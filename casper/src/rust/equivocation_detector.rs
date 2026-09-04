@@ -20,7 +20,7 @@
 //! that's the PoS contract's job. It records `EquivocationRecord`s
 //! that the proposer layer later turns into `SlashDeploy`s.
 //!
-//! See `docs/theory/slashing/slashing-verification.md` §6 for the
+//! See `docs/casper/theory/slashing/slashing-verification.md` §6 for the
 //! detector's role in the full slashing protocol.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -227,7 +227,7 @@ impl EquivocationDetector {
                     // must NOT mutate the record: stamping observer block hashes into
                     // an unbonded offender's witness set was the root cause of the
                     // observation-order-dependent NeglectedEquivocation consensus
-                    // fork (docs/theory/slashing/design/12-failure-modes.md
+                    // fork (docs/casper/theory/slashing/design/12-failure-modes.md
                     // §12.2.1a). The body is a strict no-op over `tracker` and
                     // `recorded`, so `recorded` stays empty ⇒ the pass resolves to
                     // Oblivious. Reaching it at all is a regression; alert loudly.
@@ -629,6 +629,7 @@ mod tests {
     use std::sync::Arc;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
     use models::rust::block_hash;
     use models::rust::block_metadata::BlockMetadata;
     use models::rust::casper::protocol::casper_message::{
@@ -687,6 +688,7 @@ mod tests {
                 extra_bytes: Bytes::new(),
                 sender_bond_generation: Some(bond_generation),
                 objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: None,
             },
             body: Body {
                 state: F1r3flyState {
@@ -700,8 +702,11 @@ mod tests {
                 deploys: Vec::new(),
                 rejected_deploys: Vec::new(),
                 rejected_state_effects: Vec::new(),
+                applied_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications,
             sender: sender.clone(),
@@ -710,6 +715,7 @@ mod tests {
             sig_algorithm: String::new(),
             shard_id: String::new(),
             extra_bytes: Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 
@@ -735,11 +741,14 @@ mod tests {
                 fault_tolerance_value: 0.0,
                 successful_state_effect_indices: Default::default(),
                 rejected_state_effects: Default::default(),
+                applied_state_effects: Default::default(),
                 protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 objective_equivocation_evidence_delta: Vec::new(),
                 sender_authority: None,
+                finalized_floor_commitment: None,
                 admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
                 approved_genesis: false,
+                merge_base: Bytes::new(),
             },
             block.header.sender_bond_generation.unwrap(),
         )
@@ -756,6 +765,7 @@ mod tests {
 
         let mut dag = KeyValueDagRepresentation {
             dag_set: imbl::HashSet::new(),
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -768,11 +778,19 @@ mod tests {
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index,
             deploy_index,
-            deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
                 InMemoryKeyValueStore::new(),
-            )))),
+            ))
+            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
         };
 
         for (index, block) in blocks.iter().enumerate() {

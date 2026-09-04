@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Theorem T-9.11 (permutation invariance) — randomized.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14 T-9.11.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14 T-9.11.
 // Rocq: formal/rocq/slashing/theories/EquivocationDetector.v
 // theorem `detector_permutation_invariant`.
 //

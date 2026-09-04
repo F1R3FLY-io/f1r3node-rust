@@ -22,10 +22,14 @@
 
 use std::sync::Arc;
 
+use casper::rust::block_status::{BlockError, InvalidBlock};
+use casper::rust::finality::floor_context::FloorContext;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
 use casper::rust::validate::Validate;
 use dashmap::DashSet;
-use models::rust::casper::protocol::casper_message::RejectedDeploy;
+use models::rust::casper::protocol::casper_message::{RejectedDeploy, RejectedDeployReason};
+use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -66,6 +70,7 @@ fn mk_casper_snapshot(
     let on_chain_state = OnChainCasperState {
         shard_conf,
         bonds_map: HashMap::new(),
+        bond_generations: HashMap::new(),
         active_validators: vec![],
     };
 
@@ -74,27 +79,15 @@ fn mk_casper_snapshot(
     snapshot
 }
 
-/// The stale-recovery shape: D's only real inclusion is in genesis (the
-/// finalized base), and a child block FABRICATES a rejected_deploys record
-/// for it — no honest merge can reject a chain protected by its floor.
-///
-/// Under the deterministic exemption, `repeat_deploy` judged in isolation
-/// accepts the re-inclusion (the block's parent scope says latest
-/// disposition = rejected: the predicate deliberately trusts the parent's
-/// on-chain record so that every node returns the SAME verdict). The
-/// double-execution defense for this shape sits one layer down, where it is
-/// also node-deterministic: the fabricating block itself fails
-/// `validate_block_checkpoint`'s rejected-list equality
-/// (`InvalidRejectedDeploy` — the validator's recomputed merge produces no
-/// such rejection), so the fabricated record never becomes buildable
-/// history and the recovery block is orphaned with it.
+/// A forged rejection above the finalized floor cannot override a finalized
+/// win. The ordinary repeat check rejects the duplicate occurrence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
+async fn finalized_win_dominates_parent_rejection_for_repeat_check() {
     crate::init_logger();
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+        let deploy_sig = Bytes::copy_from_slice(deploy.deploy_id());
 
         // Genesis (LFB) carries D — so D is canonically Finalized.
         let genesis = create_genesis_block(
@@ -128,7 +121,11 @@ async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
             None,
             None,
         );
-        block_n.body.rejected_deploys = vec![RejectedDeploy::legacy(deploy_sig.clone())];
+        block_n.body.rejected_deploys = vec![RejectedDeploy::occurrence_v6(
+            deploy.deploy_id_v6().expect("protocol-v6 deploy identity"),
+            genesis.block_hash.clone(),
+            RejectedDeployReason::MergeConflict,
+        )];
         block_store
             .put(block_n.block_hash.clone(), &block_n)
             .unwrap();
@@ -155,24 +152,51 @@ async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
             .expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
 
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig.clone());
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(crate::current_deploy_id(&deploy_sig));
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+        let latest_messages = block_w
+            .justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect();
+        let floor_context = FloorContext::derive(
+            &snapshot.dag,
+            &block_store,
+            &block_w.header.parents_hash_list,
+            &latest_messages,
+            FtThreshold::from_ppm(0),
+            block_w.header.version,
+        )
+        .await
+        .expect("derive finalized floor");
+        assert_eq!(floor_context.floor.hash, genesis.block_hash);
+        assert!(
+            !floor_context
+                .rejected_sigs(&block_store, 0)
+                .expect("derive floor-relative rejected deploys")
+                .contains(&crate::current_deploy_id(&deploy_sig)),
+            "the finalized winning source must dominate the forged visible rejection"
+        );
 
-        // Deterministic semantics: repeat_deploy trusts the parent's on-chain
-        // rejection record (same verdict on every node). The fabricated record
-        // itself is what gets rejected — block_n fails the checkpoint
-        // rejected-list equality (InvalidRejectedDeploy) on every validator,
-        // so this Valid verdict can never be reached through buildable history.
+        let result = Validate::repeat_deploy_at_floor(
+            &block_w,
+            &mut snapshot,
+            &block_store,
+            50,
+            Some(&floor_context),
+        );
+
         assert_eq!(
             result,
-            Either::Right(casper::rust::block_status::ValidBlock::Valid),
-            "repeat_deploy must return the same verdict on every node: the \
-             parent-scope disposition record (rejection in block_n) grants the \
-             exemption; the fabricated record is caught by checkpoint \
-             validation of block_n, not by repeat_deploy; got {:?}",
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+            "the finalized win must retain the ordinary repeat-deploy rejection; got {:?}",
             result
         );
     })
@@ -193,8 +217,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let processed_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let signed_deploy = processed_deploy.deploy.clone();
-        let deploy_sig: Bytes = signed_deploy.sig.clone();
+        let deploy_sig = Bytes::copy_from_slice(processed_deploy.deploy_id());
 
         // Genesis (LFB) carries D — so D is canonically Finalized.
         let genesis = create_genesis_block(
@@ -226,8 +249,12 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         // would otherwise re-include via the exemption path.
         {
             let mut buf = rejected_deploy_buffer.lock().unwrap();
-            buf.add(vec![signed_deploy.clone()])
-                .expect("Failed to add deploy to buffer");
+            buf.add(vec![crate::pending_envelope(
+                processed_deploy
+                    .to_cosigned()
+                    .expect("protocol-v6 deploy envelope"),
+            )])
+            .expect("Failed to add deploy to buffer");
         }
 
         let dag = block_dag_storage
@@ -242,8 +269,12 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         // record scan walks the main-parent chain from here and must see D's
         // win in genesis.
         snapshot.parents = vec![genesis.clone()];
-        snapshot.deploys_in_scope.insert(deploy_sig.clone());
-        snapshot.rejected_in_scope.insert(deploy_sig.clone());
+        snapshot
+            .deploys_in_scope
+            .insert(crate::current_deploy_id(&deploy_sig));
+        snapshot
+            .rejected_in_scope
+            .insert(crate::current_deploy_id(&deploy_sig));
 
         let now_millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -266,11 +297,14 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         let included_sigs: Vec<String> = prepared
             .deploys
             .iter()
-            .map(|d| hex::encode(&d.sig))
+            .map(|d| hex::encode(d.deploy_id()))
             .collect();
 
         assert!(
-            !prepared.deploys.iter().any(|d| d.sig == deploy_sig),
+            !prepared
+                .deploys
+                .iter()
+                .any(|d| d.deploy_id() == &deploy_sig),
             "prepare_user_deploys must skip a buffered deploy whose effects are \
              already in canonical state (re-including it would be double-execution \
              and the resulting block would be slashed by `repeat_deploy`).\n\
@@ -303,7 +337,7 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+        let deploy_sig = Bytes::copy_from_slice(deploy.deploy_id());
 
         // Recovery shape with the on-chain disposition record: genesis →
         // block_x (D) → block_m (rejected_deploys=[D]) → block_w (D again).
@@ -349,7 +383,11 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             None,
             None,
         );
-        block_m.body.rejected_deploys = vec![RejectedDeploy::legacy(deploy_sig.clone())];
+        block_m.body.rejected_deploys = vec![RejectedDeploy::occurrence_v6(
+            deploy.deploy_id_v6().expect("protocol-v6 deploy identity"),
+            block_x.block_hash.clone(),
+            RejectedDeployReason::MergeConflict,
+        )];
         block_store
             .put(block_m.block_hash.clone(), &block_m)
             .unwrap();
@@ -360,7 +398,10 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             &genesis,
             None,
             None,
-            None,
+            Some(std::collections::HashMap::from([(
+                block_m.sender.clone(),
+                block_m.block_hash.clone(),
+            )])),
             Some(vec![deploy]),
             None,
             None,
@@ -375,8 +416,8 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             .get_representation()
             .expect("dag representation");
         let mut snapshot_a = mk_casper_snapshot(dag_a);
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig.clone());
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(crate::current_deploy_id(&deploy_sig));
         snapshot_a.rejected_in_scope = Arc::new(rejected);
 
         // Validator B: same chain data, but its live view never surfaced the
@@ -387,8 +428,42 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             .expect("dag representation");
         let mut snapshot_b = mk_casper_snapshot(dag_b);
 
-        let verdict_a = Validate::repeat_deploy(&block_w, &mut snapshot_a, &block_store, 50);
-        let verdict_b = Validate::repeat_deploy(&block_w, &mut snapshot_b, &block_store, 50);
+        let latest_messages = block_w
+            .justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect();
+        let floor_context = FloorContext::derive(
+            &snapshot_a.dag,
+            &block_store,
+            &block_w.header.parents_hash_list,
+            &latest_messages,
+            FtThreshold::from_ppm(0),
+            block_w.header.version,
+        )
+        .await
+        .expect("certified recovery floor");
+        assert_eq!(floor_context.floor.hash, block_m.block_hash);
+
+        let verdict_a = Validate::repeat_deploy_at_floor(
+            &block_w,
+            &mut snapshot_a,
+            &block_store,
+            50,
+            Some(&floor_context),
+        );
+        let verdict_b = Validate::repeat_deploy_at_floor(
+            &block_w,
+            &mut snapshot_b,
+            &block_store,
+            50,
+            Some(&floor_context),
+        );
 
         assert_eq!(
             verdict_a, verdict_b,

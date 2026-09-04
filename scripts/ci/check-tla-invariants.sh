@@ -2,7 +2,7 @@
 # scripts/ci/check-tla-invariants.sh — run TLC against the bounded
 # post-fix MC configs under formal/tlaplus/ and assert clean.
 #
-# Reference: docs/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
+# Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.6 / §14.9.
 # Invokes the TLA+ model checker (TLC) against each MC instance:
 #   • slashing/MC_EquivocationDetector_liveness{,_2v}.tla / .cfg
 #   • slashing/MC_EquivocationDetectorEager{,_3v2s}.tla / .cfg
@@ -86,19 +86,31 @@ POST_FIX_CONFIGS=(
     slashing/MC_WithdrawFlow
     block_admission/MC_BlockAdmission
     deploy_occurrence/MC_DeployOccurrence
+    'deploy_occurrence/MC_DeployOccurrenceStorage|MC_DeployOccurrenceStorage'
     deploy_recovery/MC_DeployRecovery
+    'deploy_recovery/MC_CarrierIndexSoundness|CarrierIndexSoundness'
     deploy_recovery/MC_MergeRecoveryCoherence
     deploy_recovery/MC_RejectionReasonConfluence
     deploy_recovery/MC_ProtocolActivationCoherence
     deploy_recovery/MC_ProtocolVersionLifecycle
     deploy_recovery/MC_ProtocolVersionLifecycle_legacy_rejected
     deploy_recovery/MC_ProtocolVersionLifecycle_unsupported_rejected
+    'deploy_recovery/MC_FinalizedOccurrenceStatus|FinalizedOccurrenceStatus'
+    'deploy_recovery/MC_StartupMetadataPreflight|StartupMetadataPreflight'
     'finalized_floor/MC_PendingDeployHeartbeatComposition|PendingDeployHeartbeatComposition'
+    'finalized_floor/MC_PendingWorkReadiness|PendingWorkReadiness'
+    'finalized_floor/MC_ExactFloorSelection|ExactFloorSelection'
+    'finalized_floor/MC_DeployLifecycleFinalization|DeployLifecycleFinalization'
+    'finalized_floor/MC_FinalizationSnapshotRetry|FinalizationSnapshotRetry'
+    'finalized_floor/MC_AppliedStateValidationPrecedence|AppliedStateValidationPrecedence'
     'finalized_floor/MC_PendingDeployHeartbeatComposition_ingress_safety|PendingDeployHeartbeatComposition'
     'finalized_floor/MC_ProposerAdmissionCoalescing|ProposerAdmissionCoalescing'
     'finalized_floor/MC_RecoveryCommitteeTransition|RecoveryCommitteeTransition'
+    'finalized_floor/MC_AuthorityFloorStateBinding|AuthorityFloorStateBinding'
     'finalized_floor/MC_ObjectiveEquivocation|ObjectiveEquivocation'
     'finalized_floor/MC_ObjectiveEvidenceAuthorization|ObjectiveEvidenceAuthorization'
+    'finalized_floor/MC_RestoreHorizonCertifiedContext|RestoreHorizonCertifiedContext'
+    'finalized_floor/MC_RestoreHorizonStartup|RestoreHorizonStartup'
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then

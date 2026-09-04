@@ -80,6 +80,21 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn put_get_round_trip_drives_the_migration_flag() {
+        let mut manager = InMemoryStoreManager::new();
+        let storage = LastFinalizedKeyValueStorage::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        assert_eq!(storage.get().unwrap(), None);
+        assert!(!storage.require_migration().unwrap());
+
+        let hash = BlockHash::from(vec![7u8; block_hash::LENGTH]);
+        storage.put(hash.clone()).unwrap();
+        assert_eq!(storage.get().unwrap(), Some(hash));
+        assert!(storage.require_migration().unwrap());
+    }
+
+    #[tokio::test]
     async fn legacy_migration_fails_without_mutating_its_marker() {
         let mut manager = InMemoryStoreManager::new();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut manager)

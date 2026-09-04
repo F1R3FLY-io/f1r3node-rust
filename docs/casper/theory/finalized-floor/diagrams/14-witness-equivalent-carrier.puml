@@ -1,0 +1,31 @@
+@startuml
+skinparam backgroundColor #F8FAFC
+skinparam shadowing false
+skinparam defaultFontName DejaVu Sans
+skinparam ArrowColor #334155
+skinparam ArrowThickness 2
+skinparam rectangle {
+  BorderColor #334155
+  FontColor #0F172A
+  RoundCorner 12
+}
+
+title Witness-equivalent predecessor certificate carrier
+
+rectangle "Validator A\nlocal witness digest: dA\nfinalized floor: F\npost-state: S" as A #DBEAFE
+rectangle "Admitted carrier block C\ncommitment: (F, S, dA)\nportable proof pair: (C, dA)" as C #DCFCE7
+rectangle "Validator B\nlocal witness digest: dB\nfinalized floor: F\npost-state: S" as B #EDE9FE
+rectangle "Next local certificate\npredecessor pair: (C, dA)\nB's ledger remains local" as N #FEF3C7
+rectangle "Spliced pair (C, dB)" as X #FEE2E2
+
+A --> C : publishes signed commitment
+C --> B : ordinary admitted DAG evidence
+B --> N : accepts same floor and state\nthen preserves exact carrier pair
+X -[#DC2626,dashed]-> B : rejected: digest does not match C
+
+note bottom of B
+  dA and dB need not be equal.
+  Consensus authority is the certified floor and replay state.
+  Audit-history identity remains node-local.
+end note
+@enduml

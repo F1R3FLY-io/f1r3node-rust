@@ -7,7 +7,9 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::CasperSnapshot;
+use casper::rust::finality::floor_context::FloorContext;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};
@@ -24,12 +26,14 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
     StateEffectId,
 };
+use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{
-    build_block, create_block, create_genesis_block, create_validator_block,
+    build_block, create_block, create_block_with_merge_facts, create_genesis_block,
+    create_validator_block, MergeFacts,
 };
 use crate::helper::block_util::generate_validator;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -226,6 +230,29 @@ fn create_signed_deploy_with_data(
         Box::new(secp),
         construct_deploy::DEFAULT_SEC.clone(),
     )
+}
+
+fn legacy_validation_block(deploy: Signed<DeployData>) -> BlockMessage {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let mut block = build_block(
+        Vec::new(),
+        None,
+        now,
+        None,
+        None,
+        Some(vec![ProcessedDeploy::empty(deploy)]),
+        None,
+        None,
+        None,
+        None,
+    );
+    block.header.version = casper::rust::casper::CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION;
+    block.header.finalized_floor = None;
+    block.finalized_floor_certificate = None;
+    block
 }
 
 fn create_justifications(pairs: Vec<(Bytes, Bytes)>) -> HashMap<Bytes, Bytes> {
@@ -569,34 +596,18 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn future_deploy_validation_should_work() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|_block_store, _block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
             let mut updated_deploy_data = deploy.deploy.data.clone();
             updated_deploy_data.valid_after_block_number = -1;
 
-            let updated_signed_deploy = create_signed_deploy_with_data(updated_deploy_data)
-                .expect("Failed to create signed deploy");
-
-            ProcessedDeploy {
-                deploy: updated_signed_deploy,
-                ..deploy
-            }
+            create_signed_deploy_with_data(updated_deploy_data)
+                .expect("Failed to create signed deploy")
         };
 
-        let block = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![updated_processed_deploy]),
-            None,
-            None,
-            None,
-            None,
-        );
+        let block = legacy_validation_block(updated_processed_deploy);
 
         let status = Validate::future_transaction(&block);
 
@@ -608,34 +619,18 @@ async fn future_deploy_validation_should_work() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn future_deploy_validation_should_not_accept_blocks_with_a_deploy_for_a_future_block_number()
 {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|_block_store, _block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
             let mut updated_deploy_data = deploy.deploy.data.clone();
             updated_deploy_data.valid_after_block_number = i64::MAX;
 
-            let updated_signed_deploy = create_signed_deploy_with_data(updated_deploy_data)
-                .expect("Failed to create signed deploy");
-
-            ProcessedDeploy {
-                deploy: updated_signed_deploy,
-                ..deploy
-            }
+            create_signed_deploy_with_data(updated_deploy_data)
+                .expect("Failed to create signed deploy")
         };
 
-        let block_with_future_deploy = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![updated_processed_deploy]),
-            None,
-            None,
-            None,
-            None,
-        );
+        let block_with_future_deploy = legacy_validation_block(updated_processed_deploy);
 
         let status = Validate::future_transaction(&block_with_future_deploy);
 
@@ -671,34 +666,18 @@ async fn deploy_expiration_validation_should_work() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_that_is_expired() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|_block_store, _block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
             let mut updated_deploy_data = deploy.deploy.data.clone();
             updated_deploy_data.valid_after_block_number = i64::MIN;
 
-            let updated_signed_deploy = create_signed_deploy_with_data(updated_deploy_data)
-                .expect("Failed to create signed deploy");
-
-            ProcessedDeploy {
-                deploy: updated_signed_deploy,
-                ..deploy
-            }
+            create_signed_deploy_with_data(updated_deploy_data)
+                .expect("Failed to create signed deploy")
         };
 
-        let block_with_expired_deploy = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![updated_processed_deploy]),
-            None,
-            None,
-            None,
-            None,
-        );
+        let block_with_expired_deploy = legacy_validation_block(updated_processed_deploy);
 
         let status = Validate::transaction_expiration(&block_with_expired_deploy, 10);
         assert_eq!(
@@ -798,7 +777,7 @@ async fn time_based_expiration_should_accept_blocks_with_unexpired_deploys() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn time_based_expiration_should_reject_blocks_with_a_time_expired_deploy() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|_block_store, _block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         // Force `expiration_timestamp = 1` — strictly less than the
@@ -808,26 +787,10 @@ async fn time_based_expiration_should_reject_blocks_with_a_time_expired_deploy()
         let expired_processed_deploy = {
             let mut data = deploy.deploy.data.clone();
             data.expiration_timestamp = Some(1);
-            let signed =
-                create_signed_deploy_with_data(data).expect("failed to sign expired deploy");
-            ProcessedDeploy {
-                deploy: signed,
-                ..deploy
-            }
+            create_signed_deploy_with_data(data).expect("failed to sign expired deploy")
         };
 
-        let block_with_time_expired_deploy = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![expired_processed_deploy]),
-            None,
-            None,
-            None,
-            None,
-        );
+        let block_with_time_expired_deploy = legacy_validation_block(expired_processed_deploy);
 
         let status = Validate::time_based_expiration(&block_with_time_expired_deploy);
         assert_eq!(
@@ -940,12 +903,16 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_validation_rejects_duplicate_signatures_within_one_block() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|block_store, block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let block = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let block = build_block(
+            Vec::new(),
             None,
+            now,
             None,
             None,
             Some(vec![deploy.clone(), deploy]),
@@ -1016,20 +983,615 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
+/// Production order: a candidate is validated BEFORE insertion, so its own
+/// deploys are not yet in any inserted block, and fresh deploys must clear
+/// the repeat check — the parent-scope scan and the ancestor traversal have
+/// nothing to find for them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![genesis.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50);
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+/// Fast-path equivalence, repeat case: with the carrier index certified
+/// complete, a row hit routes to the exact scan and the repeat is flagged
+/// exactly as the uncertified path flags it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_still_flags_a_repeated_deploy() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let carried = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![carried.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let block1 = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![carried.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50);
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
+/// Fast-path equivalence, fresh case: with the carrier index certified
+/// complete, a fresh sig's absence proof skips the ancestor scan and the
+/// verdict stays Valid — identical to the uncertified path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_accepts_fresh_deploys() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![genesis.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50);
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+/// Fast-path soundness on the invalid-carrier gap that made the removed
+/// deploy_index fast path unportable: a sig carried ONLY by an INVALID
+/// ancestor is still a repeat (the ancestor scan reads bodies without a
+/// validity qualifier), and the certified index must reach the same
+/// verdict — the `CarriedInvalid` row routes the sig to the exact scan
+/// instead of proving absence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_still_flags_a_repeat_via_an_invalid_ancestor() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let carried = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let invalid_carrier = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![carried.clone()]),
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+        );
+
+        let candidate = build_block(
+            vec![invalid_carrier.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![carried]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut uncertified_snapshot = mk_casper_snapshot(dag);
+        let scan_verdict =
+            Validate::repeat_deploy(&candidate, &mut uncertified_snapshot, &block_store, 50);
+        assert_eq!(
+            scan_verdict,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+            "the ancestor scan flags a repeat carried by an invalid ancestor"
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut certified_snapshot = mk_casper_snapshot(dag);
+        let index_verdict =
+            Validate::repeat_deploy(&candidate, &mut certified_snapshot, &block_store, 50);
+        assert_eq!(
+            index_verdict, scan_verdict,
+            "index-served and scan-served verdicts must be equal"
+        );
+    })
+    .await
+}
+
+/// The duplicate scan walks the block's ancestry, and a storage failure during
+/// that walk used to be swallowed: the expansion returned nothing, the walk ended
+/// early, and the block passed. So a DAG that cannot be read all the way down —
+/// a truncated one, or a damaged one — silently ADMITS the repeat deploy the scan
+/// exists to reject. A validator that cannot read the set it must scan has to
+/// refuse the verdict, not return the one that absence produces.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_should_surface_a_storage_failure_not_admit_the_deploy() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+
+        // Genesis carries the deploy: it is the duplicate the scan must find.
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let missing_parent = Bytes::from(b"ancestor-absent-from-this-dag".to_vec());
+        let mid = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            None,
+        );
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut mid_metadata = dag.lookup_unsafe(&mid.block_hash).expect("mid metadata");
+        mid_metadata.parents.push(missing_parent.clone());
+        dag.block_metadata_index
+            .write()
+            .add(mid_metadata)
+            .expect("corrupt metadata row");
+
+        let head = build_block(
+            vec![mid.block_hash.clone()],
+            None,
+            1786500000001,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            Some(2),
+        );
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&head, &mut casper_snapshot, &block_store, 50);
+        assert!(
+            matches!(&result, Either::Left(BlockError::Undecidable(hash)) if hash == &missing_parent),
+            "an ancestry this node cannot read must name the block it is missing, not be \
+             swallowed (which admits the repeated deploy genesis carries) and not be \
+             reported as a local storage fault. Validation \
+             reports the gap; whether this node may act on it is decided by the block \
+             processor, which alone knows if its own history is cut short. Got {:?}",
+            result
+        );
+    })
+    .await
+}
+
+/// Fast-path ENGAGEMENT pin: the three certified-index tests above assert
+/// verdicts that are identical whether the scan ran or was skipped, so a
+/// regression that silently disables the fast path would ship clean past
+/// them. This test makes the skip itself observable: the candidate's
+/// ancestry contains an unreadable parent, so the exact scan CANNOT
+/// succeed (the uncertified control below proves it errors) — a Valid
+/// verdict is therefore only reachable through the engaged absence proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_engagement_skips_the_scan() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let missing_parent = Bytes::from(b"ancestor-absent-from-this-dag".to_vec());
+        let mid = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![mid.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut mid_metadata = dag.lookup_unsafe(&mid.block_hash).expect("mid metadata");
+        mid_metadata.parents.push(missing_parent);
+        dag.block_metadata_index
+            .write()
+            .add(mid_metadata)
+            .expect("corrupt metadata row");
+        let mut uncertified_snapshot = mk_casper_snapshot(dag);
+        let scan_verdict =
+            Validate::repeat_deploy(&candidate, &mut uncertified_snapshot, &block_store, 50);
+        assert!(
+            matches!(scan_verdict, Either::Left(_)),
+            "control: with the fast path off, the unreadable ancestry must fail the scan; \
+             got {:?}",
+            scan_verdict
+        );
+
+        uncertified_snapshot
+            .dag
+            .carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let result =
+            Validate::repeat_deploy(&candidate, &mut uncertified_snapshot, &block_store, 50);
+        assert_eq!(
+            result,
+            Either::Right(ValidBlock::Valid),
+            "a fresh sig's absence proof must skip the scan entirely — this Valid is \
+             unreachable through the scan path"
+        );
+    })
+    .await
+}
+
+/// The scan reads each ancestor's body to test it for the deploy signature, and
+/// an ancestor the DAG knows about may not be in the block store — that is the
+/// normal shape after an LFS restore, which fills the DAG from the sync window.
+/// Killing the validator thread on that read turns a recoverable storage gap
+/// into a crash; it belongs in the same typed failure as the walk itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_validation_should_surface_an_unreadable_ancestor_body() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let ghost = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            None,
+        );
+        assert!(block_store
+            .remove_block_for_tests(&ghost.block_hash)
+            .expect("remove ghost body"));
+
+        let head = build_block(
+            vec![ghost.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            Some(2),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&head, &mut casper_snapshot, &block_store, 50);
+        assert!(
+            matches!(result, Either::Left(BlockError::BlockException(_))),
+            "an ancestor whose body is missing must be a typed failure, not a panic; got {:?}",
+            result
+        );
+    })
+    .await
+}
+
+/// The retry gate at the validity layer: a re-inclusion whose kept
+/// rejection is LIVE (above the block's frozen floor) is
+/// `PrematureDeployRetry` — never a legal recovery, never
+/// `InvalidRepeatDeploy` (which would misread the retry as a plain
+/// duplicate and slash-classify differently).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
+    use std::sync::Arc;
+
+    use dashmap::DashSet;
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_id = deploy
+            .deploy_id_for_protocol(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION)
+            .expect("protocol-v6 deploy identity");
+        let deploy_id_v6 = match &deploy_id {
+            DeployLookupId::V6(deploy_id) => *deploy_id,
+            DeployLookupId::Legacy(_) => unreachable!(),
+        };
+
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let block_x = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let block_m = create_block_with_merge_facts(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_x.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MergeFacts {
+                rejected_deploys: vec![RejectedDeploy::occurrence_v6(
+                    deploy_id_v6,
+                    block_x.block_hash.clone(),
+                    RejectedDeployReason::MergeConflict,
+                )],
+                ..Default::default()
+            },
+        );
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_m.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            Some(HashMap::from([(
+                block_m.sender.clone(),
+                block_m.block_hash.clone(),
+            )])),
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot = mk_casper_snapshot(dag);
+        let latest_messages = block_w
+            .justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect();
+        let floor_context = FloorContext::derive(
+            &snapshot.dag,
+            &block_store,
+            &block_w.header.parents_hash_list,
+            &latest_messages,
+            FtThreshold::from_ppm(1_000_000),
+            block_w.header.version,
+        )
+        .await
+        .expect("live-rejection floor");
+        assert_eq!(floor_context.floor.hash, genesis.block_hash);
+
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(deploy_id);
+        snapshot.rejected_in_scope = Arc::new(rejected);
+
+        let result = Validate::repeat_deploy_at_floor(
+            &block_w,
+            &mut snapshot,
+            &block_store,
+            50,
+            Some(&floor_context),
+        );
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry))
+        );
+    })
+    .await
+}
+
 /// Regression test for `repeat_deploy`'s `rejected_in_scope` exemption.
 ///
-/// Without the exemption, validation rejects any block that re-includes a
-/// sig already present in an ancestor's `body.deploys` — including the
-/// legitimate recovery path where a deploy was rejected by a descendant
-/// merge and is re-proposed through `RejectedDeployBuffer` to land its
-/// effects in canonical state.
-///
-/// Setup models a true recovery scenario with the ON-CHAIN disposition
-/// record the deterministic exemption reads: the deploy's only inclusion
-/// (block_x) is followed by a merge block whose `rejected_deploys` names
-/// the sig — the record every real merge writes and every node sees
-/// identically. The exemption is a pure function of the block's parent
-/// scope, never of the validator's live view.
+/// The on-chain rejection record makes the exemption a pure function of the
+/// block's parent scope. The settled rejection permits one recovery inclusion.
 ///
 /// DAG: genesis (no deploys) → block_x (body.deploys=[deploy]) →
 /// block_m (rejected_deploys=[deploy]) → block_w (body.deploys=[deploy],
@@ -1049,7 +1611,13 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+        let deploy_id = deploy
+            .deploy_id_for_protocol(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION)
+            .expect("protocol-v6 deploy identity");
+        let deploy_id_v6 = match &deploy_id {
+            DeployLookupId::V6(deploy_id) => *deploy_id,
+            DeployLookupId::Legacy(_) => unreachable!(),
+        };
 
         // Genesis carries no user deploys: keeps the LFB clean of `deploy`
         // so the resolver cannot find a canonical clean inclusion.
@@ -1090,7 +1658,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         // rejected_deploys record is the disposition the deterministic
         // exemption reads (and the source `rejected_in_scope` is derived
         // from in the real pipeline).
-        let mut block_m = create_block(
+        let block_m = create_block_with_merge_facts(
             &mut block_store,
             &mut block_dag_storage,
             vec![block_x.block_hash.clone()],
@@ -1104,15 +1672,15 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
             None,
             None,
+            MergeFacts {
+                rejected_deploys: vec![RejectedDeploy::occurrence_v6(
+                    deploy_id_v6,
+                    block_x.block_hash.clone(),
+                    RejectedDeployReason::MergeConflict,
+                )],
+                ..Default::default()
+            },
         );
-        block_m.body.rejected_deploys = vec![RejectedDeploy::occurrence(
-            deploy_sig.clone(),
-            block_x.block_hash.clone(),
-            RejectedDeployReason::MergeConflict,
-        )];
-        block_store
-            .put(block_m.block_hash.clone(), &block_m)
-            .unwrap();
 
         // block_w re-includes the deploy. repeat_deploy walks block_w's
         // ancestor chain and finds block_x with deploy in body.deploys —
@@ -1125,7 +1693,10 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             &genesis,
             None,
             None,
-            None,
+            Some(HashMap::from([(
+                block_m.sender.clone(),
+                block_m.block_hash.clone(),
+            )])),
             Some(vec![deploy]),
             None,
             None,
@@ -1136,15 +1707,42 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
 
         let dag = block_dag_storage.get_representation().expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
+        let latest_messages = block_w
+            .justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect();
+        let floor_context = FloorContext::derive(
+            &snapshot.dag,
+            &block_store,
+            &block_w.header.parents_hash_list,
+            &latest_messages,
+            FtThreshold::from_ppm(0),
+            block_w.header.version,
+        )
+        .await
+        .expect("certified recovery floor");
+        assert_eq!(floor_context.floor.hash, block_m.block_hash);
 
         // The snapshot flag mirrors what the recovery pipeline derives from
         // the on-chain record above; the validation exemption itself no
         // longer reads it (node-local), but keep it for realism.
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig);
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(deploy_id);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+        let result = Validate::repeat_deploy_at_floor(
+            &block_w,
+            &mut snapshot,
+            &block_store,
+            50,
+            Some(&floor_context),
+        );
         assert_eq!(
             result,
             Either::Right(ValidBlock::Valid),
@@ -1186,7 +1784,9 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+        let deploy_id = deploy
+            .deploy_id_for_protocol(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION)
+            .expect("protocol-v6 deploy identity");
 
         // Genesis IS the LFB and contains `deploy` clean in body.deploys.
         // The resolver therefore reports `Finalized` for this sig.
@@ -1228,8 +1828,8 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
         // gap is exactly that the repeat_deploy filter cannot distinguish
         // "rejected somewhere, recoverable" from "finalized somewhere,
         // non-recoverable" via this set alone.
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig);
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(deploy_id);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
@@ -3374,7 +3974,12 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
         tampered_rej
             .body
             .rejected_deploys
-            .push(RejectedDeploy::legacy(Bytes::from(vec![0xABu8; 64])));
+            .push(RejectedDeploy::occurrence_v6(
+                models::rust::deploy_id::DeployIdV6::try_from([0xAB; 32].as_slice())
+                    .expect("fixed-width v6 deploy identity"),
+                genesis.block_hash.clone(),
+                RejectedDeployReason::MergeConflict,
+            ));
 
         let mut snap_rej = mk_casper_snapshot(
             block_dag_storage

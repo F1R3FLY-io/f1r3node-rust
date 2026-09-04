@@ -366,3 +366,300 @@ impl From<openai_api_rs::v1::error::APIError> for InterpreterError {
 impl From<std::io::Error> for InterpreterError {
     fn from(error: std::io::Error) -> Self { InterpreterError::IoError(error.to_string()) }
 }
+
+#[cfg(test)]
+mod tests {
+    use rholang_parser::{SourcePos, SourceSpan};
+
+    use super::*;
+
+    fn span() -> SourceSpan {
+        SourceSpan {
+            start: SourcePos { line: 1, col: 2 },
+            end: SourcePos { line: 1, col: 5 },
+        }
+    }
+
+    #[test]
+    fn display_renders_message_variants() {
+        let cases = vec![
+            (
+                InterpreterError::BugFoundError("b".to_string()),
+                "Bug found: b".to_string(),
+            ),
+            (
+                InterpreterError::UndefinedRequiredProtobufFieldError("f".to_string()),
+                "A parsed Protobuf field was None, should be Some: f".to_string(),
+            ),
+            (
+                InterpreterError::NormalizerError("n".to_string()),
+                "Normalizer error: n".to_string(),
+            ),
+            (
+                InterpreterError::SyntaxError("s".to_string()),
+                "Syntax error: s".to_string(),
+            ),
+            (
+                InterpreterError::LexerError("l".to_string()),
+                "Lexer error: l".to_string(),
+            ),
+            (
+                InterpreterError::ParserError("p".to_string()),
+                "Parser error: p".to_string(),
+            ),
+            (
+                InterpreterError::EncodeError("e".to_string()),
+                "Encode error: e".to_string(),
+            ),
+            (
+                InterpreterError::DecodeError("d".to_string()),
+                "Decode error: d".to_string(),
+            ),
+            (
+                InterpreterError::UnexpectedBundleContent("u".to_string()),
+                "Unexpected bundle content: u".to_string(),
+            ),
+            (
+                InterpreterError::UnrecognizedNormalizerError("u".to_string()),
+                "Unrecognized normalizer error: u".to_string(),
+            ),
+            (
+                InterpreterError::OutOfPhlogistonsError,
+                "Computation ran out of phlogistons.".to_string(),
+            ),
+            (
+                InterpreterError::UserAbortError,
+                "Computation aborted by user request.".to_string(),
+            ),
+            (
+                InterpreterError::TopLevelWildcardsNotAllowedError("w".to_string()),
+                "Top level wildcards are not allowed: w".to_string(),
+            ),
+            (
+                InterpreterError::TopLevelFreeVariablesNotAllowedError("v".to_string()),
+                "Top level free variables are not allowed: v".to_string(),
+            ),
+            (
+                InterpreterError::TopLevelLogicalConnectivesNotAllowedError("c".to_string()),
+                "Top level logical connectives are not allowed: c".to_string(),
+            ),
+            (
+                InterpreterError::SubstituteError("s".to_string()),
+                "Substitute error: s".to_string(),
+            ),
+            (
+                InterpreterError::PatternReceiveError("c".to_string()),
+                "Invalid pattern in the receive: c. Only logical AND is allowed.".to_string(),
+            ),
+            (
+                InterpreterError::SetupError("s".to_string()),
+                "Setup error: s".to_string(),
+            ),
+            (
+                InterpreterError::UnrecognizedInterpreterError("x".to_string()),
+                "Unrecognized interpreter error.".to_string(),
+            ),
+            (
+                InterpreterError::SortMatchError("s".to_string()),
+                "Sort match error: s".to_string(),
+            ),
+            (
+                InterpreterError::ReduceError("r".to_string()),
+                "Reduce error: r".to_string(),
+            ),
+            (
+                InterpreterError::MethodNotDefined {
+                    method: "m".to_string(),
+                    other_type: "Int".to_string(),
+                },
+                "Error: Method `m` is not defined on Int.".to_string(),
+            ),
+            (
+                InterpreterError::MethodArgumentNumberMismatch {
+                    method: "m".to_string(),
+                    expected: 2,
+                    actual: 1,
+                },
+                "Error: Method `m` expects 2 Par argument(s), but got 1 argument(s).".to_string(),
+            ),
+            (
+                InterpreterError::OperatorNotDefined {
+                    op: "+".to_string(),
+                    other_type: "Bool".to_string(),
+                },
+                "Error: Operator `+` is not defined on Bool.".to_string(),
+            ),
+            (
+                InterpreterError::OperatorExpectedError {
+                    op: "+".to_string(),
+                    expected: "Int".to_string(),
+                    other_type: "Bool".to_string(),
+                },
+                "Error: Operator `+` is not defined on Bool.".to_string(),
+            ),
+            (
+                InterpreterError::IfConditionTypeError {
+                    actual_type: "Int".to_string(),
+                },
+                "Error: `if` condition must evaluate to a boolean, but got Int.".to_string(),
+            ),
+            (
+                InterpreterError::OpenAIError("o".to_string()),
+                "OpenAI error: o".to_string(),
+            ),
+            (
+                InterpreterError::OllamaError("o".to_string()),
+                "Ollama error: o".to_string(),
+            ),
+            (
+                InterpreterError::ChromaDBError("c".to_string()),
+                "ChromaDB error: c".to_string(),
+            ),
+            (
+                InterpreterError::IllegalArgumentError("i".to_string()),
+                "Illegal argument: i".to_string(),
+            ),
+            (
+                InterpreterError::IoError("i".to_string()),
+                "IO error: i".to_string(),
+            ),
+            (
+                InterpreterError::CanNotReplayFailedNonDeterministicProcess,
+                "Cannot replay failed non-deterministic process".to_string(),
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn display_renders_aggregate_and_wrapped_variants() {
+        let inner = InterpreterError::ReduceError("inner".to_string());
+
+        let aggregate = InterpreterError::AggregateError {
+            interpreter_errors: vec![inner.clone()],
+        };
+        assert_eq!(
+            aggregate.to_string(),
+            format!("Error: Aggregate Error\n{:?}", inner)
+        );
+
+        let non_det = InterpreterError::NonDeterministicProcessFailure {
+            cause: Box::new(inner.clone()),
+            output_not_produced: vec![],
+        };
+        assert_eq!(
+            non_det.to_string(),
+            "Non-deterministic process failure: Reduce error: inner"
+        );
+
+        let produce_failure = InterpreterError::ProduceFailureWithOutput {
+            cause: Box::new(inner),
+            output_not_produced: vec![vec![1]],
+        };
+        assert_eq!(
+            produce_failure.to_string(),
+            "Produce failure with output: Reduce error: inner"
+        );
+    }
+
+    #[test]
+    fn display_renders_source_span_variants() {
+        let s = span();
+        let pos = SourcePos { line: 3, col: 4 };
+
+        let cases = vec![
+            (
+                InterpreterError::UnexpectedProcContext {
+                    var_name: "x".to_string(),
+                    name_var_source_span: s,
+                    process_source_span: s,
+                },
+                format!("Name variable: x at {} used in process context at {}", s, s),
+            ),
+            (
+                InterpreterError::UnexpectedReuseOfProcContextFree {
+                    var_name: "x".to_string(),
+                    first_use: s,
+                    second_use: s,
+                },
+                format!(
+                    "Free variable x is used twice as a binder (at {} and {}) in process context.",
+                    s, s
+                ),
+            ),
+            (
+                InterpreterError::UnboundVariableRefSpan {
+                    var_name: "x".to_string(),
+                    source_span: s,
+                },
+                format!("Variable reference: =x at {} is unbound.", s),
+            ),
+            (
+                InterpreterError::UnboundVariableRefPos {
+                    var_name: "x".to_string(),
+                    source_pos: pos,
+                },
+                format!("Variable reference: =x at {} is unbound.", pos),
+            ),
+            (
+                InterpreterError::ReceiveOnSameChannelsError { source_span: s },
+                format!(
+                    "Receiving on the same channels is currently not allowed (at {}).",
+                    s
+                ),
+            ),
+            (
+                InterpreterError::UnexpectedNameContext {
+                    var_name: "x".to_string(),
+                    proc_var_source_span: s,
+                    name_source_span: s,
+                },
+                format!("Proc variable: x at {} used in Name context at {}", s, s),
+            ),
+            (
+                InterpreterError::UnexpectedReuseOfNameContextFree {
+                    var_name: "x".to_string(),
+                    first_use: s,
+                    second_use: s,
+                },
+                format!(
+                    "Free variable x is used twice as a binder (at {} and {}) in name context.",
+                    s, s
+                ),
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn conversions_round_trip_between_error_domains() {
+        let rspace = RSpaceError::BugFoundError("rspace bug".to_string());
+        let interpreter: InterpreterError = rspace.clone().into();
+        assert_eq!(interpreter, InterpreterError::RSpaceError(rspace));
+        assert!(interpreter.to_string().starts_with("RSpace Error: "));
+
+        let back: RSpaceError = InterpreterError::ReduceError("r".to_string()).into();
+        assert_eq!(
+            back,
+            RSpaceError::InterpreterError("Reduce error: r".to_string())
+        );
+
+        let io = std::io::Error::other("disk gone");
+        let from_io: InterpreterError = io.into();
+        assert_eq!(from_io, InterpreterError::IoError("disk gone".to_string()));
+    }
+
+    #[test]
+    fn illegal_argument_error_names_the_method() {
+        assert_eq!(
+            illegal_argument_error("nth"),
+            InterpreterError::IllegalArgumentError("Incorrect arguments for nth".to_string())
+        );
+    }
+}

@@ -21,6 +21,32 @@ const COOPERATIVE_YIELD_TIMESLICE_MS: u64 = 1;
 const MAX_SELF_JUSTIFICATION_CACHE_ENTRIES: usize = 10_000;
 const MAX_ANCESTOR_CACHE_ENTRIES: usize = 10_000;
 
+fn active_weight_map(weights: &BTreeMap<V, i64>, active_validators: &BTreeSet<V>) -> WeightMap {
+    weights
+        .iter()
+        .filter(|(validator, stake)| **stake > 0 && active_validators.contains(*validator))
+        .map(|(validator, stake)| (validator.clone(), *stake))
+        .collect()
+}
+
+fn certified_active_weight_map(
+    target_msg: &M,
+    authority_floor_hash: &M,
+    claimed_floor_post_state_hash: &[u8],
+    stored_floor_post_state_hash: &[u8],
+    weights: &BTreeMap<V, i64>,
+    active_validators: &BTreeSet<V>,
+) -> Result<WeightMap, KvStoreError> {
+    if stored_floor_post_state_hash != claimed_floor_post_state_hash {
+        return Err(KvStoreError::InvalidArgument(format!(
+            "target {} certifies authority floor {} with a mismatched post-state hash",
+            hex::encode(target_msg),
+            hex::encode(authority_floor_hash)
+        )));
+    }
+    Ok(active_weight_map(weights, active_validators))
+}
+
 /// Denominator of the on-chain fault-tolerance threshold, in parts-per-million
 /// (ppm). The threshold θ is stored on-chain as an `i64` ppm numerator with this
 /// fixed denominator, so θ = num / 1_000_000.
@@ -59,9 +85,9 @@ impl FtThreshold {
 
 /// Exact rational finalization test: θ = num/den.
 ///
-/// The durable floor and LFB finalizer both require `(2q−S)/S > θ`. Cleared of
-/// denominators (S, den > 0), the test is `2·q·den > S·(den+num)`. `i128` so
-/// `2·q·den` and `S·(den+num)` (≤ ~2^84 for
+/// The durable floor and LFB use `(2q−S)/S > θ`. Cleared of denominators
+/// (S, den > 0), the test is `2·q·den > S·(den+num)`. `i128` keeps both
+/// sides exact for
 /// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
 /// stays exact.
 ///
@@ -121,22 +147,35 @@ impl CliqueOracle {
         map.insert(key, value);
     }
 
-    /// weight map of main parent (fallbacks to message itself if no parents)
-    /// TODO - why not use local weight map but seek for parent?
-    /// P.S. This is related to the fact that we create latest message for newly bonded validator
-    /// equal to message where bonding deploy has been submitted. So stake from validator that did not create anything is
-    /// put behind this message. So here is one more place where this logic makes things more complex.
     pub async fn get_corresponding_weight_map(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
     ) -> Result<WeightMap, KvStoreError> {
-        dag.lookup_unsafe(target_msg)
-            .and_then(|meta| match meta.parents.first() {
-                Some(main_parent) => dag
-                    .lookup_unsafe(main_parent)
-                    .map(|parent_meta| parent_meta.weight_map.into_iter().collect()),
-                None => Ok(meta.weight_map.into_iter().collect()),
-            })
+        let target = dag.lookup_unsafe(target_msg)?;
+        if target.approved_genesis {
+            return Ok(active_weight_map(
+                &target.weight_map,
+                &target.active_validator_set,
+            ));
+        }
+        if !target.is_accepted() {
+            return Ok(HashMap::new());
+        }
+        let authority = target.sender_authority.as_ref().ok_or_else(|| {
+            KvStoreError::InvalidArgument(format!(
+                "accepted target {} has no certified sender authority",
+                hex::encode(target_msg)
+            ))
+        })?;
+        let authority_floor = dag.lookup_unsafe(authority.authority_floor_hash())?;
+        certified_active_weight_map(
+            target_msg,
+            authority.authority_floor_hash(),
+            authority.authority_floor_post_state_hash(),
+            &authority_floor.post_state_hash,
+            &authority_floor.weight_map,
+            &authority_floor.active_validator_set,
+        )
     }
 
     /// If two validators will never have disagreement on target message
@@ -154,10 +193,16 @@ impl CliqueOracle {
     /// ```
     ///
     /// 1. get justification of validator b as per latest message of a (lmAjB)
-    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB are NOT in main chain
-    ///    with target message.
+    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB
+    ///    DISAGREE with the target message. The test is two-sided by height:
+    ///    a visited block at or above the target's height disagrees iff the
+    ///    target is not on its spine (a rival estimate); a visited block
+    ///    BELOW the target's height disagrees iff it is not on the TARGET'S
+    ///    spine (a rival prefix). A below-target block on the target's own
+    ///    main chain is settled ancestry the window has not caught up past —
+    ///    ignorance, not disagreement — and must not veto the edge.
     ///
-    ///    If one found - this is a source of disagreement.
+    ///    If a disagreeing block is found - this is a source of disagreement.
     async fn never_eventually_see_disagreement(
         lm_b: &M,
         lm_a_j_b: &M,
@@ -211,6 +256,7 @@ impl CliqueOracle {
                 );
                 value
             };
+            let target_height = dag.lookup_unsafe(target_msg)?.block_number;
             let mut last_yield = Instant::now();
             let mut idx: usize = 0;
             while let Some(hash) = current {
@@ -224,21 +270,41 @@ impl CliqueOracle {
                     last_yield = Instant::now();
                 }
                 idx += 1;
-                // DAG-ancestry (multi-parent), matching `agree`. A
-                // self-justification of b that has NOT merged `target_msg`
-                // (target is not a DAG-ancestor via any parent path) is a genuine
-                // divergence; one that merged it agrees. Under the old
-                // single-main-parent check, a merge block whose main parent was a
-                // sibling looked like a disagreement even though it had merged
-                // the target — collapsing the clique on equal-weight forks.
-                // (`ancestor_cache` now memoizes this DAG-ancestry result,
-                // keyed by (target, hash); for single-parent histories it is
-                // identical to the prior main-chain result.)
+                // Main-chain membership, matching `agree`, decided by height.
+                //
+                // At or above the target's height: a self-justification of b
+                // whose SPINE does not pass through `target_msg` is a genuine
+                // divergence — b's chain left (or never held) the candidate,
+                // which is exactly the fork-choice flip the clique must not
+                // contain. Merging the target on a secondary parent is not
+                // agreement; counting it as such let both sides of a
+                // conflicting sibling pair keep full mutual cliques and
+                // certify together (the ucc 00e6a2e3 consensus halt).
+                //
+                // BELOW the target's height, the target can never be on the
+                // visited block's spine, so that test conflates two
+                // different prefixes: a block on the TARGET'S OWN main chain
+                // (settled ancestry the window has not caught up past —
+                // ignorance, not disagreement) and a rival prefix (a real
+                // divergent estimate). Only the rival prefix vetoes. The
+                // conflation held certification hostage to the STALEST
+                // window in the committee: one departed-era justification
+                // reaching below the candidate froze finality for 851 s in
+                // CI (stall instance i5, run 32397055615 — see
+                // tests/finalized_floor/oracle_stall_replay_spec.rs).
+                //
+                // (`ancestor_cache` memoizes the per-(target, hash) verdict:
+                // true = this visited block does not veto.)
                 let ancestor_key = (target_msg.clone(), hash.clone());
-                let target_is_ancestor = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
+                let no_disagreement = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
                     *cached
                 } else {
-                    let value = dag.is_dag_ancestor(target_msg, &hash)?;
+                    let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                    let value = if visited_height < target_height {
+                        dag.is_in_main_chain(&hash, target_msg)?
+                    } else {
+                        dag.is_in_main_chain(target_msg, &hash)?
+                    };
                     CliqueOracle::bounded_cache_insert(
                         ancestor_cache,
                         ancestor_key,
@@ -247,7 +313,7 @@ impl CliqueOracle {
                     );
                     value
                 };
-                if !target_is_ancestor {
+                if !no_disagreement {
                     return Ok(true);
                 }
 
@@ -506,18 +572,26 @@ impl CliqueOracle {
             dag: &KeyValueDagRepresentation,
             latest_messages: &BTreeMap<V, M>,
         ) -> Result<bool, KvStoreError> {
-            // Multi-parent agreement: a validator agrees with `message` iff
-            // `message` is a DAG-ancestor of its latest message — i.e. the
-            // validator has MERGED `message` into its state via any parent
-            // path. The prior `is_in_main_chain` check counted only the
-            // single main-parent chain, which under-counts merges: an
-            // equal-weight concurrent fork that every validator has merged
-            // would still show <=1/2 agreeing weight and never finalize
-            // (the liveness wedge). For single-parent histories the two
-            // predicates coincide, so single-chain finality is unchanged.
-            latest_messages
-                .get(validator)
-                .map_or(Ok(false), |hash| dag.is_dag_ancestor(message, hash))
+            // Agreement is CHAIN CHOICE, not merging: a validator agrees
+            // with `message` iff `message` is on the MAIN-PARENT SPINE of
+            // its latest message. A spine passes through exactly one block
+            // per height, so agreement is exclusive between same-height
+            // siblings — the property the clique theorem certifies (the
+            // estimator can never move off the candidate without >θ weight
+            // faulting). DAG ancestry is the wrong relation in a merging
+            // DAG: every block is eventually merged by everyone, so
+            // ancestry-agreement saturates and certifies BOTH sides of a
+            // conflicting sibling pair — two finalized floors then freeze
+            // at one height and every join derivation refuses forever (the
+            // ucc 00e6a2e3 consensus halt). Matches the Scala reference
+            // (CliqueOracle.scala `dag.isInMainChain(targetMsg, ...)`).
+            let Some(hash) = latest_messages.get(validator) else {
+                return Ok(false);
+            };
+            if hash != message && dag.canonical_genesis_hash() == Some(hash) {
+                return Ok(false);
+            }
+            dag.is_in_main_chain(message, hash)
         }
 
         let mut agreeing_map = HashMap::new();
@@ -533,7 +607,8 @@ impl CliqueOracle {
     /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
     /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
     /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
-    /// the exact rule `2·q·den > S·(den+num)` (see [`ft_decides_exact`]). Mirrors `ft_witnessed`'s
+    /// the exact rule `2·q·den > S·(den+num)` (see [`ft_decides_exact`]).
+    /// Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
     pub async fn ft_witnessed_exact(
@@ -609,7 +684,7 @@ impl CliqueOracle {
     /// Finalizer decision + display value in one clique pass. Computes the max
     /// clique weight `q` and total stake `S` once and returns `(decision,
     /// ft_value)` where `decision` is the EXACT verdict
-    /// [`ft_decides_exact`]`(agreeing, q, S, num, den, strict)` and `ft_value` =
+    /// [`ft_decides_exact`]`(agreeing, q, S, num, den)` and `ft_value` =
     /// (2q−S)/S as `f32` for display/telemetry only. The `agreeing ≤ S/2`
     /// short-circuit returns `(false, MIN_FAULT_TOLERANCE)`, matching
     /// [`CliqueOracle::compute_output_with_cache`].
@@ -725,7 +800,45 @@ mod ft_decides_exact_tests {
     //! and the `FtThreshold` newtype. The exact test replaces the imprecise `f32`
     //! comparison `(2q−S)/S > θ`; these confirm it matches `f32` where `f32` is
     //! exact, rejects exact threshold ties, and never overflows.
-    use super::{ft_decides_exact, FtThreshold, FT_PPM_DEN};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::Bond;
+    use proptest::prelude::*;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::{
+        active_weight_map, certified_active_weight_map, ft_decides_exact, CliqueOracle,
+        FtThreshold, KvStoreError, FT_PPM_DEN,
+    };
+
+    fn validator(id: u8) -> prost::bytes::Bytes { prost::bytes::Bytes::from(vec![id; 33]) }
+
+    fn threshold_case() -> impl Strategy<Value = (i64, i64, i64)> {
+        (1i64..257, 1i64..65)
+            .prop_flat_map(|(stake, den)| (-den..=den).prop_map(move |num| (stake, num, den)))
+    }
+
+    fn hard_gate_case() -> impl Strategy<Value = (i64, i64, i64, i64, i64)> {
+        threshold_case().prop_flat_map(|(stake, num, den)| {
+            (0i64..=stake, 0i64..=(stake / 2))
+                .prop_map(move |(clique, agreeing)| (agreeing, clique, stake, num, den))
+        })
+    }
+
+    fn two_certificate_case() -> impl Strategy<Value = (i64, i64, i64, i64, i64)> {
+        (1i64..257, 1i64..65)
+            .prop_flat_map(|(stake, den)| (-den..den).prop_map(move |num| (stake, num, den)))
+            .prop_flat_map(|(stake, num, den)| {
+                let q_min = ((stake as i128 * (den + num) as i128) / (2 * den) as i128 + 1) as i64;
+                (q_min..=stake, q_min..=stake)
+                    .prop_map(move |(left, right)| (stake, num, den, left, right))
+            })
+    }
 
     /// On small stakes the exact rule matches the naive `f32` comparison
     /// `(2q−S)/S > θ` at every grid point where `f32` is exact (dyadic S and θ),
@@ -772,10 +885,7 @@ mod ft_decides_exact_tests {
             s as i128 * (den as i128 + num as i128),
             "test setup must produce an exact tie"
         );
-        assert!(
-            !ft_decides_exact(s, q, s, num, den),
-            "exact tie must not finalize"
-        );
+        assert!(!ft_decides_exact(s, q, s, num, den));
     }
 
     #[test]
@@ -835,5 +945,292 @@ mod ft_decides_exact_tests {
         assert_eq!(FtThreshold::from_f32_lossy(0.5).num, 500_000);
         assert_eq!(FtThreshold::from_f32_lossy(-1.0).num, -1_000_000);
         assert_eq!(FtThreshold::from_f32_lossy(-1.0).den, FT_PPM_DEN);
+    }
+
+    #[test]
+    fn inactive_bonds_do_not_enter_the_finality_denominator() {
+        let active = validator(1);
+        let inactive = validator(2);
+        let weights = BTreeMap::from([(active.clone(), 60), (inactive, 10_000)]);
+        let committee = active_weight_map(&weights, &BTreeSet::from([active.clone()]));
+        assert_eq!(committee, HashMap::from([(active, 60)]));
+    }
+
+    #[tokio::test]
+    async fn certified_authority_floor_controls_the_finality_denominator() {
+        let active = prost::bytes::Bytes::from(vec![1; models::rust::validator::LENGTH]);
+        let inactive = prost::bytes::Bytes::from(vec![2; models::rust::validator::LENGTH]);
+        let bonds = vec![
+            Bond {
+                validator: active.clone(),
+                stake: 60,
+            },
+            Bond {
+                validator: inactive,
+                stake: 10_000,
+            },
+        ];
+        let mut manager = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .expect("block store");
+        let dag_store = BlockDagKeyValueStorage::new(&mut manager)
+            .await
+            .expect("DAG store");
+        let mut genesis = get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            Some(active.clone()),
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(bonds.clone()),
+            Some("root".to_string()),
+            None,
+        );
+        genesis.body.state.active_validators = vec![active.clone()];
+        block_store
+            .put_block_message(&genesis)
+            .expect("store genesis");
+        dag_store
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .expect("insert genesis");
+
+        let prospective = prost::bytes::Bytes::from(vec![3; models::rust::validator::LENGTH]);
+        let parent_bonds = vec![
+            Bond {
+                validator: active.clone(),
+                stake: 60,
+            },
+            Bond {
+                validator: prospective.clone(),
+                stake: 10_000,
+            },
+        ];
+        let parent = get_random_block(
+            Some(1),
+            Some(1),
+            Some(genesis.body.state.post_state_hash.clone()),
+            None,
+            Some(active.clone()),
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(parent_bonds.clone()),
+            Some("root".to_string()),
+            None,
+        );
+        let mut parent = parent;
+        parent.body.state.active_validators = vec![active.clone(), prospective];
+        block_store
+            .put_block_message(&parent)
+            .expect("store parent");
+        dag_store
+            .insert(&parent, InsertMode::Normal)
+            .expect("insert parent");
+
+        let mut child = get_random_block(
+            Some(2),
+            Some(2),
+            Some(genesis.body.state.post_state_hash.clone()),
+            None,
+            Some(active.clone()),
+            None,
+            Some(2),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(parent_bonds),
+            Some("root".to_string()),
+            None,
+        );
+        child.header.parents_hash_list = vec![parent.block_hash.clone()];
+        block_store.put_block_message(&child).expect("store child");
+        dag_store
+            .insert(&child, InsertMode::Normal)
+            .expect("insert child");
+        let dag = dag_store.get_representation().expect("DAG");
+
+        let denominator = CliqueOracle::get_corresponding_weight_map(&child.block_hash, &dag)
+            .await
+            .expect("weight map");
+        assert_eq!(denominator, HashMap::from([(active.clone(), 60)]));
+
+        let wrong_state = prost::bytes::Bytes::from(vec![91; models::rust::block_hash::LENGTH]);
+        let mismatched = get_random_block(
+            Some(2),
+            Some(2),
+            Some(wrong_state),
+            None,
+            Some(active),
+            None,
+            Some(2),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(bonds),
+            Some("root".to_string()),
+            None,
+        );
+        block_store
+            .put_block_message(&mismatched)
+            .expect("store mismatched target");
+        dag_store
+            .insert(&mismatched, InsertMode::Normal)
+            .expect("insert mismatched target");
+        let dag = dag_store.get_representation().expect("DAG");
+        let error = CliqueOracle::get_corresponding_weight_map(&mismatched.block_hash, &dag)
+            .await
+            .expect_err("mismatched floor state must fail closed");
+        assert_eq!(
+            error,
+            KvStoreError::InvalidArgument(format!(
+                "target {} certifies authority floor {} with a mismatched post-state hash",
+                hex::encode(&mismatched.block_hash),
+                hex::encode(&genesis.block_hash)
+            ))
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn strict_clique_minimum_matches_the_exact_integer_region(
+            (stake, num, den) in threshold_case(),
+        ) {
+            let numerator = stake as i128 * (den + num) as i128;
+            let denominator = (2 * den) as i128;
+            let q_min = (numerator / denominator + 1) as i64;
+            for clique in 0..=stake {
+                prop_assert_eq!(
+                    ft_decides_exact(stake, clique, stake, num, den),
+                    clique >= q_min,
+                );
+            }
+        }
+
+        #[test]
+        fn independent_agreeing_majority_gate_rejects_half_or_less(
+            (agreeing, clique, stake, num, den) in hard_gate_case(),
+        ) {
+            prop_assert!(!ft_decides_exact(
+                agreeing,
+                clique,
+                stake,
+                num,
+                den,
+            ));
+        }
+
+        #[test]
+        fn two_certificates_force_overlap_above_the_fault_budget(
+            (stake, num, den, left, right) in two_certificate_case(),
+        ) {
+            prop_assert!(ft_decides_exact(stake, left, stake, num, den));
+            prop_assert!(ft_decides_exact(stake, right, stake, num, den));
+            let overlap = (left + right - stake).max(0);
+            prop_assert!(overlap as i128 * den as i128 > stake as i128 * num as i128);
+        }
+
+        #[test]
+        fn active_committee_is_independent_of_inactive_stake(
+            entries in proptest::collection::vec((any::<u8>(), -8i64..=2048, any::<bool>()), 0..64),
+            replacement in -8i64..=2048,
+        ) {
+            let mut weights = BTreeMap::new();
+            let mut active = BTreeSet::new();
+            for (id, stake, is_active) in entries {
+                let validator = validator(id);
+                weights.insert(validator.clone(), stake);
+                if is_active {
+                    active.insert(validator);
+                }
+            }
+            let expected = active_weight_map(&weights, &active);
+            for validator in weights.keys().filter(|validator| !active.contains(*validator)).cloned().collect::<Vec<_>>() {
+                weights.insert(validator, replacement);
+            }
+            prop_assert_eq!(active_weight_map(&weights, &active), expected);
+        }
+
+        #[test]
+        fn active_committee_contains_exactly_positive_active_bonds(
+            entries in proptest::collection::vec((any::<u8>(), -8i64..=2048, any::<bool>()), 0..64),
+        ) {
+            let mut weights = BTreeMap::new();
+            let mut active = BTreeSet::new();
+            for (id, stake, is_active) in entries {
+                let validator = validator(id);
+                weights.insert(validator.clone(), stake);
+                if is_active {
+                    active.insert(validator);
+                }
+            }
+            let committee = active_weight_map(&weights, &active);
+            prop_assert!(committee.iter().all(|(validator, stake)| active.contains(validator) && *stake > 0));
+            for (validator, stake) in weights {
+                prop_assert_eq!(committee.get(&validator).copied(), (active.contains(&validator) && stake > 0).then_some(stake));
+            }
+        }
+
+        #[test]
+        fn certified_committee_requires_the_exact_floor_state_pair(
+            entries in proptest::collection::vec((any::<u8>(), -8i64..=2048, any::<bool>()), 0..64),
+            state in any::<[u8; 32]>(),
+            matching in any::<bool>(),
+            target_a in any::<[u8; 32]>(),
+            target_b in any::<[u8; 32]>(),
+            floor_a in any::<[u8; 32]>(),
+            floor_b in any::<[u8; 32]>(),
+        ) {
+            let mut weights = BTreeMap::new();
+            let mut active = BTreeSet::new();
+            for (id, stake, is_active) in entries {
+                let validator = validator(id);
+                weights.insert(validator.clone(), stake);
+                if is_active {
+                    active.insert(validator);
+                }
+            }
+            let mut claim = state;
+            if !matching {
+                claim[0] ^= 1;
+            }
+            let expected = active_weight_map(&weights, &active);
+            let left = certified_active_weight_map(
+                &prost::bytes::Bytes::copy_from_slice(&target_a),
+                &prost::bytes::Bytes::copy_from_slice(&floor_a),
+                &claim,
+                &state,
+                &weights,
+                &active,
+            );
+            let right = certified_active_weight_map(
+                &prost::bytes::Bytes::copy_from_slice(&target_b),
+                &prost::bytes::Bytes::copy_from_slice(&floor_b),
+                &claim,
+                &state,
+                &weights,
+                &active,
+            );
+            if matching {
+                prop_assert_eq!(left.as_ref().ok(), Some(&expected));
+                prop_assert_eq!(right.as_ref().ok(), Some(&expected));
+            } else {
+                prop_assert!(matches!(left, Err(KvStoreError::InvalidArgument(_))));
+                prop_assert!(matches!(right, Err(KvStoreError::InvalidArgument(_))));
+            }
+        }
     }
 }

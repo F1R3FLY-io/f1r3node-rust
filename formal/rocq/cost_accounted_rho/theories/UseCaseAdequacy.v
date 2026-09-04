@@ -648,7 +648,7 @@ Qed.
    uc_ca_046, uc_ca_047, uc_ca_048, uc_ca_049, uc_ca_054 below are stated over the
    *digest-inclusive* replay-payload model (rb_full_replay_payload / rb_cost_trace_*
    / rb_block_auth_payload / rb_replay_cache_key, defined in RuntimeBudgetRefinement.v).
-   Per TM-CA-151 (docs/theory/cost-accounting-threat-model.md) the per-operation
+   Per TM-CA-151 (docs/casper/theory/cost-accounting-threat-model.md) the per-operation
    cost_trace_digest / cost_trace_event_count / digest-presence are DIAGNOSTIC /
    TELEMETRY ONLY and are removed from production consensus (the replay comparison
    and the signed block-hash preimage). The production consensus surface is
@@ -1474,11 +1474,31 @@ Theorem uc_ca_061_system_mode_cannot_leak_into_user_metering :
     rb_last_oop (rb_set_unmetered (rb_set_unmetered b true) false) =
       rb_last_oop b /\
     rb_unmetered (rb_set_unmetered (rb_set_unmetered b true) false) =
-      false).
+      false) /\
+  (forall count s,
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered
+        (rb_meter_identity_reserve_many count
+          (rb_meter_identity_set_unmetered s true))
+        false) =
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered s false)) /\
+  (forall components s,
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered
+        (rb_meter_identity_child_many components
+          (rb_meter_identity_set_unmetered s true))
+        false) =
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered s false)).
 Proof.
   split.
   - exact rb_unmetered_reserve_preserves_trace.
-  - exact rb_set_unmetered_restores_metered_observables.
+  - split.
+    + exact rb_set_unmetered_restores_metered_observables.
+    + split.
+      * exact rb_meter_identity_scoped_unmetered_work_preserves_next_metered_identity.
+      * exact rb_meter_identity_scoped_unmetered_children_preserve_next_metered_identity.
 Qed.
 
 (* UC-CA-062: block-authentication payloads change whenever the embedded

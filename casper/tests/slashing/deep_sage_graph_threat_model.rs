@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-93 — Deep neglect-chain threat: reverse-reachability path certificate.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-93.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-93.
 // Threat class: Graph-shape (deep neglect chain) (Sage row
 // `dag_behavior_model.sage` + `deep_threat_model.sage`).
 // Reference: formal/sage/deep_threat_model.sage,

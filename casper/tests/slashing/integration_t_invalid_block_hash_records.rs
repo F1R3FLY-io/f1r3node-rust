@@ -1,5 +1,4 @@
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -21,10 +20,12 @@ async fn invalid_block_hash_is_unattributable_and_cannot_frame_the_signer() {
 
     let deploy_data =
         construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("deploy_data");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("deploy should succeed");
+    assert!(matches!(
+        nodes[0]
+            .submit_deploy(deploy_data)
+            .expect("deploy should succeed"),
+        Either::Right(_)
+    ));
     let signed_block = nodes[0]
         .create_block_unsafe(&[])
         .await

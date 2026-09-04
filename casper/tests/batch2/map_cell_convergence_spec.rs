@@ -17,7 +17,7 @@
 // run as part of the normal `cargo test -p casper` suite (CI gate). They pass on the
 // floor-based merge with the channel_change netting fix.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -31,6 +31,7 @@ use models::rhoapi::{Expr, Par};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployAdmissionStatus, DeployData,
 };
+use models::rust::deploy_id::DeployLookupId;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
@@ -38,6 +39,22 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 type BondsFunction = fn(Vec<PublicKey>) -> HashMap<PublicKey, i64>;
+
+fn only_deploy_id(block: &BlockMessage) -> DeployLookupId {
+    block.body.deploys[0]
+        .deploy_id_for_protocol(block.header.version)
+        .expect("block deploy identity")
+}
+
+fn envelope_id(node: &TestNode, deploy: &Signed<DeployData>) -> DeployLookupId {
+    let commitment = node
+        .envelope_for_deploy(deploy)
+        .expect("build protocol-v6 envelope")
+        .envelope_commitment()
+        .expect("protocol-v6 deploy identity");
+    DeployLookupId::from_protocol_bytes(node.genesis.header.version, &commitment)
+        .expect("typed protocol-v6 deploy identity")
+}
 
 struct TestContext {
     genesis: GenesisContext,
@@ -127,12 +144,16 @@ async fn agreed_finalized_height(nodes: &[TestNode]) -> i64 {
     first.body.state.block_number
 }
 
-fn assert_deploy_executed(block: &BlockMessage, signature: &prost::bytes::Bytes, label: &str) {
+fn assert_deploy_executed(block: &BlockMessage, deploy_id: &DeployLookupId, label: &str) {
     let processed = block
         .body
         .deploys
         .iter()
-        .find(|processed| processed.deploy.sig == signature)
+        .find(|processed| {
+            processed
+                .deploy_id_for_protocol(block.header.version)
+                .is_ok_and(|candidate| &candidate == deploy_id)
+        })
         .unwrap_or_else(|| panic!("{label} was not included in the proposed block"));
     assert_eq!(
         processed.admission_status,
@@ -346,10 +367,10 @@ async fn run_convergence(
         Some(shard_id.clone()),
     )
     .expect("build init");
-    let init_signature = init.sig.clone();
-    nodes[0].casper.deploy(init).expect("init deploy");
+    let init_id = envelope_id(&nodes[0], &init);
+    nodes[0].submit_deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
-    assert_deploy_executed(&init_block, &init_signature, "map initialization");
+    assert_deploy_executed(&init_block, &init_id, "map initialization");
     for node in nodes.iter_mut().take(n_validators) {
         node.process_block(init_block.clone())
             .await
@@ -385,20 +406,20 @@ async fn run_convergence(
             let val = (key_round * n_validators + v + 1) as i64;
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
             let d = map_set_deploy(&key, val, &secs[v], valid_after_block_number, &shard_id);
-            let signature = d.sig.clone();
+            let deploy_id = envelope_id(&nodes[v], &d);
             println!(
                 "WRITE-SIG key={} sig={}",
                 key,
                 hex::encode(&d.sig[..8.min(d.sig.len())])
             );
-            nodes[v].casper.deploy(d).expect("deploy write");
+            nodes[v].submit_deploy(d).expect("deploy write");
             let previous = writes.insert(key.clone(), val);
             assert!(previous.is_none_or(|expected| expected == val));
             let blk = nodes[v]
                 .create_block_unsafe(&[])
                 .await
                 .expect("propose sibling");
-            assert_deploy_executed(&blk, &signature, &format!("write {key}"));
+            assert_deploy_executed(&blk, &deploy_id, &format!("write {key}"));
             let own = present_keys(&nodes[v], &blk.body.state.post_state_hash, &writes).await;
             assert!(
                 own.contains(&key),
@@ -421,13 +442,13 @@ async fn run_convergence(
         }
         let marker_valid_after = agreed_finalized_height(&nodes).await;
         let marker = marker_deploy(round as i32, marker_valid_after, &shard_id);
-        let marker_signature = marker.sig.clone();
-        nodes[0].casper.deploy(marker).expect("marker deploy");
+        let marker_id = envelope_id(&nodes[0], &marker);
+        nodes[0].submit_deploy(marker).expect("marker deploy");
         let merge = nodes[0]
             .create_block_unsafe(&[])
             .await
             .expect("merge block");
-        assert_deploy_executed(&merge, &marker_signature, &format!("merge marker {round}"));
+        assert_deploy_executed(&merge, &marker_id, &format!("merge marker {round}"));
         for node in nodes.iter_mut().take(n_validators) {
             node.process_block(merge.clone())
                 .await
@@ -452,13 +473,13 @@ async fn run_convergence(
         let proposer = extra % n_validators;
         let valid_after_block_number = agreed_finalized_height(&nodes).await;
         let marker = marker_deploy((1000 + extra) as i32, valid_after_block_number, &shard_id);
-        let marker_signature = marker.sig.clone();
-        nodes[proposer].casper.deploy(marker).expect("drain deploy");
+        let marker_id = envelope_id(&nodes[proposer], &marker);
+        nodes[proposer].submit_deploy(marker).expect("drain deploy");
         let blk = nodes[proposer]
             .create_block_unsafe(&[])
             .await
             .expect("drain block");
-        assert_deploy_executed(&blk, &marker_signature, &format!("drain marker {extra}"));
+        assert_deploy_executed(&blk, &marker_id, &format!("drain marker {extra}"));
         for node in nodes.iter_mut().take(n_validators) {
             node.process_block(blk.clone())
                 .await
@@ -486,13 +507,13 @@ async fn run_convergence(
     // Settle: node 0 proposes a final block; read the cell at its post-state.
     let final_valid_after = agreed_finalized_height(&nodes).await;
     let final_marker = marker_deploy(9999, final_valid_after, &shard_id);
-    let final_marker_signature = final_marker.sig.clone();
-    nodes[0].casper.deploy(final_marker).expect("final deploy");
+    let final_marker_id = envelope_id(&nodes[0], &final_marker);
+    nodes[0].submit_deploy(final_marker).expect("final deploy");
     let final_block = nodes[0]
         .create_block_unsafe(&[])
         .await
         .expect("final block");
-    assert_deploy_executed(&final_block, &final_marker_signature, "final marker");
+    assert_deploy_executed(&final_block, &final_marker_id, "final marker");
     let final_keys =
         present_keys(&nodes[0], &final_block.body.state.post_state_hash, &writes).await;
     let missing: Vec<(&String, &i64)> = writes
@@ -540,7 +561,6 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
         None,
         node.deploy_storage.clone(),
         node.rejected_deploy_buffer.clone(),
-        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         &node.runtime_manager,
         &mut node.block_store,
         true,
@@ -574,7 +594,6 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
         .expect("network");
     let first = map_set_deploy("leader-a", 1, &signer_key(0), 0, &shard);
     let second = map_set_deploy("leader-b", 2, &signer_key(1), 0, &shard);
-    let frontier_sigs = [first.sig.clone(), second.sig.clone()];
     let block_a = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&first))
         .await
@@ -583,6 +602,9 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
         .add_block_from_deploys(std::slice::from_ref(&second))
         .await
         .expect("second sibling");
+    let first_id = only_deploy_id(&block_a);
+    let second_id = only_deploy_id(&block_b);
+    let frontier_ids = [first_id.clone(), second_id.clone()];
     let status_b_on_a = nodes[0]
         .process_block(block_b.clone())
         .await
@@ -620,42 +642,47 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
             .collect::<std::collections::HashSet<_>>();
         assert!(parent_hashes.contains(&block_a.block_hash));
         assert!(parent_hashes.contains(&block_b.block_hash));
-        assert!(snapshot.deploys_in_scope.contains(&first.sig));
-        assert!(snapshot.deploys_in_scope.contains(&second.sig));
+        assert!(snapshot.deploys_in_scope.contains(&first_id));
+        assert!(snapshot.deploys_in_scope.contains(&second_id));
     }
     let fresh_a = map_set_deploy("fresh-a", 3, &signer_key(0), 0, &shard);
     let fresh_b = map_set_deploy("fresh-b", 4, &signer_key(1), 0, &shard);
-    nodes[0].casper.deploy(fresh_a.clone()).expect("fresh a");
-    nodes[1].casper.deploy(fresh_b.clone()).expect("fresh b");
+    let fresh_a_id = envelope_id(&nodes[0], &fresh_a);
+    let fresh_b_id = envelope_id(&nodes[1], &fresh_b);
+    nodes[0].submit_deploy(fresh_a.clone()).expect("fresh a");
+    nodes[1].submit_deploy(fresh_b.clone()).expect("fresh b");
     let proposal_a = create_allow_empty(&mut nodes[0]).await;
     let proposal_b = create_allow_empty(&mut nodes[1]).await;
 
-    let packaged_sigs = |result: &BlockCreatorResult| -> Vec<prost::bytes::Bytes> {
+    let packaged_ids = |result: &BlockCreatorResult| -> Vec<DeployLookupId> {
         match result {
             BlockCreatorResult::Created(block, ..) => block
                 .body
                 .deploys
                 .iter()
-                .map(|pd| pd.deploy.sig.clone())
+                .map(|pd| {
+                    pd.deploy_id_for_protocol(block.header.version)
+                        .expect("packaged deploy identity")
+                })
                 .collect(),
             _ => Vec::new(),
         }
     };
-    let sigs_a = packaged_sigs(&proposal_a);
-    let sigs_b = packaged_sigs(&proposal_b);
+    let ids_a = packaged_ids(&proposal_a);
+    let ids_b = packaged_ids(&proposal_b);
 
     assert!(
-        sigs_a.iter().all(|sig| sig == &fresh_a.sig),
-        "validator 0 packaged deploys it did not receive: {sigs_a:?}"
+        ids_a.iter().all(|deploy_id| deploy_id == &fresh_a_id),
+        "validator 0 packaged deploys it did not receive: {ids_a:?}"
     );
     assert!(
-        sigs_b.iter().all(|sig| sig == &fresh_b.sig),
-        "validator 1 packaged deploys it did not receive: {sigs_b:?}"
+        ids_b.iter().all(|deploy_id| deploy_id == &fresh_b_id),
+        "validator 1 packaged deploys it did not receive: {ids_b:?}"
     );
     // Frontier work already included in blocks A/B is never re-packaged.
-    for sig in frontier_sigs.iter() {
+    for deploy_id in frontier_ids.iter() {
         assert!(
-            !sigs_a.contains(sig) && !sigs_b.contains(sig),
+            !ids_a.contains(deploy_id) && !ids_b.contains(deploy_id),
             "already-included frontier deploy was re-packaged"
         );
     }
@@ -669,6 +696,34 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
     let mut nodes = TestNode::create_network(context.genesis, 2, None, None, None, None)
         .await
         .expect("network");
+    for node in &mut nodes {
+        node.allow_empty_blocks = true;
+    }
+    let init = construct_deploy::source_deploy_now_full(
+        r#"@"m"!({})"#.to_string(),
+        None,
+        None,
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard.clone()),
+    )
+    .expect("map initialization");
+    let init_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&init))
+        .await
+        .expect("initialized map block");
+    let init_status = nodes[1]
+        .process_block(init_block.clone())
+        .await
+        .expect("process map initialization");
+    assert!(matches!(init_status, Either::Right(_)));
+    for node in &nodes {
+        assert_eq!(
+            map_cell_datums(node, &init_block.body.state.post_state_hash).await,
+            vec![BTreeMap::new()]
+        );
+    }
+
     let first = map_set_deploy("minority", 1, &signer_key(0), 0, &shard);
     let second = map_set_deploy("majority", 2, &signer_key(1), 0, &shard);
     let block_a = nodes[0]
@@ -679,13 +734,15 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .add_block_from_deploys(std::slice::from_ref(&second))
         .await
         .expect("majority sibling");
+    let first_id = only_deploy_id(&block_a);
+    let second_id = only_deploy_id(&block_b);
     let status_b_on_a = nodes[0]
         .process_block(block_b.clone())
         .await
         .expect("process majority sibling");
     assert!(matches!(status_b_on_a, Either::Right(_)));
     let status_a_on_b = nodes[1]
-        .process_block(block_a)
+        .process_block(block_a.clone())
         .await
         .expect("process minority sibling");
     assert!(matches!(status_a_on_b, Either::Right(_)));
@@ -709,24 +766,238 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .get_snapshot()
         .await
         .expect("resolved snapshot");
-    assert!(!snapshot.deploys_in_scope.contains(&first.sig));
-    assert!(snapshot.deploys_in_scope.contains(&second.sig));
+    let parent_hashes = snapshot
+        .parents
+        .iter()
+        .map(|parent| parent.block_hash.clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        parent_hashes,
+        HashSet::from([block_a.block_hash.clone(), block_b.block_hash.clone()])
+    );
+    assert!(snapshot.deploys_in_scope.contains(&first_id));
+    assert!(snapshot.deploys_in_scope.contains(&second_id));
+    assert!(!snapshot.rejected_in_scope.contains(&first_id));
+    assert!(!snapshot.rejected_in_scope.contains(&second_id));
+
+    let settlement = nodes[0]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("exact sibling settlement block");
+    assert!(settlement.body.deploys.is_empty());
+    let first_rejections = settlement
+        .body
+        .rejected_deploys
+        .iter()
+        .filter(|rejected| rejected.typed_deploy_id() == &first_id)
+        .collect::<Vec<_>>();
+    assert_eq!(first_rejections.len(), 1);
+    assert_eq!(first_rejections[0].source_block_hash, block_a.block_hash);
+    assert!(first_rejections[0].has_provenance());
+    assert!(settlement
+        .body
+        .rejected_deploys
+        .iter()
+        .all(|rejected| rejected.typed_deploy_id() != &second_id));
+    let settlement_status = nodes[1]
+        .process_block(settlement.clone())
+        .await
+        .expect("process exact sibling settlement");
+    assert!(matches!(settlement_status, Either::Right(_)));
+
+    let settlement_support = nodes[1]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("support exact sibling settlement");
+    let settlement_support_status = nodes[0]
+        .process_block(settlement_support)
+        .await
+        .expect("process settlement support");
+    assert!(matches!(settlement_support_status, Either::Right(_)));
+    let settlement_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    for node in &nodes {
+        node.wait_for_finalizer_quiescence(settlement_deadline)
+            .await
+            .expect("settlement finalizer quiescence");
+        let snapshot = node.casper.get_snapshot().await.expect("settled snapshot");
+        assert!(
+            snapshot.last_finalized_block == settlement.block_hash
+                || snapshot
+                    .dag
+                    .is_dag_ancestor(&settlement.block_hash, &snapshot.last_finalized_block)
+                    .expect("settlement ancestry"),
+            "retry gate requires the rejection record in the finalized floor closure"
+        );
+    }
+
+    let carrier_owner = 0usize;
+    for (index, node) in nodes.iter().enumerate() {
+        let has_retry_custody = node
+            .rejected_deploy_buffer
+            .lock()
+            .expect("rejected deploy buffer")
+            .contains_id(&first_id)
+            .expect("buffer lookup");
+        assert_eq!(
+            has_retry_custody,
+            index == carrier_owner,
+            "retry custody must remain with the rejected source carrier owner"
+        );
+        let recovery_snapshot = node.casper.get_snapshot().await.expect("recovery snapshot");
+        assert!(recovery_snapshot.rejected_in_scope.contains(&first_id));
+        assert!(!recovery_snapshot.rejected_in_scope.contains(&second_id));
+    }
 
     let fresh = map_set_deploy("fresh", 3, &signer_key(0), 0, &shard);
-    nodes[0].casper.deploy(fresh.clone()).expect("fresh deploy");
-    let proposal = create_allow_empty(&mut nodes[0]).await;
-    let BlockCreatorResult::Created(block, ..) = proposal else {
-        panic!("expected a proposal containing rehomed and fresh deploys: {proposal:?}");
-    };
-    let selected = block
+    let fresh_id = envelope_id(&nodes[carrier_owner], &fresh);
+    let recovery_block = nodes[carrier_owner]
+        .add_block_from_deploys(std::slice::from_ref(&fresh))
+        .await
+        .expect("rehome and fresh block");
+    let selected = recovery_block
         .body
         .deploys
         .iter()
-        .map(|deploy| deploy.deploy.sig.clone())
-        .collect::<Vec<_>>();
-    assert!(selected.contains(&first.sig));
-    assert!(selected.contains(&fresh.sig));
-    assert!(!selected.contains(&second.sig));
+        .map(|deploy| {
+            deploy
+                .deploy_id_for_protocol(recovery_block.header.version)
+                .expect("selected deploy identity")
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        selected,
+        HashSet::from([first_id.clone(), fresh_id.clone()])
+    );
+    assert!(recovery_block.body.rejected_deploys.iter().all(|rejected| {
+        rejected.typed_deploy_id() != &first_id && rejected.typed_deploy_id() != &fresh_id
+    }));
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if index != carrier_owner {
+            let status = node
+                .process_block(recovery_block.clone())
+                .await
+                .expect("process recovery block");
+            assert!(matches!(status, Either::Right(_)));
+        }
+    }
+
+    let support_proposer = (carrier_owner + 1) % nodes.len();
+    let support = nodes[support_proposer]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("recovery support block");
+    assert!(
+        nodes[support_proposer]
+            .block_dag_storage
+            .get_representation()
+            .expect("support proposer DAG")
+            .is_dag_ancestor(&recovery_block.block_hash, &support.block_hash)
+            .expect("support ancestry"),
+        "support {} at height {} with parents {:?} does not causally support recovery {} at height {}",
+        hex::encode(&support.block_hash),
+        support.body.state.block_number,
+        support
+            .header
+            .parents_hash_list
+            .iter()
+            .map(hex::encode)
+            .collect::<Vec<_>>(),
+        hex::encode(&recovery_block.block_hash),
+        recovery_block.body.state.block_number,
+    );
+    assert!(
+        block_storage::rust::finality::state_preservation::is_state_preserved(
+            &nodes[support_proposer]
+                .block_dag_storage
+                .get_representation()
+                .expect("support proposer DAG"),
+            &recovery_block.block_hash,
+            &support.block_hash,
+        )
+        .expect("support state preservation"),
+        "support {} at height {} causally descends from recovery {} at height {} but does not preserve its state effects",
+        hex::encode(&support.block_hash),
+        support.body.state.block_number,
+        hex::encode(&recovery_block.block_hash),
+        recovery_block.body.state.block_number,
+    );
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if index != support_proposer {
+            let status = node
+                .process_block(support.clone())
+                .await
+                .expect("process recovery support");
+            assert!(matches!(status, Either::Right(_)));
+        }
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    for (index, node) in nodes.iter().enumerate() {
+        node.wait_for_finalizer_quiescence(deadline)
+            .await
+            .expect("recovery finalizer quiescence");
+        let dag = node.block_dag_storage.get_representation().expect("DAG");
+        let lfb = node
+            .casper
+            .last_finalized_block()
+            .await
+            .expect("recovery LFB");
+        let recovery_metadata = dag
+            .lookup_unsafe(&recovery_block.block_hash)
+            .expect("recovery metadata");
+        let recovery_parent_weights = recovery_metadata
+            .parents
+            .iter()
+            .map(|parent| {
+                dag.lookup_unsafe(parent)
+                    .map(|metadata| (hex::encode(parent), metadata.weight_map))
+                    .expect("recovery parent metadata")
+            })
+            .collect::<Vec<_>>();
+        let vote_context =
+            casper::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+                &dag,
+                lfb.block_hash.clone(),
+            )
+            .expect("finalized vote context");
+        let eligible_latest_messages = vote_context
+            .vote_projection()
+            .eligible_latest_messages()
+            .iter()
+            .map(|(validator, hash)| (hex::encode(validator), hex::encode(hash)))
+            .collect::<Vec<_>>();
+        assert!(
+            dag.is_dag_ancestor(&recovery_block.block_hash, &lfb.block_hash)
+                .expect("recovery ancestry"),
+            "validator {index} finalized {} at height {} without recovery {} from {} at height {} in its ancestry; support is {} from {} at height {}; recovery parents are {:?}; recovery weights are {:?}; recovery-parent weights are {:?}; eligible latest messages are {:?}",
+            hex::encode(&lfb.block_hash),
+            lfb.body.state.block_number,
+            hex::encode(&recovery_block.block_hash),
+            hex::encode(&recovery_block.sender),
+            recovery_block.body.state.block_number,
+            hex::encode(&support.block_hash),
+            hex::encode(&support.sender),
+            support.body.state.block_number,
+            recovery_metadata
+                .parents
+                .iter()
+                .map(hex::encode)
+                .collect::<Vec<_>>(),
+            recovery_metadata.weight_map,
+            recovery_parent_weights,
+            eligible_latest_messages,
+        );
+    }
+    let writes = BTreeMap::from([
+        ("fresh".to_string(), 3),
+        ("majority".to_string(), 2),
+        ("minority".to_string(), 1),
+    ]);
+    let (_, finalized_keys) = finalized_keys_all_nodes(&nodes, &writes).await;
+    assert_eq!(finalized_keys, vec![
+        "fresh".to_string(),
+        "majority".to_string(),
+        "minority".to_string(),
+    ]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

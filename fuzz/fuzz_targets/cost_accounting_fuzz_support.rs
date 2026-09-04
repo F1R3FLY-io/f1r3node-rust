@@ -66,6 +66,7 @@ pub fn event_is_invalid(event: &BillableTokenEvent) -> bool {
 pub fn deploy_data() -> DeployData {
     DeployData {
         term: "Nil".to_string(),
+        language: "rholang".to_string(),
         time_stamp: 0,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
@@ -88,6 +89,7 @@ pub fn signed_deploy(seed: u8) -> Signed<DeployData> {
 pub fn processed_deploy(seed: u8, cost: u64, failed: bool) -> ProcessedDeploy {
     ProcessedDeploy {
         deploy: signed_deploy(seed),
+        envelope_commitment: Vec::<u8>::new().into(),
         cost: PCost { cost },
         deploy_log: Vec::new(),
         is_failed: failed,
@@ -112,6 +114,7 @@ pub fn block_with_deploy(deploy: ProcessedDeploy) -> BlockMessage {
             extra_bytes: Vec::<u8>::new().into(),
             sender_bond_generation: None,
             objective_equivocation_evidence_delta: Vec::new(),
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
@@ -125,8 +128,11 @@ pub fn block_with_deploy(deploy: ProcessedDeploy) -> BlockMessage {
             deploys: vec![deploy],
             rejected_deploys: Vec::new(),
             rejected_state_effects: Vec::new(),
+            applied_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Vec::<u8>::new().into(),
+            applied_from_scope: Vec::new(),
+            merge_base: Vec::<u8>::new().into(),
         },
         justifications: Vec::new(),
         sender: vec![7; 65].into(),
@@ -135,5 +141,6 @@ pub fn block_with_deploy(deploy: ProcessedDeploy) -> BlockMessage {
         sig_algorithm: "secp256k1".to_string(),
         shard_id: "root".to_string(),
         extra_bytes: Vec::<u8>::new().into(),
+        finalized_floor_certificate: None,
     }
 }

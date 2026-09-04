@@ -28,6 +28,27 @@ pub struct CasperBufferKeyValueStorage {
 }
 
 impl CasperBufferKeyValueStorage {
+    const CERTIFICATE_DEPENDENCY_PREFIX: u8 = 0xff;
+
+    fn certificate_dependency_key(digest: &BlockHashSerde) -> Result<BlockHashSerde, KvStoreError> {
+        if digest.0.len() != models::rust::block_hash::LENGTH {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "finalization certificate digest must be {} bytes",
+                models::rust::block_hash::LENGTH
+            )));
+        }
+        let mut key = Vec::with_capacity(models::rust::block_hash::LENGTH + 1);
+        key.push(Self::CERTIFICATE_DEPENDENCY_PREFIX);
+        key.extend_from_slice(&digest.0);
+        Ok(BlockHashSerde(key.into()))
+    }
+
+    fn certificate_digest_from_dependency_key(key: &BlockHashSerde) -> Option<BlockHashSerde> {
+        (key.0.len() == models::rust::block_hash::LENGTH + 1
+            && key.0.first().copied() == Some(Self::CERTIFICATE_DEPENDENCY_PREFIX))
+        .then(|| BlockHashSerde(key.0.slice(1..)))
+    }
+
     pub async fn new_from_kvm(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let parents_store_kv = kvm.store("parents-map".to_string()).await?;
         let parents_store: KeyValueTypedStoreImpl<BlockHashSerde, HashSet<BlockHashSerde>> =
@@ -142,6 +163,72 @@ impl CasperBufferKeyValueStorage {
         self.add_relation_unlocked(parent, child)
     }
 
+    pub fn add_certificate_relation(
+        &self,
+        digest: BlockHashSerde,
+        child: BlockHashSerde,
+    ) -> Result<(), KvStoreError> {
+        let dependency = Self::certificate_dependency_key(&digest)?;
+        let _guard = self.write_guard();
+        self.add_relation_unlocked(dependency, child)
+    }
+
+    pub fn resolve_certificate_dependency(
+        &self,
+        digest: BlockHashSerde,
+    ) -> Result<(), KvStoreError> {
+        let dependency = Self::certificate_dependency_key(&digest)?;
+        let _guard = self.write_guard();
+        if self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .parent_to_child_adjacency_list
+            .contains_key(&dependency)
+        {
+            self.remove_unlocked(dependency)?;
+        }
+        Ok(())
+    }
+
+    pub fn get_missing_certificate_dependencies(&self) -> HashSet<BlockHashSerde> {
+        let _guard = self.read_guard();
+        let dag = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        dag.dependency_free
+            .iter()
+            .filter_map(Self::certificate_digest_from_dependency_key)
+            .collect()
+    }
+
+    pub fn requested_as_certificate_dependency(&self, digest: &BlockHashSerde) -> bool {
+        let Ok(dependency) = Self::certificate_dependency_key(digest) else {
+            return false;
+        };
+        let _guard = self.read_guard();
+        self.block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .parent_to_child_adjacency_list
+            .contains_key(&dependency)
+    }
+
+    pub fn is_waiting_on_certificate(&self, block_hash: &BlockHashSerde) -> bool {
+        let _guard = self.read_guard();
+        self.block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .child_to_parent_adjacency_list
+            .get(block_hash)
+            .is_some_and(|parents| {
+                parents
+                    .iter()
+                    .any(|parent| Self::certificate_digest_from_dependency_key(parent).is_some())
+            })
+    }
+
     pub fn put_pendant(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
         let temp_block = BlockHashSerde(prost::bytes::Bytes::from_static(b"tempblock"));
@@ -179,7 +266,11 @@ impl CasperBufferKeyValueStorage {
             .block_dependency_dag
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        dag.dependency_free.clone()
+        dag.dependency_free
+            .iter()
+            .filter(|hash| Self::certificate_digest_from_dependency_key(hash).is_none())
+            .cloned()
+            .collect()
     }
 
     // Block is considered to be in CasperBuffer when there is a records about its parents
@@ -244,12 +335,25 @@ impl CasperBufferKeyValueStorage {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         for hash in dag.dependency_free.iter() {
-            let seen_ms = self
-                .first_seen_ms
-                .get(hash)
-                .map(|seen| *seen)
-                .unwrap_or(now_ms);
-            nodes.push((now_ms.saturating_sub(seen_ms), hash.clone()));
+            if Self::certificate_digest_from_dependency_key(hash).is_some() {
+                if let Some(children) = dag.parent_to_child_adjacency_list.get(hash) {
+                    for child in children {
+                        let seen_ms = self
+                            .first_seen_ms
+                            .get(child)
+                            .map(|seen| *seen)
+                            .unwrap_or(now_ms);
+                        nodes.push((now_ms.saturating_sub(seen_ms), child.clone()));
+                    }
+                }
+            } else {
+                let seen_ms = self
+                    .first_seen_ms
+                    .get(hash)
+                    .map(|seen| *seen)
+                    .unwrap_or(now_ms);
+                nodes.push((now_ms.saturating_sub(seen_ms), hash.clone()));
+            }
         }
 
         nodes
@@ -335,6 +439,7 @@ impl CasperBufferKeyValueStorage {
 #[cfg(test)]
 mod tests {
     use models::rust::block_hash::BlockHashSerde;
+    use proptest::prelude::*;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
@@ -342,6 +447,23 @@ mod tests {
 
     fn create_block_hash(data: &[u8]) -> BlockHashSerde {
         BlockHashSerde(Bytes::copy_from_slice(data))
+    }
+
+    proptest! {
+        #[test]
+        fn certificate_dependency_namespace_is_disjoint_and_round_trips(bytes in any::<[u8; models::rust::block_hash::LENGTH]>()) {
+            let digest = BlockHashSerde(Bytes::copy_from_slice(&bytes));
+            let dependency = CasperBufferKeyValueStorage::certificate_dependency_key(&digest)
+                .expect("certificate dependency key");
+
+            prop_assert_eq!(dependency.0.len(), models::rust::block_hash::LENGTH + 1);
+            prop_assert_eq!(dependency.0[0], CasperBufferKeyValueStorage::CERTIFICATE_DEPENDENCY_PREFIX);
+            prop_assert_ne!(dependency.clone(), digest.clone());
+            prop_assert_eq!(
+                CasperBufferKeyValueStorage::certificate_digest_from_dependency_key(&dependency),
+                Some(digest)
+            );
+        }
     }
 
     #[tokio::test]
@@ -417,6 +539,73 @@ mod tests {
 
         let pendants = casper_buffer.get_pendants();
         assert!(pendants.contains(&block));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn certificate_dependencies_are_typed_persistent_and_resolved_atomically(
+    ) -> Result<(), KvStoreError> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.store("parents-map".to_string()).await?;
+        let typed_store = KeyValueTypedStoreImpl::new(store);
+        let digest = BlockHashSerde(Bytes::from(vec![7; models::rust::block_hash::LENGTH]));
+        let block = BlockHashSerde(Bytes::from(vec![8; models::rust::block_hash::LENGTH]));
+
+        let first = CasperBufferKeyValueStorage::new_from_kv_store(typed_store.clone()).await?;
+        first.add_certificate_relation(digest.clone(), block.clone())?;
+        assert_eq!(
+            first.get_missing_certificate_dependencies(),
+            HashSet::from([digest.clone()])
+        );
+        assert!(first.get_pendants().is_empty());
+        drop(first);
+
+        let restored = CasperBufferKeyValueStorage::new_from_kv_store(typed_store).await?;
+        assert!(restored.requested_as_certificate_dependency(&digest));
+        assert_eq!(
+            restored.get_missing_certificate_dependencies(),
+            HashSet::from([digest.clone()])
+        );
+        assert!(restored.get_pendants().is_empty());
+
+        restored.resolve_certificate_dependency(digest.clone())?;
+        assert!(!restored.requested_as_certificate_dependency(&digest));
+        assert!(restored.get_missing_certificate_dependencies().is_empty());
+        assert_eq!(restored.get_pendants(), HashSet::from([block]));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn certificate_dependency_pruning_removes_the_waiting_block_not_the_proof_obligation(
+    ) -> Result<(), KvStoreError> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.store("parents-map".to_string()).await?;
+        let typed_store = KeyValueTypedStoreImpl::new(store);
+        let buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store).await?;
+        let digest = BlockHashSerde(Bytes::from(vec![9; models::rust::block_hash::LENGTH]));
+        let block = BlockHashSerde(Bytes::from(vec![10; models::rust::block_hash::LENGTH]));
+
+        buffer.add_certificate_relation(digest.clone(), block.clone())?;
+        let (stale_pruned, _) = buffer.enforce_limits(usize::MAX, 0, 1, 0)?;
+
+        assert_eq!(stale_pruned, 1);
+        assert!(!buffer.requested_as_certificate_dependency(&digest));
+        assert!(!buffer.contains(&block));
+        assert!(!buffer.is_pendant(&block));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn certificate_dependency_rejects_non_digest_keys() -> Result<(), KvStoreError> {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.store("parents-map".to_string()).await?;
+        let typed_store = KeyValueTypedStoreImpl::new(store);
+        let buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store).await?;
+        let short = create_block_hash(b"short");
+        let block = BlockHashSerde(Bytes::from(vec![11; models::rust::block_hash::LENGTH]));
+
+        assert!(buffer.add_certificate_relation(short, block).is_err());
+        assert!(buffer.get_missing_certificate_dependencies().is_empty());
         Ok(())
     }
 

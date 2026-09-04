@@ -63,7 +63,7 @@ show_status() {
     echo ""
     echo "Hooks provide:"
     echo "  pre-commit: cargo fmt --check, cargo clippy"
-    echo "  pre-push:   cargo test (full workspace)"
+    echo "  pre-push:   CI script tests and cargo test (full workspace)"
 }
 
 install_via_hookspath() {
@@ -79,7 +79,7 @@ install_via_hookspath() {
     echo ""
     echo "Hooks installed:"
     echo "  pre-commit: cargo fmt --check + cargo clippy"
-    echo "  pre-push:   cargo test (full workspace)"
+    echo "  pre-push:   CI script tests and cargo test (full workspace)"
     echo ""
     echo "To verify: git config --local core.hooksPath"
 }
@@ -132,31 +132,31 @@ remove_hooks() {
 
 # Parse arguments
 case "${1:-}" in
-    --status)
-        show_status
-        ;;
-    --copy)
-        install_via_copy
-        ;;
-    --remove)
-        remove_hooks
-        ;;
-    --help|-h)
-        echo "Usage: $0 [--copy|--status|--remove|--help]"
-        echo ""
-        echo "Options:"
-        echo "  (default)   Install via core.hooksPath (recommended)"
-        echo "  --copy      Copy hooks to .git/hooks/"
-        echo "  --status    Show current hook configuration"
-        echo "  --remove    Remove hook configuration"
-        echo "  --help      Show this help"
-        ;;
-    "")
-        install_via_hookspath
-        ;;
-    *)
-        echo -e "${RED}Unknown option: $1${NC}"
-        echo "Run: $0 --help"
-        exit 1
-        ;;
+--status)
+    show_status
+    ;;
+--copy)
+    install_via_copy
+    ;;
+--remove)
+    remove_hooks
+    ;;
+--help | -h)
+    echo "Usage: $0 [--copy|--status|--remove|--help]"
+    echo ""
+    echo "Options:"
+    echo "  (default)   Install via core.hooksPath (recommended)"
+    echo "  --copy      Copy hooks to .git/hooks/"
+    echo "  --status    Show current hook configuration"
+    echo "  --remove    Remove hook configuration"
+    echo "  --help      Show this help"
+    ;;
+"")
+    install_via_hookspath
+    ;;
+*)
+    echo -e "${RED}Unknown option: $1${NC}"
+    echo "Run: $0 --help"
+    exit 1
+    ;;
 esac

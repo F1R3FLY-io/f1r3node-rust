@@ -1,6 +1,6 @@
 [package]
 name = "node"
-version = "0.4.45"
+version = "0.4.46"
 edition = "2021"
 publish = false
 
@@ -36,7 +36,7 @@ hex = { workspace = true }
 parking_lot = "0.12"
 num-bigint = { workspace = true }
 clap = { workspace = true }
-hocon = { version = "0.9.0", default-features = false, features = ["serde-support"] }
+hocon = "0.9.0"
 eyre = { workspace = true }
 humantime = { workspace = true }
 byte-unit = "5.1.6"

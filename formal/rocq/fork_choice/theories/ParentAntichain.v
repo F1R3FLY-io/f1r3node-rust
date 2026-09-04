@@ -18,6 +18,26 @@ Definition reachability_maximal_antichain
   (parents : list BlockHash) : list BlockHash :=
   filter (fun candidate => negb (covered_by_otherb ancestorb parents candidate)) parents.
 
+Definition secondary_candidateb
+  (ancestorb : BlockHash -> BlockHash -> bool)
+  (protected candidate : BlockHash) : bool :=
+  negb (Nat.eqb candidate protected) && negb (ancestorb candidate protected).
+
+Definition secondary_candidates
+  (ancestorb : BlockHash -> BlockHash -> bool)
+  (protected : BlockHash)
+  (candidates : list BlockHash) : list BlockHash :=
+  filter (secondary_candidateb ancestorb protected) candidates.
+
+Definition protected_parent_frontier
+  (ancestorb : BlockHash -> BlockHash -> bool)
+  (protected : BlockHash)
+  (candidates : list BlockHash) : list BlockHash :=
+  protected
+  :: reachability_maximal_antichain
+       ancestorb
+       (secondary_candidates ancestorb protected candidates).
+
 Definition parent_covers_tipb
   (ancestorb : BlockHash -> BlockHash -> bool)
   (tip parent : BlockHash) : bool :=
@@ -95,6 +115,93 @@ Theorem compaction_and_coverage_guard_preserve_every_causal_tip :
         In parent (reachability_maximal_antichain ancestorb candidates) /\
         (tip = parent \/ ancestorb tip parent = true).
 Proof. intros; eapply causal_coverage_guard_is_sound; eauto. Qed.
+
+Theorem protected_frontier_has_exact_head :
+  forall ancestorb protected candidates,
+    hd_error (protected_parent_frontier ancestorb protected candidates) = Some protected.
+Proof. reflexivity. Qed.
+
+Theorem protected_frontier_tail_excludes_head :
+  forall ancestorb protected candidates parent,
+    In parent (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    parent <> protected.
+Proof.
+  intros ancestorb protected candidates parent Hparent.
+  simpl in Hparent.
+  apply retained_parent_was_an_input in Hparent.
+  unfold secondary_candidates in Hparent.
+  apply filter_In in Hparent. destruct Hparent as [_ Heligible].
+  unfold secondary_candidateb in Heligible.
+  apply andb_true_iff in Heligible. destruct Heligible as [Hneq _].
+  apply negb_true_iff in Hneq. apply Nat.eqb_neq in Hneq. exact Hneq.
+Qed.
+
+Theorem protected_frontier_tail_was_candidate :
+  forall ancestorb protected candidates parent,
+    In parent (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    In parent candidates.
+Proof.
+  intros ancestorb protected candidates parent Hparent.
+  simpl in Hparent.
+  apply retained_parent_was_an_input in Hparent.
+  unfold secondary_candidates in Hparent.
+  apply filter_In in Hparent. exact (proj1 Hparent).
+Qed.
+
+Theorem protected_frontier_tail_is_pairwise_uncovered :
+  forall ancestorb protected candidates left right,
+    In left (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    In right (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    left <> right ->
+    ancestorb left right = false.
+Proof.
+  intros ancestorb protected candidates left right Hleft Hright Hneq.
+  simpl in Hleft, Hright.
+  eapply retained_parents_are_pairwise_uncovered; eauto.
+Qed.
+
+Theorem protected_frontier_is_duplicate_free :
+  forall ancestorb protected candidates,
+    NoDup candidates ->
+    NoDup (protected_parent_frontier ancestorb protected candidates).
+Proof.
+  intros ancestorb protected candidates Hnodup.
+  unfold protected_parent_frontier.
+  apply NoDup_cons.
+  - intro Hin.
+    assert (Hneq : protected <> protected).
+    { eapply protected_frontier_tail_excludes_head.
+      simpl. exact Hin. }
+    contradiction.
+  - unfold reachability_maximal_antichain, secondary_candidates.
+    apply NoDup_filter. apply NoDup_filter. exact Hnodup.
+Qed.
+
+Theorem protected_compaction_and_coverage_guard_preserve_every_causal_tip :
+  forall ancestorb protected tips candidates,
+    causal_coverageb
+      ancestorb
+      tips
+      (protected_parent_frontier ancestorb protected candidates) = true ->
+    forall tip,
+      In tip tips ->
+      exists parent,
+        In parent (protected_parent_frontier ancestorb protected candidates) /\
+        (tip = parent \/ ancestorb tip parent = true).
+Proof. intros; eapply causal_coverage_guard_is_sound; eauto. Qed.
+
+Definition linear_ancestorb (ancestor descendant : BlockHash) : bool :=
+  ancestor <? descendant.
+
+Theorem generic_compaction_can_erase_protected_head :
+  reachability_maximal_antichain linear_ancestorb [0; 1] = [1]
+  /\ protected_parent_frontier linear_ancestorb 0 [0; 1] = [0; 1].
+Proof. split; reflexivity. Qed.
+
+Theorem protected_frontier_preserves_descendant_coverage :
+  causal_coverageb linear_ancestorb [0; 1]
+    (protected_parent_frontier linear_ancestorb 0 [0; 1]) = true.
+Proof. reflexivity. Qed.
 
 Print Assumptions retained_parents_are_pairwise_uncovered.
 Print Assumptions compaction_and_coverage_guard_preserve_every_causal_tip.

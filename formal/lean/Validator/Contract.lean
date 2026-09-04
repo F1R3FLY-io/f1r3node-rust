@@ -13,7 +13,7 @@
   a `theorem`, so the axiom gate validates these clauses just as it does the
   underlying obligations). The clause TYPE is the obligation it re-exports.
 
-  Contract ↔ obligation ↔ spec map (see docs/theory/cost-accounting-impl/
+  Contract ↔ obligation ↔ spec map (see docs/casper/theory/cost-accounting-impl/
   workstream-e-validator-contract.md for the full table):
     S1  token-present / reject-malformed   §6.3   ← FuelGateSafety (E3)
     S2  accept iff Σ_s ≥ Δ_s (decidable)    §7.6   ← LinearLogicResources (E2)
@@ -64,10 +64,14 @@ def validator_contract_built_in_P1 :=
 def validator_contract_built_in_P1_order_independent :=
   bm_slash_many_order_independent
 
-/-- Contract clause P1 (slash-authorization, soundness): stale-epoch evidence
+/-- Contract clause P1 (slash-authorization, soundness): stale-generation evidence
     cannot authorize slashing a rebonded key. -/
 def validator_contract_built_in_P1_stale_evidence :=
-  stale_evidence_not_authorized
+  stale_generation_evidence_not_authorized
+
+/-- Contract clause P1: an ordinary epoch advance preserves bond identity. -/
+def validator_contract_built_in_P1_epoch_advance :=
+  same_generation_different_epoch_same_lifetime
 
 /-- Contract clause P3 (determinism / replay-equivalence): the validator verdict
     is a deterministic function of the system — identical across schedules. P3's

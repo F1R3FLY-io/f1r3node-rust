@@ -10,7 +10,7 @@
 //! STUCK: it cannot take a `rho_step`, and the body `P` it guards never runs.
 //!
 //! This mirrors, at the live-runtime level, the Rocq faithfulness theorems
-//! (`docs/theory/cost-accounting-native-faithfulness-design.md`,
+//! (`docs/casper/theory/cost-accounting-native-faithfulness-design.md`,
 //! `workstream-e-validator-contract.md`):
 //!   * `gated_translation_stuck` / `PInput_alone_stuck` — the unfunded gate is a
 //!     lone receiver with NO reduction step (silent blocking, never a panic);

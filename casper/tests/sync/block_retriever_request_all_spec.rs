@@ -152,6 +152,7 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list,
                         peer_requery_cursor: 0,
+                        requested_as_dependency: false,
                     };
 
                     fixture
@@ -200,6 +201,7 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list,
                         peer_requery_cursor: 0,
+                        requested_as_dependency: false,
                     };
 
                     fixture
@@ -250,6 +252,7 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list,
                         peer_requery_cursor: 0,
+                        requested_as_dependency: false,
                     };
 
                     fixture
@@ -323,6 +326,7 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list: vec![last_peer.clone()], // One peer left in waiting list
                         peer_requery_cursor: 0,
+                        requested_as_dependency: false,
                     };
 
                     fixture
@@ -374,6 +378,7 @@ mod tests {
                         in_casper_buffer: false,
                         waiting_list: Vec::new(), // Empty waiting list
                         peer_requery_cursor: 0,
+                        requested_as_dependency: false,
                     };
 
                     fixture
@@ -417,6 +422,7 @@ mod tests {
                         in_casper_buffer: true, // Already in casper buffer
                         waiting_list: Vec::new(),
                         peer_requery_cursor: 0,
+                        requested_as_dependency: false,
                     };
 
                     fixture

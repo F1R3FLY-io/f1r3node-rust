@@ -1,9 +1,9 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
-use std::collections::HashSet;
 use std::future::Future;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
 use crypto::rust::public_key::PublicKey;
@@ -18,6 +18,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::bytes::Bytes;
@@ -25,18 +26,19 @@ use prost::Message;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::trace::event::{Event as RspaceEvent, IOEvent};
+use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
 
 use crate::rust::blocks::proposer::propose_result::{
     CheckProposeConstraintsFailure, ProposeFailure, ProposeResult, ProposeStatus,
 };
 use crate::rust::blocks::proposer::proposer::ProposerResult;
-use crate::rust::casper::MultiParentCasper;
+use crate::rust::casper::{DeployError, MultiParentCasper};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::standard_deploys;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
-use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
+use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle, MIN_FAULT_TOLERANCE};
 use crate::rust::state::instances::proposer_state::ProposerState;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
@@ -50,6 +52,14 @@ pub type ApiErr<T> = eyre::Result<T>;
 #[error("Couldn't find block containing deploy with id: {deploy_id}")]
 pub struct DeployNotFoundError {
     pub deploy_id: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Private-name preview is unavailable for protocol {protocol_version} because names are bound to the authenticated deploy envelope."
+)]
+pub struct PrivateNamePreviewUnavailable {
+    pub protocol_version: i64,
 }
 
 // Look at shared/src/main/scala/coop/rchain/shared/Base16.scala
@@ -76,6 +86,12 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
         ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(reason)) => {
             Some(format!("Proposal deferred: {}.", reason))
         }
+        ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded {
+            configured_cap,
+            required_parents,
+        }) => Some(format!(
+            "Proposal deferred: exact parent frontier requires {required_parents} parents but max-number-of-parents is {configured_cap}."
+        )),
         ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
             CheckProposeConstraintsFailure::NotEnoughNewBlocks,
         )) => Some("No new blocks from peers yet; synchronize with network first.".to_string()),
@@ -114,6 +130,213 @@ fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
             normalized.contains("Must wait for more blocks from other validators")
         }
     }
+}
+
+async fn run_deploy_triggered_propose(
+    trigger: Arc<ProposeFunction>,
+    max_attempts: u32,
+    retry_delay: Duration,
+) {
+    let max_attempts = max_attempts.max(1);
+    let mut attempt = 1u32;
+    loop {
+        match trigger(ProposeRequestKind::PendingDeploy).await {
+            Ok(ProposerResult::Failure(status, seq_number)) => {
+                if should_retry_deploy_propose(&status) && attempt < max_attempts {
+                    tracing::info!(
+                        "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
+                        attempt,
+                        max_attempts,
+                        seq_number,
+                        status,
+                        retry_delay
+                    );
+                    attempt += 1;
+                    tokio::time::sleep(retry_delay).await;
+                    continue;
+                }
+                if let Some(msg) = recoverable_propose_failure_message(&status) {
+                    tracing::info!("{} (seqNum {})", msg, seq_number);
+                } else {
+                    tracing::error!("Failure: {} (seqNum {})", status, seq_number);
+                }
+            }
+            Ok(ProposerResult::Empty) => {
+                tracing::debug!("Propose already in progress");
+            }
+            Ok(ProposerResult::Started(seq_number)) => {
+                tracing::debug!("Propose started (seqNum {})", seq_number);
+            }
+            Ok(ProposerResult::Success(_, block)) => {
+                let block_hash_hex = PrettyPrinter::build_string_no_limit(&block.block_hash);
+                tracing::info!("Success! Block {} created and added.", block_hash_hex);
+            }
+            Err(err) => {
+                if attempt < max_attempts {
+                    tracing::warn!(
+                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
+                        attempt,
+                        max_attempts,
+                        err,
+                        retry_delay
+                    );
+                    attempt += 1;
+                    tokio::time::sleep(retry_delay).await;
+                    continue;
+                }
+                tracing::error!(error = %err, "deploy-triggered propose failed");
+            }
+        }
+        break;
+    }
+}
+
+fn trigger_deploy_propose(trigger: &Option<Arc<ProposeFunction>>) {
+    if let Some(trigger) = trigger {
+        tokio::spawn(run_deploy_triggered_propose(
+            Arc::clone(trigger),
+            deploy_propose_max_attempts(),
+            deploy_propose_retry_delay(),
+        ));
+    }
+}
+
+fn validate_deploy_submission<'a>(
+    data: &DeployData,
+    signer_public_keys: impl IntoIterator<Item = (Option<usize>, &'a PublicKey)>,
+    is_node_read_only: bool,
+    shard_id: &str,
+) -> Result<(), DeployValidationError> {
+    if is_node_read_only {
+        return Err(DeployValidationError {
+            message: "Deploy was rejected because node is running in read-only mode.".to_string(),
+        });
+    }
+
+    if data.shard_id != shard_id {
+        return Err(DeployValidationError {
+            message: format!(
+                "Deploy shardId '{}' is not as expected network shard '{}'.",
+                data.shard_id, shard_id
+            ),
+        });
+    }
+
+    for (index, public_key) in signer_public_keys {
+        if standard_deploys::system_public_keys()
+            .iter()
+            .any(|system_key| **system_key == *public_key)
+        {
+            let message = match index {
+                Some(index) => format!(
+                    "Deploy refused because cosigner at index {} is signed with a forbidden system private key.",
+                    index
+                ),
+                None => "Deploy refused because it's signed with forbidden private key.".to_string(),
+            };
+            return Err(DeployValidationError { message });
+        }
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    if data.is_expired_at(now) {
+        return Err(DeployValidationError {
+            message: format!(
+                "Deploy has expired: expirationTimestamp={:?} is in the past.",
+                data.expiration_timestamp
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn deploy_is_block_expired(
+    valid_after_block_number: i64,
+    latest_block_number: i64,
+    deploy_lifespan: i64,
+) -> Result<bool, CasperError> {
+    Ok(!crate::rust::util::deploy_window::is_open(
+        valid_after_block_number,
+        latest_block_number,
+        deploy_lifespan,
+    )?)
+}
+
+async fn submit_deploy_with_engine(
+    engine_cell: &EngineCell,
+    trigger_propose: &Option<Arc<ProposeFunction>>,
+    valid_after_block_number: i64,
+    submit: impl FnOnce(
+        Arc<dyn MultiParentCasper + Send + Sync>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError>,
+) -> ApiErr<String> {
+    let engine = engine_cell.get().await;
+    let casper = engine.with_casper().ok_or_else(|| {
+        let message = "Error: Could not deploy, casper instance was not available yet.";
+        tracing::warn!("{}", message);
+        eyre::eyre!(message)
+    })?;
+
+    let dag = casper.block_dag().await?;
+    let latest_block_number = dag.latest_block_number();
+    let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
+    if deploy_is_block_expired(
+        valid_after_block_number,
+        latest_block_number,
+        deploy_lifespan,
+    )? {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: format!(
+                "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                valid_after_block_number, latest_block_number, deploy_lifespan
+            ),
+        }));
+    }
+
+    match submit(casper)? {
+        Either::Left(error) => Err(error.into()),
+        Either::Right(deploy_id) => {
+            trigger_deploy_propose(trigger_propose);
+            Ok(format!(
+                "Success!\nDeployId is: {}",
+                PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+            ))
+        }
+    }
+}
+
+fn block_contains_deploy(block: &BlockMessage, deploy_id: &DeployLookupId) -> bool {
+    block.body.deploys.iter().any(|processed| {
+        processed
+            .deploy_id_for_protocol(block.header.version)
+            .as_ref()
+            == Ok(deploy_id)
+    })
+}
+
+#[derive(Debug)]
+enum CanonicalDeployBlockError<E> {
+    Store(BlockHash, E),
+    Missing(BlockHash),
+    Mismatch(BlockHash),
+}
+
+fn load_canonical_deploy_block<E>(
+    block_hash: BlockHash,
+    deploy_id: &DeployLookupId,
+    load: impl FnOnce(&BlockHash) -> Result<Option<BlockMessage>, E>,
+) -> Result<BlockMessage, CanonicalDeployBlockError<E>> {
+    let block = load(&block_hash)
+        .map_err(|error| CanonicalDeployBlockError::Store(block_hash.clone(), error))?
+        .ok_or_else(|| CanonicalDeployBlockError::Missing(block_hash.clone()))?;
+    if !block_contains_deploy(&block, deploy_id) {
+        return Err(CanonicalDeployBlockError::Mismatch(block_hash));
+    }
+    Ok(block)
 }
 
 fn clamp_depth(requested_depth: i32, max_depth_limit: i32, operation: &str) -> i32 {
@@ -226,6 +449,117 @@ impl std::fmt::Display for ExploratoryDeployReadOnlyError {
 
 impl std::error::Error for ExploratoryDeployReadOnlyError {}
 
+#[derive(Debug, thiserror::Error)]
+#[error("Node exploratory query capacity is exhausted; retry in {retry_after_secs} s")]
+pub struct ExploratoryDeployBusyError {
+    pub retry_after_secs: u64,
+}
+
+impl ExploratoryDeployBusyError {
+    fn with_budget(execution_budget: Duration) -> Self {
+        Self {
+            retry_after_secs: execution_budget.as_secs().max(1),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Exploratory query cancelled after exceeding its {timeout_ms} ms execution budget; the budget bounds execution, not response time"
+)]
+pub struct ExploratoryDeployTimeoutError {
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExploratoryDeployRejection {
+    Busy { retry_after_secs: u64 },
+    Timeout { timeout_ms: u64 },
+}
+
+impl ExploratoryDeployRejection {
+    pub fn from_cause(cause: &(dyn std::error::Error + 'static)) -> Option<Self> {
+        if let Some(busy) = cause.downcast_ref::<ExploratoryDeployBusyError>() {
+            return Some(Self::Busy {
+                retry_after_secs: busy.retry_after_secs,
+            });
+        }
+        cause
+            .downcast_ref::<ExploratoryDeployTimeoutError>()
+            .map(|timeout| Self::Timeout {
+                timeout_ms: timeout.timeout_ms,
+            })
+    }
+
+    pub fn classify(err: &eyre::Error) -> Option<Self> { err.chain().find_map(Self::from_cause) }
+}
+
+#[repr(u8)]
+enum ExploratoryDeployOutcome {
+    Failed,
+    Completed,
+    TimedOut,
+}
+
+struct ExploratoryDeployMetrics {
+    started: Instant,
+    outcome: Arc<AtomicU8>,
+}
+
+impl ExploratoryDeployMetrics {
+    fn new(outcome: Arc<AtomicU8>) -> Self {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").increment(1.0);
+        Self {
+            started: Instant::now(),
+            outcome,
+        }
+    }
+}
+
+impl Drop for ExploratoryDeployMetrics {
+    fn drop(&mut self) {
+        metrics::gauge!("exploratory_deploy.active", "source" => "casper").decrement(1.0);
+        metrics::histogram!("exploratory_deploy.duration", "source" => "casper")
+            .record(self.started.elapsed().as_secs_f64());
+        match self.outcome.load(Ordering::Relaxed) {
+            value if value == ExploratoryDeployOutcome::Completed as u8 => {
+                metrics::counter!("exploratory_deploy.completed", "source" => "casper")
+                    .increment(1);
+            }
+            value if value == ExploratoryDeployOutcome::TimedOut as u8 => {
+                metrics::counter!("exploratory_deploy.timed_out", "source" => "casper")
+                    .increment(1);
+            }
+            _ => {
+                metrics::counter!("exploratory_deploy.failed", "source" => "casper").increment(1);
+            }
+        }
+        RuntimeManager::trim_allocator();
+    }
+}
+
+enum ExploratoryDeployTaskError {
+    Join(tokio::task::JoinError),
+    Timeout,
+}
+
+async fn await_exploratory_deploy_task<T>(
+    mut task: tokio::task::JoinHandle<T>,
+    timeout: Duration,
+    outcome: Arc<AtomicU8>,
+) -> Result<T, ExploratoryDeployTaskError> {
+    match tokio::time::timeout(timeout, &mut task).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(error)) => Err(ExploratoryDeployTaskError::Join(error)),
+        Err(_) => {
+            outcome.store(ExploratoryDeployOutcome::TimedOut as u8, Ordering::Relaxed);
+            task.abort();
+            let _ = task.await;
+            Err(ExploratoryDeployTaskError::Timeout)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum LatestBlockMessageError {
     NodeReadOnlyError,
@@ -298,12 +632,26 @@ impl std::fmt::Display for NoNewDeploysError {
 impl std::error::Error for NoNewDeploysError {}
 
 impl BlockAPI {
+    pub async fn deploy_lookup_id(
+        engine_cell: &EngineCell,
+        bytes: &[u8],
+    ) -> ApiErr<DeployLookupId> {
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| eyre::eyre!("Error: casper instance was not available yet"))?;
+        Ok(DeployLookupId::from_protocol_bytes(
+            casper.get_version(),
+            bytes,
+        )?)
+    }
+
     fn find_deploy_scan_depth() -> usize { 128 }
 
     async fn find_deploy_by_recent_blocks(
         casper: &dyn MultiParentCasper,
         dag: &KeyValueDagRepresentation,
-        deploy_id: &DeployId,
+        deploy_id: &DeployLookupId,
     ) -> ApiErr<Option<LightBlockInfo>> {
         let scan_depth = Self::find_deploy_scan_depth();
         if scan_depth == 0 {
@@ -333,32 +681,31 @@ impl BlockAPI {
             }
         };
 
-        let mut deploy_sigs = HashSet::with_capacity(1);
-        deploy_sigs.insert(deploy_id.to_vec());
-
         while let Some(blocks_on_height) = candidate_blocks.pop() {
             let mut blocks_on_height = blocks_on_height;
             blocks_on_height.sort();
             for hash in blocks_on_height {
-                match casper
-                    .block_store()
-                    .has_any_deploy_sig(&hash, &deploy_sigs)
-                    .map_err(|e| eyre::eyre!(e.to_string()))
-                {
-                    Ok(true) => {
-                        let block = casper.block_store().get_unsafe(&hash);
+                match casper.block_store().get(&hash) {
+                    Ok(Some(block))
+                        if block.body.deploys.iter().any(|processed| {
+                            processed
+                                .deploy_id_for_protocol(block.header.version)
+                                .as_ref()
+                                == Ok(deploy_id)
+                        }) =>
+                    {
                         let light_block_info =
                             BlockAPI::get_light_block_info(casper, &block).await?;
                         tracing::debug!(
                             "Deploy {:?} found via fallback scan in block {}",
-                            PrettyPrinter::build_string_no_limit(deploy_id),
+                            PrettyPrinter::build_string_no_limit(deploy_id.as_bytes()),
                             PrettyPrinter::build_string_bytes(&hash)
                         );
                         return Ok(Some(light_block_info));
                     }
-                    Ok(false) => {}
+                    Ok(_) => {}
                     Err(err) => {
-                        return Err(err);
+                        return Err(eyre::eyre!(err.to_string()));
                     }
                 }
             }
@@ -377,188 +724,28 @@ impl BlockAPI {
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
-        async fn casper_deploy(
-            casper: Arc<dyn MultiParentCasper + Send + Sync>,
-            deploy_data: Signed<DeployData>,
-            trigger_propose: &Option<Arc<ProposeFunction>>,
-        ) -> ApiErr<String> {
-            let deploy_result = casper.deploy(deploy_data)?;
-            let r: ApiErr<String> = match deploy_result {
-                Either::Left(err) => Err(err.into()),
-                Either::Right(deploy_id) => Ok(format!(
-                    "Success!\nDeployId is: {}",
-                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-                )),
-            };
+        validate_deploy_submission(
+            &d.data,
+            std::iter::once((None, &d.pk)),
+            is_node_read_only,
+            shard_id,
+        )
+        .map_err(eyre::Report::new)?;
 
-            // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
-            // Deploy success should not block on proposal completion; finalization is checked via
-            // propose/finalization APIs separately in integration flows.
-            if let Some(tp) = trigger_propose {
-                let tp = Arc::clone(tp);
-                let max_attempts = deploy_propose_max_attempts();
-                let retry_delay = deploy_propose_retry_delay();
-                tokio::spawn(async move {
-                    let mut attempt = 1u32;
-                    loop {
-                        match tp(ProposeRequestKind::PendingDeploy).await {
-                            Ok(proposer_result) => match proposer_result {
-                                ProposerResult::Failure(status, seq_number) => {
-                                    if should_retry_deploy_propose(&status)
-                                        && attempt < max_attempts
-                                    {
-                                        tracing::info!(
-                                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
-                                            attempt,
-                                            max_attempts,
-                                            seq_number,
-                                            status,
-                                            retry_delay
-                                        );
-                                        attempt += 1;
-                                        tokio::time::sleep(retry_delay).await;
-                                        continue;
-                                    }
-
-                                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                                    {
-                                        tracing::info!("{} (seqNum {})", msg, seq_number);
-                                    } else {
-                                        tracing::error!(
-                                            "Failure: {} (seqNum {})",
-                                            status,
-                                            seq_number
-                                        );
-                                    }
-                                }
-                                ProposerResult::Empty => {
-                                    tracing::debug!("Propose already in progress");
-                                }
-                                ProposerResult::Started(seq_number) => {
-                                    tracing::debug!("Propose started (seqNum {})", seq_number);
-                                }
-                                ProposerResult::Success(_, block) => {
-                                    let block_hash_hex =
-                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                                    tracing::info!(
-                                        "Success! Block {} created and added.",
-                                        block_hash_hex
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                if attempt < max_attempts {
-                                    tracing::warn!(
-                                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
-                                        attempt,
-                                        max_attempts,
-                                        err,
-                                        retry_delay
-                                    );
-                                    attempt += 1;
-                                    tokio::time::sleep(retry_delay).await;
-                                    continue;
-                                }
-                                tracing::error!(error = %err, "deploy-triggered propose failed");
-                            }
-                        }
-                        break;
-                    }
-                });
-            }
-
-            // yield r
-            r
-        }
-
-        // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), DeployValidationError> = Ok(())
-            .and_then(|_| {
-                if is_node_read_only {
-                    Err(DeployValidationError {
-                        message: "Deploy was rejected because node is running in read-only mode."
-                            .to_string(),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                if d.data.shard_id != shard_id {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy shardId '{}' is not as expected network shard '{}'.",
-                            d.data.shard_id, shard_id
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                let is_forbidden_key = standard_deploys::system_public_keys()
-                    .iter()
-                    .any(|pk| **pk == d.pk);
-                if is_forbidden_key {
-                    Err(DeployValidationError {
-                        message: "Deploy refused because it's signed with forbidden private key."
-                            .to_string(),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            // Deploys have no phlo price or limit; this endpoint does not apply a
-            // price admission check.
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if d.data.is_expired_at(now) {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            d.data.expiration_timestamp
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
-            });
-
-        // Return early if validation fails
-        validation_result.map_err(|e| eyre::Report::new(e))?;
-
-        let log_error_message =
-            "Error: Could not deploy, casper instance was not available yet.".to_string();
-
-        let eng = engine_cell.get().await;
-
-        // Helper function for logging - mimic Scala logWarn
-        let log_warn = |msg: &str| -> ApiErr<String> {
-            tracing::warn!("{}", msg);
-            Err(eyre::eyre!("{}", msg))
-        };
-
-        if let Some(casper) = eng.with_casper() {
-            casper_deploy(casper, d, trigger_propose).await
-        } else {
-            log_warn(&log_error_message)
-        }
+        submit_deploy_with_engine(
+            engine_cell,
+            trigger_propose,
+            d.data.valid_after_block_number,
+            move |casper| casper.deploy(d),
+        )
+        .await
     }
 
-    /// Multi-signature-aware deploy submission. Mirrors `deploy(Signed)`
-    /// but takes a `Cosigned<DeployData>` envelope so the cosigner list
-    /// survives ingest. Validation (shard_id, forbidden keys, phlo
-    /// bounds, expiration) is performed against the PRIMARY signer's
-    /// fields — the cosigners' validation already happened at envelope
-    /// construction (`Cosigned::from_signed_data` enforces all signers
-    /// signing the canonical message hash). For single-signer Cosigned
-    /// envelopes (the legacy uplift case), this routes through
-    /// `casper.deploy_cosigned` which falls back to `casper.deploy` via
-    /// the trait's default impl — preserving byte-identical observable
-    /// behavior for legacy clients.
+    /// Multi-signature-aware deploy submission.
+    ///
+    /// Shared deployment fields receive shard and expiration validation.
+    /// Every signer receives forbidden-key validation. Envelope construction
+    /// has already verified every non-placeholder signature.
     #[tracing::instrument(
         name = "deploy_cosigned",
         target = "f1r3fly.block-api.deploy_cosigned",
@@ -573,161 +760,25 @@ impl BlockAPI {
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
-        async fn casper_deploy_cosigned(
-            casper: Arc<dyn MultiParentCasper + Send + Sync>,
-            cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-            trigger_propose: &Option<Arc<ProposeFunction>>,
-        ) -> ApiErr<String> {
-            let deploy_result = casper.deploy_cosigned(cosigned)?;
-            let r: ApiErr<String> = match deploy_result {
-                Either::Left(err) => Err(err.into()),
-                Either::Right(deploy_id) => Ok(format!(
-                    "Success!\nDeployId is: {}",
-                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-                )),
-            };
-            // Trigger propose asynchronously (mirrors `casper_deploy`).
-            if let Some(tp) = trigger_propose {
-                let tp = Arc::clone(tp);
-                let max_attempts = deploy_propose_max_attempts();
-                let retry_delay = deploy_propose_retry_delay();
-                tokio::spawn(async move {
-                    let mut attempt = 1u32;
-                    loop {
-                        match tp(ProposeRequestKind::PendingDeploy).await {
-                            Ok(proposer_result) => match proposer_result {
-                                ProposerResult::Failure(status, seq_number) => {
-                                    if should_retry_deploy_propose(&status)
-                                        && attempt < max_attempts
-                                    {
-                                        attempt += 1;
-                                        tokio::time::sleep(retry_delay).await;
-                                        continue;
-                                    }
-                                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                                    {
-                                        tracing::info!("{} (seqNum {})", msg, seq_number);
-                                    } else {
-                                        tracing::error!(
-                                            "Failure: {} (seqNum {})",
-                                            status,
-                                            seq_number
-                                        );
-                                    }
-                                }
-                                ProposerResult::Empty => {
-                                    tracing::debug!("Propose already in progress");
-                                }
-                                ProposerResult::Started(seq_number) => {
-                                    tracing::debug!("Propose started (seqNum {})", seq_number);
-                                }
-                                ProposerResult::Success(_, block) => {
-                                    let block_hash_hex =
-                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                                    tracing::info!(
-                                        "Success! Block {} created and added.",
-                                        block_hash_hex
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                if attempt < max_attempts {
-                                    attempt += 1;
-                                    tokio::time::sleep(retry_delay).await;
-                                    continue;
-                                }
-                                tracing::error!(
-                                    "Failed to trigger propose from deploy path: {}",
-                                    err
-                                );
-                            }
-                        }
-                        break;
-                    }
-                });
-            }
-            r
-        }
+        validate_deploy_submission(
+            &cosigned.data,
+            cosigned
+                .signers()
+                .iter()
+                .enumerate()
+                .map(|(index, signer)| (Some(index), &signer.pk)),
+            is_node_read_only,
+            shard_id,
+        )
+        .map_err(eyre::Report::new)?;
 
-        // Validation against the PRIMARY signer's fields. The cosigner
-        // list is already validated by Cosigned::from_signed_data
-        // (signature verification, canonical sort, no duplicates,
-        // share-sum).
-        let primary = cosigned.primary();
-        let validation_result: Result<(), String> = Ok(())
-            .and_then(|_| {
-                if is_node_read_only {
-                    Err(
-                        "Deploy was rejected because node is running in read-only mode."
-                            .to_string(),
-                    )
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                if cosigned.data.shard_id != shard_id {
-                    Err(format!(
-                        "Deploy shardId '{}' is not as expected network shard '{}'.",
-                        cosigned.data.shard_id, shard_id
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                // Any cosigner using a forbidden system key is rejected.
-                for (i, signer) in cosigned.signers().iter().enumerate() {
-                    let is_forbidden = standard_deploys::system_public_keys()
-                        .iter()
-                        .any(|pk| **pk == signer.pk);
-                    if is_forbidden {
-                        return Err(format!(
-                            "Deploy refused because cosigner at index {} is \
-                             signed with a forbidden system private key.",
-                            i
-                        ));
-                    }
-                }
-                Ok(())
-            })
-            // D3 (DR-9, D.5): the per-deploy `validate_phlo` submission check is
-            // REMOVED (no phlo price/limit on a deploy).
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if cosigned.data.is_expired_at(now) {
-                    Err(DeployExpiredError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            cosigned.data.expiration_timestamp
-                        ),
-                    }
-                    .to_string())
-                } else {
-                    Ok(())
-                }
-            });
-        // Suppress unused-binding warning under the cosigned path
-        // (primary used only in the validation chain above).
-        let _ = primary;
-
-        validation_result.map_err(|e| eyre::eyre!(e))?;
-
-        let log_error_message =
-            "Error: Could not deploy, casper instance was not available yet.".to_string();
-        let eng = engine_cell.get().await;
-        let log_warn = |msg: &str| -> ApiErr<String> {
-            tracing::warn!("{}", msg);
-            Err(eyre::eyre!("{}", msg))
-        };
-        if let Some(casper) = eng.with_casper() {
-            casper_deploy_cosigned(casper, cosigned, trigger_propose).await
-        } else {
-            log_warn(&log_error_message)
-        }
+        submit_deploy_with_engine(
+            engine_cell,
+            trigger_propose,
+            cosigned.data.valid_after_block_number,
+            move |casper| casper.deploy_cosigned(cosigned),
+        )
+        .await
     }
 
     #[tracing::instrument(level = "info", skip(engine_cell, trigger_propose_f))]
@@ -1192,10 +1243,19 @@ impl BlockAPI {
 
             let mut block_infos_at_height_acc = Vec::new();
             for block_hashes_at_height in topo_sort_dag {
-                let blocks_at_height: Vec<_> = block_hashes_at_height
-                    .iter()
-                    .map(|block_hash| casper.block_store().get_unsafe(block_hash))
-                    .collect();
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let mut blocks_at_height: Vec<BlockMessage> =
+                    Vec::with_capacity(block_hashes_at_height.len());
+                for block_hash in block_hashes_at_height.iter() {
+                    match casper.block_store().get(block_hash)? {
+                        Some(block) => blocks_at_height.push(block),
+                        None => tracing::debug!(
+                            "get-blocks-by-heights skipping unheld block {}",
+                            PrettyPrinter::build_string_bytes(block_hash)
+                        ),
+                    }
+                }
 
                 for block in blocks_at_height {
                     let block_info =
@@ -1293,26 +1353,23 @@ impl BlockAPI {
         max_depth_limit: i32,
     ) -> ApiErr<String> {
         let do_it = |(_casper, topo_sort): (&dyn MultiParentCasper, Vec<Vec<BlockHash>>)| -> ApiErr<String> {
-            // case (_, topoSort) => ...
-            let fetch_parents = |block_hash: &BlockHash| -> Vec<BlockHash> {
-                let block = _casper.block_store().get_unsafe(block_hash);
-                block.header.parents_hash_list.clone()
-            };
-
-            //string will be converted to an ApiErr<String>
-            let result = topo_sort
-                .into_iter()
-                .flat_map(|block_hashes| {
-                    block_hashes.into_iter().flat_map(|block_hash| {
-                        let block_hash_str = PrettyPrinter::build_string_bytes(&block_hash);
-                        fetch_parents(&block_hash).into_iter().map(move |parent_hash| {
-                            format!("{} {}", block_hash_str, PrettyPrinter::build_string_bytes(&parent_hash))
-                        })
-                    })
-                })
-                .collect::<Vec<String>>()
-                .join("\n");
-            Ok(result)
+            let mut edges = Vec::new();
+            for block_hashes in topo_sort {
+                for block_hash in block_hashes {
+                    let Some(block) = _casper.block_store().get(&block_hash)? else {
+                        continue;
+                    };
+                    let block_hash_text = PrettyPrinter::build_string_bytes(&block_hash);
+                    for parent_hash in block.header.parents_hash_list {
+                        edges.push(format!(
+                            "{} {}",
+                            block_hash_text,
+                            PrettyPrinter::build_string_bytes(&parent_hash)
+                        ));
+                    }
+                }
+            }
+            Ok(edges.join("\n"))
         };
 
         BlockAPI::toposort_dag(engine_cell, depth, max_depth_limit, do_it).await
@@ -1339,7 +1396,15 @@ impl BlockAPI {
         let mut block_infos_acc = Vec::new();
         for block_hashes_at_height in topo_sort {
             for block_hash in block_hashes_at_height {
-                let block = casper.block_store().get_unsafe(&block_hash);
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let Some(block) = casper.block_store().get(&block_hash)? else {
+                    tracing::debug!(
+                        "get-blocks skipping unheld block {}",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                };
                 let block_info = BlockAPI::get_block_info_with_dag(
                     casper.as_ref(),
                     &dag,
@@ -1377,7 +1442,15 @@ impl BlockAPI {
         let mut block_infos_acc = Vec::new();
         for block_hashes_at_height in topo_sort {
             for block_hash in block_hashes_at_height {
-                let block = casper.block_store().get_unsafe(&block_hash);
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let Some(block) = casper.block_store().get(&block_hash)? else {
+                    tracing::debug!(
+                        "get-blocks-full skipping unheld block {}",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                };
                 let block_info = BlockAPI::get_block_info_with_dag(
                     casper.as_ref(),
                     &dag,
@@ -1455,7 +1528,7 @@ impl BlockAPI {
 
     pub async fn find_deploy(
         engine_cell: &EngineCell,
-        deploy_id: &DeployId,
+        deploy_id: &DeployLookupId,
     ) -> ApiErr<LightBlockInfo> {
         let error_message =
             "Could not find block with deploy, casper instance was not available yet.".to_string();
@@ -1467,10 +1540,10 @@ impl BlockAPI {
             let canonical_status = crate::rust::api::deploy_finalization_status::resolve(
                 &dag,
                 casper.block_store(),
-                casper.casper_shard_conf().deploy_lifespan,
                 deploy_id,
+                None,
             )?;
-            let canonical_block_hash = match canonical_status.state {
+            let terminal_block_hash = match canonical_status.state {
                 crate::rust::api::deploy_finalization_status::DeployFinalizationState::Finalized
                 | crate::rust::api::deploy_finalization_status::DeployFinalizationState::Failed => {
                     canonical_status.latest_block_hash
@@ -1480,54 +1553,74 @@ impl BlockAPI {
                     None
                 }
             };
-            let occurrence_hashes = dag.lookup_deploy_occurrences(deploy_id)?;
-            let mut occurrence_blocks = occurrence_hashes
-                .into_iter()
-                .filter_map(|hash| casper.block_store().get(&hash).ok().flatten())
-                .filter(|block| {
-                    block
-                        .body
-                        .deploys
-                        .iter()
-                        .any(|processed| processed.deploy.sig.as_ref() == deploy_id.as_slice())
-                })
-                .collect::<Vec<_>>();
-            occurrence_blocks.sort_by(|left, right| {
-                right
-                    .body
-                    .state
-                    .block_number
-                    .cmp(&left.body.state.block_number)
-                    .then_with(|| left.block_hash.cmp(&right.block_hash))
-            });
-            let maybe_block_hash = canonical_block_hash
-                .or_else(|| {
-                    occurrence_blocks
-                        .first()
-                        .map(|block| block.block_hash.clone())
-                })
-                .or(dag.lookup_by_deploy_id(deploy_id)?);
-
-            match maybe_block_hash {
-                Some(block_hash) => {
-                    let block = casper.block_store().get_unsafe(&block_hash);
-                    let light_block_info =
-                        BlockAPI::get_light_block_info(casper.as_ref(), &block).await?;
-                    Ok(light_block_info)
+            if let Some(block_hash) = terminal_block_hash {
+                let block = casper
+                    .block_store()
+                    .get(&block_hash)
+                    .map_err(|error| {
+                        eyre::eyre!(
+                            "block_store.get failed for terminal deploy block {}: {}",
+                            PrettyPrinter::build_string_bytes(&block_hash),
+                            error
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        eyre::Report::new(BlockNotFoundError {
+                            hash: PrettyPrinter::build_string_bytes(&block_hash),
+                        })
+                    })?;
+                if !block_contains_deploy(&block, deploy_id) {
+                    return Err(eyre::Report::new(
+                        crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption {
+                            sig: Bytes::copy_from_slice(deploy_id.as_bytes()),
+                            block_hash,
+                        },
+                    ));
                 }
-                None => {
-                    if let Some(fallback_block_info) =
-                        Self::find_deploy_by_recent_blocks(casper.as_ref(), &dag, deploy_id).await?
-                    {
-                        Ok(fallback_block_info)
-                    } else {
-                        Err(DeployNotFoundError {
-                            deploy_id: PrettyPrinter::build_string_no_limit(deploy_id),
-                        }
-                        .into())
+                return BlockAPI::get_light_block_info(casper.as_ref(), &block).await;
+            }
+
+            if let Some(block_hash) = dag.lookup_by_deploy_id(deploy_id)? {
+                let block = load_canonical_deploy_block(block_hash, deploy_id, |hash| {
+                    casper.block_store().get(hash)
+                })
+                .map_err(|error| {
+                    match error {
+                    CanonicalDeployBlockError::Store(block_hash, error) => {
+                        eyre::eyre!(
+                            "block_store.get failed for canonical deploy block {}: {}",
+                            PrettyPrinter::build_string_bytes(&block_hash),
+                            error
+                        )
                     }
+                    CanonicalDeployBlockError::Missing(block_hash) => {
+                        eyre::Report::new(BlockNotFoundError {
+                            hash: PrettyPrinter::build_string_bytes(&block_hash),
+                        })
+                    }
+                    CanonicalDeployBlockError::Mismatch(block_hash) => eyre::Report::new(
+                        crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption {
+                            sig: Bytes::copy_from_slice(deploy_id.as_bytes()),
+                            block_hash,
+                        },
+                    ),
+                }
+                })?;
+                return BlockAPI::get_light_block_info(casper.as_ref(), &block).await;
+            }
+
+            if matches!(deploy_id, DeployLookupId::Legacy(_)) {
+                if let Some(fallback_block_info) =
+                    Self::find_deploy_by_recent_blocks(casper.as_ref(), &dag, deploy_id).await?
+                {
+                    return Ok(fallback_block_info);
                 }
             }
+
+            Err(DeployNotFoundError {
+                deploy_id: PrettyPrinter::build_string_no_limit(deploy_id.as_bytes()),
+            }
+            .into())
         } else {
             Err(eyre::eyre!("Error: {}", error_message))
         }
@@ -1621,16 +1714,10 @@ impl BlockAPI {
             if let Ok(Some(meta)) = dag.lookup(&block.block_hash) {
                 meta.fault_tolerance_value
             } else {
-                let safety_oracle = CliqueOracleImpl;
-                safety_oracle
-                    .normalized_fault_tolerance(dag, &block.block_hash)
-                    .await?
+                Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
             }
         } else {
-            let safety_oracle = CliqueOracleImpl;
-            safety_oracle
-                .normalized_fault_tolerance(dag, &block.block_hash)
-                .await?
+            Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
         };
 
         let initial_fault = casper.normalized_initial_fault(&block.block_hash)?;
@@ -1638,6 +1725,32 @@ impl BlockAPI {
 
         let block_info = constructor(block, fault_tolerance, is_finalized);
         Ok(block_info)
+    }
+
+    /// An oracle walk that reaches history this node does not hold (an LFS
+    /// restore horizon) reads as unknown fault tolerance, never as an API
+    /// failure.
+    async fn fault_tolerance_or_unknown(
+        dag: &KeyValueDagRepresentation,
+        block_hash: &BlockHash,
+    ) -> ApiErr<f32> {
+        let safety_oracle = CliqueOracleImpl;
+        match safety_oracle
+            .normalized_fault_tolerance(dag, block_hash)
+            .await
+        {
+            Ok(ft) => Ok(ft),
+            Err(KvStoreError::MissingBlock { hash, .. }) => {
+                tracing::debug!(
+                    "fault tolerance unknown for {}: history below the restore \
+                     horizon ({})",
+                    PrettyPrinter::build_string_bytes(block_hash),
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+                Ok(MIN_FAULT_TOLERANCE)
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn get_block_info<M: MultiParentCasper + ?Sized, A: Sized + Send>(
@@ -1718,6 +1831,16 @@ impl BlockAPI {
                 .iter()
                 .map(proto_util::bond_to_bond_info)
                 .collect(),
+            active_bonds: block
+                .body
+                .state
+                .bonds
+                .iter()
+                .filter(|bond| {
+                    bond.stake > 0 && block.body.state.active_validators.contains(&bond.validator)
+                })
+                .map(proto_util::bond_to_bond_info)
+                .collect(),
             block_size: block.to_proto().encode_to_vec().len().to_string(),
             deploy_count: block.body.deploys.len() as i32,
             fault_tolerance,
@@ -1731,7 +1854,7 @@ impl BlockAPI {
                 .rejected_deploys
                 .iter()
                 .map(|r| RejectedDeployInfo {
-                    sig: PrettyPrinter::build_string_no_limit(&r.sig),
+                    sig: PrettyPrinter::build_string_no_limit(r.deploy_id()),
                     source_block_hash: PrettyPrinter::build_string_no_limit(&r.source_block_hash),
                     reason: r.reason.label().to_string(),
                 })
@@ -1744,7 +1867,13 @@ impl BlockAPI {
         deployer: &ByteString,
         timestamp: i64,
         name_qty: i32,
+        protocol_version: i64,
     ) -> ApiErr<Vec<ByteString>> {
+        if protocol_version >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION {
+            return Err(eyre::Report::new(PrivateNamePreviewUnavailable {
+                protocol_version,
+            }));
+        }
         let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(deployer), timestamp);
         let safe_qty = name_qty.clamp(0, 1024) as usize;
         let ids: Vec<BlockHash> = (0..safe_qty)
@@ -1818,14 +1947,14 @@ impl BlockAPI {
     /// already-finalized sigs.
     pub async fn deploy_finalization_status(
         engine_cell: &EngineCell,
-        sig: &[u8],
+        deploy_id: &DeployLookupId,
     ) -> ApiErr<crate::rust::api::deploy_finalization_status::DeployFinalizationStatus> {
-        Self::deploy_finalization_status_with_known_block(engine_cell, sig, None).await
+        Self::deploy_finalization_status_with_known_block(engine_cell, deploy_id, None).await
     }
 
     pub async fn deploy_finalization_status_with_known_block(
         engine_cell: &EngineCell,
-        sig: &[u8],
+        deploy_id: &DeployLookupId,
         known_block_hash: Option<&BlockHash>,
     ) -> ApiErr<crate::rust::api::deploy_finalization_status::DeployFinalizationStatus> {
         let error_message =
@@ -1837,11 +1966,10 @@ impl BlockAPI {
         };
 
         let dag = casper.block_dag().await?;
-        match crate::rust::api::deploy_finalization_status::resolve_with_known_block(
+        match crate::rust::api::deploy_finalization_status::resolve(
             &dag,
             casper.block_store(),
-            casper.casper_shard_conf().deploy_lifespan,
-            sig,
+            deploy_id,
             known_block_hash,
         ) {
             Ok(status) => Ok(status),
@@ -1861,6 +1989,45 @@ impl BlockAPI {
                 }
             }
         }
+    }
+
+    pub async fn list_pending_deploys(
+        engine_cell: &EngineCell,
+        deployer: Option<&[u8]>,
+    ) -> ApiErr<crate::rust::api::pending_deploys::PendingDeploysSnapshot> {
+        use crate::rust::api::pending_deploys::{
+            PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS,
+        };
+
+        let error_message =
+            "Could not list pending deploys, casper instance was not available yet.";
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            tracing::warn!("{}", error_message);
+            return Err(eyre::eyre!("Error: {}", error_message));
+        };
+
+        let mut deploys = casper.list_pending_deploys().await?;
+        if let Some(pk) = deployer {
+            deploys.retain(|(deploy, _)| deploy.primary().pk.bytes.as_ref() == pk);
+        }
+        deploys.sort_by(|(left, _), (right, _)| {
+            left.data()
+                .time_stamp
+                .cmp(&right.data().time_stamp)
+                .then_with(|| {
+                    let left_id = left.envelope_commitment().unwrap_or_default();
+                    let right_id = right.envelope_commitment().unwrap_or_default();
+                    left_id.cmp(&right_id)
+                })
+        });
+
+        let total_available = deploys.len() as u32;
+        deploys.truncate(PENDING_DEPLOYS_MAX_RESULTS);
+        Ok(PendingDeploysSnapshot {
+            deploys,
+            total_available,
+        })
     }
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {
@@ -1901,6 +2068,14 @@ impl BlockAPI {
             let is_read_only = casper.get_validator().is_none();
             if is_read_only || dev_mode {
                 let runtime_manager = casper.runtime_manager();
+                let execution_budget = runtime_manager.exploratory_deploy_execution_timeout_value();
+                let permit = runtime_manager
+                    .try_acquire_exploratory_deploy_permit()
+                    .ok_or_else(|| {
+                        metrics::counter!("exploratory_deploy.rejected", "source" => "casper")
+                            .increment(1);
+                        eyre::Report::new(ExploratoryDeployBusyError::with_budget(execution_budget))
+                    })?;
 
                 // When no block specified, compute merged state from all DAG tips
                 let (state_hash, target_block) = if block_hash.is_none() {
@@ -1936,7 +2111,7 @@ impl BlockAPI {
                             .iter()
                             .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
                             .collect();
-                        let (merged_state_hash, _rejected) =
+                        let merged =
                             crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
                                 casper.block_store(),
                                 parents.clone(),
@@ -1945,9 +2120,11 @@ impl BlockAPI {
                                 &latest_messages,
                                 Some(true), // disable_late_block_filtering = true for exploratory deploy
                                 None,       // exploratory deploy: no buffer populate needed
+                                None,
+                                None,
                             )
                             .await?;
-                        merged_state_hash
+                        merged.state
                     };
 
                     tracing::warn!(
@@ -1987,9 +2164,50 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
-                        let (res, cost) = runtime_manager
-                            .play_exploratory_deploy(term, &state_hash, deployer)
-                            .await?;
+                        let protocol_version = b.header.version;
+                        let shard_id = b.shard_id.clone();
+                        let outcome =
+                            Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
+                        let task_outcome = outcome.clone();
+                        let task_runtime_manager = runtime_manager.clone();
+                        let task = tokio::spawn(async move {
+                            let _permit = permit;
+                            let _metrics = ExploratoryDeployMetrics::new(task_outcome.clone());
+                            let result = task_runtime_manager
+                                .play_exploratory_deploy_at_protocol(
+                                    term,
+                                    &state_hash,
+                                    deployer,
+                                    protocol_version,
+                                    shard_id,
+                                )
+                                .await;
+                            if result.is_ok() {
+                                task_outcome.store(
+                                    ExploratoryDeployOutcome::Completed as u8,
+                                    Ordering::Relaxed,
+                                );
+                            }
+                            result
+                        });
+                        let (res, cost) =
+                            match await_exploratory_deploy_task(task, execution_budget, outcome)
+                                .await
+                            {
+                                Ok(result) => result?,
+                                Err(ExploratoryDeployTaskError::Join(error)) => {
+                                    return Err(eyre::eyre!(
+                                        "Exploratory query task failed: {}",
+                                        error
+                                    ));
+                                }
+                                Err(ExploratoryDeployTaskError::Timeout) => {
+                                    return Err(eyre::Report::new(ExploratoryDeployTimeoutError {
+                                        timeout_ms: u64::try_from(execution_budget.as_millis())
+                                            .unwrap_or(u64::MAX),
+                                    }));
+                                }
+                            };
                         let light_block_info =
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
                         Ok((res, light_block_info, cost))
@@ -2084,5 +2302,263 @@ impl BlockAPI {
             tracing::warn!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    use super::*;
+
+    #[test]
+    fn block_expiration_matches_the_strict_deploy_window() {
+        assert!(deploy_is_block_expired(0, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(1, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(0, 49, 50).unwrap());
+        assert!(deploy_is_block_expired(i64::MIN, i64::MIN, 1).unwrap());
+        assert!(!deploy_is_block_expired(i64::MIN + 1, i64::MIN, 1).unwrap());
+        assert!(deploy_is_block_expired(0, 0, -1).is_err());
+    }
+
+    #[test]
+    fn light_block_info_separates_active_committee_from_all_bonds() {
+        let active = Bytes::from(vec![1; models::rust::validator::LENGTH]);
+        let inactive = Bytes::from(vec![2; models::rust::validator::LENGTH]);
+        let nonpositive = Bytes::from(vec![3; models::rust::validator::LENGTH]);
+        let mut block = models::rust::block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            Some(active.clone()),
+            None,
+            Some(1),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![
+                models::rust::casper::protocol::casper_message::Bond {
+                    validator: active.clone(),
+                    stake: 100,
+                },
+                models::rust::casper::protocol::casper_message::Bond {
+                    validator: inactive,
+                    stake: 200,
+                },
+                models::rust::casper::protocol::casper_message::Bond {
+                    validator: nonpositive,
+                    stake: 0,
+                },
+            ]),
+            Some("root".to_string()),
+            None,
+        );
+        block.body.state.active_validators = vec![active.clone()];
+
+        let info = BlockAPI::construct_light_block_info(&block, 0.0, false);
+
+        assert_eq!(info.bonds.len(), 3);
+        assert_eq!(info.active_bonds, vec![models::casper::BondInfo {
+            validator: hex::encode(active),
+            stake: 100,
+        }]);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn block_expiration_refines_the_lifespan_upper_bound(
+            valid_after_block_number in -1_000_000i64..=1_000_000,
+            latest_block_number in -1_000_000i64..=1_000_000,
+            deploy_lifespan in 0i64..=10_000,
+        ) {
+            let expired = deploy_is_block_expired(
+                valid_after_block_number,
+                latest_block_number,
+                deploy_lifespan,
+            ).unwrap();
+
+            proptest::prop_assert_eq!(
+                !expired,
+                latest_block_number < valid_after_block_number + deploy_lifespan,
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_deploy_loader_reads_only_the_indexed_block_and_fails_closed() {
+        let block_hash = Bytes::from_static(b"canonical");
+        let deploy_id = DeployLookupId::Legacy(
+            models::rust::deploy_id::LegacyDeploySignature::new(b"deploy".to_vec()),
+        );
+        let reads = AtomicUsize::new(0);
+        let error = load_canonical_deploy_block(block_hash.clone(), &deploy_id, |hash| {
+            reads.fetch_add(1, AtomicOrdering::SeqCst);
+            assert_eq!(hash, &block_hash);
+            Ok::<_, ()>(Some(
+                models::rust::block_implicits::get_random_block_default(),
+            ))
+        })
+        .unwrap_err();
+
+        assert_eq!(reads.load(AtomicOrdering::SeqCst), 1);
+        assert!(matches!(
+            error,
+            CanonicalDeployBlockError::Mismatch(hash) if hash == block_hash
+        ));
+    }
+
+    #[test]
+    fn canonical_deploy_loader_distinguishes_missing_blocks_and_store_errors() {
+        let block_hash = Bytes::from_static(b"canonical");
+        let deploy_id = DeployLookupId::Legacy(
+            models::rust::deploy_id::LegacyDeploySignature::new(b"deploy".to_vec()),
+        );
+        let missing = load_canonical_deploy_block(block_hash.clone(), &deploy_id, |_| {
+            Ok::<_, &'static str>(None)
+        })
+        .unwrap_err();
+        assert!(matches!(
+            missing,
+            CanonicalDeployBlockError::Missing(hash) if hash == block_hash
+        ));
+
+        let failure = load_canonical_deploy_block(block_hash.clone(), &deploy_id, |_| {
+            Err::<Option<BlockMessage>, _>("storage failure")
+        })
+        .unwrap_err();
+        assert!(matches!(
+            failure,
+            CanonicalDeployBlockError::Store(hash, "storage failure") if hash == block_hash
+        ));
+    }
+
+    #[test]
+    fn parent_frontier_capacity_is_reported_as_recoverable_without_immediate_retry() {
+        let status = ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded {
+            configured_cap: 2,
+            required_parents: 3,
+        });
+
+        assert_eq!(
+            recoverable_propose_failure_message(&status).as_deref(),
+            Some(
+                "Proposal deferred: exact parent frontier requires 3 parents but max-number-of-parents is 2."
+            )
+        );
+        assert!(!should_retry_deploy_propose(&status));
+    }
+
+    #[test]
+    fn single_and_cosigned_submissions_share_common_validation() {
+        let mut data = DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 0,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+
+        validate_deploy_submission(
+            &data,
+            std::iter::empty::<(Option<usize>, &PublicKey)>(),
+            false,
+            "root",
+        )
+        .expect("valid deploy metadata");
+
+        let read_only = validate_deploy_submission(
+            &data,
+            std::iter::empty::<(Option<usize>, &PublicKey)>(),
+            true,
+            "root",
+        )
+        .expect_err("read-only nodes must reject deploys");
+        assert_eq!(
+            read_only.message,
+            "Deploy was rejected because node is running in read-only mode."
+        );
+
+        let shard_mismatch = validate_deploy_submission(
+            &data,
+            std::iter::empty::<(Option<usize>, &PublicKey)>(),
+            false,
+            "other",
+        )
+        .expect_err("shard mismatch must reject deploys");
+        assert_eq!(
+            shard_mismatch.message,
+            "Deploy shardId 'root' is not as expected network shard 'other'."
+        );
+
+        let system_key = standard_deploys::system_public_keys()[0];
+        let single_forbidden =
+            validate_deploy_submission(&data, std::iter::once((None, system_key)), false, "root")
+                .expect_err("single system signer must be forbidden");
+        assert_eq!(
+            single_forbidden.message,
+            "Deploy refused because it's signed with forbidden private key."
+        );
+
+        let cosigned_forbidden = validate_deploy_submission(
+            &data,
+            std::iter::once((Some(3), system_key)),
+            false,
+            "root",
+        )
+        .expect_err("system cosigner must be forbidden");
+        assert_eq!(
+            cosigned_forbidden.message,
+            "Deploy refused because cosigner at index 3 is signed with a forbidden system private key."
+        );
+
+        data.expiration_timestamp = Some(0);
+        let expired = validate_deploy_submission(
+            &data,
+            std::iter::empty::<(Option<usize>, &PublicKey)>(),
+            false,
+            "root",
+        )
+        .expect_err("expired deploy must be rejected");
+        assert_eq!(
+            expired.message,
+            "Deploy has expired: expirationTimestamp=Some(0) is in the past."
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_trigger_retries_only_retryable_failures() {
+        let retry_calls = Arc::new(AtomicUsize::new(0));
+        let retry_counter = Arc::clone(&retry_calls);
+        let retry_trigger: Arc<ProposeFunction> = Arc::new(move |_| {
+            let retry_counter = Arc::clone(&retry_counter);
+            Box::pin(async move {
+                retry_counter.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(ProposerResult::failure(
+                    ProposeStatus::Failure(ProposeFailure::InternalDeployError),
+                    1,
+                ))
+            })
+        });
+        run_deploy_triggered_propose(retry_trigger, 3, Duration::ZERO).await;
+        assert_eq!(retry_calls.load(AtomicOrdering::SeqCst), 3);
+
+        let terminal_calls = Arc::new(AtomicUsize::new(0));
+        let terminal_counter = Arc::clone(&terminal_calls);
+        let terminal_trigger: Arc<ProposeFunction> = Arc::new(move |_| {
+            let terminal_counter = Arc::clone(&terminal_counter);
+            Box::pin(async move {
+                terminal_counter.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(ProposerResult::failure(
+                    ProposeStatus::Failure(ProposeFailure::NoNewDeploys),
+                    1,
+                ))
+            })
+        });
+        run_deploy_triggered_propose(terminal_trigger, 3, Duration::ZERO).await;
+        assert_eq!(terminal_calls.load(AtomicOrdering::SeqCst), 1);
     }
 }

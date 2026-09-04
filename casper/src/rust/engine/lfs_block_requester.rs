@@ -638,8 +638,16 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 
             let request_count = request_futures.len();
 
-            // Execute all requests in parallel, short-circuit on first error
-            futures::future::try_join_all(request_futures).await?;
+            let results = futures::future::join_all(request_futures).await;
+            let mut first_error = None;
+            for result in results {
+                if let Err(error) = result {
+                    first_error.get_or_insert(error);
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
+            }
 
             let request_duration = request_start.elapsed();
             tracing::info!(
@@ -757,7 +765,12 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
     request_timeout: Duration,
     max_request_timeout: Duration,
 ) -> Result<impl futures::stream::Stream<Item = ST<BlockHash>> + use<'a, T>, CasperError> {
-    let processor_count = num_cpus::get();
+    // num_cpus::get() reads the host's core count, not the pod's cgroup CPU
+    // quota or the tokio runtime's actual worker pool size — see
+    // https://github.com/F1R3FLY-io/f1r3node-rust/issues/147. Bound
+    // concurrency to the runtime's real worker count instead so it tracks
+    // whatever TOKIO_WORKER_THREADS configured in node/src/main.rs.
+    let processor_count = tokio::runtime::Handle::current().metrics().num_workers();
     tracing::info!(
         "LFS Block Requester using {} processor-bounded workers (parEvalMapProcBounded equivalent)",
         processor_count

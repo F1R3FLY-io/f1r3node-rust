@@ -4,6 +4,7 @@
 //! that don't have serde derives by default.
 
 use models::casper::{BlockInfo, DeployInfo};
+use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use utoipa::ToSchema;
 
@@ -34,17 +35,19 @@ impl From<BlockInfo> for BlockInfoSerde {
     }
 }
 
-impl From<BlockInfoSerde> for BlockInfo {
-    fn from(json: BlockInfoSerde) -> Self {
-        BlockInfo {
+impl TryFrom<BlockInfoSerde> for BlockInfo {
+    type Error = hex::FromHexError;
+
+    fn try_from(json: BlockInfoSerde) -> Result<Self, Self::Error> {
+        Ok(BlockInfo {
             block_info: Some(json.block_info.into()),
             deploys: json
                 .deploys
                 .unwrap_or_default()
                 .into_iter()
-                .map(DeployInfo::from)
-                .collect(),
-        }
+                .map(DeployInfo::try_from)
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 
@@ -57,7 +60,7 @@ where S: Serializer {
 pub fn deserialize_block_info<'de, D>(deserializer: D) -> Result<BlockInfo, D::Error>
 where D: Deserializer<'de> {
     let json_block = BlockInfoSerde::deserialize(deserializer)?;
-    Ok(json_block.into())
+    BlockInfo::try_from(json_block).map_err(D::Error::custom)
 }
 
 impl BlockInfoSerde {

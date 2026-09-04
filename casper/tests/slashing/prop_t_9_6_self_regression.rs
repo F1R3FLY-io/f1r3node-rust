@@ -1,18 +1,18 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-9.6 (self-regression caught post-fix #6).
 //
 // Theorem: T-9.6 (`t_9_6_self_regression_detected`,
 // formal/rocq/slashing/theories/BugFixSelfRegression.v).
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.7.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.7.
 //
 // Property: for every block whose creator-justification cites a
 // previous block by the same sender at a *higher* sequence number,
-// `dispatch` classifies the block as `JustificationRegression` and
-// the post-fix #3 catch-all mints an EquivocationRecord.
+// `dispatch` classifies the block as `JustificationRegression`, persists the
+// rejection, and creates no equivocation evidence.
 
 use proptest::prelude::*;
 
@@ -55,8 +55,8 @@ proptest! {
             "post-fix #6: any self-regressing block (early_seq={} citing later_seq={}) is detected",
             early_seq, later_seq);
         match base_seq_from_seq(early_seq) {
-            Some(base) => prop_assert!(harness.has_record("v0", base),
-                "post-fix #3: dispatcher mints record for positive-seq JustificationRegression"),
+            Some(base) => prop_assert!(!harness.has_record("v0", base),
+                "JustificationRegression must not create equivocation evidence"),
             None => prop_assert!(harness.dag.invalid.contains(&regressing),
                 "seq=0 regression is invalid evidence but has no predecessor record key"),
         }

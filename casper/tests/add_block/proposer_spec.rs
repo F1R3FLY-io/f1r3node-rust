@@ -36,6 +36,19 @@ impl CasperSnapshotProvider for TestCasperSnapshotProvider {
     }
 }
 
+/// A node whose history does not reach far enough to build a snapshot at all.
+pub struct HistoryIncompleteSnapshotProvider;
+impl CasperSnapshotProvider for HistoryIncompleteSnapshotProvider {
+    async fn get_casper_snapshot(
+        &self,
+        _: Arc<dyn Casper + Send + Sync + 'static>,
+    ) -> Result<CasperSnapshot, CasperError> {
+        Err(CasperError::BlockNotHeld(
+            models::rust::block_hash::BlockHash::from(b"below-my-anchor".to_vec()),
+        ))
+    }
+}
+
 pub struct AlwaysNotActiveChecker;
 impl ActiveValidatorChecker for AlwaysNotActiveChecker {
     fn check_active_validator(
@@ -273,6 +286,79 @@ async fn proposer_should_reject_to_propose_if_proposer_is_not_active_validator()
                 assert!(block_message_opt.is_none());
             }
             Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+    })
+    .await
+}
+
+/// Building the snapshot walks the same history the floor does, so a node whose
+/// history is cut short fails there before any propose constraint is consulted —
+/// the constraint that would have stopped it lives *inside* the snapshot it
+/// cannot build. Left as an error, every propose attempt re-runs the whole
+/// failing walk: one wedged joiner did this 4,563 times in an hour, pinning a
+/// core. Not being able to build a snapshot is a reason not to propose, so it
+/// must read as one.
+#[tokio::test]
+async fn proposer_should_reject_to_propose_if_its_history_is_incomplete() {
+    with_storage(|block_store, block_dag_storage| async move {
+        let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
+        let validator_identity = Arc::new(dummy_validator_identity());
+
+        let mut proposer = Proposer::new(
+            validator_identity,
+            None,
+            HistoryIncompleteSnapshotProvider,
+            AlwaysActiveChecker,
+            OkProposeConstraintStakeChecker,
+            OkHeightChecker,
+            TestBlockCreator,
+            TestBlockValidator,
+            TestProposeEffectHandler,
+            false,
+        );
+
+        use std::collections::HashMap;
+
+        use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+
+        let dag_representation = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let casper = Arc::new(NoOpsCasperEffect::new(
+            Some(HashMap::new()),
+            None,
+            Arc::new(runtime_manager),
+            block_store,
+            dag_representation,
+        ));
+
+        match proposer.propose(casper, ProposeRequestKind::Manual).await {
+            Ok(ProposeReturnType {
+                propose_result,
+                propose_result_to_send: _,
+                block_message_opt,
+            }) => {
+                use casper::rust::blocks::proposer::propose_result::{
+                    CheckProposeConstraintsFailure, ProposeFailure, ProposeStatus,
+                };
+
+                assert!(
+                    matches!(
+                        propose_result.propose_status,
+                        ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
+                            CheckProposeConstraintsFailure::HistoryIncomplete
+                        ))
+                    ),
+                    "a node that cannot build a snapshot must decline to propose, not error; \
+                     got {:?}",
+                    propose_result.propose_status
+                );
+                assert!(block_message_opt.is_none());
+            }
+            Err(e) => panic!(
+                "incomplete history must not surface as a propose error: {:?}",
+                e
+            ),
         }
     })
     .await

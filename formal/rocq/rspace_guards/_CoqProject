@@ -1,0 +1,27 @@
+# RSpace check_commit Guard Parity — Formal Verification
+#
+# Mechanizes CLAIM-RSPACE-001 (docs/claims/rspace-check-commit-play-replay.md):
+# the cross-channel `where`-guard veto (Match::check_commit) is consulted on
+# every COMM-forming play path, replay of a play event log reproduces the
+# identical COMM sequence, and the replay consume path's missing guard
+# evaluation (deviation D2) is exactly substituted by the log gate.
+#
+# Source: f1r3node-rust/rspace++/src/rspace/rspace/{ops_consume,ops_produce,
+#         ops_install}.rs, space_matcher.rs, match.rs, replay_rspace.rs,
+#         and rholang/src/rust/interpreter/matcher/match.rs (guard_passes).
+# Companion claim: docs/claims/rspace-check-commit-play-replay.md
+#
+# 2 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
+# Section Variables (Data, Guard, guard_eval) become premises of the closed
+# capstone terms — "Rocq assumes what Rust enforces": guard purity and
+# receive-bind-order agreement are the seam premises.
+#
+# Module dependency graph (→ = "depends on"):
+#
+#   GuardParity   (standalone: model + all theorems)
+#   MainTheorem   → GuardParity (closed capstone aliases)
+
+-Q theories RSpaceGuards
+
+theories/GuardParity.v
+theories/MainTheorem.v

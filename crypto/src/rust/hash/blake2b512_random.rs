@@ -499,6 +499,111 @@ mod tests {
     }
 
     #[test]
+    fn blake2b512_random_should_create_from_length() {
+        let mut rand = Blake2b512Random::create_from_length(32);
+        let res1 = rand.next();
+        let res2 = rand.next();
+        assert_eq!(res1.len(), 32);
+        assert_eq!(res2.len(), 32);
+        assert_ne!(res1, res2);
+    }
+
+    #[test]
+    fn blake2b512_random_create_should_handle_multi_block_input() {
+        let long_input: Vec<u8> = (0..300u16).map(|i| (i % 251) as u8).collect();
+        let mut a = Blake2b512Random::create_from_bytes(&long_input);
+        let mut b = Blake2b512Random::create_from_bytes(&long_input);
+        assert_eq!(a.next(), b.next());
+
+        let mut truncated = Blake2b512Random::create_from_bytes(&long_input[..299]);
+        let mut full = Blake2b512Random::create_from_bytes(&long_input);
+        assert_ne!(full.next(), truncated.next());
+    }
+
+    #[test]
+    fn blake2b512_random_create_should_handle_exact_block_multiple() {
+        let input = vec![7u8; 256];
+        let mut a = Blake2b512Random::create_from_bytes(&input);
+        let mut b = Blake2b512Random::create_from_bytes(&input);
+        assert_eq!(a.next(), b.next());
+    }
+
+    #[test]
+    fn blake2b512_random_split_bytes_should_diverge_by_index() {
+        let base = Blake2b512Random::create_from_bytes(b"seed");
+        let mut split0 = base.split_byte(0);
+        let mut split1 = base.split_byte(1);
+        let mut split0_again = base.split_byte(0);
+
+        let res0 = split0.next();
+        assert_ne!(res0, split1.next());
+        assert_eq!(res0, split0_again.next());
+    }
+
+    #[test]
+    fn blake2b512_random_deep_split_chain_should_be_deterministic() {
+        fn chain() -> Blake2b512Random {
+            let mut rand = Blake2b512Random::create_from_bytes(b"deep");
+            for i in 0..130 {
+                rand = rand.split_byte((i % 127) as i8);
+            }
+            rand
+        }
+        let mut a = chain();
+        let mut b = chain();
+        assert_eq!(a.next(), b.next());
+
+        let mut shallower = Blake2b512Random::create_from_bytes(b"deep").split_byte(0);
+        assert_ne!(chain().next(), shallower.next());
+    }
+
+    #[test]
+    fn blake2b512_random_merge_should_handle_three_children() {
+        let base = Blake2b512Random::create_from_bytes(&[]);
+        let children = || vec![base.split_byte(0), base.split_byte(1), base.split_byte(2)];
+        let mut merged_a = Blake2b512Random::merge(children());
+        let mut merged_b = Blake2b512Random::merge(children());
+        assert_eq!(merged_a.next(), merged_b.next());
+
+        let mut merged_two = Blake2b512Random::merge(vec![base.split_byte(0), base.split_byte(1)]);
+        let mut merged_three = Blake2b512Random::merge(children());
+        assert_ne!(merged_three.next(), merged_two.next());
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 2 inputs")]
+    fn blake2b512_random_merge_should_reject_single_child() {
+        Blake2b512Random::merge(vec![Blake2b512Random::create_from_bytes(&[])]);
+    }
+
+    #[test]
+    fn blake2b512_random_from_bytes_should_fall_back_to_default_on_truncated_input() {
+        let full_bytes = Blake2b512Random::create_from_bytes(b"round trip").to_bytes();
+        let default = Blake2b512Random::create_from_bytes(&[]);
+
+        assert_eq!(Blake2b512Random::from_bytes(&[]), default);
+        for truncate_at in [1, 79, 82, 90, 220, 300, full_bytes.len() - 1] {
+            let truncated = &full_bytes[..truncate_at.min(full_bytes.len() - 1)];
+            assert_eq!(Blake2b512Random::from_bytes(truncated), default);
+        }
+
+        assert_eq!(
+            Blake2b512Random::from_bytes(&full_bytes),
+            Blake2b512Random::create_from_bytes(b"round trip")
+        );
+    }
+
+    #[test]
+    fn blake2b512_random_serde_should_encode_as_unit_and_decode_as_default() {
+        let rand = Blake2b512Random::create_from_bytes(b"whatever");
+        let encoded = bincode::serialize(&rand).unwrap();
+        assert!(encoded.is_empty());
+
+        let decoded: Blake2b512Random = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded, Blake2b512Random::create_from_bytes(&[1]));
+    }
+
+    #[test]
     fn blake2b512_random_should_be_able_to_go_into_and_out_of_bytes() {
         let mut split_rand_result = Blake2b512Random::create_from_bytes(&[]).split_byte(3);
         split_rand_result.next();

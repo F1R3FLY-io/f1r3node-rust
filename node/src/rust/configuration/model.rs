@@ -128,6 +128,9 @@ pub struct PeersDiscovery {
     #[serde(rename = "heartbeat-batch-size")]
     pub heartbeat_batch_size: u32,
 
+    #[serde(rename = "heartbeat-failure-threshold")]
+    pub heartbeat_failure_threshold: u32,
+
     #[serde(rename = "init-wait-loop-interval", deserialize_with = "de_duration")]
     pub init_wait_loop_interval: Duration,
 }
@@ -157,6 +160,16 @@ pub struct ApiServer {
 
     #[serde(rename = "enable-reporting")]
     pub enable_reporting: bool,
+
+    #[serde(rename = "exploratory-deploy-max-concurrent")]
+    pub exploratory_deploy_max_concurrent: usize,
+    #[serde(rename = "exploratory-deploy-phlo-limit")]
+    pub exploratory_deploy_phlo_limit: i64,
+    #[serde(
+        rename = "exploratory-deploy-execution-timeout",
+        deserialize_with = "de_duration"
+    )]
+    pub exploratory_deploy_execution_timeout: Duration,
 
     #[serde(rename = "keep-alive-time", deserialize_with = "de_duration")]
     pub keep_alive_time: Duration,

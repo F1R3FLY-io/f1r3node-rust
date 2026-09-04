@@ -85,6 +85,81 @@ fn slash_evidence(state: &Mutex<ReplicaState>) -> Option<(usize, usize)> {
     state.lock().unwrap().evidence
 }
 
+fn set_authority_generation(state: &Mutex<ReplicaState>, generation: usize) {
+    let mut state = state.lock().unwrap();
+    state.authority_generation = generation;
+    state.evidence = evidence_at_authority(&state);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BondPhase {
+    Bonded,
+    PendingWithdraw,
+    Withdrawing,
+    Withdrawn,
+    Quarantined,
+}
+
+struct GenerationLifecycle {
+    generation: usize,
+    bonded: bool,
+    phase: BondPhase,
+    slashed: [bool; 2],
+}
+
+fn transition_phase(
+    lifecycle: &Mutex<GenerationLifecycle>,
+    expected: BondPhase,
+    next: BondPhase,
+) -> bool {
+    let mut lifecycle = lifecycle.lock().unwrap();
+    if lifecycle.phase != expected {
+        return false;
+    }
+    lifecycle.phase = next;
+    if next == BondPhase::Withdrawn {
+        lifecycle.bonded = false;
+    }
+    true
+}
+
+fn withdraw_and_rebond(lifecycle: &Mutex<GenerationLifecycle>) {
+    if !transition_phase(lifecycle, BondPhase::Bonded, BondPhase::PendingWithdraw) {
+        return;
+    }
+    if !transition_phase(
+        lifecycle,
+        BondPhase::PendingWithdraw,
+        BondPhase::Withdrawing,
+    ) {
+        return;
+    }
+    if !transition_phase(lifecycle, BondPhase::Withdrawing, BondPhase::Withdrawn) {
+        return;
+    }
+    let mut lifecycle = lifecycle.lock().unwrap();
+    if lifecycle.phase == BondPhase::Withdrawn {
+        lifecycle.generation += 1;
+        lifecycle.bonded = true;
+        lifecycle.phase = BondPhase::Bonded;
+    }
+}
+
+fn slash_generation(lifecycle: &Mutex<GenerationLifecycle>, generation: usize) {
+    let mut lifecycle = lifecycle.lock().unwrap();
+    if lifecycle.bonded
+        && lifecycle.generation == generation
+        && matches!(
+            lifecycle.phase,
+            BondPhase::Bonded | BondPhase::PendingWithdraw | BondPhase::Withdrawing
+        )
+    {
+        lifecycle.slashed[generation] = true;
+        lifecycle.bonded = false;
+        lifecycle.phase = BondPhase::Quarantined;
+    }
+}
+
 #[test]
 fn parallel_sibling_insertion_discovers_one_canonical_pair() {
     loom::model(|| {
@@ -256,5 +331,75 @@ fn structural_collision_suppresses_only_the_matching_unary_key() {
         assert_eq!(state.evidence, None);
         assert!(!unary_authorized(&state, 1));
         assert!(unary_authorized(&state, 2));
+    });
+}
+
+#[test]
+fn authority_generation_change_recomputes_the_complete_canonical_pair() {
+    loom::model(|| {
+        let state = Arc::new(Mutex::new(ReplicaState {
+            generations: [0, 0, 1, 1],
+            sequences: [7, 7, 7, 7],
+            ..ReplicaState::default()
+        }));
+        let evidence_stream = {
+            let state = state.clone();
+            thread::spawn(move || {
+                insert(&state, 0, false);
+                insert(&state, 1, false);
+                insert(&state, 2, false);
+                insert(&state, 3, false);
+            })
+        };
+        let rebond = {
+            let state = state.clone();
+            thread::spawn(move || set_authority_generation(&state, 1))
+        };
+        evidence_stream.join().unwrap();
+        rebond.join().unwrap();
+
+        let state = state.lock().unwrap();
+        assert_eq!(state.authority_generation, 1);
+        assert_eq!(state.evidence, Some((2, 3)));
+        assert!(pair_authorized(&state, state.evidence));
+    });
+}
+
+#[test]
+fn concurrent_slash_and_rebond_never_create_future_slash_history() {
+    loom::model(|| {
+        let lifecycle = Arc::new(Mutex::new(GenerationLifecycle {
+            generation: 0,
+            bonded: true,
+            phase: BondPhase::Bonded,
+            slashed: [false; 2],
+        }));
+        let slash_zero = {
+            let lifecycle = lifecycle.clone();
+            thread::spawn(move || slash_generation(&lifecycle, 0))
+        };
+        let rebond = {
+            let lifecycle = lifecycle.clone();
+            thread::spawn(move || withdraw_and_rebond(&lifecycle))
+        };
+        let slash_one = {
+            let lifecycle = lifecycle.clone();
+            thread::spawn(move || slash_generation(&lifecycle, 1))
+        };
+        slash_zero.join().unwrap();
+        rebond.join().unwrap();
+        slash_one.join().unwrap();
+
+        let lifecycle = lifecycle.lock().unwrap();
+        for generation in 0..lifecycle.slashed.len() {
+            if lifecycle.slashed[generation] {
+                assert!(generation <= lifecycle.generation);
+            }
+        }
+        assert!(lifecycle.slashed.iter().filter(|slashed| **slashed).count() <= 1);
+        if lifecycle.slashed[lifecycle.generation] {
+            assert_eq!(lifecycle.phase, BondPhase::Quarantined);
+            assert!(!lifecycle.bonded);
+        }
     });
 }

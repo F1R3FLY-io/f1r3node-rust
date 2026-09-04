@@ -13,7 +13,7 @@
  8.  | 4,         | registry           | uri = rho:id:hxyadh1ffypra47ry9mk6b8r1i33ar1w9wjsez4khfe9huzrfcytx9
  ----+------------+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------
  */
-new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`), uriOut in {
+new  NonNegativeNumber, MergeableTag(`rho:system:integerAddMergeableTag`), rs(`rho:registry:insertSigned:secp256k1`), uriOut in {
   contract NonNegativeNumber(@init, return) = {
     new this, valueStore in {
       contract this(@"add", @x, success) = {

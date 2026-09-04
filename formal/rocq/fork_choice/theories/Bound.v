@@ -20,11 +20,16 @@
      * `cast_usize_safe`     - the two unlimited sentinels take ALL; a positive
                                cap truncates (the B2 cast-safety, no wraparound);
      * `empty_tips_typed_err`- capping [] yields [] and flags the P2-8 error.
-     * `configured_parent_capacity_prevents_frontier_truncation` - capacity for
-                               active validators plus one floor backstop carries
-                               every live proposal-parent frontier;
-     * `undersized_parent_capacity_has_a_blocked_frontier_witness` - every
-                               smaller cap admits a liveness-blocking frontier.
+     * `configured_parent_capacity_prevents_frontier_truncation` - the
+                               maximum active-validator count plus one is a
+                               sufficient worst-case provisioning bound;
+     * `exact_frontier_admission_some_iff_fits` - runtime admission returns the
+                               exact frontier iff its actual cardinality fits;
+     * `exact_frontier_admission_none_iff_over_cap` - an actual over-cap
+                               frontier is deferred, never truncated;
+     * `underprovisioned_worst_case_can_fit_actual_frontier` - a cap below the
+                               configured worst case can still admit a compacted
+                               live frontier.
 
    ---------------------------------------------------------------------------
    Spec-to-Code Traceability
@@ -103,6 +108,50 @@ Definition parent_frontier_capacity_valid
   (max_active_validators max_parents : nat) : Prop :=
   S max_active_validators <= max_parents.
 
+Definition actual_frontier_fits {A : Type}
+  (max_parents : nat) (parents : list A) : Prop :=
+  length parents <= max_parents.
+
+Definition admit_exact_frontier {A : Type}
+  (max_parents : nat) (parents : list A) : option (list A) :=
+  if length parents <=? max_parents then Some parents else None.
+
+Theorem finite_cap_preserves_exact_frontier_iff_fits :
+  forall (A : Type) max_parents (parents : list A),
+    firstn max_parents parents = parents <->
+    actual_frontier_fits max_parents parents.
+Proof.
+  intros A max_parents parents. split.
+  - intro Heq. unfold actual_frontier_fits.
+    apply (f_equal (@length A)) in Heq.
+    rewrite length_firstn in Heq. lia.
+  - intro Hfits. unfold actual_frontier_fits in Hfits.
+    apply firstn_all2. exact Hfits.
+Qed.
+
+Theorem exact_frontier_admission_some_iff_fits :
+  forall (A : Type) max_parents (parents : list A),
+    admit_exact_frontier max_parents parents = Some parents <->
+    actual_frontier_fits max_parents parents.
+Proof.
+  intros A max_parents parents.
+  unfold admit_exact_frontier, actual_frontier_fits.
+  destruct (length parents <=? max_parents) eqn:Hfits.
+  - apply Nat.leb_le in Hfits. split; auto.
+  - apply Nat.leb_gt in Hfits. split; [discriminate | lia].
+Qed.
+
+Theorem exact_frontier_admission_none_iff_over_cap :
+  forall (A : Type) max_parents (parents : list A),
+    admit_exact_frontier max_parents parents = None <->
+    max_parents < length parents.
+Proof.
+  intros A max_parents parents. unfold admit_exact_frontier.
+  destruct (length parents <=? max_parents) eqn:Hfits.
+  - apply Nat.leb_le in Hfits. split; [discriminate | lia].
+  - apply Nat.leb_gt in Hfits. split; auto.
+Qed.
+
 Theorem configured_parent_capacity_prevents_frontier_truncation :
   forall (A : Type) max_active_validators max_parents (parents : list A),
     length parents <= S max_active_validators ->
@@ -122,6 +171,20 @@ Proof.
   intros max_active_validators max_parents Hsmall.
   exists (S max_active_validators). split; lia.
 Qed.
+
+Theorem underprovisioned_worst_case_can_fit_actual_frontier :
+  forall max_active_validators max_parents,
+    1 <= max_parents ->
+    max_parents < S max_active_validators ->
+    actual_frontier_fits max_parents [0].
+Proof.
+  intros max_active_validators max_parents Hpositive _.
+  unfold actual_frontier_fits. simpl. lia.
+Qed.
+
+Print Assumptions exact_frontier_admission_some_iff_fits.
+Print Assumptions exact_frontier_admission_none_iff_over_cap.
+Print Assumptions underprovisioned_worst_case_can_fit_actual_frontier.
 
 (* ===========================================================================
    The composition with Rank: the ghost main parent computed by the fork-choice

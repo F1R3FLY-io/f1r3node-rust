@@ -8,6 +8,7 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::errors::CasperError;
 use comm::rust::peer_node::PeerNode;
 use models::rust::casper::protocol::casper_message::CasperMessage;
+use proptest::prelude::*;
 use tokio::sync::Barrier;
 use tokio::time::sleep;
 
@@ -107,6 +108,69 @@ async fn test_init_creates_engine_cell_with_noop_engine() {
     // Verify it's a functioning engine (should not panic or error)
     let result = engine.init().await;
     assert!(result.is_ok(), "Noop engine init should succeed");
+}
+
+#[tokio::test]
+async fn startup_failure_is_observable_after_subscription() {
+    let engine_cell = EngineCell::init();
+    let mut failure_rx = engine_cell.subscribe_startup_failure();
+    let expected = CasperError::RuntimeError("metadata mismatch".to_string());
+
+    assert!(engine_cell.report_startup_failure(expected.clone()));
+    failure_rx.changed().await.expect("startup failure signal");
+    assert_eq!(failure_rx.borrow().as_ref(), Some(&expected));
+}
+
+#[tokio::test]
+async fn startup_failure_signal_is_first_wins_under_concurrency() {
+    const REPORTERS: usize = 32;
+
+    let engine_cell = EngineCell::init();
+    let mut failure_rx = engine_cell.subscribe_startup_failure();
+    let barrier = Arc::new(Barrier::new(REPORTERS));
+    let mut reporters = Vec::with_capacity(REPORTERS);
+
+    for reporter in 0..REPORTERS {
+        let engine_cell = engine_cell.clone();
+        let barrier = barrier.clone();
+        reporters.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let error = CasperError::RuntimeError(format!("failure-{reporter}"));
+            (error.clone(), engine_cell.report_startup_failure(error))
+        }));
+    }
+
+    let results = futures::future::join_all(reporters).await;
+    failure_rx.changed().await.expect("startup failure signal");
+
+    let winners = results
+        .into_iter()
+        .map(|result| result.expect("startup failure reporter"))
+        .filter(|(_, won)| *won)
+        .map(|(error, _)| error)
+        .collect::<Vec<_>>();
+
+    assert_eq!(winners.len(), 1);
+    assert_eq!(failure_rx.borrow().as_ref(), winners.first());
+}
+
+proptest! {
+    #[test]
+    fn startup_failure_signal_preserves_the_first_arbitrary_report(
+        reports in prop::collection::vec(any::<u16>(), 1..128),
+    ) {
+        let engine_cell = EngineCell::init();
+        let failure_rx = engine_cell.subscribe_startup_failure();
+        let expected = CasperError::RuntimeError(format!("failure-{}", reports[0]));
+
+        for (index, report) in reports.into_iter().enumerate() {
+            let error = CasperError::RuntimeError(format!("failure-{report}"));
+            prop_assert_eq!(engine_cell.report_startup_failure(error), index == 0);
+        }
+
+        let observed = failure_rx.borrow();
+        prop_assert_eq!(observed.as_ref(), Some(&expected));
+    }
 }
 
 #[tokio::test]

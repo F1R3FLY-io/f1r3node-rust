@@ -1,0 +1,21 @@
+{
+  "spec": "CertifiedRejectionDependency",
+  "schedule": [
+    { "action": "PublishInvalidIndex" },
+    { "action": "RedeliverDependency" },
+    { "action": "CertifyNonSlashableRejection" },
+    { "action": "RedeliverDependency" },
+    { "action": "ResolveChild" }
+  ],
+  "expected_rejection": {
+    "dependency_state": "Rejected",
+    "dependency_buffered": false,
+    "dependency_certified": true,
+    "invalid_index": true,
+    "slash_evidence": false,
+    "child_state": "Rejected",
+    "child_buffered": false,
+    "request_pending": false,
+    "deliveries": 3
+  }
+}

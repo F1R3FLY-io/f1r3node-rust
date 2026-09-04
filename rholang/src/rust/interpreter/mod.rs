@@ -9,6 +9,7 @@ pub mod chromadb_service;
 pub mod compiler;
 pub mod contract_call;
 pub mod deploy_parameters;
+pub mod deterministic_reduction;
 pub mod dispatch;
 pub mod env;
 pub mod errors;

@@ -64,11 +64,12 @@ impl COMM {
         //     (p_cloned.channel_hash, p_cloned.hash, p.persistent)
         // });
 
+        let times_repeated = produce_counters(&produce_refs);
         COMM {
             consume: consume_ref,
-            produces: produce_refs.clone(),
+            produces: produce_refs,
             peeks,
-            times_repeated: produce_counters(&produce_refs),
+            times_repeated,
         }
     }
 

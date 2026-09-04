@@ -1,0 +1,112 @@
+ctmc
+
+const int W0;
+const int W1;
+const int W2;
+const int W3;
+const int FTT_NUM;
+const int FTT_DEN;
+const int INITIAL_V0;
+const int INITIAL_V1;
+const int INITIAL_V2;
+const int INITIAL_V3;
+const double HORIZON_HOURS;
+const double V0_FAILURE_RATE;
+const double V1_FAILURE_RATE;
+const double V2_FAILURE_RATE;
+const double V3_FAILURE_RATE;
+const double REPAIR_RATE;
+const double RESTART_RATE;
+const double CATCHUP_RATE;
+const double REPLAY_RATE;
+const double HOST_A_FAILURE_RATE;
+const double HOST_A_REPAIR_RATE;
+const double HOST_B_FAILURE_RATE;
+const double HOST_B_REPAIR_RATE;
+const double STORAGE_A_FAILURE_RATE;
+const double STORAGE_A_REPAIR_RATE;
+const double STORAGE_B_FAILURE_RATE;
+const double STORAGE_B_REPAIR_RATE;
+const double PARTITION_A_RATE;
+const double PARTITION_B_RATE;
+const double PARTITION_REPAIR_RATE;
+const double SOFTWARE_FAILURE_RATE;
+const double SOFTWARE_REPAIR_RATE;
+const double OBSERVATION_RATE;
+
+formula total_weight = W0 + W1 + W2 + W3;
+formula host_a_visible = !host_a_down & storage_a_writable & partition != 1;
+formula host_b_visible = !host_b_down & storage_b_writable & partition != 2;
+formula eligible_weight =
+  ((v0 = 4 & host_a_visible) ? W0 : 0) +
+  ((v1 = 4 & host_a_visible) ? W1 : 0) +
+  ((v2 = 4 & host_b_visible) ? W2 : 0) +
+  ((v3 = 4 & host_b_visible) ? W3 : 0);
+formula strict_ft = 2 * eligible_weight * FTT_DEN > total_weight * (FTT_DEN + FTT_NUM);
+formula hard_majority = 2 * eligible_weight > total_weight;
+formula quorum_ready = strict_ft & hard_majority & !software_down;
+
+module topology
+  v0 : [0..4] init INITIAL_V0;
+  v1 : [0..4] init INITIAL_V1;
+  v2 : [0..4] init INITIAL_V2;
+  v3 : [0..4] init INITIAL_V3;
+  host_a_down : bool init false;
+  host_b_down : bool init false;
+  storage_a_writable : bool init true;
+  storage_b_writable : bool init true;
+  partition : [0..2] init 0;
+  software_down : bool init false;
+  observation_phase : bool init false;
+
+  [] v0 > 0 -> V0_FAILURE_RATE : (v0' = 0);
+  [] v1 > 0 -> V1_FAILURE_RATE : (v1' = 0);
+  [] v2 > 0 -> V2_FAILURE_RATE : (v2' = 0);
+  [] v3 > 0 -> V3_FAILURE_RATE : (v3' = 0);
+  [] v0 = 0 -> REPAIR_RATE : (v0' = 1);
+  [] v1 = 0 -> REPAIR_RATE : (v1' = 1);
+  [] v2 = 0 -> REPAIR_RATE : (v2' = 1);
+  [] v3 = 0 -> REPAIR_RATE : (v3' = 1);
+  [] v0 = 1 -> RESTART_RATE : (v0' = 2);
+  [] v1 = 1 -> RESTART_RATE : (v1' = 2);
+  [] v2 = 1 -> RESTART_RATE : (v2' = 2);
+  [] v3 = 1 -> RESTART_RATE : (v3' = 2);
+  [] v0 = 2 -> CATCHUP_RATE : (v0' = 3);
+  [] v1 = 2 -> CATCHUP_RATE : (v1' = 3);
+  [] v2 = 2 -> CATCHUP_RATE : (v2' = 3);
+  [] v3 = 2 -> CATCHUP_RATE : (v3' = 3);
+  [] v0 = 3 -> REPLAY_RATE : (v0' = 4);
+  [] v1 = 3 -> REPLAY_RATE : (v1' = 4);
+  [] v2 = 3 -> REPLAY_RATE : (v2' = 4);
+  [] v3 = 3 -> REPLAY_RATE : (v3' = 4);
+  [] !host_a_down -> HOST_A_FAILURE_RATE : (host_a_down' = true);
+  [] host_a_down -> HOST_A_REPAIR_RATE : (host_a_down' = false);
+  [] !host_b_down -> HOST_B_FAILURE_RATE : (host_b_down' = true);
+  [] host_b_down -> HOST_B_REPAIR_RATE : (host_b_down' = false);
+  [] storage_a_writable -> STORAGE_A_FAILURE_RATE : (storage_a_writable' = false);
+  [] !storage_a_writable -> STORAGE_A_REPAIR_RATE : (storage_a_writable' = true);
+  [] storage_b_writable -> STORAGE_B_FAILURE_RATE : (storage_b_writable' = false);
+  [] !storage_b_writable -> STORAGE_B_REPAIR_RATE : (storage_b_writable' = true);
+  [] partition = 0 -> PARTITION_A_RATE : (partition' = 1);
+  [] partition = 0 -> PARTITION_B_RATE : (partition' = 2);
+  [] partition != 0 -> PARTITION_REPAIR_RATE : (partition' = 0);
+  [] !software_down -> SOFTWARE_FAILURE_RATE : (software_down' = true);
+  [] software_down -> SOFTWARE_REPAIR_RATE : (software_down' = false);
+  [] true -> OBSERVATION_RATE : (observation_phase' = !observation_phase);
+endmodule
+
+label "service_up" = quorum_ready;
+label "service_down" = !quorum_ready;
+label "weighted_quorum_lost" = !strict_ft | !hard_majority;
+label "host_failure" = host_a_down | host_b_down;
+label "storage_failure" = !storage_a_writable | !storage_b_writable;
+label "network_partition" = partition != 0;
+label "software_failure" = software_down;
+label "validator_recovering" = v0 < 4 | v1 < 4 | v2 < 4 | v3 < 4;
+
+rewards "up_hours"
+  quorum_ready : 1;
+endrewards
+rewards "down_hours"
+  !quorum_ready : 1;
+endrewards

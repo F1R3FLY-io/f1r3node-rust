@@ -1,5 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntime.scala
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -34,6 +35,7 @@ use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
 use super::accounting::{BillableTokenEvent, RuntimeBudget};
+use super::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -48,6 +50,7 @@ use super::system_processes::{
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::grpc_client_service::GrpcClientService;
+use crate::rust::interpreter::merging::mergeable_tags::mergeable_tag_uri_bindings;
 use crate::rust::interpreter::metrics_constants::{
     CREATE_CHECKPOINT_TIME_METRIC, CREATE_SOFT_CHECKPOINT_TIME_METRIC, EVALUATE_TIME_METRIC,
     RUNTIME_CHECKPOINT_TOTAL_METRIC, RUNTIME_METRICS_SOURCE,
@@ -1901,6 +1904,7 @@ async fn setup_reducer(
     fs_handles: super::io::handle_table::FileHandleTable,
     fs_mode: super::io::ConsensusMode,
     cost: RuntimeBudget,
+    reduction_coordinator: ReductionCoordinator,
 ) -> Arc<DebruijnInterpreter> {
     rspace.set_accounting_observer(Some(Arc::new(RhoCommObserver {
         budget: cost.clone(),
@@ -1961,6 +1965,10 @@ async fn setup_reducer(
         substitute: Substitute { metering },
         // Slice 31: default ON — genesis path toggles off per-batch.
         filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        single_term_evaluations: Arc::new(AtomicU64::new(0)),
+        yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
+        spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+        reduction_coordinator,
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -2051,31 +2059,34 @@ where
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
-    // Expose the bitmask-OR mergeable tag to system contracts (Registry.rho)
-    // via a URI binding. Genesis-defined tags are unforgeable names; they must
-    // be created at runtime startup and threaded into both the merge engine's
-    // tag registry and the URN map so contracts can bind them via
-    // `bootstrapName(`rho:system:...`)`.
-    for (tag_par, merge_type) in mergeable_tags.iter() {
-        if let MergeType::BitmaskOr = merge_type {
-            tracing::info!(
-                target: "f1r3fly.merge.tag_check.validation",
-                "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
-                tag_par.unforgeables.len(),
-                tag_par.exprs.len(),
-                tag_par.bundles.len(),
-            );
-            urn_map.insert(
-                "rho:system:bitmaskMergeableTag".to_string(),
-                tag_par.clone(),
-            );
-        }
+    let tag_uri_bindings = mergeable_tag_uri_bindings(&mergeable_tags)
+        .unwrap_or_else(|uri| panic!("duplicate mergeable tag URI: {uri}"));
+    for (uri, tag_par) in tag_uri_bindings {
+        let merge_type = mergeable_tags
+            .get(&tag_par)
+            .expect("mergeable URI binding references configured tag");
+        let previous = urn_map.insert(uri.to_string(), tag_par.clone());
+        assert!(previous.is_none(), "duplicate mergeable tag URI: {uri}");
+        tracing::info!(
+            target: "f1r3fly.merge.tag_check.validation",
+            uri,
+            merge_type = ?merge_type,
+            unforgeables = tag_par.unforgeables.len(),
+            exprs = tag_par.exprs.len(),
+            bundles = tag_par.bundles.len(),
+            "Mergeable tag URI binding inserted"
+        );
     }
 
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
 
     let raw_rspace: RhoISpace = Arc::new(Box::new(rspace));
+    let reduction_coordinator = ReductionCoordinator::default();
+    let scheduled_rspace: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
+        raw_rspace,
+        reduction_coordinator.clone(),
+    )));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
@@ -2098,7 +2109,7 @@ where
     let fs_mode = super::io::ConsensusMode::default();
 
     let reducer = setup_reducer(
-        raw_rspace,
+        scheduled_rspace,
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),
@@ -2113,6 +2124,7 @@ where
         fs_handles.clone(),
         fs_mode,
         cost,
+        reduction_coordinator,
     )
     .await;
 

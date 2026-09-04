@@ -9,14 +9,14 @@ delegate spending without revealing a wallet key, which cryptographic values
 bind each transition, and how Casper validators turn the result into consensus.
 
 The normative semantic sources are
-[*Cost-Accounted Rho Calculus*](../../../publications/cost-accounting/cost-accounted-rho.tex)
+[*Cost-Accounted Rho Calculus*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex)
 and
-[*Continued Interactive GSLTs and the Cost Endofunctor*](../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
+[*Continued Interactive GSLTs and the Cost Endofunctor*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
 The production implementation refines their RevVault, wallet, purse, located
 stack, and phlogiston roles onto F1R3node's existing `SystemVault`, RSpace, and
 Casper architecture. It does not introduce a second token or ledger.
 
-![A sponsor funds authenticated outer and continuation purses, a gateway activates the retained lollipop capability, validators certify and settle each lane independently, and replay reproduces the same roots.](../theory/diagrams/d2-9-funding-flow-sequence.svg)
+![A sponsor funds authenticated outer and continuation purses, a gateway activates the retained lollipop capability, validators certify and settle each lane independently, and replay reproduces the same roots.](../casper/theory/diagrams/d2-9-funding-flow-sequence.svg)
 
 ## Actors, assets, and authority
 
@@ -85,38 +85,46 @@ The important cryptographic representations are:
 
 ### Deploy signatures and cosigned envelopes
 
-The client deterministically serializes `DeployDataProto`, including authority
-presentations, and signs the algorithm-specific message hash. Production deploy
-algorithms are `secp256k1` and `secp256k1:eth`; Schnorr and FROST are available
-only when the experimental feature is compiled. Ed25519 deploy signing is
-disabled.
+Protocol-v6.1 clients construct a canonical intent, authorization policy, and
+selected-member bitmap, then commit them into a 32-byte `DeployIdV6`. Each
+selected principal signs a scheme-separated message containing that identity.
+See [Protocol-v6.1 deploy identity and authority](../casper/theory/cost-accounting-impl/deploy-envelope-v6-1.md)
+for the exact bytes and validation algorithm.
+
+Production deploy algorithms are `secp256k1` and `secp256k1:eth`. Schnorr,
+FROST, and Ed25519 have allocated wire identifiers but are consensus-inactive;
+compiling an experimental feature cannot activate them.
 
 For a cosigned deploy, the node:
 
-1. orders signers by raw public-key bytes;
-2. rejects duplicate public keys;
-3. verifies every non-placeholder signature over the same canonical deploy
-message;
-4. checks an explicit threshold when the envelope is $`M`$-of-$`N`$; and
-5. derives funding authority only from signers whose signatures were present
-   and verified.
+1. canonicalizes each `(scheme, public key)` principal and orders principals by
+   their encoded bytes;
+2. rejects duplicate principals and duplicate underlying ground authorities;
+3. binds the complete policy and exact selected-member bitmap into
+   `DeployIdV6`;
+4. requires witnesses to correspond exactly to set bitmap bits and verifies
+   each witness under its declared active scheme;
+5. checks `AllOf` or an explicit $`M`$-of-$`N`$ threshold; and
+6. derives Rholang authority and RevVault funding only from selected verified
+   members.
 
 An empty threshold placeholder can describe the membership set but cannot make
 the corresponding wallet pay. This prevents an attacker from naming a victim's
 public key as an unsigned funding source.
 
-For `secp256k1`, the signing digest is Blake2b-256 of the canonical protobuf
-preimage and the signature uses DER-encoded ECDSA. For `secp256k1:eth`, the
-digest is Keccak-256 of the Ethereum length-prefixed canonical preimage and the
-wire signature is fixed-width $`r\mathbin\|s`$. The algorithm name is itself
-part of envelope interpretation, so validators do not guess between encodings.
-Experimental Schnorr and FROST variants use their own domain-separated hashes.
+For `secp256k1`, the signing digest is Blake2b-256 of the canonical v6.1
+signing preimage and the signature is strict minimal low-`s` DER. For
+`secp256k1:eth`, the digest is Keccak-256 after applying the Ethereum personal
+message prefix to the same domain-separated preimage, and the signature is the
+fixed-width low-`s` value $`r\mathbin\|s`$. Validators derive the algorithm
+from the policy member and never probe alternate encodings.
 
-The stable single-signer funding identity is `Ground(public_key)`, not the
-per-deploy wire signature. Consequently the same signer reaches the same purse
-across deployments. Multiple verified funders form a canonical left-associated
-compound authority; settlement retains the configured deterministic
-apportionment and never depends on arrival order.
+The stable funding identity is the selected principal's key-family ground
+authority, not the per-deploy signature. Consequently the same signer reaches
+the same purse across deployments, and native and Ethereum secp256k1 signing
+for the same key cannot double-count that purse. Multiple selected funders form
+one canonical compound authority; an unsigned policy member never contributes
+authority or funding.
 
 ### Vault-address derivation
 
@@ -142,18 +150,38 @@ authentication path.
 
 ### Reservation and certificate commitments
 
-State-bound admission derives a reservation identity with Blake2b-256 over a
-domain separator, the authenticated pre-state root, canonical program hash, and
-primary deploy signature:
+State-bound admission derives a reservation identity from the protocol-selected
+deployment identity. Protocol v6 has one formula for both prepared and
+provisional admission paths:
 
 ```text
 reservation_id := Blake2b256(
-    "f1r3node:vault-cost-reservation:v1" ||
+    "f1r3node:vault-cost-reservation:v2" ||
     pre_state_root ||
     program_hash ||
-    primary_signature
+    DeployIdV6
 )
 ```
+
+This binding prevents two threshold envelopes with the same empty member-zero
+witness from sharing a reservation. Replay independently canonicalizes the
+program and rejects a certificate unless its reservation matches the verified
+pre-state root, program hash, and `DeployIdV6` before any vault or RSpace
+mutation.
+
+Pre-v6 replay remains byte-compatible with both historical paths. Prepared
+reservations use the `v1` domain followed by the pre-state root, program hash,
+and primary signature. The older provisional path uses Blake2b-256 of the
+primary signature alone. These legacy forms are accepted only for legacy
+envelopes; neither is a valid protocol-v6 reservation.
+
+Fee authority is versioned by the same boundary. Legacy fee regions and event
+identities retain the primary-signature `v2` encoding. Protocol v6 derives a
+region scope with `f1r3node:cost-accounted-rho:deploy-scope:v1` and an event
+identity with `f1r3node:cost-accounted-rho:fee-event:v3`, each followed by the
+32-byte `DeployIdV6`. The private-name random-number generator (RNG) likewise uses
+`f1r3node:user-deploy-unforgeable:v6 || DeployIdV6`; legacy execution retains
+the original public-key-and-timestamp seed.
 
 Authority protocol version 8 derives the certificate identifier with a separate
 domain. The preimage commits to:
@@ -190,14 +218,18 @@ it neither proves that a wallet funded a process nor authorizes a vault debit.
 
 ### Unforgeable capabilities and linear ownership
 
-An Rholang `new` name is not a public-key or confidentiality secret. Its
-deterministic byte identity can be known to validators and can be predicted by
-the private-name preview API from a deployer identity and timestamp. Its
-unforgeability is a language/runtime property: Rholang source has no
-bytes-to-`GPrivate` constructor. A contract can publish its derived vault
-address while retaining the name as a first-class process value. Only code that
-receives that value through Rholang can derive the matching unforgeable auth key
-or enter the located authority region.
+An Rholang `new` name is not a public-key or confidentiality secret. Validators
+can know its deterministic byte identity. Rholang source has no
+bytes-to-`GPrivate` constructor.
+
+Protocol 6 binds the private-name stream to the complete authenticated deploy
+envelope. The legacy key-and-timestamp preview API therefore fails closed.
+A process can publish a capability in one deploy. A later deploy can use
+dependent data without a circular deployment identity.
+
+A contract can publish its derived vault address while it retains the name as
+a first-class process value. Only code that receives that value can use the
+corresponding authority.
 
 Consensus witnesses carry canonical authority structure so validators can
 replay event attribution. Seeing a serialized name identity in evidence is not
@@ -218,7 +250,7 @@ not permitted by the process design.
 
 ## Lifecycle overview
 
-![The runtime freezes one certificate-bound budget, charges every compute and byte event before mutation, atomically settles exact cost, and leaves later top-ups for later admissions.](../theory/diagrams/runtime-budget-lifecycle.svg)
+![The runtime freezes one certificate-bound budget, charges every compute and byte event before mutation, atomically settles exact cost, and leaves later top-ups for later admissions.](../casper/theory/diagrams/runtime-budget-lifecycle.svg)
 
 ### 1. Create or recover a wallet
 
@@ -397,8 +429,9 @@ merely because that sponsor deposited into it: the slot's unforgeable name, not
 the deposit history, controls debits. A refundable grant must install an
 explicit recovery branch before funding, retain the slot capability, authenticate
 the recovery authority, and keep recovery mutually exclusive with process
-consumption. The current `FundingSlotAPI` exposes installation, deposit, and
-gateway activation; it does not synthesize a sponsor-reclaim capability.
+consumption. The planned downstream `FundingSlotAPI` covers installation,
+deposit, and gateway activation. It does not synthesize a sponsor-reclaim
+capability. The downstream client integration remains pending.
 
 ## Minting, fees, and supply conservation
 
@@ -438,7 +471,8 @@ rescue an underfunded certificate, or serve as a hidden intermediate fee ledger.
 | Arithmetic or byte-schedule failure | Reject before the affected RSpace mutation |
 | Competing operations on one stack | Exactly one canonical physical allocation may consume each cell |
 | Top-up races with execution | Top-up conserves value but cannot expand the in-flight certificate |
-| Parser or reducer failure after earlier work | Restore the full deployment checkpoint and publish no final cost evidence |
+| Parser failure before execution | Restore the deployment checkpoint. Publish no cost witness. |
+| Reducer failure after earlier work | Restore user state and linear custody. Retain attempted compute and byte costs in the final witness. |
 | Missing replay history | Treat as a local recoverable fault, not peer misbehavior |
 | Concurrent sibling effects overdraw one purse | Deterministically retain only the funded exact effect set |
 
@@ -450,12 +484,13 @@ Generate the node-side encrypted wallet material with:
 cargo run -p node -- keygen ./user-keys
 ```
 
-The Python client can load a supported Ethereum keyfile or a securely supplied
-raw key; it does not directly consume the node CLI's encrypted PEM. Keep the
-key in its native keystore path unless a controlled migration is required. The
-following abbreviated sequence shows the intended separation of duties; every
-returned deploy identifier must be canonically finalized and its transfer
-result checked before the next dependent operation:
+The downstream Python client design accepts a supported Ethereum keyfile or a securely supplied raw key.
+It does not directly consume the node CLI's encrypted PEM.
+Keep the key in its native keystore path unless a controlled migration is necessary.
+The following non-executable pseudocode shows the intended separation of duties.
+It uses the planned `FundingSlotAPI` and `VaultAPI` integrations.
+Canonically finalize each returned deploy identifier.
+Check its transfer result before the next dependent operation.
 
 ```python
 from f1r3fly.cost_accounting import (
@@ -584,7 +619,7 @@ remains a scalar projection; applications must not infer exact settlement from
 | --- | --- | --- |
 | Signature and threshold verification | `crypto::signatures::signed::Cosigned`; Casper protobuf ingress | signature unit/property tests; multi-signature pipeline tests |
 | Wallet and slot address derivation | `VaultAddress`; `rho:vault:address`; `vault_payer` | address and vault-payer regressions |
-| Wallet transfer and refill | `SystemVault.rho`; `VaultAPI.transfer_batch_ensure` | SystemVault exact, rejected, invalid, and duplicate batch tests; Loom races; wallet integration tests |
+| Wallet transfer and refill | `SystemVault.rho` `transferBatch` | SystemVault exact, rejected, invalid, and duplicate batch tests. Loom races. Downstream client integration remains pending. |
 | Located purse and lollipop | cost signatures, regions, stack syntax, staged funding-slot client | `FundingSlotBootstrap.v`; `FundingSlotBootstrap.tla`; `WalletFundedLollipop.v`; `WalletFundedLollipop.tla`; cross-deploy tests |
 | Compute authority | `accounting/authority.rs`; RSpace `CommObserver` | `AtomicCommAccounting.v`; TLA+ and RSpace property tests |
 | Storage and byte cost | `accounting/byte_accounting.rs`; proposal/replay observers | `VaultBackedByteAccounting.v`; safe and unsafe TLA+ models; Loom races |
@@ -594,9 +629,9 @@ remains a scalar projection; applications must not infer exact settlement from
 
 See [Cost-accounted Rholang](13-cost-model.md) for the two-dimensional cost
 semantics, [Vaults and Tokens](12-vaults-and-tokens.md) for contract APIs,
-[End-to-end native settlement](../theory/cost-accounting-impl/end-to-end-authority-settlement.md)
+[End-to-end native settlement](../casper/theory/cost-accounting-impl/end-to-end-authority-settlement.md)
 for the architecture contract, and
-[Formal Verification of Cost-Accounted Rho](../theory/cost-accounted-rho-verification.md)
+[Formal Verification of Cost-Accounted Rho](../casper/theory/cost-accounted-rho-verification.md)
 for the proof catalog.
 
 ## References

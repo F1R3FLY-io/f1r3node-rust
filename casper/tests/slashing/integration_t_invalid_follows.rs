@@ -1,15 +1,14 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
-// Integration test — Tier 1 production-path verification of the
-// `InvalidFollows` arm of the dispatcher's `is_slashable()`
-// catch-all (Bug #3 fix).
+// Integration test — Tier 1 production-path verification of
+// `InvalidFollows` rejection persistence without economic evidence.
 //
-// UC-29 from docs/theory/slashing/slashing-specification.md §12.
-// Theorem citation: T-9.3 (catch-all dispatcher), Rocq
-// formal/rocq/slashing/theories/BugFixDispatcher.v.
+// UC-29 from docs/casper/theory/slashing/slashing-specification.md §12.
+// Theorem citation: T-9.3
+// (`certified_non_slashable_rejection_preserves_evidence`).
 //
 // Validation order: block_summary's `justifications_well_formed`
 // rejects duplicate validator entries before parent and sequence checks.
@@ -76,8 +75,8 @@ async fn integration_t_invalid_follows() {
 
     let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
     assert!(
-        has_v0,
-        "post-fix #3 catch-all: dispatcher mints record for v0 \
-         on InvalidFollows"
+        !has_v0,
+        "demoted: InvalidFollows is judged against local state and \
+         mints no slash evidence"
     );
 }

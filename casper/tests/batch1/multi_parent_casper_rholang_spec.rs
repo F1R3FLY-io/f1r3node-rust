@@ -2,8 +2,8 @@
 
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Cosigned;
+use models::rust::casper::protocol::casper_message::DeployData;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -29,13 +29,16 @@ async fn multi_parent_casper_should_create_blocks_based_on_deploys() {
         .create_block_unsafe(std::slice::from_ref(&deploy))
         .await
         .unwrap();
-    let deploys: Vec<_> = block.body.deploys.iter().map(|pd| &pd.deploy).collect();
+    assert_eq!(block.body.deploys.len(), 1);
+    let processed = block.body.deploys[0]
+        .to_cosigned()
+        .expect("protocol-v6 deploy envelope");
     let parents = proto_util::parent_hashes(&block);
 
     assert_eq!(parents.len(), 1);
     assert_eq!(parents[0], standalone_node.genesis.block_hash);
-    assert_eq!(deploys.len(), 1);
-    assert_eq!(deploys[0], &deploy);
+    assert_eq!(processed.data(), &deploy.data);
+    assert!(processed.is_envelope_bound());
 
     let data =
         rspace_util::get_data_at_public_channel_block(&block, 0, &standalone_node.runtime_manager)
@@ -75,10 +78,8 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
         )
     }
 
-    fn calculate_unforgeable_name(timestamp: i64) -> String {
-        let secp256k1 = Secp256k1;
-        let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-        let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+    fn calculate_unforgeable_name(deploy: &Cosigned<DeployData>) -> String {
+        let unforgeable_id = Tools::user_deploy_rng(deploy).next();
         let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
         hex::encode(unforgeable_id_u8)
     }
@@ -99,10 +100,13 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
         .add_block_from_deploys(std::slice::from_ref(&register_deploy))
         .await
         .unwrap();
+    let register_envelope = block0.body.deploys[0]
+        .to_cosigned()
+        .expect("register deploy envelope");
 
     let registry_id = rspace_util::get_data_at_private_channel(
         &block0,
-        &calculate_unforgeable_name(register_deploy.data.time_stamp),
+        &calculate_unforgeable_name(&register_envelope),
         &standalone_node.runtime_manager,
     )
     .await;
@@ -121,10 +125,13 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
         .add_block_from_deploys(std::slice::from_ref(&call_deploy))
         .await
         .unwrap();
+    let call_envelope = block1.body.deploys[0]
+        .to_cosigned()
+        .expect("call deploy envelope");
 
     let data = rspace_util::get_data_at_private_channel(
         &block1,
-        &calculate_unforgeable_name(call_deploy.data.time_stamp),
+        &calculate_unforgeable_name(&call_envelope),
         &standalone_node.runtime_manager,
     )
     .await;

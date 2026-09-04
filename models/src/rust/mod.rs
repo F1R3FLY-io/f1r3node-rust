@@ -5,6 +5,7 @@ pub mod block_metadata;
 pub mod bond_generation;
 pub mod bundle_ops;
 pub mod casper;
+pub mod deploy_id;
 pub mod equivocation_record;
 pub mod normalizer_env;
 pub mod par_ext;

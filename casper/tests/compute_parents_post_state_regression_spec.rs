@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -8,13 +8,13 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{
     CasperShardConf, CasperSnapshot, OnChainCasperState, CURRENT_CASPER_PROTOCOL_VERSION,
 };
+use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::errors::CasperError;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint_with_effects, compute_parents_post_state,
-    compute_parents_post_state_with_effects,
+    compute_deploys_checkpoint_cosigned_with_effects, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -100,6 +100,16 @@ fn build_empty_block(
     )
 }
 
+fn bind_cached_genesis_floor(dag_storage: &BlockDagKeyValueStorage, genesis: &BlockMessage) {
+    let dag = dag_storage
+        .get_representation()
+        .expect("genesis DAG representation");
+    dag.put_cached_floor(genesis.block_hash.clone(), genesis.block_hash.clone())
+        .expect("genesis floor cache");
+    dag.put_cached_frontier(genesis.block_hash.clone(), genesis.block_hash.clone())
+        .expect("genesis frontier cache");
+}
+
 async fn step_block(
     block_store: &mut KeyValueBlockStore,
     dag_storage: &BlockDagKeyValueStorage,
@@ -114,25 +124,17 @@ async fn step_block(
             .get_representation()
             .expect("dag representation"),
         validator,
-        shard_name,
-        last_finalized_block,
+        shard_name.clone(),
+        last_finalized_block.clone(),
     );
 
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
-        .map(|d| d.deploy)
-        .collect::<Vec<_>>();
+        .map(|deploy| deploy.to_cosigned().map_err(CasperError::RuntimeError))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let (
-        pre_state_hash,
-        post_state_hash,
-        processed_deploys,
-        rejected_deploys,
-        rejected_state_effects,
-        processed_system_deploys,
-        bonds,
-    ) = compute_deploys_checkpoint_with_effects(
+    let checkpoint = compute_deploys_checkpoint_cosigned_with_effects(
         block_store,
         parents,
         deploys,
@@ -146,13 +148,47 @@ async fn step_block(
     .await?;
 
     let mut updated = block.clone();
-    updated.body.state.pre_state_hash = pre_state_hash;
-    updated.body.state.post_state_hash = post_state_hash;
-    updated.body.deploys = processed_deploys;
-    updated.body.rejected_deploys = rejected_deploys;
-    updated.body.rejected_state_effects = rejected_state_effects;
-    updated.body.system_deploys = processed_system_deploys;
-    updated.body.state.bonds = bonds;
+    updated.body.state.pre_state_hash = checkpoint.pre_state_hash;
+    updated.body.state.post_state_hash = checkpoint.post_state_hash;
+    updated.body.deploys = checkpoint.deploys;
+    updated.body.rejected_deploys = checkpoint.rejected_deploys;
+    updated.body.rejected_state_effects = checkpoint.rejected_state_effects;
+    updated.body.system_deploys = checkpoint.system_deploys;
+    updated.body.state.bonds = checkpoint.bonds;
+    updated.body.applied_from_scope = checkpoint.applied_from_scope;
+    updated.body.merge_base = checkpoint.merge_base.unwrap_or_default();
+
+    let dag = dag_storage
+        .get_representation()
+        .map_err(CasperError::from)?;
+    let finalized = block_store
+        .get(&last_finalized_block)
+        .map_err(CasperError::from)?
+        .ok_or_else(|| CasperError::RuntimeError("missing finalized test block".to_string()))?;
+    let certificate = casper::rust::finality::certificate::genesis_finalization_certificate(
+        &dag,
+        &finalized,
+        CURRENT_CASPER_PROTOCOL_VERSION,
+        shard_name,
+        0,
+        1_000_000,
+    )?;
+    let exact_latest_messages =
+        CertifiedConsensusContext::for_finalized_floor(&dag, last_finalized_block)?
+            .vote_projection()
+            .exact_latest_messages()
+            .iter()
+            .map(|(validator, hash)| (validator.clone(), hash.clone()))
+            .collect::<BTreeMap<_, _>>();
+    let candidate_context = CertifiedConsensusContext::for_parents(
+        &dag,
+        &updated.header.parents_hash_list,
+        &exact_latest_messages,
+    )?;
+    updated.header.finalized_floor =
+        Some(certificate.commitment(candidate_context.digest().clone()));
+    updated.finalized_floor_certificate = Some(certificate);
+    updated.block_hash = proto_util::hash_block(&updated);
 
     block_store
         .put_block_message(&updated)
@@ -163,6 +199,15 @@ async fn step_block(
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
         )
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+    let inserted_dag = dag_storage
+        .get_representation()
+        .map_err(CasperError::from)?;
+    inserted_dag
+        .put_cached_floor(updated.block_hash.clone(), finalized.block_hash.clone())
+        .map_err(CasperError::from)?;
+    inserted_dag
+        .put_cached_frontier(updated.block_hash.clone(), finalized.block_hash)
+        .map_err(CasperError::from)?;
 
     Ok(updated)
 }
@@ -267,6 +312,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
+    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let b1_raw = build_empty_block(
         1,
@@ -331,7 +377,28 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     .await
     .expect("Failed to step b3");
 
-    let parents = vec![b2.clone(), b3.clone()];
+    let b4_raw = build_empty_block(
+        2,
+        4,
+        validator.clone(),
+        vec![b1.block_hash.clone()],
+        proto_util::post_state_hash(&b1),
+        b1.body.state.bonds.clone(),
+        shard_name.clone(),
+    );
+    let b4 = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &b4_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_block.block_hash.clone(),
+    )
+    .await
+    .expect("Failed to step b4");
+
+    let parents = vec![b2.clone(), b3.clone(), b4.clone()];
 
     let mut snapshot_without_skew = mk_snapshot(
         dag_storage
@@ -348,7 +415,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_without_skew, rejected_without_skew) = compute_parents_post_state(
+    let merged_without_skew = compute_parents_post_state(
         &block_store,
         parents.clone(),
         &snapshot_without_skew,
@@ -356,9 +423,13 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &latest_messages_without_skew,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state without finalized skew");
+    let state_without_skew = merged_without_skew.state;
+    let rejected_without_skew = merged_without_skew.rejected_user;
 
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
@@ -382,17 +453,21 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_with_skew, rejected_with_skew) = compute_parents_post_state(
+    let merged_with_skew = compute_parents_post_state(
         &block_store,
-        parents,
+        parents.clone(),
         &snapshot_with_skew,
         &runtime_manager,
         &latest_messages_with_skew,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state with finalized skew");
+    let state_with_skew = merged_with_skew.state;
+    let rejected_with_skew = merged_with_skew.rejected_user;
 
     assert_eq!(
         state_without_skew, state_with_skew,
@@ -403,37 +478,69 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         "Rejected deploy set should be invariant to finalized-set skew for the same parent set."
     );
 
-    // Spec §2.3 determinism pin (D4.3): the kept channel-based multi-parent
-    // merge composes disjoint sibling parents in a canonical, order-independent
-    // way, so the post-state is byte-identical under reversed parent input
-    // order. This guards `compute_parents_post_state` against an order-dependent
-    // merge regression — the residual shared-data-channel reconciliation that
-    // the spec preserves (tex §2.3:286-308) must be deterministic. (`b2`/`b3`
-    // are siblings, so the descendant fast-paths are skipped and the genuine
-    // DAG merge runs in both orders.)
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
 
-    let reversed_parents = vec![b3.clone(), b2.clone()];
-    let (state_reversed_order, rejected_reversed_order) = compute_parents_post_state(
+    let permuted_secondary_parents = vec![b2.clone(), b4.clone(), b3.clone()];
+    let merged_permuted_secondary_order = compute_parents_post_state(
         &block_store,
-        reversed_parents,
+        permuted_secondary_parents,
         &snapshot_without_skew,
         &runtime_manager,
         &latest_messages_without_skew,
         None,
         None,
+        None,
+        None,
     )
     .await
-    .expect("Failed to compute parents post-state with reversed parent order");
+    .expect("Failed to compute parents post-state with permuted secondary parents");
+    let state_permuted_secondary_order = merged_permuted_secondary_order.state;
+    let rejected_permuted_secondary_order = merged_permuted_secondary_order.rejected_user;
 
     assert_eq!(
-        state_without_skew, state_reversed_order,
-        "Parents post-state must be invariant to parent input order (spec §2.3 deterministic disjoint composition)."
+        state_without_skew, state_permuted_secondary_order,
+        "Parents post-state must be invariant to secondary-parent order while retaining the selected main parent."
     );
     assert_eq!(
-        rejected_without_skew, rejected_reversed_order,
-        "Rejected deploy set must be invariant to parent input order."
+        rejected_without_skew, rejected_permuted_secondary_order,
+        "Rejected deploy set must be invariant to secondary-parent order."
+    );
+
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.clear_block_index_cache();
+    compute_parents_post_state(
+        &block_store,
+        parents,
+        &snapshot_without_skew,
+        &runtime_manager,
+        &latest_messages_without_skew,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to warm the selected-main-parent cache entry");
+    assert_eq!(runtime_manager.parents_post_state_cache.len(), 1);
+
+    compute_parents_post_state(
+        &block_store,
+        vec![b3, b2, b4],
+        &snapshot_without_skew,
+        &runtime_manager,
+        &latest_messages_without_skew,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to compute parents post-state with a different main parent");
+    assert_eq!(
+        runtime_manager.parents_post_state_cache.len(),
+        2,
+        "Different main-parent choices must never alias in the parents post-state cache."
     );
 }
 
@@ -466,7 +573,6 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     let (_validator_sk, validator_pk) = secp.new_key_pair();
     let (_stale_validator_sk, stale_validator_pk) = secp.new_key_pair();
     let validator: Bytes = validator_pk.bytes.clone();
-    let stale_validator: Bytes = stale_validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -555,6 +661,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
+    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
@@ -569,6 +676,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         Some(shard_name.clone()),
     )
     .expect("Failed to build main deploy");
+    let main_envelope = construct_deploy::envelope_from_deploy_data(
+        main_deploy.data,
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+    )
+    .expect("Failed to build main envelope");
     let main_raw = block_implicits::get_random_block(
         Some(1),
         Some(1),
@@ -579,7 +691,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(main_deploy)]),
+        Some(vec![ProcessedDeploy::empty_from_cosigned(&main_envelope)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -606,6 +718,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         Some(shard_name.clone()),
     )
     .expect("Failed to build side deploy");
+    let side_envelope = construct_deploy::envelope_from_deploy_data(
+        side_deploy.data,
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+    )
+    .expect("Failed to build side envelope");
     let side_raw = block_implicits::get_random_block(
         Some(1),
         Some(2),
@@ -616,7 +733,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(side_deploy)]),
+        Some(vec![ProcessedDeploy::empty_from_cosigned(&side_envelope)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -690,46 +807,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         .rejected_state_effects
         .iter()
         .any(|effect| effect.source_block_hash == rejected_source));
-    let (finalized_branch, other_branch) = if rejected_source == main.block_hash {
-        (main.clone(), side.clone())
-    } else {
-        assert_eq!(rejected_source, side.block_hash);
-        (side.clone(), main.clone())
-    };
-
-    let stale_raw = build_empty_block(
-        2,
-        4,
-        stale_validator.clone(),
-        vec![
-            finalized_branch.block_hash.clone(),
-            other_branch.block_hash.clone(),
-        ],
-        proto_util::post_state_hash(&finalized_branch),
-        finalized_branch.body.state.bonds.clone(),
-        shard_name.clone(),
-    );
-    let stale = step_block(
-        &mut block_store,
-        &dag_storage,
-        &mut runtime_manager,
-        &stale_raw,
-        stale_validator.clone(),
-        shard_name.clone(),
-        genesis_hash.clone(),
-    )
-    .await
-    .expect("Failed to step stale merge block");
-    assert!(stale
-        .body
-        .rejected_deploys
-        .iter()
-        .any(|rejected| rejected.source_block_hash == finalized_branch.block_hash));
-    assert!(stale
-        .body
-        .rejected_state_effects
-        .iter()
-        .any(|effect| effect.source_block_hash == finalized_branch.block_hash));
+    assert_eq!(rejected_source, side.block_hash);
 
     let mut snapshot = mk_snapshot(
         dag_storage
@@ -745,7 +823,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
 
-    let (merged_state, rejected) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![cover.clone(), side.clone()],
         &snapshot,
@@ -753,9 +831,13 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         &latest_messages,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state");
+    let merged_state = merged.state;
+    let rejected = merged.rejected_user;
 
     assert!(
         rejected.is_empty(),
@@ -771,65 +853,50 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         "DAG-covering parent fast path should not populate the merge cache"
     );
 
-    snapshot
-        .dag
-        .put_cached_floor(genesis_hash.clone(), genesis_hash.clone())
-        .expect("Failed to cache genesis floor");
-    snapshot
-        .dag
-        .put_cached_floor(main.block_hash.clone(), genesis_hash.clone())
-        .expect("Failed to cache main floor");
-    snapshot
-        .dag
-        .put_cached_floor(side.block_hash.clone(), genesis_hash.clone())
-        .expect("Failed to cache side floor");
-    snapshot
-        .dag
-        .put_cached_floor(stale.block_hash.clone(), genesis_hash)
-        .expect("Failed to cache stale floor");
-    let latest_messages = std::collections::BTreeMap::from([
-        (validator, finalized_branch.block_hash.clone()),
-        (stale_validator, stale.block_hash.clone()),
-    ]);
+    let latest_messages = std::collections::BTreeMap::from([(validator, side.block_hash.clone())]);
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
 
-    let (rebased_state, rebased_rejected, rebased_rejected_state_effects) =
-        compute_parents_post_state_with_effects(
-            &block_store,
-            vec![stale.clone()],
-            &snapshot,
-            &runtime_manager,
-            &latest_messages,
-            None,
-            None,
-        )
-        .await
-        .expect("Failed to rebase the stale merge on its finalized state floor");
+    let rebased = compute_parents_post_state(
+        &block_store,
+        vec![cover.clone(), side.clone()],
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to rebase the stale merge on its finalized state floor");
+    let rebased_state = rebased.state;
+    let rebased_rejected = rebased.rejected_user;
+    let rebased_rejected_state_effects = rebased.rejected_state_effects;
 
     assert!(rebased_rejected
         .iter()
-        .all(|rejected| rejected.source_block_hash != finalized_branch.block_hash));
+        .all(|rejected| rejected.source_block_hash != side.block_hash));
     assert!(rebased_rejected_state_effects
         .iter()
-        .all(|effect| effect.source_block_hash != finalized_branch.block_hash));
-    assert_ne!(rebased_state, proto_util::post_state_hash(&stale));
+        .all(|effect| effect.source_block_hash != side.block_hash));
+    assert_ne!(rebased_state, proto_util::post_state_hash(&cover));
     assert!(!runtime_manager.parents_post_state_cache.is_empty());
     let channel = new_gstring_par("secondary-parent-fast-path".to_string(), Vec::new(), false);
     let finalized_data = runtime_manager
-        .get_data(proto_util::post_state_hash(&finalized_branch), &channel)
+        .get_data(proto_util::post_state_hash(&side), &channel)
         .await
         .expect("Failed to read the finalized branch effect");
-    let stale_data = runtime_manager
-        .get_data(proto_util::post_state_hash(&stale), &channel)
+    let covered_data = runtime_manager
+        .get_data(proto_util::post_state_hash(&cover), &channel)
         .await
-        .expect("Failed to read the stale merge effect");
+        .expect("Failed to read the covering merge effect");
     let rebased_data = runtime_manager
         .get_data(rebased_state, &channel)
         .await
         .expect("Failed to read the rebased finalized effect");
     assert!(!finalized_data.is_empty());
-    assert_ne!(stale_data, finalized_data);
+    assert_ne!(covered_data, finalized_data);
     assert_eq!(rebased_data, finalized_data);
 }
 
@@ -933,6 +1000,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
+    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let b1_raw = build_empty_block(
         1,
@@ -1026,6 +1094,8 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         &snapshot,
         &runtime_manager,
         &latest_messages,
+        None,
+        None,
         None,
         None,
     )
@@ -1165,6 +1235,7 @@ async fn run_visible_blocks_scope_test() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis");
+    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_post_state = proto_util::post_state_hash(&genesis_block);

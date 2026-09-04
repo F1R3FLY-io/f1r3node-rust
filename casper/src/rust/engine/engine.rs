@@ -226,6 +226,11 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     wal_payload_ctx: Option<crate::rust::engine::running::WalPayloadContext>,
     engine_cell: &EngineCell,
     event_log: &F1r3flyEvents,
+    state_items_tx: Option<
+        tokio::sync::mpsc::Sender<
+            models::rust::casper::protocol::casper_message::StoreItemsMessage,
+        >,
+    >,
 ) -> Result<(), CasperError> {
     let approved_block_info =
         PrettyPrinter::build_string_block_message(&approved_block.candidate.block, true);
@@ -251,6 +256,10 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
                 e
             ))
         })?;
+    tracing::info!(
+        event = "casper_running_state_published",
+        "Casper Running state published after startup validation"
+    );
 
     let running = Running::new(
         block_processing_queue_tx,
@@ -263,6 +272,7 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
         conf.clone(),
         block_retriever,
         recovery_context.clone(),
+        state_items_tx,
     );
 
     // Phase 7b-1 (2026-08-27): install snapshot chunk-fetch
@@ -353,6 +363,7 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     runtime_manager_arc: &Arc<RuntimeManager>,
     estimator: &Estimator,
     heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
 ) -> Result<(), CasperError> {
     // Create bounded channels and return senders so caller can feed LFS responses (Scala: expose queues).
     // Scala uses size-50 bounded queues.
@@ -391,6 +402,7 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         runtime_manager,
         estimator.clone(),
         heartbeat_signal_ref.clone(),
+        state_items_tx,
     ));
 
     // Initialize immediately on transition.

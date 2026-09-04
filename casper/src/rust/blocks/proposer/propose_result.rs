@@ -35,8 +35,17 @@ pub struct ProposeSuccess {
 pub enum ProposeFailure {
     NoNewDeploys,
     RecoveryDeferred(RecoveryDeferralReason),
+    ParentFrontierCapacityExceeded {
+        configured_cap: usize,
+        required_parents: usize,
+    },
     InternalDeployError,
     BugError,
+    /// The propose walk needed a block this node does not hold. This is
+    /// availability, not a bug: the proposer requests the named block from
+    /// peers and the heartbeat retries at normal cadence (no backoff
+    /// escalation) until the gap heals.
+    MissingBlock(Bytes),
     CheckConstraintsFailure(CheckProposeConstraintsFailure),
 }
 
@@ -53,6 +62,10 @@ pub enum CheckProposeConstraintsFailure {
     NotBonded,
     NotEnoughNewBlocks,
     TooFarAheadOfLastFinalized,
+    /// This node's history does not reach far enough to build a snapshot, so
+    /// there is nothing to propose from. Distinct from the constraints above:
+    /// those are decided FROM a snapshot, and this one is why there isn't one.
+    HistoryIncomplete,
 }
 
 /// Block creator result
@@ -92,6 +105,10 @@ impl CheckProposeConstraintsResult {
         CheckProposeConstraintsResult::Failure(
             CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
         )
+    }
+
+    pub fn history_incomplete() -> Self {
+        CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::HistoryIncomplete)
     }
 }
 
@@ -157,6 +174,14 @@ impl ProposeResult {
             ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(_))
         )
     }
+
+    pub fn is_deferred(&self) -> bool {
+        matches!(
+            self.propose_status,
+            ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(_))
+                | ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded { .. })
+        )
+    }
 }
 
 impl BlockCreatorResult {
@@ -180,10 +205,22 @@ impl fmt::Display for ProposeStatus {
                 ProposeFailure::RecoveryDeferred(reason) => {
                     write!(f, "Proposal deferred: {}", reason)
                 }
+                ProposeFailure::ParentFrontierCapacityExceeded {
+                    configured_cap,
+                    required_parents,
+                } => write!(
+                    f,
+                    "Proposal deferred: exact parent frontier requires {required_parents} parents but max-number-of-parents is {configured_cap}"
+                ),
                 ProposeFailure::InternalDeployError => {
                     write!(f, "Proposal failed: internal deploy error")
                 }
                 ProposeFailure::BugError => write!(f, "Proposal failed: BugError"),
+                ProposeFailure::MissingBlock(hash) => write!(
+                    f,
+                    "Proposal failed: MissingBlock {} — requested from peers, retrying",
+                    hex::encode(&hash[..hash.len().min(8)])
+                ),
                 ProposeFailure::CheckConstraintsFailure(check_failure) => match check_failure {
                     CheckProposeConstraintsFailure::NotBonded => {
                         write!(f, "Proposal failed: validator is not bonded")
@@ -198,6 +235,13 @@ impl fmt::Display for ProposeStatus {
                         write!(
                             f,
                             "Proposal failed: too far ahead of the last finalized block"
+                        )
+                    }
+                    CheckProposeConstraintsFailure::HistoryIncomplete => {
+                        write!(
+                            f,
+                            "Proposal failed: this node's history does not reach far enough to \
+                             build a snapshot; it is still catching up"
                         )
                     }
                 },
@@ -264,5 +308,19 @@ mod tests {
             .requires_finalization_request());
         assert!(!RecoveryDeferralReason::InactiveCandidateValidator.requires_finalization_request());
         assert!(!RecoveryDeferralReason::StaleRecoveryPermit.requires_finalization_request());
+    }
+
+    #[test]
+    fn parent_frontier_capacity_is_a_non_recovery_deferral() {
+        let result = ProposeResult::failure(ProposeFailure::ParentFrontierCapacityExceeded {
+            configured_cap: 2,
+            required_parents: 3,
+        });
+        assert!(result.is_deferred());
+        assert!(!result.is_recovery_deferred());
+        assert_eq!(
+            result.propose_status.to_string(),
+            "Proposal deferred: exact parent frontier requires 3 parents but max-number-of-parents is 2"
+        );
     }
 }

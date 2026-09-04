@@ -106,8 +106,8 @@ den = MILL
 sol = Solver()
 sol.add(0 <= q, q <= S, 0 < S, S <= 2**63, -MILL <= num, num <= MILL)
 sol.add(m == num)                                        # 4a: redisplay(num) = num
-dec_num = 2 * q * den >= S * (den + num)
-dec_m   = 2 * q * den >= S * (den + m)
+dec_num = 2 * q * den > S * (den + num)
+dec_m   = 2 * q * den > S * (den + m)
 sol.add(dec_num != dec_m)                                # decision DISAGREEMENT
 expect("exact decision invariant under f32→ppm→f32 display path", sol, "unsat")
 

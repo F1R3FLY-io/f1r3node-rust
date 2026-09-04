@@ -32,7 +32,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint, compute_parents_post_state,
+    compute_deploys_checkpoint_cosigned, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -151,10 +151,15 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         None,
         Some(construct_deploy::DEFAULT_SEC.clone()),
         None,
-        None,
+        Some(shard_name.clone()),
     )
     .expect("build deploy_x");
-    let sig_x = deploy_x.sig.clone();
+    let envelope_x = construct_deploy::envelope_from_deploy_data(
+        deploy_x.data.clone(),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+    )
+    .expect("build deploy_x envelope");
+    let sig_x = envelope_x.envelope_commitment().expect("deploy_x identity");
 
     // Validator-unique markers. Each consumes the shared produce, which
     // creates the event-log dependency that puts marker and deploy_x
@@ -174,10 +179,17 @@ for(@_v <- @"multi-validator-shared") { Nil }
         None,
         Some(construct_deploy::DEFAULT_SEC2.clone()),
         None,
-        None,
+        Some(shard_name.clone()),
     )
     .expect("build marker_v0");
-    let sig_marker_v0 = marker_v0.sig.clone();
+    let envelope_marker_v0 = construct_deploy::envelope_from_deploy_data(
+        marker_v0.data.clone(),
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+    )
+    .expect("build marker_v0 envelope");
+    let sig_marker_v0 = envelope_marker_v0
+        .envelope_commitment()
+        .expect("marker_v0 identity");
 
     tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
     let marker_v1 = construct_deploy::source_deploy_now_full(
@@ -186,10 +198,17 @@ for(@_v <- @"multi-validator-shared") { Nil }
         None,
         Some(construct_deploy::DEFAULT_SEC2.clone()),
         None,
-        None,
+        Some(shard_name.clone()),
     )
     .expect("build marker_v1");
-    let sig_marker_v1 = marker_v1.sig.clone();
+    let envelope_marker_v1 = construct_deploy::envelope_from_deploy_data(
+        marker_v1.data.clone(),
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+    )
+    .expect("build marker_v1 envelope");
+    let sig_marker_v1 = envelope_marker_v1
+        .envelope_commitment()
+        .expect("marker_v1 identity");
     assert_ne!(
         sig_marker_v0, sig_marker_v1,
         "validator-unique markers must have distinct sigs"
@@ -207,21 +226,18 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
         Some(vec![
-            ProcessedDeploy::empty(deploy_x.clone()),
-            ProcessedDeploy::empty(marker_v0.clone()),
+            ProcessedDeploy::empty_from_cosigned(&envelope_x),
+            ProcessedDeploy::empty_from_cosigned(&envelope_marker_v0),
         ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_r0, pd_r0, _, sys_pd_r0, bonds_r0) = compute_deploys_checkpoint(
+    let (_, post_state_r0, pd_r0, _, sys_pd_r0, bonds_r0) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&r0_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect(),
+        vec![envelope_x.clone(), envelope_marker_v0],
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
@@ -259,21 +275,18 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
         Some(vec![
-            ProcessedDeploy::empty(deploy_x.clone()),
-            ProcessedDeploy::empty(marker_v1.clone()),
+            ProcessedDeploy::empty_from_cosigned(&envelope_x),
+            ProcessedDeploy::empty_from_cosigned(&envelope_marker_v1),
         ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_r1, pd_r1, _, sys_pd_r1, bonds_r1) = compute_deploys_checkpoint(
+    let (_, post_state_r1, pd_r1, _, sys_pd_r1, bonds_r1) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&r1_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect(),
+        vec![envelope_x, envelope_marker_v1],
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
@@ -321,7 +334,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (_merged_state, rejected_sigs) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![r0.clone(), r1.clone()],
         &snapshot,
@@ -329,13 +342,16 @@ for(@_v <- @"multi-validator-shared") { Nil }
         &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
+        None,
+        None,
     )
     .await
     .expect("compute_parents_post_state over [R0, R1]");
 
+    let rejected_sigs = merged.rejected_user;
     let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs
         .iter()
-        .map(|rejected| rejected.sig.clone())
+        .map(|rejected| prost::bytes::Bytes::copy_from_slice(rejected.deploy_id()))
         .collect();
 
     // Dedup must keep the shared recovered sig out of the rejected
@@ -345,14 +361,14 @@ for(@_v <- @"multi-validator-shared") { Nil }
     // dag_merger.rs:153-235 is broken or has been removed.
     assert!(
         rejected_sigs.iter().any(|rejected| {
-            rejected.sig == sig_x
+            rejected.deploy_id() == sig_x.as_ref()
                 && rejected.reason
                     == models::rust::casper::protocol::casper_message::RejectedDeployReason::DuplicateOccurrence
         }),
         "the stale sig_x occurrence must be provenance-tombstoned. Got: {:?}",
         rejected_sigs
             .iter()
-            .map(|s| hex::encode(&s.sig[..std::cmp::min(8, s.sig.len())]))
+            .map(|s| hex::encode(&s.deploy_id()[..std::cmp::min(8, s.deploy_id().len())]))
             .collect::<Vec<_>>()
     );
 
@@ -376,7 +392,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         v1_orphaned,
         rejected_sigs
             .iter()
-            .map(|s| hex::encode(&s.sig[..std::cmp::min(8, s.sig.len())]))
+            .map(|s| hex::encode(&s.deploy_id()[..std::cmp::min(8, s.deploy_id().len())]))
             .collect::<Vec<_>>()
     );
 }

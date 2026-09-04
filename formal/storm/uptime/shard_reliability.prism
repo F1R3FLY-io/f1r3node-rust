@@ -1,0 +1,80 @@
+ctmc
+
+const int VALIDATORS;
+const int QUORUM;
+const int QUEUE_CAP;
+const int LAG_CAP;
+const int LAG_SLO;
+const int MEMORY_CAP;
+const int INITIAL_ELIGIBLE;
+const int INITIAL_QUEUE;
+const int INITIAL_LAG;
+const int INITIAL_MEMORY;
+const double HORIZON_HOURS;
+const double VALIDATOR_FAILURE_RATE;
+const double VALIDATOR_REPAIR_RATE;
+const double COMMON_FAILURE_RATE;
+const double COMMON_REPAIR_RATE;
+const double STORAGE_FAILURE_RATE;
+const double STORAGE_REPAIR_RATE;
+const double ARRIVAL_RATE;
+const double SERVICE_RATE;
+const double LAG_GROWTH_RATE;
+const double LAG_DRAIN_RATE;
+const double MEMORY_BACKGROUND_GROWTH_RATE;
+const double MEMORY_WORK_GROWTH_RATE;
+const double MEMORY_RECLAIM_RATE;
+
+formula quorum_ready = eligible >= QUORUM;
+formula infrastructure_ready = !common_down & storage_writable;
+formula protocol_ready = quorum_ready & infrastructure_ready;
+formula service_up = protocol_ready & lag <= LAG_SLO & queued < QUEUE_CAP & resident < MEMORY_CAP;
+
+module shard
+  eligible : [0..VALIDATORS] init INITIAL_ELIGIBLE;
+  common_down : bool init false;
+  storage_writable : bool init true;
+  queued : [0..QUEUE_CAP] init INITIAL_QUEUE;
+  lag : [0..LAG_CAP] init INITIAL_LAG;
+  resident : [0..MEMORY_CAP] init INITIAL_MEMORY;
+
+  [] VALIDATOR_FAILURE_RATE > 0 & eligible > 0 -> eligible * VALIDATOR_FAILURE_RATE : (eligible' = eligible - 1);
+  [] VALIDATOR_REPAIR_RATE > 0 & eligible < VALIDATORS -> (VALIDATORS - eligible) * VALIDATOR_REPAIR_RATE : (eligible' = eligible + 1);
+  [] COMMON_FAILURE_RATE > 0 & !common_down -> COMMON_FAILURE_RATE : (common_down' = true);
+  [] COMMON_REPAIR_RATE > 0 & common_down -> COMMON_REPAIR_RATE : (common_down' = false);
+  [] STORAGE_FAILURE_RATE > 0 & storage_writable -> STORAGE_FAILURE_RATE : (storage_writable' = false);
+  [] STORAGE_REPAIR_RATE > 0 & !storage_writable -> STORAGE_REPAIR_RATE : (storage_writable' = true);
+  [] ARRIVAL_RATE > 0 & queued < QUEUE_CAP -> ARRIVAL_RATE : (queued' = queued + 1);
+  [] SERVICE_RATE > 0 & protocol_ready & queued > 0 -> SERVICE_RATE : (queued' = queued - 1);
+  [] LAG_GROWTH_RATE > 0 & lag < LAG_CAP -> LAG_GROWTH_RATE : (lag' = lag + 1);
+  [] LAG_DRAIN_RATE > 0 & protocol_ready & lag > 0 -> LAG_DRAIN_RATE : (lag' = lag - 1);
+  [] MEMORY_BACKGROUND_GROWTH_RATE > 0 & resident < MEMORY_CAP -> MEMORY_BACKGROUND_GROWTH_RATE : (resident' = resident + 1);
+  [] MEMORY_WORK_GROWTH_RATE > 0 & (queued > 0 | lag > 0) & resident < MEMORY_CAP -> MEMORY_WORK_GROWTH_RATE : (resident' = resident + 1);
+  [] MEMORY_RECLAIM_RATE > 0 & protocol_ready & resident > 0 -> MEMORY_RECLAIM_RATE : (resident' = resident - 1);
+endmodule
+
+label "service_up" = service_up;
+label "service_down" = !service_up;
+label "quorum_lost" = !quorum_ready;
+label "common_failure" = common_down;
+label "storage_unavailable" = !storage_writable;
+label "queue_cap_exhausted" = queued = QUEUE_CAP;
+label "lag_slo_exceeded" = lag > LAG_SLO;
+label "memory_cap_exhausted" = resident = MEMORY_CAP;
+label "resource_exhausted" = queued = QUEUE_CAP | lag = LAG_CAP | resident = MEMORY_CAP;
+
+rewards "down_hours"
+  !service_up : 1;
+endrewards
+
+rewards "up_hours"
+  service_up : 1;
+endrewards
+
+rewards "queue_bucket_hours"
+  true : queued;
+endrewards
+
+rewards "memory_bucket_hours"
+  true : resident;
+endrewards

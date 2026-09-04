@@ -14,13 +14,12 @@
 //!
 //! ## Slashing-protocol position
 //!
-//! See `docs/theory/slashing/slashing-verification.md` §6.4 (T-10) and
-//! `docs/theory/fork-choice/fork-choice-verification.md`.
+//! See `docs/casper/theory/slashing/slashing-verification.md` §6.4 (T-10) and
+//! `docs/casper/theory/fork-choice/fork-choice-verification.md`.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use futures::stream::{self, StreamExt, TryStreamExt};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -32,11 +31,12 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::causal_equivocation::CertifiedConsensusContext;
 use crate::rust::util::dag_operations::DagOperations;
 
-/// Tips of the DAG, ranked against LCA
+/// Tips of the DAG, ranked against LCA.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForkChoice {
     pub tips: Vec<BlockHash>,
     pub lca: BlockHash,
+    pub scores: HashMap<BlockHash, i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +142,8 @@ impl Estimator {
         )?;
 
         tracing::debug!(target: "f1r3fly.casper.estimator", "ranked-latest-messages-hashes");
-        let ranked_latest_messages_hashes = Self::rank_forkchoices(&lca, dag, &scores_map).await?;
+        let ranked_latest_messages_hashes =
+            Self::rank_forkchoices(lca.clone(), &latest_messages_hashes, dag, &scores_map)?;
 
         tracing::debug!(target: "f1r3fly.casper.estimator", "filtered-deep-parents");
         let ranked_shallow_hashes = self
@@ -167,7 +168,11 @@ impl Estimator {
                 .take(self.max_number_of_parents as usize)
                 .collect()
         };
-        Ok(ForkChoice { tips, lca })
+        Ok(ForkChoice {
+            tips,
+            lca,
+            scores: scores_map,
+        })
     }
 
     async fn filter_deep_parents(
@@ -219,9 +224,13 @@ impl Estimator {
         let result = if latest_messages.is_empty() {
             genesis.block_hash.clone()
         } else {
-            DagOperations::lowest_universal_common_ancestor_many(&latest_messages, block_dag)
-                .await?
-                .block_hash
+            DagOperations::lowest_universal_common_ancestor_many(
+                &latest_messages,
+                block_dag,
+                genesis,
+            )
+            .await?
+            .block_hash
         };
 
         Ok(result)
@@ -246,7 +255,7 @@ impl Estimator {
             if meta.block_number < last_finalized_block_number {
                 Ok(Vec::new())
             } else {
-                Ok(meta.parents)
+                Ok(meta.parents.into_iter().take(1).collect())
             }
         }
 
@@ -318,134 +327,72 @@ impl Estimator {
         Ok(scores_map.into_iter().collect())
     }
 
-    fn greedy_ghost_head(
-        lca: &BlockHash,
+    fn rank_forkchoices(
+        lca: BlockHash,
+        latest_messages_hashes: &BTreeMap<Validator, BlockHash>,
         block_dag: &KeyValueDagRepresentation,
         scores: &HashMap<BlockHash, i64>,
-    ) -> Result<BlockHash, KvStoreError> {
-        let mut current = lca.clone();
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        fn scored_main_children(
+            block: &BlockHash,
+            block_dag: &KeyValueDagRepresentation,
+            scores: &HashMap<BlockHash, i64>,
+        ) -> Vec<BlockHash> {
+            match block_dag.children(block) {
+                Some(children_set) => children_set
+                    .iter()
+                    .filter(|child| {
+                        scores.contains_key(*child)
+                            && block_dag.main_parent(child).as_ref() == Some(block)
+                    })
+                    .cloned()
+                    .collect(),
+                None => Vec::new(),
+            }
+        }
+
+        let mut head = lca;
         let mut visited = HashSet::new();
         loop {
-            if !visited.insert(current.clone()) {
+            if !visited.insert(head.clone()) {
                 return Err(KvStoreError::InvalidArgument(
                     "fork-choice child graph contains a cycle".to_string(),
                 ));
             }
-            let Some(children) = block_dag.children(&current) else {
-                return Ok(current);
-            };
-            let scored_children = children
-                .into_iter()
-                .filter(|child| scores.contains_key(child))
-                .collect::<Vec<_>>();
-            if scored_children.is_empty() {
-                return Ok(current);
+            let mut children = scored_main_children(&head, block_dag, scores);
+            if children.is_empty() {
+                break;
             }
-            let ranked_children = ListOps::sort_by_with_decreasing_order(scored_children, scores);
-            let next = ranked_children.into_iter().next().ok_or_else(|| {
-                KvStoreError::InvalidArgument(
-                    "scored fork-choice child set unexpectedly became empty".to_string(),
-                )
-            })?;
-            let current_number = block_dag.block_number_unsafe(&current)?;
+            children.sort_by(|a, b| {
+                let score_a = scores.get(a).copied().unwrap_or(0);
+                let score_b = scores.get(b).copied().unwrap_or(0);
+                score_b.cmp(&score_a).then_with(|| a.cmp(b))
+            });
+            let next = children.swap_remove(0);
+            let current_number = block_dag.block_number_unsafe(&head)?;
             let next_number = block_dag.block_number_unsafe(&next)?;
             if next_number <= current_number {
                 return Err(KvStoreError::InvalidArgument(
                     "fork-choice child does not advance DAG height".to_string(),
                 ));
             }
-            current = next;
+            head = next;
         }
-    }
 
-    async fn rank_forkchoices(
-        lca: &BlockHash,
-        block_dag: &KeyValueDagRepresentation,
-        scores: &HashMap<BlockHash, i64>,
-    ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let ghost_head = Self::greedy_ghost_head(lca, block_dag, scores)?;
-        let mut frontier = Self::terminal_frontier(vec![lca.clone()], block_dag, scores).await?;
-        let Some(head_index) = frontier.iter().position(|hash| hash == &ghost_head) else {
-            return Err(KvStoreError::InvalidArgument(
-                "greedy GHOST head is absent from the scored terminal frontier".to_string(),
-            ));
-        };
-        frontier.remove(head_index);
-        frontier.insert(0, ghost_head);
-        Ok(frontier)
-    }
-
-    async fn terminal_frontier(
-        blocks: Vec<BlockHash>,
-        block_dag: &KeyValueDagRepresentation,
-        scores: &HashMap<BlockHash, i64>,
-    ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let unsorted_new_blocks: Vec<BlockHash> = stream::iter(blocks.iter())
-            .then(|block| Self::replace_block_hash_with_children(block, block_dag, scores))
-            .try_fold(Vec::new(), |mut acc, children| async move {
-                acc.extend(children);
-                Ok(acc)
+        let frontier = latest_messages_hashes
+            .values()
+            .filter(|hash| {
+                **hash != head && scored_main_children(hash, block_dag, scores).is_empty()
             })
-            .await?;
-
-        let unique_blocks: Vec<BlockHash> = unsorted_new_blocks
-            .into_iter()
-            .collect::<HashSet<_>>() // distinct
-            .into_iter()
-            .collect();
-
-        let new_blocks = ListOps::sort_by_with_decreasing_order(unique_blocks, scores);
-
-        if Self::still_same(&blocks, &new_blocks) {
-            Ok(blocks)
-        } else {
-            Box::pin(Self::terminal_frontier(new_blocks, block_dag, scores)).await
-        }
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut ranked = ListOps::sort_by_with_decreasing_order(
+            frontier.into_iter().collect::<Vec<_>>(),
+            scores,
+        );
+        ranked.insert(0, head);
+        Ok(ranked)
     }
-
-    fn non_empty_list(elements: &HashSet<BlockHash>) -> Option<Vec<BlockHash>> {
-        if elements.is_empty() {
-            None
-        } else {
-            Some(elements.iter().cloned().collect())
-        }
-    }
-
-    /// Only include children that have been scored,
-    /// this ensures that the search does not go beyond
-    /// the messages defined by blockDag.latestMessages
-    async fn replace_block_hash_with_children(
-        b: &BlockHash,
-        block_dag: &KeyValueDagRepresentation,
-        scores: &HashMap<BlockHash, i64>,
-    ) -> Result<Vec<BlockHash>, KvStoreError> {
-        match block_dag.children(b) {
-            Some(children_set) => {
-                let parent_number = block_dag.block_number_unsafe(b)?;
-                let mut scored_children = HashSet::new();
-                for child in children_set {
-                    if !scores.contains_key(&child) {
-                        continue;
-                    }
-                    let child_number = block_dag.block_number_unsafe(&child)?;
-                    if child_number <= parent_number {
-                        return Err(KvStoreError::InvalidArgument(
-                            "fork-choice child does not advance DAG height".to_string(),
-                        ));
-                    }
-                    scored_children.insert(child);
-                }
-
-                match Self::non_empty_list(&scored_children) {
-                    Some(non_empty_children) => Ok(non_empty_children),
-                    None => Ok(vec![b.clone()]),
-                }
-            }
-            None => Ok(vec![b.clone()]),
-        }
-    }
-
-    fn still_same(blocks: &[BlockHash], new_blocks: &[BlockHash]) -> bool { new_blocks == blocks }
 }
 
 #[cfg(test)]

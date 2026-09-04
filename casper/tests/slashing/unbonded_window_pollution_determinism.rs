@@ -1,12 +1,12 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // FV audit #6 — unbonded-window record pollution fork: post-fix determinism
 // property (randomized interleaving).
 //
-// Maps to: docs/theory/slashing/design/12-failure-modes.md §12.2.1a.
+// Maps to: docs/casper/theory/slashing/design/12-failure-modes.md §12.2.1a.
 // Rocq:  formal/rocq/slashing/theories/EquivocationDetector.v
 //        (`unbonded_offender_oblivious`, `unbonded_stamp_noop`,
 //         `unbonded_witness_order_independent`).

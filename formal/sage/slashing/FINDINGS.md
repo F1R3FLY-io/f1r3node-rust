@@ -2,7 +2,7 @@
 
 These findings are finite Sage model outputs. They are not proof authority. Each item below is a witness or theorem candidate to promote into Rocq, TLA+, implementation tests, or the slashing documents after review.
 
-Status: findings 1 through 23 have been promoted into Rocq theorem targets, `TwoLevelSlashing.tla` invariants where finite checking applies, and `docs/theory/slashing/` documentation/test-plan entries. Findings 24 through 32 are tracked deterministic scenario-corpus findings. Findings 33 and later are Hypothesis-backed, deep-threat, DAG, and objective-frontier findings that have been reduced to deterministic Sage witnesses before promotion. Sage remains the witness generator, not the proof authority.
+Status: findings 1 through 23 have been promoted into Rocq theorem targets, `TwoLevelSlashing.tla` invariants where finite checking applies, and `docs/casper/theory/slashing/` documentation/test-plan entries. Findings 24 through 32 are tracked deterministic scenario-corpus findings. Findings 33 and later are Hypothesis-backed, deep-threat, DAG, and objective-frontier findings that have been reduced to deterministic Sage witnesses before promotion. Sage remains the witness generator, not the proof authority.
 
 ## Confirmed model findings
 
@@ -502,7 +502,7 @@ assumptions concrete.
 Traceability status: represented by
 `sage_evidence_denial_min_cut_search` and
 `hypothesis_frontier_adaptive_evidence_denial`, classified as
-`model_boundary` in `docs/theory/slashing/slashing-traceability.md`, and
+`model_boundary` in `docs/casper/theory/slashing/slashing-traceability.md`, and
 covered by the TLA+ visibility/fairness classes plus Rust UC-83, UC-90,
 UC-95, and UC-109. No production Rust bug is confirmed by this witness.
 

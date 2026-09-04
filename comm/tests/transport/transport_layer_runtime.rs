@@ -99,8 +99,10 @@ impl TransportLayerTestRuntime {
 
     /// Create transport layer server
     pub fn create_transport_layer_server(&self, env: &TlsEnvironment) -> TransportServer {
-        // Create RP configuration for the server
-        let rp_config = create_rp_conf_ask(env.peer.clone(), None, None);
+        // Create RP configuration for the server. The explicit timeout also
+        // bounds the server-side TLS handshake; the 1ms fallback inside
+        // create_rp_conf_ask aborts handshakes under load (flaky specs).
+        let rp_config = create_rp_conf_ask(env.peer.clone(), Some(Duration::from_secs(5)), None);
 
         let transport_server = GrpcTransportServer::new(
             rp_config,

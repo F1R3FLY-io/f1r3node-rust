@@ -1,6 +1,6 @@
 // UC-106 — Two *distinct* equivocation children are required to neglect.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-106.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-106.
 // Theorems: T-9.11, T-2 (detection complete).
 //
 // Scenario: one equivocation child alone is not neglect — only two

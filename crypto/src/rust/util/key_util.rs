@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use eyre::{Context, Result};
+use eyre::{Result, WrapErr};
 use hex;
 use openssl::pkey::PKey;
 
@@ -82,7 +82,7 @@ impl KeyUtil {
             .map_err(|e| eyre::eyre!("Failed to create encrypted PEM: {}", e))?;
 
         // Write to file
-        std::fs::write(path, encrypted_pem).with_context(|| {
+        std::fs::write(path, encrypted_pem).wrap_err_with(|| {
             format!(
                 "Failed to write encrypted private key to: {}",
                 path.display()
@@ -107,7 +107,7 @@ impl KeyUtil {
 
         // Write to file
         std::fs::write(path, public_pem)
-            .with_context(|| format!("Failed to write public key PEM to: {}", path.display()))?;
+            .wrap_err_with(|| format!("Failed to write public key PEM to: {}", path.display()))?;
 
         Ok(())
     }
@@ -122,7 +122,7 @@ impl KeyUtil {
 
         // Write to file
         std::fs::write(path, hex_string)
-            .with_context(|| format!("Failed to write public key hex to: {}", path.display()))?;
+            .wrap_err_with(|| format!("Failed to write public key hex to: {}", path.display()))?;
 
         Ok(())
     }

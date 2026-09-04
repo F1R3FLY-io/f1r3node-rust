@@ -108,6 +108,7 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     estimator: Arc<Mutex<Option<Estimator>>>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
 }
 
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
@@ -146,6 +147,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+        state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
     ) -> Self {
         let state = Self {
             transport_layer,
@@ -181,6 +183,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             runtime_manager,
             estimator: Arc::new(Mutex::new(Some(estimator))),
             heartbeat_signal_ref,
+            state_items_tx,
         };
         metrics::gauge!(
             INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC,
@@ -524,6 +527,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 self.casper_shard_conf.max_parent_depth,
                 self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
             );
+        let min_state_block_number =
+            crate::rust::util::rspace_history_horizon::lfs_min_state_block_number(
+                start_block_number,
+                self.casper_shard_conf.max_parent_depth,
+                self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
+            );
 
         tracing::info!(
             "request_approved_state: start (block {}, min_height {})",
@@ -652,6 +661,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     &self.block_store,
                     &approved_block.candidate.block,
                     &self.casper_shard_conf,
+                    min_state_block_number,
                 )
                 .map_err(|e| CasperError::KvStoreError(e))?;
 
@@ -749,11 +759,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // Mergeable-channel metadata is not committed by the block and cannot
         // be authenticated from a peer response. Reconstruct it from the
         // locally replayed block instead.
-        self.replay_blocks_for_mergeable_channels(
-            approved_block,
-            min_block_number_for_deploy_lifespan,
-        )
-        .await?;
+        self.replay_blocks_for_mergeable_channels(approved_block, min_state_block_number)
+            .await?;
 
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
@@ -1101,6 +1108,20 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // RuntimeManager is lock-free Arc<RuntimeManager>; clone the Arc.
         let runtime_manager = self.runtime_manager.clone();
 
+        if let Err(error) =
+            crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
+                &runtime_manager,
+                &genesis_post_state_hash,
+                &self.casper_shard_conf.native_token_name,
+                &self.casper_shard_conf.native_token_symbol,
+                self.casper_shard_conf.native_token_decimals,
+            )
+            .await
+        {
+            self.engine_cell.report_startup_failure(error.clone());
+            return Err(error);
+        }
+
         let estimator = self
             .estimator
             .lock()
@@ -1248,6 +1269,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             wal_payload_ctx,
             &self.engine_cell,
             &self.event_publisher,
+            self.state_items_tx.clone(),
         )
         .await?;
 
@@ -1265,19 +1287,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         tracing::info!(
             "create_casper_and_transition_to_running: transition_to_running completed successfully"
         );
-
-        // Guard joiners (first-time connections requesting an approved block from
-        // peers) against config drift: the node's local native-token-* values
-        // must match what this network baked into the TokenMetadata contract at
-        // genesis. See casper/src/rust/util/token_metadata_check.rs for details.
-        crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
-            &self.runtime_manager,
-            &genesis_post_state_hash,
-            &self.casper_shard_conf.native_token_name,
-            &self.casper_shard_conf.native_token_symbol,
-            self.casper_shard_conf.native_token_decimals,
-        )
-        .await?;
 
         self.transport_layer
             .send_fork_choice_tip_request(&self.connections_cell, &self.rp_conf_ask)

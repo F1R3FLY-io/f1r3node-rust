@@ -1,0 +1,61 @@
+' Component/Tree Diagram 03 — GHOST heaviest-subtree selection (worked example).
+'
+' The multi-level DAG from the Wolfram/TLA+ witnesses
+' (formal/wolfram/fork_choice/ghost_heaviest_subtree.wl):
+'   root children have cumulative scores 60, 40, and 30;
+'   the 60 branch splits into terminal scores 30 and 30;
+'   the 40 branch has terminal score 40; block 4 is shared by branches 1 and 6.
+' Greedy GHOST chooses 0 → 1 → 3. Global terminal sorting would wrongly choose 5.
+'
+' Render:
+'   plantuml -tsvg docs/casper/theory/fork-choice/diagrams/03-ghost-heaviest-subtree.puml
+
+@startuml 03-ghost-heaviest-subtree
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam rectangle {
+  BorderColor #333333
+  FontName    "monospace"
+  FontSize    10
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title GHOST heaviest-subtree selection
+
+' Node color legend:
+'   green  (#A5D6A7) = CHOSEN heaviest-subtree path (0 → 1 → 3)
+'   white  (#FFFFFF) = not chosen
+' Edge color legend:
+'   green  (#2E7D32) = chosen descent (max cumulative score wins)
+'   gray   (#90A4AE) = not-chosen child
+
+rectangle "block 0  (root / LCA)\nscore = 110" as N0 #A5D6A7
+rectangle "block 1  ◀ chosen subtree\nscore = 60" as N1 #A5D6A7
+rectangle "block 2\nscore = 40" as N2 #FFFFFF
+rectangle "block 6\nscore = 30" as N6 #FFFFFF
+rectangle "block 3  ◀ GHOST head\nscore = 30" as N3 #A5D6A7
+rectangle "block 4  (shared terminal)\nscore = 30" as N4 #FFFFFF
+rectangle "block 5  (global leaf max; NOT head)\nscore = 40" as N5 #FFCDD2
+
+N0 -[#2E7D32,bold]-> N1 : 60 > 40 > 30
+N0 -[#90A4AE]-> N2 : secondary subtree
+N0 -[#90A4AE]-> N6 : secondary subtree
+N1 -[#2E7D32,bold]-> N3 : tie; lower hash wins
+N1 -[#90A4AE]-> N4 : retained terminal
+N2 -[#C62828]-> N5 : retained terminal, not head
+N6 -[#90A4AE]-> N4 : shared edge; deduplicate
+
+legend bottom
+  Greedy path: 0 → 1 → 3. Exact terminal frontier: {3, 4, 5}.
+  Ranked result: [3, 5, 4]. A global terminal sort [5, 3, 4] is not GHOST.
+  Rocq Rank + TerminalFrontier; TLA⁺ GhostTerminalFrontier;
+  Wolfram ghost_heaviest_subtree.wl.
+endlegend
+
+@enduml

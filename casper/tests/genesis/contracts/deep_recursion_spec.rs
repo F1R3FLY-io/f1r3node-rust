@@ -37,6 +37,7 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
     .await;
 
     let rand = Blake2b512Random::create_from_length(128);
+    let _unmetered = runtime.cost.enter_unmetered_scope();
 
     match tokio::time::timeout(
         timeout,

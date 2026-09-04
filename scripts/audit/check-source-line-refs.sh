@@ -3,7 +3,7 @@
 # in the slashing documentation suite.
 #
 # For every backtick citation of the form `<file>.rhox:NNN` or `<file>.rs:NNN`
-# in docs/theory/slashing/**/*.md, verify the cited line in the source file
+# in docs/casper/theory/slashing/**/*.md, verify the cited line in the source file
 # contains a recognizable declaration (a Rholang `contract` send or a Rust
 # item definition).
 #
@@ -25,13 +25,13 @@ fi
 
 # Audit the WHOLE theory corpus, not just slashing.
 #
-# This was `docs/theory/slashing` only, and that narrowness was not harmless: it is
+# This was `docs/casper/theory/slashing` only, and that narrowness was not harmless: it is
 # exactly why `FtProvenance.v` could go on citing `engine/initializing.rs:1081-1099`
 # and `token_metadata_check.rs:91,105` after the 2026-07-15 dev merge DELETED both
 # anchors, with no gate firing. A model that cites a line which no longer says what
 # it claims is a silently-false model. Widening the scope converts that whole class
 # from invisible to gated.
-DOCS_DIR="${REPO}/docs/theory"
+DOCS_DIR="${REPO}/docs/casper/theory"
 QUIET=0
 if [[ "${1:-}" == "--quiet" ]]; then QUIET=1; fi
 

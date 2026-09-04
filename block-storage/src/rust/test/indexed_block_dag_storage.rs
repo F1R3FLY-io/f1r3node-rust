@@ -5,13 +5,14 @@ use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, FinalizationCertificate};
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
 use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
+use crate::rust::finality::finalization_ledger::FinalizationHead;
 
 pub struct IndexedBlockDagStorage {
     underlying: BlockDagKeyValueStorage,
@@ -65,9 +66,11 @@ impl IndexedBlockDagStorage {
         }
         let dag = self.underlying.get_representation_internal()?;
         let next_creator_seq_num = if block.seq_num == 0 {
-            dag.latest_message(&block.sender)?
-                .map_or(-1, |b| b.sequence_number)
-                + 1
+            match dag.latest_message_hash(&block.sender) {
+                Some(hash) if dag.canonical_genesis_hash() == Some(&hash) => 1,
+                Some(hash) => dag.lookup_unsafe(&hash)?.sequence_number + 1,
+                None => 0,
+            }
         } else {
             block.seq_num
         };
@@ -144,6 +147,16 @@ impl IndexedBlockDagStorage {
             .await
     }
 
+    pub fn finalization_head(&self) -> Result<Option<FinalizationHead>, KvStoreError> {
+        self.underlying.finalization_head()
+    }
+
+    pub fn finalized_floor_certificate(
+        &self,
+    ) -> Result<Option<FinalizationCertificate>, KvStoreError> {
+        self.underlying.finalized_floor_certificate()
+    }
+
     pub fn lookup_by_id(&self, id: i64) -> Result<Option<BlockMessage>, KvStoreError> {
         // DashMap is already thread-safe, so no additional lock needed
         Ok(self.id_to_blocks.get(&id).map(|b| b.clone()))
@@ -165,5 +178,177 @@ impl crate::rust::dag::equivocations_access::EquivocationsAccess for IndexedBloc
         f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
         IndexedBlockDagStorage::access_equivocations_tracker(self, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    use models::rust::bond_generation::BondGeneration;
+    use models::rust::equivocation_record::EquivocationRecord;
+    use models::rust::validator::Validator;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::*;
+    use crate::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    fn block(number: i64, seq_num: i32, parents: Vec<BlockHash>) -> BlockMessage {
+        let certified_number = if parents.is_empty() {
+            number
+        } else {
+            number.max(1)
+        };
+        get_random_block(
+            Some(certified_number),
+            Some(seq_num),
+            None,
+            None,
+            None,
+            Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+            None,
+            Some(parents),
+            Some(vec![]),
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+        )
+    }
+
+    async fn storage() -> IndexedBlockDagStorage {
+        let mut kvm = InMemoryStoreManager::new();
+        IndexedBlockDagStorage::new(BlockDagKeyValueStorage::new(&mut kvm).await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn insert_indexed_assigns_sequential_ids_and_serves_lookups() {
+        let mut storage = storage().await;
+        let genesis = block(0, 0, vec![]);
+
+        let first = storage
+            .insert_indexed(
+                &block(0, 0, vec![genesis.block_hash.clone()]),
+                &genesis,
+                false,
+            )
+            .unwrap();
+        assert_eq!(first.body.state.block_number, 0);
+        assert_eq!(first.seq_num, 0);
+
+        let second = storage
+            .insert_indexed(
+                &block(0, 0, vec![genesis.block_hash.clone()]),
+                &genesis,
+                false,
+            )
+            .unwrap();
+        assert_eq!(second.body.state.block_number, 1);
+
+        assert_eq!(storage.lookup_by_id(0).unwrap(), Some(first.clone()));
+        assert_eq!(storage.lookup_by_id(1).unwrap(), Some(second.clone()));
+        assert_eq!(storage.lookup_by_id(99).unwrap(), None);
+        assert_eq!(storage.lookup_by_id_unsafe(1), second.clone());
+
+        let dag = storage.get_representation().unwrap();
+        assert!(dag.contains(&genesis.block_hash));
+        assert!(dag.contains(&first.block_hash));
+        assert!(dag.contains(&second.block_hash));
+    }
+
+    #[tokio::test]
+    async fn insert_indexed_keeps_explicit_sequence_numbers() {
+        let mut storage = storage().await;
+        let genesis = block(0, 0, vec![]);
+
+        let inserted = storage
+            .insert_indexed(
+                &block(0, 3, vec![genesis.block_hash.clone()]),
+                &genesis,
+                false,
+            )
+            .unwrap();
+        assert_eq!(inserted.seq_num, 3);
+        assert_eq!(inserted.body.state.block_number, 3);
+        assert_eq!(storage.lookup_by_id(3).unwrap(), Some(inserted));
+    }
+
+    #[tokio::test]
+    async fn insert_indexed_invalid_lands_in_the_invalid_set() {
+        let mut storage = storage().await;
+        let genesis = block(0, 0, vec![]);
+
+        let inserted = storage
+            .insert_indexed(
+                &block(0, 0, vec![genesis.block_hash.clone()]),
+                &genesis,
+                true,
+            )
+            .unwrap();
+
+        let dag = storage.get_representation().unwrap();
+        assert!(dag
+            .invalid_blocks()
+            .iter()
+            .any(|meta| meta.block_hash == inserted.block_hash));
+    }
+
+    #[tokio::test]
+    async fn inject_registers_a_block_at_an_explicit_index() {
+        let mut storage = storage().await;
+        let genesis = block(0, 0, vec![]);
+        storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
+
+        let injected = block(1, 1, vec![genesis.block_hash.clone()]);
+        storage.inject(7, injected.clone(), false).unwrap();
+
+        assert_eq!(storage.lookup_by_id(7).unwrap(), Some(injected.clone()));
+        let dag = storage.get_representation().unwrap();
+        assert!(dag.contains(&injected.block_hash));
+    }
+
+    #[tokio::test]
+    async fn equivocation_tracker_round_trips_through_the_indexed_wrapper() {
+        let storage = storage().await;
+        let record = EquivocationRecord::new(
+            Validator::from(vec![3u8; 65]),
+            BondGeneration::new(2).unwrap(),
+            0,
+            std::collections::BTreeSet::from([BlockHash::from(vec![0xAB; 32])]),
+        );
+
+        storage
+            .access_equivocations_tracker(|tracker| tracker.add(record.clone()))
+            .unwrap();
+        let records = storage
+            .access_equivocations_tracker(|tracker| tracker.data())
+            .unwrap();
+        assert_eq!(records, HashSet::from([record]));
+    }
+
+    #[tokio::test]
+    async fn record_directly_finalized_marks_held_ancestry() {
+        let mut storage = storage().await;
+        let genesis = block(0, 0, vec![]);
+        storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
+        let b1 = block(1, 1, vec![genesis.block_hash.clone()]);
+        storage.insert(&b1, InsertMode::Normal).unwrap();
+        let b2 = block(2, 2, vec![b1.block_hash.clone()]);
+        storage.insert(&b2, InsertMode::Normal).unwrap();
+
+        storage
+            .record_directly_finalized(b2.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+
+        let dag = storage.get_representation().unwrap();
+        assert_eq!(dag.last_finalized_block(), b2.block_hash);
+        assert!(dag.is_finalized(&b1.block_hash));
+        assert!(dag.is_finalized(&b2.block_hash));
     }
 }

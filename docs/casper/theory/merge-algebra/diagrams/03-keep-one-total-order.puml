@@ -1,0 +1,94 @@
+' Component Diagram 03 — Keep-one total order: why the merge cannot fork (Finding B).
+'
+' Two side-by-side lanes contrasting the deployed 4-key comparator (v0.4.16)
+' against the shipped 5-key fix (commit c0b7609e):
+'   LEFT  (red)   4-key tower (Σcost DESC, max-cost DESC, min deploy_id ASC,
+'         post_state_hash ASC): post_state_hash is NOT injective over distinct
+'         chains and different-parent chains can share a min deploy_id, so cmp
+'         can return Equal for two DISTINCT chains ⟹ the min_by / sort winner
+'         leaks the reseeded HashSet order ⟹ node-dependent rejected-set ⟹ FORK.
+'   RIGHT (green) 5-key tower: APPEND key 5 = deploys_with_cost.cmp (the Eq/Hash
+'         key itself, a deterministic shortlex order). Because keys 1-4 are
+'         FUNCTIONS of that set, cmp==Equal ⟺ the sets are equal ⟺ Eq, so the
+'         Equal-class ⊆ Eq: no two DISTINCT chains tie ⟹ UNIQUE winner ⟹ no fork.
+'
+' Mirrors fork-choice diagram 04, but STRICTLY FIRMER: the injective terminal
+' key discharges totality with NO NoDup / hash-distinctness premise (Rocq
+' KeepOneOrder is unconditional where TieBreak.v needs NoDup (map ehash l)).
+'
+' Witnesses: Rocq KeepOneOrder.keep_one_total_order / keep_one_equal_impl_eq /
+'            output_indep_of_input_perm, Z3 keep_one_total_order.py (+ the key-5
+'            sat probe), Rust deploy_chain_index.rs:151-230.
+'
+' Render:
+'   plantuml -tsvg docs/casper/theory/merge-algebra/diagrams/03-keep-one-total-order.puml
+
+@startuml 03-keep-one-total-order
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam rectangle {
+  FontName "monospace"
+  FontSize 10
+}
+skinparam package {
+  BackgroundColor<<Good>> #EEFAF1
+  BackgroundColor<<Bad>>  #FDECEA
+  BorderColor #444444
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Keep-one total order — why the merge cannot fork (Finding B)
+
+' Node color legend:
+'   green (#C8E6C9 / #A5D6A7) = the SHIPPED 5-key order (safe, deterministic)
+'   red   (#FFCDD2 / #EF9A9A) = the deployed 4-key order (ties ⟹ fork)
+' Edge color legend:
+'   green (#2E7D32) = safe derivation chain
+'   red   (#C62828) = fork derivation chain
+
+package "4-key comparator — v0.4.16 (FORKS on ties)" <<Bad>> {
+  rectangle "1. Σcost DESC\n2. max single cost DESC\n3. min deploy_id ASC\n4. post_state_hash ASC" as B1 #FFCDD2
+  rectangle "key 4 is NOT injective:\npost_state_hash need not distinguish\ndistinct chains; different-parent chains\ncan share a min deploy_id" as B2 #FFCDD2
+  rectangle "cmp a b = Equal for two DISTINCT chains\n(Equal-class ⊄ Eq)" as B3 #FFCDD2
+  rectangle "min_by / sort winner LEAKS the reseeded\nHashSet order (branch.0.iter())" as B4 #FFCDD2
+  rectangle "nodes reject DIFFERENT deploys ⟹ FORK ✗\n(divergent pre-state / rejected-set;\nvalidation recompute mismatches)" as B5 #EF9A9A
+  B1 -[#C62828,bold]-> B2
+  B2 -[#C62828,bold]-> B3
+  B3 -[#C62828,bold]-> B4
+  B4 -[#C62828,bold]-> B5
+}
+
+package "5-key comparator — the fix c0b7609e (SAFE)" <<Good>> {
+  rectangle "keys 1-4 (byte-identical to v0.4.16)\n5. deploys_with_cost.cmp  ASC\n   = HashableSet<DeployIdWithCost>: Ord\n   (the injective Eq/Hash key)" as G1 #C8E6C9
+  rectangle "keys 1-4 are FUNCTIONS of the deploy set,\nkey 5 IS the set (shortlex, HashSet-order\nindependent) ⟹ no cryptographic assumption" as G2 #C8E6C9
+  rectangle "cmp a b = Equal  ⟺  the sets are equal  ⟺  a = b\n(Equal-class ⊆ Eq) — keep_one_equal_impl_eq" as G3 #C8E6C9
+  rectangle "min_by / sort winner is UNIQUE;\nHashSet order is WASHED OUT by the total sort\n(output_indep_of_input_perm)" as G4 #C8E6C9
+  rectangle "every node rejects the SAME deploys ⟹ NO FORK ✓\n(recompute matches on every node)" as G5 #A5D6A7
+  G1 -[#2E7D32,bold]-> G2
+  G2 -[#2E7D32,bold]-> G3
+  G3 -[#2E7D32,bold]-> G4
+  G4 -[#2E7D32,bold]-> G5
+}
+
+' keep the two lanes side by side
+B1 -[hidden]-> G1
+B5 -[hidden]-> G5
+
+legend bottom
+  The distinction is INJECTIVITY of the terminal key. Appending the Eq/Hash key
+  (deploys_with_cost.cmp, a deterministic shortlex order) makes the Equal-class of
+  cmp EXACTLY the identity, so no two distinct chains tie — a STRICT TOTAL order.
+  Rocq KeepOneOrder is UNCONDITIONAL (no NoDup premise, unlike fork-choice
+  TieBreak.v). The fix is APPEND-ONLY: keys 1-4 are unchanged, so key 5 only
+  resolves ties that were already HashSet-nondeterministic on v0.4.16 ⟹ rolling-
+  upgrade-safe. Z3 keep_one_total_order.py proves totality + argmax uniqueness and
+  the "without key 5, distinct chains tie" sat probe.
+endlegend
+
+@enduml

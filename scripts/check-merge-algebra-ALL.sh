@@ -6,7 +6,7 @@
 # formal layer for the feature under a bounded memory envelope:
 #
 #   1. Rocq  (AUTHORITATIVE) — builds formal/rocq/merge_algebra and asserts the
-#      four capstones (merge_algebra_{keeporder,netting,conflict,split}_correct)
+#      five capstones (keep-order, netting, conflict, split, and tag binding)
 #      are axiom-free ("Closed under the global context"), then re-checks them
 #      with the TRUSTED kernel (coqchk). Any failure here fails the gate.
 #      SKIPPED only while no theories/*.v exist yet (scaffold phase).
@@ -26,12 +26,12 @@
 #      SKIPPED if cargo is absent.
 #   4. Diagrams (fail-soft) — renders the dossier's PlantUML set and asserts a
 #      populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is
-#      absent OR docs/theory/merge-algebra/diagrams/*.puml do not exist yet (the
+#      absent OR docs/casper/theory/merge-algebra/diagrams/*.puml do not exist yet (the
 #      dossier is built separately).
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/Wolfram
 # step) into .github/workflows/* — an earlier formal-CI workflow was deliberately
-# removed. See docs/theory/merge-algebra/merge-algebra-verification.md.
+# removed. See docs/casper/theory/merge-algebra/merge-algebra-verification.md.
 #
 # Env knobs:
 #   ROCQ_MEMMAX=16G   systemd MemoryMax for the Rocq build (default 16G)
@@ -41,7 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROCQ_DIR="$REPO_ROOT/formal/rocq/merge_algebra"
 Z3_DIR="$REPO_ROOT/formal/z3/merge_algebra"
-DIAG_DIR="$REPO_ROOT/docs/theory/merge-algebra/diagrams"
+DIAG_DIR="$REPO_ROOT/docs/casper/theory/merge-algebra/diagrams"
 ROCQ_MEMMAX="${ROCQ_MEMMAX:-16G}"
 LOG_DIR="$REPO_ROOT/target/verification/merge-algebra"
 mkdir -p "$LOG_DIR"
@@ -68,24 +68,25 @@ elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]];
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
   ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
   if capped make -C "$ROCQ_DIR" -j1 >"$LOG_DIR/ma_rocq_build.log" 2>&1; then
-    pass "Rocq build (KeepOneOrder, ChannelNetting, ConflictSoundness, EventLogSplit, MainTheorem)"
+    pass "Rocq build (KeepOneOrder, ChannelNetting, ConflictSoundness, EventLogSplit, MergeTagBinding, MainTheorem)"
     tmpd=$(mktemp -d "$LOG_DIR/gate-check.XXXXXX")
     chk="$tmpd/GateCheck.v"
-    # The 4 capstones must all be axiom-free (Closed under the global context).
+    # The 5 capstones must all be axiom-free (Closed under the global context).
     cat > "$chk" <<'EOF'
 From MergeAlgebra Require Import MainTheorem.
 Print Assumptions merge_algebra_keeporder_correct.
 Print Assumptions merge_algebra_netting_correct.
 Print Assumptions merge_algebra_conflict_correct.
 Print Assumptions merge_algebra_split_correct.
+Print Assumptions merge_algebra_tag_binding_correct.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" MergeAlgebra "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "4" ]]; then
-      pass "all 4 capstones axiom-free (keeporder, netting, conflict, split)"
+    if [[ "$n_closed" == "5" ]]; then
+      pass "all 5 capstones axiom-free (keeporder, netting, conflict, split, tag binding)"
     else
-      fail "capstones NOT all axiom-free ($n_closed/4 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
+      fail "capstones NOT all axiom-free ($n_closed/5 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
@@ -137,8 +138,8 @@ if command -v cargo >/dev/null 2>&1; then
   # check_single_value_cell_not_overfilled rejects a merge IFF the post-merge
   # single-value NUMBER cell would hold > 1 value (produce-only over-fill), plus
   # Kevin's §3c unit witnesses (produce-only reject / RMW allow / registry exempt).
-  if cargo test -p rholang --lib merging::rholang_merging_logic >"$LOG_DIR/ma_rust_rholang.log" 2>&1; then
-    pass "Rust rholang merging::rholang_merging_logic (§3c guard: produce-only over-fill rejected IFF result_len>1)"
+  if cargo test -p rholang --lib merging:: >"$LOG_DIR/ma_rust_rholang.log" 2>&1; then
+    pass "Rust rholang merging:: (§3c guard plus authenticated system merge-tag bindings)"
   else
     fail "Rust rholang merging::rholang_merging_logic tests failed (see $LOG_DIR/ma_rust_rholang.log)"; tail -20 "$LOG_DIR/ma_rust_rholang.log" | sed 's/^/      /'
   fi
@@ -173,7 +174,7 @@ if command -v plantuml >/dev/null 2>&1; then
     done
     [[ "$diag_ok" == "1" ]] && pass "all $n_puml PlantUML diagrams render clean (populated SVG, no stderr)"
   else
-    skip "no .puml sources in docs/theory/merge-algebra/diagrams (dossier built separately)"
+    skip "no .puml sources in docs/casper/theory/merge-algebra/diagrams (dossier built separately)"
   fi
 else
   skip "no plantuml on PATH"

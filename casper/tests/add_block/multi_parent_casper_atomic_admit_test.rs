@@ -2,9 +2,10 @@
 //
 // `block_admission::admit_handle_valid_block` is the production caller
 // of `block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer`
-// for the *valid* admission path (the invalid-path counterpart is
-// `validation_dispatcher::dispatch_handle_invalid_block`, exercised
-// by `dispatch_catchall_mints_record_for_each_slashable_variant.rs`).
+// for the *valid* admission path. Demoted invalid verdicts are covered by
+// `dispatch_routes_demoted_variants_to_the_drop_arm.rs`. The two special
+// equivocation verdicts are covered by `integration_t_admissible_equivocation.rs`
+// and `integration_t_ignorable_equivocation.rs`.
 //
 // The atomicity contract is:
 //   At every observable boundary,  block ∈ DAG  ⇔  block ∉ casper_buffer.

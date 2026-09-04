@@ -222,7 +222,7 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
         .body
         .rejected_deploys
         .iter()
-        .map(|r| r.sig.to_vec())
+        .map(|r| r.deploy_id().to_vec())
         .collect();
 
     let bridge1_rejected = rejected_sigs.iter().any(|s| s == &bridge1_sig.to_vec());

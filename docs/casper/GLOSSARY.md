@@ -1,0 +1,818 @@
+# Casper Glossary
+
+> This glossary is **load-bearing**: the Casper documentation, design
+> records, and TDD plans cite its anchors directly. It holds the
+> casper-domain canonical terms. It was split from the repository
+> glossary so the vocabulary travels with the Casper consensus on
+> extraction.
+
+Repository-wide terms (release, soak, and metrics vocabulary) stay in
+[docs/Glossary.md](../Glossary.md), and every moved term keeps a pointer
+stub there at its original anchor. The slashing notation glossary stays
+authoritative for mathematical notation in
+[theory/slashing/design/02-glossary-and-notation.md](theory/slashing/design/02-glossary-and-notation.md)
+(unification is tracked as BACKLOG-DOC-001).
+
+Each entry pins one canonical name to a **Preferred usage** statement.
+Run `/review-codebase --glossary-only` to audit anchor integrity.
+
+## Canonical Terms
+
+### Verification tier
+
+A verification tier is the CI budget class a formal check runs under: the
+**PR-gate tier** (fast checks on every push and pull request), the **nightly
+tier** (the fast TLC configurations that gate the scheduled
+`slashing-tests` run), and the **exhaustive tier** (opt-in via
+`RUN_EXHAUSTIVE_TLA=1`, dispatch-only, holding the configurations whose state
+spaces exceed the per-config cap). Tier membership is defined in
+`scripts/ci/check-tla-invariants.sh` and documented in
+`docs/casper/theory/slashing/design/14-test-plan.md` §14.6.
+
+**Preferred usage.** Use when describing *where and when* a check runs and
+what time budget it gets.
+*Distinguish from* [Implementation tier](#implementation-tier): verification
+tiers are CI budget classes; implementation tiers are code artifacts. A test
+exercising all three implementation tiers can run in any verification tier.
+*Avoid*: bare "tier" in new documents (ambiguous), "profile", "level".
+
+### Implementation tier
+
+An implementation tier is one of the three lock-step realizations of the
+slashing pipeline defined in
+`docs/casper/theory/slashing/design/14a-tier-architecture.md`: **Tier 1 Production**
+(the shipping Rust code), **Tier 2 Oracle** (the executable reference model),
+and **Tier 3 Harness** (the synthetic test driver). The triple-bisimilarity
+test pattern applies each event to all three and asserts agreement.
+
+**Preferred usage.** Use when describing which realization of the pipeline a
+piece of code or a test touches; qualify with the number and name ("Tier 2
+Oracle") on first use in a document.
+*Distinguish from* [Verification tier](#verification-tier): saying "the
+exhaustive tier" never refers to Production/Oracle/Harness.
+*Avoid*: "layer", "stage".
+
+### Model
+
+A model is a TLA+ specification of a slashing component: the base `.tla`
+module together with its `MC_*.tla` instantiation module under
+`formal/tlaplus/slashing/`. The detector model family is
+`MC_EquivocationDetector*`; `MC_EquivocationDetectorEager_3v` is the only
+three-validator detector model.
+
+**Preferred usage.** Use for the mathematical object TLC explores. Say
+"detector model" for members of the `MC_EquivocationDetector*` family.
+*Distinguish from* [Configuration](#configuration): one model may be checked
+under several configurations (safety, liveness, pre-fix regression).
+*Avoid*: "spec"/"specification" for TLA+ artifacts — those words are reserved
+for `docs/casper/theory/slashing/slashing-specification.md`.
+
+### Configuration
+
+A configuration is an `MC_*.cfg` file instantiating a
+[model](#model) for one TLC run: constant assignments plus the `INVARIANTS`
+and/or `PROPERTIES` it checks. The configuration is the unit
+`scripts/ci/check-tla-invariants.sh` iterates over, the unit
+[verification-tier](#verification-tier) membership is assigned to, and the
+unit the per-config cap applies to.
+
+**Preferred usage.** Use when discussing what CI actually runs, times, or
+moves between tiers.
+*Distinguish from* [Model](#model): moving a configuration to the exhaustive
+tier does not change the model it checks.
+*Avoid*: "config file" for the pair of `.tla`+`.cfg` (that pair is the
+model's instantiation; the configuration is specifically the `.cfg`).
+
+### Cap timeout
+
+A cap timeout is a [configuration](#configuration) exceeding
+`TLC_PER_CONFIG_TIMEOUT` (default 45 minutes) of wall clock, killed by the
+harness and reported distinctly from property failures. A cap timeout is a
+**resource outcome, not a verdict**: it says nothing about whether the
+checked property holds.
+
+**Preferred usage.** Use for any red result caused by the wall-clock cap.
+Load-bearing for EPIC-011: the exhaustive tier's red baseline is
+timeout-red, and green comes from restructuring configurations to complete —
+never from raising the cap without per-component attribution.
+*Distinguish from* [Violation](#violation): only a violation indicts the
+modeled algorithm; a cap timeout indicts the check's budget or structure.
+*Avoid*: "failure" unqualified, "TLC error".
+
+### Violation
+
+A violation is a TLC counterexample: an invariant breach or temporal-property
+failure accompanied by an error trace. A violation is the only red result
+that indicts the modeled algorithm (or the model's faithfulness to it).
+
+**Preferred usage.** Use only when TLC produced a trace. If the exhaustive
+liveness passes ever complete and report one, EPIC-011's contingency applies:
+stop and investigate the algorithm/model, do not tune the model until green.
+*Distinguish from* [Cap timeout](#cap-timeout): both make CI red; they mean
+different things and the CI script labels them differently.
+*Avoid*: "bug" (a violation may instead reveal model infidelity).
+
+### Safety configuration
+
+A safety configuration is a [configuration](#configuration) checking
+`INVARIANTS` only (e.g. `MC_EquivocationDetector_safety.cfg`). State-space
+exploration without liveness-graph construction; completes in bounded time
+proportional to distinct states.
+
+**Preferred usage.** Use for the invariants-only half of a liveness/safety
+split.
+*Distinguish from* [Liveness configuration](#liveness-configuration): the
+same model, the cheap half of the check.
+*Avoid*: "invariant config", "fast config" (fast describes a tier, not a
+property class).
+
+### Liveness configuration
+
+A liveness configuration is a [configuration](#configuration) checking
+temporal `PROPERTIES`, which requires strongly-connected-component analysis
+over the full behavior graph — the superlinear pass responsible for the
+exhaustive tier's [cap timeouts](#cap-timeout). The existing
+`MC_EquivocationDetector_liveness.cfg` demonstrates the pattern: split from
+its combined configuration, it completes in seconds. The **liveness/safety
+split** is the act of separating a combined configuration into a
+[safety configuration](#safety-configuration) and a liveness configuration
+with constants bounded to complete under the cap.
+
+**Preferred usage.** Use for the temporal-properties half of a split, and
+"liveness/safety split" for the restructuring pattern itself.
+*Distinguish from* [Safety configuration](#safety-configuration): the
+expensive half; bounding its constants must not reduce validator count below
+the property's needs (three, for detector models).
+*Avoid*: "temporal config".
+
+### Equivocation
+
+Equivocation is a validator signing two distinct blocks at the same sequence
+number (Definition 4.1 of the slashing specification; taxonomy in
+`02-glossary-and-notation.md` §2.6). The equivocation-class `InvalidBlock`
+variants are `AdmissibleEquivocation`, `NeglectedEquivocation`, and
+(post-fix) `IgnorableEquivocation`.
+
+**Preferred usage.** Use for the offence itself.
+*Distinguish from* [Equivocation detector](#equivocation-detector): the
+offence versus the component that detects it.
+*Avoid*: "double-signing" (Ethereum vocabulary; correct informally but not
+canonical here).
+
+### Bond generation
+
+A bond generation is the monotonic identity counter for one validator key.
+A completed withdrawal followed by a new bond advances the counter.
+Epoch changes, slash actions, and redemption do not advance the counter.
+
+**Preferred usage.** Use this term to bind evidence and effects to one
+[validator lifetime](#validator-lifetime). *Distinguish from* an activation
+epoch, which limits evidence eligibility but does not identify a lifetime.
+*Avoid*: bond epoch.
+
+### Validator lifetime
+
+A validator lifetime is the pair of a validator public key and its
+[bond generation](#bond-generation). One lifetime can cross ordinary epoch
+boundaries.
+
+**Preferred usage.** Use this term for validator identity across consensus,
+evidence, and slashing. *Distinguish from* an activation epoch and a public
+key without a bond generation. *Avoid*: validator epoch.
+
+### Equivocation detector
+
+The equivocation detector is the detection-pipeline component that returns an
+`InvalidBlock` verdict for a (validator, sequence) pair — the `detect(v, s)`
+label in the slashing LTS, realized in Rust as `check_equivocations` and
+modeled by the detector [model](#model) family.
+
+**Preferred usage.** Use for the component; use "detector model" for its
+TLA+ models. Detection of [equivocation](#equivocation) is inherently
+multi-validator — which is why parking the only three-validator detector
+model in the exhaustive tier left a coverage gap.
+*Distinguish from* [Model](#model): the detector is code under verification;
+a detector model is one artifact verifying it.
+*Avoid*: "tracker" (the tracker is the storage-side record keeper, §05).
+
+### Slash closure
+
+The slash closure is the reverse-reachability fixed point over the
+[neglect graph](#neglect-graph): `Closure₀ = DirectOffenders`;
+`Closureᵢ₊₁ = Closureᵢ ∪ {v : NeglectEdges(v) ∩ Closureᵢ ≠ ∅}`. Its
+properties are the T-11/T-12 theorem family
+(`02-glossary-and-notation.md` §2.7.1).
+
+**Preferred usage.** Use for the fixed-point operator and its result set.
+*Distinguish from* [Neglect graph](#neglect-graph): the closure is computed
+over the graph; they are not interchangeable.
+*Avoid*: "slash set" (ambiguous with the LTS `Sl` state component).
+
+### Neglect graph
+
+The neglect graph is the directed evidence graph with validators as vertices
+and an edge `neglecter → offender` wherever the neglecter cited an invalid
+offender block without an accompanying slash
+(`docs/casper/theory/slashing/design/08-two-level-and-collusion.md` §08.2).
+
+**Preferred usage.** Use for the evidence structure that
+[slash closure](#slash-closure) traverses.
+*Distinguish from* [Slash closure](#slash-closure): graph versus the
+fixed point computed over it.
+*Avoid*: "evidence graph" unqualified (the report action mutates which
+edges are *active*; the neglect graph is the specific active-edge structure).
+
+### Block proposal
+
+Block proposal is the end-to-end process of selecting parents and deploys,
+executing them, assembling and signing a candidate block, and self-validating
+it before publication. The process consumes a [consensus snapshot](#consensus-snapshot),
+applies [deploy admission](#deploy-admission), and finishes with
+[block validation](#block-validation).
+
+**Preferred usage.** Use for the end-to-end process of selecting parents and
+deploys, executing them, assembling a block, and self-validating it; use
+[Block creator](#block-creator) for the Rust module implementing that process.
+*Distinguish from* [Block creator](#block-creator): the proposal is the process;
+the creator is the Rust module implementing it.
+*Avoid*: "proposer pipeline" and "create-block flow".
+
+### Block creator
+
+The block creator is the Rust module centered in
+`casper/src/rust/blocks/proposer/block_creator.rs` that implements
+[block proposal](#block-proposal), including [deploy admission](#deploy-admission),
+state computation, assembly, and packaging.
+
+**Preferred usage.** Use for the Rust module that implements
+[Block proposal](#block-proposal); use "block proposal" for the process and
+"validator" for the protocol participant.
+*Distinguish from* [Block proposal](#block-proposal): the creator is a module;
+the proposal is the process hidden behind its interface.
+*Avoid*: "proposer" when referring specifically to the Rust module.
+
+### Deploy admission
+
+Deploy admission is the deterministic decision process that applies
+eligibility, recovery, ordering, count limits, and byte limits before user
+deploys enter a [block proposal](#block-proposal). It includes selection from
+the [rejected deploy buffer](#rejected-deploy-buffer) but excludes Rholang
+execution.
+
+**Preferred usage.** Use for deterministic eligibility, recovery, ordering,
+count limits, and byte limits applied before user deploys enter a proposed
+block; use "execution" for running admitted deploys in Rholang.
+*Distinguish from* [Block proposal](#block-proposal): admission decides which
+user deploys may enter; proposal also selects parents, executes deploys,
+assembles, signs, and self-validates.
+*Distinguish from execution*: admission selects deploys; execution runs the
+selected deploys and computes state effects.
+*Avoid*: "deploy filtering" when recovery, ordering, or capacity policy is
+also involved.
+
+### Block validation
+
+Block validation is the ordered classification of a received or self-created
+block through structural, cryptographic, state-replay, equivocation, and
+deploy checks. It consumes a [consensus snapshot](#consensus-snapshot) and
+returns a valid, invalid, or exceptional outcome.
+
+**Preferred usage.** Use for the ordered rules that classify a received or
+self-created block; name the specific rule when discussing signature checks,
+checkpoint replay, equivocation, or deploy constraints.
+*Distinguish from* [Block proposal](#block-proposal): validation classifies a
+block; proposal constructs one and invokes self-validation as its final step.
+*Avoid*: "validation pipeline" when referring to one rule rather than the
+whole ordered classification.
+
+### Consensus snapshot
+
+A consensus snapshot is the captured view of DAG metadata, selected parents,
+justifications, deploy visibility, validator state, and shard configuration
+used by [block proposal](#block-proposal) and [block validation](#block-validation).
+It is treated as stable for the duration of either process.
+
+**Preferred usage.** Use for the captured DAG and on-chain state consumed by
+[Block proposal](#block-proposal) and [Block validation](#block-validation);
+use "DAG" or "on-chain state" only for those constituent views.
+*Distinguish from DAG*: the snapshot includes a DAG view plus parents,
+justifications, deploy visibility, validator state, and configuration.
+*Avoid*: "state" unqualified when the full captured view is intended.
+
+### Test node
+
+A test node is the in-process fixture that composes production-shaped Casper,
+storage, runtime, and transport modules to drive integration scenarios. It
+exercises [block proposal](#block-proposal) and [block validation](#block-validation)
+without launching the production node runtime.
+
+**Preferred usage.** Use for the in-process node fixture that drives Casper
+integration scenarios; use "node" for the production runtime and "test
+adapter" for a narrower dependency substitute.
+*Distinguish from node/test adapter*: a test node composes production-shaped
+modules into an in-process fixture; a test adapter substitutes one dependency
+at a seam.
+*Avoid*: "mock node" because the fixture contains substantial production
+implementations.
+
+### Rejected deploy buffer
+
+The rejected deploy buffer is the persistent storage module holding
+merge-rejected deploys that remain eligible for later
+[deploy admission](#deploy-admission). Its contents survive beyond the block
+whose [merge scope](#merge-scope) produced a rejection.
+
+**Preferred usage.** Use for persistent storage of merge-rejected deploys that
+may be admitted again; use "rejected deploys" for entries recorded in a block
+body rather than the storage module.
+*Distinguish from rejected deploys*: the buffer persists retryable work across
+blocks; rejected deploys are block-body records of a particular merge result.
+*Avoid*: "rejection cache" because persistence and retry eligibility are
+load-bearing properties.
+
+### Latest message
+
+A latest message is the most recent block a bonded validator has produced,
+as recorded in a view or in a block's frozen justifications. Fork choice
+scores from the latest messages, and the
+[merged-frontier retry packaging](#merged-frontier-retry-packaging) gate
+tests whether the selected parent set collectively covers all valid latest
+messages.
+
+**Preferred usage.** Use for the per-validator tip a view or a
+justification set records.
+*Distinguish from* a justification: a justification is the recorded
+reference to a latest message inside a block.
+*Avoid*: "tip" unqualified, because the DAG has many tips and only one
+latest message per validator.
+
+### Canonical genesis placeholder
+
+A canonical genesis placeholder is an exact latest-message slot for a new
+validator key before its first block. The slot retains the validator stake and
+exact wire identity. A restored node can omit the genesis block body because
+the immutable genesis hash identifies the placeholder.
+
+A rebonded key retains its prior latest message and advances its sequence. The
+bond generation changes the validator incarnation. It does not reset the
+per-key sequence.
+
+**Preferred usage.** Use for the genesis hash in a silent validator's exact
+latest-message slot.
+*Distinguish from* a missing dependency: a different missing block hash is an
+error and cannot abstain.
+*Avoid*: "missing latest message", because the exact slot remains present.
+
+### Finalized floor
+
+The finalized floor of a block is the finalized ancestor that the block's
+own frozen justifications witness. Both floor sources are block-structural
+facts, so every node derives the same floor for the same block. The floor
+bounds the [merge scope](#merge-scope), anchors the
+[merge base](#merge-base) fallback, supplies the validation committee,
+and paces the [retry gate](#retry-gate). The normative rules live in
+[finalized-floor-specification.md](./theory/finalized-floor/finalized-floor-specification.md).
+
+**Preferred usage.** Use for the block-derived finalization bound that
+consensus rules read.
+*Distinguish from* [Last finalized block (LFB)](#last-finalized-block-lfb):
+the floor is a pure function of the block; the LFB is a node-local
+observation.
+*Avoid*: "floor" unqualified in a document that also discusses numeric
+floors or limits.
+
+### Last finalized block (LFB)
+
+The last finalized block is the highest block a node's finalization
+oracle has finalized in its own view. The LFB is node-local: two healthy
+nodes can briefly hold different LFBs. No consensus rule may read the
+LFB, because a node-local input would fork the network.
+
+**Preferred usage.** Use for the node's own finalization progress marker,
+such as metrics, pruning, and API output.
+*Distinguish from* [Finalized floor](#finalized-floor): the merge scope
+and the validation committee read the block-derived floor, never the LFB.
+*Avoid*: "finalized block" unqualified when the node-local marker is
+intended.
+
+### State-effect identity
+
+A state-effect identity is the pair `(source block hash, execution index)`.
+The pair identifies one committed successful execution or failed-body
+settlement. Equal deploy identities do not make two state effects equal.
+
+**Preferred usage.** Use this term for protocol-6 replay and finality state.
+*Distinguish from* [Deploy lookup identity](#deploy-lookup-identity), which
+identifies one submitted deploy.
+*Avoid*: "signature" when the rule requires exact committed state.
+
+### Exact state containment
+
+Exact state containment holds when every state-effect identity active at one
+block is active in another block. The relation does not require DAG ancestry.
+
+**Preferred usage.** Use this term for state comparison across joined replay
+lineages.
+*Distinguish from* state preservation, which also requires causal ancestry.
+*Avoid*: "descendant" when only the exact effect subset is required.
+
+### State witness
+
+A state witness is a frozen validator latest message with causal and exact
+state-preserving support for one candidate.
+
+**Preferred usage.** Use this term for a validator input to the exact state
+certificate.
+*Distinguish from* causal support, which can include a merge that rejected the
+candidate state.
+*Avoid*: "vote" without the exact state qualification.
+
+### Settled floor set
+
+The settled floor set contains every inherited finalized floor in one frozen
+block context. A selected floor and replay base must contain each member's
+exact effects.
+
+**Preferred usage.** Use this term when a decision must preserve multiple
+inherited floor states.
+*Distinguish from* one selected finalized floor.
+*Avoid*: "current floor" when the rule quantifies over the complete set.
+
+### Lowest common ancestor (LCA)
+
+The lowest common ancestor is the deepest block that is an ancestor of
+every latest message in a fork-choice computation. Fork choice scores
+stake weight from each latest message down to the LCA and then ranks
+greedily downward from it. The many-input variant is LUCA (lowest
+universal common ancestor). The fork-choice dossier holds the algorithm
+and the T-LCA obligation
+([fork-choice-glossary.md](./theory/fork-choice/fork-choice-glossary.md)).
+
+**Preferred usage.** Use only for the fork-choice scoring base.
+*Distinguish from* [Merge scope](#merge-scope): the merge scope is
+bounded by the [finalized floor](#finalized-floor) of the block, never
+by the LCA. The
+protocol overview carried this confusion before the finalized-floor
+migration.
+*Avoid*: "common ancestor" without the lowest qualifier, and any use of
+LCA to describe a merge bound.
+
+### Merge base
+
+The merge base is the state a multi-parent merge starts from. The base is
+the main parent's post-state when that state holds the
+[settled content](#settled-content) of the
+[finalized floor](#finalized-floor). Otherwise the base falls back to the
+floor's post-state (`compute_parents_post_state`). Validators recompute
+the choice from the block's recorded justifications, so the base is
+node-identical.
+
+**Preferred usage.** Use for the starting state of a merge and its
+deterministic fallback rule.
+*Distinguish from* [Merge scope](#merge-scope): the base is one state;
+the scope is the set of blocks whose effects merge onto it.
+*Avoid*: "parent state" unqualified, because only the main parent can
+supply the base.
+
+### Merge scope
+
+Merge scope is the bounded ancestry whose state effects participate in
+multi-parent merging for a [consensus snapshot](#consensus-snapshot),
+bounded by the [finalized floor](#finalized-floor) of the block:
+`closure(parents) \ closure(floor)`. A merge can place eligible work in
+the [rejected deploy buffer](#rejected-deploy-buffer)
+when competing effects cannot all be retained.
+
+**Preferred usage.** Use for the bounded ancestry whose state effects
+participate in multi-parent merging; use "ancestor set" only for an
+unconstrained graph traversal.
+*Distinguish from ancestor set*: merge scope is bounded and semantically
+selected for state merging; an ancestor set may be an unconstrained graph
+traversal.
+*Avoid*: "merge window" unless referring specifically to a numeric depth or
+time parameter.
+
+### Floor distance (Δ)
+
+The floor distance is `Δ = num(maxParent) − num(floor)`: the height span
+between the highest parent and the [finalized floor](#finalized-floor).
+Δ is a pure function of the block's frozen justifications, so every node
+computes the same value. When Δ exceeds `MAX_FLOOR_DISTANCE_BLOCKS`
+(256), the merge fails with a deterministic error keyed on Δ alone: the
+proposer parks the round, and a validator rejects the block (R-BACKSTOP).
+The visible-scope size (`MAX_PARENT_MERGE_SCOPE_BLOCKS` = 512) is an
+advisory metric and never gates admission, because branch width is not
+node-deterministic.
+
+**Preferred usage.** Use for the deterministic merge-span bound and its
+backstop.
+*Distinguish from* the scope-size metric: Δ gates, scope size only warns.
+*Avoid*: "merge depth", and any phrasing that revives the removed lossy
+single-parent fallback.
+
+### Content ordering
+
+Content ordering is the deterministic comparison of conflicting deploy chains
+by content alone: total cost, then maximum single-deploy cost, then
+lexicographic signature. The content of a deploy never changes, so content
+ordering alone produces the same loser in every merge.
+
+**Preferred usage.** Use for the content-deterministic comparison inside
+conflict adjudication.
+*Distinguish from* [Loss-aware adjudication](#loss-aware-adjudication):
+content ordering is the tie-break that loss-aware adjudication subordinates.
+*Avoid*: "cost ordering", because cost is only the first comparison key.
+
+### Prior-rejection count
+
+The prior-rejection count is the number of
+[kept rejection records](#kept-rejection-record) for a deploy identity that a
+merge can see. The view contains the [merge scope](#merge-scope) and the
+base-lineage window. The count is on-chain data, so every validator derives
+the same value for the same merge. A dependency chain uses the maximum count
+among its member deploy identities.
+
+**Preferred usage.** Use for the consensus-visible priority input to
+[loss-aware adjudication](#loss-aware-adjudication).
+*Distinguish from* the lifecycle `rejection_count`. A pending response uses
+node-local visible records. A terminal response freezes records in the
+adopted finalized-floor closure. Both response types include duplicate
+records. The [repeat-deploy carrier index](#repeat-deploy-carrier-index) is
+the one node-local materialized structure with a consensus-reading role. It
+holds that role only under its completeness invariant.
+*Avoid*: "loss count" without qualification.
+
+### Loss-aware adjudication
+
+Loss-aware adjudication is the conflict-adjudication policy that ranks a
+higher [prior-rejection count](#prior-rejection-count) above
+[content ordering](#content-ordering). Every loss raises the priority of the
+loser in an adjudicable matchup. The policy applies at all three adjudication
+sites for issue #294 phase 1.
+
+**Preferred usage.** Use for the phase-1 remediation policy of issue #294.
+*Distinguish from* [Content ordering](#content-ordering): the fallback that
+decides when prior-rejection counts are equal.
+*Avoid*: "retry priority", which suggests a
+[deploy admission](#deploy-admission) ordering change that did not occur.
+
+### Kept rejection record
+
+A kept rejection record is a rejection record without the duplicate flag. It
+disputes a standing win of its deploy identity. It is the only record class
+that counts toward the [prior-rejection count](#prior-rejection-count) and
+that drives the retry disposition.
+
+**Preferred usage.** Use when record provenance matters, such as priority
+counting or [retry gate](#retry-gate) disposition.
+*Distinguish from* a duplicate-flagged record, which testifies that the
+effect of the deploy identity is already present and disputes nothing.
+*Avoid*: "valid record", because duplicate records are also valid consensus
+content.
+
+### Carrier
+
+The carrier is the block that carried the rejected deploy copy that a merge
+adjudicated. Each rejection record names its carrier. Recovery custody is
+owner-scoped: only the sender of the carrier buffers the retry of that copy.
+
+**Preferred usage.** Use for the block a rejection record names.
+*Distinguish from* the recording block, which is the merge block whose body
+holds the rejection record.
+*Avoid*: "source block" without qualification.
+
+### Occurrence carrier
+
+An occurrence carrier is a block whose body contains one exact deploy
+occurrence. Deploy lookup can return this block.
+
+**Preferred usage.** Use when a terminal API response identifies where the
+deploy occurred.
+*Distinguish from* the [finalized state anchor](#finalized-state-anchor), which
+identifies the replay state that determined the terminal verdict.
+*Avoid*: "finalized block" unless consensus finalized the occurrence carrier.
+
+### Finalized state anchor
+
+A finalized state anchor is the finalized floor whose replay state determines
+a terminal deploy verdict. The floor body does not need to contain the deploy.
+
+**Preferred usage.** Use when a terminal API response identifies the deciding
+state.
+*Distinguish from* an [occurrence carrier](#occurrence-carrier), which contains
+the deploy body.
+*Avoid*: "deploy block", because the anchor can omit that deploy.
+
+### Archive representative
+
+An archive representative is the deterministic height-and-hash selection from stored deploy occurrences.
+The occurrence store uses this value for constant-time lookup.
+
+**Preferred usage.** Use this term for the occurrence archive index value.
+*Distinguish from* the [occurrence carrier](#occurrence-carrier) in a terminal lifecycle response.
+An exact tombstone can exclude that carrier without deleting immutable archive history.
+*Avoid*: "terminal source", because the lifecycle record supplies the terminal source.
+
+### Deploy lifespan
+
+The deploy lifespan is the validity window of a deploy, measured in
+blocks. A deploy is eligible from its `valid_after_block_number` until
+the window closes, and it terminates `Expired` if it never lands. The
+same window bounds the repeat-deploy ancestor scan
+(`expiration_threshold`) and the record view of the
+[prior-rejection count](#prior-rejection-count): records older than
+`deploy_lifespan` do not count.
+
+**Preferred usage.** Use for the block-height validity window and the
+scan bounds derived from it.
+*Distinguish from* the [retry frontier lease](#retry-frontier-lease),
+which bounds proposer deferral, not deploy validity.
+*Avoid*: "timeout" and "TTL", because the window uses block height, not
+wall-clock time.
+
+### Deploy lookup identity
+
+A deploy lookup identity is the protocol-tagged key for one deploy. A legacy
+key contains the deploy signature. A protocol-v6 key contains the envelope
+commitment.
+
+The protocol tag is part of the key. Equal payload bytes in the two protocol
+domains identify different deploys. Storage and validation must preserve the
+tag after wire decoding.
+
+**Preferred usage.** Use for keys shared by lifecycle, recovery, and
+repeat-deploy validation.
+*Distinguish from* a raw signature or commitment, which does not identify its
+protocol domain.
+*Avoid*: "signature" when the statement also applies to protocol v6.
+
+### Deploy lifecycle
+
+The deploy lifecycle is the per-deploy-identity progression a node records for
+each deploy: open event rows (inclusions and rejections projected from
+block bodies) and a WRITE-ONCE terminal record (`Finalized`, `Expired`,
+or `Failed`). Event rows are pruned at the terminal write, so the events
+table holds open deploy identities only. The status API reads these tables as
+lookups.
+
+**Preferred usage.** Use for the recorded progression and its storage
+tables (`deploy-lifecycle-events`, `deploy-lifecycle-terminal`).
+*Distinguish from* finalization: a terminal record is a node's durable
+verdict about one deploy; finalization is a property of blocks.
+*Avoid*: "deploy status" for the storage internals — status is the API
+view over the lifecycle tables.
+
+### Failed-body settlement
+
+A failed-body settlement is the verified SystemVault charge after a user body
+fails. The user body's program state rolls back. The attempted-work charge
+remains a committed state effect.
+
+**Preferred usage.** Use for the cost effect that survives failed user-body
+rollback.
+*Distinguish from* admission rejection, which executes no body and commits no
+cost effect.
+*Avoid*: "failed deploy has no effect", because the settlement changes state.
+
+### Adopted lifecycle state
+
+The adopted lifecycle state is the state of the node's adopted last finalized
+block. Exact effect membership in this state authorizes lifecycle cleanup.
+
+**Preferred usage.** Use for the state anchor of a terminal deploy verdict.
+*Distinguish from* a finality marker and a carrier's frozen floor. Those facts
+do not prove current effect membership.
+*Avoid*: "finalized carrier state", because the occurrence and state anchors
+can name different blocks.
+
+### Settled content
+
+Settled content is what the [finalized floor](#finalized-floor) closure
+commits: effects and records contained in the state the floor stands
+for. A state "holds the settled content of the floor" when everything
+the floor commits is present in that state. The
+[merge base](#merge-base) rule and the [retry gate](#retry-gate) both
+key on settlement, so both stay pure functions of the block.
+
+**Preferred usage.** Use for floor-committed effects and records that a
+rule tests for containment.
+*Distinguish from* finalized: settled is containment in the block-derived
+floor closure; finalized is the oracle's property of a block.
+*Avoid*: "confirmed", "committed" unqualified.
+
+### Retry gate
+
+The retry gate is the rule that makes a retry legal only after the latest
+[kept rejection record](#kept-rejection-record) of the deploy identity settles
+inside the frozen [finalized floor](#finalized-floor) closure. The gate is a
+pure function of the block, so
+every validator computes the same verdict (`PrematureDeployRetry`).
+
+**Preferred usage.** Use for the floor-paced legality rule on re-proposal.
+*Distinguish from* [Deploy admission](#deploy-admission) ordering: the gate is
+a lower bound on when a retry may appear, not a selection policy.
+*Avoid*: "retry timer" and "cooldown", because the gate keys on floor
+settlement, not on wall-clock time.
+
+### Repeat-deploy carrier index
+
+The repeat-deploy carrier index records carrier blocks by
+[deploy lookup identity](#deploy-lookup-identity). The index uses a dedicated
+persistent store. It covers valid, invalid, and approved blocks.
+
+Each persistent insert records carrier rows before the block becomes visible
+in the in-memory directed acyclic graph (DAG). Protocol-v6 admission commits
+all applicable carrier, metadata, occurrence, and lifecycle rows in one strict
+transaction.
+Legacy admission writes the carrier row before metadata visibility.
+
+A write-once height watermark identifies the first complete index height.
+An empty database starts at height zero. A populated database starts at one
+height above its stored maximum, so startup requires no backfill.
+
+An absence is usable only when the scan window starts at or above the
+watermark. In that scope, absence skips the ancestor scan for that deploy
+identity. A hit always routes to the exact window and parent-scope scan.
+
+An index read failure also routes to the exact scan. Missing DAG metadata or
+a missing block body fails that scan. Validation never treats missing storage
+as proof of absence.
+
+Finalized-floor advances prune entries below the expiration cutoff. Pruning
+uses a stride and can retain older rows. It never removes a row at or above
+the current cutoff.
+
+The persistent index is a deterministic materialization of block bodies. The
+exact scan also uses a bounded, in-process block-body identity cache. One
+block-store instance owns the cache, and its clones share the cache. The cache
+is an optimization and is not consensus authority.
+
+Both paths preserve the protocol tag. Equal legacy-signature and v6-commitment
+bytes remain different keys. See
+[`DeployIdentitySeparation`](theory/deploy-occurrence/deploy-occurrence-verification.md#carrier-index-refinement).
+
+The served predicate is unchanged: the same deploy identity appears in a
+parent-scope ancestor inside the expiration window. The dedicated store must
+not share a keyspace with rows keyed by unverified wire data.
+
+**Preferred usage.** Use for the validation-side fast path of
+`Validate::repeat_deploy`.
+*Distinguish from* the [deploy lifecycle](#deploy-lifecycle) tables,
+which are node-local observability with terminal pruning and never
+decide a verdict.
+*Avoid*: "deploy index" without qualification, because the removed
+last-write-wins `lookup_by_deploy_id` index resolved display carriers,
+not validity.
+
+### Retry frontier lease
+
+The retry frontier lease bounds proposer deferral when the selected parent set
+does not collectively cover all valid latest messages. The lease starts at the
+latest kept rejection height. It permits normal packaging after three blocks.
+The lease does not bypass the retry gate or carrier custody.
+
+**Preferred usage.** Use for the phase-2 proposer selection bound.
+*Distinguish from* the [retry gate](#retry-gate), which controls block validity.
+*Avoid*: "retry timeout", because the lease uses block height, not time.
+
+### Main-parent base bias
+
+Main-parent base bias is the starvation facet in which a merge bases on a
+main parent that already commits the effect of a contender. The chain of the
+retried deploy is then stale against the base, and the merge rejects it
+correctly. A proposer that always bases on the contender side therefore
+starves the retry structurally.
+
+**Preferred usage.** Use for the phase-2 facet of issue #294
+(`docs/casper/CONSENSUS_PHILOSOPHY.md` Section 2).
+*Distinguish from* the content-ordering facet, which
+[loss-aware adjudication](#loss-aware-adjudication) removed.
+*Avoid*: "merge bias" without qualification.
+
+### Remedy ladder
+
+The remedy ladder is the ordered set of remedies for
+[main-parent base bias](#main-parent-base-bias) in
+`docs/casper/CONSENSUS_PHILOSOPHY.md` Section 5. The ladder orders options by
+guarantee strength and risk, and escalation follows evidence (Principle P5).
+
+**Preferred usage.** Use for the documented option set and its escalation
+policy.
+*Distinguish from* the decision record, which tracks what shipped and what
+stays pending.
+*Avoid*: "options list".
+
+### Merged-frontier retry packaging
+
+Merged-frontier retry packaging is [remedy ladder](#remedy-ladder) option B1.
+The carrier owner packages a gated retry when the complete selected parent set
+covers all valid latest messages. Each latest message can use a different
+covering parent. The [retry frontier lease](#retry-frontier-lease) permits
+normal packaging after three blocks. **Status: implemented.**
+
+**Preferred usage.** Use for the ratified phase-2 packaging policy.
+*Distinguish from* the [retry gate](#retry-gate): the gate is a consensus
+legality rule; this packaging policy is node-local discretion on top of it.
+*Avoid*: "retry deferral" without qualification.
+
+[← Back to the Casper documentation map](./README.md)

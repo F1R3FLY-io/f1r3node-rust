@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-12 (BFT quorum preservation under bound).
 //
 // Theorem: T-12 (`bft_quorum_preservation`,
 // formal/rocq/slashing/theories/TwoLevelSlashing.v).
-// Reference: docs/theory/slashing/slashing-specification.md §8.4,
+// Reference: docs/casper/theory/slashing/slashing-specification.md §8.4,
 // design/08-two-level-and-collusion.md, citation [LSP82].
 //
 // Property: under the BFT precondition `|closure| ≤ F = ⌊(n-1)/3⌋`,

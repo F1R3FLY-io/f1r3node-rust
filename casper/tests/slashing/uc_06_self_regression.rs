@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-06 — Self-regression is detected post-fix.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-06.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-06.
 // Theorem: T-9.6 (`t_9_6_self_regression_caught`,
 // formal/rocq/slashing/theories/BugFixSelfRegression.v).
 // Bug fix:  #6 (validate.rs justification_regressions self-filter
@@ -21,8 +21,8 @@
 //
 // Post-fix invariant: the regression check includes the sender's own
 // self-justification, so a self-regressing block is classified as
-// `JustificationRegression` and the post-fix dispatcher mints an
-// EquivocationRecord (bug fix #3 catch-all).
+// `JustificationRegression`. The dispatcher persists the rejection without
+// creating equivocation evidence.
 
 use super::harness::SlashingTestHarness;
 use super::types::Status;
@@ -56,10 +56,8 @@ fn uc_06_self_regression_caught() {
         "post-fix #6: self-regression is detected via JustificationRegression"
     );
 
-    // Bug #3 post-fix catch-all: the dispatcher mints a record for
-    // every slashable status, including JustificationRegression.
     assert!(
-        harness.has_record("v0", 4),
-        "post-fix #3: dispatcher mints record for JustificationRegression"
+        !harness.has_record("v0", 4),
+        "JustificationRegression must not create equivocation evidence"
     );
 }

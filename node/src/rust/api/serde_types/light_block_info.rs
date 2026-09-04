@@ -39,6 +39,8 @@ pub struct LightBlockInfoSerde {
     #[serde(rename = "bodyExtraBytes", with = "base64_bytes")]
     pub body_extra_bytes: Vec<u8>,
     pub bonds: Vec<BondInfoJson>,
+    #[serde(rename = "activeBonds")]
+    pub active_bonds: Vec<BondInfoJson>,
     #[serde(rename = "blockSize")]
     pub block_size: String,
     #[serde(rename = "deployCount")]
@@ -103,6 +105,14 @@ impl From<LightBlockInfo> for LightBlockInfoSerde {
                     stake: b.stake,
                 })
                 .collect(),
+            active_bonds: block
+                .active_bonds
+                .iter()
+                .map(|b| BondInfoJson {
+                    validator: b.validator.clone(),
+                    stake: b.stake,
+                })
+                .collect(),
             block_size: block.block_size.clone(),
             deploy_count: block.deploy_count,
             fault_tolerance: block.fault_tolerance,
@@ -149,6 +159,14 @@ impl From<LightBlockInfoSerde> for LightBlockInfo {
             body_extra_bytes: json.body_extra_bytes.into(),
             bonds: json
                 .bonds
+                .into_iter()
+                .map(|b| BondInfo {
+                    validator: b.validator,
+                    stake: b.stake,
+                })
+                .collect(),
+            active_bonds: json
+                .active_bonds
                 .into_iter()
                 .map(|b| BondInfo {
                     validator: b.validator,
@@ -218,6 +236,7 @@ impl Default for LightBlockInfoSerde {
             post_state_hash: String::new(),
             body_extra_bytes: Vec::new(),
             bonds: Vec::new(),
+            active_bonds: Vec::new(),
             block_size: String::new(),
             deploy_count: 0,
             fault_tolerance: 0.0,
@@ -266,6 +285,10 @@ mod tests {
             post_state_hash: "post_state_hash".to_string(),
             body_extra_bytes: Bytes::from(vec![7, 8, 9]),
             bonds: vec![BondInfo {
+                validator: "validator1".to_string(),
+                stake: 1000,
+            }],
+            active_bonds: vec![BondInfo {
                 validator: "validator1".to_string(),
                 stake: 1000,
             }],
@@ -323,6 +346,7 @@ mod tests {
         assert_eq!(original.bonds.len(), deserialized.bonds.len());
         assert_eq!(original.bonds[0].validator, deserialized.bonds[0].validator);
         assert_eq!(original.bonds[0].stake, deserialized.bonds[0].stake);
+        assert_eq!(original.active_bonds, deserialized.active_bonds);
         assert_eq!(original.block_size, deserialized.block_size);
         assert_eq!(original.deploy_count, deserialized.deploy_count);
         assert_eq!(original.fault_tolerance, deserialized.fault_tolerance);

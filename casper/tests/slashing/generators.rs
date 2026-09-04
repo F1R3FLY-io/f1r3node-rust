@@ -1,6 +1,6 @@
 // Proptest strategies for the SlashingTestHarness.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.2.2.
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.2.2.
 //
 // Each generator is shrinking-aware: failure cases shrink to minimal
 // counter-examples (smallest validator count, smallest seq numbers,

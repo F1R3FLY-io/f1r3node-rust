@@ -76,6 +76,10 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            Db::new("finalization-certificates".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("block-metadata".to_string(), None),
             dag_storage_env_config(),
         ),
@@ -119,6 +123,33 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            // Deploy-lifecycle event rows (per-sig body projection, bounded to
+            // open sigs — pruned at the terminal write). Opened in
+            // BlockDagKeyValueStorage::new like the indices above.
+            Db::new("deploy-lifecycle-events".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Repeat-deploy carrier index: per-sig carrier records over valid,
+            // invalid, and settled blocks, in a dedicated store (no shared
+            // keyspace with wire-keyed rows). Opened in
+            // BlockDagKeyValueStorage::new (mirrors "floor-index").
+            Db::new("carrier-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Carrier-index metadata: the write-once engagement watermark and
+            // the prune stride cursor.
+            Db::new("carrier-index-meta".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // WRITE-ONCE terminal deploy verdicts (Finalized/Expired/Failed),
+            // written by the finality layer's lifecycle register.
+            Db::new("deploy-lifecycle-terminal".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("last-finalized-block".to_string(), None),
             dag_storage_env_config(),
         ),
@@ -138,6 +169,10 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         // Deploy storage
         (
             Db::new("deploy_storage".to_string(), None),
+            deploy_storage_env_config(),
+        ),
+        (
+            Db::new("deploy_envelope_storage_v6".to_string(), None),
             deploy_storage_env_config(),
         ),
         // Buffer of deploys rejected during multi-parent merge; shares sizing

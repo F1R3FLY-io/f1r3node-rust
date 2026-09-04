@@ -3,11 +3,46 @@ use std::fmt::Debug;
 
 use crate::rust::ByteBuffer;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AtomicStoreOperation {
+    Put(ByteBuffer),
+    PutIfAbsentOrEqual(ByteBuffer),
+    Delete,
+    CompareAndSwap {
+        expected: Option<ByteBuffer>,
+        replacement: Option<ByteBuffer>,
+    },
+}
+
+pub struct AtomicStoreMutation<'a> {
+    pub store: &'a dyn KeyValueStore,
+    pub key: ByteBuffer,
+    pub operation: AtomicStoreOperation,
+}
+
+pub fn strict_atomic_mutate(mutations: &[AtomicStoreMutation<'_>]) -> Result<(), KvStoreError> {
+    match mutations.first() {
+        Some(first) => first.store.strict_atomic_mutate(mutations),
+        None => Ok(()),
+    }
+}
+
 // See shared/src/main/scala/coop/rchain/store/KeyValueStore.scala
-pub trait KeyValueStore: Send + Sync {
+pub trait KeyValueStore: Send + Sync + 'static {
+    /// Enables downcasting to a concrete store type (e.g. `LmdbKeyValueStore`)
+    /// so callers holding a store behind `Arc<dyn KeyValueStore>` can detect
+    /// and batch same-environment LMDB writes — see
+    /// `lmdb_key_value_store::batched_put`. Has no default body (trait
+    /// objects can't provide one); every implementor must define it as
+    /// `fn as_any(&self) -> &dyn std::any::Any { self }`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError>;
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError>;
+
+    /// Atomically insert one key/value pair, returning false when the key already exists.
+    fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError>;
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError>;
 
@@ -20,6 +55,35 @@ pub trait KeyValueStore: Send + Sync {
     fn clone_box(&self) -> Box<dyn KeyValueStore>;
 
     fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError>;
+
+    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
+        Ok(self
+            .to_map()?
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .collect())
+    }
+
+    fn scan_prefix_exact_len(
+        &self,
+        prefix: &[u8],
+        key_length: usize,
+    ) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
+        Ok(self
+            .scan_prefix(prefix)?
+            .into_iter()
+            .filter(|(key, _)| key.len() == key_length)
+            .collect())
+    }
+
+    fn strict_atomic_mutate(
+        &self,
+        _mutations: &[AtomicStoreMutation<'_>],
+    ) -> Result<(), KvStoreError> {
+        Err(KvStoreError::AtomicityUnavailable(
+            "key-value backend does not provide strict transactions".to_string(),
+        ))
+    }
 
     fn print_store(&self) -> Result<(), KvStoreError>;
 
@@ -75,13 +139,29 @@ pub enum KvStoreError {
     SerializationError(String),
     InvalidArgument(String),
     LockError(String),
+    AtomicityUnavailable(String),
+    TransactionConflict(String),
     StaleFinalization {
         expected_revision: u64,
         actual_revision: u64,
     },
+    FinalizationCertificateCarrierPending {
+        expected_revision: u64,
+        floor_hash: Vec<u8>,
+        certificate_digest: Vec<u8>,
+    },
     /// Returned when a DAG representation is requested before the
     /// approved-block / last-finalized-block bootstrap has completed.
     LastFinalizedBlockUninitialized,
+    /// A block the DAG index does not hold, carried as bytes so the caller can
+    /// request it. Distinct from [`KvStoreError::KeyNotFound`], which means a
+    /// store lost a value its index still points at: this one means the index
+    /// never had the block, the normal condition of a node restored from a sync
+    /// anchor. Callers that judge blocks must be able to tell the two apart.
+    MissingBlock {
+        hash: prost::bytes::Bytes,
+        context: String,
+    },
 }
 
 impl std::fmt::Display for KvStoreError {
@@ -92,6 +172,12 @@ impl std::fmt::Display for KvStoreError {
             KvStoreError::SerializationError(e) => write!(f, "SerializationError error: {}", e),
             KvStoreError::InvalidArgument(e) => write!(f, "Invalid argument: {}", e),
             KvStoreError::LockError(e) => write!(f, "Lock error: {}", e),
+            KvStoreError::AtomicityUnavailable(e) => {
+                write!(f, "Atomic transaction unavailable: {}", e)
+            }
+            KvStoreError::TransactionConflict(e) => {
+                write!(f, "Atomic transaction conflict: {}", e)
+            }
             KvStoreError::StaleFinalization {
                 expected_revision,
                 actual_revision,
@@ -99,10 +185,28 @@ impl std::fmt::Display for KvStoreError {
                 f,
                 "stale finalization base revision {expected_revision}; durable head is revision {actual_revision}"
             ),
+            KvStoreError::FinalizationCertificateCarrierPending {
+                expected_revision,
+                floor_hash,
+                certificate_digest,
+            } => write!(
+                f,
+                "finalization base revision {expected_revision} is waiting for a causal certificate carrier for floor {} and certificate {}",
+                hex::encode(floor_hash),
+                hex::encode(certificate_digest)
+            ),
             KvStoreError::LastFinalizedBlockUninitialized => write!(
                 f,
                 "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"
             ),
+            KvStoreError::MissingBlock { hash, context } => {
+                write!(
+                    f,
+                    "DAG storage is missing hash {}{}",
+                    hex::encode(hash),
+                    context
+                )
+            }
         }
     }
 }
@@ -114,5 +218,60 @@ impl From<heed::Error> for KvStoreError {
 impl From<Box<bincode::ErrorKind>> for KvStoreError {
     fn from(error: Box<bincode::ErrorKind>) -> Self {
         KvStoreError::SerializationError(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_formats_each_variant() {
+        assert_eq!(
+            KvStoreError::KeyNotFound("k1".to_string()).to_string(),
+            "Key not found: k1"
+        );
+        assert_eq!(
+            KvStoreError::IoError("disk gone".to_string()).to_string(),
+            "I/O error: disk gone"
+        );
+        assert_eq!(
+            KvStoreError::SerializationError("bad bytes".to_string()).to_string(),
+            "SerializationError error: bad bytes"
+        );
+        assert_eq!(
+            KvStoreError::InvalidArgument("nope".to_string()).to_string(),
+            "Invalid argument: nope"
+        );
+        assert_eq!(
+            KvStoreError::LockError("poisoned".to_string()).to_string(),
+            "Lock error: poisoned"
+        );
+        assert_eq!(
+            KvStoreError::LastFinalizedBlockUninitialized.to_string(),
+            "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"
+        );
+        assert_eq!(
+            KvStoreError::MissingBlock {
+                hash: prost::bytes::Bytes::from_static(&[0xab, 0xcd]),
+                context: " while merging".to_string(),
+            }
+            .to_string(),
+            "DAG storage is missing hash abcd while merging"
+        );
+    }
+
+    #[test]
+    fn bincode_errors_convert_to_serialization_errors() {
+        let bincode_err = bincode::deserialize::<String>(&[0xff]).unwrap_err();
+        let converted: KvStoreError = bincode_err.into();
+        assert!(matches!(converted, KvStoreError::SerializationError(_)));
+    }
+
+    #[test]
+    fn heed_errors_convert_to_io_errors() {
+        let heed_err = heed::Error::Io(std::io::Error::other("mmap failure"));
+        let converted: KvStoreError = heed_err.into();
+        assert_eq!(converted, KvStoreError::IoError("mmap failure".to_string()));
     }
 }

@@ -12,10 +12,11 @@
 //! (3 verified back-compat tests), and the Phase 1.10 Rocq + TLA+ formal
 //! mechanizations cover the algebraic correctness.
 
+use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::{Signed, ToMessage};
+use crypto::rust::signatures::signed::{Cosigned, Cosigner, Signed, ToMessage};
 use models::casper::{CompoundSigner, DeployDataProto};
 use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
@@ -30,6 +31,7 @@ fn fresh_keypair() -> (crypto::rust::private_key::PrivateKey, PublicKey) {
 // stability — a deploy carries no escrow price/limit.
 fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
     DeployData {
+        language: "rholang".to_string(),
         term: "Nil".to_string(),
         time_stamp: 100,
         valid_after_block_number: 0,
@@ -45,61 +47,85 @@ fn sign_canonical_hash(data: &DeployData, sk: &crypto::rust::private_key::Privat
     Bytes::from(Secp256k1.sign(&hash, &sk.bytes))
 }
 
+fn envelope_signers(
+    data: &DeployData,
+    mut keypairs: Vec<(Option<PrivateKey>, PublicKey)>,
+    threshold: u32,
+) -> (Bytes, Vec<Cosigner>) {
+    keypairs.sort_by(|left, right| left.1.bytes.as_ref().cmp(right.1.bytes.as_ref()));
+    let principals = keypairs
+        .iter()
+        .map(|(_, pk)| Cosigner {
+            pk: pk.clone(),
+            sig: Bytes::new(),
+            sig_algorithm: Box::new(Secp256k1),
+        })
+        .collect::<Vec<_>>();
+    let mut bitmap = vec![0u8; principals.len().div_ceil(8)];
+    for (index, (private_key, _)) in keypairs.iter().enumerate() {
+        if private_key.is_some() {
+            bitmap[index / 8] |= 1 << (index % 8);
+        }
+    }
+    let commitment =
+        Cosigned::envelope_commitment_for_presence(data, &principals, threshold, &bitmap)
+            .expect("envelope commitment");
+    let signing_hash = Cosigned::envelope_signing_hash_for_presence(
+        data,
+        &principals,
+        threshold,
+        &bitmap,
+        &Secp256k1::name(),
+    )
+    .expect("envelope signing hash");
+    let signers = keypairs
+        .into_iter()
+        .map(|(sk, pk)| Cosigner {
+            pk,
+            sig: sk
+                .map(|key| Bytes::from(Secp256k1.sign(&signing_hash, &key.bytes)))
+                .unwrap_or_default(),
+            sig_algorithm: Box::new(Secp256k1),
+        })
+        .collect::<Vec<_>>();
+    (commitment, signers)
+}
+
+fn envelope_proto(
+    data: &DeployData,
+    commitment: Bytes,
+    signers: Vec<Cosigner>,
+    threshold: u32,
+) -> DeployDataProto {
+    let envelope = Cosigned::from_envelope_signed_data_threshold(data.clone(), signers, threshold)
+        .expect("valid protocol-v6 envelope");
+    let proto = DeployData::to_proto_cosigned(&envelope);
+    assert_eq!(proto.deploy_id, commitment);
+    proto
+}
+
 fn build_multi_sig_proto(num_signers: usize) -> DeployDataProto {
     assert!(num_signers >= 2, "multi-sig requires at least 2 signers");
     // D3 (DR-9): no per-signer phlo_share; `baseline_deploy_data`'s phlo_limit
     // arg is ignored (retained for call-site stability).
     let data = baseline_deploy_data((num_signers as i64) * 100);
 
-    let (primary_sk, primary_pk) = fresh_keypair();
-    let primary_sig = sign_canonical_hash(&data, &primary_sk);
-
-    let mut cosigners = Vec::with_capacity(num_signers - 1);
-    for _ in 0..(num_signers - 1) {
-        let (sk, pk) = fresh_keypair();
-        cosigners.push(CompoundSigner {
-            pk: pk.bytes.clone(),
-            sig: sign_canonical_hash(&data, &sk),
-            sig_algorithm: Secp256k1::name(),
-        });
-    }
-
-    DeployDataProto {
-        deployer: primary_pk.bytes.clone(),
-        term: data.term.clone(),
-        timestamp: data.time_stamp,
-        sig: primary_sig,
-        sig_algorithm: Secp256k1::name(),
-        valid_after_block_number: data.valid_after_block_number,
-        shard_id: data.shard_id.clone(),
-        language: String::new(),
-        expiration_timestamp: 0,
-        cosigners,
-        cosigner_threshold: 0,
-        sig_algebra: None,
-        authority_presentations: Vec::new(),
-    }
+    let keypairs = (0..num_signers)
+        .map(|_| {
+            let (sk, pk) = fresh_keypair();
+            (Some(sk), pk)
+        })
+        .collect();
+    let threshold = u32::try_from(num_signers).expect("signer count fits u32");
+    let (commitment, signers) = envelope_signers(&data, keypairs, threshold);
+    envelope_proto(&data, commitment, signers, threshold)
 }
 
 fn build_single_sig_proto() -> DeployDataProto {
     let data = baseline_deploy_data(100);
     let (sk, pk) = fresh_keypair();
-    let sig = sign_canonical_hash(&data, &sk);
-    DeployDataProto {
-        deployer: pk.bytes.clone(),
-        term: data.term.clone(),
-        timestamp: data.time_stamp,
-        sig,
-        sig_algorithm: Secp256k1::name(),
-        valid_after_block_number: data.valid_after_block_number,
-        shard_id: data.shard_id.clone(),
-        language: String::new(),
-        expiration_timestamp: 0,
-        cosigners: Vec::new(),
-        cosigner_threshold: 0,
-        sig_algebra: None,
-        authority_presentations: Vec::new(),
-    }
+    let (commitment, signers) = envelope_signers(&data, vec![(Some(sk), pk)], 1);
+    envelope_proto(&data, commitment, signers, 1)
 }
 
 #[test]
@@ -116,12 +142,14 @@ fn multi_sig_deploy_wire_codec_round_trip() {
     assert_eq!(cosigned.signers().len(), 3);
     assert!(cosigned.is_compound());
 
-    // Round-trip: serialize back to proto, decode again. The cosigner list
-    // must round-trip bit-identically.
     let re_proto = DeployData::to_proto_cosigned(&cosigned);
-    assert_eq!(re_proto.cosigners.len(), 2); // 3 signers total = primary + 2
     assert_eq!(
-        re_proto.cosigners.len() + 1, // primary in fields 1/4/5
+        re_proto
+            .authorization_v61
+            .as_ref()
+            .expect("protocol-v6 authorization")
+            .witnesses
+            .len(),
         cosigned.signers().len()
     );
     let re_cosigned = DeployData::from_proto_cosigned(re_proto)
@@ -134,15 +162,15 @@ fn multi_sig_deploy_wire_codec_round_trip() {
 }
 
 #[test]
-fn single_sig_deploy_wire_codec_back_compat() {
+fn single_sig_deploy_wire_codec_round_trip() {
     let original = build_single_sig_proto();
     let cosigned = DeployData::from_proto_cosigned(original.clone())
         .expect("single-sig wire deploy must decode through cosigned path");
     assert_eq!(cosigned.signers().len(), 1);
     assert!(!cosigned.is_compound());
 
-    // Round-trip back through to_proto_cosigned. For single-sig deploys,
-    // cosigners must be empty — recovers the byte-identical legacy wire shape.
+    // Round-trip back through to_proto_cosigned. A single-signature protocol-v6
+    // envelope has no entries in the additional cosigner list.
     let re_proto = DeployData::to_proto_cosigned(&cosigned);
     assert!(
         re_proto.cosigners.is_empty(),
@@ -150,18 +178,24 @@ fn single_sig_deploy_wire_codec_back_compat() {
     );
     assert_eq!(re_proto.deployer, original.deployer);
     assert_eq!(re_proto.sig, original.sig);
+    assert_eq!(re_proto.deploy_id, original.deploy_id);
 }
 
 #[test]
 fn multi_sig_wire_rejects_tampered_cosigner_signature() {
     let mut tampered = build_multi_sig_proto(3);
-    // Flip a byte in one cosigner's signature — the verification must fail.
-    if let Some(sig_bytes) = tampered.cosigners.last_mut().map(|c| &mut c.sig) {
-        let mut v: Vec<u8> = sig_bytes.to_vec();
-        let last = v.last_mut().unwrap();
-        *last ^= 0x01;
-        *sig_bytes = Bytes::from(v);
-    }
+    let sig_bytes = &mut tampered
+        .authorization_v61
+        .as_mut()
+        .expect("protocol-v6 authorization")
+        .witnesses
+        .last_mut()
+        .expect("signature witness")
+        .signature;
+    let mut v: Vec<u8> = sig_bytes.to_vec();
+    let last = v.last_mut().unwrap();
+    *last ^= 0x01;
+    *sig_bytes = Bytes::from(v);
     let err = DeployData::from_proto_cosigned(tampered)
         .expect_err("tampered cosigner signature must be rejected");
     assert!(
@@ -179,14 +213,19 @@ fn multi_sig_wire_rejects_tampered_cosigner_signature() {
 #[test]
 fn multi_sig_wire_rejects_duplicate_signer() {
     let mut dup = build_multi_sig_proto(3);
-    // Replace the second cosigner's pk with the primary's — duplicate.
-    let primary_pk = dup.deployer.clone();
-    if let Some(first_cosigner) = dup.cosigners.first_mut() {
-        first_cosigner.pk = primary_pk;
-        // Note: signature is now invalid (signed with different key), so
-        // we'd hit either DuplicateSigner OR SignatureVerifyFailed depending
-        // on canonical-sort order. Either is acceptable rejection behavior.
-    }
+    let authorization = dup
+        .authorization_v61
+        .as_mut()
+        .expect("protocol-v6 authorization");
+    let policy = authorization
+        .policy
+        .as_mut()
+        .and_then(|policy| policy.policy.as_mut())
+        .expect("authorization policy");
+    let models::casper::authorization_policy_v61::Policy::AllOf(all_of) = policy else {
+        panic!("all-of policy")
+    };
+    all_of.members[1].public_key = all_of.members[0].public_key.clone();
     let _err = DeployData::from_proto_cosigned(dup)
         .expect_err("duplicate signer or invalid sig must be rejected");
 }
@@ -201,6 +240,7 @@ fn processed_deploy_to_cosigned_legacy_uplift() {
     let signed = Signed::<DeployData>::create(data, Box::new(Secp256k1), sk).expect("sign");
     let pd = ProcessedDeploy {
         deploy: signed.clone(),
+        envelope_commitment: Bytes::new(),
         cost: PCost { cost: 10 },
         deploy_log: Vec::new(),
         is_failed: false,
@@ -251,12 +291,16 @@ fn processed_deploy_to_cosigned_multi_sig_reconstruction() {
         .collect();
     let pd = ProcessedDeploy {
         deploy: signed,
+        envelope_commitment: cosigned_decoded
+            .envelope_commitment()
+            .expect("protocol-v6 commitment"),
         cost: PCost { cost: 50 },
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
         cosigners: extras,
-        cosigner_threshold: 0,
+        cosigner_threshold: i32::try_from(cosigned_decoded.cosigner_threshold())
+            .expect("threshold fits i32"),
         pre_state_hash: Bytes::new(),
         post_state_hash: Bytes::new(),
         authority_funding_certificate: None,
@@ -312,12 +356,16 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         .collect();
     let pd_before = ProcessedDeploy {
         deploy: signed,
+        envelope_commitment: cosigned_decoded
+            .envelope_commitment()
+            .expect("protocol-v6 commitment"),
         cost: PCost { cost: 75 },
         deploy_log: Vec::new(),
         is_failed: false,
         system_deploy_error: None,
         cosigners: extras,
-        cosigner_threshold: 0,
+        cosigner_threshold: i32::try_from(cosigned_decoded.cosigner_threshold())
+            .expect("threshold fits i32"),
         pre_state_hash: Bytes::new(),
         post_state_hash: Bytes::new(),
         authority_funding_certificate: None,
@@ -325,9 +373,16 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
         admission_status: Default::default(),
     };
     let pd_proto = pd_before.clone().to_proto();
-    // Cosigners should be in the inner DeployDataProto (D3: no primary_phlo_share).
     let inner_deploy = pd_proto.deploy.as_ref().expect("proto deploy field");
-    assert_eq!(inner_deploy.cosigners.len(), 3);
+    assert_eq!(
+        inner_deploy
+            .authorization_v61
+            .as_ref()
+            .expect("protocol-v6 authorization")
+            .witnesses
+            .len(),
+        4
+    );
 
     let pd_after = ProcessedDeploy::from_proto(pd_proto).expect("from_proto decode");
     assert_eq!(pd_after.cosigners.len(), pd_before.cosigners.len());
@@ -343,10 +398,13 @@ fn processed_deploy_proto_round_trip_preserves_cosigners() {
 
 #[test]
 fn legacy_single_sig_processed_deploy_proto_round_trip_unchanged() {
-    let original_proto = build_single_sig_proto();
-    let signed = DeployData::from_proto(original_proto.clone()).expect("legacy single-sig decode");
+    let data = baseline_deploy_data(100);
+    let (sk, _) = fresh_keypair();
+    let signed = Signed::<DeployData>::create(data, Box::new(Secp256k1), sk)
+        .expect("legacy single-sig deploy");
     let pd_before = ProcessedDeploy {
         deploy: signed,
+        envelope_commitment: Bytes::new(),
         cost: PCost { cost: 25 },
         deploy_log: Vec::new(),
         is_failed: false,
@@ -402,8 +460,23 @@ fn sig_algebra_overrides_flat_cosigners_routes_via_algebra_dispatch() {
     // The Phase 3 dispatch in `from_proto_cosigned` MUST ignore the flat
     // `cosigners[]` field and route through the algebra walk.
     let data = baseline_deploy_data(200);
-    let atom_a = make_signed_atom(&data, 100);
-    let atom_b = make_signed_atom(&data, 100);
+    let (sk_a, pk_a) = fresh_keypair();
+    let (sk_b, pk_b) = fresh_keypair();
+    let signers = vec![(sk_a, pk_a), (sk_b, pk_b)]
+        .into_iter()
+        .map(|(private_key, public_key)| Cosigner {
+            pk: public_key,
+            sig: sign_canonical_hash(&data, &private_key),
+            sig_algorithm: Box::new(Secp256k1),
+        });
+    let mut atoms = signers.into_iter().map(|signer| SigAtom {
+        pk: signer.pk.bytes,
+        sig: signer.sig,
+        sig_algorithm: signer.sig_algorithm.name(),
+        atom_kind: models::casper::AtomKind::Ground as i32,
+    });
+    let atom_a = atoms.next().expect("first signer atom");
+    let atom_b = atoms.next().expect("second signer atom");
     let algebra = SigCompound {
         connective: Some(sig_compound::Connective::Tensor(Box::new(SigPair {
             left: Some(Box::new(make_compound_from_atom(atom_a))),
@@ -435,11 +508,13 @@ fn sig_algebra_overrides_flat_cosigners_routes_via_algebra_dispatch() {
         cosigner_threshold: 0,
         sig_algebra: Some(algebra),
         authority_presentations: Vec::new(),
+        deploy_id: Bytes::new(),
+        authorization_v61: None,
     };
 
     // The flat-cosigners path would fail (bogus sig), but the sig_algebra path
     // validates the two real atoms and succeeds.
-    let cosigned = DeployData::from_proto_cosigned(proto)
+    let cosigned = DeployData::from_proto_cosigned_legacy(proto)
         .expect("sig_algebra dispatch must succeed despite bogus flat cosigners");
     assert_eq!(cosigned.signers().len(), 2);
 }
@@ -499,7 +574,7 @@ fn sig_algebra_threshold_2_of_3_processed_deploy_round_trip() {
 }
 
 /// F-A funding/capability separation — INGRESS REJECT (c),
-/// `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
+/// `docs/casper/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
 /// §3/§6: `Plus` (⊕) is a value/capability connective, NOT a funding-signature
 /// former (§App-A `g|#P|s∘s`). The deploy-decode path now rejects it at the wire
 /// boundary BEFORE the `chosen_branch` range check, so an out-of-range

@@ -744,3 +744,204 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod behavior_tests {
+    use std::collections::HashMap;
+    use std::collections::hash_map::DefaultHasher;
+
+    use super::*;
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+
+    fn bytes(byte: u8) -> Vec<u8> { vec![byte; 4] }
+
+    fn change(added: &[u8], removed: &[u8]) -> ChannelChange<Vec<u8>> {
+        ChannelChange {
+            added: added.iter().map(|b| bytes(*b)).collect(),
+            removed: removed.iter().map(|b| bytes(*b)).collect(),
+        }
+    }
+
+    fn state_change(
+        datums: Vec<(u8, ChannelChange<Vec<u8>>)>,
+        conts: Vec<(u8, ChannelChange<Vec<u8>>)>,
+        joins: Vec<(u8, u8)>,
+    ) -> StateChange {
+        StateChange::from_parts(
+            datums
+                .into_iter()
+                .map(|(ch, c)| (mk_hash(ch), c))
+                .collect::<HashMap<_, _>>(),
+            conts
+                .into_iter()
+                .map(|(ch, c)| (vec![mk_hash(ch)], c))
+                .collect::<HashMap<_, _>>(),
+            joins
+                .into_iter()
+                .map(|(ch, join)| (vec![mk_hash(ch)], bytes(join)))
+                .collect::<HashMap<_, _>>(),
+        )
+    }
+
+    fn hash_of(sc: &StateChange) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        sc.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn multiset_diff_removes_each_item_exactly_once() {
+        let x = bytes(1);
+        let y = bytes(2);
+        let from = vec![x.clone(), x.clone(), y.clone()];
+        let result = StateChange::multiset_diff(&from, &[x.clone()]);
+        assert_eq!(result, vec![x, y]);
+    }
+
+    #[test]
+    fn multiset_diff_ignores_absent_removals_and_empty_inputs() {
+        let x = bytes(1);
+        assert!(StateChange::multiset_diff(&[], &[x.clone()]).is_empty());
+        assert_eq!(StateChange::multiset_diff(&[x.clone()], &[]), vec![x.clone()]);
+        assert_eq!(StateChange::multiset_diff(&[x.clone()], &[bytes(9)]), vec![x]);
+    }
+
+    #[test]
+    fn empty_state_change_has_no_entries() {
+        let sc = StateChange::empty();
+        assert!(sc.datums_changes.is_empty());
+        assert!(sc.cont_changes.is_empty());
+        assert!(sc.consume_channels_to_join_serialized_map.is_empty());
+    }
+
+    #[test]
+    fn combine_inserts_entries_present_only_on_one_side() {
+        let left = state_change(vec![(1, change(&[10], &[]))], vec![], vec![(3, 30)]);
+        let right = state_change(vec![], vec![(2, change(&[20], &[]))], vec![(4, 40)]);
+        let combined = left.combine(right);
+
+        assert_eq!(combined.datums_changes.get(&mk_hash(1)).unwrap().added, vec![bytes(10)]);
+        assert_eq!(combined.cont_changes.get(&vec![mk_hash(2)]).unwrap().added, vec![bytes(20)]);
+        assert_eq!(
+            *combined
+                .consume_channels_to_join_serialized_map
+                .get(&vec![mk_hash(3)])
+                .unwrap(),
+            bytes(30)
+        );
+        assert_eq!(
+            *combined
+                .consume_channels_to_join_serialized_map
+                .get(&vec![mk_hash(4)])
+                .unwrap(),
+            bytes(40)
+        );
+    }
+
+    #[test]
+    fn combine_accumulates_distinct_values_on_shared_channels() {
+        let left =
+            state_change(vec![(1, change(&[10], &[]))], vec![(2, change(&[20], &[]))], vec![]);
+        let right =
+            state_change(vec![(1, change(&[11], &[]))], vec![(2, change(&[21], &[]))], vec![]);
+        let combined = left.combine(right);
+
+        let datum = combined.datums_changes.get(&mk_hash(1)).unwrap();
+        assert_eq!(datum.added.len(), 2);
+        assert!(datum.added.contains(&bytes(10)) && datum.added.contains(&bytes(11)));
+        assert!(datum.removed.is_empty());
+
+        let cont = combined.cont_changes.get(&vec![mk_hash(2)]).unwrap();
+        assert_eq!(cont.added.len(), 2);
+        assert!(cont.added.contains(&bytes(20)) && cont.added.contains(&bytes(21)));
+    }
+
+    #[test]
+    fn combine_nets_producer_consumer_pair_on_shared_channel() {
+        let left = state_change(vec![(1, change(&[10], &[]))], vec![], vec![]);
+        let right = state_change(vec![(1, change(&[], &[10]))], vec![], vec![]);
+        let combined = left.combine(right);
+
+        let datum = combined.datums_changes.get(&mk_hash(1)).unwrap();
+        assert!(datum.added.is_empty());
+        assert!(datum.removed.is_empty());
+    }
+
+    #[test]
+    fn combine_join_map_takes_other_sides_value_on_shared_key() {
+        let left = state_change(vec![], vec![], vec![(1, 10)]);
+        let right = state_change(vec![], vec![], vec![(1, 11)]);
+        let combined = left.combine(right);
+        assert_eq!(
+            *combined
+                .consume_channels_to_join_serialized_map
+                .get(&vec![mk_hash(1)])
+                .unwrap(),
+            bytes(11)
+        );
+    }
+
+    #[test]
+    fn eq_holds_for_identical_state_changes() {
+        let a =
+            state_change(vec![(1, change(&[10], &[11]))], vec![(2, change(&[20], &[]))], vec![(
+                3, 30,
+            )]);
+        let b =
+            state_change(vec![(1, change(&[10], &[11]))], vec![(2, change(&[20], &[]))], vec![(
+                3, 30,
+            )]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn eq_detects_size_and_value_mismatches() {
+        let base = state_change(vec![(1, change(&[10], &[]))], vec![], vec![]);
+
+        let extra_entry =
+            state_change(vec![(1, change(&[10], &[])), (2, change(&[12], &[]))], vec![], vec![]);
+        assert_ne!(base, extra_entry);
+
+        let different_value = state_change(vec![(1, change(&[11], &[]))], vec![], vec![]);
+        assert_ne!(base, different_value);
+
+        let different_key = state_change(vec![(2, change(&[10], &[]))], vec![], vec![]);
+        assert_ne!(base, different_key);
+    }
+
+    #[test]
+    fn eq_detects_cont_and_join_mismatches() {
+        let a = state_change(vec![], vec![(1, change(&[10], &[]))], vec![(2, 20)]);
+        let cont_differs = state_change(vec![], vec![(1, change(&[11], &[]))], vec![(2, 20)]);
+        let join_differs = state_change(vec![], vec![(1, change(&[10], &[]))], vec![(2, 21)]);
+        assert_ne!(a, cont_differs);
+        assert_ne!(a, join_differs);
+    }
+
+    #[test]
+    fn hash_is_deterministic_for_equal_state_changes() {
+        let build = |reversed: bool| {
+            let mut datums = vec![(1, change(&[10, 12], &[11])), (2, change(&[13], &[]))];
+            if reversed {
+                datums.reverse();
+            }
+            state_change(datums, vec![(3, change(&[20], &[21]))], vec![(4, 40)])
+        };
+        let a = build(false);
+        let b = build(true);
+        assert_eq!(a, b);
+        assert_eq!(hash_of(&a), hash_of(&b));
+    }
+
+    #[test]
+    fn ordering_compares_by_total_entry_count() {
+        let small = state_change(vec![(1, change(&[10], &[]))], vec![], vec![]);
+        let large =
+            state_change(vec![(1, change(&[10], &[]))], vec![(2, change(&[20], &[]))], vec![]);
+        assert_eq!(small.cmp(&large), std::cmp::Ordering::Less);
+        assert_eq!(large.cmp(&small), std::cmp::Ordering::Greater);
+        assert_eq!(small.partial_cmp(&large), Some(std::cmp::Ordering::Less));
+        assert_eq!(small.cmp(&small.clone()), std::cmp::Ordering::Equal);
+    }
+}

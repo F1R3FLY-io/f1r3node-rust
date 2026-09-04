@@ -7,6 +7,8 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
+use models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use models::rust::utils::{new_etuple_par, new_gint_par};
 use prost::Message;
 
@@ -273,4 +275,60 @@ fn fs_generator_appears_in_deploy_sequence_after_registry() {
         15,
         "unexpected deploy count with empty vaults; someone changed the sequence"
     );
+}
+
+#[test]
+fn protocol_envelope_preserves_legacy_identity_before_v6() {
+    let signed = standard_deploys::registry("root");
+    let envelope = standard_deploys::protocol_envelope(
+        signed.clone(),
+        CERTIFIED_ADMISSION_PROTOCOL_VERSION - 1,
+    )
+    .unwrap();
+    let processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+
+    assert!(!envelope.is_envelope_bound());
+    assert!(processed.envelope_commitment.is_empty());
+    assert_eq!(processed.deploy.pk, signed.pk);
+    assert_eq!(processed.deploy.sig, signed.sig);
+    assert_eq!(processed.deploy.data, signed.data);
+}
+
+#[test]
+fn protocol_envelope_commits_and_round_trips_blessed_v6_identity() {
+    let envelope = standard_deploys::protocol_envelope(
+        standard_deploys::registry("root"),
+        CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    )
+    .unwrap();
+    let commitment = envelope.envelope_commitment().unwrap();
+    let processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+    let replay = processed.to_cosigned().unwrap();
+
+    assert!(envelope.is_envelope_bound());
+    assert_eq!(commitment.len(), 32);
+    assert_eq!(processed.envelope_commitment, commitment);
+    assert_eq!(processed.cosigner_threshold, 1);
+    assert!(replay.is_envelope_bound());
+    assert_eq!(replay.envelope_commitment().unwrap(), commitment);
+}
+
+#[test]
+fn protocol_envelope_is_deterministic_for_blessed_v6_deploys() {
+    let first = standard_deploys::protocol_envelope(
+        standard_deploys::registry("root"),
+        CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    )
+    .unwrap();
+    let second = standard_deploys::protocol_envelope(
+        standard_deploys::registry("root"),
+        CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    )
+    .unwrap();
+
+    assert_eq!(
+        first.envelope_commitment().unwrap(),
+        second.envelope_commitment().unwrap()
+    );
+    assert_eq!(first.signers()[0].sig, second.signers()[0].sig);
 }

@@ -1,0 +1,40 @@
+' One-step unfold of Meredith–Radestock's reflective replication encoding:
+' bang_encoding x P  ⇝  bang_encoding x P ∣ P   via a single rs_comm on x.
+' The self-receiver D(x) consumes the payload D(x) ∣ P sent on x, re-posts it
+' (regenerating the encoding) and dereferences it (releasing a fresh copy of P).
+'
+' Source of truth for Figure 6.6a in cost-accounted-rho-verification.md §6.6
+' (Theorem 9.19, bang_encoding_unfolds).
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/bang-encoding-onestep.puml
+'          (or: ./render.sh bang-encoding-onestep.puml)
+
+@startuml bang-encoding-onestep
+!include palette.iuml
+skinparam defaultFontName "sans-serif"
+skinparam shadowing false
+skinparam rectangle {
+  BorderColor #333333
+}
+title One-step unfold — bang_encoding_unfolds (§6.6, Theorem 9.19)
+
+rectangle "**before**\nbang_encoding x P\n=  x⟨∣ D(x) ∣ P ∣⟩  ∣  D(x)\n=  (send on x)  ∣  (receive on x)" as B $ca_pool
+
+rectangle "**after**\nbang_encoding x P  ∣  P\n=  x⟨∣ D(x) ∣ P ∣⟩  ∣  D(x)  ∣  P\n   └──── regenerated encoding ────┘   └ new P ┘" as A $ca_note_green
+
+B -[$ca_credit]-> A : rs_comm on x\nD(x) receives D(x) ∣ P,\nre-posts (regenerates) + dereferences (releases P)
+
+note right of A $ca_note_green
+  The encoding re-emerges intact, so the
+  body P can be unfolded again — this is
+  how `!P` is realised with pure-rho COMM
+  only (Meredith–Radestock [1, §3]).
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_pool>| pre-COMM encoding state |
+  |<$ca_note_green>| post-COMM state (P released) |
+  |<$ca_credit>| the single billable rs_comm step |
+endlegend
+
+@enduml

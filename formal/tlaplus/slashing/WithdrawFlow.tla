@@ -22,7 +22,7 @@
 (* Liveness: every withdrawer whose transfer eventually succeeds is         *)
 (* eventually removed (no withdrawal stuck forever under fair scheduling).  *)
 (*                                                                          *)
-(* Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md     *)
+(* Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md     *)
 (*            §9.13                                                         *)
 (*            formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v *)
 (*            (T-9.10, T-9.10', T-9.10″)                                    *)

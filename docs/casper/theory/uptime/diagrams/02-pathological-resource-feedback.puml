@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Monospaced
+skinparam componentStyle rectangle
+
+title Pathological resource-feedback chain
+
+rectangle "External and protocol pressure" #BBDEFB {
+  component "valid work arrivals" as Arrivals #64B5F6
+  component "validator / infrastructure\nunavailability" as Outage #42A5F5
+}
+
+rectangle "Live protocol work" #FFE0B2 {
+  component "admission queue\nand parent deferral" as Queue #FFB74D
+  component "finality lag\nand catch-up" as Lag #FFA726
+  component "replay, RSpace, caches,\nand task ownership" as Live #FB8C00
+}
+
+rectangle "Resource state" #FFCDD2 {
+  component "resident-memory\nheadroom consumed" as RSS #EF5350
+  component "resource guard\nterminates nodes" as Guard #E53935
+}
+
+rectangle "Service consequence" #D1C4E9 {
+  component "eligible weight and\nservice capacity fall" as Capacity #9575CD
+  component "service predicate lost" as Loss #7E57C2
+}
+
+Arrivals --> Queue
+Outage --> Lag
+Queue --> Live
+Queue --> Lag : finalization falls behind
+Lag --> Live
+Live --> RSS
+RSS --> Guard : guard reached
+Guard --> Capacity
+Capacity --> Queue : less service
+Capacity --> Lag : slower catch-up
+Capacity --> Loss
+Queue --> Loss : cap reached
+Lag --> Loss : SLO exceeded
+
+note bottom of RSS #FFF9C4
+The adverse envelope sets successful reclamation to zero.
+This is a declared falsifier, not a measured current-branch rate.
+end note
+@enduml

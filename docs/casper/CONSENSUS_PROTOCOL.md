@@ -86,10 +86,12 @@ Genesis creates the first block containing:
 
 The cost-accounted D3 rejected-deploy format begins at Casper protocol version 2.
 Exact per-execution state-effect provenance begins at version 3. Vault-backed
-quantitative byte evidence begins at version 4. This binary's supported running
-set is exactly `{4}`. Versions 1 through 3 remain recognizable as historical
-encoding metadata, but any historical approved genesis is rejected before Casper
-starts; an unknown future version is rejected identically.
+quantitative byte evidence begins at version 4, certified validator incarnation
+identity at version 5, and signed finalized-floor commitments with detachable
+certificate sidecars at version 6. This binary's supported running set is exactly
+`{6}`. Versions 1 through 5 remain recognizable as historical encoding metadata,
+but any historical approved genesis is rejected before Casper starts; an unknown
+future version is rejected identically.
 
 The genesis master writes the configured protocol version into the candidate.
 Every genesis validator checks that version before signing. Approved-block
@@ -104,12 +106,12 @@ version 2, and receivers compared proposals with the version-1 approved header.
 Honest protocol-2 proposals were discarded before validation. The repaired
 lifecycle has no independent receiver-side version source.
 
-Protocol 4 activates through a fresh protocol-4 genesis. There is no
+Protocol 6 activates through a fresh protocol-6 genesis. There is no
 block-height activation, node-local accounting switch, A/B mode, or mixed-version
 running interval. The TLA+ and Rocq models are cataloged in
 [`docs/formal-verification.md`](../formal-verification.md); the normative rules
 are in
-[`docs/theory/finalized-floor/finalized-floor-specification.md`](../theory/finalized-floor/finalized-floor-specification.md#52-protocol-version-lifecycle).
+[`docs/casper/theory/finalized-floor/finalized-floor-specification.md`](theory/finalized-floor/finalized-floor-specification.md#52-protocol-version-lifecycle).
 
 ### Key Design Point
 
@@ -175,11 +177,14 @@ recovery therefore keeps its round open and retries on a later tick.
 4. **Select declared parents** from the causal-parent projection. LMD-GHOST's
    selected vote tip is ordered first; an otherwise valid stale tip remains a
    secondary causal parent. A tip may be compacted only when another retained
-   parent reaches it through all-parent DAG ancestry. Configured parent-count or
-   depth limits fail snapshot construction if they would omit an uncovered
-   causal tip. If no causal tip exists, the captured finalized floor is the
-   parent.
-5. **Compute LCA** (Lowest Common Ancestor) of selected parents — bounds the [merge scope](#6-state-merging-multi-parent)
+   parent reaches it through all-parent DAG ancestry. Depth expiry and
+   reachability compaction run before the exact parent-count check. If the
+   resulting frozen frontier exceeds `max-number-of-parents`, proposal returns a
+   typed deferred result without creating or signing a block; no parent is
+   truncated. `number-of-active-validators + 1` is sufficient worst-case
+   provisioning, not a startup admission rule. If no causal tip exists, the
+   captured finalized floor is the parent.
+5. **Compute LCA** (Lowest Common Ancestor) of selected parents for fork-choice scoring.
 6. **Build justifications**: the exact positive finalized-floor authority set,
    using each member's registered latest-message hash, including invalid latest
    evidence needed by slashing
@@ -271,6 +276,18 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - Implements retry budgets, cooldowns, and quarantine for stuck requests
 - Deduplicates requests to avoid flooding
 
+Protocol-6 finalized-floor certificates use a distinct content-addressed sidecar
+path. A block that names an unavailable certificate is stored as detached and
+waits on a typed certificate dependency rather than being treated as invalid or
+as a missing block. The certificate retriever bounds tracked obligations and
+peer fanout, retries every eligible digest with monotonic backoff, and retains an
+obligation after a transport failure or restart. A response is persisted only
+when it satisfies a live request, parses with canonical bounded shape, and hashes
+to the requested digest. Concurrent duplicate responses converge on the same
+content-addressed record and schedule the waiting block at most once. The full
+state machine and implementation mapping are in
+[`finalization-certificate-retrieval.md`](theory/finalized-floor/finalization-certificate-retrieval.md).
+
 ---
 
 ## 4. Block Validation
@@ -290,6 +307,9 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - All parent blocks must be in the DAG
 - If missing: store block in **casper buffer** (max ~16K entries), request missing parents from peers
 - Casper buffer tracks retry attempts per dependency and quarantines blocks after budget exhaustion
+- A missing protocol-6 finalized-floor certificate is a typed sidecar dependency:
+  retain the detached block, request the exact committed digest, and resume
+  validation only after the sidecar passes shape and content-address validation
 
 ### Step 4: Snapshot Computation
 - Recompute `CasperSnapshot` with the block's actual parents as tips
@@ -314,6 +334,17 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 
 ### Step 8: Deploy & State Validation
 - Deploys are within scope, not duplicated
+  - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window without a validity qualifier
+  - A deploy identity in an invalid ancestor is still a repeat
+  - A rejected in-scope deploy identity is exempt when its retry gate is open
+  - A closed retry gate returns `PrematureDeployRetry`
+  - The [repeat-deploy carrier index](GLOSSARY.md#repeat-deploy-carrier-index) can prove an in-window absence only above its persisted watermark
+  - The index keys each carrier with a legacy-signature or v6-commitment protocol tag
+  - An absence skips the exact ancestor scan for that deploy identity
+  - A hit or index read failure routes to the exact window and parent-scope scan
+  - A missing scan dependency fails validation and does not become an absence
+  - Carrier rows precede DAG visibility, and protocol-v6 admission commits all related rows atomically
+- Phlogiston price meets minimum
 - State-bound funding evidence, realized compute/storage/byte costs, RevVault
   settlement, and replay witnesses agree exactly
 - The serialized bond cache equals the PoS bonds recomputed from the replayed
@@ -341,6 +372,42 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 5. **Rank recursively**: Starting from LCA, greedily pick the highest-scored child. Repeat until no higher-scored descendants exist.
 6. **Apply depth filter**: Main parent (rank 1) always included. Secondary parents filtered to within `max_parent_depth` of main parent.
 
+### Restore-horizon latest messages
+
+The exact latest-message map retains one slot for each active validator. A
+new validator key starts with the canonical genesis hash in its slot. This
+identity contributes no agreement. The validator stake stays in the finality
+denominator.
+
+A validator key keeps one monotonic sequence across bond generations. A rebond
+does not reset that sequence. The generation remains part of signed authority
+and equivocation evidence.
+
+A restored node can omit the canonical genesis body after it persists the
+immutable genesis hash. Full-history and restored nodes still derive the same
+certified context, fork choice, replay state, and cost state. Any different
+missing latest-message body is a typed dependency error. The node does not
+convert that error into an abstention.
+
+Each noncanonical exact hash belongs to the certificate support manifest. A
+restore must fetch and verify that block before certified-context materialization.
+
+Startup reconciles the durable latest-message index before Casper enters the
+running state. Reconciliation uses certified DAG metadata and the canonical
+genesis identity. It removes stale validator slots.
+
+For each retained validator key, reconciliation selects the greatest sequence.
+An equal sequence selects the least block hash. This rule is independent of
+metadata arrival order and bond-generation boundaries.
+
+Online insertion uses the same selector. The canonical genesis placeholder
+always yields to the first recorded sender message, independent of hash order.
+A missing noncanonical current entry stops insertion before candidate writes.
+
+One storage write lock covers reconciliation and DAG snapshot capture. A
+concurrent reader sees either the old startup phase or one complete reconciled
+state. It cannot see a running state with a partial index.
+
 ### Why LMD GHOST?
 
 - Selects by **weight** (stake), not longest chain — a validator with 51% stake immediately wins fork choice
@@ -362,8 +429,8 @@ In a multi-parent DAG, different validators may have included different deploys 
 1. **Derive the finalized floor**: From the parents' inherited floors and the
    highest state-safe clique-certified frontier in the block's frozen
    justification snapshot.
-2. **Identify visible blocks**: All blocks in the floor-bounded parent closure
-   (exclusive of the floor, inclusive of the parents).
+2. **Identify visible blocks**: Use `closure(parents) \\ closure(floor)`.
+   This set contains each parent-reachable block above the finalized floor.
 3. **Collect deploys**: Extract user deploys from all visible blocks
 4. **Detect conflicts**: Branches conflict if they contain the **same user deploy ID** (not content — just the deploy signature)
 5. **Resolve**: `ConflictSetMerger` selects the highest-value subset
@@ -401,10 +468,12 @@ block. The finalized floor, not a locally observed LFB, bounds the scope.
 ### Performance Bounds
 
 - Merge cost: O(visible_blocks^2 x deploys^2) for conflict resolution
-- The finalized-floor distance is a deterministic work bound.
-- **Backstop**: If the floor distance exceeds the configured cap, proposal parks
-  and validation fails deterministically. The node never substitutes one parent's
-  post-state or silently drops co-parent effects.
+- The finalized-floor distance is the deterministic work bound.
+- **Delta backstop**: The merge stops when `num(maxParent) - num(floor)` exceeds
+  `MAX_FLOOR_DISTANCE_BLOCKS` (256). Proposal parks, and validation rejects the
+  block deterministically. The merge does not substitute one parent state.
+- `MAX_PARENT_MERGE_SCOPE_BLOCKS` (512) controls an advisory metric only.
+  Branch width is not node-deterministic and cannot control admission.
 
 ### System Deploys
 
@@ -434,7 +503,7 @@ The exact cardinality still fails closed. This projection does not alter block
 bytes, parent selection, clique voting, fault tolerance, or finality; it ensures
 that an observable zero-effect rejection cannot make a valid parent impossible
 to index for the next proposal. See DR-53 and
-[`admission-effect-alignment.md`](../theory/cost-accounting-impl/admission-effect-alignment.md).
+[`admission-effect-alignment.md`](theory/cost-accounting-impl/admission-effect-alignment.md).
 
 ---
 
@@ -486,6 +555,31 @@ independent evaluation remain concurrent.
    candidate remains a valid speculative block; a later proposal rebases on the
    certified floor and restores progress.
 
+### Witness-equivalent predecessor certificates
+
+Two honest nodes can certify the same finalized block and replay state from
+different sufficient latest-message snapshots. Their content-addressed
+certificate digests may therefore differ without any disagreement about the
+state transition. A predecessor carrier is eligible by accepted causal
+membership, running protocol version, exact floor hash, and exact floor
+post-state—not by equality with the receiver's local witness digest.
+
+Selection always retains the carrier block hash and the certificate digest
+signed by that block as one proof pair. Substituting a digest from another
+witness-equivalent carrier is invalid. A finalizer parked for a predecessor
+proof wakes when an eligible carrier for that exact floor and state is admitted,
+independent of its digest. These rules preserve asynchronous validator
+concurrency without adding a vote, changing clique weight, or canonicalizing
+node-local evidence. The complete rule and verification evidence are in
+[Witness-equivalent certificate carriers](theory/finalized-floor/certificate-carrier-equivalence.md).
+
+Dependency maintenance is not a consensus vote and does not impose a validator
+ordering. Each local maintenance invocation freezes its visible ordinary-block
+and certificate obligations, attempts every member, and only then returns the
+first transport error. This prevents a failed request near the front of one
+node's local iteration order from suppressing unrelated proof retrieval while
+leaving replay, validation, and voting parallel across validators.
+
 ### "Never Eventually See Disagreement"
 
 Two validators A and B agree on block T if:
@@ -533,11 +627,11 @@ neither projection. Classifying floor ancestry before those intrinsic checks
 would let a multiply-invalid stale block masquerade as an admissible parent.
 
 The complete normative rules and their TLA+/Apalache, Rocq, and Rust evidence are
-in the [finalized-floor specification](../theory/finalized-floor/finalized-floor-specification.md)
-and [verification dossier](../theory/finalized-floor/finalized-floor-verification.md).
+in the [finalized-floor specification](theory/finalized-floor/finalized-floor-specification.md)
+and [verification dossier](theory/finalized-floor/finalized-floor-verification.md).
 The publication transaction, recovery cursors, effect receipts, and concurrency
 boundary are specified in
-[Atomic finalization and crash recovery](../theory/finalized-floor/finalization-atomicity-and-recovery.md).
+[Atomic finalization and crash recovery](theory/finalized-floor/finalization-atomicity-and-recovery.md).
 
 ### Fault Tolerance Values
 
@@ -624,6 +718,12 @@ observing it cannot authorize a local support proposal.
 
 ### Recovery permits and leader rotation
 
+This section specifies finality-recovery heartbeat proposals. It does not
+authorize a rejected deploy retry. A rejected source carrier gives retry
+custody only to that carrier's sender. Distinct carrier owners can retry
+independent work concurrently. Ordinary inclusion and heartbeat permits keep
+their deterministic leader rotation.
+
 The heartbeat derives one canonical authority committee from the captured LFB's
 post-state using the same `floor_committee` function used by proposal and receive
 authority. It filters the LFB-state PoS bonds to active validators, then orders
@@ -702,7 +802,7 @@ reservation, or settlement evidence; its forced follow-up rescans current
 storage against a fresh snapshot. Consequently, the liveness repair cannot
 double-charge, rescue an underfunded occurrence with a later top-up, or change
 the deterministic state transition. See
-[End-to-end cost authority and native RevVault settlement](../theory/cost-accounting-impl/end-to-end-authority-settlement.md#proposal-scheduling-and-settlement-independence).
+[End-to-end cost authority and native RevVault settlement](theory/cost-accounting-impl/end-to-end-authority-settlement.md#proposal-scheduling-and-settlement-independence).
 
 ### Synchrony Recovery
 
@@ -775,11 +875,15 @@ All consensus parameters are defined in HOCON configuration files:
 
 Operator config files are minimal overrides — HOCON's fallback semantics merge them on top of the built-in defaults automatically.
 
-**Genesis-locked parameters** (cannot change after network creation):
-- `fault-tolerance-threshold` and `synchrony-constraint-threshold` — written into the genesis block's on-chain state
-- `native-token-name`, `native-token-symbol`, `native-token-decimals` — baked into the `TokenMetadata` Rholang contract at `rho:system:tokenMetadata` with nonce `i64::MAX`, making them immutable via the registry's `insertSigned` protocol
+**Genesis-locked parameters** cannot change after network creation:
 
-Changing any of these requires a new genesis (new network).
+- `fault-tolerance-threshold` and `synchrony-constraint-threshold` define the on-chain consensus limits.
+- `max-cosigners-per-deploy` defines the signer-count limit for deploy admission.
+- `initial-phlogiston` and `epoch-phlogiston` define validator fuel credits.
+- `client-fuel-allocations` defines additional client SystemVault balances at genesis.
+- `native-token-name`, `native-token-symbol`, and `native-token-decimals` define immutable token metadata.
+
+Change these parameters only through a new genesis.
 
 **Native token metadata** is exposed via `/api/status` (`nativeTokenName`, `nativeTokenSymbol`, `nativeTokenDecimals`) and queryable on-chain by any Rholang contract. Joiners verify their config matches the on-chain values at startup; a mismatch causes the node to exit with a structured error event (`native_token_metadata_mismatch`).
 

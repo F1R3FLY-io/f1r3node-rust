@@ -1,16 +1,15 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-03 — Unrequested equivocation (Ignorable variant) is recorded post-fix.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-03.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-03.
 // Theorem: T-9.1 (`t_9_1_ignorable_recorded`,
 // formal/rocq/slashing/theories/BugFixIgnorable.v).
-// Bug fix:  #1 (block_status::is_slashable IgnorableEquivocation = true)
-//           paired with #3 (dispatcher mints record for every slashable
-//           variant). See design/09-bug-fixes-and-rationale.md §9.1, §9.3.
+// Bug fix: #1 makes IgnorableEquivocation evidence-eligible. Bug fix #3
+// persists every certified rejection. See design §9.1 and §9.3.
 //
 // Pre-fix behaviour (bug present): the dispatcher silently dropped
 // `IgnorableEquivocation` blocks via early-return. No `EquivocationRecord`

@@ -173,11 +173,11 @@ pub fn new(
         .zip(sys_mergeable_chs.iter())
         .collect();
 
-    // Create user deploy indices - filter out failed deploys
+    // Create user deploy indices for every committed user-state effect.
     let mut usr_deploy_indices = Vec::new();
     for (execution_index, (deploy, merge_chs)) in usr_deploys_with_mergeable.into_iter().enumerate()
     {
-        if !deploy.is_failed {
+        if deploy.has_committed_state_effect() {
             let effect_pre = if has_exact_state_witness {
                 Blake2b256Hash::from_bytes_prost(&deploy.pre_state_hash)
             } else {
@@ -209,7 +209,7 @@ pub fn new(
             };
 
             let deploy_index = DeployIndex {
-                deploy_id: deploy.deploy.sig.clone(),
+                deploy_id: deploy.deploy_id().clone(),
                 cost: deploy.cost.cost,
                 event_log_index,
                 execution_index: u32::try_from(execution_index).map_err(|_| {
@@ -317,6 +317,18 @@ pub fn new(
         },
     );
 
+    // Validity windows per user deploy sig, for the merge-time window rule.
+    // System deploys carry no window and are absent by construction.
+    let deploy_windows: std::collections::HashMap<prost::bytes::Bytes, i64> = usr_processed_deploys
+        .iter()
+        .map(|d| {
+            (
+                d.deploy_id().clone(),
+                d.deploy.data.valid_after_block_number,
+            )
+        })
+        .collect();
+
     // Convert deploy chains to DeployChainIndex
     let mut deploy_chain_indices = Vec::new();
     for deploy_chain in deploy_chains.0.iter() {
@@ -327,6 +339,7 @@ pub fn new(
             history_repository.clone(),
             block_hash.clone(),
             block_number,
+            deploy_windows.clone(),
         )
         .map_err(|e| CasperError::HistoryError(e))?;
         deploy_chain_indices.push(chain_index);
@@ -371,6 +384,15 @@ mod tests {
     fn ordinary_execution_failure_retains_its_mergeable_map() {
         let failed = processed_deploy(0, false, true);
         assert_eq!(effect_bearing_user_deploys(&[failed]).len() + 1, 2);
+    }
+
+    #[test]
+    fn state_bound_failure_has_a_committed_merge_effect() {
+        let mut failed = processed_deploy(0, false, true);
+        assert!(!failed.has_committed_state_effect());
+        failed.authority_funding_certificate = Some(Default::default());
+        failed.authority_cost_witness = Some(Default::default());
+        assert!(failed.has_committed_state_effect());
     }
 
     #[test]

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "backtest_id": "daily-soak-31563121791",
+  "evidence_class": "historical_backtest",
+  "control_revision": "fe97ccb18610d12637abc9cd51ae637c4a01c1e3",
+  "node_revision": "71c4d11a0fec8fcac559eaab4dcd3e97a30d2460",
+  "system_integration_revision": "755301662e4f86ffb55f51077b88f32212a1f3ed",
+  "github_run_id": 31563121791,
+  "workflow": ".github/workflows/merge-recovery-soak.yml",
+  "run_started_at": "2026-08-12T04:23:42Z",
+  "elapsed_seconds": 49906,
+  "requested_seconds": 79200,
+  "topology": {
+    "validators": 3,
+    "stake_per_validator": 1000,
+    "fault_tolerance_threshold": "1/10",
+    "bootstrap_is_validator": false,
+    "readonly_is_validator": false,
+    "providers": ["docker", "subprocess"]
+  },
+  "host": {
+    "memory_mb": 65536,
+    "node_rss_ceiling_mb": 45056,
+    "host_free_floor_mb": 8192
+  },
+  "workload": {
+    "test": "integration-tests/test/tests/custom/test_load.py",
+    "fresh_shard_per_iteration": true,
+    "provider_order": ["docker", "subprocess"],
+    "per_test_timeout_seconds": 1200
+  },
+  "observed": {
+    "iterations": 19,
+    "failures": 18,
+    "protection_breach": false,
+    "rss_peak_mb": 27495,
+    "finalization_p50_ms": 1080,
+    "finalization_p95_ms": 4942,
+    "finalization_p99_ms": 10183
+  },
+  "training_window": {
+    "source": "published daily history preceding the held-out run",
+    "iterations": 9,
+    "failures": 9,
+    "estimator": "Laplace-smoothed Bernoulli probability (failures + 1) / (iterations + 2)",
+    "failure_probability": "10/11"
+  },
+  "limits": {
+    "artifact_status": "expired",
+    "failure_classification_available": false,
+    "continuous_shard_exposure": false,
+    "uptime_rate_identifiable": false,
+    "interpretation": "This backtest checks whether the pre-repair harness-level failure behavior is reproduced. It does not calibrate a current-branch continuous-shard lifetime."
+  }
+}

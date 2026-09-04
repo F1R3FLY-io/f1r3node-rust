@@ -90,14 +90,7 @@ pub enum OptionsSubCommand {
     Repl,
     // D3 (DR-9): the `--phlo-limit` / `--phlo-price` deploy flags are removed —
     // a deploy carries no escrow price/limit (cost = per-COMM token count).
-    Deploy {
-        valid_after_block: i64,
-        #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
-        private_key: Option<PrivateKey>,
-        private_key_path: Option<PathBuf>,
-        location: String,
-        shard_id: String,
-    },
+    Deploy(DeployOptions),
     FindDeploy {
         id: Vec<u8>,
     },
@@ -110,6 +103,7 @@ pub enum OptionsSubCommand {
     },
     VisualizeDag {
         depth: i32,
+        #[arg(long = "show-justification-lines")]
         show_justification_lines: bool,
     },
     MachineVerifiableDag,
@@ -214,6 +208,10 @@ pub struct RunOptions {
     #[arg(long = "discovery-heartbeat-batch-size")]
     pub discovery_heartbeat_batch_size: Option<u32>,
 
+    /// Consecutive failed heartbeats before a peer is dropped
+    #[arg(long = "discovery-heartbeat-failure-threshold")]
+    pub discovery_heartbeat_failure_threshold: Option<u32>,
+
     /// gRPC port serving F1r3fly Protocol messages
     #[arg(short = 'p', long = "protocol-port", default_value = "40400")]
     pub protocol_port: Option<u16>,
@@ -277,6 +275,21 @@ pub struct RunOptions {
     /// Use this flag to enable reporting endpoints
     #[arg(long = "api-enable-reporting", action = ArgAction::SetTrue)]
     pub api_enable_reporting: bool,
+
+    /// Concurrent exploratory queries admitted before further ones are rejected
+    #[arg(long = "api-exploratory-deploy-max-concurrent")]
+    pub api_exploratory_deploy_max_concurrent: Option<usize>,
+
+    /// Maximum phlogiston available to one exploratory query
+    #[arg(long = "api-exploratory-deploy-phlo-limit")]
+    pub api_exploratory_deploy_phlo_limit: Option<i64>,
+
+    /// Best-effort deadline for one exploratory query
+    #[arg(
+        long = "api-exploratory-deploy-execution-timeout",
+        value_parser = ValueParser::new(parse_duration)
+    )]
+    pub api_exploratory_deploy_execution_timeout: Option<Duration>,
 
     /// Sets a custom keepalive time
     #[arg(long = "api-keep-alive-time", value_parser = ValueParser::new(parse_duration))]
@@ -648,18 +661,27 @@ pub struct EvalOptions {
 pub struct DeployOptions {
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]
-    pub valid_after_block_number: Option<u64>,
+    pub valid_after_block_number: u64,
 
     /// The deployer's secp256k1 private key encoded as Base16
-    #[arg(long = "private-key")]
-    pub private_key: Option<String>,
+    #[arg(
+        long = "private-key",
+        value_parser = ValueParser::new(PrivateKeyConverter::parse),
+        conflicts_with = "private_key_path",
+        required_unless_present = "private_key_path"
+    )]
+    pub private_key: Option<PrivateKey>,
 
     /// The deployer's file with encrypted private key
-    #[arg(long = "private-key-path")]
+    #[arg(
+        long = "private-key-path",
+        conflicts_with = "private_key",
+        required_unless_present = "private_key"
+    )]
     pub private_key_path: Option<PathBuf>,
 
     /// The name of the shard
-    #[arg(long = "shard-id", default_value = "")]
+    #[arg(long = "shard-id", default_value = "root")]
     pub shard_id: String,
 
     /// Location of the Rholang file to deploy
@@ -748,8 +770,8 @@ pub struct ProposeOptions {
 }
 
 #[cfg(test)]
-mod native_token_clap_tests {
-    use clap::Parser;
+mod clap_tests {
+    use clap::{CommandFactory, Parser};
 
     use super::*;
 
@@ -781,6 +803,91 @@ mod native_token_clap_tests {
     fn accepts_decimals_at_max() {
         let res = Options::try_parse_from(["f1r3fly", "run", "--native-token-decimals=18"]);
         assert!(res.is_ok(), "decimals=18 should parse cleanly");
+    }
+
+    #[test]
+    fn command_schema_is_valid() { Options::command().debug_assert(); }
+
+    #[test]
+    fn deploy_accepts_a_private_key_flag() {
+        let options = Options::try_parse_from([
+            "f1r3fly",
+            "deploy",
+            "--valid-after-block-number",
+            "10",
+            "--private-key",
+            "0101010101010101010101010101010101010101010101010101010101010101",
+            "contract.rho",
+        ])
+        .expect("deploy command must parse");
+
+        let Some(OptionsSubCommand::Deploy(deploy)) = options.subcommand else {
+            panic!("deploy subcommand must be selected");
+        };
+        assert_eq!(deploy.valid_after_block_number, 10);
+        assert!(deploy.private_key.is_some());
+        assert!(deploy.private_key_path.is_none());
+        assert_eq!(deploy.location, "contract.rho");
+        assert_eq!(deploy.shard_id, "root");
+    }
+
+    #[test]
+    fn deploy_accepts_a_private_key_path() {
+        let options = Options::try_parse_from([
+            "f1r3fly",
+            "deploy",
+            "--valid-after-block-number",
+            "10",
+            "--private-key-path",
+            "rnode.key",
+            "--shard-id",
+            "test",
+            "contract.rho",
+        ])
+        .expect("deploy command must parse");
+
+        let Some(OptionsSubCommand::Deploy(deploy)) = options.subcommand else {
+            panic!("deploy subcommand must be selected");
+        };
+        assert!(deploy.private_key.is_none());
+        assert_eq!(deploy.private_key_path, Some(PathBuf::from("rnode.key")));
+        assert_eq!(deploy.shard_id, "test");
+    }
+
+    #[test]
+    fn deploy_help_is_available() {
+        let error = Options::try_parse_from(["f1r3fly", "deploy", "--help"])
+            .err()
+            .expect("deploy help must stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn deploy_requires_one_key_source() {
+        let result = Options::try_parse_from([
+            "f1r3fly",
+            "deploy",
+            "--valid-after-block-number",
+            "10",
+            "contract.rho",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deploy_rejects_two_key_sources() {
+        let result = Options::try_parse_from([
+            "f1r3fly",
+            "deploy",
+            "--valid-after-block-number",
+            "10",
+            "--private-key",
+            "0101010101010101010101010101010101010101010101010101010101010101",
+            "--private-key-path",
+            "rnode.key",
+            "contract.rho",
+        ]);
+        assert!(result.is_err());
     }
 }
 

@@ -15,11 +15,13 @@ use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    self, ApprovedBlock, BlockHashMessage, BlockRequest, CasperMessage, HasBlock, HasBlockRequest,
+    self, ApprovedBlock, BlockHashMessage, BlockRequest, CasperMessage,
+    FinalizationCertificateRequest, FinalizationCertificateResponse, HasBlock, HasBlockRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
+use tokio::sync::mpsc;
 
 use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
 use crate::rust::casper::MultiParentCasper;
@@ -76,7 +78,8 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
     // Check if we have casper
     if let Some(casper) = engine.with_casper() {
         // Get latest messages from block dag
-        let latest_messages = casper.block_dag().await?.latest_message_hashes();
+        let dag = casper.block_dag().await?;
+        let latest_messages = dag.latest_message_hashes();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -85,6 +88,9 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
         // Check if any latest message is recent
         let mut has_recent_latest_message = false;
         for (_, block_hash) in latest_messages.iter() {
+            if dag.canonical_genesis_hash() == Some(block_hash) {
+                continue;
+            }
             if let Ok(Some(block)) = casper.block_store().get(block_hash) {
                 let block_timestamp = block.header.timestamp;
                 if (now - block_timestamp) < delay_threshold.as_millis() as i64 {
@@ -108,6 +114,37 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
         }
     }
 
+    Ok(())
+}
+
+pub async fn enqueue_dependency_free_blocks<T: TransportLayer + Send + Sync>(
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+    block_processing_queue_tx: &BlockProcessingQueueSender,
+    blocks_in_processing: &Arc<DashSet<BlockHash>>,
+    block_retriever: &BlockRetriever<T>,
+) -> Result<(), CasperError> {
+    let _scan_guard = block_processing_queue_tx.acquire_dependency_scan().await;
+    for block in casper.get_dependency_free_from_buffer()? {
+        let hash = block.block_hash.clone();
+        if casper.dag_contains(&hash) {
+            casper.remove_buffered_hash(&hash)?;
+            block_retriever.forget_hash_tracking(&hash)?;
+            continue;
+        }
+        if !blocks_in_processing.insert(hash.clone()) {
+            continue;
+        }
+        match block_processing_queue_tx.try_enqueue(casper.clone(), block) {
+            Ok(()) => block_retriever.ack_receive(hash).await?,
+            Err(error) if error.failure.is_temporary() => {
+                blocks_in_processing.remove(&hash);
+            }
+            Err(error) => {
+                blocks_in_processing.remove(&hash);
+                return Err(CasperError::Other(error.to_string()));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -207,6 +244,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 metrics::counter!(BLOCK_REQUEST_RECEIVED_METRIC, "source" => RUNNING_METRICS_SOURCE).increment(1);
                 self.handle_block_request(peer, br).await
             }
+            CasperMessage::FinalizationCertificateRequest(request) => {
+                self.handle_finalization_certificate_request(peer, request)
+                    .await
+            }
+            CasperMessage::FinalizationCertificateResponse(response) => {
+                self.handle_finalization_certificate_response(peer, response)
+                    .await
+            }
 
             CasperMessage::HasBlockRequest(hbr) => {
                 self.handle_has_block_request(peer, hbr, |hash| self.casper.dag_contains(&hash))
@@ -263,6 +308,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     );
                     Ok(())
                 }
+            }
+            CasperMessage::StoreItemsMessage(items) => {
+                if let Some(tx) = &self.state_items_tx {
+                    if tx.try_send(items).is_err() {
+                        tracing::warn!(
+                            "state requester items queue full or closed; dropping chunk"
+                        );
+                    }
+                }
+                Ok(())
             }
             CasperMessage::MergeableEntryRequest(req) => {
                 if self.disable_state_exporter {
@@ -437,6 +492,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     /// `payload_lookup`; incoming WalPayloadResponse / HasWalPayload
     /// are routed to `sync_driver`.
     wal_payload_ctx: std::sync::OnceLock<WalPayloadContext>,
+    state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
 }
 
 #[derive(Clone)]
@@ -506,6 +562,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         conf: RPConf,
         block_retriever: BlockRetriever<T>,
         recovery_context: Option<RunningRecoveryContext>,
+        state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
     ) -> Self {
         Running {
             block_processing_queue_tx,
@@ -521,6 +578,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             recovery_context,
             snapshot_chunk_ctx: std::sync::OnceLock::new(),
             wal_payload_ctx: std::sync::OnceLock::new(),
+            state_items_tx,
         }
     }
 
@@ -579,6 +637,10 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
                 return Ok(false);
             }
         };
+        if dag.canonical_genesis_hash() == Some(&latest_hash) {
+            self.casper.set_recovery_sync_active(false);
+            return Ok(false);
+        }
         if latest_hash == dag.last_finalized_block() {
             self.casper.set_recovery_sync_active(false);
             return Ok(false);
@@ -700,6 +762,65 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         Ok(())
     }
 
+    pub async fn handle_finalization_certificate_request(
+        &self,
+        peer: PeerNode,
+        request: FinalizationCertificateRequest,
+    ) -> Result<(), CasperError> {
+        if let Some(certificate) = self
+            .casper
+            .block_store()
+            .get_finalization_certificate(&request.digest)?
+        {
+            self.transport
+                .stream_message_to_peer(
+                    &self.conf,
+                    &peer,
+                    Arc::new(
+                        FinalizationCertificateResponse {
+                            digest: request.digest,
+                            certificate,
+                        }
+                        .to_proto(),
+                    ),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn handle_finalization_certificate_response(
+        &self,
+        peer: PeerNode,
+        response: FinalizationCertificateResponse,
+    ) -> Result<(), CasperError> {
+        if !self
+            .block_retriever
+            .finalization_certificate_response_is_expected(&response.digest)?
+        {
+            tracing::debug!(
+                peer = %peer,
+                digest = %PrettyPrinter::build_string_bytes(&response.digest),
+                "Ignoring unsolicited finalization certificate response"
+            );
+            return Ok(());
+        }
+        self.casper
+            .block_store()
+            .put_finalization_certificate(&response.digest, &response.certificate)?;
+        self.casper
+            .resolve_finalization_certificate_dependency(&response.digest)?;
+        self.block_retriever
+            .complete_finalization_certificate_request(&response.digest)?;
+        enqueue_dependency_free_blocks(
+            self.casper.clone(),
+            &self.block_processing_queue_tx,
+            &self.blocks_in_processing,
+            &self.block_retriever,
+        )
+        .await
+    }
+
     pub async fn handle_has_block_request(
         &self,
         peer: PeerNode,
@@ -720,13 +841,18 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
      */
     pub async fn handle_fork_choice_tip_request(&self, peer: PeerNode) -> Result<(), CasperError> {
         tracing::info!("Received ForkChoiceTipRequest from {}", peer.endpoint.host);
-        let latest_messages = self.casper.block_dag().await?.latest_message_hashes();
-        let tips: Vec<BlockHash> = latest_messages
-            .iter()
-            .map(|(_, hash)| hash.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let dag = self.casper.block_dag().await?;
+        let latest_messages = dag.latest_message_hashes();
+        let mut tips = Vec::new();
+        for tip in latest_messages.values().cloned().collect::<HashSet<_>>() {
+            if dag.canonical_genesis_hash() == Some(&tip) {
+                continue;
+            }
+            if !dag.contains(&tip) {
+                return Err(CasperError::BlockNotHeld(tip));
+            }
+            tips.push(tip);
+        }
         tracing::info!(
             "Sending tips {} to {}",
             tips.iter()

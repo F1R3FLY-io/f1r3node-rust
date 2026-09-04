@@ -44,8 +44,11 @@
        (c) empty_tips_typed_err      - empty tips is a typed error, not a panic;
        (d) invalid_excluded          - slashed validators excluded (T-10);
        (e) depth_filter_preserves_head - expiry cannot replace the main parent;
-       (f) configured capacity carries active validators plus floor backstop;
-       (g) every undersized cap has a blocked-frontier witness.
+       (f) configured capacity is a sufficient worst-case bound;
+       (g) every undersized worst-case bound has an over-cap witness;
+       (h) exact runtime admission succeeds iff the actual frontier fits;
+       (i) actual over-cap frontiers defer without truncation;
+       (j) an underprovisioned worst-case bound may still fit the live frontier.
 
      fork_choice_bridge_correct       (Rocq assumes what Rust enforces)
        (a) validation_implies_wf_dag - validation ENFORCES the well-formed DAG;
@@ -162,11 +165,56 @@ Theorem fork_choice_parent_antichain_correct :
       In tip tips ->
       exists parent,
         In parent (reachability_maximal_antichain ancestorb candidates) /\
-        (tip = parent \/ ancestorb tip parent = true)).
+        (tip = parent \/ ancestorb tip parent = true))
+  /\
+  (forall ancestorb protected candidates,
+    hd_error (protected_parent_frontier ancestorb protected candidates) = Some protected)
+  /\
+  (forall ancestorb protected candidates parent,
+    In parent (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    parent <> protected /\ In parent candidates)
+  /\
+  (forall ancestorb protected candidates left right,
+    In left (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    In right (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    left <> right ->
+    ancestorb left right = false)
+  /\
+  (forall ancestorb protected candidates,
+    NoDup candidates ->
+    NoDup (protected_parent_frontier ancestorb protected candidates))
+  /\
+  (forall ancestorb protected tips candidates,
+    causal_coverageb
+      ancestorb
+      tips
+      (protected_parent_frontier ancestorb protected candidates) = true ->
+    forall tip,
+      In tip tips ->
+      exists parent,
+        In parent (protected_parent_frontier ancestorb protected candidates) /\
+        (tip = parent \/ ancestorb tip parent = true))
+  /\
+  (reachability_maximal_antichain linear_ancestorb [0; 1] = [1]
+   /\ protected_parent_frontier linear_ancestorb 0 [0; 1] = [0; 1]).
 Proof.
-  exact
-    (conj retained_parents_are_pairwise_uncovered
-          compaction_and_coverage_guard_preserve_every_causal_tip).
+  split.
+  - exact retained_parents_are_pairwise_uncovered.
+  - split.
+    + exact compaction_and_coverage_guard_preserve_every_causal_tip.
+    + split.
+      * exact protected_frontier_has_exact_head.
+      * split.
+        -- intros. split.
+           ++ eapply protected_frontier_tail_excludes_head; eauto.
+           ++ eapply protected_frontier_tail_was_candidate; eauto.
+        -- split.
+           ++ exact protected_frontier_tail_is_pairwise_uncovered.
+           ++ split.
+              ** exact protected_frontier_is_duplicate_free.
+              ** split.
+                 --- exact protected_compaction_and_coverage_guard_preserve_every_causal_tip.
+                 --- exact generic_compaction_can_erase_protected_head.
 Qed.
 
 Print Assumptions fork_choice_parent_antichain_correct.
@@ -270,17 +318,33 @@ Theorem fork_choice_bound_correct :
   (forall maxn mpd head tail,
      hd_error (prop_filter_head maxn mpd (head :: tail)) = Some head)
   /\
-  (* (f) a cap at least as large as the active committee cannot truncate the live frontier *)
+  (* (f) the configured maximum plus backstop is a sufficient worst-case bound *)
   (forall (A : Type) max_active_validators max_parents (parents : list A),
      length parents <= S max_active_validators ->
      parent_frontier_capacity_valid max_active_validators max_parents ->
      length parents <= max_parents)
   /\
-  (* (g) every undersized cap admits a reachable frontier-size witness it cannot carry *)
+  (* (g) every undersized worst-case bound has a cardinality witness it cannot carry *)
   (forall max_active_validators max_parents,
      max_parents < S max_active_validators ->
      exists frontier_size,
-       frontier_size <= S max_active_validators /\ max_parents < frontier_size).
+       frontier_size <= S max_active_validators /\ max_parents < frontier_size)
+  /\
+  (* (h) exact runtime admission succeeds iff the actual compacted frontier fits *)
+  (forall (A : Type) max_parents (parents : list A),
+     admit_exact_frontier max_parents parents = Some parents <->
+     actual_frontier_fits max_parents parents)
+  /\
+  (* (i) an actual over-cap frontier defers instead of returning a subset *)
+  (forall (A : Type) max_parents (parents : list A),
+     admit_exact_frontier max_parents parents = None <->
+     max_parents < length parents)
+  /\
+  (* (j) configured worst-case underprovisioning does not imply current failure *)
+  (forall max_active_validators max_parents,
+     1 <= max_parents ->
+     max_parents < S max_active_validators ->
+     actual_frontier_fits max_parents [0]).
 Proof.
   exact (conj head_preserved
           (conj take_never_drops_head
@@ -288,7 +352,10 @@ Proof.
               (conj invalid_excluded
                 (conj depth_filter_preserves_head
                   (conj configured_parent_capacity_prevents_frontier_truncation
-                        undersized_parent_capacity_has_a_blocked_frontier_witness)))))).
+                    (conj undersized_parent_capacity_has_a_blocked_frontier_witness
+                      (conj exact_frontier_admission_some_iff_fits
+                        (conj exact_frontier_admission_none_iff_over_cap
+                              underprovisioned_worst_case_can_fit_actual_frontier))))))))).
 Qed.
 
 (* ===========================================================================

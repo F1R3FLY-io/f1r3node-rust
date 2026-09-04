@@ -51,6 +51,7 @@ From MergeAlgebra Require Import KeepOneOrder.
 From MergeAlgebra Require Import ChannelNetting.
 From MergeAlgebra Require Import ConflictSoundness.
 From MergeAlgebra Require Import EventLogSplit.
+From MergeAlgebra Require Import MergeTagBinding.
 
 (* ===========================================================================
    Capstone 1 - P3 KEEP-ONE ORDER (node-identical merge winner)
@@ -180,3 +181,17 @@ Theorem merge_algebra_split_correct :
 Proof.
   exact event_log_split_sound.
 Qed.
+
+Theorem merge_algebra_tag_binding_correct :
+  (forall tag, classify_tag tag = IntegerAdd <-> tag = integer_add_tag)
+  /\ (forall envelope,
+        safe_numeric_contract_tag envelope = integer_add_tag
+        /\ classify_tag (safe_numeric_contract_tag envelope) = IntegerAdd)
+  /\ (forall left right,
+        safe_numeric_contract_tag left = safe_numeric_contract_tag right)
+  /\ (forall envelopes,
+        safe_numeric_kinds envelopes = repeat IntegerAdd (length envelopes))
+  /\ (forall left right,
+        Permutation left right ->
+        safe_numeric_kinds left = safe_numeric_kinds right).
+Proof. exact merge_tag_binding_correct. Qed.

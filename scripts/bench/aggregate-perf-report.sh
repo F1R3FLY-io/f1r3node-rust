@@ -92,6 +92,61 @@ command -v jq >/dev/null || {
 }
 mkdir -p "$OUT_DIR"
 
+valid_checkpoint_summary() {
+	jq -e '
+    type == "object"
+    and (.target_ref | type) == "string"
+    and (.target_sha | type) == "string"
+    and (.started_at | type) == "number"
+    and (.elapsed_seconds | type) == "number"
+    and .started_at > 0
+    and .elapsed_seconds >= 0
+  ' "$SOAK_DIR/summary.json" >/dev/null 2>&1
+}
+
+recover_checkpoint_summary() {
+	local state="$SOAK_DIR/.soak-checkpoint-state.json"
+	local finished_at
+	jq -e '
+    type == "object"
+    and (.target_ref | type) == "string"
+    and (.target_sha | type) == "string"
+    and (.trigger_source | type) == "string"
+    and (.slot_delay_seconds | type) == "number"
+    and (.version | type) == "string"
+    and (.started_at | type) == "number" and .started_at > 0
+    and (.requested_seconds | type) == "number" and .requested_seconds > 0
+    and (.iterations | type) == "number" and .iterations >= 0
+    and (.failures | type) == "number" and .failures >= 0
+    and (.bench_segments | type) == "number" and .bench_segments >= 0
+    and (.bench_failures | type) == "number" and .bench_failures >= 0
+  ' "$state" >/dev/null 2>&1 || return 1
+	finished_at="$(date +%s)"
+	SOAK_OUTPUT_DIR="$SOAK_DIR" \
+		SOAK_METRICS_REGISTRY="$SCRIPT_DIR/soak-metrics.json" \
+		SOAK_TARGET_REF="$(jq -r '.target_ref' "$state")" \
+		SOAK_TARGET_SHA="$(jq -r '.target_sha' "$state")" \
+		SOAK_TRIGGER_SOURCE="$(jq -r '.trigger_source' "$state")" \
+		SOAK_SLOT_DELAY_SECONDS="$(jq -r '.slot_delay_seconds' "$state")" \
+		SOAK_VERSION="$(jq -r '.version' "$state")" \
+		SOAK_STARTED_AT="$(jq -r '.started_at' "$state")" \
+		SOAK_FINISHED_AT="$finished_at" \
+		SOAK_DURATION_SECONDS="$(jq -r '.requested_seconds' "$state")" \
+		SOAK_ITERATIONS="$(jq -r '.iterations' "$state")" \
+		SOAK_FAILURES="$(jq -r '.failures' "$state")" \
+		SOAK_BENCH_SEGMENTS="$(jq -r '.bench_segments' "$state")" \
+		SOAK_BENCH_FAILURES="$(jq -r '.bench_failures' "$state")" \
+		"$SCRIPT_DIR/write-soak-summary.sh"
+	valid_checkpoint_summary
+}
+
+if [ "$SOAK_STATUS" = "in_progress" ] && ! valid_checkpoint_summary; then
+	recover_checkpoint_summary || {
+		echo "checkpoint has no valid summary or recoverable persisted state" >&2
+		exit 2
+	}
+fi
+
 SEGMENTS_JSON="$OUT_DIR/.segments.json"
 find "$SOAK_DIR" -mindepth 2 -maxdepth 2 -type f \
 	-path '*/bench-segment-*/metrics.json' -print0 |
@@ -140,6 +195,12 @@ jq -n \
         kind: $kind,
         target_ref: ($passive.target_ref // "unknown"),
         target_sha: ($passive.target_sha // "unknown"),
+        # How the run was triggered and how late it started relative to its
+        # intended slot (oci-resource-scheduler | cron-fallback | manual).
+        # Optional by construction like version below: runs predating the
+        # field carry the defaults and the dashboard must tolerate that.
+        trigger_source: ($passive.trigger_source // "unknown"),
+        slot_delay_seconds: ($passive.slot_delay_seconds // null),
         # Optional by construction: soaks that ran before the soak script began
         # emitting it, and any run where the node checkout was unreadable, have
         # no version. History entries are never backfilled, so the dashboard
@@ -171,6 +232,7 @@ jq -n \
         iterations_per_hour: $passive.iterations_per_hour,
         rss_peak_mb: $passive.rss_peak_mb,
         cpu_peak_pct: $passive.cpu_peak_pct,
+        cpu_peak_core_grid_pct: $passive.cpu_peak_core_grid_pct,
         finalization_p50_ms: $passive.finalization_p50_ms,
         finalization_p95_ms: $passive.finalization_p95_ms,
         finalization_p99_ms: $passive.finalization_p99_ms,
@@ -207,14 +269,21 @@ jq -n \
   | ($baseline.passive // null) as $bp
   | ($current.active) as $a
   | ($baseline.active // null) as $ba
+  # Failures that are completed facts even mid-run: a failed iteration stays
+  # failed and a guardian breach stays breached no matter how much of the
+  # window remains. These survive into checkpoint verdicts, unlike the
+  # completion-only signals below.
   | (
       []
-      | if $p == null
-          then . + ["no passive soak summary was produced (no data)"] else . end
       | if $p != null and (($p.failures // 0) > 0)
           then . + ["\($p.failures) passive soak iteration(s) failed"] else . end
       | if $protection_breach
           then . + ["host protection breach aborted the soak"] else . end
+    ) as $midrun_failures
+  | (
+      $midrun_failures
+      | if $p == null
+          then . + ["no passive soak summary was produced (no data)"] else . end
       | if $bp != null and $p != null and $p.failure_rate != null and $bp.failure_rate != null
            and $p.failure_rate > ($bp.failure_rate + $thresholds.failure_rate_max_increase_pts)
           then . + ["failure rate \($p.failure_rate) exceeds baseline \($bp.failure_rate) by more than \($thresholds.failure_rate_max_increase_pts * 100)pts"] else . end
@@ -235,15 +304,19 @@ jq -n \
           then . + ["active-segment throughput \($a.throughput)/s < baseline \($ba.throughput)/s -\($thresholds.active_throughput_warn_decrease_pct * 100)%"] else . end
     ) as $warnings
   | {
-      # A checkpoint reports progress, never a judgement. Failures and
-      # warnings are dropped rather than shown, because the only ones that
-      # could fire mid-run are "no data yet" artefacts of an incomplete run,
-      # and surfacing those would put a red strip on a healthy soak.
+      # A checkpoint reports progress, never a full judgement: baseline
+      # comparisons on a partial run measure the clock, and the no-data
+      # line is an artefact of a run that has not written a summary yet —
+      # both wait for completion. But $midrun_failures are completed facts,
+      # and hiding them left run 31563121791 showing a healthy "running"
+      # tab for 14 hours while every iteration failed. The verdict stays
+      # in_progress (a checkpoint is still not a release-gate result);
+      # consumers read .failures for the provisional state.
       verdict: (if $status == "in_progress" then "in_progress"
                 elif ($failures | length) > 0 then "regress" else "pass" end),
       status: $status,
       bootstrap: ($status != "in_progress" and $baseline == null),
-      failures: (if $status == "in_progress" then [] else $failures end),
+      failures: (if $status == "in_progress" then $midrun_failures else $failures end),
       warnings: (if $status == "in_progress" then [] else $warnings end),
       thresholds: $thresholds,
       run: $current.run,
@@ -277,15 +350,17 @@ jq \
     # from claiming a comparison it never made.
     message:
       (if .verdict == "in_progress"
-         then ((.run.elapsed_seconds | hours) as $e
-               | (.run.duration_seconds | hours) as $t
-               | if $e == null or $t == null then "in progress"
-                 else "\($e)h/\($t)h" end)
+         then (((.run.elapsed_seconds | hours) as $e
+                | (.run.duration_seconds | hours) as $t
+                | if $e == null or $t == null then "in progress"
+                  else "\($e)h/\($t)h" end)
+               + (if (.failures | length) > 0 then " · failing" else "" end))
        elif .verdict == "regress" then "regress"
        elif .bootstrap then "pass · no baseline"
        else "pass" end),
     color:
-      (if .verdict == "in_progress" then "lightgrey"
+      (if .verdict == "in_progress"
+         then (if (.failures | length) > 0 then "orange" else "lightgrey" end)
        elif .verdict == "regress" then "red"
        elif .bootstrap then "yellowgreen"
        else "brightgreen" end)

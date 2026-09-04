@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-69 — Theorem-assumption counterexample catalog.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-69.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-69.
 // Theorem: T-12 hypotheses (Sage finding 20 — "the assumption
 // counterexample catalog confirms the main theorem hypotheses are
 // necessary").

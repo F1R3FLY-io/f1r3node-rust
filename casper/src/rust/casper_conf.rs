@@ -5,6 +5,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::rust::casper::UNLIMITED_PARENTS;
 
+pub fn validate_finalization_certificate_capacity(
+    number_of_active_validators: u32,
+) -> Result<(), String> {
+    let configured = usize::try_from(number_of_active_validators)
+        .map_err(|_| "number-of-active-validators does not fit this platform".to_string())?;
+    let maximum = models::rust::casper::protocol::casper_message::FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES;
+    if configured > maximum {
+        return Err(format!(
+            "number-of-active-validators={configured} exceeds the finalization-certificate committee capacity {maximum}"
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_parent_bound_values(
     max_number_of_parents: i32,
     max_parent_depth: i32,
@@ -28,27 +42,22 @@ pub fn validate_parent_bound_values(
     Ok(())
 }
 
-pub fn validate_parent_frontier_capacity(
+pub fn parent_frontier_worst_case_capacity_warning(
     max_number_of_parents: i32,
     number_of_active_validators: u32,
-) -> Result<(), String> {
+) -> Option<String> {
     if max_number_of_parents == UNLIMITED_PARENTS {
-        return Ok(());
-    }
-    if max_number_of_parents < 1 {
-        return Err(format!(
-            "max-number-of-parents must be -1 or at least 1; got {max_number_of_parents}"
-        ));
+        return None;
     }
     let required_capacity = u64::from(number_of_active_validators)
         .saturating_add(1)
         .max(1);
     if u64::try_from(max_number_of_parents).unwrap_or(0) < required_capacity {
-        return Err(format!(
-            "max-number-of-parents={max_number_of_parents} cannot carry number-of-active-validators={number_of_active_validators} plus the finalized-floor backstop; configure at least {required_capacity} or -1, otherwise a bounded proposer could permanently omit a live causal tip"
+        return Some(format!(
+            "max-number-of-parents={max_number_of_parents} is below the worst-case capacity {required_capacity} for number-of-active-validators={number_of_active_validators} plus a finalized-floor backstop; startup remains valid because proposal admission checks the exact frozen parent frontier, but a future frontier wider than this cap will defer proposal until it becomes covered or the cap is raised"
         ));
     }
-    Ok(())
+    None
 }
 
 /// Casper configuration
@@ -108,9 +117,6 @@ pub struct CasperConf {
 
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
-
-    #[serde(rename = "finalizer", default)]
-    pub finalizer: FinalizerConf,
 
     #[serde(
         rename = "synchrony-recovery-stall-window",
@@ -183,13 +189,22 @@ pub struct CasperConf {
 }
 
 impl CasperConf {
+    pub fn validate_finalization_certificate_capacity(&self) -> Result<(), String> {
+        validate_finalization_certificate_capacity(
+            self.genesis_block_data.number_of_active_validators,
+        )
+    }
+
     pub fn validate_parent_bounds(&self) -> Result<(), String> {
         validate_parent_bound_values(
             self.max_number_of_parents,
             self.max_parent_depth,
             self.mergeable_channels_gc_depth_buffer,
-        )?;
-        validate_parent_frontier_capacity(
+        )
+    }
+
+    pub fn parent_frontier_worst_case_capacity_warning(&self) -> Option<String> {
+        parent_frontier_worst_case_capacity_warning(
             self.max_number_of_parents,
             self.genesis_block_data.number_of_active_validators,
         )
@@ -496,8 +511,18 @@ pub struct HeartbeatConf {
         default = "default_stale_recovery_min_interval"
     )]
     pub stale_recovery_min_interval: Duration,
-    /// When pending deploys land, opens a grace window during which the lag cap
-    /// relaxes to `advanced.deploy_recovery_max_lag`.
+    /// Time without a new finalized block before one additional, deterministic
+    /// convergence proposal is allowed. This does not delay or replace the
+    /// routine stale-LFB recovery governed by `max_lfb_age`.
+    #[serde(
+        rename = "finality-progress-timeout",
+        deserialize_with = "de_duration",
+        default = "default_finality_progress_timeout"
+    )]
+    pub finality_progress_timeout: Duration,
+    /// When pending deploys land, opens a grace window during which lag caps
+    /// relax to `advanced.deploy_recovery_max_lag` and self-propose-cooldown
+    /// is bypassable. Burst-tolerance budget.
     #[serde(
         rename = "deploy-finalization-grace",
         deserialize_with = "de_duration",
@@ -514,18 +539,24 @@ impl Default for HeartbeatConf {
         Self {
             enabled: false,
             check_interval: Duration::from_secs(5),
-            max_lfb_age: Duration::from_secs(15),
+            max_lfb_age: Duration::from_secs(5),
             self_propose_cooldown: default_self_propose_cooldown(),
             stale_recovery_min_interval: default_stale_recovery_min_interval(),
+            finality_progress_timeout: default_finality_progress_timeout(),
             deploy_finalization_grace: default_deploy_finalization_grace(),
             advanced: HeartbeatAdvancedConf::default(),
         }
     }
 }
 
-fn default_self_propose_cooldown() -> Duration { Duration::from_secs(15) }
+// Code fallbacks MUST equal the shipped defaults.conf values (pinned by the
+// embedded-defaults test): a sparse operator conf omitting a key must get
+// the same behavior every tested deployment runs, not an untested stranger.
+fn default_self_propose_cooldown() -> Duration { Duration::from_secs(3) }
 
-fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(12) }
+fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(3) }
+
+fn default_finality_progress_timeout() -> Duration { Duration::from_secs(30) }
 
 fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 
@@ -541,6 +572,14 @@ fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 /// `cap < 0` is never true, leaving pending deploys unproposed).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeartbeatAdvancedConf {
+    /// When this validator is already ahead of LFB, how many blocks of lag
+    /// tolerate before frontier-follow proposing is throttled.
+    #[serde(
+        rename = "frontier-chase-max-lag",
+        deserialize_with = "de_non_negative_i64",
+        default = "default_frontier_chase_max_lag"
+    )]
+    pub frontier_chase_max_lag: i64,
     /// If the validator has pending deploys but is already > N blocks
     /// ahead of LFB, suppress pending-deploy proposing. Prevents lag
     /// amplification: more deploys → more blocks → wider DAG → slower
@@ -578,12 +617,15 @@ pub struct HeartbeatAdvancedConf {
 impl Default for HeartbeatAdvancedConf {
     fn default() -> Self {
         Self {
+            frontier_chase_max_lag: default_frontier_chase_max_lag(),
             pending_deploy_max_lag: default_pending_deploy_max_lag(),
             deploy_recovery_max_lag: default_deploy_recovery_max_lag(),
             empty_frontier_max_unfinalized_blocks: default_empty_frontier_max_unfinalized_blocks(),
         }
     }
 }
+
+fn default_frontier_chase_max_lag() -> i64 { 20 }
 
 fn default_pending_deploy_max_lag() -> i64 { 20 }
 
@@ -638,7 +680,6 @@ where D: serde::Deserializer<'de> {
     }
     Ok(value)
 }
-
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {
     use serde::de::Error as _;
@@ -792,6 +833,13 @@ mod native_token_validation_tests {
     }
 
     #[test]
+    fn finalization_certificate_capacity_accepts_the_protocol_boundary() {
+        let maximum = models::rust::casper::protocol::casper_message::FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES;
+        assert!(validate_finalization_certificate_capacity(maximum as u32).is_ok());
+        assert!(validate_finalization_certificate_capacity(maximum as u32 + 1).is_err());
+    }
+
+    #[test]
     fn parent_bound_values_require_a_nonempty_cap_and_nonnegative_depths() {
         assert!(validate_parent_bound_values(-1, i32::MAX, 0).is_ok());
         assert!(validate_parent_bound_values(1, 0, 0).is_ok());
@@ -802,31 +850,31 @@ mod native_token_validation_tests {
     }
 
     #[test]
-    fn parent_frontier_capacity_covers_the_maximum_active_committee() {
-        assert!(validate_parent_frontier_capacity(-1, u32::MAX).is_ok());
-        assert!(validate_parent_frontier_capacity(101, 100).is_ok());
-        assert!(validate_parent_frontier_capacity(100, 100).is_err());
-        assert!(validate_parent_frontier_capacity(101, 101).is_err());
-        assert!(validate_parent_frontier_capacity(0, 0).is_err());
+    fn parent_frontier_capacity_advises_on_worst_case_provisioning() {
+        assert!(parent_frontier_worst_case_capacity_warning(-1, u32::MAX).is_none());
+        assert!(parent_frontier_worst_case_capacity_warning(101, 100).is_none());
+        assert!(parent_frontier_worst_case_capacity_warning(100, 100).is_some());
+        assert!(parent_frontier_worst_case_capacity_warning(101, 101).is_some());
+        assert!(parent_frontier_worst_case_capacity_warning(101, 10_000).is_some());
     }
 
     proptest! {
         #[test]
-        fn finite_parent_capacity_is_valid_exactly_above_the_floor_backstop_boundary(
+        fn finite_parent_capacity_warns_exactly_below_the_worst_case_boundary(
             active in 0u32..=i32::MAX as u32 - 1,
             extra in 0u32..=1,
         ) {
             let required = active + 1;
             let cap = required.saturating_sub(extra) as i32;
             prop_assert_eq!(
-                validate_parent_frontier_capacity(cap, active).is_ok(),
-                extra == 0 && cap >= 1
+                parent_frontier_worst_case_capacity_warning(cap, active).is_some(),
+                extra == 1 || cap < 1
             );
         }
 
         #[test]
         fn unlimited_parent_capacity_accepts_every_committee_size(active in any::<u32>()) {
-            prop_assert!(validate_parent_frontier_capacity(-1, active).is_ok());
+            prop_assert!(parent_frontier_worst_case_capacity_warning(-1, active).is_none());
         }
     }
 

@@ -1,5 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/BlockStatus.scala
 
+use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::{
     AdmissionRejectionReason, CertifiedAdmissionOutcome, CertifiedSenderAuthority,
 };
@@ -27,14 +28,64 @@ pub enum ValidBlock {
 pub enum BlockError {
     Processed,
     CasperIsBusy,
+    /// Dependencies were not ready when the block arrived — established before
+    /// validation, and the block is already buffered against them.
     MissingBlocks,
+    /// Validation could not reach a verdict: it needed the named block and this
+    /// node does not hold it. NOT a judgement of the block — a node restored
+    /// from a sync anchor legitimately lacks history its peers have, and the
+    /// only correct response is to fetch the named block and try again.
+    Undecidable(BlockHash),
+    /// Flow signal, not a verdict: the block is settled history below this
+    /// node's sync anchor and was admitted hash-checked and unjudged — the
+    /// same door LFS restore used. See `block_processor::admit_as_settled`.
+    AdmittedSettled,
+    /// Validation could not reach a verdict: replay needed the named state
+    /// root and this node does not hold it. The state twin of
+    /// [`BlockError::Undecidable`] — a statement about this node's sync,
+    /// never about the block — and the response is the same: fetch the
+    /// artifact (via the state requester) and try again.
+    AwaitingState(rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash),
     BlockException(CasperError),
     Invalid(InvalidBlock),
+}
+
+impl BlockError {
+    /// Classify an error raised during validation.
+    ///
+    /// `BlockException` is converted to `InvalidTransaction` downstream, which
+    /// `is_slashable`, so anything folded into it becomes evidence against the
+    /// block's proposer. A block this node does not hold says nothing about the
+    /// proposer and must stay distinguishable.
+    pub fn from_validation_error(error: CasperError) -> Self {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
+
+        match error {
+            CasperError::BlockNotHeld(hash) => BlockError::Undecidable(hash),
+            // The state twin: a replay that needed a root this node never
+            // fetched. The chain is fully typed from rspace up, so absence
+            // keeps its name without a string search.
+            CasperError::InterpreterError(InterpreterError::RSpaceError(
+                RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(root))),
+            )) => BlockError::AwaitingState(root),
+            other => BlockError::BlockException(other),
+        }
+    }
 }
 
 /// Represents an invalid block
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InvalidBlock {
+    // AdmissibleEquivocation are blocks that would create an equivocation but are
+    // pulled in through a justification of another block
+    AdmissibleEquivocation,
+    // IgnorableEquivocation: an equivocating block we observe via someone
+    // else's justification but did not pull in as a dependency. Slashable —
+    // the dispatcher mints an EquivocationRecord so the proposer can issue a
+    // SlashDeploy. See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+    IgnorableEquivocation,
+
     InvalidFormat,
     InvalidSignature,
     InvalidSender,
@@ -64,6 +115,10 @@ pub enum InvalidBlock {
     // `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`).
     UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
+    // PrematureDeployRetry: a rejected sig re-included before its latest
+    // kept rejection settled into the block's frozen floor closure.
+    // Raised by `Validate::repeat_deploy`'s gated recovery exemption.
+    PrematureDeployRetry,
     ContainsExpiredDeploy,
     ContainsTimeExpiredDeploy,
     ContainsFutureDeploy,
@@ -86,6 +141,23 @@ pub enum ValidationDisposition {
     AlreadyProcessed,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValidationDeferral {
+    AlreadyBuffered,
+    AwaitingBlock(BlockHash),
+    AwaitingState(rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash),
+}
+
+impl ValidationDeferral {
+    pub fn status(&self) -> BlockError {
+        match self {
+            Self::AlreadyBuffered => BlockError::MissingBlocks,
+            Self::AwaitingBlock(hash) => BlockError::Undecidable(hash.clone()),
+            Self::AwaitingState(root) => BlockError::AwaitingState(root.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum CertifiedBlockValidation {
     Accepted {
@@ -101,7 +173,7 @@ pub enum CertifiedBlockValidation {
     UnattributableRejected {
         invalid: InvalidBlock,
     },
-    MissingDependency,
+    MissingDependency(ValidationDeferral),
     LocalFault(CasperError),
     CasperBusy,
     AlreadyProcessed,
@@ -117,7 +189,16 @@ impl CertifiedBlockValidation {
     pub fn from_uncertified_error(error: BlockError) -> Result<Self, CasperError> {
         match error {
             BlockError::Invalid(invalid) => Ok(Self::unattributable(invalid)),
-            BlockError::MissingBlocks => Ok(Self::MissingDependency),
+            BlockError::MissingBlocks => {
+                Ok(Self::MissingDependency(ValidationDeferral::AlreadyBuffered))
+            }
+            BlockError::Undecidable(hash) => Ok(Self::MissingDependency(
+                ValidationDeferral::AwaitingBlock(hash),
+            )),
+            BlockError::AwaitingState(root) => Ok(Self::MissingDependency(
+                ValidationDeferral::AwaitingState(root),
+            )),
+            BlockError::AdmittedSettled => Ok(Self::AlreadyProcessed),
             BlockError::BlockException(error) => Ok(Self::LocalFault(error)),
             BlockError::CasperIsBusy => Ok(Self::CasperBusy),
             BlockError::Processed => Ok(Self::AlreadyProcessed),
@@ -172,7 +253,7 @@ impl CertifiedBlockValidation {
             Self::ObjectiveRejected { invalid, .. } | Self::UnattributableRejected { invalid } => {
                 Either::Left(BlockError::Invalid(invalid.clone()))
             }
-            Self::MissingDependency => Either::Left(BlockError::MissingBlocks),
+            Self::MissingDependency(deferral) => Either::Left(deferral.status()),
             Self::LocalFault(error) => Either::Left(BlockError::BlockException(error.clone())),
             Self::CasperBusy => Either::Left(BlockError::CasperIsBusy),
             Self::AlreadyProcessed => Either::Left(BlockError::Processed),
@@ -217,6 +298,8 @@ impl CertifiedBlockValidation {
 impl From<&InvalidBlock> for AdmissionRejectionReason {
     fn from(value: &InvalidBlock) -> Self {
         match value {
+            InvalidBlock::AdmissibleEquivocation => Self::AdmissibleEquivocation,
+            InvalidBlock::IgnorableEquivocation => Self::IgnorableEquivocation,
             InvalidBlock::InvalidFormat => Self::InvalidFormat,
             InvalidBlock::InvalidSignature => Self::InvalidSignature,
             InvalidBlock::InvalidSender => Self::InvalidSender,
@@ -238,6 +321,7 @@ impl From<&InvalidBlock> for AdmissionRejectionReason {
             InvalidBlock::InvalidBlockHash => Self::InvalidBlockHash,
             InvalidBlock::UnauthorizedSlashDeploy => Self::UnauthorizedSlashDeploy,
             InvalidBlock::InvalidRejectedDeploy => Self::InvalidRejectedDeploy,
+            InvalidBlock::PrematureDeployRetry => Self::PrematureDeployRetry,
             InvalidBlock::ContainsExpiredDeploy => Self::ContainsExpiredDeploy,
             InvalidBlock::ContainsTimeExpiredDeploy => Self::ContainsTimeExpiredDeploy,
             InvalidBlock::ContainsFutureDeploy => Self::ContainsFutureDeploy,
@@ -320,6 +404,10 @@ impl BlockStatus {
         BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)
     }
 
+    pub fn premature_deploy_retry() -> BlockError {
+        BlockError::Invalid(InvalidBlock::PrematureDeployRetry)
+    }
+
     pub fn contains_expired_deploy() -> BlockError {
         BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
     }
@@ -351,6 +439,13 @@ impl BlockStatus {
             BlockStatus::Error(BlockError::MissingBlocks) => {
                 ValidationDisposition::MissingDependency
             }
+            BlockStatus::Error(BlockError::Undecidable(_))
+            | BlockStatus::Error(BlockError::AwaitingState(_)) => {
+                ValidationDisposition::MissingDependency
+            }
+            BlockStatus::Error(BlockError::AdmittedSettled) => {
+                ValidationDisposition::AlreadyProcessed
+            }
             BlockStatus::Error(BlockError::BlockException(_))
             | BlockStatus::Error(BlockError::CasperIsBusy) => ValidationDisposition::LocalFault,
             BlockStatus::Error(BlockError::Processed) => ValidationDisposition::AlreadyProcessed,
@@ -367,8 +462,65 @@ impl InvalidBlock {
         // about whether the new variant is slashable. This is the
         // future-correctness footgun protection T-9.3 depends on at the
         // dispatcher catch-all.
+        // Slash evidence demands a fault every honest node attributes
+        // identically from the signed block alone. Equivocation is the one
+        // verdict with that property: two signed blocks at the same seq are
+        // proof wherever they are examined, in any order. Every other verdict
+        // is judged against the receiver's own state — its invalid records,
+        // its equivocation tracker, its parents' replay, its admission order
+        // — so two honest nodes can disagree on it, and minting evidence
+        // from it lets whoever shapes message delivery burn honest stake
+        // (CI run 32588262605: JustificationRegression verdicts issued by
+        // one mid-catch-up node, UnauthorizedSlashDeploy verdicts on the
+        // resulting carriers, recursive evidence, FT −18.55 of honest
+        // weight). A demoted verdict still drops the block — invalidity is
+        // untouched; only the economic layer narrows to provable faults.
         match self {
-            InvalidBlock::DeployNotSigned
+            // IgnorableEquivocation is slashable per Bug #1 (§9.1). On
+            // dev this variant was a known DOS-vector TODO — equivocations
+            // observed via someone else's justification produced no on-chain
+            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
+            // mints an EquivocationRecord whenever this branch fires.
+            InvalidBlock::AdmissibleEquivocation | InvalidBlock::IgnorableEquivocation => true,
+
+            // Non-slashable variants — listed explicitly so the compiler
+            // catches new additions to the enum, forcing a deliberate
+            // decision instead of a wildcard default.
+            //   • InvalidFormat/Signature/Sender/Version/Timestamp: malformed
+            //     wire data; the sender is not identifiable (Signature) or
+            //     the sender's identity can't be verified (Sender).
+            //   • JustificationRegression / UnauthorizedSlashDeploy /
+            //     NeglectedInvalidBlock / NeglectedEquivocation: judged
+            //     against the receiver's own records or tracker — the
+            //     view-relative family observed diverging across honest
+            //     nodes in the run above.
+            //   • InvalidTransaction / InvalidBondsCache / InvalidParents /
+            //     InvalidFollows / InvalidRepeatDeploy / InvalidBlockNumber /
+            //     InvalidSequenceNumber / InvalidShardId / InvalidBlockHash /
+            //     DeployNotSigned / ContainsExpiredDeploy /
+            //     ContainsTimeExpiredDeploy / ContainsFutureDeploy: judged
+            //     against local replay state or dependency availability;
+            //     several are admission-order-sensitive in practice.
+            //     Individually provable ones can be promoted onto the
+            //     slashable list once their checks are shown
+            //     admission-order-free — demotion costs only economics,
+            //     never validity.
+            //   • InvalidRejectedDeploy: rejected-deploy tracking; not a
+            //     consensus offense.
+            //   • PrematureDeployRetry: a retry ahead of the gate. The gate
+            //     is a pure function of the block, so every honest node
+            //     declines the block identically — admission does all the
+            //     enforcement, and a gate rule in its proving phase must
+            //     never be able to burn honest stake through its own bugs.
+            //   • NotOfInterest: local node filtering decision.
+            //   • LowDeployCost: per-deploy cost threshold; rejected at
+            //     admission, not on-chain accountable.
+            InvalidBlock::InvalidFormat
+            | InvalidBlock::InvalidSignature
+            | InvalidBlock::InvalidSender
+            | InvalidBlock::InvalidVersion
+            | InvalidBlock::InvalidTimestamp
+            | InvalidBlock::DeployNotSigned
             | InvalidBlock::InvalidBlockNumber
             | InvalidBlock::InvalidRepeatDeploy
             | InvalidBlock::InvalidParents
@@ -381,38 +533,159 @@ impl InvalidBlock {
             | InvalidBlock::InvalidTransaction
             | InvalidBlock::InvalidBondsCache
             | InvalidBlock::InvalidEquivocationEvidence
+            | InvalidBlock::InvalidBlockHash
             | InvalidBlock::UnauthorizedSlashDeploy
             | InvalidBlock::ContainsExpiredDeploy
             | InvalidBlock::ContainsTimeExpiredDeploy
-            | InvalidBlock::ContainsFutureDeploy => true,
-
-            // Non-slashable variants — listed explicitly so the compiler
-            // catches new additions to the enum. Each represents a failure
-            // attributable to the block's wire format or local node state,
-            // NOT to Byzantine behavior the network can attribute and slash:
-            //   • InvalidFormat/Signature/Sender/Version/Timestamp: malformed
-            //     wire data; the sender is not identifiable (Signature) or
-            //     the sender's identity can't be verified (Sender).
-            //   • InvalidRejectedDeploy: rejected-deploy tracking; not a
-            //     consensus offense.
-            //   • NotOfInterest: local node filtering decision.
-            //   • LowDeployCost: per-deploy cost threshold; rejected at
-            //     admission, not on-chain accountable.
-            InvalidBlock::InvalidFormat
-            | InvalidBlock::InvalidSignature
-            | InvalidBlock::InvalidSender
-            | InvalidBlock::InvalidVersion
-            | InvalidBlock::InvalidTimestamp
-            | InvalidBlock::InvalidBlockHash
+            | InvalidBlock::ContainsFutureDeploy
             | InvalidBlock::InvalidRejectedDeploy
+            | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest
             | InvalidBlock::LowDeployCost => false,
         }
     }
 }
 
+/// A store error becoming a block verdict goes through the classifier like any
+/// other. `CasperError::from` already turns a missing block into `BlockNotHeld`,
+/// and wrapping that in `BlockException` directly — as this did — hands an
+/// `InvalidTransaction` record to the proposer of a block this node simply
+/// cannot read.
 impl From<KvStoreError> for BlockError {
-    fn from(error: KvStoreError) -> Self { BlockError::BlockException(CasperError::from(error)) }
+    fn from(error: KvStoreError) -> Self {
+        BlockError::from_validation_error(CasperError::from(error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use models::rust::block_hash::BlockHash;
+
+    use super::*;
+
+    /// Validation raises for two unrelated reasons, and only one of them is a
+    /// statement about the block. A storage failure means this node is broken;
+    /// a block it does not hold means its history is short, which is the normal
+    /// condition of a node restored from a sync anchor. They must not share an
+    /// outcome: `BlockException` is converted to `InvalidTransaction`, which is
+    /// slashable, so folding the second into it mints evidence against an
+    /// honest proposer for history this node never had.
+    #[test]
+    fn a_block_not_held_is_undecidable_not_an_exception() {
+        let missing = BlockHash::from(b"not-held".to_vec());
+
+        let undecidable =
+            BlockError::from_validation_error(CasperError::BlockNotHeld(missing.clone()));
+        assert_eq!(
+            undecidable,
+            BlockError::Undecidable(missing),
+            "a block this node does not hold must carry through as Undecidable, naming \
+             the block so the caller can fetch it"
+        );
+
+        let broken = BlockError::from_validation_error(CasperError::RuntimeError("disk".into()));
+        assert!(
+            matches!(broken, BlockError::BlockException(_)),
+            "every other failure is still an exception; this must not become a \
+             catch-all that swallows real storage faults"
+        );
+    }
+
+    /// State absence is the second artifact class, and it must classify like
+    /// the first. A replay that needs a root this node never fetched is a
+    /// statement about this node's sync, not about the block: the block's
+    /// parent was admitted as settled history with its bytes but not its
+    /// state, every other node replays the same block cleanly, and the verdict
+    /// this used to produce — InvalidTransaction, slashable — seeded a
+    /// NeglectedInvalidBlock cascade that condemned ninety-one honest blocks
+    /// from four false seeds. The chain arrives fully typed from rspace, so
+    /// the classification is a match, not a string search.
+    #[test]
+    fn a_missing_state_root_is_awaiting_state_not_a_verdict() {
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let root = Blake2b256Hash::from_bytes(vec![0xAB; 32]);
+        let chain = CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(
+                root.clone(),
+            ))),
+        ));
+
+        assert_eq!(
+            BlockError::from_validation_error(chain),
+            BlockError::AwaitingState(root),
+            "a root this node does not hold must classify as the absence of a verdict, \
+             naming the root so the state requester can fetch it"
+        );
+
+        let prose = CasperError::InterpreterError(InterpreterError::RSpaceError(
+            RSpaceError::HistoryError(HistoryError::RootError(RootError::UnknownRootError(
+                "no root found".to_string(),
+            ))),
+        ));
+        assert!(
+            matches!(
+                BlockError::from_validation_error(prose),
+                BlockError::BlockException(_)
+            ),
+            "the prose variant reports storewide conditions, not a fetchable root, and \
+             stays in the exception class"
+        );
+    }
+
+    #[test]
+    fn certified_deferrals_preserve_the_named_artifact() {
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let missing = BlockHash::from(vec![0x41; 32]);
+        let block = CertifiedBlockValidation::from_uncertified_error(BlockError::Undecidable(
+            missing.clone(),
+        ))
+        .expect("block deferral");
+        assert_eq!(
+            block.status(),
+            Either::Left(BlockError::Undecidable(missing))
+        );
+
+        let root = Blake2b256Hash::from_bytes(vec![0x42; 32]);
+        let state = CertifiedBlockValidation::from_uncertified_error(BlockError::AwaitingState(
+            root.clone(),
+        ))
+        .expect("state deferral");
+        assert_eq!(
+            state.status(),
+            Either::Left(BlockError::AwaitingState(root))
+        );
+
+        let buffered = CertifiedBlockValidation::from_uncertified_error(BlockError::MissingBlocks)
+            .expect("buffered deferral");
+        assert_eq!(buffered.status(), Either::Left(BlockError::MissingBlocks));
+    }
+}
+
+#[cfg(test)]
+mod floor_data_tests {
+    use models::rust::block_hash::BlockHash;
+
+    use super::*;
+
+    /// A floor derivation that dies on a block this node does not hold is an
+    /// availability event, never block invalidity: the store error carries
+    /// its name through `CasperError::BlockNotHeld` to `Undecidable`, so the
+    /// caller defers and fetches instead of recording a verdict.
+    #[test]
+    fn missing_floor_data_is_not_block_invalidity() {
+        let missing = BlockHash::from(vec![0xAB; 32]);
+        let status = BlockError::from(KvStoreError::MissingBlock {
+            hash: missing.clone(),
+            context: "floor derivation".to_string(),
+        });
+
+        assert_eq!(status, BlockError::Undecidable(missing));
+        assert!(!matches!(status, BlockError::Invalid(_)));
+    }
 }
 
 #[cfg(test)]

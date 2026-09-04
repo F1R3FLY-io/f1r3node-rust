@@ -1,6 +1,7 @@
 new
   rl(`rho:registry:lookup`), RhoSpecCh,
   getBlockData(`rho:block:data`),
+  setBlockData(`rho:test:block:data:set`),
   stdlog(`rho:io:stdlog`),
   test_get_block_data
 in {
@@ -13,7 +14,7 @@ in {
   } |
 
   contract test_get_block_data(rhoSpec, _, ackCh) = {
-    new retCh in {
+    new retCh, setCh in {
       getBlockData!(*retCh) |
       for (@blockNumber, @timestamp, @sender <- retCh) {
         // Slice 30c F-30b-3 fix: `BlockData::empty()` uses

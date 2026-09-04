@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-94 — Weighted-damage requires a closure-bound violation.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-94.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-94.
 // Threat class: Stake-weighted damage optimization (Sage row
 // `damage_optimizer.sage`).
 // Reference: formal/sage/damage_optimizer.sage,

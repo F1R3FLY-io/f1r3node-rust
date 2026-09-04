@@ -17,8 +17,8 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::Signed;
-use models::rust::block_hash::BlockHash;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use prost::bytes::Bytes;
@@ -37,6 +37,13 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
+    async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
+        self.block_retriever
+            .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
+            .await
+            .map(|_| ())
+    }
+
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         super::snapshot::compute_snapshot(self).await
     }
@@ -155,6 +162,21 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
     fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
         super::buffer_resolver::buffer_get_all_from_buffer(self)
     }
+
+    fn resolve_finalization_certificate_dependency(
+        &self,
+        digest: &BlockHash,
+    ) -> Result<(), CasperError> {
+        self.casper_buffer_storage
+            .resolve_certificate_dependency(BlockHashSerde(digest.clone()))?;
+        Ok(())
+    }
+
+    fn remove_buffered_hash(&self, hash: &BlockHash) -> Result<(), CasperError> {
+        self.casper_buffer_storage
+            .remove(BlockHashSerde(hash.clone()))?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -177,22 +199,57 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             pendants_unseen.len()
         );
 
+        let mut first_dispatch_error = None;
         for dependency in pendants_unseen {
             tracing::debug!(
                 "Sending dependency {} to BlockRetriever",
                 PrettyPrinter::build_string_bytes(&dependency)
             );
 
-            self.block_retriever
+            if let Err(error) = self
+                .block_retriever
                 .admit_hash(
                     dependency,
                     None,
                     AdmitHashReason::MissingDependencyRequested,
                 )
-                .await?;
+                .await
+            {
+                first_dispatch_error.get_or_insert(error);
+            }
         }
 
-        Ok(())
+        let certificate_dependencies = self
+            .casper_buffer_storage
+            .get_missing_certificate_dependencies();
+        let active_certificate_digests: std::collections::HashSet<BlockHash> =
+            certificate_dependencies
+                .iter()
+                .map(|digest| digest.0.clone())
+                .collect();
+        self.block_retriever
+            .retain_active_finalization_certificate_requests(&active_certificate_digests)?;
+        for digest in active_certificate_digests {
+            if self
+                .block_store
+                .get_finalization_certificate(&digest)?
+                .is_some()
+            {
+                self.casper_buffer_storage
+                    .resolve_certificate_dependency(BlockHashSerde(digest.clone()))?;
+                self.block_retriever
+                    .complete_finalization_certificate_request(&digest)?;
+            } else {
+                if let Err(error) = self
+                    .block_retriever
+                    .request_finalization_certificate(digest)
+                    .await
+                {
+                    first_dispatch_error.get_or_insert(error);
+                }
+            }
+        }
+        first_dispatch_error.map_or(Ok(()), Err)
     }
 
     fn normalized_initial_fault(&self, target: &BlockHash) -> Result<f32, CasperError> {
@@ -217,6 +274,10 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+        self.block_dag_storage.genesis_hash().map_err(Into::into)
+    }
+
     fn get_validator(&self) -> Option<ValidatorIdentity> { self.validator_id.clone() }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
@@ -227,11 +288,14 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.casper_shard_conf }
 
-    fn rejected_deploy_buffer_contains_sig(&self, sig: &[u8]) -> Result<bool, CasperError> {
+    fn rejected_deploy_buffer_contains(
+        &self,
+        deploy_id: &models::rust::deploy_id::DeployLookupId,
+    ) -> Result<bool, CasperError> {
         self.rejected_deploy_buffer
             .lock()
             .map_err(|e| CasperError::LockError(e.to_string()))?
-            .contains_sig(sig)
+            .contains_id(deploy_id)
             .map_err(Into::into)
     }
 
@@ -251,5 +315,9 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         // module-level doc-comment.
         super::block_admission::admit_has_pending_deploys_in_storage_for_snapshot(self, snapshot)
             .await
+    }
+
+    async fn list_pending_deploys(&self) -> Result<Vec<(Cosigned<DeployData>, bool)>, CasperError> {
+        super::block_admission::admit_list_pending_deploys(self).await
     }
 }

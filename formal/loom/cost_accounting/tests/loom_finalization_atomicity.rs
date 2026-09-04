@@ -1,5 +1,5 @@
 use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use loom::sync::{Arc, Mutex};
+use loom::sync::{Arc, Mutex, RwLock};
 use loom::thread;
 
 struct Schedule {
@@ -93,6 +93,73 @@ struct RecoveryCursors {
     projection_cursor: Mutex<usize>,
     effects_complete: AtomicUsize,
     effects_cursor: Mutex<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotCapture {
+    Stale,
+    Corrupt,
+    Coherent(ProjectedSnapshot),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectedSnapshot {
+    durable_revision: usize,
+    projected_revision: usize,
+    dag_floor_revision: usize,
+}
+
+struct ProjectedLedger {
+    endpoint: Mutex<(usize, usize)>,
+    dag_floor: Mutex<usize>,
+    projection: RwLock<()>,
+}
+
+impl ProjectedLedger {
+    fn new() -> Self {
+        Self {
+            endpoint: Mutex::new((0, 0)),
+            dag_floor: Mutex::new(0),
+            projection: RwLock::new(()),
+        }
+    }
+
+    fn append(&self) {
+        let mut endpoint = self.endpoint.lock().unwrap();
+        endpoint.0 += 1;
+    }
+
+    fn project(&self) {
+        let head = self.endpoint.lock().unwrap().0;
+        {
+            let _guard = self.projection.write().unwrap();
+            let mut dag_floor = self.dag_floor.lock().unwrap();
+            *dag_floor = (*dag_floor).max(head);
+        }
+        let mut endpoint = self.endpoint.lock().unwrap();
+        endpoint.1 = endpoint.1.max(head);
+    }
+
+    fn capture(&self) -> SnapshotCapture {
+        let before = *self.endpoint.lock().unwrap();
+        if before.0 != before.1 {
+            return SnapshotCapture::Stale;
+        }
+        let _guard = self.projection.read().unwrap();
+        let dag_floor = *self.dag_floor.lock().unwrap();
+        let after = *self.endpoint.lock().unwrap();
+        if before != after || after.0 != after.1 {
+            return SnapshotCapture::Stale;
+        }
+        if dag_floor != after.0 {
+            return SnapshotCapture::Corrupt;
+        }
+        SnapshotCapture::Coherent(ProjectedSnapshot {
+            durable_revision: after.0,
+            projected_revision: after.1,
+            dag_floor_revision: dag_floor,
+        })
+    }
 }
 
 const F0: usize = 0;
@@ -489,6 +556,85 @@ fn concurrent_recovery_advances_only_contiguous_durable_prefixes() {
             recovery.effects_complete.load(Ordering::SeqCst),
             (1 << 1) | (1 << 2)
         );
+    });
+}
+
+#[test]
+fn concurrent_append_projection_and_capture_never_publish_a_mixed_snapshot() {
+    loom::model(|| {
+        let ledger = Arc::new(ProjectedLedger::new());
+        let append = {
+            let ledger = ledger.clone();
+            thread::spawn(move || ledger.append())
+        };
+        let project = {
+            let ledger = ledger.clone();
+            thread::spawn(move || ledger.project())
+        };
+        let capture = {
+            let ledger = ledger.clone();
+            thread::spawn(move || ledger.capture())
+        };
+        append.join().unwrap();
+        project.join().unwrap();
+        let outcome = capture.join().unwrap();
+
+        assert_ne!(outcome, SnapshotCapture::Corrupt);
+        if let SnapshotCapture::Coherent(snapshot) = outcome {
+            assert_eq!(snapshot.durable_revision, snapshot.projected_revision);
+            assert_eq!(snapshot.projected_revision, snapshot.dag_floor_revision);
+            assert!(snapshot.durable_revision <= ledger.endpoint.lock().unwrap().0);
+        }
+    });
+}
+
+#[test]
+fn coherent_capture_remains_a_prefix_after_later_projection() {
+    loom::model(|| {
+        let ledger = ProjectedLedger::new();
+        let captured = ledger.capture();
+        ledger.append();
+        ledger.project();
+
+        assert_eq!(
+            captured,
+            SnapshotCapture::Coherent(ProjectedSnapshot {
+                durable_revision: 0,
+                projected_revision: 0,
+                dag_floor_revision: 0,
+            })
+        );
+        assert_eq!(*ledger.endpoint.lock().unwrap(), (1, 1));
+        assert_eq!(*ledger.dag_floor.lock().unwrap(), 1);
+    });
+}
+
+#[test]
+fn projection_lag_is_retryable_and_post_projection_capture_is_coherent() {
+    loom::model(|| {
+        let ledger = ProjectedLedger::new();
+        ledger.append();
+        assert_eq!(ledger.capture(), SnapshotCapture::Stale);
+        ledger.project();
+        assert_eq!(
+            ledger.capture(),
+            SnapshotCapture::Coherent(ProjectedSnapshot {
+                durable_revision: 1,
+                projected_revision: 1,
+                dag_floor_revision: 1,
+            })
+        );
+    });
+}
+
+#[test]
+fn stable_fully_projected_floor_mismatch_is_corruption() {
+    loom::model(|| {
+        let ledger = ProjectedLedger::new();
+        ledger.append();
+        ledger.project();
+        *ledger.dag_floor.lock().unwrap() = 0;
+        assert_eq!(ledger.capture(), SnapshotCapture::Corrupt);
     });
 }
 

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -52,6 +53,9 @@ use super::accounting::costs::{
     var_eval_cost,
 };
 use super::accounting::RuntimeBudget;
+use super::deterministic_reduction::{
+    self, DeterministicRSpace, ParticipantGuard, ReductionCoordinator, ScopedJoinHandle,
+};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -85,6 +89,7 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 
 /// Size of each new stack segment allocated when the red zone is reached.
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
 
 /// A Future wrapper that dynamically grows the thread stack during polling.
 ///
@@ -119,6 +124,13 @@ impl<F: Future> Future for StackGrowingFuture<F> {
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalWorkStats {
+    pub single_term_evaluations: u64,
+    pub yielded_single_term_evaluations: u64,
+    pub spawned_eval_tasks: u64,
+}
+
 #[derive(Clone)]
 pub struct DebruijnInterpreter {
     pub space: RhoISpace,
@@ -141,6 +153,10 @@ pub struct DebruijnInterpreter {
     /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
     /// system-process closures that clone the reducer.
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) single_term_evaluations: Arc<AtomicU64>,
+    pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
+    pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
+    pub(crate) reduction_coordinator: ReductionCoordinator,
 }
 
 type Application = Option<(
@@ -161,6 +177,23 @@ trait Method {
  * @param persistent  True if the write should remain in the tuplespace indefinitely.
  */
 impl DebruijnInterpreter {
+    pub fn eval_work_stats(&self) -> EvalWorkStats {
+        EvalWorkStats {
+            single_term_evaluations: self.single_term_evaluations.load(Ordering::Relaxed),
+            yielded_single_term_evaluations: self
+                .yielded_single_term_evaluations
+                .load(Ordering::Relaxed),
+            spawned_eval_tasks: self.spawned_eval_tasks.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn reset_eval_work_stats(&self) {
+        self.single_term_evaluations.store(0, Ordering::Relaxed);
+        self.yielded_single_term_evaluations
+            .store(0, Ordering::Relaxed);
+        self.spawned_eval_tasks.store(0, Ordering::Relaxed);
+    }
+
     fn with_metering_child(&self, component: usize) -> Self {
         let metering = self.metering.child(component.min(u32::MAX as usize) as u32);
         let mut child = self.clone();
@@ -180,7 +213,12 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.eval_inner(par, env, rand, CostAuthority::default()),
+            inner: deterministic_reduction::root(
+                self.space.clone(),
+                self.metering.budget(),
+                self.reduction_coordinator.clone(),
+                self.eval_inner(par, env, rand, CostAuthority::default()),
+            ),
         })
     }
 
@@ -196,7 +234,12 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.eval_inner(par, env, rand, authority),
+            inner: deterministic_reduction::root(
+                self.space.clone(),
+                self.metering.budget(),
+                self.reduction_coordinator.clone(),
+                self.eval_inner(par, env, rand, authority),
+            ),
         })
     }
 
@@ -234,6 +277,25 @@ impl DebruijnInterpreter {
                 }
             }
             self.aggregate_evaluator_errors(declaration_errors)?;
+
+            metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
+            metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
+                .increment(term_count as u64);
+
+            if let [(index, term)] = reduction_terms.as_slice() {
+                let evaluation = self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
+                if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
+                    self.yielded_single_term_evaluations
+                        .fetch_add(1, Ordering::Relaxed);
+                    tokio::task::yield_now().await;
+                }
+                let reducer = self.with_metering_child(*index);
+                let rand_split = evaluation_random(&rand, *index, term_count)
+                    .expect("term count and index were validated");
+                return reducer
+                    .generated_message_eval(term, env, rand_split, &authority)
+                    .await;
+            }
 
             // Collect errors from all parallel execution paths (pars)
             // parTraverseSafe
@@ -274,17 +336,26 @@ impl DebruijnInterpreter {
                 })
                 .collect();
 
-            metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
-            metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
-                .increment(term_count as u64);
-
+            self.spawned_eval_tasks
+                .fetch_add(futures.len() as u64, Ordering::Relaxed);
             let join_start = std::time::Instant::now();
             let mut unordered = FuturesUnordered::new();
-            for (index, fut) in futures.into_iter().enumerate() {
+            let parent_context = deterministic_reduction::current()
+                .expect("parallel evaluation requires a reduction context");
+            let child_contexts = parent_context.split(futures.len());
+            for ((index, fut), child_context) in futures.into_iter().enumerate().zip(child_contexts)
+            {
                 // Spawn each branch as its own task. This preserves actual runtime
                 // parallelism and gives deeply recursive branches an independent
                 // task stack while still reporting errors in source order below.
-                let handle = tokio::spawn(fut);
+                let guard = ParticipantGuard::for_context(&child_context);
+                let handle = ScopedJoinHandle::new(tokio::spawn(deterministic_reduction::scope(
+                    child_context,
+                    async move {
+                        let _guard = guard;
+                        fut.await
+                    },
+                )));
                 unordered.push(async move { (index, handle.await) });
             }
 
@@ -301,6 +372,7 @@ impl DebruijnInterpreter {
                     )),
                 }
             }
+            parent_context.rejoin();
             metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
                 .increment(join_start.elapsed().as_nanos() as u64);
 
@@ -839,10 +911,20 @@ impl DebruijnInterpreter {
         >,
     ) -> Result<DispatchType, InterpreterError> {
         let mut unordered = FuturesUnordered::new();
-        for (index, fut) in futures.into_iter().enumerate() {
+        let parent_context = deterministic_reduction::current()
+            .expect("parallel dispatch requires a reduction context");
+        let child_contexts = parent_context.split(futures.len());
+        for ((index, fut), child_context) in futures.into_iter().enumerate().zip(child_contexts) {
             // Persistent/peek continuations must progress independently; spawning
             // preserves parallel execution and isolates deep recursive branches.
-            let handle = tokio::spawn(fut);
+            let guard = ParticipantGuard::for_context(&child_context);
+            let handle = ScopedJoinHandle::new(tokio::spawn(deterministic_reduction::scope(
+                child_context,
+                async move {
+                    let _guard = guard;
+                    fut.await
+                },
+            )));
             unordered.push(async move { (index, handle.await) });
         }
 
@@ -859,6 +941,7 @@ impl DebruijnInterpreter {
                 )),
             }
         }
+        parent_context.rejoin();
 
         errors.sort_by_key(|(index, _)| *index);
         let stable_errors = errors.into_iter().map(|(_, err)| err).collect();
@@ -7562,6 +7645,11 @@ impl DebruijnInterpreter {
         mergeable_tags: Arc<HashMap<Par, MergeType>>,
         cost: RuntimeBudget,
     ) -> Arc<Self> {
+        let reduction_coordinator = ReductionCoordinator::default();
+        let space: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
+            space,
+            reduction_coordinator.clone(),
+        )));
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
         let dispatcher = Arc::new(RholangAndScalaDispatcher {
             _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
@@ -7581,6 +7669,10 @@ impl DebruijnInterpreter {
             // fs-native URNs.  Genesis path toggles this off around
             // `play_deploys_for_genesis` (see runtime.rs).
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            single_term_evaluations: Arc::new(AtomicU64::new(0)),
+            yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
+            spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+            reduction_coordinator,
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -7634,6 +7726,8 @@ fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
         UnfInstance::GPrivateBody(_) => String::from("PrivateBody"),
         UnfInstance::GDeployIdBody(_) => String::from("DeployId"),
         UnfInstance::GDeployerIdBody(_) => String::from("DeployerId"),
+        UnfInstance::GAuthorityIdBody(_) => String::from("AuthorityId"),
+        UnfInstance::GPrincipalIdBody(_) => String::from("PrincipalId"),
         UnfInstance::GSysAuthTokenBody(_) => String::from("SysAuthToken"),
     }
 }

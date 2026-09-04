@@ -34,11 +34,11 @@ use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::vault_parser::VaultParser;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use comm::rust::test_instances::{LogStub, LogicalTime};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use crypto::rust::hash::blake2b256::Blake2b256;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Event};
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
+use prost::Message;
 use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::rho_type::RhoNumber;
 use rspace_plus_plus::rspace::history::Either;
@@ -102,6 +102,47 @@ where
     result
 }
 
+async fn build_genesis_with_isolated_runtime(mut genesis: Genesis, version: i64) -> BlockMessage {
+    genesis.version = version;
+    let mut manager = resources::mk_test_rnode_store_manager_shared(generate_scope_id());
+    let mergeable = RuntimeManager::mergeable_store(&mut *manager)
+        .await
+        .unwrap();
+    let rspace = manager.r_space_stores().await.unwrap();
+    let runtime = RuntimeManager::create_with_store(
+        rspace,
+        mergeable,
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        rholang::rust::interpreter::external_services::ExternalServices::noop(),
+    );
+    Genesis::create_genesis_block(&runtime, &genesis)
+        .await
+        .unwrap()
+}
+
+fn canonical_event_log_digest(events: &[Event], include_occurrence_counts: bool) -> Vec<u8> {
+    let mut encoded = events
+        .iter()
+        .cloned()
+        .map(|mut event| {
+            if !include_occurrence_counts {
+                match &mut event {
+                    Event::Produce(produce) => produce.times_repeated = 0,
+                    Event::Comm(comm) => {
+                        for produce in &mut comm.produces {
+                            produce.times_repeated = 0;
+                        }
+                    }
+                    Event::Consume(_) => {}
+                }
+            }
+            event.to_proto().encode_to_vec()
+        })
+        .collect::<Vec<_>>();
+    encoded.sort();
+    Blake2b256::hash(encoded.concat())
+}
+
 fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
     CasperSnapshot {
         dag,
@@ -124,6 +165,7 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
         },
         consensus_context:
             casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
+        finalized_floor_certificate: None,
     }
 }
 
@@ -277,6 +319,14 @@ async fn genesis_system_vault_funding_is_committed_and_replay_deterministic() {
             .unwrap();
         let mut authority_regions = 0;
         for processed in &genesis_block.body.deploys {
+            assert_eq!(processed.envelope_commitment.len(), 32);
+            assert_eq!(processed.cosigner_threshold, 1);
+            let envelope = processed.to_cosigned().unwrap();
+            assert!(envelope.is_envelope_bound());
+            assert_eq!(
+                envelope.envelope_commitment().unwrap(),
+                processed.envelope_commitment
+            );
             let witness = processed
                 .authority_cost_witness
                 .as_ref()
@@ -332,6 +382,70 @@ async fn genesis_system_vault_funding_is_committed_and_replay_deterministic() {
         );
     })
     .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v6_genesis_envelope_identity_is_deterministic_across_builders() {
+    let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    let first = build_genesis_with_isolated_runtime(
+        genesis.clone(),
+        models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    )
+    .await;
+    let second = build_genesis_with_isolated_runtime(
+        genesis,
+        models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    )
+    .await;
+
+    assert_eq!(
+        first.body.state.pre_state_hash,
+        second.body.state.pre_state_hash
+    );
+    assert_eq!(first.body.deploys.len(), second.body.deploys.len());
+    for (index, (first_deploy, second_deploy)) in first
+        .body
+        .deploys
+        .iter()
+        .zip(&second.body.deploys)
+        .enumerate()
+    {
+        assert_eq!(first_deploy.envelope_commitment.len(), 32);
+        assert_eq!(
+            first_deploy.envelope_commitment, second_deploy.envelope_commitment,
+            "blessed deploy {index} envelope identity"
+        );
+        assert_eq!(
+            first_deploy.cost, second_deploy.cost,
+            "blessed deploy {index} cost"
+        );
+        assert_eq!(
+            canonical_event_log_digest(&first_deploy.deploy_log, false),
+            canonical_event_log_digest(&second_deploy.deploy_log, false),
+            "blessed deploy {index} event identities without occurrence counters"
+        );
+        assert_eq!(
+            canonical_event_log_digest(&first_deploy.deploy_log, true),
+            canonical_event_log_digest(&second_deploy.deploy_log, true),
+            "blessed deploy {index} event multiset"
+        );
+        assert_eq!(
+            first_deploy.deploy_log, second_deploy.deploy_log,
+            "blessed deploy {index} event log"
+        );
+        assert_eq!(
+            first_deploy.pre_state_hash, second_deploy.pre_state_hash,
+            "blessed deploy {index} pre-state"
+        );
+        assert_eq!(
+            first_deploy.post_state_hash, second_deploy.post_state_hash,
+            "blessed deploy {index} post-state"
+        );
+    }
+    assert_eq!(
+        first.body.state.post_state_hash,
+        second.body.state.post_state_hash
+    );
 }
 
 #[test]
@@ -649,15 +763,6 @@ new ret, rl(`rho:registry:lookup`), RevVaultCh, vaultCh, balanceCh in {
 // spec proves the read needs > 3000) while staying below the 9_000_000 default deployer vault.
 const BALANCE_QUERY_PHLO_LIMIT: i64 = 4_000_000;
 
-// Reconstructs the unforgeable id of the first `new`-bound name of a deploy signed by DEFAULT_SEC.
-fn calculate_unforgeable_name(timestamp: i64) -> String {
-    let secp256k1 = Secp256k1;
-    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
-    let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
-    hex::encode(unforgeable_id_u8)
-}
-
 // Deploys a balance query for `rev_address`, adds it in a block, and returns the pretty-printed
 // on-chain balance (a decimal string) read back from the deploy's `ret` channel.
 async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &str) -> String {
@@ -677,12 +782,22 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
         .await
         .expect("Failed to add balance-query block");
 
-    let data = rspace_util::get_data_at_private_channel(
-        &block,
-        &calculate_unforgeable_name(deploy.data.time_stamp),
-        &node.runtime_manager,
-    )
-    .await;
+    assert_eq!(block.body.deploys.len(), 1);
+    let processed = &block.body.deploys[0];
+    assert!(!processed.is_admission_rejected());
+    assert!(!processed.is_failed);
+    let envelope = processed.to_cosigned().expect("protocol-v6 envelope");
+    let unforgeable_id = Tools::user_deploy_rng(&envelope).next();
+    let private_name = hex::encode(
+        unforgeable_id
+            .iter()
+            .map(|&byte| byte as u8)
+            .collect::<Vec<_>>(),
+    );
+
+    let data =
+        rspace_util::get_data_at_private_channel(&block, &private_name, &node.runtime_manager)
+            .await;
 
     assert_eq!(
         data.len(),

@@ -1,0 +1,10 @@
+"month_survival": P=? [ !"service_down" U>HORIZON_HOURS true ];
+"mean_time_to_service_loss": R{"up_hours"}=? [ F "service_down" ];
+"month_down_hours": R{"down_hours"}=? [ C<=HORIZON_HOURS ];
+"month_weighted_quorum_loss": P=? [ F<=HORIZON_HOURS "weighted_quorum_lost" ];
+"month_host_failure": P=? [ F<=HORIZON_HOURS "host_failure" ];
+"month_storage_failure": P=? [ F<=HORIZON_HOURS "storage_failure" ];
+"month_network_partition": P=? [ F<=HORIZON_HOURS "network_partition" ];
+"month_software_failure": P=? [ F<=HORIZON_HOURS "software_failure" ];
+"eventual_recovery": P=? [ F "service_up" ];
+"expected_recovery_hours": R{"down_hours"}=? [ F "service_up" ];

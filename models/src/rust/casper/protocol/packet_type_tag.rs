@@ -4,12 +4,14 @@ use prost::Message;
 
 use crate::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto,
-    GetWalPayloadRequestProto, HasBlockProto, HasBlockRequestProto, HasSnapshotProto,
-    HasSnapshotRequestProto, HasWalPayloadProto, HasWalPayloadRequestProto,
-    MergeableEntryRequestProto, MergeableEntryResponseProto, NoApprovedBlockAvailableProto,
-    SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto, WalPayloadResponseProto,
+    BlockMessageProto, BlockRequestProto, FinalizationCertificateRequestProto,
+    FinalizationCertificateResponseProto, FloorCacheRequestProto, FloorCacheResponseProto,
+    ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, GetWalPayloadRequestProto,
+    HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
+    HasWalPayloadProto, HasWalPayloadRequestProto, MergeableEntryRequestProto,
+    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, SnapshotChunkResponseProto,
+    StoreItemsMessageProto, StoreItemsMessageRequestProto, UnapprovedBlockProto,
+    WalPayloadResponseProto,
 };
 use crate::routing::Packet;
 
@@ -45,6 +47,14 @@ impl_packet!(UnapprovedBlockProto, "UnapprovedBlock");
 impl_packet!(BlockApprovalProto, "BlockApproval");
 impl_packet!(NoApprovedBlockAvailableProto, "NoApprovedBlockAvailable");
 impl_packet!(BlockRequestProto, "BlockRequest");
+impl_packet!(
+    FinalizationCertificateRequestProto,
+    "FinalizationCertificateRequest"
+);
+impl_packet!(
+    FinalizationCertificateResponseProto,
+    "FinalizationCertificateResponse"
+);
 impl_packet!(ApprovedBlockRequestProto, "ApprovedBlockRequest");
 impl_packet!(HasBlockRequestProto, "HasBlockRequest");
 impl_packet!(HasBlockProto, "HasBlock");
@@ -63,3 +73,5 @@ impl_packet!(GetWalPayloadRequestProto, "GetWalPayloadRequest");
 impl_packet!(WalPayloadResponseProto, "WalPayloadResponse");
 impl_packet!(HasWalPayloadRequestProto, "HasWalPayloadRequest");
 impl_packet!(HasWalPayloadProto, "HasWalPayload");
+impl_packet!(FloorCacheRequestProto, "FloorCacheRequest");
+impl_packet!(FloorCacheResponseProto, "FloorCacheResponse");

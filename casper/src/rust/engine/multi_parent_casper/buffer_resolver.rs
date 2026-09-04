@@ -73,6 +73,11 @@ where
     select_dependency_free(
         candidate_hashes,
         |candidate_hash| -> Result<Option<BlockMessage>, CasperError> {
+            if this.casper_buffer_storage.is_waiting_on_certificate(
+                &models::rust::block_hash::BlockHashSerde(candidate_hash.clone()),
+            ) {
+                return Ok(None);
+            }
             Ok(this.block_store.get(candidate_hash)?)
         },
         |block| {
@@ -93,7 +98,7 @@ pub(crate) fn buffer_get_all_from_buffer<T: TransportLayer + Send + Sync>(
 
     let mut blocks = Vec::new();
     for hash in all_hashes {
-        if let Some(block) = this.block_store.get(&hash)? {
+        if let Some(block) = this.block_store.get_detached(&hash)? {
             blocks.push(block);
         }
     }

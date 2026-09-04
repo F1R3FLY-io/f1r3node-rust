@@ -221,11 +221,15 @@ curl http://localhost:40403/api/is-finalized/3bfdf56f...
 
 Submit a signed deploy to the network. Validator nodes only.
 
+The node captures one DAG view before it inserts the deploy. The node rejects
+the deploy when its block-height lifespan is closed in that view.
+
 **Request body:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `data.term` | string | yes | Rholang source code |
+| `data.language` | string | yes | Deploy language. Protocol v6.1 requires `rholang` |
 | `data.timestamp` | int | yes | Deploy timestamp (ms since epoch) |
 | `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
@@ -241,6 +245,7 @@ curl -X POST http://localhost:40413/api/deploy \
   -d '{
     "data": {
       "term": "new stdout(`rho:io:stdout`) in { stdout!(42) }",
+      "language": "rholang",
       "timestamp": 1700000000000,
       "validAfterBlockNumber": 0,
       "shardId": "root",
@@ -326,7 +331,7 @@ curl http://localhost:40403/api/deploy-finalization-status/3044...
 ```
 
 ```json
-{"state": "Finalized", "rejectionCount": 0, "latestBlockHash": "3bfdf56f..."}
+{"state": "Finalized", "rejection_count": 0, "latest_block_hash": "3bfdf56f...", "finalized_floor_hash": "91ca6d2e...", "finalized_floor_height": 42}
 ```
 
 Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
@@ -334,14 +339,70 @@ Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `state` | string | Deploy finalization state |
-| `rejectionCount` | int | Number of times the deploy was rejected during finalization |
-| `latestBlockHash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
+| `rejection_count` | int | Pending status counts visible rejection blocks. Terminal status counts rejection blocks in the deciding finalized-floor closure. |
+| `latest_block_hash` | string/null | Hex source-aware occurrence-carrier hash. This block contains the deploy. An exact tombstone cannot remain selected. |
+| `finalized_floor_hash` | string/null | Hex finalized-floor hash whose replay state determines a terminal verdict. Pending and legacy responses can omit it. |
+| `finalized_floor_height` | int/null | Height of `finalized_floor_hash`. Pending and legacy responses can omit it. |
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Status determined |
 | `400` | Signature is not valid hex (`invalid_hash`) |
 | `500` | Node-side failure |
+
+#### `GET /api/pending-deploys`
+
+Bulk snapshot of deploys currently queued in the node's local proposer pools: `deploy_storage` (submitted, not yet proposed) and `rejected_deploy_buffer` (recovering after a merge conflict). Each entry carries an `isRejected` flag so consumers can distinguish fresh deploys from recovery-backlog deploys.
+
+The queue is **node-local**: deploys never gossip between nodes, so an observer (read-only) node always answers `{"deploys": [], "totalAvailable": 0}` — it rejects `doDeploy`, so it never holds pending deploys. Route this request to a validator. For deploy status that is consistent across nodes, use `GET /api/deploy-finalization-status/{sig}` instead, which is DAG-derived.
+
+Already-included, future (`validAfterBlockNumber` ahead of the tip), and expired deploys are filtered out; a signature sitting in both pools is reported once with `isRejected: true`.
+
+**Parameters:**
+
+| Parameter | Location | Required | Description |
+|-----------|----------|----------|-------------|
+| `deployer` | query | no | Hex-encoded deployer public key; omit to return all pending deploys |
+
+```bash
+curl http://localhost:40403/api/pending-deploys
+curl http://localhost:40403/api/pending-deploys?deployer=04abc...
+```
+
+```json
+{
+  "deploys": [
+    {
+      "term": "@1!(1)",
+      "timestamp": 1700000000000,
+      "phloPrice": 1,
+      "phloLimit": 90000,
+      "validAfterBlockNumber": 0,
+      "shardId": "",
+      "deployer": "04abc...",
+      "sig": "3044...",
+      "sigAlgorithm": "secp256k1",
+      "expirationTimestamp": null,
+      "isRejected": false
+    }
+  ],
+  "totalAvailable": 1
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `deploys` | array | Pending deploys, sorted by `(timestamp, sig)` |
+| `totalAvailable` | int | Count before cap truncation. If `totalAvailable > deploys.length`, more entries exist than returned |
+| `deploys[].isRejected` | bool | `true` = rejected-recovery buffer (merge conflict), `false` = fresh in deploy_storage |
+
+Responses are capped at 1000 entries; compare `totalAvailable` with the array length to detect truncation.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Snapshot taken |
+| `400` | Deployer key is not valid hex (`invalid_public_key`) |
+| `500` | Node-side failure (including bootstrapping node, Casper not yet initialised) |
 
 #### `GET /api/prepare-deploy`
 
@@ -359,12 +420,12 @@ curl http://localhost:40403/api/prepare-deploy
 
 #### `POST /api/prepare-deploy`
 
-Same as GET, but additionally pre-generates unforgeable private-name identities
-for a given deployer and timestamp. Equivalent to gRPC
-`previewPrivateNames`. These serialized identities are deterministic and are
-not confidentiality secrets. The returned bytes do not grant the corresponding
-first-class Rholang capability: source code has no bytes-to-`GPrivate`
-constructor.
+Protocol 6 rejects this request. Protocol 6 binds each private-name stream to
+the complete authenticated deploy envelope. A key and timestamp cannot predict
+that stream before the client constructs and signs the deploy.
+
+Legacy protocols can generate private-name identities from a deployer and
+timestamp. The endpoint is then equivalent to gRPC `previewPrivateNames`.
 
 **Request body:**
 
@@ -387,12 +448,14 @@ curl -X POST http://localhost:40403/api/prepare-deploy \
 }
 ```
 
-The `names` array contains hex-encoded unforgeable names that will be produced by the deployer at the given timestamp. Clients can use these to pre-sign contracts that create private channels before deploying.
+For a legacy protocol, `names` contains the predicted private names. Protocol 6
+returns an error instead of returning identities that execution will not use.
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Sequence number and (optionally) names returned |
 | `400` | Malformed body or invalid deployer hex (`invalid_request_body`, `invalid_hash`) |
+| `409` | Protocol 6 rejects legacy private-name preview (`private_name_preview_unavailable`) |
 | `500` | Node-side failure (`runtime_error`) |
 
 ---
@@ -405,7 +468,7 @@ is settled; the response may still report the simulated compute and byte cost.
 
 #### `POST /api/explore-deploy`
 
-Execute against the latest block state.
+Execute against the last finalized block (LFB) post-state. Unfinalized DAG-tip state is not visible.
 
 **Request body:**
 
@@ -426,6 +489,10 @@ curl -X POST http://localhost:40453/api/explore-deploy \
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
+| `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
+| `504` | Execution exceeded the configured deadline (`exploratory_timeout`) |
+
+The phlogiston limit is the authoritative execution bound. The wall-clock deadline is best-effort because timeout observation requires interpreter execution to yield, and capacity remains occupied until cancelled work terminates.
 
 #### `POST /api/explore-deploy-by-block-hash`
 
@@ -453,6 +520,8 @@ curl -X POST http://localhost:40453/api/explore-deploy-by-block-hash \
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
+| `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
+| `504` | Execution exceeded the configured deadline (`exploratory_timeout`) |
 
 ---
 
@@ -759,15 +828,15 @@ curl -X POST http://localhost:40453/api/estimate-cost \
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `cost` | number | Estimated committed-COMM count plus canonical RSpace byte cost; not a physical REV settlement |
+| `cost` | number | Estimated committed-COMM count plus canonical RSpace byte cost. The estimate uses the target block protocol and does not settle REV. |
 | `blockNumber` | number | Block number the estimate ran against |
 | `blockHash` | string | Block hash the estimate ran against |
-| `deployerIdentity` | string | Which identity produced the estimate: `"provided"` (the caller-supplied `deployer` key was used) or `"ephemeral"` (no `deployer` was passed, so the term ran under a process-wide random key). `"ephemeral"` may significantly underestimate the real deploy cost for identity-dependent terms |
+| `deployerIdentity` | string | Which identity produced the estimate. `"provided"` uses the supplied key. `"ephemeral"` uses a process-wide random key and can underestimate identity-dependent terms. |
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Cost estimated |
- | `400` | Malformed body, invalid Rholang, invalid block hash, invalid deployer key, or node is not read-only (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `400` | Malformed input, invalid Rholang, invalid hash or key, or a node mode other than read-only or dev (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
@@ -801,7 +870,7 @@ curl -X POST http://localhost:40405/api/propose
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates canonical signer authority, shard ID, and expiration; state-bound purse funding is checked during block assembly. Triggers auto-propose if enabled |
+| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates signer authority, shard ID, time expiry, and block-height expiry. Checks state-bound purse funding during block assembly. Triggers auto-propose if enabled |
 | `getBlock` | `BlockQuery` | `BlockResponse` | Get block by hash. Returns `BlockInfo`; each `DeployInfo` includes protocol-v8 authority certificate/witness, adjacent roots, and admission status. Transfers are enriched on readonly nodes |
 | `getBlocks` | `BlocksQuery` | `stream BlockInfoResponse` | Get recent blocks by depth. Streaming. Returns `LightBlockInfo` (headers only) |
 | `showMainChain` | `BlocksQuery` | `stream BlockInfoResponse` | Walk the main chain path from tip. Streaming. Returns `LightBlockInfo` |
@@ -813,11 +882,17 @@ curl -X POST http://localhost:40405/api/propose
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only without settling a user purse. Returns result `Par`s, block context, and simulated cost. Readonly only |
 | `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Validates that the key is a 65-byte uncompressed secp256k1 point; returns error on invalid input. HTTP: `GET /api/bond-status/{pubkey}` |
-| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate deterministic serialized identities for unforgeable names from deployer key + timestamp. This supports signing before deployment but does not disclose a secret or create a first-class Rholang capability. Max 1024 names |
+| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate legacy private-name identities from deployer key and timestamp. Protocol 6 fails closed because its private-name stream uses the authenticated deploy envelope. Max 1024 names |
 | `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing |
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |
 | `machineVerifiableDag` | `MachineVerifyQuery` | `MachineVerifyResponse` | Machine-parseable DAG representation |
 | `status` | `google.protobuf.Empty` | `StatusResponse` | Node status — version, address, peers, network, native token metadata, LFB number, isValidator, isReadOnly, isReady, epoch |
+| `getPendingDeploys` | `PendingDeploysQuery` | `PendingDeploysResponse` | Bulk list of the node-local pending-deploy queue (deploy_storage + rejected-recovery buffer), optionally filtered by `deployerPubkey`. Capped at 1000 entries; `totalAvailable` reports the pre-cap count. Observers always answer empty. HTTP: `GET /api/pending-deploys` |
+
+`LightBlockInfo.bonds` contains the complete replayed PoS bond ledger for the
+block state. `LightBlockInfo.activeBonds` contains the positive-stake committee
+that consensus uses for the block. Clients must use `activeBonds` for finality
+and active-validator checks.
 
 ### ProposeService (port 40402)
 

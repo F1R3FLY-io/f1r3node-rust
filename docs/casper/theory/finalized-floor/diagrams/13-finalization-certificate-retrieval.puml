@@ -1,0 +1,44 @@
+@startuml
+skinparam backgroundColor #FAFCFF
+skinparam sequence {
+  ArrowColor #25476A
+  LifeLineBorderColor #25476A
+  LifeLineBackgroundColor #EAF4FF
+  ParticipantBorderColor #25476A
+  ParticipantBackgroundColor #DCEEFF
+  ParticipantFontColor #102A43
+  GroupBorderColor #587B9B
+  GroupBackgroundColor #F2F8FD
+}
+
+actor "Remote peer" as Peer #FFE8A3
+participant "Running engine" as Engine #CFE8FF
+database "Block store\n(detached block + sidecar)" as Store #D8F3DC
+database "Casper buffer\n(persistent dependency DAG)" as Buffer #E8DDF8
+participant "Certificate retriever\n(cap 256, fanout 4)" as Retriever #FFD6E0
+queue "Block-processing queue" as Queue #FFE5B4
+
+Peer -> Engine: V6 block with signed floor commitment
+Engine -> Store: persist detached block
+Engine -> Buffer: add certificate dependency\n0xFF || certificate_digest
+Engine -> Retriever: track(certificate_digest)
+Retriever -> Peer: FinalizationCertificateRequest(digest)
+
+alt expected, shape-valid, digest-matching response
+  Peer -> Engine: FinalizationCertificateResponse
+  Engine -> Store: content-addressed sidecar write
+  Engine -> Buffer: atomically resolve typed dependency
+  Engine -> Retriever: complete(digest)
+  Engine -> Queue: scan and enqueue once
+else unsolicited or invalid response
+  Peer -> Engine: response
+  Engine --> Peer: ignore or reject without mutation
+end
+
+group crash and restart
+  Engine -> Buffer: reconstruct dependency DAG from durable map
+  Engine -> Store: recover detached blocks and sidecars
+  Engine -> Retriever: rebuild bounded live obligations
+  Retriever -> Peer: retry with monotonic backoff
+end
+@enduml

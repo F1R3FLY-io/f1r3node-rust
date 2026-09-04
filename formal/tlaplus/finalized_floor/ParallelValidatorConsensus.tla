@@ -6,6 +6,10 @@ CONSTANTS
   Defect,
   \* @type: Bool;
   EnableCrashes,
+  \* @type: Bool;
+  StartWithOneRemoteSupport,
+  \* @type: Bool;
+  StartWithStalePromotionWindow,
   \* @type: Int;
   MaxActions
 
@@ -35,12 +39,14 @@ ASSUME /\ Defect \in {
            "CrashDeletesRecordedRoot"
          }
        /\ EnableCrashes \in BOOLEAN
+       /\ StartWithOneRemoteSupport \in BOOLEAN
+       /\ StartWithStalePromotionWindow \in BOOLEAN
        /\ MaxActions \in Nat
 
 Stake == [validator \in Validators |->
-  CASE validator = 1 -> 60
-    [] validator = 2 -> 20
-    [] OTHER -> 15]
+  CASE validator = 1 -> 40
+    [] validator = 2 -> 35
+    [] OTHER -> 25]
 
 WeightOf(validators) ==
   (IF 1 \in validators THEN Stake[1] ELSE 0) +
@@ -69,6 +75,9 @@ OwnEffects(candidate) ==
 
 CanonicalDeployOrigin(candidate) ==
   IF Defect = "CausalOnlyAcceptance" /\ candidate = 2 THEN 2 ELSE 1
+
+StalePromotionWindow ==
+  StartWithStalePromotionWindow
 
 VARIABLES
   \* @type: Int;
@@ -128,22 +137,94 @@ vars == <<
 
 Init ==
   /\ actionCount = 0
-  /\ knownCandidates = [validator \in Validators |-> {}]
-  /\ phase = [pair \in Pairs |-> "Idle"]
+  /\ knownCandidates =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2
+         THEN {1, 2}
+         ELSE IF StalePromotionWindow /\ validator = 1
+         THEN {1, 2}
+         ELSE IF StartWithOneRemoteSupport /\ validator = 1 THEN {1} ELSE {}]
+  /\ phase =
+       [pair \in Pairs |->
+         IF StalePromotionWindow
+              /\ pair \in {Pair(1, 1), Pair(1, 2), Pair(2, 1), Pair(2, 2)}
+         THEN "Accepted"
+         ELSE IF StartWithOneRemoteSupport /\ pair = Pair(1, 1)
+         THEN "Accepted"
+         ELSE "Idle"]
   /\ capturedBlock = [pair \in Pairs |-> 0]
   /\ capturedRoot = [pair \in Pairs |-> 0]
-  /\ capturedState = [pair \in Pairs |-> {}]
-  /\ replayedState = [pair \in Pairs |-> {}]
-  /\ emittedSupport = {}
-  /\ deliveredSupport = {}
-  /\ floorBlock = [validator \in Validators |-> 0]
-  /\ floorRoot = [validator \in Validators |-> 0]
-  /\ floorState = [validator \in Validators |-> StateOf(0)]
-  /\ committedEffects = [validator \in Validators |-> StateOf(0)]
-  /\ recordedRoots = [validator \in Validators |-> {0}]
-  /\ currentPointer = [validator \in Validators |-> 0]
-  /\ promotionSupport = [validator \in Validators |-> {}]
-  /\ deployOrigin = [validator \in Validators |-> 0]
+  /\ capturedState =
+       [pair \in Pairs |->
+         IF StalePromotionWindow
+              /\ pair \in {Pair(1, 1), Pair(1, 2), Pair(2, 1), Pair(2, 2)}
+         THEN StateOf(0)
+         ELSE IF StartWithOneRemoteSupport /\ pair = Pair(1, 1)
+         THEN StateOf(0)
+         ELSE {}]
+  /\ replayedState =
+       [pair \in Pairs |->
+         IF StalePromotionWindow /\ pair \in {Pair(1, 2), Pair(2, 2)}
+         THEN StateOf(2)
+         ELSE IF StalePromotionWindow
+              /\ pair \in {Pair(1, 1), Pair(2, 1)}
+         THEN StateOf(1)
+         ELSE IF StartWithOneRemoteSupport /\ pair = Pair(1, 1)
+         THEN StateOf(1)
+         ELSE {}]
+  /\ emittedSupport =
+       IF StalePromotionWindow
+       THEN {Pair(1, 1), Pair(1, 2), Pair(2, 1), Pair(2, 2)}
+       ELSE IF StartWithOneRemoteSupport THEN {Pair(1, 1)} ELSE {}
+  /\ deliveredSupport =
+       IF StalePromotionWindow
+       THEN {
+         SupportMessage(2, 1, 1),
+         SupportMessage(2, 2, 1),
+         SupportMessage(2, 1, 2),
+         SupportMessage(2, 2, 2)
+       }
+       ELSE IF StartWithOneRemoteSupport
+       THEN {SupportMessage(2, 1, 1)}
+       ELSE {}
+  /\ floorBlock =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2 THEN 2 ELSE 0]
+  /\ floorRoot =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2 THEN 2 ELSE 0]
+  /\ floorState =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2
+         THEN StateOf(2)
+         ELSE StateOf(0)]
+  /\ committedEffects =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2
+         THEN StateOf(2)
+         ELSE StateOf(0)]
+  /\ recordedRoots =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2
+         THEN {0, 1, 2}
+         ELSE IF StalePromotionWindow /\ validator = 1
+         THEN {0, 1, 2}
+         ELSE IF StartWithOneRemoteSupport /\ validator = 1
+         THEN {0, 1}
+         ELSE {0}]
+  /\ currentPointer =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2
+         THEN 2
+         ELSE IF StalePromotionWindow /\ validator = 1
+         THEN 2
+         ELSE IF StartWithOneRemoteSupport /\ validator = 1 THEN 1 ELSE 0]
+  /\ promotionSupport =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2 THEN {1, 2} ELSE {}]
+  /\ deployOrigin =
+       [validator \in Validators |->
+         IF StalePromotionWindow /\ validator = 2 THEN 1 ELSE 0]
 
 ReceiveCandidate(validator, candidate) ==
   LET pair == Pair(validator, candidate)
@@ -556,6 +637,13 @@ CanonicalDeployLookupAgrees ==
 CurrentPointerNamesRecordedRoot ==
   \A validator \in Validators :
     currentPointer[validator] \in recordedRoots[validator]
+
+RemoteObserverPromotion ==
+  \E observer \in Validators, candidate \in Candidates :
+    /\ floorBlock[observer] = candidate
+    /\ \E signer \in promotionSupport[observer] : signer # observer
+
+NoRemoteObserverPromotion == ~RemoteObserverPromotion
 
 AllValidatorsPromoteMergedFloor ==
   <> (\A validator \in Validators : floorBlock[validator] = 2)

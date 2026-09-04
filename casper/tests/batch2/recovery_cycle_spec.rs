@@ -16,6 +16,7 @@
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
@@ -53,7 +54,7 @@ impl TestContext {
 /// transfers no application REV. Its exact protocol debit remains far below the
 /// funded aggregate boundary exercised by the benign merge tests.
 const CONFLICT_RHO: &str = r#"
-@0!(0) | for (_ <- @0) { 0 }
+new ch in { ch!(0) | for (_ <- ch) { Nil } }
 "#;
 
 /// Phlogiston pricing per deploy. RETAINED only as (ignored) parameters for
@@ -202,6 +203,8 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
         .add_block_from_deploys(std::slice::from_ref(&deploy_b))
         .await
         .expect("validator 1 proposes block_b");
+    let deploy_id_a = Bytes::copy_from_slice(block_a.body.deploys[0].deploy_id());
+    let deploy_id_b = Bytes::copy_from_slice(block_b.body.deploys[0].deploy_id());
     assert_ne!(
         block_a.block_hash, block_b.block_hash,
         "block_a and block_b must be distinct sibling blocks"
@@ -277,10 +280,12 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| rd.sig.clone())
+        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
         .collect();
     assert!(
-        !rejected_sigs.iter().any(|s| *s == sig_a || *s == sig_b),
+        !rejected_sigs
+            .iter()
+            .any(|id| *id == deploy_id_a || *id == deploy_id_b),
         "D3: neither same-key benign deploy is rejected at MERGE — the \
          precharge-driven vault-balance conflict is removed; the complete \
          application-plus-protocol aggregate remains solvent. Got merge rejected sigs={:?}, \
@@ -296,16 +301,16 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
         .block_dag_storage
         .get_representation()
         .expect("dag representation");
-    for sig in [&sig_a, &sig_b] {
+    for deploy_id in [&deploy_id_a, &deploy_id_b] {
         assert!(
             representation
-                .lookup_by_deploy_id(&sig.to_vec())
+                .lookup_by_deploy_id(&crate::current_deploy_id(deploy_id))
                 .ok()
                 .flatten()
                 .is_some(),
             "D3: same-key benign deploy sig {} must remain reachable in the \
              canonical view (it was admitted, not merge-rejected)",
-            hex::encode(sig)
+            hex::encode(deploy_id)
         );
     }
 }
@@ -409,11 +414,16 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| rd.sig.clone())
+        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
         .collect();
     let conflicting_rejections = deploys
         .iter()
-        .filter(|deploy| rejected_sigs.contains(&deploy.sig))
+        .enumerate()
+        .filter(|(index, _)| {
+            rejected_sigs.iter().any(|rejected| {
+                rejected.as_ref() == sibling_blocks[*index].body.deploys[0].deploy_id()
+            })
+        })
         .count();
     assert_eq!(
         conflicting_rejections,
@@ -480,9 +490,9 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
 /// destination purse and `deposit`s into it, which calls `balance!("sub", amount)`
 /// on the SOURCE purse — writing a `-amount` diff onto the source vault's
 /// `NonNegativeNumber` value store at `@(*MergeableTag, *valueStore)`, an
-/// `IntegerAdd` mergeable number channel (its tag is
-/// `non_negative_mergeable_tag_name()`, mapped to `MergeType::IntegerAdd` by
-/// `default_mergeable_tags()`). Because the source vault is created ONCE at
+/// `IntegerAdd` mergeable number channel. The contract resolves the runtime's
+/// authenticated `rho:system:integerAddMergeableTag` binding. The runtime maps
+/// this binding to its configured `IntegerAdd` tag. The source vault is created ONCE at
 /// genesis, every sibling branch decrements the SAME channel, so their `-amount`
 /// diffs combine at multi-parent merge and are below-zero-checked together by
 /// `conflict_set_merger::cal_merged_result`. Mirrors `vault_demo/3.transfer_funds.rho`.
@@ -533,7 +543,6 @@ pub(super) struct D3VaultConflictFixture {
 
 pub(super) struct D3VaultMergeOutcome {
     pub(super) merge_block: BlockMessage,
-    pub(super) winning_block: BlockMessage,
     pub(super) rejected_sig: Bytes,
     pub(super) surviving_sigs: [Bytes; 2],
     pub(super) recovery_validator_index: usize,
@@ -588,12 +597,6 @@ pub(super) async fn build_d3_vault_conflict_siblings_with_finalization_rate(
             .expect("build transfer deploy"),
         );
     }
-    let transfer_sigs: [Bytes; 3] = assigned_deploys
-        .iter()
-        .map(|deploy| deploy.sig.clone())
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("fixture has exactly three transfer deploys");
     let mut siblings = Vec::with_capacity(nodes.len());
     for (index, deploy) in assigned_deploys.iter().enumerate() {
         siblings.push(
@@ -603,6 +606,12 @@ pub(super) async fn build_d3_vault_conflict_siblings_with_finalization_rate(
                 .unwrap_or_else(|error| panic!("validator {index} proposes transfer: {error}")),
         );
     }
+    let transfer_sigs: [Bytes; 3] = siblings
+        .iter()
+        .map(|block| Bytes::copy_from_slice(block.body.deploys[0].deploy_id()))
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("fixture has exactly three transfer deploys");
 
     for (source, block) in siblings.iter().enumerate() {
         for (target, node) in nodes.iter_mut().enumerate() {
@@ -659,7 +668,7 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
                 .body
                 .rejected_deploys
                 .iter()
-                .any(|rejected| rejected.sig == **sig)
+                .any(|rejected| rejected.deploy_id() == sig.as_ref())
         })
         .cloned()
         .collect();
@@ -747,7 +756,7 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
         .body
         .rejected_deploys
         .iter()
-        .find(|rejected| rejected.sig == rejected_sig)
+        .find(|rejected| rejected.deploy_id() == rejected_sig.as_ref())
         .expect("merge carries the rejected transfer record");
     assert!(
         rejected_record.has_provenance(),
@@ -768,7 +777,6 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
 
     D3VaultMergeOutcome {
         merge_block,
-        winning_block: fixture.siblings[recovery_validator_index].clone(),
         rejected_sig,
         surviving_sigs,
         recovery_validator_index,
@@ -801,26 +809,25 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
 ///          ╲   │    ╱
 ///        merge_block           proposed by the fourth validator
 ///             │
-///       recovery_block         proposed by the finalized-view recovery leader
-///                              must resurface in body.deploys
+///       deferred_block         ordinary work progresses while retry waits
+///             │
+///       recovery_block         retry follows rejection finalization
 ///
 /// Recovery pipeline (consensus-critical, D3-independent):
 ///   1. multi-parent merge → `dag_merger::merge` returns the rejected sig;
 ///      `compute_rejected_buffer_admits` admits it (its finalization state is
 ///      `Pending`) to the buffer.
-///   2. the recovery leader validates merge_block → `validate_block_checkpoint`
-///      populates its `KeyValueRejectedDeployBuffer`.
-///   3. that validator proposes recovery_block → `prepare_user_deploys` pulls the
-///      buffered sig, and `canonical_won_sigs` exempts it (its highest-block
-///      disposition is the REJECTION at merge_block height 2, which overrides the
-///      WIN in block_0 at height 1) so it survives the self-chain dedup filter
-///      and reaches `body.deploys`.
+///   2. the rejected carrier owner validates merge_block →
+///      `validate_block_checkpoint` populates its `KeyValueRejectedDeployBuffer`.
+///   3. the owner keeps custody until the rejection reaches the frozen floor;
+///   4. after finalization, `prepare_user_deploys` selects the retry and the
+///      self-chain filter preserves that authorized selection.
 ///
 /// Determinism: all three transfers are economically identical and signed by
 /// `DEFAULT_SEC`. Consensus deterministically selects one exact rejected source
 /// occurrence from the complete branch indices. The fixture observes that
 /// protocol result, proves its provenance names one sibling block, and derives
-/// recovery leadership from the actual committed finalized view. No test
+/// recovery custody from the exact rejected carrier. No test
 /// assertion depends on signature ordering, incidental branch construction, or
 /// the rejected source validator also being the elected recovery leader.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -829,6 +836,7 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
     let ctx = TestContext::new().await;
     let mut fixture = build_d3_vault_conflict_siblings(&ctx.genesis).await;
     let outcome = propose_d3_vault_rejecting_merge(&mut fixture, 1).await;
+    let recovery_owner_index = outcome.recovery_validator_index;
     let merge_block = outcome.merge_block;
     let rejected_sig = outcome.rejected_sig;
     let [surviving_sig_1, surviving_sig_2] = outcome.surviving_sigs;
@@ -854,40 +862,22 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
     for (index, node) in nodes.iter().enumerate() {
         assert!(node.contains(&merge_block.block_hash));
         let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
-        assert!(
-            buffer_guard
-                .contains_sig(&rejected_sig)
-                .expect("buffer.contains_sig"),
-            "validator {index}'s rejected-deploy buffer must contain the merge-rejected \
-             transfer {} after validating merge_block",
-            hex::encode(&rejected_sig)
+        let has_retry_custody = buffer_guard
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
+            .expect("buffer.contains_sig");
+        assert_eq!(
+            has_retry_custody,
+            index == recovery_owner_index,
+            "only rejected carrier owner {recovery_owner_index} may hold retry custody for {}",
+            hex::encode(&rejected_sig),
         );
     }
 
-    let recovery_snapshot = nodes[0]
+    let recovery_snapshot = nodes[recovery_owner_index]
         .casper
         .get_snapshot()
         .await
         .expect("recovery snapshot");
-    let finalized_height = recovery_snapshot
-        .dag
-        .lookup_unsafe(&recovery_snapshot.last_finalized_block)
-        .expect("finalized block metadata")
-        .block_number
-        .max(0) as usize;
-    let finalized_validators = recovery_snapshot.finalized_floor_validators();
-    let recovery_key = finalized_validators
-        .get(finalized_height % finalized_validators.len())
-        .expect("finalized-view recovery leader")
-        .clone();
-    let recovery_leader_index = nodes
-        .iter()
-        .position(|node| {
-            node.validator_id_opt
-                .as_ref()
-                .is_some_and(|identity| identity.public_key.bytes == recovery_key)
-        })
-        .expect("recovery leader is a local validator");
     for (index, node) in nodes.iter().enumerate() {
         let snapshot = node.casper.get_snapshot().await.expect("node snapshot");
         assert_eq!(
@@ -911,20 +901,22 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
         - recovery_snapshot.on_chain_state.shard_conf.deploy_lifespan;
     let (canonical_won, canonical_rejected) =
         casper::rust::util::rholang::interpreter_util::canonical_disposition_sets(
-            &nodes[recovery_leader_index].block_store,
+            &nodes[recovery_owner_index].block_store,
             &parent_hashes,
             scan_floor,
         )
         .expect("canonical recovery disposition");
+    let rejected_deploy_id = DeployLookupId::from_protocol_bytes(
+        recovery_snapshot.on_chain_state.shard_conf.casper_version,
+        &rejected_sig,
+    )
+    .expect("protocol deploy identity");
     assert!(
-        !canonical_won.contains(&rejected_sig) && canonical_rejected.contains(&rejected_sig),
+        !canonical_won.contains(&rejected_deploy_id)
+            && canonical_rejected.contains(&rejected_deploy_id),
         "exact merge tombstone must make the rejected source canonically rejected"
     );
 
-    // Recovery: the committed-view leader proposes recovery_block. `prepare_user_deploys` pulls
-    // the buffered sig and the `canonical_won_sigs` exemption lets it past the
-    // self-chain dedup filter (its highest-block disposition is the merge
-    // rejection, not the block_0 win) into body.deploys.
     let marker_2 = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::basic_deploy_data(
@@ -934,12 +926,127 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
         )
         .expect("build recovery marker")
     };
-    let recovery_block = nodes[recovery_leader_index]
+    let marker_2_id = nodes[recovery_owner_index]
+        .canonical_deploy_id(&marker_2)
+        .expect("recovery marker identity");
+    let deferred_block = nodes[recovery_owner_index]
         .add_block_from_deploys(&[marker_2])
         .await
-        .expect("committed-view leader proposes recovery_block");
+        .expect("rejected carrier owner proposes while retry gate is closed");
     for (index, node) in nodes.iter_mut().enumerate() {
-        if index != recovery_leader_index {
+        if index != recovery_owner_index {
+            let status = node
+                .process_block(deferred_block.clone())
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("validator {index} replays deferred block: {error}")
+                });
+            assert!(
+                matches!(status, Either::Right(_)),
+                "validator {index} rejected deferred block: {status:?}"
+            );
+        }
+    }
+    let deferred_ids = deferred_block
+        .body
+        .deploys
+        .iter()
+        .map(|deploy| {
+            deploy
+                .deploy_id_for_protocol(deferred_block.header.version)
+                .expect("deferred deploy identity")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        deferred_ids.contains(&marker_2_id),
+        "ordinary marker must progress while the retry gate is closed"
+    );
+    assert!(
+        !deferred_ids
+            .iter()
+            .any(|deploy_id| deploy_id.as_bytes() == rejected_sig.as_ref()),
+        "a rejection above the frozen floor must not retry immediately"
+    );
+
+    for (index, node) in nodes.iter().enumerate() {
+        let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
+        let has_retry_custody = buffer_guard
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
+            .expect("buffer.contains_sig");
+        assert_eq!(
+            has_retry_custody,
+            index == recovery_owner_index,
+            "owner custody for {} changed while the retry gate was closed",
+            hex::encode(&rejected_sig),
+        );
+    }
+
+    let pre_settlement_snapshot = nodes[recovery_owner_index]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("pre-settlement snapshot");
+    assert!(
+        pre_settlement_snapshot.last_finalized_block != merge_block.block_hash
+            && !pre_settlement_snapshot
+                .dag
+                .is_dag_ancestor(
+                    &merge_block.block_hash,
+                    &pre_settlement_snapshot.last_finalized_block,
+                )
+                .expect("pre-settlement floor ancestry"),
+        "retry gate must remain closed while the rejection is above the frozen floor"
+    );
+
+    let settlement_validators = (0..nodes.len())
+        .filter(|index| *index != recovery_owner_index)
+        .collect::<Vec<_>>();
+    let mut gate_open = false;
+    for round in 0..40usize {
+        let proposer = settlement_validators[round % settlement_validators.len()];
+        let support = nodes[proposer]
+            .add_block_from_deploys(&[])
+            .await
+            .expect("settlement support block");
+        for (index, node) in nodes.iter_mut().enumerate() {
+            if index != proposer {
+                let status = node
+                    .process_block(support.clone())
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("validator {index} replays settlement support: {error}")
+                    });
+                assert!(
+                    matches!(status, Either::Right(_)),
+                    "validator {index} rejected settlement support: {status:?}"
+                );
+            }
+        }
+        let snapshot = nodes[recovery_owner_index]
+            .casper
+            .get_snapshot()
+            .await
+            .expect("settlement snapshot");
+        gate_open = snapshot.last_finalized_block == merge_block.block_hash
+            || snapshot
+                .dag
+                .is_dag_ancestor(&merge_block.block_hash, &snapshot.last_finalized_block)
+                .expect("settlement floor ancestry");
+        if gate_open {
+            break;
+        }
+    }
+    assert!(
+        gate_open,
+        "the synchronized settlement rounds must finalize the rejection record"
+    );
+
+    let recovery_block = nodes[recovery_owner_index]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("owner proposes recovery after floor settlement");
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if index != recovery_owner_index {
             let status = node
                 .process_block(recovery_block.clone())
                 .await
@@ -952,59 +1059,52 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
             );
         }
     }
-    let recovery_sigs: Vec<&Bytes> = recovery_block
+    let recovery_ids = recovery_block
         .body
         .deploys
         .iter()
-        .map(|pd| &pd.deploy.sig)
-        .collect();
+        .map(|deploy| {
+            deploy
+                .deploy_id_for_protocol(recovery_block.header.version)
+                .expect("recovery deploy identity")
+        })
+        .collect::<Vec<_>>();
     assert!(
-        recovery_sigs.iter().any(|s| **s == rejected_sig),
-        "recovery_block.body.deploys must re-include the merge-rejected transfer \
-         {} pulled from the rejected-deploy buffer; got body.deploys sigs = {:?}. \
-         If this fires, check that `prepare_user_deploys` and the self-chain dedup \
-         filter both exempt `rejected_in_scope` sigs",
-        hex::encode(&rejected_sig),
-        recovery_sigs
+        recovery_ids
             .iter()
-            .map(|s| hex::encode(s.as_ref()))
-            .collect::<Vec<_>>()
+            .any(|deploy_id| deploy_id.as_bytes() == rejected_sig.as_ref()),
+        "floor settlement must authorize the owner's canonical retry"
     );
 
-    // Packaging the replay must NOT drain the buffer entry (ported from dev's
-    // retry test; this is the invariant behind the disabled finalization-time
-    // purge): the recovery block is not yet canonical — it could be orphaned —
-    // and the buffer holds the only re-proposable copy. The entry is purged only
-    // once the replay is finalized-WON (proposer-side terminal purge in
-    // `prepare_user_deploys_with_policy`).
-    {
-        for (index, node) in nodes.iter().enumerate() {
-            let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
-            assert!(
-                buffer_guard
-                    .contains_sig(&rejected_sig)
-                    .expect("buffer.contains_sig"),
-                "validator {index} evicted recovered sig {} before finalized-WON",
-                hex::encode(&rejected_sig)
-            );
-        }
+    for (index, node) in nodes.iter().enumerate() {
+        let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
+        let has_retry_custody = buffer_guard
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
+            .expect("buffer.contains_sig");
+        assert_eq!(
+            has_retry_custody,
+            index == recovery_owner_index,
+            "owner custody for {} changed before the retry became floor-settled",
+            hex::encode(&rejected_sig),
+        );
     }
 
-    // A recovery block must never list one of its own accepted deploys as
-    // rejected (ported from dev's retry test: accept/reject overlap would be an
-    // InvalidRejectedDeploy-class self-contradiction).
     let recovery_body_sigs: std::collections::HashSet<Bytes> = recovery_block
         .body
         .deploys
         .iter()
-        .map(|pd| pd.deploy.sig.clone())
+        .map(|pd| Bytes::copy_from_slice(pd.deploy_id()))
         .collect();
     let overlapping: Vec<Bytes> = recovery_block
         .body
         .rejected_deploys
         .iter()
-        .filter(|rd| recovery_body_sigs.contains(&rd.sig))
-        .map(|rd| rd.sig.clone())
+        .filter(|rd| {
+            recovery_body_sigs
+                .iter()
+                .any(|sig| sig.as_ref() == rd.deploy_id())
+        })
+        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
         .collect();
     assert!(
         overlapping.is_empty(),
@@ -1014,14 +1114,14 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
 
     // The two surviving transfers stay reachable in the canonical view (they were
     // admitted at merge, not rejected).
-    let representation = nodes[recovery_leader_index]
+    let representation = nodes[recovery_owner_index]
         .block_dag_storage
         .get_representation()
         .expect("dag representation");
     for sig in [&surviving_sig_1, &surviving_sig_2] {
         assert!(
             representation
-                .lookup_by_deploy_id(&sig.to_vec())
+                .lookup_by_deploy_id(&crate::current_deploy_id(sig))
                 .ok()
                 .flatten()
                 .is_some(),

@@ -28,6 +28,7 @@ use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig, SignatureChanne
 fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {
     DeployData {
         term: "Nil".to_string(),
+        language: "rholang".to_string(),
         time_stamp: 1700000000000,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),
@@ -100,7 +101,9 @@ fn bench_signature_channel_from_sig(c: &mut Criterion) {
 fn bench_set_deploy_signatures(c: &mut Criterion) {
     let mut group = c.benchmark_group("RuntimeBudget::set_deploy_signatures");
     for n in [1usize, 4, 16, 64].iter().copied() {
-        let sigs: Vec<Vec<u8>> = (0..n).map(|i| vec![0xCC + (i as u8); 32]).collect();
+        let sigs: Vec<Vec<u8>> = (0..n)
+            .map(|i| vec![0xCCu8.wrapping_add(i as u8); 32])
+            .collect();
         group.bench_with_input(BenchmarkId::from_parameter(n), &sigs, |b, sigs| {
             let refs: Vec<&[u8]> = sigs.iter().map(Vec::as_slice).collect();
             b.iter(|| {
@@ -113,7 +116,7 @@ fn bench_set_deploy_signatures(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_cosigned_threshold_64_choose_32(c: &mut Criterion) {
+fn bench_cosigned_threshold_32_of_64(c: &mut Criterion) {
     let data = baseline_deploy_data(32 * 1024);
     let signers = build_n_signers(&data, 32);
     // Pad with 32 placeholder signers (empty sig, zero share) for n=64.
@@ -127,7 +130,7 @@ fn bench_cosigned_threshold_64_choose_32(c: &mut Criterion) {
             sig_algorithm: Box::new(Secp256k1),
         });
     }
-    c.bench_function("Cosigned::from_signed_data_threshold/64-of-32", |b| {
+    c.bench_function("Cosigned::from_signed_data_threshold/32-of-64", |b| {
         b.iter(|| {
             let cosigned = Cosigned::from_signed_data_threshold(
                 black_box(data.clone()),
@@ -145,6 +148,6 @@ criterion_group!(
     bench_cosigned_construction,
     bench_signature_channel_from_sig,
     bench_set_deploy_signatures,
-    bench_cosigned_threshold_64_choose_32
+    bench_cosigned_threshold_32_of_64
 );
 criterion_main!(benches);

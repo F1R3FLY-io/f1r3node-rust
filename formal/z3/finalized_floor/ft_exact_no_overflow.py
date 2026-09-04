@@ -2,16 +2,16 @@
 # Z3 cross-witness for A9 — the exact-integer fault-tolerance DECISION that replaces
 # the f32 comparison in the clique oracle (clique_oracle.rs::ft_decides_exact).
 #
-# The oracle finalizes iff (2q − S)/S ≥ θ, θ = num/den (q = max-clique weight,
+# The oracle finalizes iff (2q − S)/S > θ, θ = num/den (q = max-clique weight,
 # S = total bonded stake, θ = ppm/1_000_000). Cleared of denominators (S, den > 0):
-#   2·q·den ≥ S·(den + num).
+#   2·q·den > S·(den + num).
 # This witnesses, against exact machine integers + IEEE-754:
 #   (a) the i128 products never overflow for realistic bonds (S ≤ i64::MAX, den = 10^6);
 #   (b) the exact test is EXACTLY the cleared-denominator rational test (all integers);
 #   (c) the f32 residual is REAL — the i64→f32 cast is non-injective above 2^24, so a
 #       decision computed in f32 cannot distinguish stakes that the exact test does
 #       (this is precisely the precision fuzz A9 removes).
-# Confirms the Rocq FtExact.v lemmas (ft_exact_iff_ratio, ft_exact_no_overflow).
+# Confirms the Rocq FtExact.v lemmas (ft_exact_iff_ratio_strict, ft_exact_no_overflow).
 from z3 import *
 
 ok = True
@@ -39,19 +39,19 @@ sol = Solver()
 sol.add(bounds, Or(lhs >= 2**127, lhs < -(2**127), rhs >= 2**127, rhs < -(2**127)))
 expect("i128 no-overflow over FULL validated ppm range (−den ≤ num ≤ den, S ≤ 2^63)", sol, "unsat")
 
-# ---- (b) exact test == cleared-denominator ratio test (exact integers) -------------
+# ---- (b) strict exact test == cleared-denominator ratio test -----------------------
 den = Int('den')
-exact_ge = 2 * q * den >= s * (den + num)          # ft_exact_ge
-ratio_ge = (2 * q - s) * den >= num * s            # (2q−S)/S ≥ num/den, cleared (S,den>0)
-sol = Solver()
-sol.add(s > 0, den > 0, exact_ge != ratio_ge)
-expect("exact test ≡ cleared-denominator ratio test (all integers)", sol, "unsat")
-# strict twin (for the LFB finalizer's `>`):
 exact_gt = 2 * q * den > s * (den + num)
 ratio_gt = (2 * q - s) * den > num * s
 sol = Solver()
 sol.add(s > 0, den > 0, exact_gt != ratio_gt)
 expect("exact strict test ≡ cleared-denominator strict ratio test", sol, "unsat")
+# Inclusive twin retained as a historical boundary-bug control.
+exact_ge = 2 * q * den >= s * (den + num)
+ratio_ge = (2 * q - s) * den >= num * s
+sol = Solver()
+sol.add(s > 0, den > 0, exact_ge != ratio_ge)
+expect("inclusive arithmetic control ≡ cleared-denominator ratio control", sol, "unsat")
 
 # ---- (c) the f32 residual is real: i64→f32 is non-injective above 2^24 -------------
 # Two DISTINCT i64 stakes — 2^24 and 2^24+1 — round to the SAME Float32 (RNE ties 2^24+1
@@ -71,14 +71,14 @@ expect("i64→f32 collides at 2^24 vs 2^24+1 (f32 decision residual is real)", s
 # The node passes TWO quantities to ft_decides_exact(agreeing, max_clique_weight, …):
 #   q        = max-CLIQUE weight — the quantity the θ-test scales (2·q·den ⋛ S·(den+num));
 #   agreeing = TOTAL agreeing weight, of which q is a sub-part (q ≤ agreeing ≤ S).
-# The floor θ-test alone is `fin_theta` on q. This mirrors Rocq CliqueOracle Section 9
+# The node's θ-test alone is `fin_theta` on q. This mirrors Rocq CliqueOracle Section 9
 # (Finalized_ft_hg / Finalized_ft_hg_refines_Finalized): finalization = θ-test ∧ hard gate.
 agreeing, den2 = Ints('agreeing den2')
-fin_theta = 2 * q * den2 >= s * (den2 + num)          # θ-exact floor test (on the clique q)
+fin_theta = 2 * q * den2 > s * (den2 + num)           # strict θ-test (on the clique q)
 
 # GAP (no hard gate): at θ ≤ 0 (num ≤ 0) the θ-test can finalize while the clique is NOT
-# a strict majority — `fin_theta` holds yet 2q ≤ S (e.g. num = 0, 2q = S exactly). SAT.
-# This is exactly why `Finalized_ft_refines_Finalized` needs 0 < num (it is VACUOUS here).
+# a strict majority — `fin_theta` holds yet 2q ≤ S for a negative threshold. SAT.
+# This is why negative thresholds require the independent hard-gate refinement.
 sol = Solver()
 sol.add(den2 > 0, s > 0, q >= 0, q <= s, -den2 <= num, num <= 0, fin_theta, Not(2 * q > s))
 expect("θ≤0 GAP: θ-test finalizes with 2q ≤ S (below strict majority) — no hard gate", sol, "sat")

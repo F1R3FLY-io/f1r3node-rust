@@ -207,9 +207,8 @@ Current epoch rewards from the PoS contract. Readonly only.
 
 ### `POST /api/estimate-cost`
 
-Estimate committed-COMM plus canonical RSpace byte cost without settling a
-user purse. Takes `{"term": "..."}`, returns `{"cost": 39, ...}`. Readonly
-only.
+Estimate committed-COMM plus canonical RSpace byte cost without REV settlement.
+The estimate uses the target block protocol. This endpoint is read-only.
 
 ### `GET /api/validator/{pubkey}`
 
@@ -355,6 +354,12 @@ Both gRPC and REST APIs retry `find_deploy` on `DeployNotFoundError`:
 
 These values are hardcoded (previously configurable via `F1R3_*` env vars, removed in v0.4.10).
 
+Protocol-v6 lookup reads the constant-size canonical occurrence summary and
+then its single indexed block. Exact archived occurrence history is not scanned
+by this hot endpoint. A missing or mismatched canonical block fails closed as a
+storage-consistency error. Only an unindexed pre-v6 identifier uses the bounded
+recent-block compatibility scan.
+
 ## Runtime Instances
 
 **`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
@@ -389,7 +394,7 @@ transport-local ordering or metadata to consensus state. See
 
 | Env var | Default | Purpose |
 |---------|--------:|---------|
-| `F1R3_MALLOC_TRIM_EVERY_BLOCKS` | `1` | Linux/glibc only: ask the allocator to return whole free replay and RSpace arena pages to the operating system after every N completed incoming block-processing tasks. The default closes the block-lifecycle allocation boundary on validators, joining validators, and read-only nodes; every local proposal attempt closes the corresponding creator boundary. Set a larger interval only after demonstrating that the resulting peak RSS remains within the deployment's memory envelope. `0` disables explicit trimming. See [Block-Heap Lifecycle and Reclamation](../theory/cost-accounting-impl/block-heap-lifecycle.md). |
+| `F1R3_MALLOC_TRIM_EVERY_BLOCKS` | `1` | Linux/glibc only: ask the allocator to return whole free replay and RSpace arena pages to the operating system after every N completed incoming block-processing tasks. The default closes the block-lifecycle allocation boundary on validators, joining validators, and read-only nodes; every local proposal attempt closes the corresponding creator boundary. Set a larger interval only after demonstrating that the resulting peak RSS remains within the deployment's memory envelope. `0` disables explicit trimming. See [Block-Heap Lifecycle and Reclamation](../casper/theory/cost-accounting-impl/block-heap-lifecycle.md). |
 | `F1R3_MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. Was 10s through v0.4.16; raised to 120s to stop request storms against slow peers. Lower it on small local networks where dependencies resolve fast. |
 
 **`ProposerInstance`** -- Dequeues proposal requests. Non-blocking locking (try_lock). 5-minute timeout for stuck proposals. Min-interval between proposals is 250ms (hardcoded).
@@ -445,6 +450,12 @@ Structured logging uses the `tracing` crate. The subscriber is initialised from 
 | `file.retention` | `14` | Number of rotated files to keep; `0` = unlimited |
 
 When `sink` includes `"file"`, logs are written to `<data-dir>/logs/node.log`. The `logs/` subdirectory is created automatically. In Docker the data dir is `/var/lib/rnode`, so log files land at `/var/lib/rnode/logs/node.log`.
+
+Deploy-pool filtering emits aggregate counts. Debug records include at most
+eight deterministic deploy-ID prefixes per reason and report the omitted
+count. Routine future, expired, and already-in-scope filtering is not a warning
+condition, so an adversarial pool cannot create one warning or debug record per
+deploy.
 
 ### Precedence (highest wins)
 

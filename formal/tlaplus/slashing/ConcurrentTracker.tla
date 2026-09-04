@@ -18,7 +18,7 @@
 (* Under Locked = TRUE the race is closed and the bug fix #2 (T-9.2) is     *)
 (* validated.                                                                *)
 (*                                                                          *)
-(* Reference: docs/theory/slashing/slashing-verification.md §9.2.           *)
+(* Reference: docs/casper/theory/slashing/slashing-verification.md §9.2.           *)
 (****************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC

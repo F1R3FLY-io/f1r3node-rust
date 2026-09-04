@@ -4,17 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Pull request number to validate
-        required: true
+        description: Pull request number to validate (pull-request mode)
+        required: false
+        default: ""
       head_sha:
-        description: Expected pull request head SHA reviewed by the maintainer
-        required: true
+        description: Expected pull request head SHA reviewed by the maintainer (pull-request mode)
+        required: false
+        default: ""
       approval_comment_id:
-        description: Pull request comment ID containing /full-oci-validate <pr_number> <head_sha>
-        required: true
+        description: Pull request comment ID containing /full-oci-validate <pr_number> <head_sha> (pull-request mode)
+        required: false
+        default: ""
+      candidate_tag:
+        description: Candidate tag (vMAJOR.MINOR.PATCH-canary.RUN) for exact-candidate mode; leave empty for pull-request mode
+        required: false
+        default: ""
 
+# Pull-request mode builds an unpublished image from the reviewed PR head.
+# Exact-candidate mode (docs/release-process.md section 9) validates the
+# published candidate image by digest from OCIR and publishes the section
+# 8.1 gate document on the candidate prerelease.
 concurrency:
-  group: full-oci-validation-${{ github.event.inputs.pr_number }}
+  group: full-oci-validation-${{ github.event.inputs.candidate_tag || github.event.inputs.pr_number }}
   cancel-in-progress: false
 
 permissions:
@@ -38,7 +49,7 @@ env:
 
 jobs:
   validate_pr:
-    name: Validate PR Input
+    name: Validate Input
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -46,20 +57,79 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      head_repo: ${{ steps.pr.outputs.head_repo }}
-      head_sha: ${{ steps.pr.outputs.head_sha }}
-      head_ref: ${{ steps.pr.outputs.head_ref }}
-      base_ref: ${{ steps.pr.outputs.base_ref }}
-      system_integration_ref: ${{ steps.pr.outputs.system_integration_ref }}
+      head_repo: ${{ steps.pr.outputs.head_repo || steps.candidate.outputs.head_repo }}
+      head_sha: ${{ steps.pr.outputs.head_sha || steps.candidate.outputs.head_sha }}
+      head_ref: ${{ steps.pr.outputs.head_ref || steps.candidate.outputs.head_ref }}
+      base_ref: ${{ steps.pr.outputs.base_ref || steps.candidate.outputs.base_ref }}
+      system_integration_ref: ${{ steps.pr.outputs.system_integration_ref || steps.candidate.outputs.system_integration_ref }}
+      candidate_tag: ${{ steps.candidate.outputs.candidate_tag }}
+      candidate_amd64_digest: ${{ steps.candidate.outputs.candidate_amd64_digest }}
+      candidate_arm64_digest: ${{ steps.candidate.outputs.candidate_arm64_digest }}
     steps:
       - name: Checkout workflow configuration
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      - name: Validate candidate
+        id: candidate
+        if: github.event.inputs.candidate_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATE_TAG: ${{ github.event.inputs.candidate_tag }}
+          ACTOR: ${{ github.actor }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if ! [[ "$CANDIDATE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-canary\.[1-9][0-9]*$ ]]; then
+            echo "candidate_tag must be a standard canary tag."
+            exit 1
+          fi
+          actor_permission=$(gh api "repos/${GH_REPO}/collaborators/${ACTOR}/permission" --jq '.permission' 2>/dev/null || true)
+          if [ "$actor_permission" != "admin" ] && [ "$actor_permission" != "maintain" ]; then
+            echo "${ACTOR} has ${actor_permission:-no} permission; exact-candidate validation requires maintain or admin permission."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/candidate"
+          gh release download "$CANDIDATE_TAG" --repo "$GH_REPO" \
+            --pattern release-evidence.json --pattern release-evidence.json.sha256 \
+            --dir "$RUNNER_TEMP/candidate"
+          (cd "$RUNNER_TEMP/candidate" && awk '{print $1 "  release-evidence.json"}' release-evidence.json.sha256 | sha256sum -c -)
+          evidence="$RUNNER_TEMP/candidate/release-evidence.json"
+          .github/scripts/release-evidence.sh validate "$evidence"
+          [ "$(jq -r '.publication_mode' "$evidence")" = canary ] || { echo "candidate has no published images"; exit 1; }
+          [ "$(jq -r '.candidate_tag' "$evidence")" = "$CANDIDATE_TAG" ] || { echo "evidence candidate tag differs from the requested tag"; exit 1; }
+          source_sha="$(jq -r '.source_sha' "$evidence")"
+          ref_json="$(gh api "repos/${GH_REPO}/git/ref/tags/${CANDIDATE_TAG}")"
+          tag_sha="$(jq -r '.object.sha' <<<"$ref_json")"
+          if [ "$(jq -r '.object.type' <<<"$ref_json")" = tag ]; then
+            tag_sha="$(gh api "repos/${GH_REPO}/git/tags/${tag_sha}" --jq '.object.sha')"
+          fi
+          [ "$tag_sha" = "$source_sha" ] || { echo "tag ${CANDIDATE_TAG} resolves to ${tag_sha}, not the evidence source ${source_sha}"; exit 1; }
+          {
+            echo "head_repo=${GH_REPO}"
+            echo "head_sha=${source_sha}"
+            echo "head_ref=refs/tags/${CANDIDATE_TAG}"
+            echo "base_ref=master"
+            echo "system_integration_ref=$(jq -r '.system_integration_sha' "$evidence")"
+            echo "candidate_tag=${CANDIDATE_TAG}"
+            echo "candidate_amd64_digest=$(jq -r '.images.linux_amd64_digest' "$evidence")"
+            echo "candidate_arm64_digest=$(jq -r '.images.linux_arm64_digest' "$evidence")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Keep the verified candidate evidence for this run
+        if: github.event.inputs.candidate_tag != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-evidence
+          path: ${{ runner.temp }}/candidate/release-evidence.json
+          retention-days: 30
+          if-no-files-found: error
+
       - name: Validate pull request
         id: pr
+        if: github.event.inputs.candidate_tag == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -164,7 +234,7 @@ jobs:
       contents: read
     steps:
       - name: Clone trusted system-integration launcher
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ needs.validate_pr.outputs.system_integration_ref }}
@@ -215,7 +285,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -265,6 +335,78 @@ jobs:
       head_repo: ${{ needs.validate_pr.outputs.head_repo }}
       head_sha: ${{ needs.validate_pr.outputs.head_sha }}
       system_integration_ref: ${{ needs.validate_pr.outputs.system_integration_ref }}
+      candidate_tag: ${{ needs.validate_pr.outputs.candidate_tag }}
+      candidate_amd64_digest: ${{ needs.validate_pr.outputs.candidate_amd64_digest }}
+      candidate_arm64_digest: ${{ needs.validate_pr.outputs.candidate_arm64_digest }}
+    secrets:
+      OCIR_REGISTRY: ${{ secrets.OCIR_REGISTRY }}
+      OCIR_NAMESPACE: ${{ secrets.OCIR_NAMESPACE }}
+      OCIR_REPO: ${{ secrets.OCIR_REPO }}
+      OCIR_USERNAME: ${{ secrets.OCIR_USERNAME }}
+      OCIR_AUTH_TOKEN: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+  publish_candidate_evidence:
+    name: Publish Candidate Gate Evidence
+    needs: [validate_pr, oci_validation]
+    if: needs.validate_pr.outputs.candidate_tag != '' && needs.oci_validation.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    environment: release-credentials
+    steps:
+      - name: Checkout trusted release controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Download the evidence this run validated
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: candidate-evidence
+          path: ${{ runner.temp }}/gate
+
+      - name: Write and publish the OCI validation gate document
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ needs.validate_pr.outputs.candidate_tag }}
+          EXPECTED_SOURCE_SHA: ${{ needs.validate_pr.outputs.head_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # The evidence comes from this run's own artifact, written by the
+          # validate job before any test ran. A release asset replaced after
+          # resolution cannot change what this document binds to.
+          work="$RUNNER_TEMP/gate"
+          ci-control/.github/scripts/release-evidence.sh validate "$work/release-evidence.json"
+          [ "$(jq -r '.source_sha' "$work/release-evidence.json")" = "$EXPECTED_SOURCE_SHA" ] || {
+            echo "::error::carried evidence names a different source than the validated head"
+            exit 1
+          }
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > "$work/run.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
+            --paginate --jq '.jobs[]' | jq -s '{jobs: .}' > "$work/jobs.json"
+          ci-control/.github/scripts/release-gate-evidence.sh oci-validation \
+            "$work/release-evidence.json" "$work/run.json" "$work/jobs.json" \
+            "$work/oci-validation-evidence.json"
+          ci-control/.github/scripts/release-gate-evidence.sh candidate-marker \
+            "$work/release-evidence.json" "$work/release-candidate.json"
+          # --clobber: a rerun of the same candidate replaces its own gate
+          # document. The document binds to the exact source and image, so a
+          # newer successful run supersedes an older one for the same candidate.
+          gh release upload "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$work/oci-validation-evidence.json"
+          echo "Published oci-validation-evidence.json on ${CANDIDATE_TAG}."
+
+      - name: Upload candidate marker
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/gate/release-candidate.json
+          retention-days: 30
+          if-no-files-found: error
 
   report_result:
     name: Report OCI Validation Result
@@ -297,7 +439,9 @@ jobs:
             description="Full OCI validation failed"
           fi
 
-          gh pr comment "$PR_NUMBER" --body "${description} for ${HEAD_SHA}. Run: ${RUN_URL}"
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body "${description} for ${HEAD_SHA}. Run: ${RUN_URL}"
+          fi
 
           if [ -n "$HEAD_SHA" ]; then
             gh api -X POST "repos/${GH_REPO}/statuses/${HEAD_SHA}" \

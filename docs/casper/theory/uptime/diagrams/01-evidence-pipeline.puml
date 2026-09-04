@@ -1,0 +1,51 @@
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Monospaced
+skinparam componentStyle rectangle
+
+title Thirty-day uptime evidence pipeline
+
+rectangle "Hard semantic authorities" #D1C4E9 {
+  component "Rocq\nalgebra and refinement" as Rocq #B39DDB
+  component "TLA+ / Apalache\nconcurrent protocol" as TLA #9575CD
+  component "Loom / Rust\nownership and code" as Loom #7E57C2
+}
+
+rectangle "Quantitative reliability" #BBDEFB {
+  component "Storm\n30-day CTMC queries" as Storm #64B5F6
+  component "Storm-pars\nexact parameter functions" as Pars #42A5F5
+  component "mCRL2\ndeadlock + overlap" as MCRL #2196F3
+}
+
+rectangle "Calibration and exploration" #C8E6C9 {
+  component "historical backtest + fault injection\ncurrent 60h calibration" as Measure #81C784
+  component "Wolfram (opt-in)\nrobust feasible region" as Wolfram #66BB6A
+}
+
+rectangle "Evidence result" #FFF9C4 {
+  component "720-hour engineering envelope\nparameters + provenance" as Projection #FFF176
+  component "calibrated release projection\nfail closed" as Release #FFD54F
+}
+
+Rocq --> Storm : certified service interface
+TLA --> Storm : progress and fault premises
+Loom --> Storm : bounded ownership premises
+MCRL --> Projection : parallelism retained
+Measure --> Storm : calibrated rates and buckets
+Storm --> Pars : reduced parametric controls
+Storm --> Projection : exact / sound query results
+Pars --> Projection : rational boundaries
+Projection --> Wolfram : machine-readable report
+Wolfram --> Storm : candidate thresholds rechecked
+Projection --> Release
+Measure --> Release
+Rocq --> Release
+TLA --> Release
+Loom --> Release
+
+note bottom of Release #FFCDD2
+No probability overrides a failed hard invariant.
+No missing or stale calibration produces a release projection.
+end note
+@enduml

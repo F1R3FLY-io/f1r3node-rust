@@ -10,6 +10,7 @@ CONSTANTS v1, v2, v3, v4
 
 MC_Validators == {v1, v2, v3, v4}
 MC_MaxLevel   == 4
+MC_EconomicNeglectSlashing == FALSE
 MC_BondWeight == [v \in MC_Validators |-> 1]
 MC_CurrentValidators == MC_Validators
 MC_EvidenceValidators == MC_Validators

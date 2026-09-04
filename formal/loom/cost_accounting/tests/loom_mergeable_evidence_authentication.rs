@@ -21,6 +21,15 @@ struct EvidenceStore {
     entries: Mutex<BTreeMap<ExecutionKey, Evidence>>,
 }
 
+struct PublicationState {
+    durable: BTreeMap<ExecutionKey, Evidence>,
+    cache: BTreeMap<ExecutionKey, Evidence>,
+}
+
+struct ValidatedEvidenceStore {
+    state: Mutex<PublicationState>,
+}
+
 impl EvidenceStore {
     fn new() -> Self {
         Self {
@@ -43,6 +52,50 @@ impl EvidenceStore {
     }
 
     fn snapshot(&self) -> BTreeMap<ExecutionKey, Evidence> { self.entries.lock().unwrap().clone() }
+}
+
+impl ValidatedEvidenceStore {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(PublicationState {
+                durable: BTreeMap::new(),
+                cache: BTreeMap::new(),
+            }),
+        }
+    }
+
+    fn publish_authenticated_replay(
+        &self,
+        authenticated: bool,
+        declared_post_root: usize,
+        computed_post_root: usize,
+        key: ExecutionKey,
+        evidence: Evidence,
+    ) -> bool {
+        if !authenticated || declared_post_root != computed_post_root {
+            return false;
+        }
+
+        let mut state = self.state.lock().unwrap();
+        match state.durable.get(&key) {
+            Some(existing) if *existing != evidence => false,
+            _ => {
+                state.durable.insert(key, evidence);
+                state.cache.insert(key, evidence);
+                true
+            }
+        }
+    }
+
+    fn snapshot(
+        &self,
+    ) -> (
+        BTreeMap<ExecutionKey, Evidence>,
+        BTreeMap<ExecutionKey, Evidence>,
+    ) {
+        let state = self.state.lock().unwrap();
+        (state.durable.clone(), state.cache.clone())
+    }
 }
 
 fn equivocations() -> ((ExecutionKey, Evidence), (ExecutionKey, Evidence)) {
@@ -112,6 +165,38 @@ fn peer_evidence_cannot_race_with_or_overwrite_local_replay() {
         peer.join().unwrap();
         assert_eq!(store.get(key), Some(canonical));
         assert_eq!(store.snapshot().len(), 1);
+    });
+}
+
+#[test]
+fn only_authenticated_exact_root_replay_publishes_durable_and_cached_evidence() {
+    loom::model(|| {
+        let store = Arc::new(ValidatedEvidenceStore::new());
+        let ((key, canonical), _) = equivocations();
+        let exact = {
+            let store = store.clone();
+            thread::spawn(move || store.publish_authenticated_replay(true, 9, 9, key, canonical))
+        };
+        let mismatched = {
+            let store = store.clone();
+            thread::spawn(move || {
+                store.publish_authenticated_replay(true, 9, 10, key, Evidence { diff: 91 })
+            })
+        };
+        let unauthenticated = {
+            let store = store.clone();
+            thread::spawn(move || {
+                store.publish_authenticated_replay(false, 9, 9, key, Evidence { diff: 92 })
+            })
+        };
+
+        assert!(exact.join().unwrap());
+        assert!(!mismatched.join().unwrap());
+        assert!(!unauthenticated.join().unwrap());
+        let (durable, cache) = store.snapshot();
+        assert_eq!(durable.get(&key), Some(&canonical));
+        assert_eq!(cache.get(&key), Some(&canonical));
+        assert_eq!(durable, cache);
     });
 }
 

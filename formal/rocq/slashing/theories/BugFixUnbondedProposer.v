@@ -17,7 +17,7 @@
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lia.
 From Stdlib Require Import Lists.List.
-From Slashing Require Import Validator Block SlashDeploy BlockCreator.
+From Slashing Require Import Validator ValidatorLifetime Block SlashDeploy BlockCreator.
 Import ListNotations.
 
 Set Implicit Arguments.
@@ -29,6 +29,7 @@ Set Implicit Arguments.
 Definition prepare_slashing_deploys_post_fix
   (candidates : list AuthorizedCandidate)
   (bonds : BondMap)
+  (generations : GenerationMap)
   (proposer : Validator)
   (seqNum : nat)
   (currentEpoch : nat)
@@ -36,16 +37,18 @@ Definition prepare_slashing_deploys_post_fix
   : list SlashDeploy :=
   if Nat.eqb (bm_lookup bonds proposer) 0
   then []
-  else prepare_slashing_deploys candidates bonds proposer seqNum currentEpoch seed_fn.
+  else prepare_slashing_deploys
+    candidates bonds generations proposer seqNum currentEpoch seed_fn.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §2 — T-9.8: Unbonded proposer never emits a slash deploy
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Theorem t_9_8_unbonded_proposer_no_slash :
-  forall candidates bonds proposer seqNum currentEpoch seed_fn,
+  forall candidates bonds generations proposer seqNum currentEpoch seed_fn,
     bm_lookup bonds proposer = 0 ->
-    prepare_slashing_deploys_post_fix candidates bonds proposer seqNum currentEpoch seed_fn = [].
+    prepare_slashing_deploys_post_fix
+      candidates bonds generations proposer seqNum currentEpoch seed_fn = [].
 Proof.
   intros. unfold prepare_slashing_deploys_post_fix.
   rewrite H. simpl. reflexivity.
@@ -54,10 +57,12 @@ Qed.
 (* Under the post-fix predicate, behavior is identical to pre-fix when the
    proposer is bonded. *)
 Theorem t_9_8_post_fix_equivalent_when_bonded :
-  forall candidates bonds proposer seqNum currentEpoch seed_fn,
+  forall candidates bonds generations proposer seqNum currentEpoch seed_fn,
     bm_lookup bonds proposer > 0 ->
-    prepare_slashing_deploys_post_fix candidates bonds proposer seqNum currentEpoch seed_fn
-    = prepare_slashing_deploys candidates bonds proposer seqNum currentEpoch seed_fn.
+    prepare_slashing_deploys_post_fix
+      candidates bonds generations proposer seqNum currentEpoch seed_fn =
+    prepare_slashing_deploys
+      candidates bonds generations proposer seqNum currentEpoch seed_fn.
 Proof.
   intros. unfold prepare_slashing_deploys_post_fix.
   destruct (bm_lookup bonds proposer) eqn:E.

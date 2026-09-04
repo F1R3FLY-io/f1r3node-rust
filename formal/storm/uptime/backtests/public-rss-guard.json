@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "backtest_id": "public-rss-guard-2026-08",
+  "evidence_class": "historical_backtest",
+  "sources": [
+    {
+      "url": "https://f1r3fly-io.github.io/f1r3node-rust/data/history.json",
+      "sha256": "ec2ccef7b1b4401c94b53c164f1ff9b6cefbcf293306b813f50024a26742d3c5"
+    },
+    {
+      "url": "https://f1r3fly-io.github.io/f1r3node-rust/data/history-daily.json",
+      "sha256": "4166d23686d3ea1a7502b9663f536360dfa066bdbd60bbbf7a8ce892982b7df8"
+    }
+  ],
+  "records": [
+    {"run_id": 31332864501, "target_revision": "eb4030c2e9625692fb4e9c2c1bf216b07ac2cf88", "rss_peak_mb": 19311, "rss_ceiling_mb": 14336, "observed_protection_breach": true, "direct_rss_guard_crossing": true},
+    {"run_id": 31390673884, "target_revision": "d4e12a2e2067131985b7a692dab603f3e3d85dd6", "rss_peak_mb": 27828, "rss_ceiling_mb": 20480, "observed_protection_breach": true, "direct_rss_guard_crossing": true},
+    {"run_id": 31404822218, "target_revision": "438f472449b747cfc18d9abcc71b3a041ec98cde", "rss_peak_mb": 36981, "rss_ceiling_mb": 28672, "observed_protection_breach": true, "direct_rss_guard_crossing": true},
+    {"run_id": 31457254913, "target_revision": "62fa58f1183630d08919e4957d29018ecd1b3bcb", "rss_peak_mb": 23518, "rss_ceiling_mb": 28672, "observed_protection_breach": true, "direct_rss_guard_crossing": false},
+    {"run_id": 31547587950, "target_revision": "2185f3f470d3d1c9f0fd2b70d69121b8f6c17b90", "rss_peak_mb": 30028, "rss_ceiling_mb": 28672, "observed_protection_breach": true, "direct_rss_guard_crossing": true},
+    {"run_id": 31563121791, "target_revision": "71c4d11a0fec8fcac559eaab4dcd3e97a30d2460", "rss_peak_mb": 27495, "rss_ceiling_mb": 45056, "observed_protection_breach": false, "direct_rss_guard_crossing": false},
+    {"run_id": 31661102643, "target_revision": "cfc64ecf4fa0e720ded0f0c27bf7d9226c374f99", "rss_peak_mb": 29265, "rss_ceiling_mb": 45056, "observed_protection_breach": false, "direct_rss_guard_crossing": false},
+    {"run_id": 31703151252, "target_revision": "6e485b72755e8cad894a0e7a80a75f477cb2d7af", "rss_peak_mb": 25987, "rss_ceiling_mb": 45056, "observed_protection_breach": true, "direct_rss_guard_crossing": false},
+    {"run_id": 31764014742, "target_revision": "3a0fae88367aae04b67e14209d2f9c18be186dbc", "rss_peak_mb": 47118, "rss_ceiling_mb": 45056, "observed_protection_breach": true, "direct_rss_guard_crossing": true}
+  ],
+  "interpretation": "Every observed aggregate RSS peak at or above the revision-specific guard coincided with a protection breach. Breaches below the RSS guard remain possible because the guardian also enforces host-free-memory and other limits. Fresh-shard peaks do not identify a continuous RSS growth or reclamation rate."
+}

@@ -18,7 +18,7 @@
    bm_sum                    │ Σ_{v ∈ dom(B)} B(v)        │ Σ over .values()
    ─────────────────────────────────────────────────────────────────────────
 
-   Companion doc: docs/theory/slashing/slashing-verification.md §3.1
+   Companion doc: docs/casper/theory/slashing/slashing-verification.md §3.1
    Dependencies:  Rocq 9.1+ stdlib.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
@@ -36,8 +36,8 @@ Set Implicit Arguments.
 
    Validators are abstract identifiers. We model them as natural numbers for
    decidability of equality without committing to any particular byte
-   representation. The bisimilarity proof argues observational equivalence
-   modulo this representation choice. *)
+   representation. Safety and refinement results are modulo this
+   representation choice. *)
 
 Definition Validator := nat.
 

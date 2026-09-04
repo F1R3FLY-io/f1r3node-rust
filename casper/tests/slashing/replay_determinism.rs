@@ -1,7 +1,7 @@
 // Replay determinism: the same sequence of operations produces identical
 // projected state in two independent harness runs.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14.6.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14.6.
 // Theorems: T-replay (catalog of replay-equivalent projections).
 //
 // Property: running the same script (sign, dispatch, slash, cite, slash)

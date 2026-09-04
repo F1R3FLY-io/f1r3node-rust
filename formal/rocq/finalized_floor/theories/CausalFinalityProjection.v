@@ -180,6 +180,17 @@ Definition causal_delta_dependencies_complete
   (delta : CausalEvidenceContext) : Prop :=
   Forall (causal_evidence_dependencies_present dependencies) delta.
 
+Fixpoint first_missing_dependency
+  (held : BlockHash -> bool) (dependencies : list BlockHash)
+  : option BlockHash :=
+  match dependencies with
+  | [] => None
+  | dependency :: rest =>
+      if held dependency
+      then first_missing_dependency held rest
+      else Some dependency
+  end.
+
 Record ReceiverCausalView : Type := mkReceiverCausalView {
   receiver_parent_evidence : CausalEvidenceContext;
   receiver_ambient_evidence : CausalEvidenceContext
@@ -195,6 +206,56 @@ Record FinalityConsensusCertificate : Type := mkFinalityConsensusCertificate {
   consensus_pre_state_floor : BlockHash
 }.
 
+Inductive FinalityProjectionCapture : Type :=
+| CompleteFinalityProjection (projection : list (Validator * BlockHash))
+| MissingFinalityDependency (missing : BlockHash)
+| InvalidFinalityClosure.
+
+Definition capture_finality_projection
+  (held : BlockHash -> bool)
+  (dependencies : list BlockHash)
+  (closure_invalid : bool)
+  (authority : list ParentAuthorityEntry)
+  (latest : list CertifiedLatestMessage)
+  (incoming : CausalEvidenceContext)
+  (exact_justifications : list (Validator * BlockHash))
+  : FinalityProjectionCapture :=
+  match first_missing_dependency held dependencies with
+  | Some missing => MissingFinalityDependency missing
+  | None =>
+      if closure_invalid
+      then InvalidFinalityClosure
+      else CompleteFinalityProjection
+        (derive_finality_vote_projection
+          authority latest incoming exact_justifications)
+  end.
+
+Definition projection_from_capture
+  (capture : FinalityProjectionCapture)
+  : option (list (Validator * BlockHash)) :=
+  match capture with
+  | CompleteFinalityProjection projection => Some projection
+  | MissingFinalityDependency _ => None
+  | InvalidFinalityClosure => None
+  end.
+
+Definition certify_frozen_projection_context
+  (base promoted : BlockHash)
+  (exact_justifications : list (Validator * BlockHash))
+  (exact_max_sequences : list (Validator * nat))
+  (incoming delta : CausalEvidenceContext)
+  (projection : list (Validator * BlockHash))
+  : FinalityConsensusCertificate :=
+  let floor := floor_from_projection base promoted projection in
+  mkFinalityConsensusCertificate
+    exact_justifications
+    exact_max_sequences
+    incoming
+    (causal_context_union incoming delta)
+    projection
+    floor
+    floor.
+
 Definition certify_finality_context
   (base promoted : BlockHash)
   (authority : list ParentAuthorityEntry)
@@ -208,15 +269,31 @@ Definition certify_finality_context
   let projection :=
     derive_finality_vote_projection
       authority latest incoming exact_justifications in
-  let floor := floor_from_projection base promoted projection in
-  mkFinalityConsensusCertificate
+  certify_frozen_projection_context
+    base
+    promoted
     exact_justifications
     exact_max_sequences
     incoming
-    (causal_context_union incoming delta)
-    projection
-    floor
-    floor.
+    delta
+    projection.
+
+Definition certificate_from_projection_capture
+  (base promoted : BlockHash)
+  (exact_justifications : list (Validator * BlockHash))
+  (exact_max_sequences : list (Validator * nat))
+  (incoming delta : CausalEvidenceContext)
+  (capture : FinalityProjectionCapture)
+  : option FinalityConsensusCertificate :=
+  match capture with
+  | CompleteFinalityProjection projection =>
+      Some
+        (certify_frozen_projection_context
+          base promoted exact_justifications exact_max_sequences
+          incoming delta projection)
+  | MissingFinalityDependency _ => None
+  | InvalidFinalityClosure => None
+  end.
 
 Definition evidence_is_slash_authorized
   (evidence : CausalObjectiveEvidence)
@@ -246,6 +323,100 @@ Theorem finality_projection_is_subset_of_exact_justifications :
 Proof.
   intros authority latest incoming exact_justifications vote Hvote.
   apply filter_In in Hvote. exact (proj1 Hvote).
+Qed.
+
+Theorem first_missing_dependency_names_unheld :
+  forall held dependencies missing,
+    first_missing_dependency held dependencies = Some missing ->
+    In missing dependencies /\ held missing = false.
+Proof.
+  intros held dependencies. induction dependencies as [|dependency rest IH]; simpl.
+  - intros missing Hmissing. discriminate.
+  - destruct (held dependency) eqn:Hheld.
+    + intros missing Hmissing. apply IH in Hmissing.
+      destruct Hmissing as [Hin Hunheld]. split; auto.
+    + intros missing Hmissing. inversion Hmissing; subst. split; auto.
+Qed.
+
+Theorem complete_dependency_set_has_no_missing_member :
+  forall held dependencies,
+    Forall (fun dependency => held dependency = true) dependencies ->
+    first_missing_dependency held dependencies = None.
+Proof.
+  intros held dependencies Hcomplete. induction Hcomplete; simpl.
+  - reflexivity.
+  - rewrite H. exact IHHcomplete.
+Qed.
+
+Theorem missing_capture_names_exact_unheld_dependency :
+  forall held dependencies closure_invalid authority latest incoming exact missing,
+    capture_finality_projection
+      held dependencies closure_invalid authority latest incoming exact =
+      MissingFinalityDependency missing ->
+    In missing dependencies /\ held missing = false.
+Proof.
+  intros held dependencies closure_invalid authority latest incoming exact missing Hcapture.
+  unfold capture_finality_projection in Hcapture.
+  destruct (first_missing_dependency held dependencies) as [found|] eqn:Hmissing.
+  - inversion Hcapture; subst.
+    eapply first_missing_dependency_names_unheld. exact Hmissing.
+  - destruct closure_invalid; discriminate.
+Qed.
+
+Theorem incomplete_closure_has_no_projection :
+  forall held dependencies closure_invalid authority latest incoming exact missing,
+    capture_finality_projection
+      held dependencies closure_invalid authority latest incoming exact =
+      MissingFinalityDependency missing ->
+    projection_from_capture
+      (capture_finality_projection
+        held dependencies closure_invalid authority latest incoming exact) = None.
+Proof.
+  intros. rewrite H. reflexivity.
+Qed.
+
+Theorem incomplete_closure_has_no_certificate :
+  forall base promoted exact max_sequences incoming delta capture missing,
+    capture = MissingFinalityDependency missing ->
+    certificate_from_projection_capture
+      base promoted exact max_sequences incoming delta capture = None.
+Proof.
+  intros. subst. reflexivity.
+Qed.
+
+Theorem invalid_closure_has_no_certificate :
+  forall base promoted exact max_sequences incoming delta capture,
+    capture = InvalidFinalityClosure ->
+    certificate_from_projection_capture
+      base promoted exact max_sequences incoming delta capture = None.
+Proof.
+  intros. subst. reflexivity.
+Qed.
+
+Theorem full_restoration_reproduces_complete_projection :
+  forall held dependencies authority latest incoming exact,
+    Forall (fun dependency => held dependency = true) dependencies ->
+    capture_finality_projection
+      held dependencies false authority latest incoming exact =
+      CompleteFinalityProjection
+        (derive_finality_vote_projection authority latest incoming exact).
+Proof.
+  intros held dependencies authority latest incoming exact Hcomplete.
+  unfold capture_finality_projection.
+  rewrite (complete_dependency_set_has_no_missing_member held dependencies Hcomplete).
+  reflexivity.
+Qed.
+
+Theorem complete_capture_certifies_the_same_projection :
+  forall base promoted exact max_sequences incoming delta capture projection,
+    capture = CompleteFinalityProjection projection ->
+    exists certificate,
+      certificate_from_projection_capture
+        base promoted exact max_sequences incoming delta capture = Some certificate /\
+      consensus_finality_projection certificate = projection.
+Proof.
+  intros. subst.
+  eexists. split; reflexivity.
 Qed.
 
 Theorem causal_parent_projection_is_subset_of_exact_justifications :
@@ -351,6 +522,17 @@ Proof.
   apply filter_In in Hparent. destruct Hparent as [_ Heligible].
   unfold causal_parent_is_eligible in Heligible; simpl in Heligible.
   rewrite Hauthority in Heligible. discriminate.
+Qed.
+
+Theorem absent_authority_cannot_vote :
+  forall authority latest incoming exact validator hash,
+    lookup_parent_authority validator authority = None ->
+    ~ In (validator, hash)
+      (derive_finality_vote_projection authority latest incoming exact).
+Proof.
+  intros authority latest incoming exact validator hash Hauthority Hvote.
+  apply finality_projection_is_subset_of_causal_parent_projection in Hvote.
+  eapply absent_authority_cannot_be_causal_parent; eauto.
 Qed.
 
 Theorem wrong_generation_cannot_be_causal_parent :

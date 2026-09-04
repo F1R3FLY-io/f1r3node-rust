@@ -169,8 +169,11 @@ impl GenesisBuilder {
             deploys: vec![],
             rejected_deploys: vec![],
             rejected_state_effects: vec![],
+            applied_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: bytes::Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: bytes::Bytes::new(),
         };
 
         let header = Header {
@@ -180,6 +183,7 @@ impl GenesisBuilder {
             extra_bytes: bytes::Bytes::new(),
             sender_bond_generation: None,
             objective_equivocation_evidence_delta: Vec::new(),
+            finalized_floor: None,
         };
 
         BlockMessage {
@@ -193,6 +197,7 @@ impl GenesisBuilder {
             sig_algorithm: "secp256k1".to_string(),
             shard_id: "root".to_string(), // Using "root" like in GenesisBuilder
             extra_bytes: bytes::Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 

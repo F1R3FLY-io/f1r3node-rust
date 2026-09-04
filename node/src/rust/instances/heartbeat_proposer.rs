@@ -557,6 +557,9 @@ async fn check_lfb_and_propose(
                 if matches!(
                     status,
                     ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(_))
+                        | ProposeStatus::Failure(
+                            ProposeFailure::ParentFrontierCapacityExceeded { .. }
+                        )
                 ) {
                     tracing::debug!(
                         "Heartbeat: Propose deferred with {} (seqNum {})",
@@ -1169,6 +1172,7 @@ mod tests {
         enum FixedProposerOutcome {
             Empty,
             RecoveryDeferred,
+            ParentFrontierCapacityDeferred,
             Failure,
             Started,
             Success,
@@ -1190,6 +1194,17 @@ mod tests {
                             )),
                             7,
                         ),
+                        FixedProposerOutcome::ParentFrontierCapacityDeferred => {
+                            ProposerResult::Failure(
+                                ProposeStatus::Failure(
+                                    ProposeFailure::ParentFrontierCapacityExceeded {
+                                        configured_cap: 2,
+                                        required_parents: 3,
+                                    },
+                                ),
+                                7,
+                            )
+                        }
                         FixedProposerOutcome::Failure => ProposerResult::Failure(
                             ProposeStatus::Failure(ProposeFailure::InternalDeployError),
                             7,
@@ -1206,22 +1221,20 @@ mod tests {
             })
         }
 
-        fn create_recovery_deferred_propose_function() -> (Arc<AtomicUsize>, Arc<ProposeFunction>) {
-            use casper::rust::blocks::proposer::propose_result::{ProposeFailure, ProposeStatus};
+        fn create_counting_deferred_propose_function(
+            failure: ProposeFailure,
+        ) -> (Arc<AtomicUsize>, Arc<ProposeFunction>) {
+            use casper::rust::blocks::proposer::propose_result::ProposeStatus;
             use casper::rust::blocks::proposer::proposer::ProposerResult;
 
             let count = Arc::new(AtomicUsize::new(0));
             let count_clone = count.clone();
             let func: Arc<ProposeFunction> = Arc::new(move |_request_kind| {
                 count_clone.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async {
-                    Ok(ProposerResult::Failure(
-                        ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(
-                            casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::FinalizedFloorMaterializationPending,
-                        )),
-                        7,
-                    ))
-                })
+                let failure = failure.clone();
+                Box::pin(
+                    async move { Ok(ProposerResult::Failure(ProposeStatus::Failure(failure), 7)) },
+                )
             });
             (count, func)
         }
@@ -1288,11 +1301,24 @@ mod tests {
             let mut context_preimage = b"heartbeat-test-certified-context-v1".to_vec();
             context_preimage.extend_from_slice(&authority_floor_hash);
             context_preimage.extend_from_slice(&authority_floor_post_state_hash);
+            let authority_context_digest: Bytes =
+                crypto::rust::hash::blake2b256::Blake2b256::hash(context_preimage).into();
+            let finalized_floor_commitment =
+                models::rust::casper::protocol::casper_message::FinalizedFloorCommitment {
+                    floor_hash: authority_floor_hash.clone(),
+                    floor_post_state_hash: authority_floor_post_state_hash.clone(),
+                    certificate_digest: crypto::rust::hash::blake2b256::Blake2b256::hash(
+                        b"heartbeat-test-finalization-certificate-v1".to_vec(),
+                    )
+                    .into(),
+                    authority_context_digest: authority_context_digest.clone(),
+                };
+            authority_block.header.finalized_floor = Some(finalized_floor_commitment.clone());
             let sender_authority = CertifiedSenderAuthority::new(
                 &authority_block,
                 authority_floor_hash,
                 authority_floor_post_state_hash,
-                crypto::rust::hash::blake2b256::Blake2b256::hash(context_preimage).into(),
+                authority_context_digest,
                 BondGeneration::GENESIS,
                 1,
             )
@@ -1317,11 +1343,14 @@ mod tests {
                 fault_tolerance_value: 1.0,
                 successful_state_effect_indices: Default::default(),
                 rejected_state_effects: Default::default(),
+                applied_state_effects: Default::default(),
                 protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 objective_equivocation_evidence_delta: Vec::new(),
                 sender_authority: Some(sender_authority),
+                finalized_floor_commitment: Some(finalized_floor_commitment),
                 admission_schema_version: ADMISSION_SCHEMA_VERSION,
                 approved_genesis: false,
+                merge_base: parents.first().cloned().unwrap_or_default(),
             };
 
             snapshot.dag.dag_set.insert(hash.clone());
@@ -1466,6 +1495,7 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 stale_recovery_min_interval: Duration::from_millis(0),
                 advanced: casper::rust::casper_conf::HeartbeatAdvancedConf {
+                    frontier_chase_max_lag: 20,
                     pending_deploy_max_lag: 20,
                     deploy_recovery_max_lag: 64,
                     empty_frontier_max_unfinalized_blocks: 4,
@@ -1540,6 +1570,7 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 stale_recovery_min_interval: Duration::ZERO,
                 advanced: casper::rust::casper_conf::HeartbeatAdvancedConf {
+                    frontier_chase_max_lag: 1,
                     pending_deploy_max_lag: 1,
                     deploy_recovery_max_lag: 1,
                     empty_frontier_max_unfinalized_blocks: 4,
@@ -1569,6 +1600,7 @@ mod tests {
             let outcomes = [
                 (FixedProposerOutcome::Empty, false),
                 (FixedProposerOutcome::RecoveryDeferred, false),
+                (FixedProposerOutcome::ParentFrontierCapacityDeferred, false),
                 (FixedProposerOutcome::Failure, false),
                 (FixedProposerOutcome::Started, true),
                 (FixedProposerOutcome::Success, true),
@@ -1641,6 +1673,7 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 stale_recovery_min_interval: Duration::from_secs(15),
                 advanced: casper::rust::casper_conf::HeartbeatAdvancedConf {
+                    frontier_chase_max_lag: 1,
                     pending_deploy_max_lag: 1,
                     deploy_recovery_max_lag: 1,
                     empty_frontier_max_unfinalized_blocks: 4,
@@ -1792,6 +1825,7 @@ mod tests {
             let outcomes = [
                 (FixedProposerOutcome::Empty, None),
                 (FixedProposerOutcome::RecoveryDeferred, None),
+                (FixedProposerOutcome::ParentFrontierCapacityDeferred, None),
                 (FixedProposerOutcome::Failure, None),
                 (FixedProposerOutcome::Started, Some(0)),
                 (FixedProposerOutcome::Success, Some(0)),
@@ -1838,56 +1872,70 @@ mod tests {
 
         #[tokio::test]
         async fn do_heartbeat_check_retains_deferred_leader_round_for_retry() {
-            let validator = create_test_validator_identity();
-            let validator_id = validator.public_key.bytes.clone();
-            let mut snapshot =
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            bond_only_validator_in_snapshot(&mut snapshot, &validator_id);
-            let last_finalized_block = snapshot.last_finalized_block.clone();
-            let lfb = create_lfb_with_age(60000);
-            let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb),
-            );
-            let (propose_count, propose_func) = create_recovery_deferred_propose_function();
-            let config = HeartbeatConf {
-                enabled: true,
-                check_interval: Duration::from_secs(1),
-                max_lfb_age: Duration::from_secs(1),
-                self_propose_cooldown: Duration::from_secs(15),
-                ..HeartbeatConf::default()
-            };
-            let mut finality_progress =
-                stalled_finality_progress(last_finalized_block, config.max_lfb_age);
+            let deferred_failures = [
+                ProposeFailure::RecoveryDeferred(
+                    casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::FinalizedFloorMaterializationPending,
+                ),
+                ProposeFailure::ParentFrontierCapacityExceeded {
+                    configured_cap: 2,
+                    required_parents: 3,
+                },
+            ];
 
-            let first = do_heartbeat_check(
-                casper.clone(),
-                &*propose_func,
-                &validator,
-                &config,
-                false,
-                &mut finality_progress,
-            )
-            .await
-            .expect("heartbeat check");
+            for failure in deferred_failures {
+                let validator = create_test_validator_identity();
+                let validator_id = validator.public_key.bytes.clone();
+                let mut snapshot = casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+                bond_only_validator_in_snapshot(&mut snapshot, &validator_id);
+                let last_finalized_block = snapshot.last_finalized_block.clone();
+                let lfb = create_lfb_with_age(60000);
+                let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(
+                    casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb),
+                );
+                let (propose_count, propose_func) =
+                    create_counting_deferred_propose_function(failure);
+                let config = HeartbeatConf {
+                    enabled: true,
+                    check_interval: Duration::from_secs(1),
+                    max_lfb_age: Duration::from_secs(1),
+                    self_propose_cooldown: Duration::from_secs(15),
+                    ..HeartbeatConf::default()
+                };
+                let mut finality_progress =
+                    stalled_finality_progress(last_finalized_block, config.max_lfb_age);
 
-            assert_eq!(propose_count.load(Ordering::SeqCst), 1);
-            assert!(!first.bug_failure);
-            assert_eq!(finality_progress.last_completed_recovery_round, None);
+                let first = do_heartbeat_check(
+                    casper.clone(),
+                    &*propose_func,
+                    &validator,
+                    &config,
+                    false,
+                    &mut finality_progress,
+                )
+                .await
+                .expect("heartbeat check");
 
-            let second = do_heartbeat_check(
-                casper,
-                &*propose_func,
-                &validator,
-                &config,
-                false,
-                &mut finality_progress,
-            )
-            .await
-            .expect("heartbeat retry");
+                assert_eq!(propose_count.load(Ordering::SeqCst), 1);
+                assert!(!first.bug_failure);
+                assert!(!first.refresh_deploy_grace_window);
+                assert_eq!(finality_progress.last_completed_recovery_round, None);
 
-            assert_eq!(propose_count.load(Ordering::SeqCst), 2);
-            assert!(!second.bug_failure);
-            assert_eq!(finality_progress.last_completed_recovery_round, None);
+                let second = do_heartbeat_check(
+                    casper,
+                    &*propose_func,
+                    &validator,
+                    &config,
+                    false,
+                    &mut finality_progress,
+                )
+                .await
+                .expect("heartbeat retry");
+
+                assert_eq!(propose_count.load(Ordering::SeqCst), 2);
+                assert!(!second.bug_failure);
+                assert!(!second.refresh_deploy_grace_window);
+                assert_eq!(finality_progress.last_completed_recovery_round, None);
+            }
         }
 
         #[tokio::test]

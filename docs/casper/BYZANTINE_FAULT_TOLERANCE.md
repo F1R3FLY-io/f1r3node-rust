@@ -154,6 +154,10 @@ isNotEquivocation               = maybeCreatorJustification == maybeLatestMessag
 
 Byzantine validators could collude by agreeing to ignore each other's equivocations. Without detection of this behavior, groups of validators could cooperate to attack the network without consequences.
 
+![Minimal equivocation neglect scenario](./images/minimal_equivocation_neglect.png)
+
+*Figure: the minimal neglect scenario. A validator cites an equivocating block without a slash, which creates the neglect edge the detector must catch.*
+
 #### The Algorithm
 
 The system maintains an `EquivocationRecord` for each detected equivocation:
@@ -223,6 +227,10 @@ The implementation is based on Ethereum's CBC Casper research and the clique ora
 
 **Source:** [Casper the Friendly Finality Gadget](https://github.com/ethereum/research/blob/master/papers/CasperTFG/CasperTFG.pdf)
 
+![CBC Casper ping-pong message exchange between validators](./images/cbc-casper_ping_pong_diagram.png)
+
+*Figure: the CBC Casper ping-pong exchange. Validators alternate messages, and each message carries the justifications that the clique oracle later scores.*
+
 **Code Location:** `casper/src/rust/safety/clique_oracle.rs`
 
 ### Algorithm Overview
@@ -277,6 +285,10 @@ if (normalizedFaultTolerance >= faultToleranceThreshold) {
 
 Two validators A and B are considered to never see disagreement if validator A's view of validator B's justification chain contains no messages that disagree with the target block.
 
+![Finalization mistake without the disagreement check](./images/no_finalizable_block_mistake_with_no_disagreement_check.png)
+
+*Figure: why the disagreement check is load-bearing. Without it, the oracle can report a finalizable block where none exists.*
+
 **Implementation:**
 ```scala
 def neverEventuallySeeDisagreement(
@@ -314,6 +326,10 @@ def neverEventuallySeeDisagreement(
 The algorithm checks if any of B's self-justifications between `lmB` and `lmAjB` disagree with the target block. If none disagree, then A and B never eventually see disagreement.
 
 ### Normalized Fault Tolerance Calculation
+
+![No majority fork stays safe after clique union](./images/no_majority_fork_safe_after_union.png)
+
+*Figure: the union argument behind the fault-tolerance formula. When no fork holds a majority clique, the union of agreeing cliques keeps the finalized block safe.*
 
 **Formula:**
 ```
@@ -713,9 +729,12 @@ def checkSynchronyConstraint[F[_]](
 The Byzantine fault tolerance implementation includes comprehensive test coverage:
 
 **Test Locations:**
-- `casper/tests/batch2/finalizer_test.rs` — Finalizer tests
+- `casper/tests/batch2/floor_of_view_test.rs` — Finality floor tests
+- `casper/tests/batch2/clique_oracle_test.rs` — Safety oracle tests
 - `casper/tests/batch2/` — Extended validation tests
-- `casper/src/test/scala/coop/rchain/casper/batch2/CliqueOracleTest.scala` — Safety oracle tests (Scala)
+
+The pre-extraction Scala suite (`CliqueOracleTest.scala`) is a
+historical reference. It does not exist in this repository.
 
 ### Critical Test Scenarios
 
@@ -834,8 +853,10 @@ Validators that accept deploys with prices below this threshold can be slashed. 
 
 **Defense:**
 - Neglected equivocation detection specifically targets this attack
-- If validator had evidence but didn't slash, they are themselves slashed
-- Two-level slashing makes collusion mutually destructive
+- A block that neglects known evidence is rejected; the level-2 stake
+  penalty is currently demoted (view-relative verdict) pending
+  re-promotion — see the slashing-specification amendment
+- Two-level slashing makes collusion mutually destructive once re-promoted
 - Requires >2/3 stake to avoid detection (same as direct Byzantine attack)
 
 ### Attack: Censorship

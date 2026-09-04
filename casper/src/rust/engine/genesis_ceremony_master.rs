@@ -207,6 +207,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     wal_payload_ctx,
                     &engine_cell,
                     event_publisher,
+                    // The ceremony master transitions genesis-rooted: its
+                    // anchor is height 0, so the settled door never opens and
+                    // no runtime state fetch can be needed.
+                    None,
                 )
                 .await?;
 

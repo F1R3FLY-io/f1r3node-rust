@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "profile_id": "month-expected-current-compose-envelope",
+  "purpose": "Central endpoint of the declared current-compose operating envelope; not a fitted population mean",
+  "evidence_class": "engineering_envelope",
+  "envelope_id": "current-compose-2026-08",
+  "case": "expected",
+  "calibration": {
+    "status": "bounded_assumptions",
+    "source": "formal/storm/uptime/profiles/current-compose-envelope.json",
+    "valid_until": null
+  },
+  "constants": {
+    "VALIDATORS": 3,
+    "QUORUM": 2,
+    "QUEUE_CAP": 8,
+    "LAG_CAP": 64,
+    "LAG_SLO": 20,
+    "MEMORY_CAP": 8,
+    "INITIAL_ELIGIBLE": 3,
+    "INITIAL_QUEUE": 0,
+    "INITIAL_LAG": 0,
+    "INITIAL_MEMORY": 0,
+    "HORIZON_HOURS": 720,
+    "VALIDATOR_FAILURE_RATE": "1/720",
+    "VALIDATOR_REPAIR_RATE": 2,
+    "COMMON_FAILURE_RATE": "1/2160",
+    "COMMON_REPAIR_RATE": 1,
+    "STORAGE_FAILURE_RATE": "1/8760",
+    "STORAGE_REPAIR_RATE": 1,
+    "ARRIVAL_RATE": "1/6",
+    "SERVICE_RATE": 2,
+    "LAG_GROWTH_RATE": "1/5",
+    "LAG_DRAIN_RATE": 2,
+    "MEMORY_BACKGROUND_GROWTH_RATE": "1/168",
+    "MEMORY_WORK_GROWTH_RATE": "1/12",
+    "MEMORY_RECLAIM_RATE": 1
+  }
+}

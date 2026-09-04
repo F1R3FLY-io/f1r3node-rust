@@ -92,7 +92,11 @@ to re-issue non-persistent peeked data on other channels that RSpace removed.
 **Stack safety**: Cost accounting uses explicit `MeteredMachine` work frames
 for source-token events. The evaluator still wraps recursive Rholang
 continuation calls with `StackGrowingFuture` as a compatibility guard while
-metering itself remains stack-safe.
+metering itself remains stack-safe. Unmetered child contexts reuse the parent
+metering identity state. The deterministic reducer stores causal paths in an
+immutable tree with binary-lifted ancestor indexes. This representation
+preserves exact lexicographic order without scanning or copying each full path
+prefix.
 
 **Variable substitution**: `Substitute` trait replaces De Bruijn-indexed variables. Each substitution reserves a deterministic `Substitution` source-token event through `MeteredMachine`.
 

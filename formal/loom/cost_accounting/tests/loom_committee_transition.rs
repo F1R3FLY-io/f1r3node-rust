@@ -105,3 +105,33 @@ fn head_drift_cannot_change_floor_authority_or_synchrony_weight() {
         assert_eq!(view.lock().unwrap().head_weight, 100);
     });
 }
+
+#[test]
+fn inactive_bond_updates_cannot_change_the_active_finality_denominator() {
+    loom::model(|| {
+        #[derive(Clone, Copy)]
+        struct Weights {
+            active_floor: usize,
+            all_bonds: usize,
+        }
+
+        let weights = Arc::new(Mutex::new(Weights {
+            active_floor: 3,
+            all_bonds: 3,
+        }));
+        let update = {
+            let weights = weights.clone();
+            thread::spawn(move || weights.lock().unwrap().all_bonds += 10_000)
+        };
+        let certify = {
+            let weights = weights.clone();
+            thread::spawn(move || weights.lock().unwrap().active_floor)
+        };
+
+        update.join().unwrap();
+        assert_eq!(certify.join().unwrap(), 3);
+        let weights = weights.lock().unwrap();
+        assert_eq!(weights.active_floor, 3);
+        assert_eq!(weights.all_bonds, 10_003);
+    });
+}

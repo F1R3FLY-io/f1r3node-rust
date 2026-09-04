@@ -205,6 +205,8 @@ impl Score {
     pub const DEPLOYER_AUTH: i32 = 10;
     pub const DEPLOY_ID: i32 = 11;
     pub const SYS_AUTH_TOKEN: i32 = 12;
+    pub const AUTHORITY_ID: i32 = 13;
+    pub const PRINCIPAL_ID: i32 = 14;
     pub const EPATHMAP: i32 = 13;
     pub const DOUBLE: i32 = 14;
     pub const BIG_INT: i32 = 15;

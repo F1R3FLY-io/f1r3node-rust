@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "profile_id": "ci-analytic",
+  "purpose": "Closed-form single-validator reliability control for the local and PR gate",
+  "evidence_class": "analytic_control",
+  "calibration": {
+    "status": "not_required",
+    "source": "P(failure by t) = 1 - exp(-lambda * t)",
+    "valid_until": null
+  },
+  "constants": {
+    "VALIDATORS": 1,
+    "QUORUM": 1,
+    "QUEUE_CAP": 2,
+    "LAG_CAP": 2,
+    "LAG_SLO": 1,
+    "MEMORY_CAP": 2,
+    "INITIAL_ELIGIBLE": 1,
+    "INITIAL_QUEUE": 0,
+    "INITIAL_LAG": 0,
+    "INITIAL_MEMORY": 0,
+    "HORIZON_HOURS": 1,
+    "VALIDATOR_FAILURE_RATE": 1,
+    "VALIDATOR_REPAIR_RATE": 0,
+    "COMMON_FAILURE_RATE": 0,
+    "COMMON_REPAIR_RATE": 0,
+    "STORAGE_FAILURE_RATE": 0,
+    "STORAGE_REPAIR_RATE": 0,
+    "ARRIVAL_RATE": 0,
+    "SERVICE_RATE": 1,
+    "LAG_GROWTH_RATE": 0,
+    "LAG_DRAIN_RATE": 1,
+    "MEMORY_BACKGROUND_GROWTH_RATE": 0,
+    "MEMORY_WORK_GROWTH_RATE": 0,
+    "MEMORY_RECLAIM_RATE": 1
+  }
+}

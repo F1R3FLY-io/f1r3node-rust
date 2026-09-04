@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "profile_id": "unsafe-unreclaimed-memory",
+  "purpose": "Negative control proving that persistent resident growth without reclamation reaches the configured memory guard",
+  "evidence_class": "negative_control",
+  "constants": {
+    "VALIDATORS": 3,
+    "QUORUM": 2,
+    "QUEUE_CAP": 2,
+    "LAG_CAP": 2,
+    "LAG_SLO": 1,
+    "MEMORY_CAP": 3,
+    "INITIAL_ELIGIBLE": 3,
+    "INITIAL_QUEUE": 0,
+    "INITIAL_LAG": 0,
+    "INITIAL_MEMORY": 0,
+    "HORIZON_HOURS": 24,
+    "VALIDATOR_FAILURE_RATE": 0,
+    "VALIDATOR_REPAIR_RATE": 1,
+    "COMMON_FAILURE_RATE": 0,
+    "COMMON_REPAIR_RATE": 1,
+    "STORAGE_FAILURE_RATE": 0,
+    "STORAGE_REPAIR_RATE": 1,
+    "ARRIVAL_RATE": 0,
+    "SERVICE_RATE": 1,
+    "LAG_GROWTH_RATE": 0,
+    "LAG_DRAIN_RATE": 1,
+    "MEMORY_BACKGROUND_GROWTH_RATE": 1,
+    "MEMORY_WORK_GROWTH_RATE": 0,
+    "MEMORY_RECLAIM_RATE": 0
+  }
+}

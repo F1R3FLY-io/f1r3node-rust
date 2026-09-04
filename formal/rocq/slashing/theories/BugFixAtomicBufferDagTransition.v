@@ -21,7 +21,7 @@
    atomic_insert_then_buffer(B), applying reconcile_buffer_against_dag
    on resume yields the same slashing projection as the no-crash run.
 
-   Companion doc: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+   Companion doc: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
    Companion Rust: block-storage/src/rust/dag/buffer_dag_transition.rs,
                    block-storage/tests/atomic_buffer_dag_transition.rs.
    ═══════════════════════════════════════════════════════════════════════════ *)

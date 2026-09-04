@@ -3,7 +3,7 @@
 These targets expand the slashing search horizon with coverage-guided
 fuzzing. They are seedable from Sage/Hypothesis fixtures and are not proof
 authority; crashes must be minimized, replayed deterministically, classified
-in `docs/theory/slashing/slashing-traceability.md`, and promoted to Rocq/TLA+
+in `docs/casper/theory/slashing/slashing-traceability.md`, and promoted to Rocq/TLA+
 only after review.
 
 Run smoke checks:
@@ -43,7 +43,11 @@ domain in case kani's bound is too tight.
 deploy, converts to proto, converts back, and asserts equality. The
 narrow surface lets the fuzzer find malformed-public-key, hash-length,
 and epoch-i64 edges that the broader `block_message_roundtrip` test
-would not isolate.
+would not isolate. The primary invalid-block hash remains arbitrary. The
+optional second hash is either absent or exactly 32 bytes, matching the
+consensus evidence domain: the legacy proto3 field reserves empty bytes
+as the canonical absence sentinel. A models-crate regression separately
+fixes that sentinel mapping at the wire boundary.
 
 `block_message_roundtrip` is a full `BlockMessage` proto idempotency
 check: `from_proto ∘ to_proto ∘ from_proto = from_proto`. It is the

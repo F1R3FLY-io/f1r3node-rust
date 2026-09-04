@@ -326,7 +326,12 @@ where
                             ValidBlockProcessing::Left(invalid_reason) => {
                                 // Some self-validation failures are recoverable races in fast, multi-parent
                                 // proposing: parent selection can become stale, and safety checks can reject
-                                // the candidate by the time validation runs.
+                                // the candidate by the time validation runs. ContainsExpiredDeploy is in this
+                                // set as a wedge-breaker, not a race: deploy selection excludes block-expired
+                                // deploys, but any residual expiry disagreement with validation must cost one
+                                // skipped propose rather than the permanent BugError retry loop of issue #197
+                                // (the pool is unchanged on this path, so erroring here re-proposes the same
+                                // block forever).
                                 if matches!(
                                     invalid_reason,
                                     BlockError::Invalid(InvalidBlock::InvalidParents)
@@ -337,6 +342,7 @@ where
                                         | BlockError::Invalid(InvalidBlock::InvalidBondsCache)
                                         | BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
                                         | BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
+                                        | BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
                                 ) {
                                     let recoverable_reason = match &invalid_reason {
                                         BlockError::Invalid(InvalidBlock::InvalidParents) => {
@@ -357,6 +363,9 @@ where
                                         BlockError::Invalid(
                                             InvalidBlock::NeglectedInvalidBlock,
                                         ) => "neglected_invalid_block",
+                                        BlockError::Invalid(
+                                            InvalidBlock::ContainsExpiredDeploy,
+                                        ) => "contains_expired_deploy",
                                         _ => "other",
                                     };
                                     metrics::counter!(
@@ -451,10 +460,55 @@ where
 
         // get snapshot to serve as a base for propose
         let snapshot_start = std::time::Instant::now();
-        let mut casper_snapshot = self
+        let snapshot_result = self
             .casper_snapshot_provider
             .get_casper_snapshot(casper.clone())
-            .await?;
+            .await;
+        let mut casper_snapshot = match snapshot_result {
+            Ok(snapshot) => snapshot,
+            Err(CasperError::ParentFrontierCapacityExceeded {
+                configured_cap,
+                required_parents,
+                ..
+            }) => {
+                let propose_result =
+                    ProposeResult::failure(ProposeFailure::ParentFrontierCapacityExceeded {
+                        configured_cap,
+                        required_parents,
+                    });
+                return Ok(ProposeReturnType {
+                    propose_result_to_send: ProposerResult::failure(
+                        propose_result.propose_status.clone(),
+                        -1,
+                    ),
+                    propose_result,
+                    block_message_opt: None,
+                });
+            }
+            // Not having the history to build a snapshot is a reason not to
+            // propose, not an error to retry. The constraint that would have
+            // stopped this node lives inside the snapshot it cannot build, so
+            // as an error every attempt re-runs the whole failing walk.
+            Err(CasperError::BlockNotHeld(missing)) => {
+                tracing::info!(
+                    target: "f1r3fly.casper.proposer",
+                    "Not proposing: snapshot needs {}, which this node does not hold.",
+                    PrettyPrinter::build_string_bytes(&missing)
+                );
+                let result = ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ));
+                return Ok(ProposeReturnType {
+                    propose_result_to_send: ProposerResult::failure(
+                        result.propose_status.clone(),
+                        0,
+                    ),
+                    propose_result: result,
+                    block_message_opt: None,
+                });
+            }
+            Err(err) => return Err(err),
+        };
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
         let elapsed = start_time.elapsed();
@@ -544,14 +598,6 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    pending_cosigner_metadata: Arc<
-        parking_lot::Mutex<
-            std::collections::HashMap<
-                prost::bytes::Bytes,
-                crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
-            >,
-        >,
-    >,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
@@ -571,7 +617,6 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
         ProductionBlockCreator::new(
             deploy_storage,
             rejected_deploy_buffer,
-            pending_cosigner_metadata,
             runtime_manager.clone(),
             block_store.clone(),
         ),
@@ -653,19 +698,6 @@ impl HeightChecker for ProductionHeightChecker {
 pub struct ProductionBlockCreator {
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    /// Multi-sig cosigner-metadata sidecar (§1.9.5). Shared `Arc` with the
-    /// owning `MultiParentCasperImpl.pending_cosigner_metadata`; populated
-    /// by `admit_deploy_cosigned` at submission and consulted by
-    /// `block_creator::create` at proposal time to reconstruct full
-    /// `Cosigned<DeployData>` envelopes for multi-sig deploys.
-    pending_cosigner_metadata: Arc<
-        parking_lot::Mutex<
-            std::collections::HashMap<
-                prost::bytes::Bytes,
-                crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
-            >,
-        >,
-    >,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
 }
@@ -674,21 +706,12 @@ impl ProductionBlockCreator {
     pub fn new(
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-        pending_cosigner_metadata: Arc<
-            parking_lot::Mutex<
-                std::collections::HashMap<
-                    prost::bytes::Bytes,
-                    crate::rust::engine::multi_parent_casper::types::PendingCosignerMetadata,
-                >,
-            >,
-        >,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
     ) -> Self {
         Self {
             deploy_storage,
             rejected_deploy_buffer,
-            pending_cosigner_metadata,
             runtime_manager,
             block_store,
         }
@@ -713,7 +736,6 @@ impl BlockCreator for ProductionBlockCreator {
             dummy_deploy_opt,
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            self.pending_cosigner_metadata.clone(),
             &self.runtime_manager,
             &mut self.block_store,
             allow_empty_blocks,
@@ -837,6 +859,24 @@ mod proposal_intent_tests {
             Err(CasperError::RuntimeError(
                 "unused snapshot provider".to_string(),
             ))
+        }
+    }
+
+    struct CapacityExceededSnapshotProvider;
+
+    impl CasperSnapshotProvider for CapacityExceededSnapshotProvider {
+        async fn get_casper_snapshot(
+            &self,
+            _casper: Arc<dyn Casper + Send + Sync + 'static>,
+        ) -> Result<CasperSnapshot, CasperError> {
+            Err(CasperError::ParentFrontierCapacityExceeded {
+                configured_cap: 2,
+                required_parents: 3,
+                effective_committee: 3,
+                unique_causal_tips: 3,
+                floor_backstop_added: false,
+                expired_tip_count: 0,
+            })
         }
     }
 
@@ -1011,6 +1051,43 @@ mod proposal_intent_tests {
         }
     }
 
+    #[tokio::test]
+    async fn exact_parent_frontier_over_cap_is_a_non_signing_deferral() {
+        use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+
+        let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        let lfb = models::rust::block_implicits::get_random_block_default();
+        let casper = Arc::new(TestCasperWithSnapshot::new(snapshot, lfb));
+        let validator = Arc::new(ValidatorIdentity::new(&PrivateKey::from_bytes(&[1; 32])));
+        let mut proposer = Proposer::new(
+            validator,
+            None,
+            CapacityExceededSnapshotProvider,
+            AllowActiveValidator,
+            AllowStake,
+            AllowHeight,
+            DeferredBlockCreator(RecoveryDeferralReason::CandidateFloorConflict),
+            UnusedBlockValidator,
+            UnusedEffectHandler,
+            false,
+        );
+
+        let result = proposer
+            .propose(casper.clone(), ProposeRequestKind::Manual)
+            .await
+            .expect("capacity failure must be represented as a proposal result");
+
+        assert!(result.block_message_opt.is_none());
+        assert!(matches!(
+            result.propose_result.propose_status,
+            ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded {
+                configured_cap: 2,
+                required_parents: 3,
+            })
+        ));
+        assert_eq!(casper.finalization_request_count(), 0);
+    }
+
     #[test]
     fn recovery_leader_fails_closed_without_valid_height_or_committee() {
         assert_eq!(finality_recovery_leader(Vec::new(), 0, 0), None);
@@ -1107,12 +1184,15 @@ mod proposal_intent_tests {
                     fault_tolerance_value: 1.0,
                     successful_state_effect_indices: BTreeSet::new(),
                     rejected_state_effects: BTreeSet::new(),
+                    applied_state_effects: BTreeSet::new(),
                     protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                     objective_equivocation_evidence_delta: Vec::new(),
                     sender_authority: None,
+                    finalized_floor_commitment: None,
                     admission_schema_version:
                         models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
                     approved_genesis: false,
+                    merge_base: Bytes::new(),
                 },
                 models::rust::bond_generation::BondGeneration::GENESIS,
             ))

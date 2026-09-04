@@ -2,14 +2,14 @@
   Validator.SlashAuthorization — Lean 4 mirror of the validator-scoped P1
   (slash-authorization soundness) obligation from the Rocq slashing development
     `formal/rocq/slashing/theories/Validator.v`         (the BondMap slash taxonomy)
-    `formal/rocq/slashing/theories/ValidatorLifetime.v` (`stale_evidence_not_authorized`)
+    `formal/rocq/slashing/theories/ValidatorLifetime.v` (`stale_generation_evidence_not_authorized`)
   (Workstream E, stage E4; DR-12).
 
   SCOPE (DR-12). P1 is a PLATFORM obligation that custom validators INHERIT, so
   the Lean mirror proves it for the BUILT-IN once. We mirror the LOAD-BEARING
   KERNEL — the BondMap slash EFFECT taxonomy — over the exact Rocq model, and we
   port the small `ValidatorLifetime` authorization kernel verbatim. We do NOT
-  port the full slashing development (evidence/epoch closure machinery,
+  port the full slashing development (evidence lifecycle closure machinery,
   `TwoLevelSlashing`, `authorized_slash_candidate`'s evidence-lookup oracle, the
   Rust shell). Per DR-12 those stay Rocq-only; the BondMap taxonomy here IS the
   load-bearing slash-effect soundness, and the lifetime authorization predicate
@@ -24,8 +24,8 @@
   NON-VACUITY. `bm_slash_changes_lookup_example` exhibits a CONCRETE BondMap on
   which `bm_slash` actually changes a lookup from a nonzero bond (7) to 0, so the
   slash taxonomy is not vacuous over a trivial map where every lookup is already
-  0. `evidence_authorizes_self_example` exhibits a matching (validator,epoch)
-  evidence that IS authorized, so `stale_evidence_not_authorized` is not vacuous
+  0. `evidence_authorizes_self_example` exhibits a matching validator generation
+  evidence that IS authorized, so `stale_generation_evidence_not_authorized` is not vacuous
   over a predicate that rejects everything.
 
   DEPENDENCY-FREE: core `Init` only (no mathlib/batteries). `List.Perm` and
@@ -272,69 +272,83 @@ theorem bm_slash_other_example :
          (ValidatorLifetime.v:7-54)
    ═══════════════════════════════════════════════════════════════════════════
 
-   The load-bearing AUTHORIZATION fact (`main_T9_12_stale_evidence_not_authorized`,
-   MainTheorem.v:210 = `stale_evidence_not_authorized`, ValidatorLifetime.v:31):
+   The load-bearing AUTHORIZATION fact (`main_T9_12_stale_generation_evidence_not_authorized`,
+   MainTheorem.v = `stale_generation_evidence_not_authorized`, ValidatorLifetime.v):
    evidence authorizes a slash only if it targets the SAME validator AT THE SAME
-   epoch. Evidence carried against a STALE epoch (a key that has since rebonded
+   bond generation. Evidence carried against a STALE generation (a key that has since rebonded
    into a new lifetime) is NOT authorized — the platform rejects it. This small
-   `ValidatorLifetimeId` model ports faithfully offline (no evidence/epoch closure
+   `ValidatorLifetimeId` model ports faithfully offline (no evidence lifecycle closure
    machinery), so we port it rather than flag it Rocq-only. -/
 
-/-- An epoch index (Rocq `Epoch := nat`, ValidatorLifetime.v:7). -/
+/-- A monotonic bond generation (Rocq `BondGeneration := nat`). -/
+abbrev BondGeneration : Type := Nat
+
+/-- An activation epoch does not define validator lifetime identity. -/
 abbrev Epoch : Type := Nat
 
-/-- A validator LIFETIME identity: a validator paired with the epoch it bonded
-    in (Rocq `ValidatorLifetimeId`, ValidatorLifetime.v:9-12). Rebonding starts a
-    new lifetime (same `vl_validator`, fresh `vl_epoch`). -/
+/-- A validator lifetime identity pairs a validator with its bond generation.
+    Rebonding starts a new lifetime with a fresh `vl_generation`. -/
 structure ValidatorLifetimeId where
   vl_validator : Validator
-  vl_epoch : Epoch
+  vl_generation : BondGeneration
   deriving DecidableEq
 
+/-- Two identifiers name the same validator lifetime iff both fields match. -/
+def same_lifetime (first second : ValidatorLifetimeId) : Prop :=
+  first.vl_validator = second.vl_validator ∧
+  first.vl_generation = second.vl_generation
+
+/-- Distinct generations under one key identify distinct validator lifetimes. -/
+theorem same_key_different_generation_distinct
+    (v : Validator) (first second : BondGeneration) (hne : first ≠ second) :
+    ¬ same_lifetime ⟨v, first⟩ ⟨v, second⟩ := by
+  intro hsame
+  exact hne hsame.2
+
+/-- An epoch change does not change a validator lifetime. -/
+theorem same_generation_different_epoch_same_lifetime
+    (v : Validator) (generation : BondGeneration) (_first _second : Epoch) :
+    same_lifetime ⟨v, generation⟩ ⟨v, generation⟩ := by
+  exact ⟨rfl, rfl⟩
+
 /-- Evidence authorizes a target lifetime iff it names the SAME validator AND the
-    SAME epoch (Rocq `evidence_authorizes_lifetime`, ValidatorLifetime.v:17-21):
-    the validator-equality guard (`validator_eq_dec`) then the epoch equality
-    (`Nat.eqb`). Mismatched validator ⇒ false; matching validator but mismatched
-    epoch ⇒ false. -/
+    SAME bond generation. A mismatched validator or generation returns false. -/
 def evidence_authorizes_lifetime (evidence target : ValidatorLifetimeId) : Bool :=
   if evidence.vl_validator = target.vl_validator then
-    evidence.vl_epoch == target.vl_epoch
+    evidence.vl_generation == target.vl_generation
   else
     false
 
 /-- P1 HEADLINE (authorization) — STALE EVIDENCE IS NOT AUTHORIZED (Rocq
-    `stale_evidence_not_authorized`, ValidatorLifetime.v:31-42; lifted to
-    `main_T9_12_stale_evidence_not_authorized`, MainTheorem.v:210). For the SAME
-    validator `v` but DIFFERENT epochs `e_old ≠ e_new`, authorization is `false`:
-    evidence against a key in a prior (now-rebonded / re-epoched) lifetime cannot
+    `stale_generation_evidence_not_authorized`; lifted to
+    `main_T9_12_stale_generation_evidence_not_authorized`). For the SAME
+    validator `v` but DIFFERENT generations, authorization is `false`:
+    evidence against a key in a prior, now-rebonded lifetime cannot
     authorize a slash. This is the authorization-soundness companion to the
     BondMap effect taxonomy — together they say the platform only ever slashes a
     key for evidence in that key's CURRENT lifetime, and the slash then zeros
     exactly that key. -/
-theorem stale_evidence_not_authorized (v : Validator) (e_old e_new : Epoch)
-    (hne : e_old ≠ e_new) :
+theorem stale_generation_evidence_not_authorized
+    (v : Validator) (g_old g_new : BondGeneration) (hne : g_old ≠ g_new) :
     evidence_authorizes_lifetime
-        ⟨v, e_old⟩ ⟨v, e_new⟩ = false := by
+        ⟨v, g_old⟩ ⟨v, g_new⟩ = false := by
   unfold evidence_authorizes_lifetime
-  -- vl_validator matches (v = v), so the guard takes the `then` branch; the
-  -- epoch comparison `e_old == e_new` is then `false` because `e_old ≠ e_new`.
   simp only [reduceIte]
   exact beq_eq_false_iff_ne.mpr hne
 
 /-- NON-VACUITY DUAL (authorization) — MATCHING evidence IS authorized (Rocq
-    `matching_lifetime_authorized`, ValidatorLifetime.v:44-54): same validator,
-    same epoch ⇒ `true`. Without this, `stale_evidence_not_authorized` could be
+    `matching_generation_authorized`): same validator and generation ⇒ `true`.
+    Without this, `stale_generation_evidence_not_authorized` could be
     vacuously satisfied by a predicate that rejects EVERYTHING; this witnesses
     that `evidence_authorizes_lifetime` genuinely accepts the in-lifetime case,
     so the rejection in the stale case carries real content. -/
-theorem matching_lifetime_authorized (v : Validator) (e : Epoch) :
-    evidence_authorizes_lifetime ⟨v, e⟩ ⟨v, e⟩ = true := by
+theorem matching_generation_authorized (v : Validator) (g : BondGeneration) :
+    evidence_authorizes_lifetime ⟨v, g⟩ ⟨v, g⟩ = true := by
   unfold evidence_authorizes_lifetime
   simp
 
-/-- NON-VACUITY WITNESS (authorization, concrete): evidence for validator 3 at
-    epoch 9 authorizes the same lifetime, but the SAME validator at the stale
-    epoch 8 does NOT. A single concrete pair pinning down both directions. -/
+/-- NON-VACUITY WITNESS: generation 9 authorizes itself, but stale generation 8
+    does not authorize generation 9 for the same validator. -/
 theorem evidence_authorizes_self_example :
     evidence_authorizes_lifetime ⟨3, 9⟩ ⟨3, 9⟩ = true ∧
     evidence_authorizes_lifetime ⟨3, 8⟩ ⟨3, 9⟩ = false := by

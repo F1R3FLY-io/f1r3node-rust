@@ -53,6 +53,7 @@ run_unsafe() {
 
 run_safe parallel-validator-safe MC_ParallelValidatorConsensus.cfg
 run_safe parallel-validator-crash-safe MC_ParallelValidatorConsensus_crash.cfg
+run_safe parallel-validator-stale-window-safe MC_ParallelValidatorConsensus_stale_window.cfg
 run_unsafe MC_ParallelValidatorConsensus_causal_only_unsafe AcceptedUsesExactReplay
 run_unsafe MC_ParallelValidatorConsensus_early_support_unsafe SupportRequiresLocalAcceptance
 run_unsafe MC_ParallelValidatorConsensus_local_replay_unsafe PromotedFloorUsesLocalReplay

@@ -1,7 +1,7 @@
 // Shared helpers for the Track 2 production-path integration
 // tests and Track 3 triple-bisimilarity proptests.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
 // (production-path integration), §14.5 (cross-tier bisim).
 // Plan-agent design from session ending at commit 030336a.
 
@@ -18,10 +18,10 @@ use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crypto::rust::signatures::signed::{Cosigned, Signed};
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    StateEffectId, ValidatorBondGeneration,
+    BlockMessage, DeployData, ValidatorBondGeneration,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -31,16 +31,6 @@ use super::production_adapter::SlashingProductionAdapter;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisContext;
 
-type CostAccountedCheckpoint = (
-    StateHash,
-    StateHash,
-    Vec<ProcessedDeploy>,
-    Vec<RejectedDeploy>,
-    Vec<StateEffectId>,
-    Vec<ProcessedSystemDeploy>,
-    Vec<Bond>,
-);
-
 async fn compute_cost_accounted_checkpoint(
     producing_node: &mut TestNode,
     snapshot: &CasperSnapshot,
@@ -48,7 +38,7 @@ async fn compute_cost_accounted_checkpoint(
     deploys: Vec<Signed<DeployData>>,
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
-) -> Result<CostAccountedCheckpoint, CasperError> {
+) -> Result<interpreter_util::DeploysCheckpoint, CasperError> {
     let latest_messages: BTreeMap<Validator, BlockHash> = snapshot
         .justifications
         .iter()
@@ -59,7 +49,7 @@ async fn compute_cost_accounted_checkpoint(
             )
         })
         .collect();
-    let (pre_state, _) = interpreter_util::compute_parents_post_state(
+    let pre_state = interpreter_util::compute_parents_post_state(
         &producing_node.block_store,
         parents.clone(),
         snapshot,
@@ -67,13 +57,23 @@ async fn compute_cost_accounted_checkpoint(
         &latest_messages,
         None,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
+        None,
     )
-    .await?;
+    .await?
+    .state;
+    let protocol_version = snapshot.on_chain_state.shard_conf.casper_version;
     let cosigned = deploys
         .into_iter()
-        .map(Cosigned::from_single_signer)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        .map(|deploy| {
+            if protocol_version >= CERTIFIED_ADMISSION_PROTOCOL_VERSION {
+                producing_node.envelope_for_deploy(&deploy)
+            } else {
+                Cosigned::from_single_signer(deploy)
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))
+            }
+        })
+        .collect::<Result<Vec<_>, CasperError>>()?;
     let admission = producing_node
         .runtime_manager
         .certify_state_bound_admission(&pre_state, cosigned, &block_data, &invalid_blocks)
@@ -92,7 +92,7 @@ async fn compute_cost_accounted_checkpoint(
         ),
     ))];
 
-    interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
         &mut producing_node.block_store,
         parents,
         outcome.admitted.clone(),
@@ -102,9 +102,12 @@ async fn compute_cost_accounted_checkpoint(
         block_data,
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
+        None,
         admission,
     )
-    .await
+    .await?;
+    Ok(checkpoint)
 }
 
 async fn validator_caches_at(
@@ -293,19 +296,36 @@ pub async fn equivocate_block(
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        applied_state_effects,
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
         validator_caches_at(producing_node, &post_state_hash).await?;
+    let sender_bond_generation = snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "test proposer is absent from the certified authority generation map".to_string(),
+            )
+        })?;
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     // Inline the equivalent of `block_creator::package_block` —
     // that function is private to block_creator.rs (`fn`, not
@@ -326,30 +346,29 @@ pub async fn equivocate_block(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
-        sender_bond_generation: snapshot
-            .on_chain_state
-            .bond_generations
-            .get(&Bytes::copy_from_slice(
-                &validator_identity.public_key.bytes,
-            ))
-            .copied(),
+        sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor,
     };
-    let unsigned = proto_util::unsigned_block_proto(
+    let mut unsigned = proto_util::unsigned_block_proto(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
 
     // Sign with v0's identity — this is the Byzantine signing step.
     let signed = validator_identity.sign_block(&unsigned);
@@ -437,19 +456,36 @@ pub async fn propose_with_explicit_justifications(
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        applied_state_effects,
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
         validator_caches_at(producing_node, &post_state_hash).await?;
+    let sender_bond_generation = snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "test proposer is absent from the certified authority generation map".to_string(),
+            )
+        })?;
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -466,30 +502,29 @@ pub async fn propose_with_explicit_justifications(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
-        sender_bond_generation: snapshot
-            .on_chain_state
-            .bond_generations
-            .get(&Bytes::copy_from_slice(
-                &validator_identity.public_key.bytes,
-            ))
-            .copied(),
+        sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor,
     };
-    let unsigned = proto_util::unsigned_block_proto(
+    let mut unsigned = proto_util::unsigned_block_proto(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
 
     let signed = validator_identity.sign_block(&unsigned);
     Ok(signed)
@@ -502,11 +537,10 @@ pub async fn propose_with_explicit_justifications(
 /// the block as `NotOfInterest` BEFORE reaching the
 /// `Validate::shard_identifier` validator inside `block_summary`.
 ///
-/// The deeper-layer `InvalidShardId` is defence-in-depth — the same
+/// The deeper-layer `InvalidShardId` is defense-in-depth — the same
 /// check at a different layer of the pipeline. The dispatcher's
-/// catch-all routes it through `is_slashable()` (block_status.rs:181)
-/// so we still want to verify the catch-all minted a record when
-/// it fires; we just have to bypass the upstream early-rejection.
+/// certified-rejection path persists it without economic evidence. The
+/// helper bypasses only the upstream early rejection.
 ///
 /// Reference: `casper/tests/helper/test_node.rs::process_block_through_pipe`
 /// for the full pipeline.
@@ -614,19 +648,36 @@ pub async fn propose_with_block_mutation(
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        applied_state_effects,
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
         validator_caches_at(producing_node, &post_state_hash).await?;
+    let sender_bond_generation = snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "test proposer is absent from the certified authority generation map".to_string(),
+            )
+        })?;
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -643,22 +694,20 @@ pub async fn propose_with_block_mutation(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
-        sender_bond_generation: snapshot
-            .on_chain_state
-            .bond_generations
-            .get(&Bytes::copy_from_slice(
-                &validator_identity.public_key.bytes,
-            ))
-            .copied(),
+        sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor,
     };
     let mut unsigned = proto_util::unsigned_block_proto(
         body,
@@ -667,6 +716,7 @@ pub async fn propose_with_block_mutation(
         shard_id,
         Some(block_data.seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
 
     // Apply the caller's mutation BEFORE signing. The signing step
     // recomputes the block_hash, so the mutated block is correctly
@@ -686,7 +736,7 @@ pub async fn propose_with_block_mutation(
 /// `is_neglected_equivocation_detected_with_update` fires and
 /// classifies as `InvalidBlock::NeglectedEquivocation`.
 ///
-/// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+/// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
 /// (production-path integration). Plan-agent designed Item 5 of
 /// the principled-resolution session.
 ///
@@ -766,19 +816,36 @@ pub async fn propose_neglecting_block(
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        applied_state_effects,
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
         validator_caches_at(producing_node, &post_state_hash).await?;
+    let sender_bond_generation = snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "test proposer is absent from the certified authority generation map".to_string(),
+            )
+        })?;
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -795,30 +862,29 @@ pub async fn propose_neglecting_block(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
-        sender_bond_generation: snapshot
-            .on_chain_state
-            .bond_generations
-            .get(&Bytes::copy_from_slice(
-                &validator_identity.public_key.bytes,
-            ))
-            .copied(),
+        sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor,
     };
-    let unsigned = proto_util::unsigned_block_proto(
+    let mut unsigned = proto_util::unsigned_block_proto(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
 
     let signed = validator_identity.sign_block(&unsigned);
     Ok(signed)

@@ -56,6 +56,7 @@ fn create_approved_block_with_state_hash(state_hash: Blake2b256Hash) -> Approved
 
     ApprovedBlock {
         candidate,
+        floor_seed: None,
         sigs: Vec::new(), // Empty signatures list
     }
 }

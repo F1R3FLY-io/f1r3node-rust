@@ -1,5 +1,6 @@
 // See models/src/main/scala/coop/rchain/casper/protocol/CasperMessage.scala
 
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::{Signed, ToMessage};
@@ -11,9 +12,11 @@ use shared::rust::{Byte, ByteVector};
 use crate::casper::system_deploy_data_proto::SystemDeploy;
 use crate::casper::*;
 use crate::rhoapi::PCost;
-use crate::rust::block_hash::BlockHash;
+use crate::rust::block_hash::{BlockHash, BlockHashSerde};
 use crate::rust::bond_generation::BondGeneration;
 use crate::rust::casper::pretty_printer::PrettyPrinter;
+use crate::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
+use crate::rust::validator::ValidatorSerde;
 use crate::rust::{block_hash, validator};
 
 // TODO: Use type ByteString from models crate
@@ -28,6 +31,8 @@ pub enum CasperMessage {
     ApprovedBlockRequest(ApprovedBlockRequest),
     BlockApproval(BlockApproval),
     BlockRequest(BlockRequest),
+    FinalizationCertificateRequest(FinalizationCertificateRequest),
+    FinalizationCertificateResponse(FinalizationCertificateResponse),
     ForkChoiceTipRequest(ForkChoiceTipRequest),
     HasBlock(HasBlock),
     HasBlockRequest(HasBlockRequest),
@@ -48,6 +53,8 @@ pub enum CasperMessage {
     WalPayloadResponse(WalPayloadResponse),
     HasWalPayloadRequest(HasWalPayloadRequest),
     HasWalPayload(HasWalPayload),
+    FloorCacheRequest(FloorCacheRequest),
+    FloorCacheResponse(FloorCacheResponse),
 }
 
 impl CasperMessage {
@@ -89,6 +96,22 @@ impl CasperMessage {
 
     pub fn from_block_request(proto: BlockRequestProto) -> Self {
         CasperMessage::BlockRequest(BlockRequest::from_proto(proto))
+    }
+
+    pub fn from_finalization_certificate_request(
+        proto: FinalizationCertificateRequestProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::FinalizationCertificateRequest(
+            FinalizationCertificateRequest::from_proto(proto)?,
+        ))
+    }
+
+    pub fn from_finalization_certificate_response(
+        proto: FinalizationCertificateResponseProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::FinalizationCertificateResponse(
+            FinalizationCertificateResponse::from_proto(proto)?,
+        ))
     }
 
     pub fn from_fork_choice_tip_request(_proto: ForkChoiceTipRequestProto) -> Self {
@@ -162,6 +185,14 @@ impl CasperMessage {
     pub fn from_has_wal_payload(proto: HasWalPayloadProto) -> Self {
         CasperMessage::HasWalPayload(HasWalPayload::from_proto(proto))
     }
+
+    pub fn from_floor_cache_request(proto: FloorCacheRequestProto) -> Self {
+        CasperMessage::FloorCacheRequest(FloorCacheRequest::from_proto(proto))
+    }
+
+    pub fn from_floor_cache_response(proto: FloorCacheResponseProto) -> Self {
+        CasperMessage::FloorCacheResponse(FloorCacheResponse::from_proto(proto))
+    }
 }
 
 // TODO: Remove all into() and to_vec() once we have correct ByteString type in the models crate
@@ -196,6 +227,70 @@ impl BlockRequest {
     pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
 
     pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalizationCertificateRequest {
+    pub digest: ByteString,
+}
+
+impl FinalizationCertificateRequest {
+    pub const MAX_ENCODED_BYTES: usize = 64;
+
+    pub fn from_proto(proto: FinalizationCertificateRequestProto) -> Result<Self, String> {
+        if proto.digest.len() != block_hash::LENGTH {
+            return Err(format!(
+                "finalization certificate request digest must be {} bytes",
+                block_hash::LENGTH
+            ));
+        }
+        Ok(Self {
+            digest: proto.digest,
+        })
+    }
+
+    pub fn to_proto(self) -> FinalizationCertificateRequestProto {
+        FinalizationCertificateRequestProto {
+            digest: self.digest,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalizationCertificateResponse {
+    pub digest: ByteString,
+    pub certificate: FinalizationCertificate,
+}
+
+impl FinalizationCertificateResponse {
+    pub const MAX_ENCODED_BYTES: usize = FinalizationCertificate::MAX_ENCODED_BYTES + 128;
+
+    pub fn from_proto(proto: FinalizationCertificateResponseProto) -> Result<Self, String> {
+        if proto.digest.len() != block_hash::LENGTH {
+            return Err(format!(
+                "finalization certificate response digest must be {} bytes",
+                block_hash::LENGTH
+            ));
+        }
+        let certificate =
+            FinalizationCertificate::from_proto(proto.certificate.ok_or_else(|| {
+                "finalization certificate response is missing proof".to_string()
+            })?)?;
+        if certificate.digest() != proto.digest {
+            return Err("finalization certificate response digest mismatch".to_string());
+        }
+        Ok(Self {
+            digest: proto.digest,
+            certificate,
+        })
+    }
+
+    pub fn to_proto(self) -> FinalizationCertificateResponseProto {
+        FinalizationCertificateResponseProto {
+            digest: self.digest,
+            certificate: Some(self.certificate.to_proto()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -286,10 +381,122 @@ impl BlockApproval {
     }
 }
 
+/// Ask a peer for its cached finalized-floor values for the named blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheRequest {
+    pub hashes: Vec<ByteString>,
+}
+
+impl FloorCacheRequest {
+    pub fn from_proto(proto: FloorCacheRequestProto) -> Self {
+        Self {
+            hashes: proto.hashes,
+        }
+    }
+
+    pub fn to_proto(self) -> FloorCacheRequestProto {
+        FloorCacheRequestProto {
+            hashes: self.hashes,
+        }
+    }
+}
+
+/// One block's cached floor and frontier, as the responder derived them when
+/// it validated the block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheEntry {
+    pub block_hash: ByteString,
+    pub floor_hash: ByteString,
+    pub frontier_hash: ByteString,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheResponse {
+    pub entries: Vec<FloorCacheEntry>,
+    /// The shard's genesis block hash; empty when the responder does not
+    /// hold it.
+    pub genesis_hash: ByteString,
+    /// The genesis block itself; absent when the responder does not hold
+    /// it. Verified against `genesis_hash` by the receiver before storing.
+    pub genesis_block: Option<BlockMessage>,
+}
+
+impl FloorCacheResponse {
+    pub fn from_proto(proto: FloorCacheResponseProto) -> Self {
+        Self {
+            entries: proto
+                .entries
+                .into_iter()
+                .map(|entry| FloorCacheEntry {
+                    block_hash: entry.block_hash,
+                    floor_hash: entry.floor_hash,
+                    frontier_hash: entry.frontier_hash,
+                })
+                .collect(),
+            genesis_hash: proto.genesis_hash,
+            genesis_block: proto
+                .genesis_block
+                .and_then(|block| BlockMessage::from_proto(block).ok()),
+        }
+    }
+
+    pub fn to_proto(self) -> FloorCacheResponseProto {
+        FloorCacheResponseProto {
+            entries: self
+                .entries
+                .into_iter()
+                .map(|entry| FloorCacheEntryProto {
+                    block_hash: entry.block_hash,
+                    floor_hash: entry.floor_hash,
+                    frontier_hash: entry.frontier_hash,
+                })
+                .collect(),
+            genesis_hash: self.genesis_hash,
+            genesis_block: self.genesis_block.map(|block| block.to_proto()),
+        }
+    }
+}
+
+/// The anchor's finalized floor and frontier, carried with the approved block
+/// so a restored node can start deriving forward from them.
+///
+/// Each block is named by hash AND number: the number sizes the receiver's
+/// download window, which it must fix before it holds any block to look up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinalizedFloorSeed {
+    pub floor_hash: ByteString,
+    pub floor_number: i64,
+    pub frontier_hash: ByteString,
+    pub frontier_number: i64,
+}
+
+impl FinalizedFloorSeed {
+    pub fn from_proto(proto: FinalizedFloorSeedProto) -> Self {
+        Self {
+            floor_hash: proto.floor_hash,
+            floor_number: proto.floor_number,
+            frontier_hash: proto.frontier_hash,
+            frontier_number: proto.frontier_number,
+        }
+    }
+
+    pub fn to_proto(self) -> FinalizedFloorSeedProto {
+        FinalizedFloorSeedProto {
+            floor_hash: self.floor_hash,
+            floor_number: self.floor_number,
+            frontier_hash: self.frontier_hash,
+            frontier_number: self.frontier_number,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovedBlock {
     pub candidate: ApprovedBlockCandidate,
     pub sigs: Vec<Signature>,
+    /// Absent from peers that predate the seed, and from the non-trim response
+    /// (a node syncing from genesis derives its own floors).
+    pub floor_seed: Option<FinalizedFloorSeed>,
 }
 
 impl ApprovedBlock {
@@ -301,6 +508,7 @@ impl ApprovedBlock {
                     .ok_or_else(|| "Missing candidate field".to_string())?,
             )?,
             sigs: proto.sigs,
+            floor_seed: proto.floor_seed.map(FinalizedFloorSeed::from_proto),
         })
     }
 
@@ -308,6 +516,7 @@ impl ApprovedBlock {
         ApprovedBlockProto {
             candidate: Some(self.candidate.to_proto()),
             sigs: self.sigs,
+            floor_seed: self.floor_seed.map(FinalizedFloorSeed::to_proto),
         }
     }
 }
@@ -390,6 +599,7 @@ pub struct BlockMessage {
     pub sig_algorithm: String,
     pub shard_id: String,
     pub extra_bytes: ByteString,
+    pub finalized_floor_certificate: Option<FinalizationCertificate>,
 }
 
 impl BlockMessage {
@@ -413,6 +623,10 @@ impl BlockMessage {
             sig_algorithm: proto.sig_algorithm,
             shard_id: proto.shard_id,
             extra_bytes: proto.extra_bytes,
+            finalized_floor_certificate: proto
+                .finalized_floor_certificate
+                .map(FinalizationCertificate::from_proto)
+                .transpose()?,
         })
     }
 
@@ -433,6 +647,10 @@ impl BlockMessage {
             sig_algorithm: self.sig_algorithm.clone(),
             shard_id: self.shard_id.clone(),
             extra_bytes: self.extra_bytes.clone(),
+            finalized_floor_certificate: self
+                .finalized_floor_certificate
+                .as_ref()
+                .map(FinalizationCertificate::to_proto),
         }
     }
 
@@ -449,6 +667,7 @@ pub struct Header {
     pub extra_bytes: ByteString,
     pub sender_bond_generation: Option<BondGeneration>,
     pub objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
+    pub finalized_floor: Option<FinalizedFloorCommitment>,
 }
 
 impl Header {
@@ -479,6 +698,10 @@ impl Header {
             extra_bytes: proto.extra_bytes,
             sender_bond_generation,
             objective_equivocation_evidence_delta,
+            finalized_floor: proto
+                .finalized_floor
+                .map(FinalizedFloorCommitment::from_proto)
+                .transpose()?,
         })
     }
 
@@ -494,8 +717,369 @@ impl Header {
                 .iter()
                 .map(ObjectiveEquivocationEvidence::to_proto)
                 .collect(),
+            finalized_floor: self
+                .finalized_floor
+                .as_ref()
+                .map(FinalizedFloorCommitment::to_proto),
         }
     }
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub struct FinalizedFloorCommitment {
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub floor_hash: ByteString,
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub floor_post_state_hash: ByteString,
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub certificate_digest: ByteString,
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub authority_context_digest: ByteString,
+}
+
+impl FinalizedFloorCommitment {
+    pub fn from_proto(proto: FinalizedFloorCommitmentProto) -> Result<Self, String> {
+        let commitment = Self {
+            floor_hash: proto.floor_hash,
+            floor_post_state_hash: proto.floor_post_state_hash,
+            certificate_digest: proto.certificate_digest,
+            authority_context_digest: proto.authority_context_digest,
+        };
+        commitment.validate_shape()?;
+        Ok(commitment)
+    }
+
+    pub fn to_proto(&self) -> FinalizedFloorCommitmentProto {
+        FinalizedFloorCommitmentProto {
+            floor_hash: self.floor_hash.clone(),
+            floor_post_state_hash: self.floor_post_state_hash.clone(),
+            certificate_digest: self.certificate_digest.clone(),
+            authority_context_digest: self.authority_context_digest.clone(),
+        }
+    }
+
+    pub fn validate_shape(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("floor hash", &self.floor_hash),
+            ("floor post-state hash", &self.floor_post_state_hash),
+            ("certificate digest", &self.certificate_digest),
+            ("authority-context digest", &self.authority_context_digest),
+        ] {
+            if value.len() != block_hash::LENGTH {
+                return Err(format!(
+                    "finalized-floor commitment {name} must be {} bytes, got {}",
+                    block_hash::LENGTH,
+                    value.len()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FinalizationCertificate {
+    pub schema_version: u32,
+    pub protocol_version: i64,
+    pub shard_id: String,
+    pub genesis_hash: BlockHashSerde,
+    pub predecessor_floor_hash: BlockHashSerde,
+    pub predecessor_certificate_digest: BlockHashSerde,
+    pub predecessor_certificate_block_hash: BlockHashSerde,
+    pub target_floor_hash: BlockHashSerde,
+    pub target_post_state_hash: BlockHashSerde,
+    pub target_block_number: i64,
+    pub fault_tolerance_numerator: i64,
+    pub fault_tolerance_denominator: i64,
+    pub exact_latest_messages: std::collections::BTreeMap<ValidatorSerde, BlockHashSerde>,
+    pub authority_context_digest: BlockHashSerde,
+    pub supporting_manifest_digest: BlockHashSerde,
+    pub finalized_manifest_digest: BlockHashSerde,
+    pub supporting_block_count: u32,
+    pub finalized_block_count: u32,
+}
+
+impl FinalizationCertificate {
+    pub const SCHEMA_VERSION: u32 = 4;
+    pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
+    pub const MAX_EXACT_LATEST_MESSAGES: usize = 10_000;
+    pub const MAX_SUPPORTING_BLOCKS: usize = 262_144;
+    pub const MAX_FINALIZED_BLOCKS: usize = 262_144;
+    pub const MAX_DAG_VISITS_PER_VERIFICATION: usize = 1_048_576;
+    pub const MAX_SHARD_ID_BYTES: usize = 256;
+
+    pub fn from_proto(proto: FinalizationCertificateProto) -> Result<Self, String> {
+        if proto.encoded_len() > Self::MAX_ENCODED_BYTES {
+            return Err(format!(
+                "finalization certificate exceeds {} encoded bytes",
+                Self::MAX_ENCODED_BYTES
+            ));
+        }
+        if proto.exact_latest_messages.len() > Self::MAX_EXACT_LATEST_MESSAGES {
+            return Err(format!(
+                "finalization certificate has more than {} latest messages",
+                Self::MAX_EXACT_LATEST_MESSAGES
+            ));
+        }
+        let mut exact_latest_messages = std::collections::BTreeMap::new();
+        for justification in proto.exact_latest_messages {
+            let justification = Justification::from_proto(justification);
+            if exact_latest_messages
+                .insert(
+                    ValidatorSerde(justification.validator),
+                    BlockHashSerde(justification.latest_block_hash),
+                )
+                .is_some()
+            {
+                return Err(
+                    "finalization certificate exact latest messages contain duplicate validators"
+                        .to_string(),
+                );
+            }
+        }
+        let certificate = Self {
+            schema_version: proto.schema_version,
+            protocol_version: proto.protocol_version,
+            shard_id: proto.shard_id,
+            genesis_hash: BlockHashSerde(proto.genesis_hash),
+            predecessor_floor_hash: BlockHashSerde(proto.predecessor_floor_hash),
+            predecessor_certificate_digest: BlockHashSerde(proto.predecessor_certificate_digest),
+            predecessor_certificate_block_hash: BlockHashSerde(
+                proto.predecessor_certificate_block_hash,
+            ),
+            target_floor_hash: BlockHashSerde(proto.target_floor_hash),
+            target_post_state_hash: BlockHashSerde(proto.target_post_state_hash),
+            target_block_number: proto.target_block_number,
+            fault_tolerance_numerator: proto.fault_tolerance_numerator,
+            fault_tolerance_denominator: proto.fault_tolerance_denominator,
+            exact_latest_messages,
+            authority_context_digest: BlockHashSerde(proto.authority_context_digest),
+            supporting_manifest_digest: BlockHashSerde(proto.supporting_manifest_digest),
+            finalized_manifest_digest: BlockHashSerde(proto.finalized_manifest_digest),
+            supporting_block_count: proto.supporting_block_count,
+            finalized_block_count: proto.finalized_block_count,
+        };
+        certificate.validate_shape()?;
+        Ok(certificate)
+    }
+
+    pub fn to_proto(&self) -> FinalizationCertificateProto {
+        FinalizationCertificateProto {
+            schema_version: self.schema_version,
+            protocol_version: self.protocol_version,
+            shard_id: self.shard_id.clone(),
+            genesis_hash: self.genesis_hash.0.clone(),
+            predecessor_floor_hash: self.predecessor_floor_hash.0.clone(),
+            predecessor_certificate_digest: self.predecessor_certificate_digest.0.clone(),
+            predecessor_certificate_block_hash: self.predecessor_certificate_block_hash.0.clone(),
+            target_floor_hash: self.target_floor_hash.0.clone(),
+            target_post_state_hash: self.target_post_state_hash.0.clone(),
+            target_block_number: self.target_block_number,
+            fault_tolerance_numerator: self.fault_tolerance_numerator,
+            fault_tolerance_denominator: self.fault_tolerance_denominator,
+            exact_latest_messages: self
+                .exact_latest_messages
+                .iter()
+                .map(|(validator, block_hash)| JustificationProto {
+                    validator: validator.0.clone(),
+                    latest_block_hash: block_hash.0.clone(),
+                })
+                .collect(),
+            authority_context_digest: self.authority_context_digest.0.clone(),
+            supporting_manifest_digest: self.supporting_manifest_digest.0.clone(),
+            finalized_manifest_digest: self.finalized_manifest_digest.0.clone(),
+            supporting_block_count: self.supporting_block_count,
+            finalized_block_count: self.finalized_block_count,
+        }
+    }
+
+    pub fn digest(&self) -> BlockHash {
+        let mut bytes = Vec::new();
+        append_certificate_bytes(&mut bytes, b"f1r3fly-finalization-certificate-v4");
+        bytes.extend_from_slice(&self.schema_version.to_be_bytes());
+        bytes.extend_from_slice(&self.protocol_version.to_be_bytes());
+        append_certificate_bytes(&mut bytes, self.shard_id.as_bytes());
+        append_certificate_bytes(&mut bytes, &self.genesis_hash.0);
+        append_certificate_bytes(&mut bytes, &self.predecessor_floor_hash.0);
+        append_certificate_bytes(&mut bytes, &self.predecessor_certificate_digest.0);
+        append_certificate_bytes(&mut bytes, &self.predecessor_certificate_block_hash.0);
+        append_certificate_bytes(&mut bytes, &self.target_floor_hash.0);
+        append_certificate_bytes(&mut bytes, &self.target_post_state_hash.0);
+        bytes.extend_from_slice(&self.target_block_number.to_be_bytes());
+        bytes.extend_from_slice(&self.fault_tolerance_numerator.to_be_bytes());
+        bytes.extend_from_slice(&self.fault_tolerance_denominator.to_be_bytes());
+        bytes.extend_from_slice(&(self.exact_latest_messages.len() as u64).to_be_bytes());
+        for (validator, block_hash) in &self.exact_latest_messages {
+            append_certificate_bytes(&mut bytes, &validator.0);
+            append_certificate_bytes(&mut bytes, &block_hash.0);
+        }
+        append_certificate_bytes(&mut bytes, &self.authority_context_digest.0);
+        append_certificate_bytes(&mut bytes, &self.supporting_manifest_digest.0);
+        append_certificate_bytes(&mut bytes, &self.finalized_manifest_digest.0);
+        bytes.extend_from_slice(&self.supporting_block_count.to_be_bytes());
+        bytes.extend_from_slice(&self.finalized_block_count.to_be_bytes());
+        Blake2b256::hash(bytes).into()
+    }
+
+    pub fn manifest_digest(
+        domain: &[u8],
+        hashes: &std::collections::BTreeSet<BlockHashSerde>,
+    ) -> BlockHashSerde {
+        let mut bytes = Vec::with_capacity(
+            domain.len() + 16 + hashes.len().saturating_mul(block_hash::LENGTH + 8),
+        );
+        append_certificate_bytes(&mut bytes, b"f1r3fly-finalization-manifest-v1");
+        append_certificate_bytes(&mut bytes, domain);
+        bytes.extend_from_slice(&(hashes.len() as u64).to_be_bytes());
+        for hash in hashes {
+            append_certificate_bytes(&mut bytes, &hash.0);
+        }
+        BlockHashSerde(Blake2b256::hash(bytes).into())
+    }
+
+    pub fn supporting_digest(
+        hashes: &std::collections::BTreeSet<BlockHashSerde>,
+    ) -> BlockHashSerde {
+        Self::manifest_digest(b"supporting", hashes)
+    }
+
+    pub fn finalized_digest(hashes: &std::collections::BTreeSet<BlockHashSerde>) -> BlockHashSerde {
+        Self::manifest_digest(b"finalized", hashes)
+    }
+
+    pub fn commitment(
+        &self,
+        candidate_authority_context_digest: ByteString,
+    ) -> FinalizedFloorCommitment {
+        FinalizedFloorCommitment {
+            floor_hash: self.target_floor_hash.0.clone(),
+            floor_post_state_hash: self.target_post_state_hash.0.clone(),
+            certificate_digest: self.digest(),
+            authority_context_digest: candidate_authority_context_digest,
+        }
+    }
+
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported finalization certificate schema {}; expected {}",
+                self.schema_version,
+                Self::SCHEMA_VERSION
+            ));
+        }
+        if self.protocol_version <= 0
+            || self.shard_id.is_empty()
+            || self.shard_id.len() > Self::MAX_SHARD_ID_BYTES
+        {
+            return Err("finalization certificate protocol and shard must be present".to_string());
+        }
+        if self.exact_latest_messages.len() > Self::MAX_EXACT_LATEST_MESSAGES {
+            return Err(format!(
+                "finalization certificate has more than {} latest messages",
+                Self::MAX_EXACT_LATEST_MESSAGES
+            ));
+        }
+        if self.supporting_block_count == 0
+            || !usize::try_from(self.supporting_block_count)
+                .is_ok_and(|count| count <= Self::MAX_SUPPORTING_BLOCKS)
+            || self.finalized_block_count == 0
+            || !usize::try_from(self.finalized_block_count)
+                .is_ok_and(|count| count <= Self::MAX_FINALIZED_BLOCKS)
+            || self.finalized_block_count > self.supporting_block_count
+        {
+            return Err("finalization certificate manifest counts are invalid".to_string());
+        }
+        if self.target_block_number < 0
+            || self.fault_tolerance_denominator <= 0
+            || self.fault_tolerance_numerator < -self.fault_tolerance_denominator
+            || self.fault_tolerance_numerator > self.fault_tolerance_denominator
+        {
+            return Err("finalization certificate numeric domain is invalid".to_string());
+        }
+        for (name, value) in [
+            ("genesis hash", &self.genesis_hash.0),
+            ("predecessor floor hash", &self.predecessor_floor_hash.0),
+            (
+                "predecessor certificate digest",
+                &self.predecessor_certificate_digest.0,
+            ),
+            (
+                "predecessor certificate block hash",
+                &self.predecessor_certificate_block_hash.0,
+            ),
+            ("target floor hash", &self.target_floor_hash.0),
+            ("target post-state hash", &self.target_post_state_hash.0),
+            ("authority-context digest", &self.authority_context_digest.0),
+            (
+                "supporting-manifest digest",
+                &self.supporting_manifest_digest.0,
+            ),
+            (
+                "finalized-manifest digest",
+                &self.finalized_manifest_digest.0,
+            ),
+        ] {
+            if value.len() != block_hash::LENGTH {
+                return Err(format!(
+                    "finalization certificate {name} must be {} bytes, got {}",
+                    block_hash::LENGTH,
+                    value.len()
+                ));
+            }
+        }
+        if self.exact_latest_messages.is_empty()
+            || self.exact_latest_messages.iter().any(|(validator, hash)| {
+                validator.0.len() != validator::LENGTH || hash.0.len() != block_hash::LENGTH
+            })
+            || (self
+                .predecessor_certificate_digest
+                .0
+                .iter()
+                .all(|byte| *byte == 0)
+                != self
+                    .predecessor_certificate_block_hash
+                    .0
+                    .iter()
+                    .all(|byte| *byte == 0))
+            || (!self
+                .predecessor_certificate_digest
+                .0
+                .iter()
+                .all(|byte| *byte == 0)
+                && self.predecessor_certificate_block_hash.0 == self.target_floor_hash.0)
+            || self.to_proto().encoded_len() > Self::MAX_ENCODED_BYTES
+        {
+            return Err("finalization certificate structure is invalid".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn validate_commitment(&self, commitment: &FinalizedFloorCommitment) -> Result<(), String> {
+        commitment.validate_shape()?;
+        self.validate_shape()?;
+        if commitment.floor_hash != self.target_floor_hash.0
+            || commitment.floor_post_state_hash != self.target_post_state_hash.0
+            || commitment.certificate_digest != self.digest()
+        {
+            return Err(
+                "finalization certificate does not match the signed floor commitment".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+fn append_certificate_bytes(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    output.extend_from_slice(value);
 }
 
 #[derive(
@@ -593,6 +1177,7 @@ pub enum RejectedDeployReason {
     MergeConflict,
     DuplicateOccurrence,
     CollateralChainDrop,
+    ValidityWindowClosed,
 }
 
 impl RejectedDeployReason {
@@ -602,16 +1187,19 @@ impl RejectedDeployReason {
             Self::MergeConflict => "merge_conflict",
             Self::DuplicateOccurrence => "duplicate_occurrence",
             Self::CollateralChainDrop => "collateral_chain_drop",
+            Self::ValidityWindowClosed => "validity_window_closed",
         }
     }
 
     pub fn canonical_join(self, other: Self) -> Self {
         use RejectedDeployReason::{
             CollateralChainDrop, DuplicateOccurrence, MergeConflict, Unspecified,
+            ValidityWindowClosed,
         };
 
         match (self, other) {
             (DuplicateOccurrence, _) | (_, DuplicateOccurrence) => DuplicateOccurrence,
+            (ValidityWindowClosed, _) | (_, ValidityWindowClosed) => ValidityWindowClosed,
             (MergeConflict, _) | (_, MergeConflict) => MergeConflict,
             (CollateralChainDrop, _) | (_, CollateralChainDrop) => CollateralChainDrop,
             (Unspecified, Unspecified) => Unspecified,
@@ -630,6 +1218,9 @@ impl RejectedDeployReason {
             RejectedDeployReasonProto::RejectedDeployReasonCollateralChainDrop => {
                 Self::CollateralChainDrop
             }
+            RejectedDeployReasonProto::RejectedDeployReasonValidityWindowClosed => {
+                Self::ValidityWindowClosed
+            }
         }
     }
 
@@ -645,13 +1236,16 @@ impl RejectedDeployReason {
             Self::CollateralChainDrop => {
                 RejectedDeployReasonProto::RejectedDeployReasonCollateralChainDrop as i32
             }
+            Self::ValidityWindowClosed => {
+                RejectedDeployReasonProto::RejectedDeployReasonValidityWindowClosed as i32
+            }
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RejectedDeploy {
-    pub sig: ByteString,
+    deploy_id: DeployLookupId,
     pub source_block_hash: BlockHash,
     pub reason: RejectedDeployReason,
 }
@@ -659,39 +1253,107 @@ pub struct RejectedDeploy {
 impl RejectedDeploy {
     pub fn legacy(sig: ByteString) -> Self {
         Self {
-            sig,
+            deploy_id: DeployLookupId::Legacy(LegacyDeploySignature::new(sig.to_vec())),
             source_block_hash: ByteString::new(),
             reason: RejectedDeployReason::Unspecified,
         }
     }
 
-    pub fn occurrence(
-        sig: ByteString,
+    pub fn occurrence_legacy(
+        sig: LegacyDeploySignature,
         source_block_hash: BlockHash,
         reason: RejectedDeployReason,
     ) -> Self {
         Self {
-            sig,
+            deploy_id: DeployLookupId::Legacy(sig),
             source_block_hash,
             reason,
         }
     }
 
-    pub fn has_provenance(&self) -> bool { !self.source_block_hash.is_empty() }
-
-    pub fn from_proto(proto: RejectedDeployProto) -> Self {
+    pub fn occurrence_v6(
+        deploy_id: DeployIdV6,
+        source_block_hash: BlockHash,
+        reason: RejectedDeployReason,
+    ) -> Self {
         Self {
-            sig: proto.sig,
-            source_block_hash: proto.source_block_hash,
-            reason: RejectedDeployReason::from_proto(proto.reason),
+            deploy_id: DeployLookupId::V6(deploy_id),
+            source_block_hash,
+            reason,
         }
     }
 
+    pub fn deploy_id(&self) -> &[u8] { self.deploy_id.as_bytes() }
+
+    pub fn typed_deploy_id(&self) -> &DeployLookupId { &self.deploy_id }
+
+    pub fn has_provenance(&self) -> bool { !self.source_block_hash.is_empty() }
+
+    pub fn is_duplicate(&self) -> bool { self.reason == RejectedDeployReason::DuplicateOccurrence }
+
+    pub fn from_proto(proto: RejectedDeployProto) -> Result<Self, String> {
+        let deploy_id = match (proto.sig.is_empty(), proto.deploy_id_v6.is_empty()) {
+            (false, true) => DeployLookupId::Legacy(LegacyDeploySignature::new(proto.sig.to_vec())),
+            (true, false) => DeployLookupId::V6(
+                DeployIdV6::try_from(proto.deploy_id_v6.as_ref())
+                    .map_err(|error| error.to_string())?,
+            ),
+            (false, false) => {
+                return Err(
+                    "rejected deploy cannot contain both legacy and v6 identities".to_string(),
+                );
+            }
+            (true, true) => return Err("rejected deploy identity is missing".to_string()),
+        };
+        if !proto.source_block_hash.is_empty()
+            && !proto.carrier.is_empty()
+            && proto.source_block_hash != proto.carrier
+        {
+            return Err("rejected deploy source and compatibility carrier disagree".to_string());
+        }
+        let source_block_hash = if proto.source_block_hash.is_empty() {
+            proto.carrier
+        } else {
+            proto.source_block_hash
+        };
+        let reason = RejectedDeployReason::from_proto(proto.reason);
+        let reason = if reason == RejectedDeployReason::Unspecified && proto.duplicate {
+            RejectedDeployReason::DuplicateOccurrence
+        } else if reason == RejectedDeployReason::Unspecified && !source_block_hash.is_empty() {
+            RejectedDeployReason::MergeConflict
+        } else {
+            reason
+        };
+        if proto.duplicate != (reason == RejectedDeployReason::DuplicateOccurrence)
+            && proto.reason != RejectedDeployReasonProto::RejectedDeployReasonUnspecified as i32
+        {
+            return Err(
+                "rejected deploy reason and compatibility duplicate flag disagree".to_string(),
+            );
+        }
+        Ok(Self {
+            deploy_id,
+            source_block_hash,
+            reason,
+        })
+    }
+
     pub fn to_proto(self) -> RejectedDeployProto {
+        let duplicate = self.is_duplicate();
+        let (sig, deploy_id_v6) = match self.deploy_id {
+            DeployLookupId::Legacy(sig) => (ByteString::from(sig.into_bytes()), ByteString::new()),
+            DeployLookupId::V6(deploy_id) => (
+                ByteString::new(),
+                ByteString::copy_from_slice(deploy_id.as_ref()),
+            ),
+        };
         RejectedDeployProto {
-            sig: self.sig,
+            sig,
+            duplicate,
+            carrier: self.source_block_hash.clone(),
             source_block_hash: self.source_block_hash,
             reason: self.reason.to_proto(),
+            deploy_id_v6,
         }
     }
 }
@@ -727,6 +1389,26 @@ impl StateEffectId {
             execution_index: self.execution_index,
         }
     }
+
+    pub fn validate_canonical_sequence(effects: &[Self], field: &str) -> Result<(), String> {
+        if let Some(effect) = effects
+            .iter()
+            .find(|effect| effect.source_block_hash.len() != block_hash::LENGTH)
+        {
+            return Err(format!(
+                "{field} contains a {}-byte source block hash at execution index {}, expected {} bytes",
+                effect.source_block_hash.len(),
+                effect.execution_index,
+                block_hash::LENGTH
+            ));
+        }
+        if effects.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(format!(
+                "{field} must be strictly ordered without duplicate effect identities"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -735,12 +1417,30 @@ pub struct Body {
     pub deploys: Vec<ProcessedDeploy>,
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub rejected_state_effects: Vec<StateEffectId>,
+    pub applied_state_effects: Vec<StateEffectId>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub extra_bytes: ByteString,
+    pub applied_from_scope: Vec<ByteString>,
+    pub merge_base: ByteString,
 }
 
 impl Body {
     pub fn from_proto(proto: BodyProto) -> Result<Self, String> {
+        let rejected_state_effects = proto
+            .rejected_state_effects
+            .into_iter()
+            .map(StateEffectId::from_proto)
+            .collect::<Vec<_>>();
+        StateEffectId::validate_canonical_sequence(
+            &rejected_state_effects,
+            "rejectedStateEffects",
+        )?;
+        let applied_state_effects = proto
+            .applied_state_effects
+            .into_iter()
+            .map(StateEffectId::from_proto)
+            .collect::<Vec<_>>();
+        StateEffectId::validate_canonical_sequence(&applied_state_effects, "appliedStateEffects")?;
         Ok(Self {
             state: F1r3flyState::from_proto(
                 proto
@@ -756,18 +1456,17 @@ impl Body {
                 .rejected_deploys
                 .into_iter()
                 .map(|r| RejectedDeploy::from_proto(r))
-                .collect(),
-            rejected_state_effects: proto
-                .rejected_state_effects
-                .into_iter()
-                .map(StateEffectId::from_proto)
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
+            rejected_state_effects,
+            applied_state_effects,
             system_deploys: proto
                 .system_deploys
                 .into_iter()
                 .map(|s| ProcessedSystemDeploy::from_proto(s))
                 .collect::<Result<Vec<ProcessedSystemDeploy>, String>>()?,
             extra_bytes: proto.extra_bytes,
+            applied_from_scope: proto.applied_from_scope,
+            merge_base: proto.merge_base,
         })
     }
 
@@ -791,6 +1490,11 @@ impl Body {
                 .iter()
                 .map(StateEffectId::to_proto)
                 .collect(),
+            applied_state_effects: self
+                .applied_state_effects
+                .iter()
+                .map(StateEffectId::to_proto)
+                .collect(),
             system_deploys: self
                 .system_deploys
                 .clone()
@@ -798,6 +1502,8 @@ impl Body {
                 .map(|s| s.to_proto())
                 .collect(),
             extra_bytes: self.extra_bytes.clone(),
+            applied_from_scope: self.applied_from_scope.clone(),
+            merge_base: self.merge_base.clone(),
         }
     }
 }
@@ -941,6 +1647,7 @@ impl ValidatorBondGeneration {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcessedDeploy {
     pub deploy: Signed<DeployData>,
+    pub envelope_commitment: ByteString,
     pub cost: PCost,
     pub deploy_log: Vec<Event>,
     pub is_failed: bool,
@@ -949,10 +1656,8 @@ pub struct ProcessedDeploy {
     /// Empty for legacy single-signature deploys. Round-trips through
     /// `DeployDataProto.cosigners` (proto field 14 on `deploy`).
     pub cosigners: Vec<crate::casper::CompoundSigner>,
-    /// M-of-N quorum threshold (Phase 2). 0 = N-of-N semantics (every
-    /// signer's signature must verify); k > 0 = at least k signatures
-    /// must verify. Round-trips through `DeployDataProto.cosigner_threshold`
-    /// (proto field 16).
+    /// M-of-N quorum threshold. Protocol v6 uses an explicit value in
+    /// `1..=N`. Zero is reserved for the pre-v6 N-of-N encoding.
     pub cosigner_threshold: i32,
     pub pre_state_hash: ByteString,
     pub post_state_hash: ByteString,
@@ -999,6 +1704,7 @@ impl ProcessedDeploy {
     pub fn empty(deploy: Signed<DeployData>) -> Self {
         Self {
             deploy,
+            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed: false,
@@ -1013,14 +1719,23 @@ impl ProcessedDeploy {
         }
     }
 
-    /// Construct an empty processed-deploy stub from a `Cosigned<DeployData>`
+    /// Construct an empty processed-deploy record from a `Cosigned<DeployData>`
     /// envelope, preserving the full cosigner list. Used by error-envelope
     /// construction paths in the multi-sig runtime fan-out where a deploy
     /// fails BEFORE evaluation begins.
     pub fn empty_from_cosigned(
         cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> Self {
-        let primary = cosigned.primary();
+        let primary_index = if cosigned.is_envelope_bound() {
+            cosigned
+                .signers()
+                .iter()
+                .position(|signer| !signer.sig.is_empty())
+                .expect("validated protocol-v6 envelope has a selected signer")
+        } else {
+            0
+        };
+        let primary = &cosigned.signers()[primary_index];
         let deploy = Signed {
             data: cosigned.data.clone(),
             pk: primary.pk.clone(),
@@ -1032,8 +1747,9 @@ impl ProcessedDeploy {
             cosigned
                 .signers()
                 .iter()
-                .skip(1)
-                .map(|c| crate::casper::CompoundSigner {
+                .enumerate()
+                .filter(|(index, _)| *index != primary_index)
+                .map(|(_, c)| crate::casper::CompoundSigner {
                     pk: c.pk.bytes.clone().into(),
                     sig: c.sig.clone(),
                     sig_algorithm: c.sig_algorithm.name(),
@@ -1044,14 +1760,19 @@ impl ProcessedDeploy {
         };
         Self {
             deploy,
+            envelope_commitment: if cosigned.is_envelope_bound() {
+                cosigned
+                    .envelope_commitment()
+                    .expect("envelope-bound Cosigned invariant")
+            } else {
+                ByteString::new()
+            },
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
             cosigners,
-            // empty_from_cosigned has no view of the runtime threshold —
-            // callers needing M-of-N must set the field after construction.
-            cosigner_threshold: 0,
+            cosigner_threshold: i32::try_from(cosigned.cosigner_threshold()).unwrap_or(i32::MAX),
             pre_state_hash: ByteString::new(),
             post_state_hash: ByteString::new(),
             authority_funding_certificate: None,
@@ -1079,6 +1800,40 @@ impl ProcessedDeploy {
         self.admission_status == DeployAdmissionStatus::Rejected
     }
 
+    pub fn has_committed_state_effect(&self) -> bool {
+        !self.is_admission_rejected()
+            && (!self.is_failed
+                || (self.authority_funding_certificate.is_some()
+                    && self.authority_cost_witness.is_some()))
+    }
+
+    pub fn deploy_id(&self) -> &ByteString {
+        if self.envelope_commitment.is_empty() {
+            &self.deploy.sig
+        } else {
+            &self.envelope_commitment
+        }
+    }
+
+    pub fn deploy_id_v6(&self) -> Result<crate::rust::deploy_id::DeployIdV6, String> {
+        crate::rust::deploy_id::DeployIdV6::try_from(self.envelope_commitment.as_ref())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn deploy_id_for_protocol(
+        &self,
+        protocol_version: i64,
+    ) -> Result<crate::rust::deploy_id::DeployLookupId, String> {
+        if protocol_version >= 6 {
+            self.deploy_id_v6()
+                .map(crate::rust::deploy_id::DeployLookupId::V6)
+        } else {
+            Ok(crate::rust::deploy_id::DeployLookupId::Legacy(
+                crate::rust::deploy_id::LegacyDeploySignature::new(self.deploy.sig.to_vec()),
+            ))
+        }
+    }
+
     /// Reconstitute the [`Cosigned<DeployData>`] envelope from on-disk
     /// `ProcessedDeploy` shape. For legacy deploys (`cosigners.is_empty()`),
     /// uplifts via `Cosigned::from_single_signer` for byte-identical replay
@@ -1089,57 +1844,65 @@ impl ProcessedDeploy {
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
-        if self.cosigners.is_empty() {
-            // Legacy single-sig path: byte-identical to single-sig replay.
-            Cosigned::from_single_signer(self.deploy.clone())
-                .map_err(|e| format!("legacy uplift to Cosigned failed: {}", e))
-        } else {
-            // Multi-sig: rebuild signer list with full re-verification.
-            let primary = Cosigner {
-                pk: self.deploy.pk.clone(),
-                sig: self.deploy.sig.clone(),
-                sig_algorithm: self.deploy.sig_algorithm.clone(),
-            };
-            let mut signers = Vec::with_capacity(1 + self.cosigners.len());
-            signers.push(primary);
-            for cs in &self.cosigners {
-                let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
-                    format!(
-                        "Unknown cosigner signature algorithm: {} for cosigner pk={}",
-                        cs.sig_algorithm,
-                        hex::encode(&cs.pk)
-                    )
-                })?;
-                signers.push(Cosigner {
-                    pk: PublicKey::from_bytes(&cs.pk),
-                    sig: cs.sig.clone(),
-                    sig_algorithm: alg,
-                });
-            }
-            // Phase 2 dispatch on threshold; preserves replay determinism
-            // because the threshold is a wire-level constant captured at
-            // proposal time.
-            if self.cosigner_threshold > 0 {
-                Cosigned::from_signed_data_threshold(
-                    self.deploy.data.clone(),
-                    signers,
-                    self.cosigner_threshold as u32,
+        let mut signers = Vec::with_capacity(1 + self.cosigners.len());
+        signers.push(Cosigner {
+            pk: self.deploy.pk.clone(),
+            sig: self.deploy.sig.clone(),
+            sig_algorithm: self.deploy.sig_algorithm.clone(),
+        });
+        for cs in &self.cosigners {
+            let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
+                format!(
+                    "Unknown cosigner signature algorithm: {} for cosigner pk={}",
+                    cs.sig_algorithm,
+                    hex::encode(&cs.pk)
                 )
-                .map_err(|e| {
-                    format!(
-                        "ProcessedDeploy to_cosigned threshold reconstruction failed (threshold={}): {}",
-                        self.cosigner_threshold, e
-                    )
-                })
-            } else {
-                Cosigned::from_signed_data(self.deploy.data.clone(), signers).map_err(|e| {
-                    format!("ProcessedDeploy to_cosigned reconstruction failed: {}", e)
-                })
+            })?;
+            signers.push(Cosigner {
+                pk: PublicKey::from_bytes(&cs.pk),
+                sig: cs.sig.clone(),
+                sig_algorithm: alg,
+            });
+        }
+        if !self.envelope_commitment.is_empty() {
+            if self.cosigner_threshold < 1 {
+                return Err(
+                    "ProcessedDeploy v6 envelope requires an explicit positive threshold"
+                        .to_string(),
+                );
             }
+            let envelope = Cosigned::from_envelope_signed_data_threshold(
+                self.deploy.data.clone(),
+                signers,
+                self.cosigner_threshold as u32,
+            )
+            .map_err(|error| format!("ProcessedDeploy v6 envelope invalid: {error}"))?;
+            if envelope
+                .envelope_commitment()
+                .map_err(|error| format!("ProcessedDeploy v6 envelope invalid: {error}"))?
+                != self.envelope_commitment
+            {
+                return Err("ProcessedDeploy envelope commitment mismatch".to_string());
+            }
+            Ok(envelope)
+        } else if self.cosigners.is_empty() {
+            Cosigned::from_single_signer(self.deploy.clone())
+                .map_err(|error| format!("legacy uplift to Cosigned failed: {error}"))
+        } else if self.cosigner_threshold > 0 {
+            Cosigned::from_signed_data_threshold(
+                self.deploy.data.clone(),
+                signers,
+                self.cosigner_threshold as u32,
+            )
+            .map_err(|error| format!("legacy threshold envelope invalid: {error}"))
+        } else {
+            Cosigned::from_signed_data(self.deploy.data.clone(), signers)
+                .map_err(|error| format!("legacy envelope invalid: {error}"))
         }
     }
 
     pub fn to_deploy_info(self) -> DeployInfo {
+        let deploy_id = self.deploy_id().clone();
         DeployInfo {
             deployer: PrettyPrinter::build_string_no_limit(&self.deploy.pk.bytes),
             term: self.deploy.data.term.clone(),
@@ -1157,6 +1920,7 @@ impl ProcessedDeploy {
             pre_state_hash: self.pre_state_hash,
             post_state_hash: self.post_state_hash,
             admission_status: self.admission_status.to_proto(),
+            deploy_id,
         }
     }
 
@@ -1169,10 +1933,42 @@ impl ProcessedDeploy {
         // only the primary signer; the cosigners[] populate the
         // ProcessedDeploy fields directly so the multi-sig shape survives
         // serialization.
-        let cosigners = deploy_proto.cosigners.clone();
-        let cosigner_threshold = deploy_proto.cosigner_threshold;
-        Ok(Self {
-            deploy: DeployData::from_proto(deploy_proto)?,
+        let mut cosigners = deploy_proto.cosigners.clone();
+        let mut cosigner_threshold = deploy_proto.cosigner_threshold;
+        let envelope_commitment = deploy_proto.deploy_id.clone();
+        let deploy = if envelope_commitment.is_empty() {
+            DeployData::from_proto(deploy_proto)?
+        } else {
+            let envelope = DeployData::from_proto_cosigned(deploy_proto)?;
+            let selected_index = envelope
+                .signers()
+                .iter()
+                .position(|signer| !signer.sig.is_empty())
+                .ok_or_else(|| "protocol-v6 envelope has no selected signer".to_string())?;
+            let selected = &envelope.signers()[selected_index];
+            cosigner_threshold = i32::try_from(envelope.cosigner_threshold())
+                .map_err(|_| "protocol-v6 threshold exceeds i32".to_string())?;
+            cosigners = envelope
+                .signers()
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != selected_index)
+                .map(|(_, signer)| crate::casper::CompoundSigner {
+                    pk: signer.pk.bytes.clone().into(),
+                    sig: signer.sig.clone(),
+                    sig_algorithm: signer.sig_algorithm.name(),
+                })
+                .collect();
+            Signed {
+                data: envelope.data.clone(),
+                pk: selected.pk.clone(),
+                sig: selected.sig.clone(),
+                sig_algorithm: selected.sig_algorithm.clone(),
+            }
+        };
+        let processed = Self {
+            deploy,
+            envelope_commitment,
             cost: proto.cost.ok_or_else(|| "Missing cost field".to_string())?,
             deploy_log: proto
                 .deploy_log
@@ -1194,16 +1990,25 @@ impl ProcessedDeploy {
             authority_funding_certificate: proto.authority_funding_certificate,
             authority_cost_witness: proto.authority_cost_witness,
             admission_status: DeployAdmissionStatus::from_proto(proto.admission_status),
-        })
+        };
+        processed.to_cosigned()?;
+        Ok(processed)
     }
 
     pub fn to_proto(self) -> ProcessedDeployProto {
-        let mut deploy_proto = DeployData::to_proto(self.deploy);
-        // Re-attach the cosigner metadata that lives at the
-        // ProcessedDeploy level into the inner DeployDataProto so the
-        // wire shape carries it through block-storage round-trip.
-        deploy_proto.cosigners = self.cosigners;
-        deploy_proto.cosigner_threshold = self.cosigner_threshold;
+        let mut deploy_proto = if self.envelope_commitment.is_empty() {
+            DeployData::to_proto(self.deploy.clone())
+        } else {
+            DeployData::to_proto_cosigned(
+                &self
+                    .to_cosigned()
+                    .expect("validated ProcessedDeploy v6.1 envelope"),
+            )
+        };
+        if self.envelope_commitment.is_empty() {
+            deploy_proto.cosigners = self.cosigners.clone();
+            deploy_proto.cosigner_threshold = self.cosigner_threshold;
+        }
         ProcessedDeployProto {
             deploy: Some(deploy_proto),
             cost: Some(self.cost),
@@ -1557,6 +2362,7 @@ impl ProcessedSystemDeploy {
 )]
 pub struct DeployData {
     pub term: String,
+    pub language: String,
     #[serde(rename = "timestamp")]
     pub time_stamp: i64,
     #[serde(rename = "validAfterBlockNumber")]
@@ -1572,6 +2378,115 @@ pub struct DeployData {
 impl ToMessage for DeployData {
     type Type = DeployDataProto;
     fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
+    fn envelope_intent_v61(&self) -> Result<Vec<u8>, String> {
+        self.validate_authority_presentations()?;
+        if self.language != "rholang" {
+            return Err("protocol-v6 deploy language must be rholang".to_string());
+        }
+        let timestamp = u64::try_from(self.time_stamp)
+            .map_err(|_| "protocol-v6 deploy timestamp must be nonnegative".to_string())?;
+        let valid_after = u64::try_from(self.valid_after_block_number)
+            .map_err(|_| "protocol-v6 valid-after block must be nonnegative".to_string())?;
+        if self.shard_id.is_empty() {
+            return Err("protocol-v6 shard ID must be nonempty".to_string());
+        }
+        let mut intent = Vec::new();
+        intent.extend_from_slice(&1u16.to_be_bytes());
+        intent.push(1);
+        append_deploy_intent_field(&mut intent, self.term.as_bytes());
+        intent.extend_from_slice(&timestamp.to_be_bytes());
+        intent.extend_from_slice(&valid_after.to_be_bytes());
+        append_deploy_intent_field(&mut intent, self.shard_id.as_bytes());
+        match self.expiration_timestamp {
+            None => intent.push(0),
+            Some(expiration) if expiration > 0 => {
+                intent.push(1);
+                intent.extend_from_slice(&(expiration as u64).to_be_bytes());
+            }
+            Some(_) => {
+                return Err("protocol-v6 expiration timestamp must be positive".to_string());
+            }
+        }
+        intent.extend_from_slice(&(self.authority_presentations.len() as u32).to_be_bytes());
+        for presentation in &self.authority_presentations {
+            append_deploy_intent_field(&mut intent, &canonical_cost_signature_bytes(presentation)?);
+        }
+        Ok(intent)
+    }
+}
+
+fn append_deploy_intent_field(output: &mut Vec<u8>, bytes: &[u8]) {
+    output.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    output.extend_from_slice(bytes);
+}
+
+fn canonical_cost_signature_bytes(
+    signature: &crate::rhoapi::CostSignature,
+) -> Result<Vec<u8>, String> {
+    use crate::rhoapi::cost_signature::Value;
+    use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+    use crate::rust::rholang::sorter::sortable::Sortable;
+
+    let mut encoded = Vec::new();
+    match signature.value.as_ref() {
+        Some(Value::Unit(true)) => encoded.push(0),
+        Some(Value::Ground(bytes)) => {
+            encoded.push(1);
+            append_deploy_intent_field(&mut encoded, bytes);
+        }
+        Some(Value::Quote(par)) => {
+            let canonical = ParSortMatcher::sort_match(par).term;
+            if canonical != *par {
+                return Err("authority quote must contain a canonical process".to_string());
+            }
+            encoded.push(2);
+            append_deploy_intent_field(&mut encoded, &canonical.encode_to_vec());
+        }
+        Some(Value::Name(par)) => {
+            let canonical = ParSortMatcher::sort_match(par).term;
+            if canonical != *par {
+                return Err("authority name must contain a canonical process".to_string());
+            }
+            encoded.push(3);
+            append_deploy_intent_field(&mut encoded, &canonical.encode_to_vec());
+        }
+        Some(Value::Compound(compound)) => {
+            let mut children = Vec::new();
+            for child in &compound.elements {
+                match child.value.as_ref() {
+                    Some(Value::Compound(_)) | Some(Value::Unit(_)) => {
+                        return Err(
+                            "authority compound must be flat and contain no unit".to_string()
+                        );
+                    }
+                    _ => children.push(canonical_cost_signature_bytes(child)?),
+                }
+            }
+            if children.len() < 2 {
+                return Err("authority compound must contain at least two elements".to_string());
+            }
+            let supplied = children.clone();
+            children.sort();
+            if children != supplied {
+                return Err("authority compound elements must be canonically ordered".to_string());
+            }
+            encoded.push(4);
+            encoded.extend_from_slice(&(children.len() as u32).to_be_bytes());
+            for child in children {
+                append_deploy_intent_field(&mut encoded, &child);
+            }
+        }
+        Some(Value::BoundLevel(_)) => {
+            return Err(
+                "authority presentation contains an unresolved bound signature".to_string(),
+            );
+        }
+        Some(Value::Unit(false)) => {
+            return Err("authority presentation contains a false unit".to_string());
+        }
+        None => return Err("authority presentation is missing its signature".to_string()),
+    }
+    Ok(encoded)
 }
 
 /// Internal helper for walking a `SigCompound` expression and collecting
@@ -1635,6 +2550,7 @@ impl DeployData {
     fn _from_proto(proto: DeployDataProto) -> Self {
         Self {
             term: proto.term,
+            language: proto.language,
             time_stamp: proto.timestamp,
             valid_after_block_number: proto.valid_after_block_number,
             shard_id: proto.shard_id,
@@ -1686,7 +2602,7 @@ impl DeployData {
             if &canonical != signature {
                 return Err("authority presentations must contain canonical signatures".to_string());
             }
-            let encoded = canonical.encode_to_vec();
+            let encoded = canonical_cost_signature_bytes(&canonical)?;
             if previous.as_ref().is_some_and(|prior| prior >= &encoded) {
                 return Err(
                     "authority presentations must be strictly ordered and unique".to_string(),
@@ -1735,10 +2651,16 @@ impl DeployData {
     /// D3 (DR-9): there is no per-signer `phlo_share` and no share-sum
     /// invariant — authority is resolved from canonical vault custody and
     /// prepaid located stacks.
-    pub fn from_proto_cosigned(
+    pub fn from_proto_cosigned_legacy(
         proto: DeployDataProto,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+
+        if !proto.deploy_id.is_empty() || proto.authorization_v61.is_some() {
+            return Err(
+                "legacy deploy cannot contain protocol-v6 authorization fields".to_string(),
+            );
+        }
 
         if let Some(sig_algebra) = proto.sig_algebra.clone() {
             let data = DeployData::_from_proto(proto);
@@ -1805,6 +2727,139 @@ impl DeployData {
                     )
                 })
         }
+    }
+
+    pub fn from_proto_cosigned(
+        proto: DeployDataProto,
+    ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
+        use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+
+        use crate::casper::authorization_policy_v61::Policy;
+
+        if proto.deploy_id.len() != DeployIdV6::LENGTH {
+            return Err("protocol-v6 deploy requires a 32-byte DeployId".to_string());
+        }
+        if !proto.deployer.is_empty()
+            || !proto.sig.is_empty()
+            || !proto.sig_algorithm.is_empty()
+            || !proto.cosigners.is_empty()
+            || proto.cosigner_threshold != 0
+            || proto.sig_algebra.is_some()
+        {
+            return Err(
+                "protocol-v6 deploy cannot contain legacy authorization fields".to_string(),
+            );
+        }
+        let authorization = proto
+            .authorization_v61
+            .as_ref()
+            .ok_or_else(|| "protocol-v6 deploy authorization is missing".to_string())?;
+        if authorization.format_version != 0x0006_0001 {
+            return Err("protocol-v6 deploy authorization format is not v6.1".to_string());
+        }
+        let policy = authorization
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.policy.as_ref())
+            .ok_or_else(|| "protocol-v6 deploy authorization policy is missing".to_string())?;
+        let (members, threshold) = match policy {
+            Policy::AllOf(policy) => {
+                let count = u32::try_from(policy.members.len())
+                    .map_err(|_| "protocol-v6 signer count exceeds u32".to_string())?;
+                if count == 0 {
+                    return Err("protocol-v6 AllOf policy must contain members".to_string());
+                }
+                (&policy.members, count)
+            }
+            Policy::Threshold(policy) => {
+                let count = u32::try_from(policy.members.len())
+                    .map_err(|_| "protocol-v6 signer count exceeds u32".to_string())?;
+                if policy.minimum == 0 || policy.minimum >= count {
+                    return Err("protocol-v6 threshold must satisfy 1 <= k < N".to_string());
+                }
+                (&policy.members, policy.minimum)
+            }
+        };
+        let expected_bitmap_len = members.len().div_ceil(8);
+        if authorization.presence_bitmap.len() != expected_bitmap_len
+            || authorization.presence_bitmap.last().is_some_and(|last| {
+                let used = members.len() % 8;
+                used != 0 && *last & !((1u8 << used) - 1) != 0
+            })
+        {
+            return Err("protocol-v6 presence bitmap is not canonical".to_string());
+        }
+        let selected_indices = authorization
+            .presence_bitmap
+            .iter()
+            .enumerate()
+            .flat_map(|(byte_index, byte)| {
+                (0..8).filter_map(move |bit| {
+                    ((*byte & (1 << bit)) != 0).then_some(byte_index * 8 + bit)
+                })
+            })
+            .filter(|index| *index < members.len())
+            .collect::<Vec<_>>();
+        if authorization.witnesses.len() != selected_indices.len()
+            || authorization
+                .witnesses
+                .iter()
+                .zip(&selected_indices)
+                .any(|(witness, expected)| {
+                    witness.signature.is_empty() || witness.member_index as usize != *expected
+                })
+        {
+            return Err(
+                "protocol-v6 witnesses do not exactly match the presence bitmap".to_string(),
+            );
+        }
+        let mut witness_iter = authorization.witnesses.iter().peekable();
+        let signers = members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| {
+                let algorithm_name = match SignatureSchemeV61::try_from(member.scheme)
+                    .unwrap_or(SignatureSchemeV61::Unspecified)
+                {
+                    SignatureSchemeV61::Secp256k1 => "secp256k1",
+                    SignatureSchemeV61::Secp256k1Eth => "secp256k1:eth",
+                    _ => return Err("protocol-v6 signature scheme is not active".to_string()),
+                };
+                let signature = if witness_iter
+                    .peek()
+                    .is_some_and(|witness| witness.member_index as usize == index)
+                {
+                    witness_iter
+                        .next()
+                        .expect("peeked witness")
+                        .signature
+                        .clone()
+                } else {
+                    ByteString::new()
+                };
+                Ok(Cosigner {
+                    pk: PublicKey::from_bytes(&member.public_key),
+                    sig: signature,
+                    sig_algorithm: SignaturesAlgFactory::apply(algorithm_name)
+                        .expect("active protocol-v6 signature scheme"),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Cosigned::<DeployData>::validate_envelope_signer_order(&signers)
+            .map_err(|error| format!("protocol-v6 envelope validation failed: {error}"))?;
+        let expected_commitment = proto.deploy_id.clone();
+        let data = DeployData::_from_proto(proto);
+        data.validate_authority_presentations()?;
+        let envelope = Cosigned::from_envelope_signed_data_threshold(data, signers, threshold)
+            .map_err(|error| format!("protocol-v6 envelope validation failed: {error}"))?;
+        if envelope
+            .envelope_commitment()
+            .map_err(|error| format!("protocol-v6 envelope validation failed: {error}"))?
+            != expected_commitment
+        {
+            return Err("protocol-v6 DeployId mismatch".to_string());
+        }
+        Ok(envelope)
     }
 
     /// Validates the admission algebra accepted at the deploy boundary. `Atom`
@@ -1951,6 +3006,7 @@ impl DeployData {
     fn _to_proto(dd: DeployData) -> DeployDataProto {
         DeployDataProto {
             term: dd.term,
+            language: String::new(),
             timestamp: dd.time_stamp,
             valid_after_block_number: dd.valid_after_block_number,
             shard_id: dd.shard_id,
@@ -1966,6 +3022,7 @@ impl DeployData {
     pub fn to_proto_ref(dd: &Signed<DeployData>) -> DeployDataProto {
         DeployDataProto {
             term: dd.data.term.clone(),
+            language: dd.data.language.clone(),
             timestamp: dd.data.time_stamp,
             valid_after_block_number: dd.data.valid_after_block_number,
             shard_id: dd.data.shard_id.clone(),
@@ -1987,38 +3044,85 @@ impl DeployData {
     pub fn to_proto_cosigned(
         cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> DeployDataProto {
-        let primary = cosigned.primary();
-        let is_compound = cosigned.is_compound();
-        let cosigners_proto: Vec<crate::casper::CompoundSigner> = if is_compound {
-            cosigned
-                .signers()
-                .iter()
-                .skip(1) // primary occupies fields 1/4/5; cosigners[] is the rest
-                .map(|c| crate::casper::CompoundSigner {
-                    pk: c.pk.bytes.clone().into(),
-                    sig: c.sig.clone(),
-                    sig_algorithm: c.sig_algorithm.name(),
-                })
-                .collect()
+        if !cosigned.is_envelope_bound() {
+            let primary = cosigned.primary();
+            return DeployDataProto {
+                term: cosigned.data.term.clone(),
+                language: cosigned.data.language.clone(),
+                timestamp: cosigned.data.time_stamp,
+                valid_after_block_number: cosigned.data.valid_after_block_number,
+                shard_id: cosigned.data.shard_id.clone(),
+                deployer: primary.pk.bytes.clone().into(),
+                sig: primary.sig.clone(),
+                sig_algorithm: primary.sig_algorithm.name(),
+                expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
+                authority_presentations: cosigned.data.authority_presentations.clone(),
+                cosigners: cosigned
+                    .signers()
+                    .iter()
+                    .skip(1)
+                    .map(|signer| crate::casper::CompoundSigner {
+                        pk: signer.pk.bytes.clone().into(),
+                        sig: signer.sig.clone(),
+                        sig_algorithm: signer.sig_algorithm.name(),
+                    })
+                    .collect(),
+                cosigner_threshold: i32::try_from(cosigned.cosigner_threshold())
+                    .unwrap_or(i32::MAX),
+                ..Default::default()
+            };
+        }
+
+        use crate::casper::authorization_policy_v61::Policy;
+        let members = cosigned
+            .signers()
+            .iter()
+            .map(|signer| crate::casper::PrincipalV61 {
+                scheme: i32::from(signer.scheme_id_v61().expect("validated v6.1 scheme")),
+                public_key: signer.pk.bytes.clone().into(),
+            })
+            .collect::<Vec<_>>();
+        let threshold = cosigned.cosigner_threshold();
+        let policy = if threshold == members.len() as u32 {
+            Policy::AllOf(crate::casper::AllOfPolicyV61 { members })
         } else {
-            Vec::new()
+            Policy::Threshold(crate::casper::ThresholdPolicyV61 {
+                minimum: threshold,
+                members,
+            })
         };
+        let witnesses = cosigned
+            .signers()
+            .iter()
+            .enumerate()
+            .filter(|(_, signer)| !signer.sig.is_empty())
+            .map(|(index, signer)| crate::casper::SignatureWitnessV61 {
+                member_index: index as u32,
+                signature: signer.sig.clone(),
+            })
+            .collect();
         DeployDataProto {
             term: cosigned.data.term.clone(),
+            language: cosigned.data.language.clone(),
             timestamp: cosigned.data.time_stamp,
             valid_after_block_number: cosigned.data.valid_after_block_number,
             shard_id: cosigned.data.shard_id.clone(),
-            deployer: primary.pk.bytes.clone().into(),
-            sig: primary.sig.clone(),
-            sig_algorithm: primary.sig_algorithm.name(),
             expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
             authority_presentations: cosigned.data.authority_presentations.clone(),
-            cosigners: cosigners_proto,
-            // Single-signer / N-of-N round-trip emits 0 (legacy semantics).
-            // M-of-N round-trip requires the caller to set this directly on
-            // the proto AFTER calling this routine; the Cosigned envelope
-            // does not carry the threshold value through the data path.
-            cosigner_threshold: 0,
+            deploy_id: cosigned
+                .envelope_commitment()
+                .expect("envelope-bound Cosigned invariant"),
+            authorization_v61: Some(crate::casper::DeployAuthorizationV61 {
+                format_version: 0x0006_0001,
+                policy: Some(crate::casper::AuthorizationPolicyV61 {
+                    policy: Some(policy),
+                }),
+                presence_bitmap: cosigned
+                    .presence_bitmap_v61()
+                    .expect("envelope-bound Cosigned invariant")
+                    .into(),
+                witnesses,
+            }),
             ..Default::default()
         }
     }
@@ -2403,7 +3507,7 @@ impl MergeableEntryResponse {
 // `checked_total_phlo_charge_value` / `refund_amount_for_token_cost_value`)
 // are removed with the escrow model. The replacement supply-side
 // no-underflow kani proof lives with the settlement writer (Commit 2 fuzz/
-// kani retarget — see `docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`
+// kani retarget — see `docs/casper/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`
 // §Sequencing, Commit 2).
 
 // -------- Phase 7b-1 snapshot chunk-fetch (2026-08-27) --------
@@ -2618,14 +3722,227 @@ impl HasWalPayload {
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::secp256k1_eth::Secp256k1Eth;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-    use crypto::rust::signatures::signed::Signed;
+    use crypto::rust::signatures::signed::{Cosigned, Cosigner, Signed};
     use proptest::prelude::*;
     use prost::bytes::Bytes;
 
     use super::*;
+
+    fn finalization_certificate() -> FinalizationCertificate {
+        let target = BlockHashSerde(Bytes::from(vec![3; block_hash::LENGTH]));
+        let latest = BlockHashSerde(Bytes::from(vec![4; block_hash::LENGTH]));
+        let carrier = BlockHashSerde(Bytes::from(vec![9; block_hash::LENGTH]));
+        FinalizationCertificate {
+            schema_version: FinalizationCertificate::SCHEMA_VERSION,
+            protocol_version: 6,
+            shard_id: "root".to_string(),
+            genesis_hash: BlockHashSerde(Bytes::from(vec![1; block_hash::LENGTH])),
+            predecessor_floor_hash: BlockHashSerde(Bytes::from(vec![2; block_hash::LENGTH])),
+            predecessor_certificate_digest: BlockHashSerde(Bytes::from(vec![
+                5;
+                block_hash::LENGTH
+            ])),
+            predecessor_certificate_block_hash: carrier.clone(),
+            target_floor_hash: target.clone(),
+            target_post_state_hash: BlockHashSerde(Bytes::from(vec![6; block_hash::LENGTH])),
+            target_block_number: 9,
+            fault_tolerance_numerator: 100_000,
+            fault_tolerance_denominator: 1_000_000,
+            exact_latest_messages: std::collections::BTreeMap::from([(
+                ValidatorSerde(Bytes::from(vec![7; validator::LENGTH])),
+                latest.clone(),
+            )]),
+            authority_context_digest: BlockHashSerde(Bytes::from(vec![8; block_hash::LENGTH])),
+            supporting_manifest_digest: FinalizationCertificate::supporting_digest(
+                &std::collections::BTreeSet::from([target.clone(), latest, carrier]),
+            ),
+            finalized_manifest_digest: FinalizationCertificate::finalized_digest(
+                &std::collections::BTreeSet::from([target]),
+            ),
+            supporting_block_count: 3,
+            finalized_block_count: 1,
+        }
+    }
+
+    #[test]
+    fn finalization_certificate_round_trip_preserves_canonical_digest() {
+        let certificate = finalization_certificate();
+        let decoded = FinalizationCertificate::from_proto(certificate.to_proto())
+            .expect("canonical finalization certificate");
+        assert_eq!(decoded, certificate);
+        assert_eq!(decoded.digest(), certificate.digest());
+        assert!(certificate.to_proto().encoded_len() <= FinalizationCertificate::MAX_ENCODED_BYTES);
+    }
+
+    #[test]
+    fn finalization_certificate_request_and_response_are_content_addressed() {
+        let certificate = finalization_certificate();
+        let digest = certificate.digest();
+        let request = FinalizationCertificateRequest::from_proto(
+            FinalizationCertificateRequest {
+                digest: digest.clone(),
+            }
+            .to_proto(),
+        )
+        .expect("valid certificate request");
+        assert_eq!(request.digest, digest);
+
+        let response = FinalizationCertificateResponse {
+            digest: digest.clone(),
+            certificate: certificate.clone(),
+        };
+        let proto = response.clone().to_proto();
+        assert!(proto.encoded_len() <= FinalizationCertificateResponse::MAX_ENCODED_BYTES);
+        assert_eq!(
+            FinalizationCertificateResponse::from_proto(proto).expect("valid certificate response"),
+            response
+        );
+
+        let mut mismatched = response.to_proto();
+        mismatched.digest = Bytes::from(vec![11; block_hash::LENGTH]);
+        assert!(FinalizationCertificateResponse::from_proto(mismatched).is_err());
+    }
+
+    #[test]
+    fn finalization_certificate_requests_reject_non_digest_identifiers() {
+        for digest in [Bytes::new(), Bytes::from(vec![0; block_hash::LENGTH + 1])] {
+            assert!(FinalizationCertificateRequest::from_proto(
+                FinalizationCertificateRequestProto { digest }
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn finalization_certificate_manifest_commitments_are_domain_separated_and_binding() {
+        let certificate = finalization_certificate();
+        let singleton = std::collections::BTreeSet::from([certificate.target_floor_hash.clone()]);
+        assert_ne!(
+            FinalizationCertificate::supporting_digest(&singleton),
+            FinalizationCertificate::finalized_digest(&singleton)
+        );
+
+        let commitment = certificate.commitment(certificate.authority_context_digest.0.clone());
+        let mut tampered = certificate;
+        tampered.supporting_manifest_digest =
+            BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]));
+        assert_ne!(tampered.digest(), commitment.certificate_digest);
+        assert!(tampered.validate_commitment(&commitment).is_err());
+    }
+
+    #[test]
+    fn finalization_certificate_manifest_counts_are_digest_bound_and_bounded() {
+        let certificate = finalization_certificate();
+        let digest = certificate.digest();
+        let mut tampered = certificate.clone();
+        tampered.supporting_block_count += 1;
+        assert_ne!(tampered.digest(), digest);
+
+        for (supporting, finalized) in [
+            (0, 1),
+            (1, 0),
+            (1, 2),
+            (
+                u32::try_from(FinalizationCertificate::MAX_SUPPORTING_BLOCKS).unwrap() + 1,
+                1,
+            ),
+            (
+                2,
+                u32::try_from(FinalizationCertificate::MAX_FINALIZED_BLOCKS).unwrap() + 1,
+            ),
+        ] {
+            let mut invalid = certificate.clone();
+            invalid.supporting_block_count = supporting;
+            invalid.finalized_block_count = finalized;
+            assert!(invalid.validate_shape().is_err());
+        }
+    }
+
+    #[test]
+    fn finalization_certificate_rejects_latest_message_count_before_canonicalization() {
+        let mut proto = finalization_certificate().to_proto();
+        proto.exact_latest_messages = vec![
+            JustificationProto {
+                validator: Bytes::from(vec![7; validator::LENGTH]),
+                latest_block_hash: Bytes::from(vec![4; block_hash::LENGTH]),
+            };
+            FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES + 1
+        ];
+        let error = FinalizationCertificate::from_proto(proto).unwrap_err();
+        assert!(error.contains("latest messages"));
+    }
+
+    #[test]
+    fn maximum_supported_finalization_committee_fits_the_wire_budget() {
+        let mut certificate = finalization_certificate();
+        certificate.exact_latest_messages = (0..FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES)
+            .map(|index| {
+                let index = u32::try_from(index).unwrap().to_be_bytes();
+                let mut validator_bytes = vec![0; validator::LENGTH];
+                validator_bytes[validator::LENGTH - index.len()..].copy_from_slice(&index);
+                let mut hash_bytes = vec![0; block_hash::LENGTH];
+                hash_bytes[block_hash::LENGTH - index.len()..].copy_from_slice(&index);
+                (
+                    ValidatorSerde(Bytes::from(validator_bytes)),
+                    BlockHashSerde(Bytes::from(hash_bytes)),
+                )
+            })
+            .collect();
+        certificate.validate_shape().unwrap();
+        assert!(certificate.to_proto().encoded_len() <= FinalizationCertificate::MAX_ENCODED_BYTES);
+    }
+
+    #[test]
+    fn finalization_certificate_rejects_oversized_shard_identity() {
+        let mut certificate = finalization_certificate();
+        certificate.shard_id = "s".repeat(FinalizationCertificate::MAX_SHARD_ID_BYTES + 1);
+        assert!(certificate.validate_shape().is_err());
+    }
+
+    #[test]
+    fn finalization_certificate_binds_floor_state_and_certificate_digest() {
+        let certificate = finalization_certificate();
+        let commitment = FinalizedFloorCommitment {
+            floor_hash: certificate.target_floor_hash.0.clone(),
+            floor_post_state_hash: certificate.target_post_state_hash.0.clone(),
+            certificate_digest: certificate.digest(),
+            authority_context_digest: certificate.authority_context_digest.0.clone(),
+        };
+        certificate
+            .validate_commitment(&commitment)
+            .expect("matching commitment");
+
+        for tampered in [
+            FinalizedFloorCommitment {
+                floor_hash: Bytes::from(vec![9; block_hash::LENGTH]),
+                ..commitment.clone()
+            },
+            FinalizedFloorCommitment {
+                floor_post_state_hash: Bytes::from(vec![9; block_hash::LENGTH]),
+                ..commitment.clone()
+            },
+            FinalizedFloorCommitment {
+                certificate_digest: Bytes::from(vec![9; block_hash::LENGTH]),
+                ..commitment.clone()
+            },
+        ] {
+            assert!(certificate.validate_commitment(&tampered).is_err());
+        }
+
+        let candidate_specific_context = FinalizedFloorCommitment {
+            authority_context_digest: Bytes::from(vec![9; block_hash::LENGTH]),
+            ..commitment
+        };
+        certificate
+            .validate_commitment(&candidate_specific_context)
+            .expect(
+                "candidate authority context is bound by the signed block, not the certificate",
+            );
+    }
 
     #[test]
     fn equivocation_slash_canonicalizes_and_round_trips_both_hashes() {
@@ -2672,15 +3989,162 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn slash_proto_canonicalizes_empty_equivocation_hash_to_absence() {
+        let slash = SystemDeployData::Slash {
+            invalid_block_hash: Bytes::from_static(b"invalid"),
+            equivocation_block_hash: Some(Bytes::new()),
+            issuer_public_key: PublicKey::from_bytes(b"issuer"),
+            target_activation_epoch: 9,
+            target_bond_generation: BondGeneration::GENESIS,
+        };
+        let decoded =
+            SystemDeployData::from_proto(SystemDeployData::to_proto(slash)).expect("slash proto");
+        assert!(matches!(decoded, SystemDeployData::Slash {
+            equivocation_block_hash: None,
+            ..
+        }));
+    }
+
     fn deploy_data() -> DeployData {
         DeployData {
             term: "Nil".to_string(),
+            language: "rholang".to_string(),
             time_stamp: 0,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             authority_presentations: Vec::new(),
         }
+    }
+
+    fn v61_envelope(selected: &[usize], threshold: u32) -> Cosigned<DeployData> {
+        let secp = Secp256k1;
+        let mut members = (0..3)
+            .map(|_| {
+                let (private_key, public_key) = secp.new_key_pair();
+                (
+                    Cosigner {
+                        pk: public_key,
+                        sig: Bytes::new(),
+                        sig_algorithm: Box::new(secp.clone()),
+                    },
+                    private_key,
+                )
+            })
+            .collect::<Vec<(Cosigner, PrivateKey)>>();
+        members.sort_by_key(|(signer, _)| signer.principal_bytes_v61().unwrap());
+        let mut bitmap = vec![0u8; members.len().div_ceil(8)];
+        for index in selected {
+            bitmap[index / 8] |= 1 << (index % 8);
+        }
+        let unsigned = members
+            .iter()
+            .map(|(signer, _)| signer.clone())
+            .collect::<Vec<_>>();
+        let data = deploy_data();
+        for index in selected {
+            let hash = Cosigned::<DeployData>::envelope_signing_hash_for_presence(
+                &data,
+                &unsigned,
+                threshold,
+                &bitmap,
+                &members[*index].0.sig_algorithm.name(),
+            )
+            .unwrap();
+            members[*index].0.sig = members[*index]
+                .0
+                .sig_algorithm
+                .sign(&hash, &members[*index].1.bytes)
+                .into();
+        }
+        Cosigned::from_envelope_signed_data_threshold(
+            data,
+            members.into_iter().map(|(signer, _)| signer).collect(),
+            threshold,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn v61_wire_round_trip_preserves_authorization_and_identity() {
+        let envelope = v61_envelope(&[0, 2], 2);
+        let proto = DeployData::to_proto_cosigned(&envelope);
+        let decoded = DeployData::from_proto_cosigned(proto).unwrap();
+        assert_eq!(decoded, envelope);
+        assert_eq!(
+            decoded.envelope_commitment().unwrap(),
+            envelope.envelope_commitment().unwrap()
+        );
+    }
+
+    #[test]
+    fn v61_wire_rejects_signer_order_presence_and_legacy_mutations() {
+        let envelope = v61_envelope(&[0, 2], 2);
+        let proto = DeployData::to_proto_cosigned(&envelope);
+
+        let mut reordered = proto.clone();
+        let policy = reordered
+            .authorization_v61
+            .as_mut()
+            .unwrap()
+            .policy
+            .as_mut()
+            .unwrap()
+            .policy
+            .as_mut()
+            .unwrap();
+        let crate::casper::authorization_policy_v61::Policy::Threshold(policy) = policy else {
+            panic!("expected threshold policy");
+        };
+        policy.members.swap(0, 1);
+        assert!(DeployData::from_proto_cosigned(reordered).is_err());
+
+        let mut presence = proto.clone();
+        let mut bitmap = presence
+            .authorization_v61
+            .as_ref()
+            .unwrap()
+            .presence_bitmap
+            .to_vec();
+        bitmap[0] ^= 0b0000_0010;
+        presence.authorization_v61.as_mut().unwrap().presence_bitmap = bitmap.into();
+        assert!(DeployData::from_proto_cosigned(presence).is_err());
+
+        let mut coexistence = proto;
+        coexistence.sig = Bytes::from_static(b"legacy");
+        assert!(DeployData::from_proto_cosigned(coexistence).is_err());
+    }
+
+    #[test]
+    fn v61_wire_rejects_noncanonical_threshold_n_of_n() {
+        let envelope = v61_envelope(&[0, 1, 2], 3);
+        let mut proto = DeployData::to_proto_cosigned(&envelope);
+        let authorization = proto.authorization_v61.as_mut().unwrap();
+        let policy = authorization.policy.as_mut().unwrap();
+        let crate::casper::authorization_policy_v61::Policy::AllOf(all_of) =
+            policy.policy.take().unwrap()
+        else {
+            panic!("expected all-of policy");
+        };
+        policy.policy = Some(crate::casper::authorization_policy_v61::Policy::Threshold(
+            crate::casper::ThresholdPolicyV61 {
+                minimum: all_of.members.len() as u32,
+                members: all_of.members,
+            },
+        ));
+        assert!(DeployData::from_proto_cosigned(proto).is_err());
+    }
+
+    #[test]
+    fn v61_processed_deploy_primary_is_an_authenticated_witness() {
+        let envelope = v61_envelope(&[1, 2], 2);
+        let unsigned = envelope.signers()[0].pk.clone();
+        let processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+
+        assert_ne!(processed.deploy.pk, unsigned);
+        assert!(!processed.deploy.sig.is_empty());
+        assert_eq!(processed.to_cosigned().unwrap(), envelope);
     }
 
     fn authority_signature(tag: u8) -> crate::rhoapi::CostSignature {
@@ -2762,30 +4226,34 @@ mod tests {
 
     #[test]
     fn rejected_deploy_occurrence_round_trips_through_proto() {
-        let rejected = RejectedDeploy::occurrence(
-            Bytes::from_static(b"deploy"),
+        let rejected = RejectedDeploy::occurrence_legacy(
+            LegacyDeploySignature::new(b"deploy".to_vec()),
             Bytes::from_static(b"source"),
             RejectedDeployReason::DuplicateOccurrence,
         );
 
         assert_eq!(
-            RejectedDeploy::from_proto(rejected.clone().to_proto()),
+            RejectedDeploy::from_proto(rejected.clone().to_proto()).unwrap(),
             rejected
         );
     }
 
     #[test]
-    fn rejected_state_effects_round_trip_through_body_proto_without_reordering() {
+    fn state_effects_round_trip_through_body_proto_without_reordering() {
         let effects = vec![
             StateEffectId {
-                source_block_hash: Bytes::from_static(b"source-a"),
+                source_block_hash: Bytes::from(vec![1; block_hash::LENGTH]),
                 execution_index: 2,
             },
             StateEffectId {
-                source_block_hash: Bytes::from_static(b"source-b"),
+                source_block_hash: Bytes::from(vec![2; block_hash::LENGTH]),
                 execution_index: 1,
             },
         ];
+        let applied = vec![StateEffectId {
+            source_block_hash: Bytes::from(vec![3; block_hash::LENGTH]),
+            execution_index: 4,
+        }];
         let body = Body {
             state: F1r3flyState {
                 pre_state_hash: Bytes::from_static(b"pre"),
@@ -2798,13 +4266,65 @@ mod tests {
             deploys: Vec::new(),
             rejected_deploys: Vec::new(),
             rejected_state_effects: effects.clone(),
+            applied_state_effects: applied.clone(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
         };
 
         let decoded = Body::from_proto(body.to_proto()).unwrap();
         assert_eq!(decoded, body);
         assert_eq!(decoded.rejected_state_effects, effects);
+        assert_eq!(decoded.applied_state_effects, applied);
+    }
+
+    #[test]
+    fn body_proto_rejects_noncanonical_state_effect_sequences() {
+        let first = StateEffectId {
+            source_block_hash: Bytes::from(vec![1; block_hash::LENGTH]),
+            execution_index: 0,
+        };
+        let second = StateEffectId {
+            source_block_hash: Bytes::from(vec![2; block_hash::LENGTH]),
+            execution_index: 0,
+        };
+        let mut body = Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::from(vec![3; block_hash::LENGTH]),
+                post_state_hash: Bytes::from(vec![4; block_hash::LENGTH]),
+                bonds: Vec::new(),
+                bond_generations: Vec::new(),
+                active_validators: Vec::new(),
+                block_number: 1,
+            },
+            deploys: Vec::new(),
+            rejected_deploys: Vec::new(),
+            rejected_state_effects: Vec::new(),
+            applied_state_effects: vec![first.clone(), second.clone()],
+            system_deploys: Vec::new(),
+            extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
+        };
+
+        body.applied_state_effects.reverse();
+        assert!(Body::from_proto(body.to_proto())
+            .expect_err("unordered effects must fail")
+            .contains("strictly ordered"));
+
+        body.applied_state_effects = vec![first.clone(), first];
+        assert!(Body::from_proto(body.to_proto())
+            .expect_err("duplicate effects must fail")
+            .contains("duplicate"));
+
+        body.applied_state_effects = vec![StateEffectId {
+            source_block_hash: Bytes::from_static(b"short"),
+            execution_index: 0,
+        }];
+        assert!(Body::from_proto(body.to_proto())
+            .expect_err("malformed source hash must fail")
+            .contains("expected 32 bytes"));
     }
 
     #[test]
@@ -2865,12 +4385,15 @@ mod tests {
     fn legacy_rejected_deploy_proto_remains_readable() {
         let proto = RejectedDeployProto {
             sig: Bytes::from_static(b"deploy"),
+            duplicate: false,
+            carrier: Bytes::new(),
             source_block_hash: Bytes::new(),
             reason: 0,
+            deploy_id_v6: Bytes::new(),
         };
 
         assert_eq!(
-            RejectedDeploy::from_proto(proto),
+            RejectedDeploy::from_proto(proto).unwrap(),
             RejectedDeploy::legacy(Bytes::from_static(b"deploy"))
         );
     }
@@ -3169,6 +4692,7 @@ mod tests {
     fn processed_deploy_cosigner_threshold_roundtrips_through_proto() {
         let processed = ProcessedDeploy {
             deploy: signed_deploy(deploy_data()),
+            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed: false,
@@ -3193,6 +4717,7 @@ mod tests {
         let deploy = Signed::create(deploy_data(), algorithm, private_key).unwrap();
         let processed = ProcessedDeploy {
             deploy,
+            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 1 },
             deploy_log: Vec::new(),
             is_failed: false,
@@ -3240,6 +4765,7 @@ mod tests {
         let post_state = ByteString::from_static(&[6; 32]);
         let processed = ProcessedDeploy {
             deploy: signed_deploy(deploy_data()),
+            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 12 },
             deploy_log: Vec::new(),
             is_failed: false,
@@ -3283,12 +4809,33 @@ mod tests {
             ProcessedDeploy::from_proto(rejected.clone().to_proto()).unwrap(),
             rejected
         );
+        assert!(!rejected.has_committed_state_effect());
+    }
+
+    #[test]
+    fn failed_state_bound_execution_keeps_its_committed_settlement_effect() {
+        let signed = signed_deploy(deploy_data());
+        let mut processed = ProcessedDeploy::empty(signed);
+        processed.is_failed = true;
+        assert!(!processed.has_committed_state_effect());
+
+        processed.authority_funding_certificate =
+            Some(CostAuthorityFundingCertificateProto::default());
+        assert!(!processed.has_committed_state_effect());
+
+        processed.authority_cost_witness = Some(CostAuthorityWitnessProto::default());
+        assert!(processed.has_committed_state_effect());
+
+        processed.is_failed = false;
+        processed.authority_funding_certificate = None;
+        processed.authority_cost_witness = None;
+        assert!(processed.has_committed_state_effect());
     }
 
     // =================================================================
     // F-A funding/capability separation — INGRESS REJECT (c) tests.
     //
-    // `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
+    // `docs/casper/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
     // §3/§6: the deploy-decode path
     // (`from_proto_cosigned_with_sig_algebra`) REJECTS the five value/capability
     // type-logic connectives (`Plus` ⊕ / `With` & / `Bang` ! / `WhyNot` ? /
@@ -3507,8 +5054,10 @@ mod tests {
             cosigner_threshold: 0, // N-of-N
             sig_algebra: None,
             authority_presentations: Vec::new(),
+            deploy_id: ByteString::new(),
+            authorization_v61: None,
         };
-        let cosigned = DeployData::from_proto_cosigned(proto)
+        let cosigned = DeployData::from_proto_cosigned_legacy(proto)
             .expect("flat N-of-N (no sig_algebra) must decode unchanged post-F-A");
         assert_eq!(cosigned.signers().len(), 2);
         assert!(cosigned.is_compound());
@@ -3520,6 +5069,7 @@ mod tests {
         let algebra = atom_compound(&payload);
         let proto = DeployDataProto {
             term: payload.term.clone(),
+            language: payload.language.clone(),
             timestamp: payload.time_stamp,
             valid_after_block_number: payload.valid_after_block_number,
             shard_id: payload.shard_id.clone(),
@@ -3534,7 +5084,7 @@ mod tests {
             ..Default::default()
         };
 
-        let cosigned = DeployData::from_proto_cosigned(proto)
+        let cosigned = DeployData::from_proto_cosigned_legacy(proto)
             .expect("sig algebra must completely override the flat envelope fields");
         assert_eq!(cosigned.signers().len(), 1);
     }
@@ -3552,6 +5102,7 @@ mod tests {
         let base = DeployDataProto {
             deployer: primary_pk.bytes.clone().into(),
             term: payload.term,
+            language: payload.language,
             timestamp: payload.time_stamp,
             sig: Bytes::from(secp.sign(&hash, &primary_sk.bytes)),
             sig_algorithm: Secp256k1::name(),
@@ -3566,19 +5117,19 @@ mod tests {
             ..Default::default()
         };
 
-        let cosigned = DeployData::from_proto_cosigned(base.clone())
+        let cosigned = DeployData::from_proto_cosigned_legacy(base.clone())
             .expect("one valid signer must satisfy a one-of-two threshold");
         assert_eq!(cosigned.cosigner_threshold(), 1);
 
         let mut negative = base.clone();
         negative.cosigner_threshold = -1;
-        assert!(DeployData::from_proto_cosigned(negative)
+        assert!(DeployData::from_proto_cosigned_legacy(negative)
             .unwrap_err()
             .contains("Invalid cosigner_threshold"));
 
         let mut excessive = base;
         excessive.cosigner_threshold = 3;
-        assert!(DeployData::from_proto_cosigned(excessive)
+        assert!(DeployData::from_proto_cosigned_legacy(excessive)
             .unwrap_err()
             .contains("Invalid cosigner_threshold"));
     }
@@ -3742,5 +5293,614 @@ mod tests {
                 .expect_err("no threshold policy can be nested under a tensor");
             prop_assert!(err.contains("top-level admission connective"));
         }
+    }
+
+    fn candidate() -> ApprovedBlockCandidate {
+        ApprovedBlockCandidate {
+            block: BlockMessage {
+                block_hash: Bytes::from_static(b"anchor"),
+                header: Header {
+                    parents_hash_list: vec![],
+                    timestamp: 0,
+                    version: 0,
+                    extra_bytes: Bytes::new(),
+                    sender_bond_generation: None,
+                    objective_equivocation_evidence_delta: vec![],
+                    finalized_floor: None,
+                },
+                body: Body {
+                    state: F1r3flyState {
+                        pre_state_hash: Bytes::new(),
+                        post_state_hash: Bytes::new(),
+                        bonds: vec![],
+                        bond_generations: vec![],
+                        active_validators: vec![],
+                        block_number: 87,
+                    },
+                    deploys: vec![],
+                    rejected_deploys: vec![],
+                    rejected_state_effects: vec![],
+                    applied_state_effects: vec![],
+                    system_deploys: vec![],
+                    extra_bytes: Bytes::new(),
+                    applied_from_scope: vec![],
+                    merge_base: Bytes::new(),
+                },
+                justifications: vec![],
+                sender: Bytes::new(),
+                seq_num: 0,
+                sig: Bytes::new(),
+                sig_algorithm: String::new(),
+                shard_id: "root".to_string(),
+                extra_bytes: Bytes::new(),
+                finalized_floor_certificate: None,
+            },
+            required_sigs: 0,
+        }
+    }
+
+    /// The finalized-floor cache travels with the LFS window. A restored node
+    /// cannot derive floors for blocks below its anchor — the derivation
+    /// recurses through history it deliberately does not keep — and without
+    /// them every sibling-branch validation crawls gap-by-gap toward genesis.
+    /// The responder computed these values when it validated the blocks; the
+    /// numbers are hashes only, a few KB for a window whose size is constant
+    /// in chain height.
+    #[test]
+    fn the_floor_cache_survives_the_wire() {
+        let entry = FloorCacheEntry {
+            block_hash: Bytes::from_static(b"window-block"),
+            floor_hash: Bytes::from_static(b"its-floor"),
+            frontier_hash: Bytes::from_static(b"its-frontier"),
+        };
+        let request = FloorCacheRequest {
+            hashes: vec![Bytes::from_static(b"window-block")],
+        };
+        let response = FloorCacheResponse {
+            entries: vec![entry],
+            genesis_hash: Bytes::from_static(b"the-genesis"),
+            genesis_block: Some(crate::rust::block_implicits::get_random_block_default()),
+        };
+
+        assert_eq!(
+            FloorCacheRequest::from_proto(request.clone().to_proto()),
+            request,
+            "the requested hash set must survive the wire"
+        );
+        assert_eq!(
+            FloorCacheResponse::from_proto(response.clone().to_proto()),
+            response,
+            "every entry must survive intact: the receiver writes these into the \
+             same caches its own validation would have filled"
+        );
+    }
+
+    /// The seed rides on the ApprovedBlock, never inside its candidate: the
+    /// candidate's serialized bytes are what the genesis ceremony signs and
+    /// what `Validate::approved_block` re-derives to verify, so a field added
+    /// there would put unsigned peer-supplied data inside the signed envelope
+    /// and make two ceremony participants disagree on the digest.
+    #[test]
+    fn the_floor_seed_survives_the_wire_and_the_candidate_digest_does_not_move() {
+        let seed = FinalizedFloorSeed {
+            floor_hash: Bytes::from_static(b"floor"),
+            floor_number: 37,
+            frontier_hash: Bytes::from_static(b"frontier"),
+            frontier_number: 41,
+        };
+        let seeded = ApprovedBlock {
+            candidate: candidate(),
+            sigs: vec![],
+            floor_seed: Some(seed.clone()),
+        };
+        let bare = ApprovedBlock {
+            candidate: candidate(),
+            sigs: vec![],
+            floor_seed: None,
+        };
+
+        assert_eq!(
+            ApprovedBlock::from_proto(seeded.clone().to_proto()).expect("round trip"),
+            seeded,
+            "the seed must survive the wire intact: the receiver sizes its download \
+             window from these numbers before it requests a single block"
+        );
+        assert_eq!(
+            ApprovedBlock::from_proto(bare.clone().to_proto()).expect("round trip"),
+            bare,
+            "a peer that sends no seed must decode as no seed, not as a zero floor"
+        );
+
+        assert_eq!(
+            seeded
+                .to_proto()
+                .candidate
+                .expect("candidate")
+                .encode_to_vec(),
+            bare.to_proto()
+                .candidate
+                .expect("candidate")
+                .encode_to_vec(),
+            "seeding must not shift one byte of the candidate: those bytes are the \
+             ceremony's signed payload"
+        );
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    use super::*;
+    use crate::rust::block_implicits::{get_random_block_default, signed_deploy_data_gen};
+
+    type Bytes = prost::bytes::Bytes;
+
+    fn signed_deploy() -> Signed<DeployData> {
+        signed_deploy_data_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current()
+    }
+
+    fn produce_event() -> ProduceEvent {
+        ProduceEvent {
+            channels_hash: Bytes::from_static(b"chan"),
+            hash: Bytes::from_static(b"produce"),
+            persistent: true,
+            times_repeated: 2,
+            is_deterministic: false,
+            output_value: vec![Bytes::from_static(b"out")],
+            failed: true,
+        }
+    }
+
+    fn consume_event() -> ConsumeEvent {
+        ConsumeEvent {
+            channels_hashes: vec![Bytes::from_static(b"c1"), Bytes::from_static(b"c2")],
+            hash: Bytes::from_static(b"consume"),
+            persistent: false,
+        }
+    }
+
+    fn hash32(fill: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![fill; 32]) }
+
+    #[test]
+    fn rejected_deploy_decodes_legacy_wire_format() {
+        let legacy = [0x0a, 0x03, b's', b'i', b'g'];
+        let decoded = RejectedDeployProto::decode(legacy.as_slice()).unwrap();
+        let record = RejectedDeploy::from_proto(decoded).unwrap();
+
+        assert_eq!(record.deploy_id(), b"sig");
+        assert!(!record.is_duplicate());
+        assert!(record.source_block_hash.is_empty());
+    }
+
+    #[test]
+    fn hash_addressed_messages_round_trip() {
+        let has_block = HasBlock {
+            hash: Bytes::from_static(b"h1"),
+        };
+        assert_eq!(
+            HasBlock::from_proto(has_block.clone().to_proto()),
+            has_block
+        );
+
+        let has_block_request = HasBlockRequest {
+            hash: Bytes::from_static(b"h2"),
+        };
+        assert_eq!(
+            HasBlockRequest::from_proto(has_block_request.clone().to_proto()),
+            has_block_request
+        );
+
+        let block_request = BlockRequest {
+            hash: Bytes::from_static(b"h3"),
+        };
+        assert_eq!(
+            BlockRequest::from_proto(block_request.clone().to_proto()),
+            block_request
+        );
+
+        let mergeable_request = MergeableEntryRequest {
+            block_hash: Bytes::from_static(b"h4"),
+        };
+        assert_eq!(
+            MergeableEntryRequest::from_proto(mergeable_request.clone().to_proto()),
+            mergeable_request
+        );
+
+        let mergeable_response = MergeableEntryResponse {
+            block_hash: Bytes::from_static(b"h5"),
+            serialized_entry: Bytes::from_static(b"entry"),
+        };
+        assert_eq!(
+            MergeableEntryResponse::from_proto(mergeable_response.clone().to_proto()),
+            mergeable_response
+        );
+    }
+
+    #[test]
+    fn identifier_messages_round_trip() {
+        let block_hash_message = BlockHashMessage {
+            block_hash: Bytes::from_static(b"hash"),
+            block_creator: Bytes::from_static(b"creator"),
+        };
+        assert_eq!(
+            BlockHashMessage::from_proto(block_hash_message.clone().to_proto()),
+            block_hash_message
+        );
+
+        let no_approved = NoApprovedBlockAvailable {
+            identifier: "id".to_string(),
+            node_identifier: "node".to_string(),
+        };
+        assert_eq!(
+            NoApprovedBlockAvailable::from_proto(no_approved.clone().to_proto()),
+            no_approved
+        );
+
+        let approved_request = ApprovedBlockRequest {
+            identifier: "id".to_string(),
+            trim_state: true,
+        };
+        assert_eq!(
+            ApprovedBlockRequest::from_proto(approved_request.clone().to_proto()),
+            approved_request
+        );
+
+        assert_eq!(
+            ForkChoiceTipRequest.to_proto(),
+            ForkChoiceTipRequestProto {}
+        );
+    }
+
+    #[test]
+    fn block_message_round_trips_through_proto() {
+        let block = get_random_block_default();
+        let round_tripped = BlockMessage::from_proto(block.to_proto()).unwrap();
+        assert_eq!(round_tripped, block);
+    }
+
+    #[test]
+    fn block_message_from_proto_requires_header_and_body() {
+        let block = get_random_block_default();
+
+        let mut missing_header = block.to_proto();
+        missing_header.header = None;
+        assert_eq!(
+            BlockMessage::from_proto(missing_header),
+            Err("Missing header field".to_string())
+        );
+
+        let mut missing_body = block.to_proto();
+        missing_body.body = None;
+        assert_eq!(
+            BlockMessage::from_proto(missing_body),
+            Err("Missing body field".to_string())
+        );
+    }
+
+    #[test]
+    fn block_message_to_string_pretty_prints() {
+        let block = get_random_block_default();
+        let rendered = block.clone().to_string();
+        assert!(rendered.contains(&format!("#{}", block.body.state.block_number)));
+    }
+
+    #[test]
+    fn unapproved_block_and_block_approval_round_trip() {
+        let block = get_random_block_default();
+        let candidate = ApprovedBlockCandidate {
+            block,
+            required_sigs: 3,
+        };
+
+        let unapproved = UnapprovedBlock {
+            candidate: candidate.clone(),
+            timestamp: 11,
+            duration: 22,
+        };
+        assert_eq!(
+            UnapprovedBlock::from_proto(unapproved.clone().to_proto()).unwrap(),
+            unapproved
+        );
+
+        let approval = BlockApproval {
+            candidate: candidate.clone(),
+            sig: Signature {
+                public_key: Bytes::from_static(b"pk"),
+                algorithm: "secp256k1".to_string(),
+                sig: Bytes::from_static(b"sig"),
+            },
+        };
+        assert_eq!(
+            BlockApproval::from_proto(approval.clone().to_proto()).unwrap(),
+            approval
+        );
+
+        assert_eq!(
+            BlockApproval::from_proto(BlockApprovalProto {
+                candidate: None,
+                sig: None,
+            }),
+            Err("Missing candidate field".to_string())
+        );
+        assert_eq!(
+            UnapprovedBlock::from_proto(UnapprovedBlockProto {
+                candidate: None,
+                timestamp: 0,
+                duration: 0,
+            }),
+            Err("Missing candidate field".to_string())
+        );
+    }
+
+    #[test]
+    fn events_round_trip_through_proto() {
+        let produce = Event::Produce(produce_event());
+        assert_eq!(Event::from_proto(produce.to_proto()).unwrap(), produce);
+
+        let consume = Event::Consume(consume_event());
+        assert_eq!(Event::from_proto(consume.to_proto()).unwrap(), consume);
+
+        let comm = Event::Comm(CommEvent {
+            consume: consume_event(),
+            produces: vec![produce_event()],
+            peeks: vec![Peek { channel_index: 4 }],
+        });
+        assert_eq!(Event::from_proto(comm.to_proto()).unwrap(), comm);
+    }
+
+    #[test]
+    fn empty_event_proto_is_rejected() {
+        assert_eq!(
+            Event::from_proto(EventProto {
+                event_instance: None,
+            }),
+            Err("Received malformed Event: None".to_string())
+        );
+    }
+
+    #[test]
+    fn processed_deploy_round_trips_and_derives_values() {
+        let deploy = signed_deploy();
+        let mut processed = ProcessedDeploy::empty(deploy.clone());
+        processed.cost = PCost { cost: 100 };
+        processed.deploy_log = vec![Event::Produce(produce_event())];
+        processed.is_failed = true;
+        processed.system_deploy_error = Some("boom".to_string());
+        assert_eq!(
+            ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap(),
+            processed
+        );
+
+        let empty = ProcessedDeploy::empty(deploy.clone());
+        assert_eq!(empty.cost, PCost { cost: 0 });
+        assert!(!empty.is_failed);
+        assert_eq!(empty.system_deploy_error, None);
+        assert_eq!(
+            ProcessedDeploy::from_proto(empty.clone().to_proto()).unwrap(),
+            empty
+        );
+
+        let info = processed.clone().to_deploy_info();
+        assert_eq!(info.term, deploy.data.term);
+        assert_eq!(info.cost, 100);
+        assert!(info.errored);
+        assert_eq!(info.system_deploy_error, "boom".to_string());
+        assert_eq!(info.sig, hex::encode(&deploy.sig));
+    }
+
+    #[test]
+    fn system_deploy_data_round_trips_all_variants() {
+        let slash = SystemDeployData::create_slash(
+            Bytes::from_static(b"invalid-block"),
+            PublicKey::from_bytes(b"issuer"),
+            5,
+            BondGeneration::new(2).unwrap(),
+        );
+        assert_eq!(
+            SystemDeployData::from_proto(SystemDeployData::to_proto(slash.clone())).unwrap(),
+            slash
+        );
+
+        let close = SystemDeployData::create_close();
+        assert_eq!(close, SystemDeployData::CloseBlockSystemDeployData);
+        assert_eq!(
+            SystemDeployData::from_proto(SystemDeployData::to_proto(close.clone())).unwrap(),
+            close
+        );
+
+        assert_eq!(
+            SystemDeployData::from_proto(SystemDeployData::to_proto(SystemDeployData::Empty)),
+            Err("Missing system deploy field".to_string())
+        );
+    }
+
+    #[test]
+    fn processed_system_deploy_round_trips_and_folds() {
+        let succeeded = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![Event::Consume(consume_event())],
+            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+            pre_state_hash: Bytes::from_static(b"before"),
+            post_state_hash: Bytes::from_static(b"after"),
+        };
+        assert_eq!(
+            ProcessedSystemDeploy::from_proto(succeeded.clone().to_proto()).unwrap(),
+            succeeded
+        );
+        assert!(!succeeded.clone().failed());
+        assert_eq!(succeeded.fold(|events| events.len(), |_, _| 999), 1);
+
+        let failed = ProcessedSystemDeploy::Failed {
+            event_list: vec![],
+            error_msg: "went wrong".to_string(),
+            pre_state_hash: Bytes::from_static(b"before"),
+            post_state_hash: Bytes::from_static(b"after"),
+        };
+        assert_eq!(
+            ProcessedSystemDeploy::from_proto(failed.clone().to_proto()).unwrap(),
+            failed
+        );
+        assert!(failed.clone().failed());
+        assert_eq!(
+            failed.fold(|_| "ok".to_string(), |_, msg| msg),
+            "went wrong".to_string()
+        );
+    }
+
+    #[test]
+    fn deploy_data_legacy_encoding_round_trips_compatibility_projection() {
+        let with_expiration = DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 4,
+            shard_id: "root".to_string(),
+            expiration_timestamp: Some(500),
+            authority_presentations: Vec::new(),
+        };
+        let mut expected_with_expiration = with_expiration.clone();
+        expected_with_expiration.language.clear();
+        assert_eq!(
+            DeployData::decode(DeployData::encode(with_expiration.clone())).unwrap(),
+            expected_with_expiration
+        );
+
+        let without_expiration = DeployData {
+            expiration_timestamp: None,
+            ..with_expiration.clone()
+        };
+        let mut expected_without_expiration = without_expiration.clone();
+        expected_without_expiration.language.clear();
+        assert_eq!(
+            DeployData::decode(DeployData::encode(without_expiration.clone())).unwrap(),
+            expected_without_expiration
+        );
+
+        assert!(DeployData::decode(vec![0xff, 0xff, 0xff]).is_err());
+    }
+
+    #[test]
+    fn deploy_data_expiration_helpers() {
+        let mut deploy = DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        assert!(!deploy.has_expiration());
+        assert!(!deploy.is_expired_at(i64::MAX));
+
+        deploy.expiration_timestamp = Some(100);
+        assert!(deploy.has_expiration());
+        assert!(!deploy.is_expired_at(100));
+        assert!(deploy.is_expired_at(101));
+    }
+
+    #[test]
+    fn signed_deploy_data_survives_proto_round_trip() {
+        let signed = signed_deploy();
+        let round_tripped = DeployData::from_proto(DeployData::to_proto_ref(&signed)).unwrap();
+        assert_eq!(round_tripped.data, signed.data);
+        assert_eq!(round_tripped.sig, signed.sig);
+        assert_eq!(round_tripped.pk, signed.pk);
+    }
+
+    #[test]
+    fn deploy_data_from_proto_rejects_unknown_algorithm_and_bad_signature() {
+        let signed = signed_deploy();
+
+        let mut unknown_alg = DeployData::to_proto_ref(&signed);
+        unknown_alg.sig_algorithm = "no-such-alg".to_string();
+        assert!(DeployData::from_proto(unknown_alg)
+            .unwrap_err()
+            .contains("Unknown signature algorithm"));
+
+        let mut tampered = DeployData::to_proto_ref(&signed);
+        tampered.term = format!("{} ", tampered.term);
+        assert!(DeployData::from_proto(tampered).is_err());
+    }
+
+    #[test]
+    fn store_node_key_round_trips_with_and_without_index() {
+        let with_index = (hash32(1), Some(7u8));
+        assert_eq!(
+            StoreNodeKey::from_proto(StoreNodeKey::to_proto(&with_index)),
+            with_index
+        );
+
+        let without_index = (hash32(2), None);
+        assert_eq!(
+            StoreNodeKey::from_proto(StoreNodeKey::to_proto(&without_index)),
+            without_index
+        );
+    }
+
+    #[test]
+    fn store_items_messages_round_trip() {
+        let request = StoreItemsMessageRequest {
+            start_path: vec![(hash32(1), Some(0)), (hash32(2), None)],
+            skip: 5,
+            take: 10,
+        };
+        assert_eq!(
+            StoreItemsMessageRequest::from_proto(request.clone().to_proto()),
+            request
+        );
+
+        let message = StoreItemsMessage {
+            start_path: vec![(hash32(1), None)],
+            last_path: vec![(hash32(2), Some(3))],
+            history_items: vec![(hash32(3), Bytes::from_static(b"history"))],
+            data_items: vec![(hash32(4), Bytes::from_static(b"data"))],
+        };
+        assert_eq!(
+            StoreItemsMessage::from_proto(message.clone().to_proto()),
+            message
+        );
+
+        let pretty = message.pretty();
+        assert!(pretty.starts_with("StoreItemsMessage(history: 1, data: 1"));
+    }
+
+    #[test]
+    fn casper_message_wrappers_tag_the_right_variant() {
+        let hash = Bytes::from_static(b"h");
+        assert_eq!(
+            CasperMessage::from_has_block(HasBlockProto { hash: hash.clone() }),
+            CasperMessage::HasBlock(HasBlock { hash: hash.clone() })
+        );
+        assert_eq!(
+            CasperMessage::from_has_block_request(HasBlockRequestProto { hash: hash.clone() }),
+            CasperMessage::HasBlockRequest(HasBlockRequest { hash: hash.clone() })
+        );
+        assert_eq!(
+            CasperMessage::from_block_request(BlockRequestProto { hash: hash.clone() }),
+            CasperMessage::BlockRequest(BlockRequest { hash: hash.clone() })
+        );
+        assert_eq!(
+            CasperMessage::from_fork_choice_tip_request(ForkChoiceTipRequestProto {}),
+            CasperMessage::ForkChoiceTipRequest(ForkChoiceTipRequest)
+        );
+
+        let block = get_random_block_default();
+        assert_eq!(
+            CasperMessage::from_block_message(block.to_proto()).unwrap(),
+            CasperMessage::BlockMessage(block)
+        );
+
+        let request = FloorCacheRequest {
+            hashes: vec![hash.clone()],
+        };
+        assert_eq!(
+            CasperMessage::from_floor_cache_request(request.clone().to_proto()),
+            CasperMessage::FloorCacheRequest(request)
+        );
     }
 }

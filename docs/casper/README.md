@@ -1,4 +1,29 @@
-> Last updated: 2026-04-29
+> Last updated: 2026-08-20
+
+# Casper Consensus Documentation
+
+This directory is the consolidated home of the Casper consensus
+documentation. The tree travels with the Casper consensus when the
+consensus code moves to an independent repository. The f1r3node-rust
+platform itself stays neutral about consensus and state-machine
+replication.
+
+## Documentation Map
+
+| Area | Documents |
+|---|---|
+| Protocol | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) (11-stage walkthrough) · the implementation walkthrough below |
+| Safety | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) · [Synchrony Constraint](./SYNC_CONSTRAINT.md) |
+| Philosophy | [Consensus Philosophy](./CONSENSUS_PHILOSOPHY.md) (principles P1–P6, remedy ladder, CBC relation) |
+| Vocabulary | [Casper Glossary](./GLOSSARY.md) (canonical casper-domain terms; repo-wide terms stay in [docs/Glossary.md](../Glossary.md)) |
+| Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
+| Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
+| Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) |
+| Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |
+
+Related documentation that stays platform-owned: [formal-verification.md](../formal-verification.md) (umbrella for `formal/**` artifacts), [data-flows](../data-flows/README.md), [docs index](../README.md).
+
+---
 
 # Crate: casper (Consensus Layer)
 
@@ -117,10 +142,12 @@ pub struct CasperSnapshot {
 ## Fork Choice (LMD GHOST)
 
 **Estimator** implements Latest Message Driven Greedy Heaviest Observed Subtree:
-1. Calculate Lowest Common Ancestor (LCA) of all latest messages
-2. Score each latest message from LCA downward
-3. Rank and select non-conflicting subset with highest score
-4. Constraints: `max_number_of_parents`, `max_parent_depth`
+1. Capture one certified context with one exact slot per active validator
+2. Exclude ineligible identities without deleting their exact slots or stake
+3. Calculate the Lowest Common Ancestor (LCA) of all eligible messages
+4. Score each eligible message from the LCA downward
+5. Rank and select a non-conflicting subset with the highest score
+6. Apply `max_number_of_parents` and `max_parent_depth`
 
 ## Safety Oracle (Clique Oracle)
 
@@ -174,17 +201,23 @@ internally consistent DAG representation.
 
 When a block has multiple parents (selected by the fork choice rule), the node must compute a merged post-state before executing new deploys. The merge procedure:
 
-1. **Find the LCA** (Lowest Common Ancestor) of the parent blocks in the DAG.
-2. **Determine visible blocks** -- all blocks between the LCA and the parents (exclusive of LCA, inclusive of parents).
+1. **Select the certified floor** carried by the parent contexts.
+2. **Determine visible blocks** -- all parent-reachable blocks above the certified floor.
 3. **Run ConflictSetMerger** -- collects deploys from visible blocks, detects conflicts (deploys touching overlapping channels), and resolves them deterministically.
 
-### LCA-Scoped Merge
+### Certified-Floor-Scoped Merge
 
-The merge scope is limited to blocks at or above the LCA. Blocks below the LCA are common ancestors whose state is already reflected in the LCA's post-state -- replaying them would be redundant and expensive. Because the LCA is derived purely from DAG structure (parent pointers and block heights), every validator computes the same LCA for the same set of parent blocks.
+The merge scope is limited to blocks above the certified floor. The certified
+floor supplies the replay base and frozen authority. Each accepted parent delta
+is applied once in deterministic order. The merge preserves every active floor
+effect, including effects carried only through a secondary parent.
 
 ### Determinism Constraint
 
-The merge scope cannot rely on local finalization status because different validators may have temporarily different finalized views. A validator that has finalized block B and one that has not must still compute the same merge result for identical parent sets. Using block height and LCA (both derived from the immutable DAG) ensures this.
+The merge scope cannot rely on local finalization status because validators can
+have different local views. Signed floor commitments and validated certificate
+contexts bind the floor. Identical certified contexts and parent closures
+therefore produce identical merge results.
 
 **Deterministic ordering**: Merge paths in `conflict_set_merger.rs` and casper-buffer eviction enforce deterministic tie-breaks to ensure consistent behavior across nodes.
 
@@ -219,7 +252,7 @@ response message types remain wire-decodable during rolling migration: a node
 with the requested block sends an empty response, and a synchronizing node
 ignores every response payload. A missing entry is reconstructed through local
 replay before merge. See [mergeable evidence
-authentication](../theory/cost-accounting-impl/mergeable-evidence-authentication.md).
+authentication](theory/cost-accounting-impl/mergeable-evidence-authentication.md).
 
 #### Pitfalls when authoring contracts that use mergeable-tagged channels
 
@@ -261,6 +294,6 @@ All interpreter-level tests use `#[tokio::test(flavor = "multi_thread", worker_t
 to match the production multi-threaded runtime, ensuring parallel `tokio::spawn` evaluation
 of Rholang Par branches is exercised during testing.
 
-**See also:** [casper/ crate README](../../casper/README.md) | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) | [Synchrony Constraint](./SYNC_CONSTRAINT.md)
+**See also:** [casper/ crate README](../../casper/README.md) | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) | [Synchrony Constraint](./SYNC_CONSTRAINT.md) | [Consensus Philosophy](./CONSENSUS_PHILOSOPHY.md)
 
 [← Back to docs index](../README.md)

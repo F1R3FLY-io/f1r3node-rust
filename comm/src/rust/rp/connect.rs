@@ -1,8 +1,10 @@
 // See comm/src/main/scala/coop/rchain/comm/rp/Connect.scala
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use futures::future::join_all;
+use prost::bytes::Bytes;
 use rand::seq::SliceRandom;
 use tracing::{info, warn};
 
@@ -17,6 +19,75 @@ use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::transport_layer::TransportLayer;
 
 pub type Connection = PeerNode;
+
+/// Outcome of recording one failed heartbeat against a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatFailure {
+    /// The streak is short of the threshold, so the peer keeps its connection.
+    Retained { streak: usize, threshold: usize },
+    /// The streak reached the threshold; the peer is evicted and its count cleared.
+    Evicted,
+}
+
+/// Consecutive heartbeat failures per peer, and the streak length that evicts.
+///
+/// A peer survives until it fails `threshold` heartbeats in a row; any success
+/// clears its count. The caller owns one tracker for the lifetime of its cleanup
+/// loop — a tracker rebuilt each pass would evict on first failure.
+#[derive(Debug)]
+pub struct PeerLivenessTracker {
+    streaks: HashMap<Bytes, usize>,
+    threshold: usize,
+}
+
+impl PeerLivenessTracker {
+    /// Rejects a zero threshold: it would name a streak no peer can reach, and
+    /// silently clamping it hides a misconfiguration behind eviction behaviour
+    /// nobody asked for.
+    pub fn new(threshold: u32) -> Result<Self, CommError> {
+        if threshold == 0 {
+            return Err(CommError::ConfigError(
+                "heartbeat failure threshold must be at least 1".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            streaks: HashMap::new(),
+            threshold: threshold as usize,
+        })
+    }
+
+    pub fn threshold(&self) -> usize { self.threshold }
+
+    /// Current consecutive-failure count for a peer; zero when it has none.
+    pub fn streak(&self, peer_id: &Bytes) -> usize {
+        self.streaks.get(peer_id).copied().unwrap_or(0)
+    }
+
+    pub fn record_success(&mut self, peer_id: &Bytes) { self.streaks.remove(peer_id); }
+
+    pub fn record_failure(&mut self, peer_id: &Bytes) -> HeartbeatFailure {
+        let streak = self.streaks.entry(peer_id.clone()).or_insert(0);
+        *streak += 1;
+
+        if *streak >= self.threshold {
+            self.streaks.remove(peer_id);
+            HeartbeatFailure::Evicted
+        } else {
+            HeartbeatFailure::Retained {
+                streak: *streak,
+                threshold: self.threshold,
+            }
+        }
+    }
+
+    /// Drop counts for peers that are no longer connected, bounding the map to
+    /// the live connection set.
+    pub fn retain_connected(&mut self, connected: &HashSet<Bytes>) {
+        self.streaks
+            .retain(|peer_id, _| connected.contains(peer_id));
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Connections(pub Vec<Connection>);
@@ -175,48 +246,61 @@ impl ConnectionsCell {
 /// re-establish the connection on the next discovery cycle. Removing it is
 /// irreversible and strands the node if no other peers are known.
 ///
+/// A peer is removed only after `liveness` records enough consecutive failures;
+/// the tracker must outlive the call for that streak to accumulate.
+///
 /// Returns tuple of (number of failed peers, list of failed peers).
-pub async fn clear_connections<T: TransportLayer>(
+pub async fn clear_connections<T>(
     connections_cell: &ConnectionsCell,
     conf: &RPConf,
     transport: &T,
     node_discovery: &dyn crate::rust::discovery::node_discovery::NodeDiscovery,
-) -> Result<(usize, Vec<PeerNode>), CommError> {
+    liveness: &mut PeerLivenessTracker,
+) -> Result<(usize, Vec<PeerNode>), CommError>
+where
+    T: TransportLayer + Sync,
+{
     let connections = connections_cell.read()?;
     let num_to_ping = conf.clear_connections.num_of_connections_pinged;
+    // Only the first `num_to_ping` peers are probed, and both successful and
+    // retained peers are appended to the back below, so the list rotates. Beyond
+    // that many connections a streak spans rotations rather than consecutive
+    // cleanup intervals.
     let to_ping = connections.take(num_to_ping);
+    let connected_ids: HashSet<Bytes> =
+        connections.iter().map(|peer| peer.id.key.clone()).collect();
+    liveness.retain_connected(&connected_ids);
 
-    let mut results = Vec::new();
-
-    // Send heartbeats to each peer
-    for peer in to_ping.iter() {
+    let results = join_all(to_ping.iter().cloned().map(|peer| {
         let heartbeat_msg = protocol_helper::heartbeat(&conf.local, &conf.network_id);
-        let result = transport.send(peer, &heartbeat_msg).await;
-        results.push((peer.clone(), result));
+        async move {
+            let result = transport.send(&peer, &heartbeat_msg).await;
+            (peer, result)
+        }
+    }))
+    .await;
+
+    let mut retained_peers = Vec::new();
+    let mut failed_peers = Vec::new();
+
+    for (peer, result) in results {
+        match result {
+            Ok(()) => {
+                liveness.record_success(&peer.id.key);
+                retained_peers.push(peer);
+            }
+            Err(error) => match liveness.record_failure(&peer.id.key) {
+                HeartbeatFailure::Evicted => failed_peers.push(peer),
+                HeartbeatFailure::Retained { streak, threshold } => {
+                    warn!(
+                        "Heartbeat to {} failed ({}/{}); retaining connection: {}",
+                        peer, streak, threshold, error
+                    );
+                    retained_peers.push(peer);
+                }
+            },
+        }
     }
-
-    // Separate successful and failed peers
-    let successful_peers: Vec<PeerNode> = results
-        .iter()
-        .filter_map(|(peer, result)| {
-            if result.is_ok() {
-                Some(peer.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let failed_peers: Vec<PeerNode> = results
-        .iter()
-        .filter_map(|(peer, result)| {
-            if result.is_err() {
-                Some(peer.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
 
     // Bootstrap peer is pinned in KademliaStore so the node can always
     // rediscover it via findAndConnect.  Removing it from the routing
@@ -256,7 +340,7 @@ pub async fn clear_connections<T: TransportLayer>(
     let failed_count = failed_peers.len();
     connections_cell.flat_modify(|conns| {
         let updated = conns.remove_conns(to_ping.into_vec())?;
-        updated.add_conns(successful_peers)
+        updated.add_conns(retained_peers)
     })?;
 
     // Report connections if any were cleared
@@ -331,4 +415,127 @@ pub async fn connect<T: TransportLayer>(
         .record(start.elapsed().as_secs_f64());
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::test_instances::NodeDiscoveryStub;
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 80, 80),
+        }
+    }
+
+    fn cell_with(peers: &[PeerNode]) -> ConnectionsCell {
+        let cell = ConnectionsCell::new();
+        cell.flat_modify(|_| Ok(Connections::from_vec(peers.to_vec())))
+            .unwrap();
+        cell
+    }
+
+    #[test]
+    fn liveness_tracker_exposes_threshold() {
+        let tracker = PeerLivenessTracker::new(3).unwrap();
+        assert_eq!(tracker.threshold(), 3);
+    }
+
+    #[test]
+    fn connections_is_empty_reflects_content() {
+        assert!(Connections::empty().is_empty());
+        assert!(!Connections::from_vec(vec![peer("A")]).is_empty());
+    }
+
+    #[test]
+    fn add_conn_and_report_appends_connection() {
+        let connections = Connections::empty()
+            .add_conn_and_report(peer("A"))
+            .unwrap()
+            .add_conn_and_report(peer("B"))
+            .unwrap();
+        assert_eq!(connections.into_vec(), vec![peer("A"), peer("B")]);
+    }
+
+    #[test]
+    fn remove_conn_and_report_drops_connection() {
+        let connections = Connections::from_vec(vec![peer("A"), peer("B")])
+            .remove_conn_and_report(peer("A"))
+            .unwrap();
+        assert_eq!(connections.into_vec(), vec![peer("B")]);
+    }
+
+    #[test]
+    fn refresh_conn_moves_existing_connection_to_end() {
+        let connections = Connections::from_vec(vec![peer("A"), peer("B"), peer("C")])
+            .refresh_conn(peer("A"))
+            .unwrap();
+        assert_eq!(connections.into_vec(), vec![
+            peer("B"),
+            peer("C"),
+            peer("A")
+        ]);
+    }
+
+    #[test]
+    fn refresh_conn_ignores_unknown_connection() {
+        let connections = Connections::from_vec(vec![peer("A"), peer("B")])
+            .refresh_conn(peer("X"))
+            .unwrap();
+        assert_eq!(connections.into_vec(), vec![peer("A"), peer("B")]);
+    }
+
+    #[test]
+    fn random_returns_at_most_max_known_peers() {
+        let all = vec![peer("A"), peer("B"), peer("C"), peer("D")];
+        let cell = cell_with(&all);
+
+        let two = cell.random(2).unwrap();
+        assert_eq!(two.len(), 2);
+        for p in two.iter() {
+            assert!(all.contains(p));
+        }
+
+        let many = cell.random(10).unwrap();
+        assert_eq!(many.to_set(), Connections::from_vec(all).to_set());
+    }
+
+    #[test]
+    fn reset_connections_empties_the_cell() {
+        let cell = cell_with(&[peer("A"), peer("B")]);
+        reset_connections(&cell).unwrap();
+        assert!(cell.read().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_and_connect_skips_wrong_network_peers() {
+        let cell = cell_with(&[]);
+        let mut discovery = NodeDiscoveryStub::new();
+        discovery.nodes = vec![peer("good"), peer("wrong-net"), peer("broken")];
+
+        let connect_fn = |p: &PeerNode| {
+            let p = p.clone();
+            async move {
+                if p == peer("wrong-net") {
+                    Err(CommError::WrongNetwork(
+                        "wrong-net".to_string(),
+                        "network mismatch".to_string(),
+                    ))
+                } else if p == peer("broken") {
+                    Err(CommError::TimeOut)
+                } else {
+                    Ok(())
+                }
+            }
+        };
+
+        let connected = find_and_connect(&cell, &discovery, connect_fn)
+            .await
+            .unwrap();
+        assert_eq!(connected, vec![peer("good")]);
+    }
 }

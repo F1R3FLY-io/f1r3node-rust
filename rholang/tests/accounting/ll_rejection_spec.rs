@@ -200,7 +200,7 @@ fn anti_with_tensor_at_enum_layer() {
 /// TOTAL on the malformed structure (no panic) — the quorum-range rejection
 /// lives at the wire-decode + verifier-dispatch layers, not the substrate.
 ///
-/// F-A note (red-team M1, `docs/theory/cost-accounting-impl/
+/// F-A note (red-team M1, `docs/casper/theory/cost-accounting-impl/
 /// f-a-funding-vs-capability-separation.md`): SEPARATELY from this Threshold
 /// range check, the deploy-ingress decoder
 /// (`DeployData::from_proto_cosigned_with_sig_algebra`) now ACTUALLY rejects

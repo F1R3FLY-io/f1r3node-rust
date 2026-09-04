@@ -26,7 +26,10 @@
      validator_contract_S4        StepDeterminism                      §7.1
                                   .ca_step_deterministic
      validator_contract_P1        MainTheorem                          DR-12
-                                  .main_T9_12_stale_evidence_not_authorized
+                                  .main_T9_12_stale_generation_evidence_not_authorized
+     validator_contract_P1_epoch_advance
+                                  MainTheorem                          DR-12
+                                  .main_T9_12_epoch_advance_preserves_lifetime
      validator_contract_P1_effect Validator.bm_slash_lookup            DR-12
      validator_contract_P2        MainTheorem                          DR-12
                                   .main_T10_fork_choice_exclusion
@@ -108,18 +111,26 @@ Proof. exact @ca_step_deterministic. Qed.
 
 (* ─── Platform obligations P1–P3 (Slashing + CostAccountedRho) ──────────── *)
 
-(* P1 (slash-authorization soundness, DR-12): stale-epoch evidence cannot
-   authorize slashing a rebonded key — evidence bound to an old validator
-   lifetime does not authorize action against the same key in a new epoch. *)
+(* P1 (slash-authorization soundness, DR-12): stale-generation evidence cannot
+   authorize slashing a rebonded key. Evidence bound to an old validator
+   lifetime does not authorize action against the same key in a new lifetime. *)
 Theorem validator_contract_P1 :
-  forall (v : Validator) (e_old e_new : ValidatorLifetime.Epoch),
-  e_old <> e_new ->
+  forall (v : Validator) (g_old g_new : ValidatorLifetime.BondGeneration),
+  g_old <> g_new ->
   ValidatorLifetime.evidence_authorizes_lifetime
     {| ValidatorLifetime.vl_validator := v;
-       ValidatorLifetime.vl_epoch := e_old |}
+       ValidatorLifetime.vl_generation := g_old |}
     {| ValidatorLifetime.vl_validator := v;
-       ValidatorLifetime.vl_epoch := e_new |} = false.
-Proof. exact @main_T9_12_stale_evidence_not_authorized. Qed.
+       ValidatorLifetime.vl_generation := g_new |} = false.
+Proof. exact @main_T9_12_stale_generation_evidence_not_authorized. Qed.
+
+Theorem validator_contract_P1_epoch_advance :
+  forall (v : Validator) (generation : ValidatorLifetime.BondGeneration)
+    (old_epoch new_epoch : ValidatorLifetime.Epoch),
+  ValidatorLifetime.same_lifetime
+    (ValidatorLifetime.mkValidatorLifetimeId v generation)
+    (ValidatorLifetime.mkValidatorLifetimeId v generation).
+Proof. exact @main_T9_12_epoch_advance_preserves_lifetime. Qed.
 
 (* P1 effect (DR-12): the slash effect zeros exactly the offender's bond at the
    bond-map lookup level. This is the algebraic kernel the protocol-level slash

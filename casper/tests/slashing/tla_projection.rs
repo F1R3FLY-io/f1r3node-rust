@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // TLA+ → SlashingTestHarness projection.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.6
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.6
 // (TLA+ trace replay), Item 4 (Track 7) of the principled-resolution
 // session.
 //
@@ -27,8 +27,8 @@
 //     fix RMW-atomicity)
 //   • MC_SlashFlow             — full pipeline:
 //     sign-honest → sign-equivocating → record → slash
-//   • MC_TwoLevelSlashing      — neglect closure: A equivocates,
-//     B cites A's invalid block without slashing → both slashed
+//   • MC_TwoLevelSlashing      — A equivocates; B's neglect rejection
+//     creates no economic evidence in the normative configuration
 //   • MC_WithdrawFlow          — Bug-#10 withdrawal flow:
 //     withdraw-succeeds / withdraw-fails / retry-from-failed
 
@@ -135,12 +135,10 @@ pub fn apply_step(harness: &mut SlashingTestHarness, step: &TraceStep) -> StepRe
             }
         }
         "SignNeglecting" => {
-            // TwoLevelSlashing: B cites the offender's invalid block
-            // without slashing. The harness flags B as itself
-            // slashable via the catch-all (status = NeglectedEquivocation
-            // semantics at the harness projection).
+            // TwoLevelSlashing: B receives a NeglectedEquivocation
+            // rejection without new economic evidence.
             let neglecter_hash = harness.sign_block(other, seq);
-            let _ = harness.dispatch_with_status(neglecter_hash, Status::SlashableOther);
+            let _ = harness.dispatch_with_status(neglecter_hash, Status::NeglectedEquivocation);
             StepResult::Ok
         }
         // ─── WithdrawFlow ───

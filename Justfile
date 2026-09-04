@@ -31,6 +31,14 @@ build-debug:
     cargo build -p node
 
 # =================================================================
+# TEST COVERAGE
+# =================================================================
+
+# Enforce 80% unit-test line coverage (requires cargo-llvm-cov + llvm-tools-preview)
+coverage *crates:
+    scripts/coverage.sh {{crates}}
+
+# =================================================================
 # STANDALONE NODE
 # =================================================================
 
@@ -99,6 +107,14 @@ vps-down:
 # Run a latency benchmark against the shard (local if host="", remote via SSH otherwise)
 vps-bench-latency host="" duration="60" rate="2":
     scripts/bench/latency-benchmark.sh --host {{host}} --duration {{duration}} --rate {{rate}} --apply
+
+# =================================================================
+# CI MAINTENANCE
+# =================================================================
+
+# Re-pin the trusted system-integration harness (updates all pin sites, runs checks)
+repin-system-integration sha:
+    scripts/repin-system-integration.sh {{sha}}
 
 # =================================================================
 # HELP

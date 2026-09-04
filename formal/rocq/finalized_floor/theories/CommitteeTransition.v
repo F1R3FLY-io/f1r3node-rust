@@ -11,6 +11,15 @@ Definition committee_validators (committee : Committee) : list Validator :=
 Definition positive_committee_validators (committee : Committee) : list Validator :=
   map fst (filter (fun bond => Nat.ltb 0 (snd bond)) committee).
 
+Definition active_weight_committee
+  (weights : Committee) (active : list Validator) : Committee :=
+  filter
+    (fun bond =>
+       if in_dec Nat.eq_dec (fst bond) active
+       then Nat.ltb 0 (snd bond)
+       else false)
+    weights.
+
 Definition justification_validators (block : Block) : list Validator :=
   map fst (blk_just block).
 
@@ -29,6 +38,37 @@ Definition authority_committee
   (floor_of : Block -> BlockHash)
   (block : Block) : Committee :=
   floor_bonds (floor_of block).
+
+Definition certified_finality_committee
+  (floor_bonds : BlockHash -> Committee)
+  (floor_active : BlockHash -> list Validator)
+  (authority_floor_of : Block -> BlockHash)
+  (target : Block) : Committee :=
+  active_weight_committee
+    (floor_bonds (authority_floor_of target))
+    (floor_active (authority_floor_of target)).
+
+Definition FloorStateHash := nat.
+
+Definition certified_state_bound_finality_committee
+  (claimed_floor_hash stored_floor_hash : BlockHash)
+  (claimed_floor_state stored_floor_state : FloorStateHash)
+  (weights : Committee)
+  (active : list Validator) : option Committee :=
+  if Nat.eq_dec claimed_floor_hash stored_floor_hash then
+    if Nat.eq_dec claimed_floor_state stored_floor_state then
+      Some (active_weight_committee weights active)
+    else None
+  else None.
+
+Definition parent_post_state_finality_committee
+  (post_state_bonds : BlockHash -> Committee)
+  (post_state_active : BlockHash -> list Validator)
+  (parent_of : Block -> BlockHash)
+  (target : Block) : Committee :=
+  active_weight_committee
+    (post_state_bonds (parent_of target))
+    (post_state_active (parent_of target)).
 
 Definition authority_context_valid
   (floor_bonds : BlockHash -> Committee)
@@ -155,6 +195,98 @@ Theorem same_block_transition_does_not_grant_authority :
       (committee_validators (serialized_post_state_bonds post_state_bonds block)) ->
     ~ authorized (authority_committee floor_bonds floor_of block) validator.
 Proof. intros. assumption. Qed.
+
+Theorem certified_finality_committee_is_authority_floor_committee :
+  forall floor_bonds floor_active authority_floor_of target,
+    certified_finality_committee
+      floor_bonds floor_active authority_floor_of target =
+    active_weight_committee
+      (floor_bonds (authority_floor_of target))
+      (floor_active (authority_floor_of target)).
+Proof. reflexivity. Qed.
+
+Theorem parent_post_state_transition_does_not_change_certified_finality :
+  forall floor_bonds floor_active authority_floor_of target
+    (post_state_bonds_left post_state_bonds_right : BlockHash -> Committee)
+    (post_state_active_left post_state_active_right : BlockHash -> list Validator)
+    (parent_of : Block -> BlockHash),
+    certified_finality_committee
+      floor_bonds floor_active authority_floor_of target =
+    certified_finality_committee
+      floor_bonds floor_active authority_floor_of target.
+Proof. reflexivity. Qed.
+
+Theorem parent_only_validator_cannot_enter_certified_finality_committee :
+  forall floor_bonds floor_active authority_floor_of target validator,
+    ~ In validator
+      (committee_validators
+        (certified_finality_committee
+          floor_bonds floor_active authority_floor_of target)) ->
+    forall post_state_bonds post_state_active parent_of,
+      In validator
+        (committee_validators
+          (parent_post_state_finality_committee
+            post_state_bonds post_state_active parent_of target)) ->
+      ~ In validator
+        (committee_validators
+          (certified_finality_committee
+            floor_bonds floor_active authority_floor_of target)).
+Proof. intros. assumption. Qed.
+
+Theorem certified_floor_hash_mismatch_fails_closed :
+  forall claimed_floor_hash stored_floor_hash
+    claimed_floor_state stored_floor_state weights active,
+    claimed_floor_hash <> stored_floor_hash ->
+    certified_state_bound_finality_committee
+      claimed_floor_hash stored_floor_hash
+      claimed_floor_state stored_floor_state weights active = None.
+Proof.
+  intros claimed_floor_hash stored_floor_hash claimed_floor_state
+    stored_floor_state weights active Hmismatch.
+  unfold certified_state_bound_finality_committee.
+  destruct (Nat.eq_dec claimed_floor_hash stored_floor_hash).
+  - contradiction.
+  - reflexivity.
+Qed.
+
+Theorem certified_floor_state_mismatch_fails_closed :
+  forall floor_hash claimed_floor_state stored_floor_state weights active,
+    claimed_floor_state <> stored_floor_state ->
+    certified_state_bound_finality_committee
+      floor_hash floor_hash claimed_floor_state stored_floor_state
+      weights active = None.
+Proof.
+  intros floor_hash claimed_floor_state stored_floor_state weights active Hmismatch.
+  unfold certified_state_bound_finality_committee.
+  destruct (Nat.eq_dec floor_hash floor_hash); [| contradiction].
+  destruct (Nat.eq_dec claimed_floor_state stored_floor_state).
+  - contradiction.
+  - reflexivity.
+Qed.
+
+Theorem exact_certified_floor_identity_selects_active_committee :
+  forall floor_hash floor_state weights active,
+    certified_state_bound_finality_committee
+      floor_hash floor_hash floor_state floor_state weights active =
+    Some (active_weight_committee weights active).
+Proof.
+  intros floor_hash floor_state weights active.
+  unfold certified_state_bound_finality_committee.
+  destruct (Nat.eq_dec floor_hash floor_hash); [| contradiction].
+  destruct (Nat.eq_dec floor_state floor_state); [reflexivity | contradiction].
+Qed.
+
+Theorem certified_floor_identity_ignores_ambient_committees :
+  forall floor_hash floor_state weights active
+    (target_committee_left target_committee_right : Committee)
+    (head_committee_left head_committee_right : Committee),
+    certified_state_bound_finality_committee
+      floor_hash floor_hash floor_state floor_state weights active =
+    Some (active_weight_committee weights active).
+Proof.
+  intros.
+  apply exact_certified_floor_identity_selects_active_committee.
+Qed.
 
 Theorem exact_justifications_are_floor_authorized :
   forall floor_bonds floor_of block,
@@ -399,4 +531,38 @@ Proof.
   unfold authorized, authority_committee.
   rewrite Hfloor, Hbonds.
   exact Hin.
+Qed.
+
+Theorem active_weight_committee_exact :
+  forall weights active bond,
+    In bond (active_weight_committee weights active) <->
+    In bond weights /\ In (fst bond) active /\ 0 < snd bond.
+Proof.
+  intros weights active [validator stake].
+  unfold active_weight_committee.
+  rewrite filter_In.
+  simpl.
+  split.
+  - intros [Hin Hkept].
+    split; [exact Hin |].
+    destruct (in_dec Nat.eq_dec validator active) as [Hactive | Hinactive].
+    + split; [exact Hactive |].
+      apply Nat.ltb_lt. exact Hkept.
+    + discriminate.
+  - intros [Hin [Hactive Hpositive]].
+    split; [exact Hin |].
+    destruct (in_dec Nat.eq_dec validator active) as [_ | Hinactive].
+    + apply Nat.ltb_lt. exact Hpositive.
+    + contradiction.
+Qed.
+
+Theorem inactive_bond_does_not_change_active_weight_committee :
+  forall weights active validator stake,
+    ~ In validator active ->
+    active_weight_committee ((validator, stake) :: weights) active =
+    active_weight_committee weights active.
+Proof.
+  intros weights active validator stake Hinactive.
+  unfold active_weight_committee. simpl.
+  destruct (in_dec Nat.eq_dec validator active); [contradiction | reflexivity].
 Qed.

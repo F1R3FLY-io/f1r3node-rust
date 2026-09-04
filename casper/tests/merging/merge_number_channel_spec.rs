@@ -1,6 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/merging/MergeNumberChannelSpec.scala
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use casper::rust::merging::deploy_chain_index::DeployChainIndex;
 use casper::rust::merging::deploy_index::DeployIndex;
@@ -245,6 +245,11 @@ async fn test_case(
                 history_repo.clone(),
                 prost::bytes::Bytes::from(vec![0xAAu8; 32]),
                 1,
+                deploy_index
+                    .0
+                    .iter()
+                    .map(|d| (d.deploy_id.clone(), 0))
+                    .collect(),
             )
             .unwrap()
         })
@@ -261,6 +266,11 @@ async fn test_case(
                 history_repo.clone(),
                 prost::bytes::Bytes::from(vec![0xBBu8; 32]),
                 2,
+                deploy_index
+                    .0
+                    .iter()
+                    .map(|d| (d.deploy_id.clone(), 0))
+                    .collect(),
             )
             .unwrap()
         })
@@ -341,6 +351,7 @@ async fn test_case(
         merging_logic::depends(&target.event_log_index, &source.event_log_index)
     };
     let cost = dag_merger::cost_optimal_rejection_alg();
+    let prior_losses = |_r: &DeployChainIndex| 0;
     let state_changes = |r: &DeployChainIndex| Ok(r.state_changes.clone());
     let mergeable_channels = |r: &DeployChainIndex| r.event_log_index.number_channels_data.clone();
     let get_data = |x: Blake2b256Hash| base_reader.get_data(&x);
@@ -404,10 +415,12 @@ async fn test_case(
         Vec::new(),
         &depends,
         &cost,
+        &prior_losses,
         &mergeable_channels,
         &get_data,
         &compute_branches,
         &compute_conflict_map,
+        &HashSet::new(),
     )
     .unwrap();
     let final_hash = conflict_set_merger::compute_merged_state(
@@ -432,10 +445,11 @@ async fn test_case(
 
     let mut runtime_ops = RuntimeOps::new(runtime);
     let (res, _cost) = runtime_ops
-        .play_exploratory_deploy(
+        .play_exploratory_deploy_with_phlo_limit(
             RHO_EXPLORE_READ.to_owned(),
             &final_hash.to_bytes_prost(),
             None,
+            5_000_000,
         )
         .await
         .unwrap();

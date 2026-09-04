@@ -1,7 +1,7 @@
 // SlashingObserver — the read-only contract every tier of the
 // slashing test architecture must satisfy.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.2.4
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.2.4
 // (tier model, added by Track 9). Plan-agent design from session
 // committed at fa29d33+.
 //

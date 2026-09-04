@@ -170,7 +170,7 @@ async fn observes_exactly_once_for_either_trigger_side() {
 }
 
 #[tokio::test]
-async fn join_observes_one_comm_and_rejection_is_atomic() {
+async fn produce_triggered_join_rejection_is_state_trace_and_counter_atomic() {
     let observer = Arc::new(Observer::new(true));
     let space = space(observer.clone()).await;
     let channels = vec!["left".to_string(), "right".to_string()];
@@ -199,11 +199,94 @@ async fn join_observes_one_comm_and_rejection_is_atomic() {
     assert_eq!(observer.produces.load(Ordering::Acquire), 2);
     assert_eq!(space.get_data(&"left".to_string()).await.len(), 1);
     assert!(space.get_data(&"right".to_string()).await.is_empty());
-    assert_eq!(space.get_waiting_continuations(channels).await.len(), 1);
+    assert_eq!(
+        space
+            .get_waiting_continuations(channels.clone())
+            .await
+            .len(),
+        1
+    );
+
+    observer.reject.store(false, Ordering::Release);
+    assert!(
+        space
+            .produce("right".to_string(), "two".to_string(), false)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(observer.count.load(Ordering::Acquire), 2);
+    assert_eq!(observer.produces.load(Ordering::Acquire), 3);
+    assert!(space.get_data(&"left".to_string()).await.is_empty());
+    assert!(space.get_data(&"right".to_string()).await.is_empty());
+    assert!(space.get_waiting_continuations(channels).await.is_empty());
+    {
+        let observed = observer.observed.lock().unwrap();
+        assert_eq!(observed[1].times_repeated.len(), 2);
+        assert!(observed[1].times_repeated.values().all(|count| *count == 1));
+    }
     let log = space.take_event_log().await;
-    assert_eq!(log.len(), 2);
+    assert_eq!(log.len(), 4);
     assert!(matches!(log[0], Event::IoEvent(IOEvent::Consume(_))));
     assert!(matches!(log[1], Event::IoEvent(IOEvent::Produce(_))));
+    assert!(matches!(log[2], Event::IoEvent(IOEvent::Produce(_))));
+    assert!(matches!(log[3], Event::Comm(_)));
+}
+
+#[tokio::test]
+async fn consume_triggered_join_rejection_is_state_and_trace_atomic() {
+    let observer = Arc::new(Observer::new(true));
+    let space = space(observer.clone()).await;
+    let channels = vec!["left".to_string(), "right".to_string()];
+    for (channel, datum) in [("left", "one"), ("right", "two")] {
+        assert!(
+            space
+                .produce(channel.to_string(), datum.to_string(), false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(
+        space
+            .consume(channels.clone(), vec![Any, Any], "join".to_string(), false, BTreeSet::new(),)
+            .await,
+        Err(RSpaceError::OutOfPhlogistons)
+    );
+    assert_eq!(observer.count.load(Ordering::Acquire), 1);
+    assert_eq!(space.get_data(&"left".to_string()).await.len(), 1);
+    assert_eq!(space.get_data(&"right".to_string()).await.len(), 1);
+    assert!(
+        space
+            .get_waiting_continuations(channels.clone())
+            .await
+            .is_empty()
+    );
+
+    observer.reject.store(false, Ordering::Release);
+    assert!(
+        space
+            .consume(channels.clone(), vec![Any, Any], "join".to_string(), false, BTreeSet::new(),)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(observer.count.load(Ordering::Acquire), 2);
+    assert_eq!(observer.consumes.load(Ordering::Acquire), 2);
+    assert!(space.get_data(&"left".to_string()).await.is_empty());
+    assert!(space.get_data(&"right".to_string()).await.is_empty());
+    assert!(space.get_waiting_continuations(channels).await.is_empty());
+    {
+        let observed = observer.observed.lock().unwrap();
+        assert_eq!(observed[1].times_repeated.len(), 2);
+        assert!(observed[1].times_repeated.values().all(|count| *count == 1));
+    }
+    let log = space.take_event_log().await;
+    assert_eq!(log.len(), 4);
+    assert!(matches!(log[0], Event::IoEvent(IOEvent::Produce(_))));
+    assert!(matches!(log[1], Event::IoEvent(IOEvent::Produce(_))));
+    assert!(matches!(log[2], Event::IoEvent(IOEvent::Consume(_))));
+    assert!(matches!(log[3], Event::Comm(_)));
 }
 
 #[tokio::test]

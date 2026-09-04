@@ -4,7 +4,7 @@ A custom Cost-Accounted Rho validator customizes the **economics / adjudication*
 **proof bundle** discharging the validator behavioral contract for its decision functions. It inherits the
 fixed Rust platform shell (acceptance gate, slash-authorization, equivocation detection, finalization). This
 is a spec-minimal seam — there is **no plugin framework** (cost-accounted-rho §7.7: one proof-checker,
-swappable economics). Background: `docs/theory/cost-accounting-impl/workstream-e-validator-contract.md` (the
+swappable economics). Background: `docs/casper/theory/cost-accounting-impl/workstream-e-validator-contract.md` (the
 contract) and decision record DR-12.
 
 ## What you supply

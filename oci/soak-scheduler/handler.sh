@@ -88,11 +88,14 @@ base64url() {
 }
 
 github_api() {
-	local method="$1" path="$2" token="$3" payload="${4:-}" response_file status
+	local method="$1" path="$2" token="$3" payload="${4:-}" response_file status curl_status attempt
+	local attempts="${GITHUB_API_ATTEMPTS:-3}" retry_delay="${GITHUB_API_RETRY_DELAY_SECONDS:-2}"
 	response_file="$(mktemp)"
 	TMP_FILES+=("$response_file")
 	local args=(
 		--silent --show-error
+		--connect-timeout 5
+		--max-time 20
 		--output "$response_file"
 		--write-out '%{http_code}'
 		--request "$method"
@@ -105,7 +108,34 @@ github_api() {
 	if [ -n "$payload" ]; then
 		args+=(--data "$payload")
 	fi
-	status="$(curl "${args[@]}" "$API_ROOT$path")"
+	# Transport failures and 5xx are retried; 4xx are deterministic and are
+	# not. The 2026-08-12T02:30Z slot was lost to a single intermittent TLS
+	# handshake failure against api.github.com — one bad handshake must not
+	# cost a night's soak. The retry loop lives here in bash because the
+	# container's curl (Oracle Linux 8, 7.61) predates --retry-all-errors,
+	# and plain --retry does not cover TLS failures. Worst case per call is
+	# attempts x max-time plus the fixed delays, well inside the 120s
+	# function timeout for the realistic instant-abort failure mode.
+	for attempt in $(seq 1 "$attempts"); do
+		curl_status=0
+		status="$(curl "${args[@]}" "$API_ROOT$path")" || curl_status=$?
+		if [ "$curl_status" -eq 0 ]; then
+			case "$status" in
+			5??) ;;
+			*) break ;;
+			esac
+		fi
+		if [ "$attempt" -lt "$attempts" ]; then
+			printf 'GitHub API %s %s attempt %s/%s failed (curl exit %s, HTTP %s); retrying\n' \
+				"$method" "$path" "$attempt" "$attempts" "$curl_status" "${status:-000}" >&2
+			sleep "$retry_delay"
+		fi
+	done
+	if [ "$curl_status" -ne 0 ]; then
+		printf 'GitHub API %s %s failed: curl exit %s after %s attempt(s)\n' \
+			"$method" "$path" "$curl_status" "$attempts" >&2
+		return 1
+	fi
 	case "$status" in
 	200 | 201) cat "$response_file" ;;
 	204) printf '{}\n' ;;
@@ -175,6 +205,29 @@ workflow_api_path() {
 	printf '/repos/%s/actions/workflows/%s' "$GITHUB_REPOSITORY" "$GITHUB_WORKFLOW"
 }
 
+# A 204 from the dispatch POST only means GitHub accepted the event, and the
+# scheduling stack above this handler treats any zero exit as proof the slot
+# was served (hotwrap masks handler failures as successful invocations, and
+# the Resource Scheduler work request ignores the response body entirely).
+# Polling until the [scheduled:<epoch>] run actually exists is therefore the
+# only place "the soak is really launched" can be asserted; a dispatch that
+# never materializes becomes a nonzero exit instead of a silent no-op.
+verify_dispatched_run() {
+	local token="$1" workflow_path="$2" title="$3" attempt runs
+	local attempts="${DISPATCH_VERIFY_ATTEMPTS:-6}" delay="${DISPATCH_VERIFY_DELAY_SECONDS:-5}"
+	for attempt in $(seq 1 "$attempts"); do
+		sleep "$delay"
+		if runs="$(github_api GET "${workflow_path}/runs?event=workflow_dispatch&per_page=100" "$token")" &&
+			jq -e --arg title "$title" \
+				'.workflow_runs[]? | select(.display_title == $title)' <<<"$runs" >/dev/null; then
+			return 0
+		fi
+	done
+	printf 'dispatch was accepted but no run titled "%s" appeared after %s check(s)\n' \
+		"$title" "$attempts" >&2
+	return 1
+}
+
 dispatch_slot() {
 	local token="$1" slot_epoch="$2" series="$3" target_ref="$4" duration="$5"
 	local workflow_path title runs payload
@@ -192,7 +245,8 @@ dispatch_slot() {
 		--arg duration "$duration" \
 		--arg slot_epoch "$slot_epoch" \
 		'{ref:$ref,inputs:{target_ref:$target_ref,duration:$duration,scheduled_slot_epoch:$slot_epoch}}')"
-	github_api POST "${workflow_path}/dispatches" "$token" "$payload" >/dev/null
+	github_api POST "${workflow_path}/dispatches" "$token" "$payload" >/dev/null || return 1
+	verify_dispatched_run "$token" "$workflow_path" "$title" || return 1
 	jq -cn --argjson slot_epoch "$slot_epoch" --arg series "$series" \
 		'{status:"dispatched",slot_epoch:$slot_epoch,series:$series}'
 }

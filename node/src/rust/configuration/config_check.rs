@@ -1,9 +1,29 @@
+use casper::rust::util::rholang::runtime_manager::ExploratoryDeployConfig;
 use comm::rust::utils::{is_valid_inet_address, is_valid_public_inet_address};
 use eyre::Result;
 use tracing::{error, info};
 
 use crate::rust::configuration::NodeConf;
 use crate::rust::effects::console_io::{console_io, decrypt_key_from_file};
+
+/// Check api-server settings whose invalid values have no safe interpretation.
+///
+/// Validation runs through `ExploratoryDeployConfig::new` — the same constructor
+/// the runtime uses — so there is one set of rules rather than two that can
+/// drift. Running it here surfaces the failure at startup, before any storage is
+/// opened.
+pub fn check_api_server(conf: &NodeConf) -> Result<()> {
+    ExploratoryDeployConfig::new(
+        conf.api_server.exploratory_deploy_max_concurrent,
+        conf.api_server.exploratory_deploy_phlo_limit,
+        conf.api_server.exploratory_deploy_execution_timeout,
+    )
+    .map_err(|err| {
+        error!("Invalid api-server configuration: {}", err);
+        eyre::eyre!("Invalid api-server configuration: {}", err)
+    })?;
+    Ok(())
+}
 
 /// Check host configuration (equivalent to Scala's checkHost)
 pub async fn check_host(conf: &NodeConf) -> Result<()> {

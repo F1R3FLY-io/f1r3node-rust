@@ -6,6 +6,11 @@ SYSTEM_INTEGRATION_DIR="${SYSTEM_INTEGRATION_DIR:?SYSTEM_INTEGRATION_DIR is requ
 OUTPUT_DIR="${SOAK_OUTPUT_DIR:-/tmp/merge-recovery-soak}"
 TARGET_REF="${SOAK_TARGET_REF:-unknown}"
 TARGET_SHA="${SOAK_TARGET_SHA:-unknown}"
+TRIGGER_SOURCE="${SOAK_TRIGGER_SOURCE:-manual}"
+SLOT_DELAY_SECONDS="${SOAK_SLOT_DELAY_SECONDS:-0}"
+if ! [[ "$SLOT_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+	SLOT_DELAY_SECONDS=0
+fi
 if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'SOAK_DURATION_SECONDS must be a positive integer\n' >&2
 	exit 2
@@ -71,16 +76,16 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Harness telemetry roots. Subprocess sessions write monitor artifacts and
-# node logs under data/; docker sessions write them under log-archive/ (the
-# provider's host-visible per-session dir — DockerProvider.monitor_output_dir
-# in system-integration). Every search for monitor output, node logs, breach
-# markers or SOAK_METRIC lines must cover both, or docker iterations lose
-# their telemetry: rss_peak_mb and finalization_latency were null on every
-# docker iteration (runs 30880995655, 30906818259) because only data/ was
-# searched. Created up front so multi-root find never ENOENTs.
+# node logs under .subprocess-data/; docker sessions write them under
+# log-archive/ (the provider's host-visible per-session dir —
+# DockerProvider.monitor_output_dir in system-integration). The data/ root
+# remains for harness versions that write logs there. Every search for monitor
+# output, node logs, breach markers or SOAK_METRIC lines must cover all roots.
+# Created up front so multi-root find never ENOENTs.
 HARNESS_TELEMETRY_DIRS=(
 	"$SYSTEM_INTEGRATION_DIR/integration-tests/data"
 	"$SYSTEM_INTEGRATION_DIR/integration-tests/log-archive"
+	"$SYSTEM_INTEGRATION_DIR/integration-tests/.subprocess-data"
 )
 mkdir -p "${HARNESS_TELEMETRY_DIRS[@]}"
 RUN_BENCHMARKS="${SOAK_RUN_BENCHMARKS:-false}"
@@ -158,8 +163,76 @@ else
 	fi
 fi
 
-printf 'Soak host protection: node RSS ceiling=%sMB; host free floor=%sMB\n' \
-	"$RSS_CEILING_MB" "$HOST_FREE_FLOOR_MB"
+# Disk twin of the memory floor (issue #378). Weekend runs 33254400407 and
+# 33278321865 filled the soak VM's default ~47GB boot volume 9-12h in: the
+# runner worker died on ENOSPC writing its own _diag log, and the last
+# iteration before death failed "121 deploy(s) not finalized within 45s" —
+# a full disk masquerading as a finalization regression. Memory had a
+# guardian, warn band and durable last words; disk had nothing.
+# SOAK_DISK_FREE_FLOOR_MB overrides; 0 disables the floor.
+DISK_FREE_FLOOR_MB="${SOAK_DISK_FREE_FLOOR_MB:-4096}"
+if ! [[ "$DISK_FREE_FLOOR_MB" =~ ^[0-9]+$ ]]; then
+	printf 'SOAK_DISK_FREE_FLOOR_MB must be a non-negative integer\n' >&2
+	exit 2
+fi
+# Hygiene runs when free space sinks into floor+band, BEFORE the floor
+# breaches: pruning between iterations is cheap, while a breach ends the run.
+DISK_HYGIENE_BAND_MB="${SOAK_DISK_HYGIENE_BAND_MB:-4096}"
+if ! [[ "$DISK_HYGIENE_BAND_MB" =~ ^[0-9]+$ ]]; then
+	printf 'SOAK_DISK_HYGIENE_BAND_MB must be a non-negative integer\n' >&2
+	exit 2
+fi
+
+# Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
+# session dirs and the runner's _diag all live on the one boot volume, so one
+# probe stands for them all. Prints nothing and fails unless the probe yields
+# a plain number: an unparseable df must read as "no sample", never feed
+# arithmetic garbage into the guardian.
+disk_free_mb() {
+	local mb
+	mb="$(df -Pm "$OUTPUT_DIR" 2>/dev/null | awk 'NR == 2 { print int($4) }')"
+	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$mb"
+}
+
+# Reclaim space that accumulates across iterations without touching anything
+# an active session owns. Container removal is scoped to EXITED containers in
+# the soak's own `rnode.` namespace (a failed `compose up` leaks them);
+# dangling images are by definition unreferenced, and the docker build cache
+# is dead weight once the image under test is built and loaded. The network
+# prune and the /tmp sweep are broader by nature, and both lean on two facts:
+# this VM is exclusive to the soak (the RUNNER_LABELS f1r3fly-rust-soak
+# registration below admits no other workload), and a /tmp/test-* file older
+# than 60 minutes is past pytest's own 1200s per-test timeout, so no live
+# iteration can still own it. Never prunes tagged images (the image under
+# test) or running containers.
+reclaim_disk_space() {
+	local before after
+	before="$(disk_free_mb)" || before=""
+	if command -v docker >/dev/null 2>&1; then
+		docker ps -aq --filter status=exited --filter 'name=rnode.' 2>/dev/null |
+			xargs -r docker rm >/dev/null 2>&1 || true
+		docker network prune -f >/dev/null 2>&1 || true
+		docker image prune -f >/dev/null 2>&1 || true
+		docker builder prune -af >/dev/null 2>&1 || true
+	fi
+	find /tmp -maxdepth 1 -name 'test-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+	after="$(disk_free_mb)" || after=""
+	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
+}
+
+# The floor is only as good as the probe behind it: an OUTPUT_DIR that df
+# cannot stat would turn every later disk check into a silent no-op and the
+# soak would run believing itself protected. Refuse to start instead;
+# SOAK_DISK_FREE_FLOOR_MB=0 is the explicit opt-out.
+if [ "$DISK_FREE_FLOOR_MB" -gt 0 ] && ! disk_free_mb >/dev/null; then
+	printf 'cannot read free disk space for %s; fix the path or set SOAK_DISK_FREE_FLOOR_MB=0 to run without the disk floor\n' \
+		"$OUTPUT_DIR" >&2
+	exit 2
+fi
+
+printf 'Soak host protection: node RSS ceiling=%sMB; host free floor=%sMB; disk free floor=%sMB (hygiene band +%sMB)\n' \
+	"$RSS_CEILING_MB" "$HOST_FREE_FLOOR_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
 
 if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
 	printf 'SOAK_NODE_REPO_DIR is required when SOAK_RUN_BENCHMARKS=true\n' >&2
@@ -190,6 +263,42 @@ if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
 	[ -n "$parsed_version" ] && VERSION="$parsed_version"
 fi
 
+persist_soak_state() {
+	local state_tmp="${STATE_FILE}.tmp"
+	local checkpoint_state="$OUTPUT_DIR/.soak-checkpoint-state.json"
+	local checkpoint_tmp="${checkpoint_state}.tmp"
+	mkdir -p "$OUTPUT_DIR"
+	{
+		printf 'STARTED_AT=%s\n' "$STARTED_AT"
+		printf 'ITERATIONS=%s\n' "$ITERATIONS"
+		printf 'FAILURES=%s\n' "$FAILURES"
+		printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
+		printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
+		printf 'SEGMENT=%s\n' "$SEGMENT"
+	} >"$state_tmp" && mv "$state_tmp" "$STATE_FILE"
+	jq -n \
+		--arg target_ref "$TARGET_REF" \
+		--arg target_sha "$TARGET_SHA" \
+		--arg trigger_source "$TRIGGER_SOURCE" \
+		--argjson slot_delay "$SLOT_DELAY_SECONDS" \
+		--arg version "$VERSION" \
+		--argjson started_at "$STARTED_AT" \
+		--argjson requested_seconds "$DURATION_SECONDS" \
+		--argjson iterations "$ITERATIONS" \
+		--argjson failures "$FAILURES" \
+		--argjson bench_segments "$BENCH_SEGMENTS" \
+		--argjson bench_failures "$BENCH_FAILURES" \
+		'{target_ref: $target_ref, target_sha: $target_sha,
+      trigger_source: $trigger_source, slot_delay_seconds: $slot_delay,
+      version: $version, started_at: $started_at,
+      requested_seconds: $requested_seconds, iterations: $iterations,
+      failures: $failures, bench_segments: $bench_segments,
+      bench_failures: $bench_failures}' >"$checkpoint_tmp" &&
+		mv "$checkpoint_tmp" "$checkpoint_state"
+}
+
+persist_soak_state
+
 # Peak total node RSS for this iteration, from the newest harness
 # resource-timeseries.csv written after the iteration's start marker
 # (columns: elapsed_s,node,memory_mb,cpu_percent,memory_limit_mb; the
@@ -212,19 +321,113 @@ iteration_rss_peak_mb() {
 # iteration_rss_peak_mb — reuses the copy that function already left in
 # iteration_dir rather than re-finding and re-copying it. Must run after
 # iteration_rss_peak_mb. Empty output when absent.
+#
+# Deliberately NOT the max of the per-node peaks below: this sums cpu_percent
+# ACROSS nodes at each timestamp and peaks that total — "how hot did the whole
+# shard run at once" — so its value can exceed every individual node's peak
+# (two nodes at 10% and 20% in the same sample yield 30). The per-node
+# extractor answers the different question "how hot did each node get".
+#
+# LC_ALL=C on every awk that prints "%.1f": a comma-decimal LC_NUMERIC locale
+# would emit "30,0", which downstream jq rejects — and because these values
+# ride --argjson into metrics.json, that would silently cost the iteration its
+# entire metrics file, not just this field.
 iteration_cpu_peak_percent() {
 	local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
 	[ -s "$ts_csv" ] || return 0
-	awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
+	LC_ALL=C awk -F, 'NR > 1 && $2 != "__system__" { sum[$1] += $4 }
            END { max = 0; for (t in sum) if (sum[t] > max) max = sum[t]
                  if (max > 0) printf "%.1f\n", max }' "$ts_csv" 2>/dev/null
+}
+
+# The same CSV split back out per node: each node's own peak cpu_percent over
+# the iteration, as a JSON object {node: pct}. This is the dashboard CPU
+# grid's AGGREGATE fallback — one "all cores combined" value per node — used
+# by the summary rollup for nodes the per-core extractor below has no data
+# for (pre-emission harness, provider without the per-core hook). The harness
+# prefixes container names — historically "rnode.<network>.", today a bare
+# per-iteration shard hash ("f6f7eb46.validator1") — so the node id is the
+# name's final dot-segment. Stripping ONLY the historical form let the hash
+# prefixes through, and because every iteration mints a fresh hash the run
+# rollup unioned them into one grid column per (iteration × node): 42
+# columns of unreadable axis soup on the published chart. Node names are then
+# sanitized to a safe character class ([-A-Za-z0-9._], anything else becomes
+# "_") so a hostile or malformed name can neither break the hand-built JSON
+# nor silently collide with another name the way character DELETION could.
+# '{}' when absent, and the caller validates the output is JSON before
+# trusting it (fail-soft like every metric here).
+iteration_cpu_peak_per_node_percent() {
+	local iteration_dir="$1" ts_csv="$iteration_dir/resource-timeseries.csv"
+	[ -s "$ts_csv" ] || {
+		printf '{}'
+		return 0
+	}
+	LC_ALL=C awk -F, 'NR > 1 { sub(/\r$/, "") }
+	         NR > 1 && $2 != "__system__" && $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	           n = $2; sub(/^.*\./, "", n); if (n == "") n = $2
+	           if (!(n in peak) || $4 + 0 > peak[n]) peak[n] = $4 + 0 }
+	         END { printf "{"; sep = ""
+	               for (n in peak) {
+	                 k = n; gsub(/[^A-Za-z0-9._-]/, "_", k)
+	                 printf "%s\"%s\":%.1f", sep, k, peak[n]; sep = "," }
+	               printf "}" }' "$ts_csv" 2>/dev/null || printf '{}'
+}
+
+# Real core rows for the same grid: the harness monitor's per-core telemetry
+# (resource-percore-timeseries.csv, columns elapsed_s,node,core,cpu_percent —
+# a separate file from resource-timeseries.csv precisely so the aggregate
+# extractors above cannot double-count), reduced to each (node, core) cell's
+# peak over the iteration as nested JSON {node: {core: pct}}. '{}' when the
+# harness predates per-core emission or the provider has no per-core hook;
+# the summary rollup then keeps that node's "all" fallback row. Same name
+# prefix stripping and JSON validation contract as the per-node extractor.
+iteration_cpu_peak_per_node_core_percent() {
+	local iteration_dir="$1" pc_csv="$iteration_dir/resource-percore-timeseries.csv"
+	[ -s "$pc_csv" ] || {
+		printf '{}'
+		return 0
+	}
+	# Same row discipline as the per-node extractor: __system__ is host
+	# state, not a node, and must never become a grid column (a node with
+	# per-core rows drops its "all" fallback, so a phantom node here would
+	# distort the grid, not just add noise). Core ids are bare CPU indices
+	# per the telemetry contract — anything non-numeric is a malformed row,
+	# rejected rather than sanitized into a phantom core.
+	#
+	# The leading sub() strips a CR before the fields are tested: the harness
+	# writes this CSV with Python csv.writer, whose default line terminator
+	# is \r\n, so cpu_percent — the LAST column — arrives as "1.5\r" and
+	# would fail the numeric check on every row (smoke run 31547587950
+	# published an all-fallback grid exactly this way). The per-node
+	# extractor above gets the same guard for symmetry, though its CSV
+	# carries a 5th column that happened to absorb the CR.
+	LC_ALL=C awk -F, 'NR > 1 { sub(/\r$/, "") }
+	         NR > 1 && $2 != "__system__" && $3 ~ /^[0-9]+$/ &&
+	           $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+	           n = $2; sub(/^.*\./, "", n); if (n == "") n = $2
+	           cell = n SUBSEP $3
+	           if (!(cell in peak) || $4 + 0 > peak[cell]) peak[cell] = $4 + 0 }
+	         END { printf "{"; nsep = ""
+	               for (cell in peak) { split(cell, parts, SUBSEP); nodes[parts[1]] = 1 }
+	               for (n in nodes) {
+	                 k = n; gsub(/[^A-Za-z0-9._-]/, "_", k)
+	                 printf "%s\"%s\":{", nsep, k; nsep = ","
+	                 csep = ""
+	                 for (cell in peak) {
+	                   split(cell, parts, SUBSEP)
+	                   if (parts[1] != n) continue
+	                   printf "%s\"%s\":%.1f", csep, parts[2], peak[cell]; csep = ","
+	                 }
+	                 printf "}"
+	               }
+	               printf "}" }' "$pc_csv" 2>/dev/null || printf '{}'
 }
 
 snapshot_iteration_monitor_outputs() {
 	local iteration_dir="$1" started_epoch filename source tmp
 	started_epoch="$(date +%s)"
 	while :; do
-		for filename in resource-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
+		for filename in resource-timeseries.csv resource-percore-timeseries.csv node-metrics-timeseries.csv resource-summary.txt host-protection-breach.txt; do
 			source="$(find "${HARNESS_TELEMETRY_DIRS[@]}" \
 				-name "$filename" -newer "$iteration_dir/.started" -print0 2>/dev/null |
 				xargs -0 -r ls -t 2>/dev/null | head -1 || true)"
@@ -311,26 +514,40 @@ dedup_files_by_content() {
 	done
 }
 
-# Propose-timing latency samples (total_ms) from node JSON logs written after
-# the iteration's start marker — the f1r3fly.propose.timing parse target from
-# profile-casper-latency.sh. Emits "p50 p95 p99 count" or nothing.
+# Finalization latency from the test_load.py phase report. Each iteration uses
+# the phase with the highest p95. A p99 comparison resolves equal p95 values.
+# Emits that phase's "p50_ms p95_ms p99_ms phase_count" or nothing.
 iteration_finalization_latency() {
 	local iteration_dir="$1"
-	# `|| true` is load-bearing under pipefail: a failed iteration can leave
-	# zero matching samples, making grep exit 1 and the pipeline nonzero.
-	find "${HARNESS_TELEMETRY_DIRS[@]}" \
-		-name '*.log' -newer "$iteration_dir/.started" 2>/dev/null |
-		dedup_files_by_content |
-		xargs -r grep -h -o 'Propose timing:[^"]*' 2>/dev/null |
-		grep -oE 'total_ms=[0-9]+' | grep -oE '[0-9]+' |
-		sort -n |
-		awk '{ a[NR] = $1 }
-           END { if (NR == 0) exit
-                 p50 = a[int((NR + 1) * 0.5)]; p95 = a[int((NR + 1) * 0.95)]; p99 = a[int((NR + 1) * 0.99)]
-                 if (p50 == "") p50 = a[NR]
-                 if (p95 == "") p95 = a[NR]
-                 if (p99 == "") p99 = a[NR]
-                 print p50, p95, p99, NR }' || true
+	awk -F'|' '
+      function trim(value) {
+        gsub(/\r/, "", value)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        return value
+      }
+      {
+        deploys = trim($2)
+        finalization = trim($5)
+        count = split(finalization, values, /[[:space:]]+/)
+        if (deploys !~ /^[0-9]+$/ || count != 3) next
+        if (values[1] !~ /^[0-9]+([.][0-9]+)?$/ ||
+            values[2] !~ /^[0-9]+([.][0-9]+)?$/ ||
+            values[3] !~ /^[0-9]+([.][0-9]+)?$/) next
+        p50 = values[1] + 0
+        p95 = values[2] + 0
+        p99 = values[3] + 0
+        if (phases == 0 || p95 > selected_p95 ||
+            (p95 == selected_p95 && p99 > selected_p99)) {
+          selected_p50 = p50
+          selected_p95 = p95
+          selected_p99 = p99
+        }
+        phases++
+      }
+      END {
+        if (phases > 0)
+          printf "%.0f %.0f %.0f %d\n", selected_p50 * 1000, selected_p95 * 1000, selected_p99 * 1000, phases
+      }' "$iteration_dir/pytest.log" 2>/dev/null || true
 }
 
 # Count of proposal rejections logged as too far ahead of the last finalized
@@ -346,6 +563,15 @@ iteration_too_far_ahead_errors() {
 		dedup_files_by_content |
 		xargs -r grep -h -o 'too far ahead of the last finalized block' 2>/dev/null |
 		wc -l | tr -d ' '
+}
+
+iteration_lfb_spread() {
+	local iteration_dir="$1"
+	grep -oE 'All-node LFBs at drain:.*\(spread [0-9]+ blocks\)' \
+		"$iteration_dir/pytest.log" 2>/dev/null |
+		grep -oE 'spread [0-9]+ blocks' |
+		grep -oE '[0-9]+' |
+		tail -1 || true
 }
 
 # Parse the pytest terminal summary line ("== 1 failed, 64 passed, ... ==")
@@ -364,6 +590,11 @@ emit_iteration_metrics() {
 	errors="$(printf '%s' "$summary_line" | grep -oE '[0-9]+ error' | grep -oE '[0-9]+' || echo 0)"
 	rss_peak="$(iteration_rss_peak_mb "$iteration_dir")"
 	cpu_peak="$(iteration_cpu_peak_percent "$iteration_dir")"
+	local cpu_per_node cpu_per_core
+	cpu_per_node="$(iteration_cpu_peak_per_node_percent "$iteration_dir")"
+	jq -e 'type == "object"' >/dev/null 2>&1 <<<"$cpu_per_node" || cpu_per_node='{}'
+	cpu_per_core="$(iteration_cpu_peak_per_node_core_percent "$iteration_dir")"
+	jq -e 'type == "object"' >/dev/null 2>&1 <<<"$cpu_per_core" || cpu_per_core='{}'
 	latency="$(iteration_finalization_latency "$iteration_dir")"
 	lat_p50="$(printf '%s' "$latency" | awk '{print $1}')"
 	lat_p95="$(printf '%s' "$latency" | awk '{print $2}')"
@@ -374,14 +605,25 @@ emit_iteration_metrics() {
 	# bespoke extractors above, adding a metric here needs no code change: the
 	# harness emits a SOAK_METRIC line and the registry declares it. Fail-soft
 	# by the same contract — the collector yields {} rather than erroring.
-	local registry_metrics
+	local registry_metrics metric_log_roots root
+	metric_log_roots="$iteration_dir"
+	for root in "${HARNESS_TELEMETRY_DIRS[@]-}"; do
+		[ -n "$root" ] || continue
+		metric_log_roots="${metric_log_roots}:$root"
+	done
 	registry_metrics="$("$SCRIPT_DIR/bench/collect-soak-metrics.sh" \
-		"$iteration_dir/.started" \
-		"$(
-			IFS=:
-			printf '%s' "${HARNESS_TELEMETRY_DIRS[*]}"
-		)" 2>/dev/null || printf '{}')"
+		"$iteration_dir/.started" "$metric_log_roots" \
+		2>/dev/null || printf '{}')"
 	jq -e . >/dev/null 2>&1 <<<"$registry_metrics" || registry_metrics='{}'
+	local lfb_spread
+	if ! jq -e '.lfb_spread.samples > 0' >/dev/null 2>&1 <<<"$registry_metrics"; then
+		lfb_spread="$(iteration_lfb_spread "$iteration_dir")"
+		if [[ "$lfb_spread" =~ ^[0-9]+$ ]]; then
+			registry_metrics="$(jq -c --argjson value "$lfb_spread" \
+				'. + {lfb_spread: {p50: $value, p95: $value, max: $value, min: $value, samples: 1}}' \
+				<<<"$registry_metrics")"
+		fi
+	fi
 	jq -n \
 		--argjson metrics "$registry_metrics" \
 		--argjson iteration "$iteration" \
@@ -395,6 +637,8 @@ emit_iteration_metrics() {
 		--argjson errors "$errors" \
 		--argjson rss_peak "${rss_peak:-null}" \
 		--argjson cpu_peak "${cpu_peak:-null}" \
+		--argjson cpu_per_node "$cpu_per_node" \
+		--argjson cpu_per_core "$cpu_per_core" \
 		--argjson lat_p50 "${lat_p50:-null}" \
 		--argjson lat_p95 "${lat_p95:-null}" \
 		--argjson lat_p99 "${lat_p99:-null}" \
@@ -406,6 +650,8 @@ emit_iteration_metrics() {
       pytest: {passed: $passed, failed: $failed, skipped: $skipped, errors: $errors},
       rss_peak_mb: $rss_peak,
       cpu_peak_pct: $cpu_peak,
+      cpu_peak_per_node_pct: (if ($cpu_per_node | length) > 0 then $cpu_per_node else null end),
+      cpu_peak_per_node_core_pct: (if ($cpu_per_core | length) > 0 then $cpu_per_core else null end),
       finalization_latency: {p50_ms: $lat_p50, p95_ms: $lat_p95, p99_ms: $lat_p99, samples: ($lat_n // 0)},
       too_far_ahead_errors: $too_far_ahead,
       metrics: $metrics,
@@ -476,6 +722,7 @@ mkdir -p "$OUTPUT_DIR"
 # for and skew the run's active-benchmark averages.
 if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ]; then
 	run_bench_segment
+	persist_soak_state
 fi
 
 # Operator signal, polled between iterations.
@@ -545,33 +792,156 @@ cleanup_soak_processes() {
 	[ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
 }
 trap cleanup_soak_processes EXIT
-if [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; then
+if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 	(
+		# Run 33136185540 (2026-08-28): the kernel OOM killer chose
+		# Runner.Worker while this guardian's 3-sample window was still
+		# open — the runner vanished mid-soak, the VM self-terminated
+		# through the ephemeral exit path, and the night left no artifact.
+		# Three hardenings, each aimed at that failure shape:
+		#
+		# 1. Every sample re-applies oom_score_adj 1000 to the node
+		#    processes and node containers, so a kernel OOM that beats
+		#    this guardian to the punch kills the WORKLOAD (a recorded
+		#    breach) and never the runner (a vanished VM). Re-applied per
+		#    sample because nodes restart across iterations.
+		# 2. A hard floor at half the configured floor fires on a SINGLE
+		#    sample: a fast plunge must not get 15s of grace.
+		# 3. On warning or breach, the last-known memory state is stamped
+		#    into the instance's freeform tags via the instance-principal
+		#    CLI. Tags outlive termination (the 33136185540 post-mortem
+		#    could read the dead VM's tags), so even a lost runner leaves
+		#    durable last words. Stamped ONLY in the warning/breach band —
+		#    a healthy run never writes tags, keeping the read-modify-write
+		#    race with the soak-signal tag out of the normal path. The
+		#    freeform-tag API replaces the whole map, so the remaining
+		#    single-write race against a concurrent soak-signal writer is
+		#    accepted by design: it exists only while the host is already
+		#    dying, and last words outrank a checkpoint signal there.
+		guardian_oom_mark_warned=0
+		guardian_mark_workload_oom_preferred() {
+			local pid cid failed=0
+			for pid in $(pgrep -f '/tmp/rnode' 2>/dev/null); do
+				echo 1000 >"/proc/$pid/oom_score_adj" 2>/dev/null ||
+					sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 ||
+					failed=1
+			done
+			for cid in $(docker ps -q --filter 'name=rnode.' 2>/dev/null); do
+				pid="$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)" || continue
+				[ -n "$pid" ] && [ "$pid" != "0" ] || continue
+				sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 ||
+					failed=1
+			done
+			# One line for the whole guardian lifetime: a per-sample failure
+			# would flood the log, silence would hide that the runner is NOT
+			# protected from the kernel OOM killer.
+			if [ "$failed" -eq 1 ] && [ "$guardian_oom_mark_warned" -eq 0 ]; then
+				guardian_oom_mark_warned=1
+				printf 'host guardian: could not apply oom_score_adj to some workload processes; the runner is not OOM-preferred over them\n' >&2
+			fi
+		}
+		guardian_stamp_health_tag() {
+			local state="$1" avail="$2" iid tags
+			command -v oci >/dev/null 2>&1 || return 0
+			iid="$(curl -fsS --max-time 5 -H 'Authorization: Bearer Oracle' \
+				http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || return 0
+			case "$iid" in ocid1.instance.*) ;; *) return 0 ;; esac
+			# Every remote call is deadline-bounded: this function runs while
+			# the host is under memory pressure, and a hung CLI here must not
+			# stall the guardian whose whole job is reacting fast.
+			tags="$(timeout 15 oci --auth instance_principal compute instance get \
+				--instance-id "$iid" --query 'data."freeform-tags"' \
+				--output json 2>/dev/null)" || return 0
+			tags="$(printf '%s' "$tags" | python3 -c '
+import json, sys
+tags = json.load(sys.stdin) or {}
+tags["soak-health"] = sys.argv[1]
+print(json.dumps(tags))
+' "$state:$(date +%s):avail=${avail}MB")" || return 0
+			timeout 15 oci --auth instance_principal compute instance update \
+				--instance-id "$iid" --freeform-tags "$tags" --force \
+				>/dev/null 2>&1 || true
+		}
 		over=0
+		hard_floor_mb=$((HOST_FREE_FLOOR_MB / 2))
+		[ "$hard_floor_mb" -ge 1 ] || hard_floor_mb=1
+		warn_floor_mb=$((HOST_FREE_FLOOR_MB + ${SOAK_HOST_WARN_BAND_MB:-4096}))
+		disk_over=0
+		disk_hard_floor_mb=$((DISK_FREE_FLOOR_MB / 2))
+		[ "$disk_hard_floor_mb" -ge 1 ] || disk_hard_floor_mb=1
+		last_stamp=0
+		sample_n=0
 		while :; do
 			sleep 5
+			# Disk twin of the memory floor below (issue #378): same
+			# 3-consecutive-sample soft floor, same single-sample hard floor
+			# at half, same kill-then-marker order, same durable tag last
+			# words. Killing the nodes on a disk breach stops the writers
+			# while the runner still has bytes left for its own _diag log —
+			# on runs 33254400407/33278321865 those bytes ran out and the
+			# breach became a vanished runner instead of a recorded failure.
+			if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+				disk_mb="$(disk_free_mb)"
+				if [ -n "$disk_mb" ]; then
+					if [ "$disk_mb" -ge "$DISK_FREE_FLOOR_MB" ]; then
+						disk_over=0
+					else
+						disk_over=$((disk_over + 1))
+						if [ "$disk_mb" -lt "$disk_hard_floor_mb" ] || [ "$disk_over" -ge 3 ]; then
+							pkill -9 -f '/tmp/rnode' 2>/dev/null || true
+							docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
+							printf 'orchestrator disk guardian: host free disk %sMB < floor %sMB (hard floor %sMB, consecutive %s); killed all node processes and containers to protect the runner\n' \
+								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" >"$HOST_GUARDIAN_BREACH"
+							guardian_stamp_health_tag disk-breach "$disk_mb"
+							exit 0
+						fi
+					fi
+				fi
+			fi
+			if [ "$HOST_FREE_FLOOR_MB" -le 0 ]; then
+				continue
+			fi
 			free_mb="$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null)"
 			[ -n "$free_mb" ] || continue
+			# Every 3rd sample (15s): fresh nodes appear at iteration
+			# boundaries, not per second, and the docker inspect round trip
+			# is not free at a 5s cadence.
+			sample_n=$((sample_n + 1))
+			[ $((sample_n % 3)) -eq 1 ] && guardian_mark_workload_oom_preferred
 			if [ "$free_mb" -ge "$HOST_FREE_FLOOR_MB" ]; then
 				over=0
+				# The warning stamp runs ONLY on the healthy side of the
+				# breach checks and in the background, so a slow tag write
+				# can never delay the emergency kill below.
+				if [ "$free_mb" -lt "$warn_floor_mb" ]; then
+					now="$(date +%s)"
+					if [ $((now - last_stamp)) -ge 60 ]; then
+						guardian_stamp_health_tag warning "$free_mb" &
+						last_stamp="$now"
+					fi
+				fi
 				continue
 			fi
 			over=$((over + 1))
-			[ "$over" -lt 3 ] && continue
+			if [ "$free_mb" -ge "$hard_floor_mb" ] && [ "$over" -lt 3 ]; then
+				continue
+			fi
 			# Kill first, marker second: the marker asserts the host was defended,
 			# so it must not exist before the kills have run. `|| true` on each —
 			# pkill exits 1 with no matching process (normal when only containers
 			# are up), and neither miss may stop the other mitigation.
 			pkill -9 -f '/tmp/rnode' 2>/dev/null || true
 			docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
-			printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB for 3 consecutive samples (5s each); killed all node processes and containers to protect the host\n' \
-				"$free_mb" "$HOST_FREE_FLOOR_MB" >"$HOST_GUARDIAN_BREACH"
+			printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB (hard floor %sMB, consecutive %s); killed all node processes and containers to protect the host\n' \
+				"$free_mb" "$HOST_FREE_FLOOR_MB" "$hard_floor_mb" "$over" >"$HOST_GUARDIAN_BREACH"
+			guardian_stamp_health_tag breach "$free_mb"
 			exit 0
 		done
 	) &
 	HOST_GUARDIAN_PID=$!
-	printf 'orchestrator host guardian watching MemAvailable floor %sMB (pid %s)\n' \
-		"$HOST_FREE_FLOOR_MB" "$HOST_GUARDIAN_PID"
+	printf 'orchestrator host guardian watching MemAvailable floor %sMB (hard floor %sMB, warn %sMB) and disk free floor %sMB (hard floor %sMB); pid %s\n' \
+		"$HOST_FREE_FLOOR_MB" "$((HOST_FREE_FLOOR_MB / 2))" "$((HOST_FREE_FLOOR_MB + 4096))" \
+		"$DISK_FREE_FLOOR_MB" "$((DISK_FREE_FLOOR_MB / 2))" "$HOST_GUARDIAN_PID"
 fi
 
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -586,6 +956,45 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			>"$OUTPUT_DIR/early-exit.txt"
 		FAILURES="$((FAILURES + 1))"
 		break
+	fi
+	# Iteration-boundary disk hygiene (issue #378): reclaim per-iteration
+	# leftovers while free space is merely low, so the guardian floor above
+	# is the backstop and not the routine outcome. If hygiene cannot lift
+	# free space back over the floor, end the run here — cleanly, with df
+	# evidence — rather than start an iteration whose nodes will write into
+	# a nearly full disk and fail with a misleading consensus verdict.
+	if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+		DISK_MB="$(disk_free_mb)"
+		if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
+			printf 'free disk %sMB inside hygiene band (floor %sMB + band %sMB); reclaiming\n' \
+				"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
+			reclaim_disk_space
+			# The guardian may have fired while hygiene ran (a builder prune
+			# can outlast the soft floor's 15s window), and it exits after
+			# firing — space recovered afterwards does not un-fire it or
+			# bring it back. Fail closed here rather than start an iteration
+			# that would run unguarded until its watcher trips on the marker.
+			if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+				EARLY_EXIT_REASON="host_protection_breach"
+				printf 'orchestrator host guardian fired during disk hygiene; ending soak (fail-closed)\n'
+				head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" \
+					>"$OUTPUT_DIR/early-exit.txt"
+				FAILURES="$((FAILURES + 1))"
+				break
+			fi
+			DISK_MB="$(disk_free_mb)"
+			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
+				EARLY_EXIT_REASON="host_protection_breach"
+				df -Pm "$OUTPUT_DIR" >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
+				printf 'orchestrator disk floor: free disk %sMB < floor %sMB after hygiene; ending soak (fail-closed)\n' \
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" | tee "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: disk floor: free %sMB < floor %sMB after hygiene\n' \
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" >"$OUTPUT_DIR/early-exit.txt"
+				FAILURES="$((FAILURES + 1))"
+				break
+			fi
+		fi
 	fi
 	if [ -e "$SIGNAL_FILE" ]; then
 		SIGNAL="$(tr -d '[:space:]' <"$SIGNAL_FILE" 2>/dev/null || true)"
@@ -617,6 +1026,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
 	ITERATIONS="$((ITERATIONS + 1))"
+	persist_soak_state
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
 	mkdir -p "$ITERATION_DIR"
 	REMAINING="$((DEADLINE - $(date +%s)))"
@@ -690,6 +1100,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	if [ "$STATUS" -ne 0 ]; then
 		FAILURES="$((FAILURES + 1))"
+		persist_soak_state
 		printf '%s\n' "$STATUS" >"$ITERATION_DIR/exit-code.txt"
 		for evidence_root in "${HARNESS_TELEMETRY_DIRS[@]}"; do
 			[ -d "$evidence_root" ] || continue
@@ -737,6 +1148,18 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 					"$ITERATION_DIR/pytest.log" 2>/dev/null || true)"
 			fi
 		fi
+		# Fourth channel (issue #378): an iteration that fails while free
+		# disk is under the floor is an infrastructure failure, whatever the
+		# assertion text says. Run 33254400407's last iteration reported
+		# "121 deploy(s) not finalized within 45s" — nodes writing to a full
+		# disk, not a finalization regression. Label it and fail closed.
+		if [ -z "$BREACH_LINE" ] && [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+			DISK_MB="$(disk_free_mb)"
+			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
+				df -Pm "$OUTPUT_DIR" >"$ITERATION_DIR/disk-floor-breach.txt" 2>/dev/null || true
+				BREACH_LINE="iteration $ITERATIONS failed with free disk ${DISK_MB}MB < floor ${DISK_FREE_FLOOR_MB}MB; infrastructure, not a workload verdict"
+			fi
+		fi
 		if [ -n "$BREACH_LINE" ]; then
 			EARLY_EXIT_REASON="host_protection_breach"
 			printf 'host-protection breach in iteration %s; ending soak (fail-closed)\n' "$ITERATIONS"
@@ -758,6 +1181,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 
 	if [ "$RUN_BENCHMARKS" = "true" ] && [ "$((ITERATIONS % BENCH_EVERY))" -eq 0 ]; then
 		run_bench_segment
+		persist_soak_state
 	fi
 
 done
@@ -778,14 +1202,7 @@ FINISHED_AT="$(date +%s)"
 
 # Written before the rollup so a later segment resumes from accurate counters
 # even if the rollup below fails.
-{
-	printf 'STARTED_AT=%s\n' "$STARTED_AT"
-	printf 'ITERATIONS=%s\n' "$ITERATIONS"
-	printf 'FAILURES=%s\n' "$FAILURES"
-	printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
-	printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
-	printf 'SEGMENT=%s\n' "$SEGMENT"
-} >"$STATE_FILE"
+persist_soak_state
 
 {
 	printf 'started_at=%s\n' "$STARTED_AT"
@@ -807,6 +1224,8 @@ if command -v jq >/dev/null; then
 		SOAK_METRICS_REGISTRY="$SCRIPT_DIR/bench/soak-metrics.json" \
 		SOAK_TARGET_REF="$TARGET_REF" \
 		SOAK_TARGET_SHA="$TARGET_SHA" \
+		SOAK_TRIGGER_SOURCE="$TRIGGER_SOURCE" \
+		SOAK_SLOT_DELAY_SECONDS="$SLOT_DELAY_SECONDS" \
 		SOAK_VERSION="$VERSION" \
 		SOAK_STARTED_AT="$STARTED_AT" \
 		SOAK_FINISHED_AT="$FINISHED_AT" \
@@ -827,6 +1246,8 @@ if command -v jq >/dev/null; then
 			jq -n \
 				--arg target_ref "$TARGET_REF" \
 				--arg target_sha "$TARGET_SHA" \
+				--arg trigger_source "$TRIGGER_SOURCE" \
+				--argjson slot_delay "$SLOT_DELAY_SECONDS" \
 				--arg version "$VERSION" \
 				--argjson started "$STARTED_AT" \
 				--argjson finished "$FINISHED_AT" \
@@ -836,6 +1257,7 @@ if command -v jq >/dev/null; then
 				--argjson bench_segments "$BENCH_SEGMENTS" \
 				--argjson bench_failures "$BENCH_FAILURES" \
 				'{target_ref: $target_ref, target_sha: $target_sha, version: $version,
+          trigger_source: $trigger_source, slot_delay_seconds: $slot_delay,
           started_at: $started, finished_at: $finished,
           requested_seconds: $requested,
           elapsed_seconds: ($finished - $started),

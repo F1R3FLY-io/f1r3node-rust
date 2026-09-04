@@ -1,6 +1,6 @@
 // UC-16 — Slashed validator's blocks stay in the DAG but exit fork choice.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-16.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-16.
 // Theorems: T-7 (fork-choice exclusion of slashed validators).
 // Reference: design/07-fork-choice-and-lifecycle.md.
 //

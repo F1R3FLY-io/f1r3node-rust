@@ -67,8 +67,15 @@ COPY node/ ./node/
 # xx-apt installs target libs in the xx sysroot, we need to tell pkg-config where they are
 # Enable AES CPU features for gxhash dependency (required by PathMap crate).
 # +sse2 is x86-only; on aarch64 only +aes is valid (avoids warning spam on ARM hosts).
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+# PROFILING_BUILD=1 keeps frame pointers in the release binary so `perf
+# record -g`'s default fp-based unwinder can resolve user-space (Rust) call
+# stacks above libc frames instead of stopping at the kernel/libc boundary.
+# Off by default: frame pointers cost a register + minor codegen overhead,
+# not wanted in the image everyone actually runs.
+ARG PROFILING_BUILD=0
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/build/build \
     export TARGET_TRIPLE=$(xx-cargo --print-target-triple) && \
     export PKG_CONFIG_SYSROOT_DIR=$(xx-info sysroot) && \
@@ -78,6 +85,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         aarch64*) export RUSTFLAGS="-C target-feature=+aes" ;; \
         *) export RUSTFLAGS="-C target-feature=+aes,+sse2" ;; \
     esac && \
+    if [ "${PROFILING_BUILD}" = "1" ]; then export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"; fi && \
     xx-cargo build --release -p node --target-dir ./build && \
     xx-verify ./build/${TARGET_TRIPLE}/release/node && \
     cp ./build/${TARGET_TRIPLE}/release/node /build/node_binary && \
@@ -88,6 +96,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ============================================================================
 FROM debian:bookworm-slim AS runtime-base
 
+# Re-declared: ARGs don't cross FROM boundaries. Gates the `perf`/`procps`
+# install below the same way it gates frame pointers in the builder stage —
+# keeps profiling tooling out of the image everyone actually runs.
+ARG PROFILING_BUILD=0
+
 # Install runtime dependencies
 # Note: grpcurl and jq for healthcheck (matching build.sbt healthcheck)
 RUN apt-get update && apt-get install -y \
@@ -96,6 +109,7 @@ RUN apt-get update && apt-get install -y \
     libc6 \
     libjemalloc2 \
     curl \
+    && if [ "${PROFILING_BUILD}" = "1" ]; then apt-get install -y linux-perf procps binutils; fi \
     && rm -rf /var/lib/apt/lists/*
 
 # Install grpcurl and jq for healthcheck (matching build.sbt)
@@ -171,7 +185,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # drifting from node/Cargo.toml.
 ARG VERSION=unknown
 LABEL maintainer="F1r3fly.io LCA https://f1r3fly.io/"
-LABEL version="0.4.45"
+LABEL version="0.4.46"
 
 # Switch to daemon user (matching build.sbt: daemonUser in Docker := "daemon")
 USER daemon

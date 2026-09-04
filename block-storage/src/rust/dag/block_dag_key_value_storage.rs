@@ -21,25 +21,23 @@
 //!
 //! * `global_lock: Arc<parking_lot::RwLock<()>>` coordinates pure-read
 //!   snapshot acquisition (via `.read()`) against mutators (`.write()`).
-//! * `block_metadata_index`, `deploy_index` are themselves
-//!   `parking_lot::RwLock`-wrapped for fine-grained concurrency.
+//! * `block_metadata_index` is itself `parking_lot::RwLock`-wrapped for
+//!   fine-grained concurrency.
 //!
-//! See `docs/theory/slashing/slashing-verification.md` for the
+//! See `docs/casper/theory/slashing/slashing-verification.md` for the
 //! protocol-level theorems whose witnesses are recorded here.
 
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[cfg(any(test, feature = "test-internals"))]
-use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 #[cfg(any(test, feature = "test-internals"))]
 use models::rust::block_metadata::AdmissionRejectionReason;
@@ -47,7 +45,8 @@ use models::rust::block_metadata::{BlockMetadata, ADMISSION_SCHEMA_VERSION};
 pub use models::rust::block_metadata::{CertifiedAdmissionOutcome, CertifiedSenderAuthority};
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, FinalizationCertificate};
+use models::rust::deploy_id::{DeployLookupId, LegacyDeploySignature};
 #[cfg(any(test, feature = "test-internals"))]
 use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::equivocation_record::SequenceNumber;
@@ -58,13 +57,26 @@ use models::rust::validator::{self, Validator, ValidatorSerde};
 // `access_equivocations_tracker` RMW contract is preserved by holding
 // `global_lock` for the duration of the critical section.
 use parking_lot::RwLock as PlRwLock;
+use prost::bytes::Bytes;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{
+    strict_atomic_mutate, AtomicStoreMutation, AtomicStoreOperation, KeyValueStore, KvStoreError,
+};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use super::block_metadata_store::BlockMetadataStore;
+use super::carrier_index::CarrierIndex;
+use super::deploy_lifecycle_types::{
+    DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
+    TerminalState,
+};
+use super::deploy_occurrence_store::DeployOccurrenceStore;
+use super::deploy_occurrence_types::{
+    DeployOccurrence, OccurrenceAdmissionMode, TerminalOccurrenceSummary,
+    DEPLOY_OCCURRENCE_PROTOCOL_VERSION, DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+};
 use super::equivocation_tracker_store::EquivocationTrackerStore;
 use crate::rust::finality::{
     state_preservation, FinalizationAppendOutcome, FinalizationEffectId, FinalizationHead,
@@ -80,27 +92,19 @@ fn test_sender_authority_certificate(
     generation: BondGeneration,
     stake: i64,
 ) -> Result<CertifiedSenderAuthority, KvStoreError> {
-    let authority_floor_hash = block
-        .header
-        .parents_hash_list
-        .first()
-        .cloned()
-        .or_else(|| (block.body.state.block_number == 0).then(|| block.block_hash.clone()))
-        .ok_or_else(|| {
-            KvStoreError::InvalidArgument(
-                "a non-genesis test block requires an authority-floor parent".to_string(),
-            )
-        })?;
-    let authority_floor_post_state_hash = block.body.state.pre_state_hash.clone();
-    let mut preimage = b"f1r3fly-test-certified-consensus-context-v1".to_vec();
-    preimage.extend_from_slice(&authority_floor_hash);
-    preimage.extend_from_slice(&authority_floor_post_state_hash);
-    let context_digest = Blake2b256::hash(preimage).into();
+    let commitment = block.header.finalized_floor.as_ref().ok_or_else(|| {
+        KvStoreError::InvalidArgument(
+            "a non-genesis test block requires a finalized-floor commitment".to_string(),
+        )
+    })?;
+    commitment
+        .validate_shape()
+        .map_err(KvStoreError::InvalidArgument)?;
     CertifiedSenderAuthority::new(
         block,
-        authority_floor_hash,
-        authority_floor_post_state_hash,
-        context_digest,
+        commitment.floor_hash.clone(),
+        commitment.floor_post_state_hash.clone(),
+        commitment.authority_context_digest.clone(),
         generation,
         stake,
     )
@@ -124,6 +128,81 @@ pub enum InsertMode {
     /// Genesis / approved-block insertion. Marks the block as the
     /// initial finalization root.
     ApprovedGenesis,
+    /// Settled-history insertion: a hash-checked, unjudged block below the
+    /// node's sync anchor, admitted the way LFS restore admitted its
+    /// neighbours. Identical to `Normal` except that latest messages are
+    /// untouched — settled history predates the anchor's justification
+    /// frontier, so it is never anyone's latest message, and letting it
+    /// advance one hands fork choice a frontier this node does not hold.
+    SettledHistory,
+}
+
+fn candidate_is_preferred_latest_message(
+    current_sequence_number: Option<i32>,
+    current_hash: &BlockHash,
+    candidate_sequence_number: i32,
+    candidate_hash: &BlockHash,
+) -> bool {
+    match current_sequence_number {
+        None => true,
+        Some(current_sequence_number) => {
+            candidate_sequence_number > current_sequence_number
+                || (candidate_sequence_number == current_sequence_number
+                    && candidate_hash < current_hash)
+        }
+    }
+}
+
+#[cfg(test)]
+mod latest_message_order_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn hash(value: u16) -> BlockHash { Bytes::copy_from_slice(&value.to_be_bytes()) }
+
+    fn select(candidates: &[(i32, u16)]) -> (Option<i32>, BlockHash) {
+        candidates.iter().fold(
+            (None, hash(u16::MAX)),
+            |(current_sequence, current_hash), (candidate_sequence, candidate_hash)| {
+                let candidate_hash = hash(*candidate_hash);
+                if candidate_is_preferred_latest_message(
+                    current_sequence,
+                    &current_hash,
+                    *candidate_sequence,
+                    &candidate_hash,
+                ) {
+                    (Some(*candidate_sequence), candidate_hash)
+                } else {
+                    (current_sequence, current_hash)
+                }
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn latest_message_selection_is_permutation_invariant(
+            candidates in prop::collection::vec((0i32..100, any::<u16>()), 0..32),
+        ) {
+            let selected = select(&candidates);
+            let mut reversed = candidates.clone();
+            reversed.reverse();
+            prop_assert_eq!(&selected, &select(&reversed));
+
+            let expected = candidates.iter().max_by(|left, right| {
+                left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1))
+            });
+            match expected {
+                Some((sequence, value)) => {
+                    prop_assert_eq!(selected, (Some(*sequence), hash(*value)));
+                }
+                None => {
+                    prop_assert_eq!(selected, (None, hash(u16::MAX)));
+                }
+            }
+        }
+    }
 }
 
 // Phase 8 (A-6): `InsertMode::flags()` projection deleted; `insert_internal`
@@ -132,6 +211,7 @@ pub enum InsertMode {
 #[derive(Clone)]
 pub struct KeyValueDagRepresentation {
     pub dag_set: imbl::HashSet<BlockHash>,
+    pub canonical_genesis_hash: Option<BlockHash>,
     pub latest_messages_map: imbl::HashMap<Validator, BlockHash>,
     pub child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
     pub height_map: imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
@@ -143,18 +223,17 @@ pub struct KeyValueDagRepresentation {
         imbl::HashMap<(Validator, BondGeneration, SequenceNumber), BTreeSet<BlockHash>>,
     pub last_finalized_block_hash: BlockHash,
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
-    // P2-14: the metadata + deploy indices are kept `pub` for cross-crate
-    // test fixtures that build a `KeyValueDagRepresentation` from raw
+    // P2-14: the metadata index is kept `pub` for cross-crate test
+    // fixtures that build a `KeyValueDagRepresentation` from raw
     // components. Production code on the same crate (block-storage)
-    // accesses them through the inherent methods on this type; treat
+    // accesses it through the inherent methods on this type; treat
     // direct manipulation as a test-only escape hatch.
     #[doc(hidden)]
     pub block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     #[doc(hidden)]
     pub deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     #[doc(hidden)]
-    pub deploy_occurrence_index:
-        Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>>>>,
+    pub deploy_occurrence_store: DeployOccurrenceStore,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     /// Pure function of the block, so node-identical; persistent to avoid
     /// re-walking to genesis on every floor query.
@@ -166,9 +245,23 @@ pub struct KeyValueDagRepresentation {
     /// per-merge floor walk from O(Delta^2) into an amortized-O(1) incremental
     /// up-walk (finalized-floor fix; see finality/floor.rs).
     pub frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
+    /// The deploy-lifecycle tables (see `deploy_lifecycle_types`): per-sig
+    /// event rows fed by `insert`'s body pass, and the WRITE-ONCE terminal
+    /// verdicts the finality layer's register writes. The status API reads
+    /// these — Pending/Finalized/Expired/Failed are lookups, never
+    /// computations.
+    pub lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
+    /// The repeat-deploy carrier index (see `carrier_index`): per-sig
+    /// carrier records over valid, invalid, and settled blocks, plus the
+    /// engagement watermark. Fed by `insert` before DAG visibility.
+    pub carrier_index: Arc<PlRwLock<CarrierIndex>>,
 }
 
 impl KeyValueDagRepresentation {
+    pub fn canonical_genesis_hash(&self) -> Option<&BlockHash> {
+        self.canonical_genesis_hash.as_ref()
+    }
+
     pub fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
         if self.dag_set.contains(block_hash) {
             let block_metadata_index_guard = self.block_metadata_index.read();
@@ -192,6 +285,23 @@ impl KeyValueDagRepresentation {
 
     pub fn latest_message_hashes(&self) -> imbl::HashMap<Validator, BlockHash> {
         self.latest_messages_map.clone()
+    }
+
+    pub fn validate_latest_message_materialization(&self) -> Result<(), KvStoreError> {
+        for (validator, hash) in &self.latest_messages_map {
+            if self.canonical_genesis_hash() == Some(hash) {
+                continue;
+            }
+            self.lookup_unsafe(hash)
+                .map_err(|_| KvStoreError::MissingBlock {
+                    hash: hash.clone(),
+                    context: format!(
+                        "latest message for validator {}",
+                        PrettyPrinter::build_string_bytes(validator)
+                    ),
+                })?;
+        }
+        Ok(())
     }
 
     pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
@@ -307,6 +417,185 @@ impl KeyValueDagRepresentation {
             .put_one(BlockHashSerde(block_hash), BlockHashSerde(frontier_hash))
     }
 
+    /// Lifecycle: the write-once terminal record for a sig, if determined.
+    pub fn deploy_terminal(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<Option<TerminalRecord>, KvStoreError> {
+        self.lifecycle.read().get_terminal(deploy_id)
+    }
+
+    /// Lifecycle: the open event row for a sig (pruned once terminal).
+    pub fn deploy_lifecycle_events(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<Option<LifecycleEvents>, KvStoreError> {
+        self.lifecycle.read().get_events(deploy_id)
+    }
+
+    /// Lifecycle: WRITE-ONCE terminal write (prunes the event row on a
+    /// fresh write; returns the survivor on a duplicate attempt).
+    pub fn put_deploy_terminal_if_absent(
+        &self,
+        deploy_id: &DeployLookupId,
+        record: TerminalRecord,
+    ) -> Result<TerminalRecord, KvStoreError> {
+        if matches!(deploy_id, DeployLookupId::V6(_)) {
+            return Err(KvStoreError::InvalidArgument(
+                "protocol-v6 terminalization requires atomic occurrence compaction".to_string(),
+            ));
+        }
+        self.lifecycle
+            .write()
+            .put_terminal_if_absent(deploy_id, record)
+    }
+
+    pub fn put_deploy_terminal_and_compact_occurrences(
+        &self,
+        deploy_id: models::rust::deploy_id::DeployIdV6,
+        record: TerminalRecord,
+        finalization_revision: u64,
+        finalized_floor_hash: [u8; 32],
+        finalized_floor_height: i64,
+        compaction_horizon: i64,
+    ) -> Result<TerminalRecord, KvStoreError> {
+        let validate_record = |candidate: &TerminalRecord| {
+            let carrier_length = candidate.latest_block_hash.len();
+            if matches!(
+                candidate.state,
+                TerminalState::Finalized | TerminalState::Failed
+            ) && carrier_length != 32
+            {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "protocol-v6 finalized or failed lifecycle carrier must be 32 bytes, got {}",
+                    carrier_length
+                )));
+            }
+            if carrier_length != 0 && carrier_length != 32 {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "protocol-v6 lifecycle carrier must be empty or 32 bytes, got {}",
+                    carrier_length
+                )));
+            }
+            if candidate.latest_height < 0 || candidate.latest_height > finalized_floor_height {
+                return Err(KvStoreError::InvalidArgument(
+                    "protocol-v6 lifecycle carrier height is outside the finalized floor"
+                        .to_string(),
+                ));
+            }
+            Ok(())
+        };
+        validate_record(&record)?;
+        let typed_id = DeployLookupId::V6(deploy_id);
+        let lifecycle = self.lifecycle.write();
+        let survivor = lifecycle
+            .get_terminal(&typed_id)?
+            .unwrap_or_else(|| record.clone());
+        validate_record(&survivor)?;
+        let occurrence_plan = self.deploy_occurrence_store.prepare_compaction(
+            deploy_id,
+            survivor.state,
+            survivor.rejection_count,
+            finalization_revision,
+            finalized_floor_hash,
+            finalized_floor_height,
+            compaction_horizon,
+        )?;
+        let terminal_store = lifecycle.terminal_store();
+        let events_store = lifecycle.events_store();
+        let expected_terminal = terminal_store
+            .get_one(&typed_id)?
+            .map(|existing| terminal_store.encode_value(&existing))
+            .transpose()?;
+        let mut owned_mutations = vec![
+            (
+                terminal_store.raw_store().clone(),
+                terminal_store.encode_key(&typed_id)?,
+                AtomicStoreOperation::CompareAndSwap {
+                    expected: expected_terminal,
+                    replacement: Some(terminal_store.encode_value(&survivor)?),
+                },
+            ),
+            (
+                events_store.raw_store().clone(),
+                events_store.encode_key(&typed_id)?,
+                AtomicStoreOperation::Delete,
+            ),
+        ];
+        owned_mutations.extend(
+            occurrence_plan
+                .mutations
+                .into_iter()
+                .map(|(key, operation)| {
+                    (
+                        self.deploy_occurrence_store.raw_store().clone(),
+                        key,
+                        operation,
+                    )
+                }),
+        );
+        let mutations = owned_mutations
+            .iter()
+            .map(|(store, key, operation)| AtomicStoreMutation {
+                store: store.as_ref(),
+                key: key.clone(),
+                operation: operation.clone(),
+            })
+            .collect::<Vec<_>>();
+        strict_atomic_mutate(&mutations)?;
+        Ok(survivor)
+    }
+
+    /// Lifecycle: every open sig — the register's schedule rebuild input.
+    pub fn open_lifecycle_sigs(&self) -> Result<Vec<DeployLookupId>, KvStoreError> {
+        self.lifecycle.read().open_sigs()
+    }
+
+    /// Repeat-deploy carrier index: the height since which every insert
+    /// has recorded carriers on this database. The fast path engages only
+    /// for scan windows starting at or above this watermark; `None` means
+    /// the index was never initialized and the fast path stays off.
+    pub fn carrier_index_watermark(&self) -> Result<Option<i64>, KvStoreError> {
+        self.carrier_index.read().watermark()
+    }
+
+    /// Repeat-deploy carrier index: true when the index holds NO carrier
+    /// for the sig. Sound as an absence proof only when the scan window
+    /// starts at or above the watermark. A `false` is not a verdict — it
+    /// routes the sig to the exact ancestor scan.
+    pub fn carrier_index_proves_absence(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<bool, KvStoreError> {
+        self.carrier_index.read().proves_absence(deploy_id)
+    }
+
+    /// Repeat-deploy carrier index: drop entries below the cutoff (below
+    /// every future scan window). The finality register drives this on
+    /// floor advances.
+    pub fn prune_carriers_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
+        self.carrier_index.write().prune_below(cutoff)
+    }
+
+    /// The sig's most recent canonical appearance — the latest lifecycle
+    /// event by (height, hash), or the terminal record's frozen display
+    /// block once the row is pruned. A pure function of the DAG's bodies,
+    /// so the answer never depends on node-local insertion order. Events
+    /// whose block is not in this representation's `dag_set` are orphans
+    /// from a crash inside the ingest-first window and never resolve.
+    pub fn deploy_canonical_appearance(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .lifecycle
+            .read()
+            .canonical_appearance(deploy_id, &|h| {
+                self.dag_set.contains(&BlockHash::copy_from_slice(h))
+            })?
+            .map(BlockHash::from))
+    }
+
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
     // latestBlockNumber, topoSort and lookupByDeployId are only used in BlockAPI.
@@ -327,12 +616,8 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn block_number_unsafe(&self, block_hash: &BlockHash) -> Result<i64, KvStoreError> {
-        self.block_number(block_hash).ok_or_else(|| {
-            KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {}",
-                PrettyPrinter::build_string_bytes(block_hash)
-            ))
-        })
+        self.block_number(block_hash)
+            .ok_or_else(|| missing_block(block_hash, "block_number_unsafe"))
     }
 
     pub fn main_parent(&self, block_hash: &BlockHash) -> Option<BlockHash> {
@@ -410,39 +695,58 @@ impl KeyValueDagRepresentation {
         }
     }
 
-    pub fn lookup_by_deploy_id(
+    pub fn lookup_by_legacy_signature(
         &self,
-        deploy_id: &DeployId,
+        deploy_id: &LegacyDeploySignature,
     ) -> Result<Option<BlockHash>, KvStoreError> {
         let deploy_index_guard = self.deploy_index.read();
         deploy_index_guard
-            .get_one(deploy_id)
+            .get_one(&deploy_id.as_bytes().to_vec())
             .map(|result| result.map(|block_hash_serde| block_hash_serde.into()))
+    }
+
+    pub fn lookup_by_deploy_id(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        match deploy_id {
+            DeployLookupId::Legacy(signature) => self.lookup_by_legacy_signature(signature),
+            DeployLookupId::V6(deploy_id) => self.deploy_occurrence_store.canonical(*deploy_id),
+        }
     }
 
     pub fn lookup_deploy_occurrences(
         &self,
-        deploy_id: &DeployId,
+        deploy_id: &DeployLookupId,
     ) -> Result<BTreeSet<BlockHash>, KvStoreError> {
-        let deploy_occurrence_index_guard = self.deploy_occurrence_index.read();
-        Ok(deploy_occurrence_index_guard
-            .get_one(deploy_id)?
-            .unwrap_or_default()
-            .into_iter()
-            .map(Into::into)
-            .collect())
+        match deploy_id {
+            DeployLookupId::Legacy(signature) => Ok(self
+                .lookup_by_legacy_signature(signature)?
+                .into_iter()
+                .collect()),
+            DeployLookupId::V6(deploy_id) => Ok(self
+                .deploy_occurrence_store
+                .exact_occurrences(*deploy_id)?
+                .into_keys()
+                .collect()),
+        }
+    }
+
+    pub fn deploy_terminal_occurrence_summary(
+        &self,
+        deploy_id: models::rust::deploy_id::DeployIdV6,
+    ) -> Result<Option<TerminalOccurrenceSummary>, KvStoreError> {
+        self.deploy_occurrence_store.terminal_summary(deploy_id)
     }
 
     // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagRepresentationSyntax.scala
 
     // Get block metadata, "unsafe" because method expects block already in the DAG.
+    // (see `missing_hash_context` below for why these errors carry a backtrace)
     pub fn lookup_unsafe(&self, block_hash: &BlockHash) -> Result<BlockMetadata, KvStoreError> {
         match self.lookup(block_hash) {
             Ok(Some(metadata)) => Ok(metadata),
-            _ => Err(KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {}",
-                PrettyPrinter::build_string_bytes(block_hash)
-            ))),
+            _ => Err(missing_block(block_hash, "lookup_unsafe")),
         }
     }
 
@@ -488,6 +792,7 @@ impl KeyValueDagRepresentation {
         validator: &Validator,
     ) -> Result<Option<BlockMetadata>, KvStoreError> {
         match self.latest_message_hash(validator) {
+            Some(hash) if self.canonical_genesis_hash() == Some(&hash) => Ok(None),
             Some(hash) => self.lookup_unsafe(&hash).map(Some),
             None => Ok(None),
         }
@@ -498,8 +803,20 @@ impl KeyValueDagRepresentation {
 
         let mut result = HashMap::new();
         for (validator, hash) in latest_messages.iter() {
-            let metadata = self.lookup_unsafe(hash)?;
-            result.insert(validator.clone(), metadata);
+            if self.canonical_genesis_hash() == Some(hash) {
+                continue;
+            }
+            match self.lookup(hash)? {
+                Some(metadata) => {
+                    result.insert(validator.clone(), metadata);
+                }
+                None => {
+                    return Err(KvStoreError::MissingBlock {
+                        hash: hash.clone(),
+                        context: "latest message".to_string(),
+                    });
+                }
+            }
         }
 
         Ok(result)
@@ -602,10 +919,7 @@ impl KeyValueDagRepresentation {
 
         // Keep behavior for blocks that intentionally have no self-justification.
         if !self.contains(block_hash) {
-            return Err(KvStoreError::InvalidArgument(format!(
-                "DAG storage is missing hash {}",
-                PrettyPrinter::build_string_bytes(block_hash)
-            )));
+            return Err(missing_block(block_hash, "self_justification"));
         }
         Ok(None)
     }
@@ -700,6 +1014,189 @@ impl KeyValueDagRepresentation {
         Ok(false)
     }
 
+    fn consume_certified_support_work(remaining: &mut usize) -> Result<(), KvStoreError> {
+        *remaining = remaining.checked_sub(1).ok_or_else(|| {
+            KvStoreError::InvalidArgument(format!(
+                "finalization certificate exceeds the deterministic DAG-visit limit {}",
+                FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION
+            ))
+        })?;
+        Ok(())
+    }
+
+    fn is_dag_ancestor_certified_support(
+        &self,
+        ancestor: &BlockHash,
+        descendant: &BlockHash,
+        remaining: &mut usize,
+    ) -> Result<bool, KvStoreError> {
+        if ancestor == descendant {
+            return Ok(true);
+        }
+        let stop_height = self.block_number_unsafe(ancestor)?;
+        let mut visited = HashSet::from([descendant.clone()]);
+        let mut pending = BTreeSet::from([descendant.clone()]);
+        while let Some(hash) = pending.pop_first() {
+            Self::consume_certified_support_work(remaining)?;
+            if hash == *ancestor {
+                return Ok(true);
+            }
+            let metadata = self.lookup_unsafe(&hash)?;
+            if metadata.block_number <= stop_height {
+                continue;
+            }
+            for parent in metadata.parents {
+                if visited.insert(parent.clone()) {
+                    pending.insert(parent);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn is_predecessor_history_certified_support(
+        &self,
+        hash: &BlockHash,
+        block_number: i64,
+        predecessor: &BlockHash,
+        predecessor_block_number: i64,
+        remaining_work: &mut usize,
+        predecessor_cache: &mut HashMap<BlockHash, bool>,
+    ) -> Result<bool, KvStoreError> {
+        if hash == predecessor {
+            return Ok(true);
+        }
+        if block_number > predecessor_block_number {
+            return Ok(false);
+        }
+        if let Some(result) = predecessor_cache.get(hash) {
+            return Ok(*result);
+        }
+        let result = self.is_dag_ancestor_certified_support(hash, predecessor, remaining_work)?;
+        predecessor_cache.insert(hash.clone(), result);
+        Ok(result)
+    }
+
+    pub fn certified_finalized_delta(
+        &self,
+        predecessor: &BlockHash,
+        target: &BlockHash,
+        maximum_finalized_blocks: usize,
+        remaining_work: &mut usize,
+    ) -> Result<BTreeSet<BlockHashSerde>, KvStoreError> {
+        if maximum_finalized_blocks == 0
+            || maximum_finalized_blocks > FinalizationCertificate::MAX_FINALIZED_BLOCKS
+        {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "finalization delta limit must be between 1 and {}",
+                FinalizationCertificate::MAX_FINALIZED_BLOCKS
+            )));
+        }
+        let predecessor_block_number = self.block_number_unsafe(predecessor)?;
+        let mut finalized = BTreeSet::new();
+        let mut queued = HashSet::from([target.clone()]);
+        let mut pending = BTreeSet::from([target.clone()]);
+        let mut predecessor_cache = HashMap::new();
+        while let Some(hash) = pending.pop_first() {
+            Self::consume_certified_support_work(remaining_work)?;
+            let metadata = self.lookup_unsafe(&hash)?;
+            if self.is_predecessor_history_certified_support(
+                &hash,
+                metadata.block_number,
+                predecessor,
+                predecessor_block_number,
+                remaining_work,
+                &mut predecessor_cache,
+            )? {
+                continue;
+            }
+            if finalized.insert(BlockHashSerde(hash.clone()))
+                && finalized.len() > maximum_finalized_blocks
+            {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "finalization ancestry delta exceeds the protocol limit {}",
+                    maximum_finalized_blocks
+                )));
+            }
+            for parent in metadata.parents {
+                if queued.insert(parent.clone()) {
+                    pending.insert(parent);
+                }
+            }
+        }
+        Ok(finalized)
+    }
+
+    pub fn certified_support_closure(
+        &self,
+        predecessor: &BlockHash,
+        roots: impl IntoIterator<Item = BlockHash>,
+        maximum_supporting_blocks: usize,
+        remaining_work: &mut usize,
+    ) -> Result<BTreeSet<BlockHashSerde>, KvStoreError> {
+        if maximum_supporting_blocks == 0
+            || maximum_supporting_blocks > FinalizationCertificate::MAX_SUPPORTING_BLOCKS
+        {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "finalization support limit must be between 1 and {}",
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS
+            )));
+        }
+        let predecessor_block_number = self.block_number_unsafe(predecessor)?;
+        let mut support = BTreeSet::new();
+        let mut queued = HashSet::new();
+        let mut pending = BTreeSet::new();
+        let mut predecessor_cache = HashMap::new();
+        for hash in roots {
+            if queued.insert(hash.clone()) {
+                pending.insert(hash);
+            }
+        }
+        while let Some(hash) = pending.pop_first() {
+            Self::consume_certified_support_work(remaining_work)?;
+            if !support.insert(BlockHashSerde(hash.clone())) {
+                continue;
+            }
+            if support.len() > maximum_supporting_blocks {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "finalization support closure exceeds the protocol limit {}",
+                    maximum_supporting_blocks
+                )));
+            }
+            if self.canonical_genesis_hash() == Some(&hash) {
+                continue;
+            }
+            let metadata = self.lookup_unsafe(&hash)?;
+            let predecessor_history = self.is_predecessor_history_certified_support(
+                &hash,
+                metadata.block_number,
+                predecessor,
+                predecessor_block_number,
+                remaining_work,
+                &mut predecessor_cache,
+            )?;
+            if predecessor_history {
+                continue;
+            }
+            let dependencies = metadata
+                .parents
+                .into_iter()
+                .chain(
+                    metadata
+                        .justifications
+                        .into_iter()
+                        .map(|justification| justification.latest_block_hash),
+                )
+                .collect::<BTreeSet<_>>();
+            for dependency in dependencies {
+                if queued.insert(dependency.clone()) {
+                    pending.insert(dependency);
+                }
+            }
+        }
+        Ok(support)
+    }
+
     pub fn parents_unsafe(&self, block_hash: &BlockHash) -> Result<Vec<BlockHash>, KvStoreError> {
         let metadata = self.lookup_unsafe(block_hash)?;
         Ok(metadata.parents)
@@ -787,6 +1284,56 @@ impl KeyValueDagRepresentation {
         Ok(result)
     }
 
+    /// `ancestors` for the finalized-ancestry MARKING walk over a possibly
+    /// truncated DAG. A parent referenced by a held block whose own metadata
+    /// is not held is the restore horizon: everything below it is below the
+    /// anchor's floor, hence already settled, so the walk terminates there —
+    /// the parent is neither marked nor expanded. Erroring instead (as
+    /// `ancestors` does) aborts the LFB adoption and wedges the finalizer
+    /// forever while the chain grows past it. Callers for whom a missing
+    /// block is an availability failure to surface (merge scope) stay on
+    /// `ancestors`.
+    pub fn held_ancestors(
+        &self,
+        block_hash: BlockHash,
+        filter_f: impl Fn(&BlockHash) -> bool,
+    ) -> Result<HashSet<BlockHash>, KvStoreError> {
+        let mut result = HashSet::new();
+        let mut current_level = vec![self.lookup_unsafe(&block_hash)?];
+
+        while !current_level.is_empty() {
+            let mut next_level = Vec::new();
+
+            for metadata in &current_level {
+                for parent in &metadata.parents {
+                    if filter_f(parent) && !result.contains(parent) {
+                        if let Some(parent_metadata) = self.lookup(parent)? {
+                            result.insert(parent.clone());
+                            next_level.push(parent_metadata);
+                        } else {
+                            // Routine on a truncated node while the sweep
+                            // first crosses its restore horizon; on a node
+                            // holding full history the same skip means the
+                            // index lost a block — keep it visible either
+                            // way rather than terminating silently.
+                            tracing::warn!(
+                                parent = %PrettyPrinter::build_string_bytes(parent),
+                                child = %PrettyPrinter::build_string_bytes(&metadata.block_hash),
+                                "finalization sweep skipped an unheld parent: settled \
+                                 ancestry below a restore horizon, or lost data on a \
+                                 fully-synced node"
+                            );
+                        }
+                    }
+                }
+            }
+
+            current_level = next_level;
+        }
+
+        Ok(result)
+    }
+
     pub fn with_ancestors(
         &self,
         block_hash: BlockHash,
@@ -802,7 +1349,7 @@ impl KeyValueDagRepresentation {
 /// test fixtures that previously poked at these fields must now go
 /// through the `#[cfg(any(test, feature = "test-internals"))]`-gated
 /// constructor (`from_parts`) and the matching `metadata_index_for_tests`
-/// / `deploy_index_for_tests` accessors — see further down this file.
+/// accessor — see further down this file.
 /// **Production code MUST NOT touch these fields directly.** All RMW on
 /// the equivocation tracker must route through
 /// `access_equivocations_tracker` (Bug #2 / T-9.2 contract). All
@@ -827,8 +1374,7 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     pub(crate) deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
-    pub(crate) deploy_occurrence_index:
-        Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>>>>,
+    pub(crate) deploy_occurrence_store: DeployOccurrenceStore,
     /// DD-7b-2 (a) Option 2 (2026-08-29): persistent
     /// `payload_hash → deploy_sig` index populated as an
     /// atomic side-effect of Consensus-cap `journal_write` via
@@ -874,29 +1420,151 @@ pub struct BlockDagKeyValueStorage {
         (ValidatorSerde, BondGeneration, SequenceNumber),
         BTreeSet<BlockHashSerde>,
     >,
-    pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
     pub(crate) finalization_ledger: FinalizationLedger,
+    pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
+    /// Repeat-deploy carrier index (see `KeyValueDagRepresentation::carrier_index`).
+    pub(crate) carrier_index: Arc<PlRwLock<CarrierIndex>>,
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
+    /// Lower bound on `fault_tolerance_value` across `finalized_block_set`,
+    /// held as `f32` bits (`f32::to_bits` / `from_bits`) so it fits an atomic.
+    /// `propagate_ft_to_finalized_blocks` reads it to skip a scan that could
+    /// only raise blocks already at or above `ft_value`.
+    ///
+    /// The invariant is one-sided: too LOW costs one needless scan, too HIGH
+    /// skips a scan that was needed and leaves blocks under-propagated. So
+    /// lowering is free and may happen at any time, while raising is only
+    /// sound once a scan has actually rewritten every finalized block.
+    ///
+    /// Both writers hold `global_lock` exclusively — the lowering in
+    /// `record_directly_finalized`'s persist closure and the raise at the end
+    /// of `propagate_ft_to_finalized_blocks`. That is what makes `Relaxed`
+    /// sufficient here; a reader outside the lock would need stronger
+    /// ordering, and could observe a stale-high bound.
+    pub(crate) ft_lower_bound: Arc<AtomicU32>,
+    /// The shard's genesis block hash, persisted as a single-slot register.
+    /// On ceremony nodes it is derivable from the DAG (the height-0 block);
+    /// a truncated (LFS-restored) node holds no height-0 block and must
+    /// LEARN it — hash only, never the block — during restore. Consumers
+    /// that need a network-uniform genesis sentinel read this register.
+    pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
 }
 
 #[derive(Clone)]
 pub struct FinalizationBase {
     pub head: FinalizationHead,
     pub dag: KeyValueDagRepresentation,
+    pub dag_generation: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FinalizationWitnessInputs {
+    pub protocol_version: i64,
+    pub shard_id: String,
+    pub predecessor_certificate_digest: BlockHashSerde,
+    pub predecessor_certificate_block_hash: BlockHashSerde,
     pub fault_tolerance_numerator: i64,
     pub fault_tolerance_denominator: i64,
     pub latest_messages: BTreeMap<ValidatorSerde, BlockHashSerde>,
     pub authority_context_digest: BlockHashSerde,
 }
 
+fn predecessor_certificate_carrier_digest(
+    dag: &KeyValueDagRepresentation,
+    carrier: &BlockHash,
+    predecessor_floor: &BlockHash,
+    predecessor_post_state: &BlockHash,
+    protocol_version: i64,
+) -> Result<Option<BlockHash>, KvStoreError> {
+    if dag.canonical_genesis_hash() == Some(carrier) {
+        return Ok(None);
+    }
+    let metadata = dag.lookup_unsafe(carrier)?;
+    metadata
+        .validate()
+        .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
+    if metadata.approved_genesis
+        || !metadata.is_accepted()
+        || metadata.protocol_version != protocol_version
+    {
+        return Ok(None);
+    }
+    let Some(commitment) = metadata.finalized_floor_commitment.as_ref() else {
+        return Ok(None);
+    };
+    commitment
+        .validate_shape()
+        .map_err(KvStoreError::InvalidArgument)?;
+    Ok((commitment.floor_hash == *predecessor_floor
+        && commitment.floor_post_state_hash == *predecessor_post_state)
+        .then(|| commitment.certificate_digest.clone()))
+}
+
 impl BlockDagKeyValueStorage {
-    pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
+    /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
+    /// (same shared lifecycle tables), for callers holding the storage rather
+    /// than a representation. Lock order: `block_metadata_index` before
+    /// `lifecycle` (the DAG-visibility filter reads the metadata state).
+    pub fn deploy_canonical_appearance(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
+        Ok(self
+            .lifecycle
+            .read()
+            .canonical_appearance(deploy_id, &|h| {
+                metadata_guard.contains(&BlockHash::copy_from_slice(h))
+            })?
+            .map(BlockHash::from))
+    }
+
+    /// First-boot carrier-index initialization (startup, next to the
+    /// LFB-migration precedent). Writes the watermark W once: 0 on an
+    /// empty database (complete from the first insert), else the current
+    /// maximum stored block number + 1 (complete from the next insert). Blocks below W are
+    /// never claimed — the fast path engages only for scan windows that
+    /// start at or above W — so no backfill walk exists and there is no
+    /// walk-completeness state to certify or to forge. Returns the
+    /// effective watermark.
+    pub fn ensure_carrier_watermark(&self) -> Result<i64, KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        let next_height = {
+            let metadata_guard = self.block_metadata_index.read();
+            let dag_state_guard = metadata_guard.dag_state().read();
+            dag_state_guard
+                .block_number_map
+                .values()
+                .copied()
+                .max()
+                .map_or(Ok(0), |height| {
+                    height.checked_add(1).ok_or_else(|| {
+                        KvStoreError::InvalidArgument(
+                            "carrier watermark height exceeds i64".to_string(),
+                        )
+                    })
+                })?
+        };
+        self.carrier_index
+            .write()
+            .set_watermark_if_absent(next_height)
+    }
+
+    /// Test-only corruption helper (P2-16-style escape hatch): deletes the
+    /// PERSISTED metadata row for a block while the in-memory DAG state
+    /// still lists it, simulating a crash between the lifecycle ingest and
+    /// the metadata add.
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn remove_block_metadata_row_for_tests(
+        &self,
+        hash: &BlockHash,
+    ) -> Result<(), KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
+        metadata_guard.delete_kv_row_for_tests(hash)
+    }
+
+    pub async fn new(kvm: &mut (impl KeyValueStoreManager + ?Sized)) -> Result<Self, KvStoreError> {
         let admission_schema_kv_store = kvm.store("dag-admission-schema".to_string()).await?;
         let admission_schema_db: KeyValueTypedStoreImpl<String, u32> =
             KeyValueTypedStoreImpl::new(admission_schema_kv_store);
@@ -921,8 +1589,17 @@ impl BlockDagKeyValueStorage {
         let finalization_ledger_kv_store = kvm
             .store(FinalizationLedger::STORE_NAME.to_string())
             .await?;
+        let lifecycle_events_kv_store = kvm.store("deploy-lifecycle-events".to_string()).await?;
+        let lifecycle_terminal_kv_store =
+            kvm.store("deploy-lifecycle-terminal".to_string()).await?;
+        let carrier_index_kv_store = kvm.store("carrier-index".to_string()).await?;
+        let carrier_index_meta_kv_store = kvm.store("carrier-index-meta".to_string()).await?;
+        let carrier_index_tables = CarrierIndex::new(
+            carrier_index_kv_store.clone(),
+            carrier_index_meta_kv_store.clone(),
+        );
 
-        let schema_key = "casper-v5".to_string();
+        let schema_key = "casper-v6".to_string();
         match admission_schema_db.get_one(&schema_key)? {
             Some(version) if version == ADMISSION_SCHEMA_VERSION => {}
             Some(version) => {
@@ -947,16 +1624,33 @@ impl BlockDagKeyValueStorage {
                         FinalizationLedger::STORE_NAME,
                         &finalization_ledger_kv_store,
                     ),
+                    ("deploy-lifecycle-events", &lifecycle_events_kv_store),
+                    ("deploy-lifecycle-terminal", &lifecycle_terminal_kv_store),
+                    ("carrier-index", &carrier_index_kv_store),
+                    ("carrier-index-meta", &carrier_index_meta_kv_store),
                 ];
                 for (name, store) in existing_indices {
                     if store.non_empty()? {
                         return Err(KvStoreError::InvalidArgument(format!(
-                            "DAG index {name} contains data without a protocol-v5 admission schema; start from a fresh protocol-v5 genesis or run an explicit verified migration"
+                            "DAG index {name} contains data without a protocol-v6 admission schema; start from a fresh protocol-v6 genesis or run an explicit verified migration"
                         )));
                     }
                 }
                 admission_schema_db.put_one(schema_key, ADMISSION_SCHEMA_VERSION)?;
             }
+        }
+        let schema_rows = admission_schema_db.to_map()?;
+        if schema_rows.len() != 1 || schema_rows.get("casper-v6") != Some(&ADMISSION_SCHEMA_VERSION)
+        {
+            return Err(KvStoreError::InvalidArgument(
+                "DAG admission schema contains partial or unknown activation state".to_string(),
+            ));
+        }
+        if deploy_index_kv_store.non_empty()? {
+            return Err(KvStoreError::InvalidArgument(
+                "protocol-v6 DAG contains a legacy deploy index; start from a fresh protocol-v6 genesis"
+                    .to_string(),
+            ));
         }
 
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
@@ -991,7 +1685,7 @@ impl BlockDagKeyValueStorage {
             }
         } else if !block_metadata_store.dag_set().is_empty() {
             return Err(KvStoreError::InvalidArgument(
-                "protocol-v5 DAG metadata exists without a finalization ledger; start from a fresh genesis or run an explicit verified migration"
+                "protocol-v6 DAG metadata exists without a finalization ledger; start from a fresh genesis or run an explicit verified migration"
                     .to_string(),
             ));
         }
@@ -1016,8 +1710,10 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(genesis_hash_kv_store);
         let deploy_index_db: KeyValueTypedStoreImpl<DeployId, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
-        let deploy_occurrence_index_db: KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>> =
-            KeyValueTypedStoreImpl::new(deploy_occurrence_index_kv_store);
+        let deploy_occurrence_store =
+            DeployOccurrenceStore::activate_fresh(deploy_occurrence_index_kv_store)?;
+        let lifecycle_tables =
+            DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
         // DD-7b-2 (a) Option 2 (2026-08-29): payload-hash → deploy-sig
         // typed store.  Vec<u8> key = 32-byte Blake2b256 payload
         // hash; DeployId = raw primary-signer signature bytes.
@@ -1028,17 +1724,20 @@ impl BlockDagKeyValueStorage {
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
             deploy_index: Arc::new(PlRwLock::new(deploy_index_db)),
-            deploy_occurrence_index: Arc::new(PlRwLock::new(deploy_occurrence_index_db)),
+            deploy_occurrence_store,
             payload_source_index: Arc::new(PlRwLock::new(payload_source_index_db)),
             invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
             equivocation_tracker_index: equivocation_tracker_store,
             equivocation_evidence_index: equivocation_evidence_db,
-            genesis_hash_index: genesis_hash_db,
             finalization_ledger,
+            lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
+            carrier_index: Arc::new(PlRwLock::new(carrier_index_tables)),
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
+            ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            genesis_hash_index: genesis_hash_db,
         })
     }
 
@@ -1065,9 +1764,18 @@ impl BlockDagKeyValueStorage {
     }
 
     fn genesis_hash_internal(&self) -> Result<Option<BlockHash>, KvStoreError> {
-        self.genesis_hash_index
-            .get_one(&Self::GENESIS_HASH_KEY.to_string())
-            .map(|stored| stored.map(|BlockHashSerde(hash)| hash))
+        if let Some(BlockHashSerde(hash)) = self
+            .genesis_hash_index
+            .get_one(&Self::GENESIS_HASH_KEY.to_string())?
+        {
+            return Ok(Some(hash));
+        }
+        let metadata = self.block_metadata_index.read();
+        let state = metadata.dag_state().read();
+        Ok(state
+            .height_map
+            .get(&0)
+            .and_then(|blocks| blocks.iter().min().cloned()))
     }
 
     pub fn genesis_hash(&self) -> Result<Option<BlockHash>, KvStoreError> {
@@ -1216,6 +1924,18 @@ impl BlockDagKeyValueStorage {
 
     #[cfg(any(test, feature = "test-internals"))]
     #[doc(hidden)]
+    pub fn put_latest_message_for_test(
+        &self,
+        validator: Validator,
+        hash: BlockHash,
+    ) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        self.latest_messages_index
+            .put_one(ValidatorSerde(validator), BlockHashSerde(hash))
+    }
+
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
     pub fn delete_objective_evidence_for_test(
         &self,
         validator: Validator,
@@ -1351,9 +2071,9 @@ impl BlockDagKeyValueStorage {
             self.invalid_blocks_index.delete(stale_invalid)?;
         }
 
-        let mut expected: HashMap<Validator, (i32, BlockHash)> = registered
+        let mut expected: HashMap<Validator, (Option<i32>, BlockHash)> = registered
             .iter()
-            .map(|validator| (validator.clone(), (-1, genesis_hash.clone())))
+            .map(|validator| (validator.clone(), (None, genesis_hash.clone())))
             .collect();
         for entry in metadata {
             if entry.sender.is_empty() || !registered.contains(&entry.sender) {
@@ -1370,13 +2090,16 @@ impl BlockDagKeyValueStorage {
             expected
                 .entry(entry.sender)
                 .and_modify(|current| {
-                    if candidate.0 > current.0
-                        || (candidate.0 == current.0 && candidate.1 < current.1)
-                    {
-                        *current = candidate.clone();
+                    if candidate_is_preferred_latest_message(
+                        current.0,
+                        &current.1,
+                        candidate.0,
+                        &candidate.1,
+                    ) {
+                        *current = (Some(candidate.0), candidate.1.clone());
                     }
                 })
-                .or_insert(candidate);
+                .or_insert((Some(candidate.0), candidate.1));
         }
 
         self.latest_messages_index.put(
@@ -1401,13 +2124,15 @@ impl BlockDagKeyValueStorage {
         if !stale.is_empty() {
             self.latest_messages_index.delete(stale)?;
         }
-        Ok(())
+        self.get_representation_internal()?
+            .validate_latest_message_materialization()
     }
 
     // P2-16: the following three methods bypass `global_lock` — production
+    // P2-16: the following methods bypass `global_lock` — production
     // code MUST route through `access_equivocations_tracker` to honor the
     // Bug #2 / T-9.2 atomicity contract (see
-    // `docs/theory/slashing/slashing-verification.md` §9.2 and
+    // `docs/casper/theory/slashing/slashing-verification.md` §9.2 and
     // `formal/rocq/slashing/theories/BugFixAtomicTracker.v`). They are
     // gated behind `#[cfg(any(test, feature = "test-internals"))]` so the
     // compiler hard-fails on any production caller — the prior
@@ -1425,19 +2150,6 @@ impl BlockDagKeyValueStorage {
         record: EquivocationRecord,
     ) -> Result<(), KvStoreError> {
         self.equivocation_tracker_index.add(record)
-    }
-
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn update_equivocation_record(
-        &self,
-        mut record: EquivocationRecord,
-        block_hash: BlockHash,
-    ) -> Result<(), KvStoreError> {
-        self.equivocation_tracker_index.add({
-            record.equivocation_detected_block_hashes.insert(block_hash);
-            record
-        })
     }
 
     /// Phase 11 (visibility hardening): test fixtures used to build a
@@ -1468,7 +2180,10 @@ impl BlockDagKeyValueStorage {
             latest_messages_index,
             block_metadata_index,
             deploy_index,
-            deploy_occurrence_index,
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(
+                deploy_occurrence_index.read().raw_store().clone(),
+            )
+            .expect("fresh test deploy occurrence storage"),
             // DD-7b-2 (a) Option 2: test constructor defaults to a
             // fresh in-memory typed store — none of the cross-crate
             // tests that call from_parts today wire payload-source
@@ -1484,13 +2199,16 @@ impl BlockDagKeyValueStorage {
             equivocation_evidence_index: KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
-            genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
-                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
-            )),
             finalization_ledger: FinalizationLedger::from_store(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
+            lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
+            carrier_index: Arc::new(PlRwLock::new(CarrierIndex::in_memory())),
             dag_generation,
+            ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
         }
     }
 
@@ -1510,10 +2228,8 @@ impl BlockDagKeyValueStorage {
 
     #[cfg(any(test, feature = "test-internals"))]
     #[doc(hidden)]
-    pub fn deploy_occurrence_index_for_tests(
-        &self,
-    ) -> Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>>>> {
-        self.deploy_occurrence_index.clone()
+    pub fn deploy_occurrence_store_for_tests(&self) -> DeployOccurrenceStore {
+        self.deploy_occurrence_store.clone()
     }
 
     /// Test-only accessor for the block-metadata-index handle. Same
@@ -1525,7 +2241,7 @@ impl BlockDagKeyValueStorage {
     }
 
     /// Test-only accessor for the floor-index handle. Same rationale as
-    /// `deploy_index_for_tests`. `floor_index` is a plain memoization store
+    /// `metadata_index_for_tests`. `floor_index` is a plain memoization store
     /// (block hash -> floor hash) with interior mutability, so a shared
     /// reference suffices for the round-trip test.
     #[cfg(any(test, feature = "test-internals"))]
@@ -1606,6 +2322,7 @@ impl BlockDagKeyValueStorage {
 
         Ok(KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: self.genesis_hash_internal()?,
             latest_messages_map: latest_messages,
             child_map,
             height_map,
@@ -1618,9 +2335,11 @@ impl BlockDagKeyValueStorage {
             finalized_blocks_set: finalized_blocks,
             block_metadata_index: self.block_metadata_index.clone(),
             deploy_index: self.deploy_index.clone(),
-            deploy_occurrence_index: self.deploy_occurrence_index.clone(),
+            deploy_occurrence_store: self.deploy_occurrence_store.clone(),
             floor_index: self.floor_index.clone(),
             frontier_index: self.frontier_index.clone(),
+            lifecycle: self.lifecycle.clone(),
+            carrier_index: self.carrier_index.clone(),
         })
     }
 
@@ -1656,7 +2375,9 @@ impl BlockDagKeyValueStorage {
                     .unwrap_or(1);
                 let certificate = test_sender_authority_certificate(block, generation, stake)?;
                 let outcome = match mode {
-                    InsertMode::Normal => CertifiedAdmissionOutcome::accepted(block, &certificate),
+                    InsertMode::Normal | InsertMode::SettledHistory => {
+                        CertifiedAdmissionOutcome::accepted(block, &certificate)
+                    }
                     InsertMode::Invalid => CertifiedAdmissionOutcome::rejected(
                         block,
                         &certificate,
@@ -1743,7 +2464,9 @@ impl BlockDagKeyValueStorage {
                 .unwrap_or(1);
             let certificate = test_sender_authority_certificate(block, generation, stake)?;
             let outcome = match mode {
-                InsertMode::Normal => CertifiedAdmissionOutcome::accepted(block, &certificate),
+                InsertMode::Normal | InsertMode::SettledHistory => {
+                    CertifiedAdmissionOutcome::accepted(block, &certificate)
+                }
                 InsertMode::Invalid => CertifiedAdmissionOutcome::rejected(
                     block,
                     &certificate,
@@ -1807,7 +2530,11 @@ impl BlockDagKeyValueStorage {
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         match (certificate, outcome, mode) {
             (None, None, InsertMode::ApprovedGenesis) => {}
-            (Some(certificate), Some(outcome), InsertMode::Normal | InsertMode::Invalid) => {
+            (
+                Some(certificate),
+                Some(outcome),
+                InsertMode::Normal | InsertMode::Invalid | InsertMode::SettledHistory,
+            ) => {
                 certificate
                     .validate_for(block)
                     .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
@@ -1815,7 +2542,7 @@ impl BlockDagKeyValueStorage {
                     .validate_for(block, certificate)
                     .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
                 let mode_matches = match mode {
-                    InsertMode::Normal => outcome.is_accepted(),
+                    InsertMode::Normal | InsertMode::SettledHistory => outcome.is_accepted(),
                     InsertMode::Invalid => outcome.is_rejected(),
                     InsertMode::ApprovedGenesis => false,
                 };
@@ -1837,6 +2564,7 @@ impl BlockDagKeyValueStorage {
         // shim survived a Phase-4 transition; it is no longer needed.
         let invalid = matches!(mode, InsertMode::Invalid);
         let approved = matches!(mode, InsertMode::ApprovedGenesis);
+        let settled_history = matches!(mode, InsertMode::SettledHistory);
         let sender_is_empty = block.sender.is_empty();
         let sender_has_invalid_format =
             !sender_is_empty && (block.sender.len() != validator::LENGTH);
@@ -1916,7 +2644,8 @@ impl BlockDagKeyValueStorage {
             if !newly_bonded_unseen.is_empty() {
                 let placeholder = self.genesis_hash_internal()?.ok_or_else(|| {
                     KvStoreError::InvalidArgument(format!(
-                        "cannot seed newly-bonded latest-message slot(s) while inserting {}: canonical approved genesis hash is unavailable",
+                        "cannot seed newly-bonded latest-message slot(s) while inserting {}: \
+                         no height-0 block is held and no genesis hash was learned",
                         PrettyPrinter::build_string_bytes(&block_hash),
                     ))
                 })?;
@@ -1958,18 +2687,34 @@ impl BlockDagKeyValueStorage {
                 .ensure_genesis(block.block_hash.clone(), block.body.state.block_number)?;
         }
 
-        if block_exists {
+        let block_hash = block.block_hash.clone();
+        if sender_has_invalid_format {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "Block sender is malformed., Block: {:?}",
+                block
+            )));
+        }
+        if block_hash.len() != block_hash::LENGTH {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "Block hash {} is not correct length.",
+                PrettyPrinter::build_string_bytes(&block_hash)
+            )));
+        }
+        if sender_is_empty {
+            tracing::warn!("{}", log_empty_sender);
+        }
+
+        let block_metadata = if block_exists {
+            let existing = self
+                .block_metadata_index
+                .read()
+                .get(&block.block_hash)?
+                .ok_or_else(|| {
+                    KvStoreError::KeyNotFound(
+                        "DAG membership exists without block metadata".to_string(),
+                    )
+                })?;
             if approved {
-                let existing = self
-                    .block_metadata_index
-                    .read()
-                    .get(&block.block_hash)?
-                    .ok_or_else(|| {
-                        KvStoreError::KeyNotFound(
-                            "approved genesis DAG membership exists without block metadata"
-                                .to_string(),
-                        )
-                    })?;
                 let mut supplied = BlockMetadata::from_approved_genesis(block)
                     .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
                 supplied.directly_finalized = existing.directly_finalized;
@@ -1983,15 +2728,6 @@ impl BlockDagKeyValueStorage {
                 }
             }
             if let (Some(certificate), Some(outcome)) = (certificate, outcome) {
-                let existing = self
-                    .block_metadata_index
-                    .read()
-                    .get(&block.block_hash)?
-                    .ok_or_else(|| {
-                        KvStoreError::KeyNotFound(
-                            "DAG membership exists without block metadata".to_string(),
-                        )
-                    })?;
                 if existing.sender_authority.as_ref() != Some(certificate) {
                     return Err(KvStoreError::InvalidArgument(
                         "stored block metadata disagrees with certified sender authority"
@@ -2004,34 +2740,10 @@ impl BlockDagKeyValueStorage {
                             .to_string(),
                     ));
                 }
-                self.repair_certified_objective_evidence(block, certificate)?;
             }
-            tracing::warn!("{}", log_already_stored);
-            self.get_representation_internal()
+            existing
         } else {
-            let block_hash = block.block_hash.clone();
-            let block_hash_is_invalid = !(block_hash.len() == block_hash::LENGTH);
-
-            if sender_has_invalid_format {
-                return Err(KvStoreError::InvalidArgument(format!(
-                    "Block sender is malformed., Block: {:?}",
-                    block
-                )));
-            }
-            // TODO: should we have special error type for block hash error also?
-            //  Should this be checked before calling insert? Is DAG storage responsible for that? - OLD
-            if block_hash_is_invalid {
-                return Err(KvStoreError::InvalidArgument(format!(
-                    "Block hash {} is not correct length.",
-                    PrettyPrinter::build_string_bytes(&block_hash)
-                )));
-            }
-
-            if sender_is_empty {
-                tracing::warn!("{}", log_empty_sender);
-            }
-
-            let block_metadata = match (certificate, outcome) {
+            match (certificate, outcome) {
                 (Some(certificate), Some(outcome)) => {
                     BlockMetadata::from_certified_block(block, None, None, certificate, outcome)
                         .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?
@@ -2039,95 +2751,359 @@ impl BlockDagKeyValueStorage {
                 (None, None) => BlockMetadata::from_approved_genesis(block)
                     .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?,
                 _ => unreachable!(),
-            };
-            let mut block_metadata_guard = self.block_metadata_index.write();
-            block_metadata_guard.add(block_metadata.clone())?;
-            drop(block_metadata_guard);
-            self.dag_generation.fetch_add(1, Ordering::Relaxed);
-
-            if let Some(certificate) = certificate {
-                self.repair_certified_objective_evidence(block, certificate)?;
             }
-
-            if !invalid {
-                let deploy_hashes: Vec<DeployId> = block
-                    .body
-                    .deploys
-                    .iter()
-                    .map(|deploy| deploy.deploy.sig.clone().into())
-                    .collect();
-                let deploy_index_guard = self.deploy_index.write();
-                let deploy_occurrence_index_guard = self.deploy_occurrence_index.write();
-                for deploy_id in deploy_hashes {
-                    let candidate_hash = block.block_hash.clone();
-                    let selected_hash = match deploy_index_guard.get_one(&deploy_id)? {
-                        Some(existing) => {
-                            let existing_hash: BlockHash = existing.into();
-                            let existing_height = self
-                                .block_metadata_index
-                                .read()
-                                .get(&existing_hash)?
-                                .map(|metadata| metadata.block_number)
-                                .unwrap_or(i64::MIN);
-                            if existing_height > block.body.state.block_number
-                                || (existing_height == block.body.state.block_number
-                                    && existing_hash < candidate_hash)
-                            {
-                                existing_hash
-                            } else {
-                                candidate_hash.clone()
-                            }
-                        }
-                        None => candidate_hash.clone(),
-                    };
-                    deploy_index_guard.put_one(deploy_id.clone(), BlockHashSerde(selected_hash))?;
-                    let mut occurrences = deploy_occurrence_index_guard
-                        .get_one(&deploy_id)?
-                        .unwrap_or_default();
-                    occurrences.insert(BlockHashSerde(candidate_hash));
-                    deploy_occurrence_index_guard.put_one(deploy_id, occurrences)?;
-                }
-                drop(deploy_occurrence_index_guard);
-                drop(deploy_index_guard);
-            }
-
-            if invalid {
-                self.invalid_blocks_index
-                    .put_one(block_hash.clone().into(), block_metadata)?;
-            }
-
+        };
+        let new_latest_from_sender = if !block_exists && !settled_history {
             let sender_is_registered = !sender_is_empty
                 && self
                     .latest_messages_index
                     .contains_key(ValidatorSerde(block.sender.clone()))?;
-            let new_latest_from_sender = if !sender_is_empty && (!invalid || sender_is_registered) {
-                // Add LM either if there is no existing message for the sender, or if sequence number advances
-                // - assumes block sender is not valid hash
-                if match self
+            if !sender_is_empty && (!invalid || sender_is_registered) {
+                let canonical_genesis_hash = self.genesis_hash_internal()?;
+                let candidate_wins = match self
                     .latest_messages_index
-                    .get_one(&block.sender.clone().into())
+                    .get_one(&block.sender.clone().into())?
                 {
-                    Ok(Some(latest_message_hash)) => {
-                        let block_metadata_index_guard = self.block_metadata_index.read();
-                        match block_metadata_index_guard.get(&latest_message_hash.into()) {
-                            Ok(Some(metadata)) => {
-                                block.seq_num > metadata.sequence_number
-                                    || (block.seq_num == metadata.sequence_number
-                                        && block.block_hash < metadata.block_hash)
-                            }
-                            _ => true,
-                        }
+                    Some(BlockHashSerde(latest_message_hash)) => {
+                        let current_sequence_number =
+                            if canonical_genesis_hash.as_ref() == Some(&latest_message_hash) {
+                                None
+                            } else {
+                                let current_metadata = self
+                                    .block_metadata_index
+                                    .read()
+                                    .get(&latest_message_hash)?
+                                    .ok_or_else(|| {
+                                        KvStoreError::KeyNotFound(format!(
+                                        "latest message metadata {} is missing for validator {}",
+                                        PrettyPrinter::build_string_bytes(&latest_message_hash),
+                                        PrettyPrinter::build_string_bytes(&block.sender)
+                                    ))
+                                    })?;
+                                Some(current_metadata.sequence_number)
+                            };
+                        candidate_is_preferred_latest_message(
+                            current_sequence_number,
+                            &latest_message_hash,
+                            block.seq_num,
+                            &block.block_hash,
+                        )
                     }
-                    _ => true,
-                } {
+                    None => true,
+                };
+                if candidate_wins {
                     HashMap::from([senders_new_lm])
                 } else {
                     HashMap::new()
                 }
             } else {
                 HashMap::new()
-            };
+            }
+        } else {
+            HashMap::new()
+        };
+        let (metadata_key, metadata_value, metadata_store) = {
+            let metadata_guard = self.block_metadata_index.read();
+            let (key, value) = metadata_guard.encode_add(&block_metadata)?;
+            (key, value, metadata_guard.raw_store().clone())
+        };
+        let carrier_guard = self.carrier_index.write();
+        let carrier_ids = block
+            .body
+            .deploys
+            .iter()
+            .map(|deploy| {
+                deploy
+                    .deploy_id_for_protocol(block.header.version)
+                    .map_err(KvStoreError::InvalidArgument)
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let mut owned_mutations: Vec<(Arc<dyn KeyValueStore>, Vec<u8>, AtomicStoreOperation)> =
+            Vec::new();
+        for deploy_id in carrier_ids {
+            if let Some((key, expected, replacement)) = carrier_guard.prepare_record_once(
+                &deploy_id,
+                block.body.state.block_number,
+                block.block_hash.to_vec(),
+            )? {
+                owned_mutations.push((
+                    carrier_guard.raw_store().clone(),
+                    key,
+                    AtomicStoreOperation::CompareAndSwap {
+                        expected,
+                        replacement: Some(replacement),
+                    },
+                ));
+            }
+        }
+        owned_mutations.push((
+            metadata_store,
+            metadata_key,
+            AtomicStoreOperation::PutIfAbsentOrEqual(metadata_value),
+        ));
 
+        if !invalid {
+            let source_block_hash: [u8; 32] =
+                block.block_hash.as_ref().try_into().map_err(|_| {
+                    KvStoreError::InvalidArgument(
+                        "deploy occurrence source block hash must be 32 bytes".to_string(),
+                    )
+                })?;
+            for (ordinal, deploy) in block.body.deploys.iter().enumerate() {
+                match deploy
+                    .deploy_id_for_protocol(block.header.version)
+                    .map_err(KvStoreError::InvalidArgument)?
+                {
+                    DeployLookupId::V6(deploy_id) => {
+                        let (
+                            admission_mode,
+                            admission_ruleset_digest,
+                            admission_context_digest,
+                            sender_authority_digest,
+                        ) = if approved {
+                            (
+                                OccurrenceAdmissionMode::ApprovedGenesis,
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        } else {
+                            let outcome = outcome.ok_or_else(|| {
+                                KvStoreError::InvalidArgument(
+                                    "protocol-v6 occurrence requires certified admission"
+                                        .to_string(),
+                                )
+                            })?;
+                            (
+                                if settled_history {
+                                    OccurrenceAdmissionMode::SettledHistory
+                                } else {
+                                    OccurrenceAdmissionMode::Normal
+                                },
+                                outcome.ruleset_digest().to_vec(),
+                                outcome.incoming_context_digest().to_vec(),
+                                outcome.sender_authority_digest().to_vec(),
+                            )
+                        };
+                        let plan =
+                            self.deploy_occurrence_store
+                                .prepare_insert(DeployOccurrence {
+                                    schema_version: DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+                                    deploy_id,
+                                    protocol_version: DEPLOY_OCCURRENCE_PROTOCOL_VERSION,
+                                    source_block_hash,
+                                    source_block_height: block.body.state.block_number,
+                                    source_validator: if approved {
+                                        Vec::new()
+                                    } else {
+                                        block.sender.to_vec()
+                                    },
+                                    deploy_ordinal: u32::try_from(ordinal).map_err(|_| {
+                                        KvStoreError::InvalidArgument(
+                                            "deploy occurrence ordinal exceeds u32".to_string(),
+                                        )
+                                    })?,
+                                    admission_mode,
+                                    admission_ruleset_digest,
+                                    admission_context_digest,
+                                    sender_authority_digest,
+                                    is_failed: deploy.is_failed,
+                                })?;
+                        owned_mutations.extend(plan.mutations.into_iter().map(
+                            |(key, operation)| {
+                                (
+                                    self.deploy_occurrence_store.raw_store().clone(),
+                                    key,
+                                    operation,
+                                )
+                            },
+                        ));
+                    }
+                    DeployLookupId::Legacy(signature) => {
+                        let deploy_id = signature.into_bytes();
+                        let candidate_hash = block.block_hash.clone();
+                        let selected_hash = match self.deploy_index.read().get_one(&deploy_id)? {
+                            Some(existing) => {
+                                let existing_hash: BlockHash = existing.into();
+                                let existing_height = self
+                                    .block_metadata_index
+                                    .read()
+                                    .get(&existing_hash)?
+                                    .map(|metadata| metadata.block_number)
+                                    .unwrap_or(i64::MIN);
+                                if existing_height > block.body.state.block_number
+                                    || (existing_height == block.body.state.block_number
+                                        && existing_hash < candidate_hash)
+                                {
+                                    existing_hash
+                                } else {
+                                    candidate_hash
+                                }
+                            }
+                            None => candidate_hash,
+                        };
+                        let deploy_index = self.deploy_index.read();
+                        owned_mutations.push((
+                            deploy_index.raw_store().clone(),
+                            deploy_index.encode_key(&deploy_id)?,
+                            AtomicStoreOperation::Put(
+                                deploy_index.encode_value(&BlockHashSerde(selected_hash))?,
+                            ),
+                        ));
+                    }
+                }
+            }
+
+            let block_number = block.body.state.block_number;
+            let lifecycle_guard = self.lifecycle.write();
+            let mut lifecycle_rows: BTreeMap<DeployLookupId, (Option<Vec<u8>>, LifecycleEvents)> =
+                BTreeMap::new();
+            for deploy in &block.body.deploys {
+                let deploy_id = deploy
+                    .deploy_id_for_protocol(block.header.version)
+                    .map_err(KvStoreError::InvalidArgument)?;
+                if lifecycle_guard.get_terminal(&deploy_id)?.is_some() {
+                    continue;
+                }
+                let entry = match lifecycle_rows.entry(deploy_id.clone()) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        let current = lifecycle_guard.get_events(&deploy_id)?;
+                        let encoded = current
+                            .as_ref()
+                            .map(|row| lifecycle_guard.events_store().encode_value(row))
+                            .transpose()?;
+                        entry.insert((
+                            encoded,
+                            current.unwrap_or(LifecycleEvents {
+                                valid_after: None,
+                                events: Vec::new(),
+                            }),
+                        ))
+                    }
+                };
+                if entry.1.valid_after.is_none() {
+                    entry.1.valid_after = Some(deploy.deploy.data.valid_after_block_number);
+                }
+                let event = LifecycleEvent {
+                    height: block_number,
+                    block_hash: block.block_hash.to_vec(),
+                    kind: LifecycleEventKind::Included {
+                        is_failed: deploy.is_failed,
+                    },
+                };
+                if !entry.1.events.contains(&event) {
+                    entry.1.events.push(event);
+                }
+            }
+            for rejected in &block.body.rejected_deploys {
+                let rejected_id = match (
+                    block.header.version >= DEPLOY_OCCURRENCE_PROTOCOL_VERSION,
+                    rejected.typed_deploy_id(),
+                ) {
+                    (true, DeployLookupId::V6(deploy_id)) => DeployLookupId::V6(*deploy_id),
+                    (false, DeployLookupId::Legacy(signature)) => {
+                        DeployLookupId::Legacy(signature.clone())
+                    }
+                    (true, DeployLookupId::Legacy(_)) => {
+                        return Err(KvStoreError::InvalidArgument(
+                            "protocol-v6 rejected deploy requires a v6 deploy identity".to_string(),
+                        ));
+                    }
+                    (false, DeployLookupId::V6(_)) => {
+                        return Err(KvStoreError::InvalidArgument(
+                            "pre-v6 rejected deploy requires a legacy deploy identity".to_string(),
+                        ));
+                    }
+                };
+                if lifecycle_guard.get_terminal(&rejected_id)?.is_some() {
+                    continue;
+                }
+                let entry = match lifecycle_rows.entry(rejected_id.clone()) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        let current = lifecycle_guard.get_events(&rejected_id)?;
+                        let encoded = current
+                            .as_ref()
+                            .map(|row| lifecycle_guard.events_store().encode_value(row))
+                            .transpose()?;
+                        entry.insert((
+                            encoded,
+                            current.unwrap_or(LifecycleEvents {
+                                valid_after: None,
+                                events: Vec::new(),
+                            }),
+                        ))
+                    }
+                };
+                let event = LifecycleEvent {
+                    height: block_number,
+                    block_hash: block.block_hash.to_vec(),
+                    kind: LifecycleEventKind::Rejected {
+                        duplicate: rejected.is_duplicate(),
+                        carrier: rejected.source_block_hash.to_vec(),
+                    },
+                };
+                if !entry.1.events.contains(&event) {
+                    entry.1.events.push(event);
+                }
+            }
+            for (deploy_id, (expected, replacement)) in lifecycle_rows {
+                let events_store = lifecycle_guard.events_store();
+                owned_mutations.push((
+                    events_store.raw_store().clone(),
+                    events_store.encode_key(&deploy_id)?,
+                    AtomicStoreOperation::CompareAndSwap {
+                        expected,
+                        replacement: Some(events_store.encode_value(&replacement)?),
+                    },
+                ));
+            }
+            let mutations = owned_mutations
+                .iter()
+                .map(|(store, key, operation)| AtomicStoreMutation {
+                    store: store.as_ref(),
+                    key: key.clone(),
+                    operation: operation.clone(),
+                })
+                .collect::<Vec<_>>();
+            commit_admission_mutations(block.header.version, &mutations)?;
+            drop(lifecycle_guard);
+        } else {
+            let mutations = owned_mutations
+                .iter()
+                .map(|(store, key, operation)| AtomicStoreMutation {
+                    store: store.as_ref(),
+                    key: key.clone(),
+                    operation: operation.clone(),
+                })
+                .collect::<Vec<_>>();
+            commit_admission_mutations(block.header.version, &mutations)?;
+        }
+        drop(carrier_guard);
+
+        if !block_exists {
+            self.block_metadata_index
+                .write()
+                .apply_committed_add(block_metadata.clone());
+            self.dag_generation.fetch_add(1, Ordering::Relaxed);
+        }
+
+        if let Some(certificate) = certificate {
+            self.repair_certified_objective_evidence(block, certificate)?;
+        }
+
+        if block_exists {
+            tracing::warn!("{}", log_already_stored);
+            return self.get_representation_internal();
+        }
+
+        if invalid {
+            self.invalid_blocks_index
+                .put_one(block_hash.clone().into(), block_metadata)?;
+        }
+
+        if !settled_history {
             let mut new_latest_to_add = if invalid {
                 HashMap::new()
             } else {
@@ -2141,16 +3117,16 @@ impl BlockDagKeyValueStorage {
                     .map(|(k, v)| (k.into(), v.into()))
                     .collect(),
             )?;
-
-            if approved {
-                let mut block_metadata_guard = self.block_metadata_index.write();
-                // Genesis/approved block has FT=1.0 by construction: it is the DAG root,
-                // all validators start from it, so all stake agrees.
-                block_metadata_guard.record_finalized(block_hash, HashSet::new(), 1.0)?;
-            }
-
-            self.get_representation_internal()
         }
+
+        if approved {
+            let mut block_metadata_guard = self.block_metadata_index.write();
+            // Genesis/approved block has FT=1.0 by construction: it is the DAG root,
+            // all validators start from it, so all stake agrees.
+            block_metadata_guard.record_finalized(block_hash, HashSet::new(), 1.0)?;
+        }
+
+        self.get_representation_internal()
     }
 
     pub fn access_equivocations_tracker<A>(
@@ -2183,30 +3159,96 @@ impl BlockDagKeyValueStorage {
         self.finalization_ledger.head()
     }
 
+    pub fn finalized_floor_certificate(
+        &self,
+    ) -> Result<Option<FinalizationCertificate>, KvStoreError> {
+        let Some(head) = self.finalization_ledger.head()? else {
+            return Ok(None);
+        };
+        self.finalized_floor_certificate_for_head(&head)
+    }
+
+    pub fn finalized_floor_certificate_for_head(
+        &self,
+        head: &FinalizationHead,
+    ) -> Result<Option<FinalizationCertificate>, KvStoreError> {
+        if head.revision == 0 {
+            return Ok(None);
+        }
+        let witness = self
+            .finalization_ledger
+            .witness(&head.certificate_digest)?
+            .ok_or_else(|| {
+                KvStoreError::SerializationError(
+                    "durable finalized head has no matching certificate witness".to_string(),
+                )
+            })?;
+        let certificate = witness.to_certificate();
+        if certificate.digest() != head.certificate_digest.0 {
+            return Err(KvStoreError::SerializationError(
+                "durable finalized head certificate digest does not match its witness".to_string(),
+            ));
+        }
+        if certificate.target_floor_hash != head.block_hash
+            || certificate.target_block_number != head.block_number
+        {
+            return Err(KvStoreError::SerializationError(
+                "durable finalized head does not match its certificate target".to_string(),
+            ));
+        }
+        Ok(Some(certificate))
+    }
+
     pub fn capture_finalization_base(&self) -> Result<FinalizationBase, KvStoreError> {
         self.reconcile_finalization_projection()?;
+        self.capture_finalization_base_after_reconciliation(|| {})
+    }
+
+    fn capture_finalization_base_after_reconciliation(
+        &self,
+        after_reconciliation: impl FnOnce(),
+    ) -> Result<FinalizationBase, KvStoreError> {
+        after_reconciliation();
         let before = self
             .finalization_ledger
-            .head()?
+            .projection_endpoint()?
             .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
-        let dag = self.get_representation()?;
+        if before.projection_revision != before.head.revision {
+            return Err(KvStoreError::StaleFinalization {
+                expected_revision: before.projection_revision,
+                actual_revision: before.head.revision,
+            });
+        }
+        let _lock_guard = self.global_lock.read();
+        let dag = self.get_representation_internal()?;
+        let dag_generation = self.dag_generation.load(Ordering::Acquire);
         let after = self
             .finalization_ledger
-            .head()?
+            .projection_endpoint()?
             .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
         if before != after {
             return Err(KvStoreError::StaleFinalization {
-                expected_revision: before.revision,
-                actual_revision: after.revision,
+                expected_revision: before.head.revision,
+                actual_revision: after.head.revision,
             });
         }
-        if dag.last_finalized_block() != before.block_hash.0 {
+        if after.projection_revision != after.head.revision {
+            return Err(KvStoreError::StaleFinalization {
+                expected_revision: after.projection_revision,
+                actual_revision: after.head.revision,
+            });
+        }
+        if dag.last_finalized_block() != before.head.block_hash.0 {
             return Err(KvStoreError::SerializationError(
                 "projected finalized head does not match the durable finalization ledger"
                     .to_string(),
             ));
         }
-        Ok(FinalizationBase { head: before, dag })
+        Ok(FinalizationBase {
+            head: before.head,
+            dag,
+            dag_generation,
+        })
     }
 
     pub fn committed_finalization_records(&self) -> Result<Vec<FinalizationRecord>, KvStoreError> {
@@ -2244,6 +3286,7 @@ impl BlockDagKeyValueStorage {
 
     pub fn reconcile_finalization_projection(&self) -> Result<(), KvStoreError> {
         for record in self.finalization_ledger.pending_projection_records()? {
+            let fault_tolerance = f32::from_bits(record.fault_tolerance_bits);
             let indirectly_finalized = record
                 .finalized
                 .iter()
@@ -2256,12 +3299,16 @@ impl BlockDagKeyValueStorage {
                 metadata.record_finalized(
                     record.directly_finalized.0.clone(),
                     indirectly_finalized,
-                    f32::from_bits(record.fault_tolerance_bits),
+                    fault_tolerance,
                 )?;
-                let finalized = metadata.finalized_block_hashes();
-                metadata
-                    .update_ft_if_higher(finalized, f32::from_bits(record.fault_tolerance_bits))?;
+                let current_lower_bound =
+                    f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed));
+                if fault_tolerance < current_lower_bound {
+                    self.ft_lower_bound
+                        .store(fault_tolerance.to_bits(), Ordering::Relaxed);
+                }
             }
+            self.propagate_ft_to_finalized_blocks(fault_tolerance)?;
             self.finalization_ledger
                 .record_projection_completed(record.revision)?;
         }
@@ -2282,6 +3329,7 @@ impl BlockDagKeyValueStorage {
         self.record_directly_finalized_atomic(
             &base.head,
             directly_finalized_hash,
+            "root".to_string(),
             ft_value,
             move |_revision, finalized| finalization_effect(finalized),
         )
@@ -2293,6 +3341,7 @@ impl BlockDagKeyValueStorage {
         &self,
         expected: &FinalizationHead,
         directly_finalized_hash: BlockHash,
+        shard_id: String,
         ft_value: f32,
         finalization_effect: F,
     ) -> Result<FinalizationAppendOutcome, KvStoreError>
@@ -2301,7 +3350,10 @@ impl BlockDagKeyValueStorage {
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
         let dag = self.get_representation()?;
-        let latest_messages = dag
+        let protocol_version = dag
+            .lookup_unsafe(&directly_finalized_hash)?
+            .protocol_version;
+        let latest_messages: BTreeMap<ValidatorSerde, BlockHashSerde> = dag
             .latest_messages_map
             .iter()
             .map(|(validator, block_hash)| {
@@ -2311,11 +3363,56 @@ impl BlockDagKeyValueStorage {
                 )
             })
             .collect();
+        let zero = Bytes::from(vec![0; block_hash::LENGTH]);
+        let (predecessor_certificate_digest, predecessor_certificate_block_hash) =
+            if expected.revision == 0 {
+                (BlockHashSerde(zero.clone()), BlockHashSerde(zero))
+            } else {
+                let predecessor_post_state =
+                    dag.lookup_unsafe(&expected.block_hash.0)?.post_state_hash;
+                let roots = latest_messages
+                    .values()
+                    .map(|hash| hash.0.clone())
+                    .chain(std::iter::once(directly_finalized_hash.clone()))
+                    .collect::<Vec<_>>();
+                let mut remaining_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+                let support = dag.certified_support_closure(
+                    &expected.block_hash.0,
+                    roots,
+                    FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                    &mut remaining_work,
+                )?;
+                let mut selected = None;
+                for carrier in support {
+                    if carrier.0 == directly_finalized_hash {
+                        continue;
+                    }
+                    if let Some(digest) = predecessor_certificate_carrier_digest(
+                        &dag,
+                        &carrier.0,
+                        &expected.block_hash.0,
+                        &predecessor_post_state,
+                        protocol_version,
+                    )? {
+                        selected = Some((BlockHashSerde(digest), carrier));
+                        break;
+                    }
+                }
+                selected.ok_or_else(|| KvStoreError::FinalizationCertificateCarrierPending {
+                    expected_revision: expected.revision,
+                    floor_hash: expected.block_hash.0.to_vec(),
+                    certificate_digest: expected.certificate_digest.0.to_vec(),
+                })?
+            };
         self.record_directly_finalized_certified_atomic(
             expected,
             directly_finalized_hash,
             ft_value,
             FinalizationWitnessInputs {
+                protocol_version,
+                shard_id,
+                predecessor_certificate_digest,
+                predecessor_certificate_block_hash,
                 fault_tolerance_numerator: 0,
                 fault_tolerance_denominator: 1,
                 latest_messages,
@@ -2408,33 +3505,76 @@ impl BlockDagKeyValueStorage {
                         .to_string(),
                 ));
             }
-            let mut finalized = dag.ancestors(directly_finalized_hash.clone(), |hash| {
-                !dag.is_finalized(hash)
-            })?;
-            finalized.insert(directly_finalized_hash.clone());
-            let mut supporting = BTreeSet::new();
-            let mut pending = VecDeque::from_iter(
-                witness_inputs
-                    .latest_messages
-                    .values()
-                    .map(|hash| hash.0.clone())
-                    .chain(std::iter::once(directly_finalized_hash.clone())),
-            );
-            while let Some(hash) = pending.pop_front() {
-                if !supporting.insert(BlockHashSerde(hash.clone())) {
-                    continue;
+            let mut remaining_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+            let finalized = dag
+                .certified_finalized_delta(
+                    &expected.block_hash.0,
+                    &directly_finalized_hash,
+                    FinalizationCertificate::MAX_FINALIZED_BLOCKS,
+                    &mut remaining_work,
+                )?
+                .into_iter()
+                .map(|hash| hash.0)
+                .collect::<HashSet<_>>();
+            let supporting_roots = witness_inputs
+                .latest_messages
+                .values()
+                .map(|hash| hash.0.clone())
+                .chain(std::iter::once(directly_finalized_hash.clone()))
+                .collect::<Vec<_>>();
+            let supporting = dag.certified_support_closure(
+                &expected.block_hash.0,
+                supporting_roots,
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut remaining_work,
+            )?;
+            let predecessor_digest_is_zero = witness_inputs
+                .predecessor_certificate_digest
+                .0
+                .iter()
+                .all(|byte| *byte == 0);
+            let predecessor_carrier_is_zero = witness_inputs
+                .predecessor_certificate_block_hash
+                .0
+                .iter()
+                .all(|byte| *byte == 0);
+            if expected.revision == 0 {
+                if !predecessor_digest_is_zero || !predecessor_carrier_is_zero {
+                    return Err(KvStoreError::InvalidArgument(
+                        "genesis predecessor must use the zero certificate carrier".to_string(),
+                    ));
                 }
-                if hash == expected.block_hash.0 || dag.is_finalized(&hash) {
-                    continue;
+            } else {
+                if predecessor_digest_is_zero
+                    || predecessor_carrier_is_zero
+                    || !supporting.contains(&witness_inputs.predecessor_certificate_block_hash)
+                {
+                    return Err(KvStoreError::InvalidArgument(
+                        "non-genesis predecessor requires a supported certificate carrier"
+                            .to_string(),
+                    ));
                 }
-                let metadata = dag.lookup_unsafe(&hash)?;
-                pending.extend(metadata.parents.iter().cloned());
-                pending.extend(
-                    metadata
-                        .justifications
-                        .iter()
-                        .map(|justification| justification.latest_block_hash.clone()),
-                );
+                let predecessor_post_state =
+                    dag.lookup_unsafe(&expected.block_hash.0)?.post_state_hash;
+                let committed_digest = predecessor_certificate_carrier_digest(
+                    &dag,
+                    &witness_inputs.predecessor_certificate_block_hash.0,
+                    &expected.block_hash.0,
+                    &predecessor_post_state,
+                    witness_inputs.protocol_version,
+                )?
+                .ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "predecessor certificate carrier does not commit to the expected floor state"
+                            .to_string(),
+                    )
+                })?;
+                if committed_digest != witness_inputs.predecessor_certificate_digest.0 {
+                    return Err(KvStoreError::InvalidArgument(
+                        "predecessor certificate carrier and digest are not the same proof"
+                            .to_string(),
+                    ));
+                }
             }
             (
                 block_number,
@@ -2450,9 +3590,13 @@ impl BlockDagKeyValueStorage {
             .genesis_anchor()?
             .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
         let witness = FinalizationLedger::prepare_witness(
+            witness_inputs.protocol_version,
+            witness_inputs.shard_id,
             genesis.block_hash.0,
             expected,
             directly_finalized_hash.clone(),
+            witness_inputs.predecessor_certificate_digest.0,
+            witness_inputs.predecessor_certificate_block_hash.0,
             block_number,
             target_post_state_hash,
             witness_inputs.fault_tolerance_numerator,
@@ -2487,6 +3631,37 @@ impl BlockDagKeyValueStorage {
         finalization_effect(revision, &all_finalized).await?;
         Ok(outcome)
     }
+
+    fn propagate_ft_to_finalized_blocks(&self, ft_value: f32) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+
+        // Nothing is below the bound and this scan only raises, so it would
+        // rewrite nothing. Skipping keeps `global_lock` off an O(finalized) walk.
+        if ft_value <= f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed)) {
+            metrics::counter!("propagate_ft.skipped", "source" => "f1r3fly.casper.block-dag")
+                .increment(1);
+            return Ok(());
+        }
+
+        // Update ALL finalized blocks with lower FT, not just ancestors of the
+        // current LFB. In a multi-parent DAG, finalized blocks on orphaned
+        // branches are not reachable via the ancestor chain of the new LFB.
+        let scan_started = std::time::Instant::now();
+        let mut block_metadata_index_guard = self.block_metadata_index.write();
+        let finalized_hashes = block_metadata_index_guard.finalized_block_hashes();
+        let scanned = finalized_hashes.len();
+        block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)?;
+        drop(block_metadata_index_guard);
+        metrics::histogram!("propagate_ft.scan.time", "source" => "f1r3fly.casper.block-dag")
+            .record(scan_started.elapsed().as_secs_f64());
+        metrics::histogram!("propagate_ft.scan.blocks", "source" => "f1r3fly.casper.block-dag")
+            .record(scanned as f64);
+
+        // Every finalized block is now at or above `ft_value`.
+        self.ft_lower_bound
+            .store(ft_value.to_bits(), Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 // EquivocationsAccess trait impl — delegates to the inherent method.
@@ -2500,5 +3675,705 @@ impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorag
         f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
         BlockDagKeyValueStorage::access_equivocations_tracker(self, f)
+    }
+}
+
+/// A block the DAG does not hold, named so a caller can request it.
+///
+/// These lookups assume the block is already in the DAG, and for a node whose
+/// history reaches genesis a miss is a caller bug. For a node restored from a
+/// sync anchor it is the normal condition — its history stops at the anchor —
+/// so the hash travels as data rather than inside a message: a walk that cannot
+/// read this node's own history must never become a verdict against whoever
+/// proposed the block it was judging.
+///
+/// `method` and the backtrace stay in `context` because the same absence is
+/// reachable from three methods and many call sites, and in a live shard the
+/// error otherwise surfaces as "block processing failed" with no indication of
+/// WHICH lookup asked — not enough to tell a gated dependency from an ancestor
+/// walk that was never gated at all (ucc runs: 7-12 occurrences per run, every
+/// run, escalating into propose failures). Captured only on the error path, and
+/// with `force_capture` so it does not depend on RUST_BACKTRACE being set in the
+/// shard's environment.
+fn missing_block(block_hash: &BlockHash, method: &str) -> KvStoreError {
+    KvStoreError::MissingBlock {
+        hash: block_hash.clone(),
+        context: format!(
+            " [{}]\n  caller backtrace:\n{}",
+            method,
+            std::backtrace::Backtrace::force_capture()
+        ),
+    }
+}
+
+fn commit_admission_mutations(
+    protocol_version: i64,
+    mutations: &[AtomicStoreMutation<'_>],
+) -> Result<(), KvStoreError> {
+    if protocol_version >= DEPLOY_OCCURRENCE_PROTOCOL_VERSION {
+        if let [mutation] = mutations {
+            if let AtomicStoreOperation::PutIfAbsentOrEqual(value) = &mutation.operation {
+                if mutation
+                    .store
+                    .put_one_if_absent(mutation.key.clone(), value.clone())?
+                {
+                    return Ok(());
+                }
+                return match mutation.store.get_one(&mutation.key)? {
+                    Some(existing) if existing == *value => Ok(()),
+                    Some(_) => Err(KvStoreError::TransactionConflict(format!(
+                        "existing value differs for key {}",
+                        hex::encode(&mutation.key)
+                    ))),
+                    None => Err(KvStoreError::TransactionConflict(format!(
+                        "atomic insert lost key {}",
+                        hex::encode(&mutation.key)
+                    ))),
+                };
+            }
+        }
+        return strict_atomic_mutate(mutations);
+    }
+    for mutation in mutations {
+        let current = mutation.store.get_one(&mutation.key)?;
+        match &mutation.operation {
+            AtomicStoreOperation::Put(value) => {
+                mutation
+                    .store
+                    .put_one(mutation.key.clone(), value.clone())?;
+            }
+            AtomicStoreOperation::PutIfAbsentOrEqual(value) => match current {
+                Some(existing) if existing != *value => {
+                    return Err(KvStoreError::TransactionConflict(format!(
+                        "existing legacy value differs for key {}",
+                        hex::encode(&mutation.key)
+                    )));
+                }
+                Some(_) => {}
+                None => mutation
+                    .store
+                    .put_one(mutation.key.clone(), value.clone())?,
+            },
+            AtomicStoreOperation::Delete => {
+                mutation.store.delete(vec![mutation.key.clone()])?;
+            }
+            AtomicStoreOperation::CompareAndSwap {
+                expected,
+                replacement,
+            } => {
+                if current.as_ref() != expected.as_ref() {
+                    return Err(KvStoreError::TransactionConflict(format!(
+                        "legacy compare-and-swap expectation failed for key {}",
+                        hex::encode(&mutation.key)
+                    )));
+                }
+                match replacement {
+                    Some(value) => mutation
+                        .store
+                        .put_one(mutation.key.clone(), value.clone())?,
+                    None => {
+                        mutation.store.delete(vec![mutation.key.clone()])?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod admission_commit_tests {
+    use models::rust::deploy_id::{DeployLookupId, LegacyDeploySignature};
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+    use super::*;
+
+    #[test]
+    fn legacy_carrier_first_failure_routes_conservatively_and_retry_is_duplicate_free() {
+        let carrier_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let carrier_meta: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let metadata_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let lifecycle_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let index = CarrierIndex::new(carrier_store.clone(), carrier_meta);
+        let deploy_id =
+            DeployLookupId::Legacy(LegacyDeploySignature::new(b"legacy-deploy".to_vec()));
+        let metadata_key = b"legacy-block-metadata".to_vec();
+        let lifecycle_key = b"legacy-deploy-lifecycle".to_vec();
+        metadata_store
+            .put_one(metadata_key.clone(), b"injected-conflict".to_vec())
+            .unwrap();
+        let (carrier_key, carrier_expected, carrier_replacement) = index
+            .prepare_record_once(&deploy_id, 7, vec![0x41; 32])
+            .unwrap()
+            .unwrap();
+        let mutations = [
+            AtomicStoreMutation {
+                store: carrier_store.as_ref(),
+                key: carrier_key,
+                operation: AtomicStoreOperation::CompareAndSwap {
+                    expected: carrier_expected,
+                    replacement: Some(carrier_replacement),
+                },
+            },
+            AtomicStoreMutation {
+                store: metadata_store.as_ref(),
+                key: metadata_key.clone(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"metadata".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: lifecycle_store.as_ref(),
+                key: lifecycle_key.clone(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"lifecycle".to_vec()),
+            },
+        ];
+
+        assert!(matches!(
+            commit_admission_mutations(5, &mutations),
+            Err(KvStoreError::TransactionConflict(_))
+        ));
+        assert!(!index.proves_absence(&deploy_id).unwrap());
+        assert_eq!(
+            metadata_store.get_one(&metadata_key).unwrap(),
+            Some(b"injected-conflict".to_vec())
+        );
+        assert_eq!(lifecycle_store.get_one(&lifecycle_key).unwrap(), None);
+
+        metadata_store.delete(vec![metadata_key.clone()]).unwrap();
+        assert!(index
+            .prepare_record_once(&deploy_id, 7, vec![0x41; 32])
+            .unwrap()
+            .is_none());
+        let retry = [
+            AtomicStoreMutation {
+                store: metadata_store.as_ref(),
+                key: metadata_key.clone(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"metadata".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: lifecycle_store.as_ref(),
+                key: lifecycle_key.clone(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"lifecycle".to_vec()),
+            },
+        ];
+        commit_admission_mutations(5, &retry).unwrap();
+
+        assert_eq!(
+            metadata_store.get_one(&metadata_key).unwrap(),
+            Some(b"metadata".to_vec())
+        );
+        assert_eq!(
+            lifecycle_store.get_one(&lifecycle_key).unwrap(),
+            Some(b"lifecycle".to_vec())
+        );
+        assert_eq!(index.prune_below(8).unwrap(), 1);
+        assert!(index.proves_absence(&deploy_id).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod certified_closure_tests {
+    use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Bond, FinalizationCertificate, FinalizedFloorCommitment,
+    };
+    use models::rust::validator::{self, Validator};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::{BlockDagKeyValueStorage, InsertMode};
+    use crate::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+
+    fn rank(value: u8) -> BlockHash { Bytes::from(vec![value; block_hash::LENGTH]) }
+
+    fn validator() -> Validator { Bytes::from(vec![7; validator::LENGTH]) }
+
+    fn make_block(
+        hash: u8,
+        height: i64,
+        parents: Vec<BlockHash>,
+        floor: Option<(BlockHash, BlockHash, BlockHash)>,
+    ) -> BlockMessage {
+        let validator = validator();
+        let mut block = block_implicits::get_random_block(
+            Some(height),
+            Some(i32::try_from(height).unwrap()),
+            Some(rank(hash.saturating_add(20))),
+            Some(rank(hash.saturating_add(40))),
+            Some(validator.clone()),
+            Some(models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+            Some(height),
+            Some(parents),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![Bond {
+                validator,
+                stake: 1,
+            }]),
+            Some("root".to_string()),
+            None,
+        );
+        block.block_hash = rank(hash);
+        block.header.finalized_floor =
+            floor.map(|(floor_hash, floor_post_state_hash, certificate_digest)| {
+                FinalizedFloorCommitment {
+                    floor_hash,
+                    floor_post_state_hash,
+                    certificate_digest,
+                    authority_context_digest: rank(99),
+                }
+            });
+        block
+    }
+
+    async fn fixture(include_ambient: bool) -> (KeyValueDagRepresentation, Vec<BlockHash>) {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        let genesis = make_block(0, 0, Vec::new(), None);
+        storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
+        let predecessor = make_block(1, 1, vec![rank(0)], Some((rank(0), rank(40), rank(90))));
+        let carrier = make_block(2, 2, vec![rank(1)], Some((rank(1), rank(41), rank(91))));
+        let descendant = make_block(3, 3, vec![rank(2)], Some((rank(1), rank(41), rank(91))));
+        let target = make_block(4, 4, vec![rank(3)], Some((rank(1), rank(41), rank(91))));
+        for block in [&predecessor, &carrier, &descendant, &target] {
+            storage.insert(block, InsertMode::Normal).unwrap();
+        }
+        if include_ambient {
+            let ambient = make_block(5, 2, vec![rank(1)], Some((rank(1), rank(41), rank(91))));
+            storage.insert(&ambient, InsertMode::Normal).unwrap();
+        }
+        (storage.get_representation().unwrap(), vec![
+            rank(1),
+            rank(2),
+            rank(3),
+            rank(4),
+        ])
+    }
+
+    #[tokio::test]
+    async fn certified_closures_use_objective_predecessor_history_and_ignore_ambient_blocks() {
+        let (base, expected) = fixture(false).await;
+        let (extended, _) = fixture(true).await;
+        let mut base_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let mut extended_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let base_support = base
+            .certified_support_closure(
+                &rank(1),
+                [rank(4)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut base_work,
+            )
+            .unwrap();
+        let extended_support = extended
+            .certified_support_closure(
+                &rank(1),
+                [rank(4)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut extended_work,
+            )
+            .unwrap();
+        assert_eq!(base_support, extended_support);
+        assert_eq!(
+            base_support,
+            expected.into_iter().map(BlockHashSerde).collect()
+        );
+        assert!(!base_support.contains(&BlockHashSerde(rank(0))));
+        assert!(!extended_support.contains(&BlockHashSerde(rank(5))));
+
+        let mut finalized_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let finalized = extended
+            .certified_finalized_delta(
+                &rank(1),
+                &rank(4),
+                FinalizationCertificate::MAX_FINALIZED_BLOCKS,
+                &mut finalized_work,
+            )
+            .unwrap();
+        assert_eq!(
+            finalized,
+            [rank(2), rank(3), rank(4)]
+                .into_iter()
+                .map(BlockHashSerde)
+                .collect()
+        );
+    }
+
+    #[tokio::test]
+    async fn certified_support_is_invariant_under_root_order_and_duplication() {
+        let (dag, _) = fixture(true).await;
+        let mut oracle_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let oracle = dag
+            .certified_support_closure(
+                &rank(1),
+                [rank(4), rank(0)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut oracle_work,
+            )
+            .unwrap();
+        let strategy = proptest::collection::vec(0usize..4, 0..32);
+        let mut runner = TestRunner::new(Config::with_cases(256));
+        runner
+            .run(&strategy, |indices| {
+                let mut roots = vec![rank(4), rank(0)];
+                roots.extend(indices.into_iter().map(|index| rank(index as u8 + 1)));
+                let mut remaining = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+                let actual = dag
+                    .certified_support_closure(
+                        &rank(1),
+                        roots,
+                        FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                        &mut remaining,
+                    )
+                    .unwrap();
+                prop_assert_eq!(&actual, &oracle);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn canonical_genesis_support_identity_is_stable_when_its_body_is_omitted() {
+        let (full, _) = fixture(false).await;
+        let mut restored = full.clone();
+        restored.dag_set.remove(&rank(0));
+
+        let mut full_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let full_support = full
+            .certified_support_closure(
+                &rank(1),
+                [rank(4), rank(0)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut full_work,
+            )
+            .unwrap();
+        let mut restored_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let restored_support = restored
+            .certified_support_closure(
+                &rank(1),
+                [rank(0), rank(4)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut restored_work,
+            )
+            .unwrap();
+
+        assert_eq!(restored_support, full_support);
+        assert!(restored_support.contains(&BlockHashSerde(rank(0))));
+
+        let mut missing_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        assert!(restored
+            .certified_support_closure(
+                &rank(1),
+                [rank(6)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut missing_work,
+            )
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn canonical_genesis_latest_reader_is_invariant_when_its_body_is_omitted() {
+        let (mut full, _) = fixture(false).await;
+        let validator = validator();
+        full.latest_messages_map.insert(validator.clone(), rank(0));
+        let mut restored = full.clone();
+        restored.dag_set.remove(&rank(0));
+
+        assert!(full.latest_message(&validator).unwrap().is_none());
+        assert!(restored.latest_message(&validator).unwrap().is_none());
+        assert_eq!(
+            full.latest_messages().unwrap(),
+            restored.latest_messages().unwrap()
+        );
+        assert!(full.latest_messages().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn certified_closure_limits_fail_closed() {
+        let (dag, _) = fixture(false).await;
+        let mut no_work = 0;
+        assert!(dag
+            .certified_support_closure(&rank(1), [rank(4)], 4, &mut no_work)
+            .is_err());
+        let mut bounded_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        assert!(dag
+            .certified_support_closure(&rank(1), [rank(4)], 3, &mut bounded_work)
+            .is_err());
+    }
+}
+
+#[cfg(test)]
+mod finalization_snapshot_tests {
+    use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
+    use models::rust::block_implicits;
+    use models::rust::bond_generation::BondGeneration;
+    use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+    use models::rust::validator::{self, Validator, ValidatorSerde};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use shared::rust::store::key_value_store::KvStoreError;
+
+    use super::{BlockDagKeyValueStorage, InsertMode};
+    use crate::rust::finality::{FinalizationAppendOutcome, FinalizationHead, FinalizationLedger};
+
+    fn hash(value: u8) -> BlockHash { Bytes::from(vec![value; block_hash::LENGTH]) }
+
+    fn validator() -> Validator { Bytes::from(vec![7; validator::LENGTH]) }
+
+    fn block(value: u8, block_number: i64, parents: Vec<BlockHash>) -> BlockMessage {
+        let validator = validator();
+        let pre_state = if block_number == 0 {
+            hash(20)
+        } else {
+            hash(value.saturating_add(39))
+        };
+        let mut block = block_implicits::get_random_block(
+            Some(block_number),
+            Some(i32::try_from(block_number).unwrap()),
+            Some(pre_state),
+            Some(hash(value.saturating_add(40))),
+            Some(validator.clone()),
+            Some(models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+            Some(block_number),
+            Some(parents),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![Bond {
+                validator,
+                stake: 1,
+            }]),
+            Some("root".to_string()),
+            None,
+        );
+        block.block_hash = hash(value);
+        block.header.sender_bond_generation = Some(BondGeneration::GENESIS);
+        block
+    }
+
+    async fn fixture() -> (
+        InMemoryStoreManager,
+        BlockDagKeyValueStorage,
+        BlockMessage,
+        BlockMessage,
+    ) {
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let genesis = block(0, 0, Vec::new());
+        storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
+        let child = block(1, 1, vec![genesis.block_hash.clone()]);
+        storage.insert(&child, InsertMode::Normal).unwrap();
+        (manager, storage, genesis, child)
+    }
+
+    fn append_without_projection(
+        storage: &BlockDagKeyValueStorage,
+        child: &BlockMessage,
+    ) -> FinalizationHead {
+        let expected = storage.finalization_head().unwrap().unwrap();
+        let genesis = storage
+            .finalization_ledger
+            .genesis_anchor()
+            .unwrap()
+            .unwrap();
+        let zero = hash(0);
+        let finalized: std::collections::BTreeSet<_> = [BlockHashSerde(child.block_hash.clone())]
+            .into_iter()
+            .collect();
+        let mut supporting = finalized.clone();
+        let (predecessor_certificate_digest, predecessor_certificate_block_hash) =
+            if expected.revision == 0 {
+                (zero.clone(), zero.clone())
+            } else {
+                supporting.insert(expected.block_hash.clone());
+                (
+                    expected.certificate_digest.0.clone(),
+                    expected.block_hash.0.clone(),
+                )
+            };
+        let latest_messages = std::collections::BTreeMap::from([(
+            ValidatorSerde(validator()),
+            BlockHashSerde(child.block_hash.clone()),
+        )]);
+        let witness = FinalizationLedger::prepare_witness(
+            child.header.version,
+            child.shard_id.clone(),
+            genesis.block_hash.0,
+            &expected,
+            child.block_hash.clone(),
+            predecessor_certificate_digest,
+            predecessor_certificate_block_hash,
+            child.body.state.block_number,
+            child.body.state.post_state_hash.clone(),
+            1,
+            1,
+            latest_messages,
+            supporting,
+            BlockHashSerde(hash(99)),
+            finalized.clone(),
+        )
+        .unwrap();
+        storage
+            .finalization_ledger
+            .persist_witness(&expected, &witness)
+            .unwrap();
+        let record = FinalizationLedger::prepare_record(
+            &expected,
+            child.block_hash.clone(),
+            child.body.state.block_number,
+            1.0,
+            finalized,
+            &witness,
+        )
+        .unwrap();
+        match storage
+            .finalization_ledger
+            .try_append(&expected, &record)
+            .unwrap()
+        {
+            FinalizationAppendOutcome::Committed(head) => head,
+            outcome => panic!("unexpected append outcome: {outcome:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_append_after_reconciliation_returns_typed_stale_finalization() {
+        let (_, storage, _, child) = fixture().await;
+        storage.reconcile_finalization_projection().unwrap();
+
+        let error = match storage.capture_finalization_base_after_reconciliation(|| {
+            append_without_projection(&storage, &child);
+        }) {
+            Ok(_) => panic!("a durable head beyond its projection must be retried"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, KvStoreError::StaleFinalization {
+            expected_revision: 0,
+            actual_revision: 1,
+        }));
+    }
+
+    #[tokio::test]
+    async fn completed_projection_produces_a_coherent_finalization_base() {
+        let (_, storage, _, child) = fixture().await;
+        let head = append_without_projection(&storage, &child);
+
+        storage.reconcile_finalization_projection().unwrap();
+        let base = storage.capture_finalization_base().unwrap();
+
+        assert_eq!(base.head, head);
+        assert_eq!(base.dag.last_finalized_block(), child.block_hash);
+    }
+
+    #[tokio::test]
+    async fn captured_base_remains_a_coherent_prefix_after_later_projection() {
+        let (_, storage, genesis, child) = fixture().await;
+        let captured = storage.capture_finalization_base().unwrap();
+
+        let later_head = append_without_projection(&storage, &child);
+        storage.reconcile_finalization_projection().unwrap();
+        let later = storage.capture_finalization_base().unwrap();
+
+        assert_eq!(captured.head.revision, 0);
+        assert_eq!(captured.head.block_hash.0, genesis.block_hash);
+        assert_eq!(captured.dag.last_finalized_block(), genesis.block_hash);
+        assert_eq!(later.head, later_head);
+        assert_eq!(later.dag.last_finalized_block(), child.block_hash);
+        assert!(captured.head.revision < later.head.revision);
+    }
+
+    #[tokio::test]
+    async fn generated_monotonic_history_preserves_every_captured_prefix() {
+        let (_, storage, genesis, first_child) = fixture().await;
+        let mut captures = vec![storage.capture_finalization_base().unwrap()];
+        let mut parent = genesis;
+
+        for revision in 1_u8..=6 {
+            let next = if revision == 1 {
+                first_child.clone()
+            } else {
+                let next = block(revision, i64::from(revision), vec![parent
+                    .block_hash
+                    .clone()]);
+                storage.insert(&next, InsertMode::Normal).unwrap();
+                next
+            };
+            append_without_projection(&storage, &next);
+            storage.reconcile_finalization_projection().unwrap();
+            captures.push(storage.capture_finalization_base().unwrap());
+            parent = next;
+        }
+
+        let strategy = (0_usize..captures.len(), 0_usize..captures.len());
+        let mut runner = TestRunner::new(Config::with_cases(128));
+        runner
+            .run(&strategy, |(left, right)| {
+                let captured_index = left.min(right);
+                let later_index = left.max(right);
+                let captured = &captures[captured_index];
+                let later = &captures[later_index];
+
+                prop_assert_eq!(captured.head.revision, captured_index as u64);
+                prop_assert_eq!(later.head.revision, later_index as u64);
+                prop_assert!(captured.head.revision <= later.head.revision);
+                let captured_floor = captured.dag.last_finalized_block();
+                let later_floor = later.dag.last_finalized_block();
+                prop_assert_eq!(&captured_floor, &captured.head.block_hash.0);
+                prop_assert_eq!(&later_floor, &later.head.block_hash.0);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stable_fully_projected_head_mismatch_is_fatal_corruption() {
+        let (_, storage, genesis, child) = fixture().await;
+        append_without_projection(&storage, &child);
+        storage
+            .finalization_ledger
+            .record_projection_completed(1)
+            .unwrap();
+
+        let error = match storage.capture_finalization_base() {
+            Ok(_) => panic!("a stable projected-head mismatch must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            KvStoreError::SerializationError(message)
+                if message == "projected finalized head does not match the durable finalization ledger"
+        ));
+        assert_eq!(
+            storage.get_representation().unwrap().last_finalized_block(),
+            genesis.block_hash
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_reconciles_a_durable_head_ahead_of_its_projection_cursor() {
+        let (mut manager, storage, _, child) = fixture().await;
+        let head = append_without_projection(&storage, &child);
+        drop(storage);
+
+        let restarted = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let base = restarted.capture_finalization_base().unwrap();
+
+        assert_eq!(base.head, head);
+        assert_eq!(base.dag.last_finalized_block(), child.block_hash);
+        assert!(restarted
+            .finalization_ledger
+            .pending_projection_records()
+            .unwrap()
+            .is_empty());
     }
 }

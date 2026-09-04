@@ -8,8 +8,8 @@ use prost::bytes::Bytes;
 use prost::Message;
 
 use super::casper::protocol::casper_message::{
-    BlockMessage, F1r3flyState, Justification, ObjectiveEquivocationEvidence,
-    ProcessedSystemDeploy, StateEffectId,
+    BlockMessage, F1r3flyState, FinalizedFloorCommitment, Justification,
+    ObjectiveEquivocationEvidence, ProcessedSystemDeploy, StateEffectId,
 };
 use crate::casper::{
     BlockMetadataInternal, BondProto, CertifiedAdmissionOutcomeProto, CertifiedSenderAuthorityProto,
@@ -17,10 +17,11 @@ use crate::casper::{
 use crate::rust::bond_generation::BondGeneration;
 use crate::rust::{block_hash, validator};
 
-pub const ADMISSION_SCHEMA_VERSION: u32 = 9;
-pub const CERTIFIED_ADMISSION_PROTOCOL_VERSION: i64 = 5;
+pub const ADMISSION_SCHEMA_VERSION: u32 = 13;
+pub const CERTIFIED_ADMISSION_PROTOCOL_VERSION: i64 = 6;
 pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 = 3;
-pub const ADMISSION_RULESET_MANIFEST: &str = "f1r3fly-certified-admission-v9|0:accepted|1:invalid-format|2:invalid-signature|3:invalid-sender|4:invalid-version|5:invalid-timestamp|6:deploy-not-signed|7:invalid-block-number|8:invalid-repeat-deploy|9:invalid-parents|10:invalid-follows|11:invalid-sequence-number|12:invalid-shard-id|13:justification-regression|14:neglected-invalid-block|15:neglected-equivocation|16:invalid-transaction|17:invalid-bonds-cache|18:invalid-equivocation-evidence|19:invalid-block-hash|20:unauthorized-slash-deploy|21:invalid-rejected-deploy|22:contains-expired-deploy|23:contains-time-expired-deploy|24:contains-future-deploy|25:not-of-interest|26:low-deploy-cost|finalization-ledger:atomic-rooted-hash-chain-v2";
+pub const APPLIED_STATE_EFFECTS_PROTOCOL_VERSION: i64 = 6;
+pub const ADMISSION_RULESET_MANIFEST: &str = "f1r3fly-certified-admission-v13|0:accepted|1:invalid-format|2:invalid-signature|3:invalid-sender|4:invalid-version|5:invalid-timestamp|6:deploy-not-signed|7:invalid-block-number|8:invalid-repeat-deploy|9:invalid-parents|10:invalid-follows|11:invalid-sequence-number|12:invalid-shard-id|13:justification-regression|14:neglected-invalid-block|15:neglected-equivocation|16:invalid-transaction|17:invalid-bonds-cache|18:invalid-equivocation-evidence|19:invalid-block-hash|20:unauthorized-slash-deploy|21:invalid-rejected-deploy|22:contains-expired-deploy|23:contains-time-expired-deploy|24:contains-future-deploy|25:not-of-interest|26:low-deploy-cost|finalization-ledger:atomic-rooted-hash-chain-v2|finalized-floor:durable-exact-state-occurrence-v2|certificate-cache:exact-state-candidate-v2|candidate-authority-context:signed-exact-v1|certificate-sidecar:manifest-digests-and-counts-v2";
 
 pub fn admission_ruleset_digest() -> Bytes {
     Blake2b256::hash(ADMISSION_RULESET_MANIFEST.as_bytes().to_vec()).into()
@@ -307,6 +308,44 @@ pub enum AdmissionRejectionReason {
     ContainsFutureDeploy = 24,
     NotOfInterest = 25,
     LowDeployCost = 26,
+    PrematureDeployRetry = 27,
+    AdmissibleEquivocation = 28,
+    IgnorableEquivocation = 29,
+}
+
+impl AdmissionRejectionReason {
+    pub const fn is_slash_evidence_eligible(self) -> bool {
+        match self {
+            Self::AdmissibleEquivocation | Self::IgnorableEquivocation => true,
+            Self::InvalidFormat
+            | Self::InvalidSignature
+            | Self::InvalidSender
+            | Self::InvalidVersion
+            | Self::InvalidTimestamp
+            | Self::DeployNotSigned
+            | Self::InvalidBlockNumber
+            | Self::InvalidRepeatDeploy
+            | Self::InvalidParents
+            | Self::InvalidFollows
+            | Self::InvalidSequenceNumber
+            | Self::InvalidShardId
+            | Self::JustificationRegression
+            | Self::NeglectedInvalidBlock
+            | Self::NeglectedEquivocation
+            | Self::InvalidTransaction
+            | Self::InvalidBondsCache
+            | Self::InvalidEquivocationEvidence
+            | Self::InvalidBlockHash
+            | Self::UnauthorizedSlashDeploy
+            | Self::InvalidRejectedDeploy
+            | Self::ContainsExpiredDeploy
+            | Self::ContainsTimeExpiredDeploy
+            | Self::ContainsFutureDeploy
+            | Self::NotOfInterest
+            | Self::LowDeployCost
+            | Self::PrematureDeployRetry => false,
+        }
+    }
 }
 
 impl TryFrom<u32> for AdmissionRejectionReason {
@@ -340,6 +379,9 @@ impl TryFrom<u32> for AdmissionRejectionReason {
             24 => Ok(Self::ContainsFutureDeploy),
             25 => Ok(Self::NotOfInterest),
             26 => Ok(Self::LowDeployCost),
+            27 => Ok(Self::PrematureDeployRetry),
+            28 => Ok(Self::AdmissibleEquivocation),
+            29 => Ok(Self::IgnorableEquivocation),
             _ => Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(
                 value,
             )),
@@ -481,6 +523,20 @@ impl CertifiedAdmissionOutcome {
 
     pub const fn is_rejected(&self) -> bool {
         matches!(self.decision, CertifiedAdmissionDecision::Rejected(_))
+    }
+
+    pub const fn rejection_reason(&self) -> Option<AdmissionRejectionReason> {
+        match self.decision {
+            CertifiedAdmissionDecision::Accepted => None,
+            CertifiedAdmissionDecision::Rejected(reason) => Some(reason),
+        }
+    }
+
+    pub const fn is_slash_evidence_eligible(&self) -> bool {
+        match self.rejection_reason() {
+            Some(reason) => reason.is_slash_evidence_eligible(),
+            None => false,
+        }
     }
 
     pub fn validate_for(
@@ -639,13 +695,19 @@ pub struct BlockMetadata {
     pub directly_finalized: bool,
     pub finalized: bool,
     pub fault_tolerance_value: f32,
+    /// The wire name is historical. This set contains every committed state
+    /// effect, including settlement after a failed user-body execution.
     pub successful_state_effect_indices: BTreeSet<u32>,
     pub rejected_state_effects: BTreeSet<StateEffectId>,
+    pub applied_state_effects: BTreeSet<StateEffectId>,
     pub protocol_version: i64,
     pub objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
     pub sender_authority: Option<CertifiedSenderAuthority>,
+    pub finalized_floor_commitment: Option<FinalizedFloorCommitment>,
     pub admission_schema_version: u32,
     pub approved_genesis: bool,
+    #[serde(with = "shared::rust::serde_bytes", default)]
+    pub merge_base: Bytes,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -662,22 +724,36 @@ pub enum BlockMetadataError {
     InvalidActiveValidatorSet,
     #[error("block metadata post-state hash must be {expected} bytes, got {actual}")]
     InvalidPostStateHash { expected: usize, actual: usize },
+    #[error("block metadata contains malformed state-effect provenance: {0}")]
+    InvalidStateEffectProvenance(String),
+    #[error("block metadata applies and rejects the same state effect")]
+    ConflictingStateEffectDisposition,
+    #[error("block metadata merge base must be empty or 32 bytes, got {0}")]
+    InvalidMergeBase(usize),
     #[error("block metadata contains malformed objective evidence: {0}")]
     InvalidObjectiveEvidence(String),
     #[error("block metadata contains an invalid authority certificate: {0}")]
     InvalidAuthorityCertificate(#[from] CertifiedSenderAuthorityError),
     #[error("block metadata contains an invalid admission outcome: {0}")]
     InvalidAdmissionOutcome(#[from] CertifiedAdmissionOutcomeError),
+    #[error("block metadata contains an invalid finalized-floor commitment: {0}")]
+    InvalidFinalizedFloorCommitment(String),
     #[error("non-genesis block metadata is missing its authority certificate")]
     MissingAuthorityCertificate,
     #[error("non-genesis block metadata is missing its admission outcome")]
     MissingAdmissionOutcome,
+    #[error("non-genesis block metadata is missing its finalized-floor commitment")]
+    MissingFinalizedFloorCommitment,
     #[error("genesis block metadata must not contain a sender authority certificate")]
     UnexpectedGenesisAuthorityCertificate,
     #[error("genesis block metadata must not contain an admission outcome")]
     UnexpectedGenesisAdmissionOutcome,
+    #[error("genesis block metadata must not contain a finalized-floor commitment")]
+    UnexpectedGenesisFinalizedFloorCommitment,
     #[error("authority certificate does not match block metadata")]
     AuthorityCertificateMismatch,
+    #[error("finalized-floor commitment does not match accepted sender authority")]
+    FinalizedFloorAuthorityMismatch,
     #[error("rejected certified block metadata cannot be finalized")]
     InvalidBlockFinalized,
     #[error("approved genesis metadata has an invalid shape")]
@@ -761,12 +837,15 @@ impl PartialEq for BlockMetadata {
             && self.finalized == other.finalized
             && self.successful_state_effect_indices == other.successful_state_effect_indices
             && self.rejected_state_effects == other.rejected_state_effects
+            && self.applied_state_effects == other.applied_state_effects
             && self.protocol_version == other.protocol_version
             && self.objective_equivocation_evidence_delta
                 == other.objective_equivocation_evidence_delta
             && self.sender_authority == other.sender_authority
+            && self.finalized_floor_commitment == other.finalized_floor_commitment
             && self.admission_schema_version == other.admission_schema_version
             && self.approved_genesis == other.approved_genesis
+            && self.merge_base == other.merge_base
     }
 }
 
@@ -795,16 +874,33 @@ impl std::hash::Hash for BlockMetadata {
         self.finalized.hash(state);
         self.successful_state_effect_indices.hash(state);
         self.rejected_state_effects.hash(state);
+        self.applied_state_effects.hash(state);
         self.protocol_version.hash(state);
         self.objective_equivocation_evidence_delta.hash(state);
         self.sender_authority.hash(state);
+        self.finalized_floor_commitment.hash(state);
         self.admission_schema_version.hash(state);
         self.approved_genesis.hash(state);
+        self.merge_base.hash(state);
     }
 }
 
 impl BlockMetadata {
     pub fn from_proto(proto: BlockMetadataInternal) -> Result<Self, BlockMetadataError> {
+        let rejected_state_effects = proto
+            .rejected_state_effects
+            .into_iter()
+            .map(StateEffectId::from_proto)
+            .collect::<Vec<_>>();
+        StateEffectId::validate_canonical_sequence(&rejected_state_effects, "rejectedStateEffects")
+            .map_err(BlockMetadataError::InvalidStateEffectProvenance)?;
+        let applied_state_effects = proto
+            .applied_state_effects
+            .into_iter()
+            .map(StateEffectId::from_proto)
+            .collect::<Vec<_>>();
+        StateEffectId::validate_canonical_sequence(&applied_state_effects, "appliedStateEffects")
+            .map_err(BlockMetadataError::InvalidStateEffectProvenance)?;
         let bond_generation_map = proto
             .bond_generations
             .into_iter()
@@ -845,6 +941,11 @@ impl BlockMetadata {
             .admission_outcome
             .map(CertifiedAdmissionOutcome::from_proto)
             .transpose()?;
+        let finalized_floor_commitment = proto
+            .finalized_floor_commitment
+            .map(FinalizedFloorCommitment::from_proto)
+            .transpose()
+            .map_err(BlockMetadataError::InvalidFinalizedFloorCommitment)?;
         if sender_generation_claim != sender_authority.as_ref().map(|cert| cert.generation()) {
             return Err(BlockMetadataError::AuthorityCertificateMismatch);
         }
@@ -875,16 +976,15 @@ impl BlockMetadata {
                 .successful_state_effect_indices
                 .into_iter()
                 .collect(),
-            rejected_state_effects: proto
-                .rejected_state_effects
-                .into_iter()
-                .map(StateEffectId::from_proto)
-                .collect(),
+            rejected_state_effects: rejected_state_effects.into_iter().collect(),
+            applied_state_effects: applied_state_effects.into_iter().collect(),
             protocol_version: proto.protocol_version,
             objective_equivocation_evidence_delta,
             sender_authority,
+            finalized_floor_commitment,
             admission_schema_version: proto.admission_schema_version,
             approved_genesis: proto.approved_genesis,
+            merge_base: proto.merge_base,
         };
         metadata.validate()?;
         Ok(metadata)
@@ -931,6 +1031,11 @@ impl BlockMetadata {
                 .iter()
                 .map(StateEffectId::to_proto)
                 .collect(),
+            applied_state_effects: self
+                .applied_state_effects
+                .iter()
+                .map(StateEffectId::to_proto)
+                .collect(),
             protocol_version: self.protocol_version,
             sender_bond_generation: self.sender_bond_generation().map(BondGeneration::get),
             objective_equivocation_evidence_delta: self
@@ -948,6 +1053,11 @@ impl BlockMetadata {
                 .admission_outcome
                 .as_ref()
                 .map(CertifiedAdmissionOutcome::to_proto),
+            finalized_floor_commitment: self
+                .finalized_floor_commitment
+                .as_ref()
+                .map(FinalizedFloorCommitment::to_proto),
+            merge_base: self.merge_base.clone(),
         }
     }
 
@@ -974,6 +1084,32 @@ impl BlockMetadata {
             .iter()
             .map(|b| (b.validator.clone(), b.stake))
             .collect()
+    }
+
+    fn committed_state_effect_indices(block: &BlockMessage) -> BTreeSet<u32> {
+        let mut execution_index = 0usize;
+        let mut indices = BTreeSet::new();
+        for deploy in &block.body.deploys {
+            if deploy.is_admission_rejected() {
+                continue;
+            }
+            if deploy.has_committed_state_effect() {
+                indices.insert(
+                    u32::try_from(execution_index).expect("block deploy index must fit in u32"),
+                );
+            }
+            execution_index += 1;
+        }
+        for deploy in &block.body.system_deploys {
+            if matches!(deploy, ProcessedSystemDeploy::Succeeded { .. }) {
+                indices.insert(
+                    u32::try_from(execution_index)
+                        .expect("block system deploy index must fit in u32"),
+                );
+            }
+            execution_index += 1;
+        }
+        indices
     }
 
     pub fn from_block(
@@ -1004,36 +1140,19 @@ impl BlockMetadata {
             directly_finalized,
             finalized,
             fault_tolerance_value: 0.0,
-            successful_state_effect_indices: b
-                .body
-                .deploys
-                .iter()
-                .enumerate()
-                .filter(|(_, deploy)| !deploy.is_failed)
-                .map(|(index, _)| u32::try_from(index).expect("block deploy index must fit in u32"))
-                .chain(
-                    b.body
-                        .system_deploys
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, deploy)| {
-                            matches!(deploy, ProcessedSystemDeploy::Succeeded { .. })
-                        })
-                        .map(|(index, _)| {
-                            u32::try_from(b.body.deploys.len() + index)
-                                .expect("block system deploy index must fit in u32")
-                        }),
-                )
-                .collect(),
+            successful_state_effect_indices: Self::committed_state_effect_indices(b),
             rejected_state_effects: b.body.rejected_state_effects.iter().cloned().collect(),
+            applied_state_effects: b.body.applied_state_effects.iter().cloned().collect(),
             protocol_version: b.header.version,
             objective_equivocation_evidence_delta: b
                 .header
                 .objective_equivocation_evidence_delta
                 .clone(),
             sender_authority: None,
+            finalized_floor_commitment: b.header.finalized_floor.clone(),
             admission_schema_version: ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
+            merge_base: b.body.merge_base.clone(),
         }
     }
 
@@ -1080,12 +1199,33 @@ impl BlockMetadata {
             .is_some_and(CertifiedAdmissionOutcome::is_rejected)
     }
 
+    pub fn rejection_reason(&self) -> Option<AdmissionRejectionReason> {
+        self.admission_outcome
+            .as_ref()
+            .and_then(CertifiedAdmissionOutcome::rejection_reason)
+    }
+
+    pub fn is_slash_evidence_eligible(&self) -> bool {
+        self.admission_outcome
+            .as_ref()
+            .is_some_and(CertifiedAdmissionOutcome::is_slash_evidence_eligible)
+    }
+
     pub fn validate(&self) -> Result<(), BlockMetadataError> {
         if self.post_state_hash.len() != block_hash::LENGTH {
             return Err(BlockMetadataError::InvalidPostStateHash {
                 expected: block_hash::LENGTH,
                 actual: self.post_state_hash.len(),
             });
+        }
+        if !self.merge_base.is_empty() && self.merge_base.len() != block_hash::LENGTH {
+            return Err(BlockMetadataError::InvalidMergeBase(self.merge_base.len()));
+        }
+        if !self
+            .rejected_state_effects
+            .is_disjoint(&self.applied_state_effects)
+        {
+            return Err(BlockMetadataError::ConflictingStateEffectDisposition);
         }
         if self.admission_schema_version != ADMISSION_SCHEMA_VERSION {
             return Err(BlockMetadataError::UnsupportedAdmissionSchema(
@@ -1099,6 +1239,9 @@ impl BlockMetadata {
         }
         if self.is_rejected() && (self.directly_finalized || self.finalized) {
             return Err(BlockMetadataError::InvalidBlockFinalized);
+        }
+        if self.approved_genesis && self.finalized_floor_commitment.is_some() {
+            return Err(BlockMetadataError::UnexpectedGenesisFinalizedFloorCommitment);
         }
         if self.approved_genesis
             && (!self.parents.is_empty()
@@ -1119,6 +1262,13 @@ impl BlockMetadata {
             (None, _, false) => Err(BlockMetadataError::MissingAuthorityCertificate),
             (_, None, false) => Err(BlockMetadataError::MissingAdmissionOutcome),
             (Some(certificate), Some(outcome), false) => {
+                let commitment = self
+                    .finalized_floor_commitment
+                    .as_ref()
+                    .ok_or(BlockMetadataError::MissingFinalizedFloorCommitment)?;
+                commitment
+                    .validate_shape()
+                    .map_err(BlockMetadataError::InvalidFinalizedFloorCommitment)?;
                 certificate.validate_shape()?;
                 if certificate.block_hash() != &self.block_hash
                     || certificate.protocol_version() != self.protocol_version
@@ -1127,6 +1277,14 @@ impl BlockMetadata {
                     return Err(BlockMetadataError::AuthorityCertificateMismatch);
                 }
                 outcome.validate_metadata(&self.block_hash, self.protocol_version, certificate)?;
+                if outcome.is_accepted()
+                    && (certificate.authority_floor_hash() != &commitment.floor_hash
+                        || certificate.authority_floor_post_state_hash()
+                            != &commitment.floor_post_state_hash
+                        || certificate.context_digest() != &commitment.authority_context_digest)
+                {
+                    return Err(BlockMetadataError::FinalizedFloorAuthorityMismatch);
+                }
                 Ok(())
             }
         }
@@ -1138,6 +1296,7 @@ mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
+    use proptest::prelude::*;
 
     use super::*;
     use crate::rhoapi::PCost;
@@ -1151,6 +1310,7 @@ mod tests {
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),
+                language: "rholang".to_string(),
                 time_stamp: 0,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
@@ -1163,6 +1323,7 @@ mod tests {
         .unwrap();
         ProcessedDeploy {
             deploy,
+            envelope_commitment: Bytes::new(),
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed,
@@ -1183,10 +1344,16 @@ mod tests {
             header: Header {
                 parents_hash_list: vec![Bytes::from(vec![3; block_hash::LENGTH])],
                 timestamp: 0,
-                version: 5,
+                version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
                 extra_bytes: Bytes::new(),
                 sender_bond_generation: Some(BondGeneration::GENESIS),
                 objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: Some(FinalizedFloorCommitment {
+                    floor_hash: Bytes::from(vec![10; block_hash::LENGTH]),
+                    floor_post_state_hash: Bytes::from(vec![11; block_hash::LENGTH]),
+                    certificate_digest: Bytes::from(vec![13; block_hash::LENGTH]),
+                    authority_context_digest: Bytes::from(vec![12; block_hash::LENGTH]),
+                }),
             },
             body: Body {
                 state: F1r3flyState {
@@ -1200,8 +1367,11 @@ mod tests {
                 deploys: Vec::new(),
                 rejected_deploys: Vec::new(),
                 rejected_state_effects: Vec::new(),
+                applied_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: Vec::new(),
             sender: Bytes::from(vec![2; validator::LENGTH]),
@@ -1210,6 +1380,7 @@ mod tests {
             sig_algorithm: String::new(),
             shard_id: "root".to_string(),
             extra_bytes: Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 
@@ -1228,20 +1399,33 @@ mod tests {
     }
 
     #[test]
-    fn block_metadata_records_only_successful_execution_effects_and_round_trips() {
+    fn block_metadata_records_all_committed_effects_in_execution_order() {
         let rejected = StateEffectId {
-            source_block_hash: Bytes::from_static(b"source"),
+            source_block_hash: Bytes::from(vec![5; block_hash::LENGTH]),
             execution_index: 4,
         };
+        let successful = processed_deploy(false);
+        let mut admission_rejected = processed_deploy(true);
+        admission_rejected.admission_status = DeployAdmissionStatus::Rejected;
+        let legacy_failure = processed_deploy(true);
+        let mut settled_failure = processed_deploy(true);
+        settled_failure.authority_funding_certificate = Some(Default::default());
+        settled_failure.authority_cost_witness = Some(Default::default());
         let block = BlockMessage {
             block_hash: Bytes::from(vec![1; block_hash::LENGTH]),
             header: Header {
                 parents_hash_list: vec![Bytes::from_static(b"parent")],
                 timestamp: 0,
-                version: 5,
+                version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
                 extra_bytes: Bytes::new(),
                 sender_bond_generation: Some(BondGeneration::GENESIS),
                 objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: Some(FinalizedFloorCommitment {
+                    floor_hash: Bytes::from(vec![10; block_hash::LENGTH]),
+                    floor_post_state_hash: Bytes::from(vec![11; block_hash::LENGTH]),
+                    certificate_digest: Bytes::from(vec![13; block_hash::LENGTH]),
+                    authority_context_digest: Bytes::from(vec![12; block_hash::LENGTH]),
+                }),
             },
             body: Body {
                 state: F1r3flyState {
@@ -1252,9 +1436,15 @@ mod tests {
                     active_validators: Vec::new(),
                     block_number: 9,
                 },
-                deploys: vec![processed_deploy(false), processed_deploy(true)],
+                deploys: vec![
+                    successful,
+                    admission_rejected,
+                    legacy_failure,
+                    settled_failure,
+                ],
                 rejected_deploys: Vec::new(),
                 rejected_state_effects: vec![rejected.clone()],
+                applied_state_effects: Vec::new(),
                 system_deploys: vec![
                     ProcessedSystemDeploy::Succeeded {
                         event_list: Vec::new(),
@@ -1270,6 +1460,8 @@ mod tests {
                     },
                 ],
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: Vec::new(),
             sender: Bytes::from(vec![2; validator::LENGTH]),
@@ -1278,6 +1470,7 @@ mod tests {
             sig_algorithm: String::new(),
             shard_id: "root".to_string(),
             extra_bytes: Bytes::new(),
+            finalized_floor_certificate: None,
         };
 
         let certificate = authority_certificate(&block, 1).unwrap();
@@ -1292,14 +1485,94 @@ mod tests {
         .unwrap();
         assert_eq!(
             metadata.successful_state_effect_indices,
-            BTreeSet::from([0, 2])
+            BTreeSet::from([0, 2, 3])
         );
         assert_eq!(metadata.rejected_state_effects, BTreeSet::from([rejected]));
-        assert_eq!(metadata.protocol_version, 5);
+        assert_eq!(
+            metadata.protocol_version,
+            CERTIFIED_ADMISSION_PROTOCOL_VERSION
+        );
         assert_eq!(
             BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap(),
             metadata
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn committed_effect_projection_compacts_rejections_and_retains_settled_failures(
+            dispositions in proptest::collection::vec(
+                (any::<bool>(), any::<bool>(), any::<bool>()),
+                0..48,
+            ),
+            system_successes in proptest::collection::vec(any::<bool>(), 0..16),
+        ) {
+            let template = processed_deploy(false);
+            let mut block = authority_block();
+            block.body.deploys = dispositions
+                .iter()
+                .map(|(admission_rejected, failed, settled)| {
+                    let mut deploy = template.clone();
+                    deploy.is_failed = *failed || *admission_rejected;
+                    deploy.admission_status = if *admission_rejected {
+                        DeployAdmissionStatus::Rejected
+                    } else {
+                        DeployAdmissionStatus::Executed
+                    };
+                    if *settled {
+                        deploy.authority_funding_certificate = Some(Default::default());
+                        deploy.authority_cost_witness = Some(Default::default());
+                    }
+                    deploy
+                })
+                .collect();
+            block.body.system_deploys = system_successes
+                .iter()
+                .map(|success| {
+                    if *success {
+                        ProcessedSystemDeploy::Succeeded {
+                            event_list: Vec::new(),
+                            system_deploy: SystemDeployData::Empty,
+                            pre_state_hash: Bytes::new(),
+                            post_state_hash: Bytes::new(),
+                        }
+                    } else {
+                        ProcessedSystemDeploy::Failed {
+                            event_list: Vec::new(),
+                            error_msg: "failed".to_string(),
+                            pre_state_hash: Bytes::new(),
+                            post_state_hash: Bytes::new(),
+                        }
+                    }
+                })
+                .collect();
+
+            let mut expected = BTreeSet::new();
+            let mut execution_index = 0u32;
+            for (admission_rejected, failed, settled) in &dispositions {
+                if *admission_rejected {
+                    continue;
+                }
+                if !*failed || *settled {
+                    expected.insert(execution_index);
+                }
+                execution_index += 1;
+            }
+            for success in &system_successes {
+                if *success {
+                    expected.insert(execution_index);
+                }
+                execution_index += 1;
+            }
+
+            prop_assert_eq!(
+                BlockMetadata::from_block(&block, None, None)
+                    .successful_state_effect_indices,
+                expected,
+            );
+        }
     }
 
     #[test]
@@ -1320,6 +1593,62 @@ mod tests {
         assert_eq!(metadata.sender_authority, Some(certificate));
         assert_eq!(metadata.admission_outcome, Some(outcome));
         assert_eq!(metadata.validate(), Ok(()));
+    }
+
+    #[test]
+    fn accepted_metadata_binds_the_exact_signed_floor_authority_context() {
+        let block = authority_block();
+        let certificate = authority_certificate(&block, 10).unwrap();
+        let outcome = CertifiedAdmissionOutcome::accepted(&block, &certificate).unwrap();
+        let metadata =
+            BlockMetadata::from_certified_block(&block, None, None, &certificate, &outcome)
+                .unwrap();
+
+        for (index, mut tampered) in [metadata.clone(), metadata.clone(), metadata.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let commitment = tampered.finalized_floor_commitment.as_mut().unwrap();
+            match index {
+                0 => commitment.floor_hash = Bytes::from(vec![20; block_hash::LENGTH]),
+                1 => commitment.floor_post_state_hash = Bytes::from(vec![21; block_hash::LENGTH]),
+                2 => {
+                    commitment.authority_context_digest = Bytes::from(vec![22; block_hash::LENGTH])
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                tampered.validate(),
+                Err(BlockMetadataError::FinalizedFloorAuthorityMismatch)
+            );
+        }
+
+        let mut missing = metadata;
+        missing.finalized_floor_commitment = None;
+        assert_eq!(
+            missing.validate(),
+            Err(BlockMetadataError::MissingFinalizedFloorCommitment)
+        );
+    }
+
+    #[test]
+    fn approved_genesis_rejects_a_finalized_floor_commitment_explicitly() {
+        let mut block = authority_block();
+        block.header.parents_hash_list.clear();
+        block.header.finalized_floor = None;
+        block.body.state.block_number = 0;
+        block.seq_num = 0;
+        let mut metadata = BlockMetadata::from_approved_genesis(&block).unwrap();
+        metadata.finalized_floor_commitment = Some(FinalizedFloorCommitment {
+            floor_hash: Bytes::from(vec![1; block_hash::LENGTH]),
+            floor_post_state_hash: Bytes::from(vec![2; block_hash::LENGTH]),
+            certificate_digest: Bytes::from(vec![3; block_hash::LENGTH]),
+            authority_context_digest: Bytes::from(vec![4; block_hash::LENGTH]),
+        });
+        assert_eq!(
+            metadata.validate(),
+            Err(BlockMetadataError::UnexpectedGenesisFinalizedFloorCommitment)
+        );
     }
 
     #[test]
@@ -1450,18 +1779,56 @@ mod tests {
 
     #[test]
     fn every_stable_admission_rejection_code_round_trips() {
-        for code in 1..=26 {
+        for code in 1..=29 {
             let reason = AdmissionRejectionReason::try_from(code).unwrap();
             assert_eq!(reason as u32, code);
+            assert_eq!(
+                reason.is_slash_evidence_eligible(),
+                matches!(
+                    reason,
+                    AdmissionRejectionReason::AdmissibleEquivocation
+                        | AdmissionRejectionReason::IgnorableEquivocation
+                )
+            );
         }
         assert_eq!(
             AdmissionRejectionReason::try_from(0),
             Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(0))
         );
         assert_eq!(
-            AdmissionRejectionReason::try_from(27),
-            Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(27))
+            AdmissionRejectionReason::try_from(30),
+            Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(30))
         );
+    }
+
+    #[test]
+    fn certified_outcome_and_metadata_expose_the_same_evidence_classification() {
+        let block = authority_block();
+        let certificate = authority_certificate(&block, 10).unwrap();
+        let accepted = CertifiedAdmissionOutcome::accepted(&block, &certificate).unwrap();
+        assert_eq!(accepted.rejection_reason(), None);
+        assert!(!accepted.is_slash_evidence_eligible());
+
+        for code in 1..=29 {
+            let reason = AdmissionRejectionReason::try_from(code).unwrap();
+            let outcome =
+                CertifiedAdmissionOutcome::rejected(&block, &certificate, reason).unwrap();
+            let metadata = BlockMetadata::from_certified_block(
+                &block,
+                Some(false),
+                Some(false),
+                &certificate,
+                &outcome,
+            )
+            .unwrap();
+
+            assert_eq!(outcome.rejection_reason(), Some(reason));
+            assert_eq!(metadata.rejection_reason(), Some(reason));
+            assert_eq!(
+                metadata.is_slash_evidence_eligible(),
+                reason.is_slash_evidence_eligible()
+            );
+        }
     }
 
     #[test]
@@ -1484,5 +1851,225 @@ mod tests {
             ),
             Err(BlockMetadataError::InvalidBlockFinalized)
         );
+    }
+}
+
+#[cfg(test)]
+mod round_trip_tests {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    use super::*;
+    use crate::rust::block_implicits::get_random_block_default;
+
+    fn sample() -> BlockMetadata {
+        BlockMetadata {
+            block_hash: Bytes::from(vec![1; block_hash::LENGTH]),
+            post_state_hash: Bytes::from(vec![2; block_hash::LENGTH]),
+            parents: Vec::new(),
+            sender: Bytes::from_static(b"sender"),
+            justifications: vec![Justification {
+                validator: Bytes::from_static(b"validator"),
+                latest_block_hash: Bytes::from_static(b"latest"),
+            }],
+            weight_map: BTreeMap::from([
+                (Bytes::from_static(b"v1"), 10),
+                (Bytes::from_static(b"v2"), 20),
+            ]),
+            bond_generation_map: BTreeMap::new(),
+            active_validator_set: BTreeSet::new(),
+            block_number: 0,
+            sequence_number: 0,
+            admission_outcome: None,
+            directly_finalized: true,
+            finalized: true,
+            fault_tolerance_value: 0.5,
+            successful_state_effect_indices: BTreeSet::from([0, 2]),
+            rejected_state_effects: BTreeSet::from([StateEffectId {
+                source_block_hash: Bytes::from(vec![3; block_hash::LENGTH]),
+                execution_index: 1,
+            }]),
+            applied_state_effects: BTreeSet::from([StateEffectId {
+                source_block_hash: Bytes::from(vec![4; block_hash::LENGTH]),
+                execution_index: 3,
+            }]),
+            protocol_version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+            objective_equivocation_evidence_delta: Vec::new(),
+            sender_authority: None,
+            finalized_floor_commitment: None,
+            admission_schema_version: ADMISSION_SCHEMA_VERSION,
+            approved_genesis: true,
+            merge_base: Bytes::from(vec![5; block_hash::LENGTH]),
+        }
+    }
+
+    fn hash_of(m: &BlockMetadata) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        m.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn proto_round_trip_preserves_every_field() {
+        let metadata = sample();
+        let round_tripped = BlockMetadata::from_proto(metadata.to_proto()).unwrap();
+        assert_eq!(round_tripped, metadata);
+        assert_eq!(
+            round_tripped.fault_tolerance_value,
+            metadata.fault_tolerance_value
+        );
+    }
+
+    #[test]
+    fn bytes_round_trip_preserves_every_field() {
+        let metadata = sample();
+        let round_tripped = BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap();
+        assert_eq!(round_tripped, metadata);
+        assert_eq!(
+            round_tripped.fault_tolerance_value,
+            metadata.fault_tolerance_value
+        );
+    }
+
+    #[test]
+    fn proto_rejects_noncanonical_applied_state_effects() {
+        let mut unordered = sample().to_proto();
+        let first = unordered.applied_state_effects[0].clone();
+        let second = StateEffectId {
+            source_block_hash: Bytes::from(vec![6; block_hash::LENGTH]),
+            execution_index: 0,
+        }
+        .to_proto();
+        unordered.applied_state_effects = vec![second, first.clone()];
+        assert!(matches!(
+            BlockMetadata::from_proto(unordered),
+            Err(BlockMetadataError::InvalidStateEffectProvenance(message))
+                if message.contains("strictly ordered")
+        ));
+
+        let mut duplicate = sample().to_proto();
+        duplicate.applied_state_effects = vec![first.clone(), first];
+        assert!(matches!(
+            BlockMetadata::from_proto(duplicate),
+            Err(BlockMetadataError::InvalidStateEffectProvenance(message))
+                if message.contains("duplicate")
+        ));
+
+        let mut malformed = sample().to_proto();
+        malformed.applied_state_effects = vec![StateEffectId {
+            source_block_hash: Bytes::from_static(b"short"),
+            execution_index: 0,
+        }
+        .to_proto()];
+        assert!(matches!(
+            BlockMetadata::from_proto(malformed),
+            Err(BlockMetadataError::InvalidStateEffectProvenance(message))
+                if message.contains("expected 32 bytes")
+        ));
+    }
+
+    #[test]
+    fn proto_rejects_conflicting_effect_dispositions_and_malformed_state_parent() {
+        let mut conflicting = sample().to_proto();
+        conflicting.applied_state_effects = conflicting.rejected_state_effects.clone();
+        assert_eq!(
+            BlockMetadata::from_proto(conflicting),
+            Err(BlockMetadataError::ConflictingStateEffectDisposition)
+        );
+
+        let mut malformed_parent = sample().to_proto();
+        malformed_parent.merge_base = Bytes::from_static(b"short");
+        assert_eq!(
+            BlockMetadata::from_proto(malformed_parent),
+            Err(BlockMetadataError::InvalidMergeBase(5))
+        );
+    }
+
+    #[test]
+    fn to_proto_maps_weight_map_to_bonds() {
+        let proto = sample().to_proto();
+        let validators: Vec<&[u8]> = proto.bonds.iter().map(|b| b.validator.as_ref()).collect();
+        let stakes: Vec<i64> = proto.bonds.iter().map(|b| b.stake).collect();
+        assert_eq!(validators, vec![b"v1".as_ref(), b"v2".as_ref()]);
+        assert_eq!(stakes, vec![10, 20]);
+    }
+
+    #[test]
+    fn ordering_by_num_orders_by_block_number_first() {
+        let mut low = sample();
+        low.block_number = 1;
+        let mut high = sample();
+        high.block_number = 2;
+        assert_eq!(BlockMetadata::ordering_by_num(&low, &high), Ordering::Less);
+        assert_eq!(
+            BlockMetadata::ordering_by_num(&high, &low),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn ordering_by_num_breaks_ties_by_block_hash() {
+        let mut a = sample();
+        a.block_hash = Bytes::from_static(b"aaa");
+        let mut b = sample();
+        b.block_hash = Bytes::from_static(b"bbb");
+        assert_eq!(BlockMetadata::ordering_by_num(&a, &b), Ordering::Less);
+        assert_eq!(BlockMetadata::ordering_by_num(&a, &a), Ordering::Equal);
+    }
+
+    #[test]
+    fn from_block_copies_block_fields_and_defaults_flags() {
+        let block = get_random_block_default();
+        let metadata = BlockMetadata::from_block(&block, None, None);
+
+        assert_eq!(metadata.block_hash, block.block_hash);
+        assert_eq!(metadata.post_state_hash, block.body.state.post_state_hash);
+        assert_eq!(metadata.parents, block.header.parents_hash_list);
+        assert_eq!(metadata.sender, block.sender);
+        assert_eq!(metadata.justifications, block.justifications);
+        assert_eq!(metadata.block_number, block.body.state.block_number);
+        assert_eq!(metadata.sequence_number, block.seq_num);
+        assert_eq!(metadata.merge_base, block.body.merge_base);
+        assert_eq!(
+            metadata.applied_state_effects,
+            block.body.applied_state_effects.iter().cloned().collect()
+        );
+        assert_eq!(
+            metadata.rejected_state_effects,
+            block.body.rejected_state_effects.iter().cloned().collect()
+        );
+        assert!(!metadata.directly_finalized);
+        assert!(!metadata.finalized);
+        assert_eq!(metadata.fault_tolerance_value, 0.0);
+
+        for bond in &block.body.state.bonds {
+            assert_eq!(metadata.weight_map.get(&bond.validator), Some(&bond.stake));
+        }
+        assert_eq!(metadata.weight_map.len(), block.body.state.bonds.len());
+    }
+
+    #[test]
+    fn from_block_honors_explicit_finalization_flags() {
+        let block = get_random_block_default();
+        let metadata = BlockMetadata::from_block(&block, Some(true), Some(true));
+        assert!(metadata.directly_finalized);
+        assert!(metadata.finalized);
+    }
+
+    #[test]
+    fn equality_and_hash_ignore_fault_tolerance_value() {
+        let a = sample();
+        let mut b = sample();
+        b.fault_tolerance_value = -1.0;
+        assert_eq!(a, b);
+        assert_eq!(hash_of(&a), hash_of(&b));
+    }
+
+    #[test]
+    fn equality_distinguishes_block_hash() {
+        let a = sample();
+        let mut b = sample();
+        b.block_hash = Bytes::from_static(b"other");
+        assert_ne!(a, b);
+        assert_ne!(hash_of(&a), hash_of(&b));
     }
 }

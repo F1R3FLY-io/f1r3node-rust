@@ -1,0 +1,22 @@
+dtmc
+
+const int ITERATIONS;
+const int OBSERVED_FAILURES;
+const double FAILURE_PROBABILITY;
+
+module soak_backtest
+  completed : [0..ITERATIONS] init 0;
+  failures : [0..ITERATIONS] init 0;
+
+  [] completed < ITERATIONS ->
+    FAILURE_PROBABILITY : (completed' = completed + 1) & (failures' = failures + 1) +
+    (1 - FAILURE_PROBABILITY) : (completed' = completed + 1);
+  [] completed = ITERATIONS -> true;
+endmodule
+
+label "done" = completed = ITERATIONS;
+label "observed_or_worse" = completed = ITERATIONS & failures >= OBSERVED_FAILURES;
+
+rewards "final_failure_count"
+  completed = ITERATIONS : failures;
+endrewards

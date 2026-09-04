@@ -4,14 +4,16 @@ use std::time::{Duration, Instant};
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
     BlockNotFoundError, BlockPendingAdmissionError, DeployNotFoundError, DeployValidationError,
-    ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
-    LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+    ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
+    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+    PrivateNamePreviewUnavailable, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
+use casper::rust::casper::DeployError;
 use casper::rust::errors::CasperError;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -86,7 +88,7 @@ pub struct ApiErrorResponse {
     /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
-    /// `no_new_deploys`
+    /// `no_new_deploys`, `private_name_preview_unavailable`
     ///
     /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
@@ -95,6 +97,12 @@ pub struct ApiErrorResponse {
     ///
     /// **502 Bad Gateway:**
     /// `comm_error`, `external_service_error`
+    ///
+    /// **503 Service Unavailable:**
+    /// `observer_busy` — carries `Retry-After`
+    ///
+    /// **504 Gateway Timeout:**
+    /// `exploratory_timeout`
     pub error: String,
     /// Human-readable description of the error.
     pub message: String,
@@ -113,14 +121,34 @@ impl IntoResponse for AppError {
             tracing::debug!("API error: {:#}", self.0);
         }
 
-        (
+        let retry_after = retry_after_secs(&self.0);
+
+        let mut response = (
             status,
             Json(ApiErrorResponse {
                 error: error_kind.to_string(),
                 message,
             }),
         )
-            .into_response()
+            .into_response();
+
+        if let Some(secs) = retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+
+        response
+    }
+}
+
+/// `Retry-After` hint for the rejections that carry one. Read from the error
+/// variant rather than recomputed from the rendered message, so the header and
+/// the body cannot disagree.
+fn retry_after_secs(err: &eyre::Error) -> Option<u64> {
+    match ExploratoryDeployRejection::classify(err) {
+        Some(ExploratoryDeployRejection::Busy { retry_after_secs }) => Some(retry_after_secs),
+        Some(ExploratoryDeployRejection::Timeout { .. }) | None => None,
     }
 }
 
@@ -207,8 +235,22 @@ where
 
 fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
     for cause in err.chain() {
+        if let Some(rejection) = ExploratoryDeployRejection::from_cause(cause) {
+            let (status, kind) = match rejection {
+                ExploratoryDeployRejection::Busy { .. } => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "observer_busy")
+                }
+                ExploratoryDeployRejection::Timeout { .. } => {
+                    (StatusCode::GATEWAY_TIMEOUT, "exploratory_timeout")
+                }
+            };
+            return (status, kind, cause.to_string());
+        }
         if let Some(ce) = cause.downcast_ref::<CasperError>() {
             return classify_casper_error(ce);
+        }
+        if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
+            return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
         }
         if cause.downcast_ref::<DeployNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "deploy_not_found", cause.to_string());
@@ -272,6 +314,16 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if cause.downcast_ref::<NoNewDeploysError>().is_some() {
             return (StatusCode::CONFLICT, "no_new_deploys", cause.to_string());
         }
+        if cause
+            .downcast_ref::<PrivateNamePreviewUnavailable>()
+            .is_some()
+        {
+            return (
+                StatusCode::CONFLICT,
+                "private_name_preview_unavailable",
+                cause.to_string(),
+            );
+        }
     }
 
     (
@@ -309,7 +361,16 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
             "invalid_cost_settlement",
             err.to_string(),
         ),
+        ParentFrontierCapacityExceeded { .. } => (
+            S::SERVICE_UNAVAILABLE,
+            "parent_frontier_capacity_exceeded",
+            err.to_string(),
+        ),
+        CertificateVerificationWorkExceeded { .. } => {
+            internal("certificate_verification_work_exceeded")
+        }
         UnsupportedProtocolVersion { .. } => internal("unsupported_protocol_version"),
+        BlockNotHeld(_) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -319,6 +380,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         ReplayFailure(_) => internal("replay_failure"),
         StreamError(_) => internal("stream_error"),
         LockError(_) => internal("lock_error"),
+        IncompatibleFinalizedFork(_) => internal("incompatible_finalized_fork"),
         Other(_) => internal("other_error"),
     }
 }
@@ -442,6 +504,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
         (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
@@ -462,6 +525,7 @@ pub async fn deploy_handler(
 #[utoipa::path(
     post,
     path = "/explore-deploy",
+    description = "Executes against the last finalized block post-state. Unfinalized DAG-tip state is not visible.",
     request_body = SimpleExploreDeployRequest,
     responses(
         (status = 200, description = "Exploratory deploy executed; returns channel data", body = RhoDataResponse),
@@ -469,6 +533,8 @@ pub async fn deploy_handler(
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
+        (status = 504, description = "Exploratory execution exceeded its deadline (`exploratory_timeout`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
 )]
@@ -498,6 +564,8 @@ pub async fn explore_deploy_handler(
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
+        (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
+        (status = 504, description = "Exploratory execution exceeded its deadline (`exploratory_timeout`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
 )]
@@ -624,5 +692,423 @@ mod tests {
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(kind, "unsupported_protocol_version");
         assert!(detail.contains("Unsupported Casper protocol version: 1"));
+    }
+
+    #[test]
+    fn parent_frontier_capacity_is_a_service_deferral() {
+        let error = CasperError::ParentFrontierCapacityExceeded {
+            configured_cap: 2,
+            required_parents: 3,
+            effective_committee: 3,
+            unique_causal_tips: 3,
+            floor_backstop_added: false,
+            expired_tip_count: 0,
+        };
+        let (status, kind, detail) = classify_casper_error(&error);
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind, "parent_frontier_capacity_exceeded");
+        assert!(detail.contains("requires 3 parents"));
+    }
+
+    #[test]
+    fn protocol_v6_private_name_preview_is_a_stable_conflict() {
+        let error = eyre::Report::new(PrivateNamePreviewUnavailable {
+            protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+        });
+        let (status, kind, detail) = classify_error(&error);
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(kind, "private_name_preview_unavailable");
+        assert!(detail.contains("authenticated deploy envelope"));
+    }
+
+    mod classification {
+        use axum::http::StatusCode;
+        use casper::rust::api::block_api::{
+            BlockNotFoundError, DeployNotFoundError, DeployValidationError,
+            ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
+            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+        };
+        use casper::rust::casper::DeployError;
+        use casper::rust::errors::CasperError;
+        use rholang::rust::interpreter::errors::InterpreterError;
+
+        use super::super::classify_error;
+
+        fn classify(err: impl std::error::Error + Send + Sync + 'static) -> (StatusCode, String) {
+            let (status, kind, _message) = classify_error(&eyre::Report::new(err));
+            (status, kind.to_string())
+        }
+
+        #[test]
+        fn typed_block_api_errors_map_to_stable_kinds() {
+            assert_eq!(
+                classify(DeployNotFoundError {
+                    deploy_id: "aa".to_string(),
+                }),
+                (StatusCode::NOT_FOUND, "deploy_not_found".to_string())
+            );
+            assert_eq!(
+                classify(BlockNotFoundError {
+                    hash: "bb".to_string(),
+                }),
+                (StatusCode::NOT_FOUND, "block_not_found".to_string())
+            );
+            assert_eq!(
+                classify(InvalidHashError("bad hash".to_string())),
+                (StatusCode::BAD_REQUEST, "invalid_hash".to_string())
+            );
+            assert_eq!(
+                classify(ExploratoryDeployReadOnlyError),
+                (
+                    StatusCode::BAD_REQUEST,
+                    "readonly_node_required".to_string()
+                )
+            );
+            assert_eq!(
+                classify(InvalidPublicKeyError("bad key".to_string())),
+                (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+            assert_eq!(
+                classify(DeployValidationError {
+                    message: "bad deploy".to_string(),
+                }),
+                (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+            assert_eq!(
+                classify(ProposeReadOnlyError),
+                (
+                    StatusCode::BAD_REQUEST,
+                    "readonly_node_required".to_string()
+                )
+            );
+            assert_eq!(
+                classify(NoNewDeploysError),
+                (StatusCode::CONFLICT, "no_new_deploys".to_string())
+            );
+        }
+
+        #[test]
+        fn latest_block_message_errors_split_by_variant() {
+            assert_eq!(
+                classify(LatestBlockMessageError::NodeReadOnlyError),
+                (
+                    StatusCode::BAD_REQUEST,
+                    "validator_node_required".to_string()
+                )
+            );
+            assert_eq!(
+                classify(LatestBlockMessageError::NoBlockMessageError),
+                (StatusCode::NOT_FOUND, "block_not_found".to_string())
+            );
+        }
+
+        #[test]
+        fn duplicate_deploy_is_conflict() {
+            let err = DeployError::duplicate_deploy(vec![1u8, 2].into());
+            assert_eq!(
+                classify(err),
+                (StatusCode::CONFLICT, "duplicate_deploy".to_string())
+            );
+        }
+
+        #[test]
+        fn unknown_error_falls_back_to_internal_server_error() {
+            let (status, kind, _) = classify_error(&eyre::eyre!("something odd"));
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(kind, "unknown_error");
+        }
+
+        #[test]
+        fn casper_errors_map_to_stable_kinds() {
+            let cases = vec![
+                (
+                    CasperError::CommError(comm::rust::errors::CommError::UnknownCommError(
+                        "peer gone".to_string(),
+                    )),
+                    StatusCode::BAD_GATEWAY,
+                    "comm_error",
+                ),
+                (
+                    CasperError::SigningError("sig".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "signing_error",
+                ),
+                (
+                    CasperError::RuntimeError("rt".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "runtime_error",
+                ),
+                (
+                    CasperError::StreamError("st".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "stream_error",
+                ),
+                (
+                    CasperError::LockError("lk".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "lock_error",
+                ),
+                (
+                    CasperError::IncompatibleFinalizedFork("fork".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "incompatible_finalized_fork",
+                ),
+                (
+                    CasperError::Other("misc".to_string()),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "other_error",
+                ),
+                (
+                    CasperError::BlockNotHeld(vec![0xab].into()),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "block_not_held",
+                ),
+            ];
+
+            for (err, expected_status, expected_kind) in cases {
+                let (status, kind) = classify(err);
+                assert_eq!(status, expected_status, "kind {expected_kind}");
+                assert_eq!(kind, expected_kind);
+            }
+        }
+
+        #[test]
+        fn interpreter_bad_term_errors_are_bad_request() {
+            for err in [
+                InterpreterError::SyntaxError("boom".to_string()),
+                InterpreterError::LexerError("boom".to_string()),
+                InterpreterError::ParserError("boom".to_string()),
+                InterpreterError::PatternReceiveError("boom".to_string()),
+            ] {
+                let (status, kind) = classify(CasperError::InterpreterError(err));
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+                assert_eq!(kind, "rholang_bad_term");
+            }
+        }
+
+        #[test]
+        fn interpreter_illegal_argument_is_bad_request() {
+            let (status, kind) = classify(CasperError::InterpreterError(
+                InterpreterError::IllegalArgumentError("bad arg".to_string()),
+            ));
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(kind, "illegal_argument");
+        }
+
+        #[test]
+        fn interpreter_execution_failures_are_unprocessable() {
+            assert_eq!(
+                classify(CasperError::InterpreterError(
+                    InterpreterError::OutOfPhlogistonsError
+                )),
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "out_of_phlogistons".to_string()
+                )
+            );
+            assert_eq!(
+                classify(CasperError::InterpreterError(
+                    InterpreterError::UserAbortError
+                )),
+                (StatusCode::UNPROCESSABLE_ENTITY, "user_abort".to_string())
+            );
+            for err in [
+                InterpreterError::ReduceError("boom".to_string()),
+                InterpreterError::MethodNotDefined {
+                    method: "nth".to_string(),
+                    other_type: "Int".to_string(),
+                },
+                InterpreterError::SubstituteError("boom".to_string()),
+            ] {
+                let (status, kind) = classify(CasperError::InterpreterError(err));
+                assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+                assert_eq!(kind, "rholang_execution_error");
+            }
+        }
+
+        #[test]
+        fn interpreter_internal_errors_are_internal_server_error() {
+            for err in [
+                InterpreterError::BugFoundError("boom".to_string()),
+                InterpreterError::SetupError("boom".to_string()),
+            ] {
+                let (status, kind) = classify(CasperError::InterpreterError(err));
+                assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+                assert_eq!(kind, "interpreter_internal_error");
+            }
+        }
+
+        #[test]
+        fn interpreter_external_service_errors_are_bad_gateway() {
+            for err in [
+                InterpreterError::OpenAIError("api down".to_string()),
+                InterpreterError::OllamaError("api down".to_string()),
+            ] {
+                let (status, kind) = classify(CasperError::InterpreterError(err));
+                assert_eq!(status, StatusCode::BAD_GATEWAY);
+                assert_eq!(kind, "external_service_error");
+            }
+        }
+
+        #[test]
+        fn interpreter_aggregate_error_joins_messages() {
+            let err = CasperError::InterpreterError(InterpreterError::AggregateError {
+                interpreter_errors: vec![
+                    InterpreterError::ReduceError("first".to_string()),
+                    InterpreterError::ReduceError("second".to_string()),
+                ],
+            });
+            let (status, kind, message) = classify_error(&eyre::Report::new(err));
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(kind, "aggregate_error");
+            assert!(
+                message.contains("first") && message.contains("second"),
+                "{message}"
+            );
+        }
+    }
+
+    mod extractors {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post};
+        use axum::Router;
+        use tower::ServiceExt;
+
+        use super::super::{offload, AppJson, AppPath, AppQuery};
+
+        #[derive(serde::Deserialize)]
+        struct TypedBody {
+            #[allow(dead_code)]
+            value: i64,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct TypedQuery {
+            #[allow(dead_code)]
+            count: i64,
+        }
+
+        fn router() -> Router {
+            Router::new()
+                .route(
+                    "/json",
+                    post(|AppJson(_body): AppJson<TypedBody>| async { "ok".into_response() }),
+                )
+                .route(
+                    "/path/{id}",
+                    get(|AppPath(_id): AppPath<i64>| async { "ok".into_response() }),
+                )
+                .route(
+                    "/query",
+                    get(|AppQuery(_q): AppQuery<TypedQuery>| async { "ok".into_response() }),
+                )
+        }
+
+        async fn body_json(response: axum::response::Response) -> serde_json::Value {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        #[tokio::test]
+        async fn app_json_accepts_valid_body_and_rejects_malformed_body_as_json() {
+            let ok = router()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/json")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"value": 3}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+
+            let bad = router()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/json")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"value": "not a number"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(bad.status().is_client_error());
+            let json = body_json(bad).await;
+            assert_eq!(json["error"], "invalid_request_body");
+            assert!(json["message"].as_str().is_some());
+        }
+
+        #[tokio::test]
+        async fn app_path_rejects_non_integer_segment_as_json() {
+            let ok = router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/path/42")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+
+            let bad = router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/path/not-a-number")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+            let json = body_json(bad).await;
+            assert_eq!(json["error"], "invalid_path_parameter");
+        }
+
+        #[tokio::test]
+        async fn app_query_rejects_unparsable_query_as_json() {
+            let ok = router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/query?count=5")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), StatusCode::OK);
+
+            let bad = router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/query?count=many")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+            let json = body_json(bad).await;
+            assert_eq!(json["error"], "invalid_query_parameter");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn offload_propagates_ok_and_err_results() {
+            let ok: Result<i32, eyre::Error> = offload(|| async { Ok(5) }).await;
+            assert_eq!(ok.unwrap(), 5);
+
+            let err: Result<i32, eyre::Error> =
+                offload(|| async { Err(eyre::eyre!("expected failure")) }).await;
+            assert!(err.unwrap_err().to_string().contains("expected failure"));
+        }
     }
 }
