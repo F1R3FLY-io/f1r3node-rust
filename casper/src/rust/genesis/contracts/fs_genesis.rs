@@ -673,15 +673,15 @@ pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     "rename",
     "copyFile",
     "entries",
-    // M-3 fix (2026-08-06): entriesStream + quarantine had
-    // `fs_native_def` registrations in rho_runtime.rs but were
-    // NOT bound in the composed new-clause below.  A future
-    // slice referencing `fsEntriesStream!(...)` would silently
-    // bind to a fresh unforgeable and never fire.  Both are now
-    // in the suffix list; the bidirectional drift check
+    // M-3 fix (2026-08-06): quarantine had `fs_native_def`
+    // registration in rho_runtime.rs but was NOT bound in the
+    // composed new-clause below.  The bidirectional drift check
     // `fs_native_urn_suffixes_matches_composed_source_bidirectionally`
     // pins the correspondence in both directions.
-    "entriesStream",
+    //
+    // A8-M-1 (2026-09-03): the bulk "entriesStream" URN was
+    // retired alongside its handler stub — per-fd variants at
+    // `entriesStreamOpen` / `_Next` / `_Close` are the live surface.
     "quarantine",
     // Phase 8 slice 8a — range-lock natives.  File.rho binds these
     // via lexical `new` capture the same way it binds fsRead/fsWrite/etc.
@@ -695,11 +695,10 @@ pub const FS_NATIVE_URN_SUFFIXES: &[&str] = &[
     // locks on the same (dev, inode) survive.
     "releaseAllForHolder",
     // Streaming-backing slice (2026-08-25) — per-fd directory-entries
-    // streaming primitive.  Three natives replace the bulk `entriesStream`
-    // stub (kept in place until Dir.rho swaps its consumer, Step 5).
-    // Open allocates a stream fd; Next yields one entry per call; Close
-    // releases the fd.  See implementation-plan.md
-    // §"Streaming-backing slice" for the full design.
+    // streaming primitive.  Open allocates a stream fd; Next yields
+    // one entry per call; Close releases the fd.  See implementation-
+    // plan.md §"Streaming-backing slice" for the full design.  Replaces
+    // the retired bulk `entriesStream` URN (A8-M-1, 2026-09-03).
     "entriesStreamOpen",
     "entriesStreamNext",
     "entriesStreamClose",
@@ -831,7 +830,6 @@ new
   fsRename(`rho:io:fs:native:1.0.0/rename`),
   fsCopyFile(`rho:io:fs:native:1.0.0/copyFile`),
   fsEntries(`rho:io:fs:native:1.0.0/entries`),
-  fsEntriesStream(`rho:io:fs:native:1.0.0/entriesStream`),
   fsEntriesStreamOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`),
   fsEntriesStreamNext(`rho:io:fs:native:1.0.0/entriesStreamNext`),
   fsEntriesStreamClose(`rho:io:fs:native:1.0.0/entriesStreamClose`),
@@ -1571,27 +1569,29 @@ mod tests {
         // Every arity change here IS a cross-source change and
         // usually a hard fork of caller code.
         let golden: &[(&str, usize)] = &[
-            ("open", 5),          // (root, rel, mode, cmode, ack)
-            ("close", 2),         // (fd, ack)
-            ("read", 3),          // (fd, n, ack)
-            ("readAt", 4),        // (fd, off, n, ack)
-            ("write", 3),         // (fd, bytes, ack)
-            ("writeAt", 4),       // (fd, off, bytes, ack)
-            ("seek", 4),          // (fd, whence, off, ack)
-            ("tell", 2),          // (fd, ack)
-            ("size", 2),          // (fd, ack)
-            ("flush", 2),         // (fd, ack)
-            ("stat", 4),          // (root, rel, cmode, ack) — Slice 26
-            ("exists", 3),        // (root, rel, ack)
-            ("truncate", 3),      // (fd, n, ack)
-            ("chmod", 5),         // (root, rel, mode, cmode, ack) — Slice 26
-            ("chown", 6),         // (root, rel, owner, group, cmode, ack) — Slice 26
-            ("removeFile", 4),    // (root, rel, cmode, ack) — Slice 26
-            ("removeDir", 5),     // (root, rel, recursive, cmode, ack) — Slice 26
-            ("rename", 6),        // (from_root, from_rel, to_root, to_rel, cmode, ack) — Slice 26
-            ("copyFile", 6),      // (from_root, from_rel, to_root, to_rel, cmode, ack) — Slice 26
-            ("entries", 4),       // (root, rel, cmode, ack) — Slice 26
-            ("entriesStream", 3), // (root, rel, ack)
+            ("open", 5),       // (root, rel, mode, cmode, ack)
+            ("close", 2),      // (fd, ack)
+            ("read", 3),       // (fd, n, ack)
+            ("readAt", 4),     // (fd, off, n, ack)
+            ("write", 3),      // (fd, bytes, ack)
+            ("writeAt", 4),    // (fd, off, bytes, ack)
+            ("seek", 4),       // (fd, whence, off, ack)
+            ("tell", 2),       // (fd, ack)
+            ("size", 2),       // (fd, ack)
+            ("flush", 2),      // (fd, ack)
+            ("stat", 4),       // (root, rel, cmode, ack) — Slice 26
+            ("exists", 3),     // (root, rel, ack)
+            ("truncate", 3),   // (fd, n, ack)
+            ("chmod", 5),      // (root, rel, mode, cmode, ack) — Slice 26
+            ("chown", 6),      // (root, rel, owner, group, cmode, ack) — Slice 26
+            ("removeFile", 4), // (root, rel, cmode, ack) — Slice 26
+            ("removeDir", 5),  // (root, rel, recursive, cmode, ack) — Slice 26
+            ("rename", 6),     // (from_root, from_rel, to_root, to_rel, cmode, ack) — Slice 26
+            ("copyFile", 6),   // (from_root, from_rel, to_root, to_rel, cmode, ack) — Slice 26
+            ("entries", 4),    // (root, rel, cmode, ack) — Slice 26
+            // A8-M-1 (2026-09-03): the arity-3 "entriesStream" bulk
+            // handler + URN binding were retired.  Per-fd variants
+            // below are the live surface.
             // Streaming-backing slice (2026-08-25).
             ("entriesStreamOpen", 4),  // (root, rel, cmode, ack)
             ("entriesStreamNext", 2),  // (streamFd, ack) — cmode captured at open
@@ -2099,7 +2099,19 @@ mod tests {
         //   reference the new §Read-side stream producers > Bounded
         //   convenience spec entry.  Comment-only edit inside File.rho's
         //   outer `new` body; no Rholang semantics changed.
-        const EXPECTED: &str = "98ff01d3cd7cc7e616e0a43398c512cb6484d9843a943f0b0c4a7e222590e900";
+        // Prior anchor: 98ff01d3 (FS-4, 2026-09-03).
+        // 2026-09-03: A8-M-1 dead-code cleanup — the bulk
+        //   `fsEntriesStream(`rho:io:fs:native:1.0.0/entriesStream`)`
+        //   URN binding was removed from the composed outer `new`
+        //   (handler + dispatch + FS_NATIVE_URN_SUFFIXES entry all
+        //   retired in the same slice).  Per-fd variants
+        //   `entriesStreamOpen` / `_Next` / `_Close` are the live
+        //   surface.  Removing a URN binding is a hard-fork surface
+        //   change (composed source bytes shrink) — free per the
+        //   f1r3node_no_running_network invariant, but any future
+        //   external caller that had bound to the retired URN would
+        //   need to migrate.
+        const EXPECTED: &str = "ff7d928fc33ad51f2fdc01b14717894cb31817ca7da3a68c528163eaf8af32a9";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

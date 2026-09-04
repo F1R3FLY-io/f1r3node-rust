@@ -4888,49 +4888,6 @@ impl FsProcesses {
     }
 
     // -------------------------------------------------------------------
-    // entriesStream — (rootCanon, rel) -> [true, streamFd]
-    // Placeholder: returns FSERR_UNSUPPORTED.  The backing streaming
-    // primitive (a per-runtime dir-handle table analogous to
-    // FileHandleTable, with `next(fd)` / `close(fd)` operators) is
-    // scoped for Phase 1 tail-end but not yet implemented; Phase 4
-    // wires the agent-side EntryStream on top of it.
-    // -------------------------------------------------------------------
-    pub async fn fs_entries_stream(
-        &self,
-        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
-    ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-iv: charge fs_entries_stream SETUP cost only.
-        // Weight = 50 (the base term).  Per-entry cost
-        // (FS_ENTRIES_PER_ENTRY * n_entries) is deferred to a
-        // follow-up slice because it requires post-syscall counting
-        // on the leader branch and matching entry extraction from
-        // `previous` on the replay branch — a two-branch charge
-        // pattern rather than the single entry-point charge used
-        // by the other length-parameterized handlers.
-        self.metering
-            .reserve_primitive(costs::fs_entries_stream_cost(0))?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_entries_stream"));
-        };
-        let [_root, _rel, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_entries_stream"));
-        };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let reply = err(
-            FSERR_UNSUPPORTED,
-            "entriesStream backing not yet implemented (Phase 1 tail-end)",
-        );
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
-    }
-
-    // -------------------------------------------------------------------
     // Streaming-backing slice (2026-08-25) — three natives implementing
     // per-fd directory-entries streaming.  Companion to (eventually
     // replacing, once Dir.rho swaps) the bulk `entriesStream` stub

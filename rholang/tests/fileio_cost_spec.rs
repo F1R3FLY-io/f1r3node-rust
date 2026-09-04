@@ -38,7 +38,7 @@
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::io::costs::{
     fs_chmod_cost, fs_chown_cost, fs_close_cost, fs_copy_file_cost, fs_entries_cost,
-    fs_entries_per_entry_supplement_cost, fs_entries_stream_close_cost, fs_entries_stream_cost,
+    fs_entries_per_entry_supplement_cost, fs_entries_stream_close_cost,
     fs_entries_stream_next_cost, fs_entries_stream_open_cost,
     fs_entries_stream_per_entry_supplement_cost, fs_exists_cost, fs_flush_cost, fs_lock_range_cost,
     fs_lock_sequential_cost, fs_open_cost, fs_quarantine_cost, fs_read_at_cost, fs_read_cost,
@@ -89,7 +89,7 @@ fn fs_entries_per_entry_is_pinned_at_32() {
     assert_eq!(
         FS_ENTRIES_PER_ENTRY, 32,
         "consensus-critical weight drift: FS_ENTRIES_PER_ENTRY governs the \
-         linear cost of fs_entries / fs_entries_stream / fs_remove_dir."
+         linear cost of fs_entries / fs_entries_stream_next / fs_remove_dir."
     );
 }
 
@@ -102,7 +102,7 @@ fn fs_entries_setup_is_pinned_at_50() {
     assert_eq!(
         FS_ENTRIES_SETUP, 50,
         "consensus-critical weight drift: FS_ENTRIES_SETUP is the fixed \
-         base for fs_entries / fs_entries_stream."
+         base for fs_entries / fs_entries_stream_open + _next."
     );
 }
 
@@ -222,19 +222,23 @@ fn fs_release_all_for_holder_weight_is_pinned() {
 // (`entriesStreamOpen`/`Next`/`Close`) each ship a per-handler cost
 // alias so the every-handler-charges-its-cost pin
 // (`every_fs_handler_charges_its_cost_helper`) passes.  Semantically
-// they delegate to the pre-existing shapes:
-//   - open + next  → fs_entries_stream_cost(0) = FS_ENTRIES_SETUP = 50
-//     (the per-entry supplement is a separate two-branch charge via
-//      `fs_entries_stream_per_entry_supplement_cost`).
+// they deliver setup weights:
+//   - open + next  → FS_ENTRIES_SETUP = 50 (per-entry supplement for
+//     `_next` is a separate two-branch charge via
+//     `fs_entries_stream_per_entry_supplement_cost`).
 //   - close        → fs_close_cost() = FS_SYSCALL_CONST = 100.
-// Golden values pinned here so a future consensus-observable retune of
-// the underlying shapes flips the corresponding pin.
+// A8-M-1 (2026-09-03): the bulk `fs_entries_stream_cost(n)` helper
+// was retired; the per-fd variants below now carry their own cost
+// class strings (`fs_entries_stream_open` / `_next`) so the every-
+// handler-charges-its-cost pin still names each handler distinctly.
+// Golden values pinned here so a future consensus-observable retune
+// of the underlying shapes flips the corresponding pin.
 
 #[test]
 fn fs_entries_stream_open_weight_is_pinned() {
     assert_eq!(
         fs_entries_stream_open_cost(),
-        Cost::create(FS_ENTRIES_SETUP, "fs_entries_stream")
+        Cost::create(FS_ENTRIES_SETUP, "fs_entries_stream_open")
     );
 }
 
@@ -242,7 +246,7 @@ fn fs_entries_stream_open_weight_is_pinned() {
 fn fs_entries_stream_next_weight_is_pinned() {
     assert_eq!(
         fs_entries_stream_next_cost(),
-        Cost::create(FS_ENTRIES_SETUP, "fs_entries_stream")
+        Cost::create(FS_ENTRIES_SETUP, "fs_entries_stream_next")
     );
 }
 
@@ -344,21 +348,12 @@ fn fs_entries_weight_at_10_entries_is_pinned() {
     );
 }
 
-#[test]
-fn fs_entries_stream_weight_at_zero_entries_is_pinned() {
-    assert_eq!(
-        fs_entries_stream_cost(0),
-        Cost::create(50, "fs_entries_stream")
-    );
-}
-
-#[test]
-fn fs_entries_stream_weight_at_10_entries_is_pinned() {
-    assert_eq!(
-        fs_entries_stream_cost(10),
-        Cost::create(50 + 32 * 10, "fs_entries_stream")
-    );
-}
+// A8-M-1 (2026-09-03): fs_entries_stream_weight_at_zero_entries_is_pinned
+// and fs_entries_stream_weight_at_10_entries_is_pinned retired
+// alongside the bulk `fs_entries_stream_cost(n)` helper.  The per-fd
+// variants have their own `_weight_is_pinned` tests above; per-entry
+// scaling for `_next` is covered by
+// `fs_entries_stream_per_entry_supplement_at_10_is_pinned` below.
 
 #[test]
 fn fs_remove_dir_weight_at_zero_entries_is_pinned() {
@@ -472,13 +467,22 @@ fn entries_family_supplements_match_combined_costs() {
              split has drifted from the single-charge helper — every \
              non-empty entries call would over- or under-charge.",
         );
-        // fs_entries_stream
+        // A8-M-1 (2026-09-03): fs_entries_stream_cost(n) helper
+        // retired.  The per-fd `_next` handler pairs
+        // `fs_entries_stream_next_cost()` (setup) with
+        // `fs_entries_stream_per_entry_supplement_cost(n)`; the
+        // combined weight must equal `FS_ENTRIES_SETUP + n *
+        // FS_ENTRIES_PER_ENTRY` under saturation (matches the retired
+        // bulk helper's shape).
+        let expected_next = (FS_ENTRIES_SETUP as i64).saturating_add(
+            (FS_ENTRIES_PER_ENTRY as i64).saturating_mul(n.min(i64::MAX as u64) as i64),
+        );
         assert_eq!(
-            fs_entries_stream_cost(0)
+            fs_entries_stream_next_cost()
                 .value
                 .saturating_add(fs_entries_stream_per_entry_supplement_cost(n).value),
-            fs_entries_stream_cost(n).value,
-            "slice 9b-iv total-weight drift (fs_entries_stream at n={n})",
+            expected_next,
+            "slice 9b-iv total-weight drift for _next at n={n}",
         );
         // fs_remove_dir
         assert_eq!(
@@ -536,13 +540,10 @@ fn fs_entries_cost_saturates_at_u64_max() {
     );
 }
 
-#[test]
-fn fs_entries_stream_cost_saturates_at_u64_max() {
-    assert_eq!(
-        fs_entries_stream_cost(u64::MAX),
-        Cost::create(i64::MAX, "fs_entries_stream")
-    );
-}
+// A8-M-1 (2026-09-03): fs_entries_stream_cost_saturates_at_u64_max
+// retired alongside the bulk helper.  Per-fd variants use
+// FS_ENTRIES_SETUP directly (constant) + per-entry supplement (which
+// has its own saturation pin).
 
 #[test]
 fn fs_remove_dir_cost_saturates_at_u64_max() {
@@ -625,11 +626,10 @@ fn fs_entries_cost_is_strictly_monotone_and_linear() {
     assert_linear_shape(fs_entries_cost, 32, "fs_entries_cost");
 }
 
-#[test]
-fn fs_entries_stream_cost_is_strictly_monotone_and_linear() {
-    assert_strictly_monotone(fs_entries_stream_cost, "fs_entries_stream_cost");
-    assert_linear_shape(fs_entries_stream_cost, 32, "fs_entries_stream_cost");
-}
+// A8-M-1 (2026-09-03): fs_entries_stream_cost_is_strictly_monotone_
+// and_linear retired.  The per-entry supplement helper covers the
+// linearity concern for the live `_next` charge path (see the
+// supplement pins above).
 
 #[test]
 fn fs_remove_dir_cost_is_strictly_monotone_and_linear() {
@@ -1043,44 +1043,12 @@ fn length_parameterized_cost_helpers_use_reserve_incremental_primitive() {
     );
 }
 
-/// **Streaming-slice Step 8 review-fixup pin (2026-08-26).**  The
-/// arity-3 `fs_entries_stream` handler at handlers.rs:2450 is a
-/// deprecated stub — replaced by the three arity-2/4 streaming
-/// natives (`fs_entries_stream_open` / `_next` / `_close`) landed in
-/// Steps 2-3.  It stays in the composed source for URN-backward-
-/// compatibility (`rho:io:fs:native:1.0.0/entriesStream` remains
-/// bound at `fs_genesis.rs:682`) but is unreachable from any
-/// production caller after Step 5 swapped Dir.rho to the streaming
-/// primitives.
-///
-/// The prior deferred-charge pin (dropped in Step 8) implicitly
-/// guarded against a silent "upgrade" of this stub to a real
-/// implementation without wiring the paired supplement charge.
-/// This pin re-instates that guard by requiring the stub to
-/// explicitly return `FSERR_UNSUPPORTED`: a PR that flips the
-/// return to `[true, ...]` without ALSO wiring the two-branch
-/// supplement pattern would trip this pin — forcing the author to
-/// justify why the arity-3 shape is being resurrected when arity-2
-/// streaming already covers the use case.
-#[test]
-fn arity3_entries_stream_stub_still_returns_fserr_unsupported() {
-    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
-    // Anchor at the arity-3 handler — signature line grep is
-    // sufficient to disambiguate from arity-2 / arity-4 variants.
-    let signature_prefix = "    pub async fn fs_entries_stream(";
-    let body = method_body(src, signature_prefix)
-        .expect("fs_entries_stream handler (arity-3 stub) must exist");
-    assert!(
-        body.contains("FSERR_UNSUPPORTED"),
-        "arity-3 fs_entries_stream stub must return FSERR_UNSUPPORTED — \
-         it is deprecated post-Step-5, replaced by the arity-2/4 streaming \
-         primitives.  Resurrecting the arity-3 shape requires wiring the \
-         two-branch supplement charge on BOTH branches AND replacing this \
-         pin with a `_charges_supplement_on_both_branches` shape.  \
-         Confirm with a review pass that the URN backward-compatibility \
-         binding at fs_genesis.rs is still the right disposition."
-    );
-}
+// A8-M-1 (2026-09-03): arity3_entries_stream_stub_still_returns_
+// fserr_unsupported retired.  The bulk `fs_entries_stream` handler
+// stub, its URN binding at `fs_genesis.rs`, its dispatch registration
+// at `rho_runtime.rs`, and its FixedChannels byte-54 slot were all
+// removed — there's no more stub to guard.  Byte 54 is documented as
+// reserved (do NOT reassign) in `system_processes.rs`.
 
 /// **Phase 8 arity-tightening retirement pin (2026-08-26).**  The
 /// `fs_lock_range` and `fs_lock_sequential` handlers dropped their

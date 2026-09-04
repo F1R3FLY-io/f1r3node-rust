@@ -296,7 +296,11 @@ impl FixedChannels {
     pub fn fs_stat() -> Par { byte_name(51) }
     pub fn fs_exists() -> Par { byte_name(52) }
     pub fn fs_entries() -> Par { byte_name(53) }
-    pub fn fs_entries_stream() -> Par { byte_name(54) }
+    // A8-M-1 (2026-09-03): the bulk `fs_entries_stream` native was
+    // retired — replaced by per-fd streaming (`fs_entries_stream_open`
+    // / `_next` / `_close`).  Byte 54 is reserved (do NOT reassign) so
+    // any historical channel-derived identity referencing byte 54
+    // stays inert rather than aliasing a new native.
     pub fn fs_rename() -> Par { byte_name(55) }
     pub fn fs_copy_file() -> Par { byte_name(56) }
     pub fn fs_remove_file() -> Par { byte_name(57) }
@@ -369,7 +373,9 @@ impl BodyRefs {
     pub const FS_STAT: i64 = 51;
     pub const FS_EXISTS: i64 = 52;
     pub const FS_ENTRIES: i64 = 53;
-    pub const FS_ENTRIES_STREAM: i64 = 54;
+    // A8-M-1 (2026-09-03): `FS_ENTRIES_STREAM = 54` retired.  Slot
+    // reserved (do NOT reassign); the per-fd streaming variants at
+    // 66/67/68 are the live surface.
     pub const FS_RENAME: i64 = 55;
     pub const FS_COPY_FILE: i64 = 56;
     pub const FS_REMOVE_FILE: i64 = 57;
@@ -414,7 +420,6 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::FS_STAT,
         BodyRefs::FS_EXISTS,
         BodyRefs::FS_ENTRIES,
-        BodyRefs::FS_ENTRIES_STREAM,
         BodyRefs::FS_RENAME,
         BodyRefs::FS_COPY_FILE,
         BodyRefs::FS_REMOVE_FILE,

@@ -1356,18 +1356,15 @@ fn std_system_processes() -> Vec<Definition> {
             BodyRefs::FS_ENTRIES,
             |sp, args| Box::pin(async move { sp.fs.fs_entries(args).await }),
         ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/entriesStream",
-            FixedChannels::fs_entries_stream(),
-            3, // (rootCanon, rel, ack)
-            BodyRefs::FS_ENTRIES_STREAM,
-            |sp, args| Box::pin(async move { sp.fs.fs_entries_stream(args).await }),
-        ),
+        // A8-M-1 (2026-09-03): the bulk `rho:io:fs:native:1.0.0/entriesStream`
+        // native was retired.  Dir.rho swapped to the per-fd streaming
+        // primitives (`entriesStreamOpen` / `_Next` / `_Close`) at Step 5;
+        // the bulk URN had no remaining callers and its handler stub
+        // (returned FSERR_UNSUPPORTED unconditionally) is gone.
+        //
         // Streaming-backing slice (2026-08-25) — per-fd directory-entries
-        // streaming primitive.  Three natives replace the bulk
-        // `entriesStream` stub above (kept for backwards compat until
-        // Dir.rho swaps its consumer, Step 5): Open allocates a stream
-        // fd, Next yields one entry per call, Close releases the fd.
+        // streaming primitive.  Open allocates a stream fd, Next yields
+        // one entry per call, Close releases the fd.
         // Under Consensus mode each Next reply is D3-WAL-journaled
         // (Step 3); under Oracular the natives are best-effort.
         fs_native_def(

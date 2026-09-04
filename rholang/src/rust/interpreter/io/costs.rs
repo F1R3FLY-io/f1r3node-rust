@@ -227,19 +227,6 @@ pub fn fs_entries_cost(n_entries: u64) -> Cost {
     )
 }
 
-/// `fs_entries_stream(dir)` — same shape as `fs_entries_cost`.
-/// The streaming variant amortizes the setup+per-entry cost across
-/// resume events rather than charging up-front, but the total-over-
-/// the-stream weight matches `fs_entries_cost(total_delivered)`.
-/// Phase 9 slice 9c will refine this into per-resume increments
-/// when the stream-methods layer is wired.
-pub fn fs_entries_stream_cost(n_entries: u64) -> Cost {
-    Cost::create(
-        saturate_linear(FS_ENTRIES_SETUP, FS_ENTRIES_PER_ENTRY as u64, n_entries),
-        "fs_entries_stream",
-    )
-}
-
 /// Streaming-backing slice (2026-08-25): per-handler cost aliases for
 /// the three natives that back the per-fd streaming primitive.  Each
 /// alias exists to satisfy the naming pin in
@@ -249,16 +236,21 @@ pub fn fs_entries_stream_cost(n_entries: u64) -> Cost {
 /// deletes the charge site is caught at test-time.  Under D3 a
 /// missing handler charge is a leader/replay consensus divergence.
 ///
-/// Semantically these delegate to the pre-existing shapes:
-/// - `fs_entries_stream_open_cost` = `fs_entries_stream_cost(0)`
-///   (setup only; per-entry supplement is fs_entries_stream_next).
-/// - `fs_entries_stream_next_cost` = `fs_entries_stream_cost(0)`
-///   (per-call setup; per-entry supplement charged separately via
-///   `fs_entries_stream_per_entry_supplement_cost`).
-/// - `fs_entries_stream_close_cost` = `fs_close_cost()` (fd release
-///   is a hashmap remove + closedir, same class as fs_close).
-pub fn fs_entries_stream_open_cost() -> Cost { fs_entries_stream_cost(0) }
-pub fn fs_entries_stream_next_cost() -> Cost { fs_entries_stream_cost(0) }
+/// Semantically these deliver setup-only weights; per-entry cost for
+/// `_next` is charged separately via
+/// `fs_entries_stream_per_entry_supplement_cost` after the row count
+/// is known.  Close is a hashmap remove + `closedir`, same class as
+/// `fs_close`.
+///
+/// A8-M-1 (2026-09-03): the bulk `fs_entries_stream_cost(n)` helper
+/// that these aliased was retired alongside the bulk handler; the
+/// setup weights are now defined directly (FS_ENTRIES_SETUP = 50).
+pub fn fs_entries_stream_open_cost() -> Cost {
+    Cost::create(FS_ENTRIES_SETUP, "fs_entries_stream_open")
+}
+pub fn fs_entries_stream_next_cost() -> Cost {
+    Cost::create(FS_ENTRIES_SETUP, "fs_entries_stream_next")
+}
 pub fn fs_entries_stream_close_cost() -> Cost { fs_close_cost() }
 
 /// `fs_remove_dir` recursive — path-mutation base plus per-entry
@@ -306,8 +298,11 @@ pub fn fs_release_all_for_holder_cost() -> Cost {
 // deletion count; follower extracts the same count from `previous`'s
 // manifest.  Oracular recursive skips the supplement (no wire-visible
 // count — see `fs_remove_dir_per_entry_supplement_cost` docstring).
-// Deferred: `fs_entries_stream` (still a stub returning
-// FSERR_UNSUPPORTED — no entries to charge for).
+// Retired: the bulk `fs_entries_stream` handler was removed
+// A8-M-1 (2026-09-03).  The per-fd streaming variants
+// (`fs_entries_stream_next` in particular) DO wire the two-branch
+// supplement pattern — see `fs_entries_stream_next_charges_
+// supplement_on_both_branches` in `fileio_cost_spec`.
 
 /// Per-entry supplement for the `fs_entries` two-branch charge.
 /// Sits alongside `fs_entries_cost(0)` (the setup component at
@@ -321,11 +316,12 @@ pub fn fs_entries_per_entry_supplement_cost(n_entries: u64) -> Cost {
     )
 }
 
-/// Per-entry supplement for `fs_entries_stream` — same shape as
-/// `fs_entries_per_entry_supplement_cost`.  Deferred wiring: the
-/// current stub returns `FSERR_UNSUPPORTED` unconditionally, so
-/// no supplement charge is needed (n = 0 always).  Ready-to-use
-/// helper for when the streaming backing lands.
+/// Per-entry supplement for the per-fd streaming
+/// (`fs_entries_stream_next`) two-branch charge — same shape as
+/// `fs_entries_per_entry_supplement_cost`.  Wired at
+/// `handlers.rs::fs_entries_stream_next` on both leader (from the
+/// syscall's yielded row count) and replay (from `previous`) branches
+/// so the D3 canonical event log stays byte-identical.
 pub fn fs_entries_stream_per_entry_supplement_cost(n_entries: u64) -> Cost {
     Cost::create(
         saturate_linear(0, FS_ENTRIES_PER_ENTRY as u64, n_entries),

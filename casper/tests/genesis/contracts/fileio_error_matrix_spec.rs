@@ -43,11 +43,11 @@
 //! - `FSERR_CROSS_DEVICE`: fires on `rename(2)`/`link(2)` across
 //!   filesystems.  Requires a multi-mount test rig.
 //! - `EOS` (end-of-stream sentinel from `Dir.entries()`): reachable
-//!   only through the EntryStream materialisation path in Dir.rho.
-//!   Deferred until the fs_entries_stream backing lands (currently a
-//!   Phase 1 stub); see Dir.rho:117.  The stream builder's EOS arm
-//!   is exercised transitively by `foldChunks` walks in the canonical
-//!   examples once that native returns non-empty batches.
+//!   only through the EntryStream materialisation path in Dir.rho,
+//!   which now walks the per-fd streaming primitives
+//!   (`entriesStreamOpen` / `_Next` / `_Close`).  The stream
+//!   builder's EOS arm is exercised transitively by `foldChunks`
+//!   walks in the canonical examples.
 //! - `FSERR_QUARANTINE`: fires on symlink-in-path or path-escapes-root
 //!   during canonicalisation.  Covered by unit tests in
 //!   `rholang/src/rust/interpreter/io/path.rs::tests`.
