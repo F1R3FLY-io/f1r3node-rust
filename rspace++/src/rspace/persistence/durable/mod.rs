@@ -91,6 +91,7 @@ pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};
 /// differential migration work is still in progress.
 pub(crate) struct DurableAuthorityViewV1<P: SemanticProfile> {
     writer: SemanticallyAdmittedDurableWriterV1<P>,
+    _generation_lease: GenerationLeaseV1,
 }
 
 impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
@@ -143,5 +144,11 @@ pub(crate) fn recover_read_authority<P: SemanticProfile>(
     })?;
     let writer =
         directory.recover_and_admit_v1::<P>(recovery_limits, wal_limits, admission_limits)?;
-    Ok(DurableAuthorityViewV1 { writer })
+    let generation_lease = writer
+        .generation_leases()
+        .acquire(GenerationLeaseKeyV1::from_catalog(writer.catalog()))?;
+    Ok(DurableAuthorityViewV1 {
+        writer,
+        _generation_lease: generation_lease,
+    })
 }

@@ -50,9 +50,9 @@ use crate::rspace::persistence::wal::{
     LogPackSequence, PreparedLogPackTransactionV1, TerminalCommitViewV1,
 };
 use crate::rspace::persistence::{
-    CatalogAuthorityTokenV1, CatalogSlotV1, DurableLimits, GenerationLeaseRegistryV1,
-    LogPackDecodeLimits, ObjectIndexRecordV1, PackId, SemanticProfileId, StateVersionV1,
-    VerifiedDagState,
+    CatalogAuthorityTokenV1, CatalogSlotV1, DurableLimits, GenerationLeaseError,
+    GenerationLeaseRegistryV1, LogPackDecodeLimits, ObjectIndexRecordV1, PackId, SemanticProfileId,
+    StateVersionV1, VerifiedDagState,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -472,6 +472,7 @@ impl<E: std::error::Error + 'static> std::error::Error for DurableObjectCopyErro
 #[derive(Debug)]
 pub(crate) enum DurableAdmissionErrorV1 {
     Startup(DurableStartupErrorV1),
+    GenerationLease(GenerationLeaseError),
     ObjectStore(DurableObjectReadErrorV1),
     Canonical(CanonicalFormatError),
     Closure(ClosureError<DurableObjectReadErrorV1>),
@@ -506,6 +507,7 @@ impl Display for DurableAdmissionErrorV1 {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Startup(error) => Display::fmt(error, formatter),
+            Self::GenerationLease(error) => Display::fmt(error, formatter),
             Self::ObjectStore(error) => Display::fmt(error, formatter),
             Self::Canonical(error) => Display::fmt(error, formatter),
             Self::Closure(error) => Display::fmt(error, formatter),
@@ -560,6 +562,7 @@ impl std::error::Error for DurableAdmissionErrorV1 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Startup(error) => Some(error),
+            Self::GenerationLease(error) => Some(error),
             Self::ObjectStore(error) => Some(error),
             Self::Canonical(error) => Some(error),
             Self::Closure(error) => Some(error),
@@ -570,6 +573,10 @@ impl std::error::Error for DurableAdmissionErrorV1 {
 
 impl From<DurableStartupErrorV1> for DurableAdmissionErrorV1 {
     fn from(error: DurableStartupErrorV1) -> Self { Self::Startup(error) }
+}
+
+impl From<GenerationLeaseError> for DurableAdmissionErrorV1 {
+    fn from(error: GenerationLeaseError) -> Self { Self::GenerationLease(error) }
 }
 
 impl From<DurableObjectReadErrorV1> for DurableAdmissionErrorV1 {
