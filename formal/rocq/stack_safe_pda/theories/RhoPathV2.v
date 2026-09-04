@@ -21,27 +21,27 @@ Definition count_byte (n : nat) : bytes :=
     (n / 16777216) mod 256; (n / 65536) mod 256;
     (n / 256) mod 256; n mod 256 ].
 
-Definition datum_key (channel structure identity : bytes) : bytes :=
+Definition datum_key (channel structure ident : bytes) : bytes :=
   v2_magic ++ [datum_kind] ++ encode_frame channel ++
-  encode_frame structure ++ encode_frame identity.
+  encode_frame structure ++ encode_frame ident.
 
-Definition continuation_key_unchecked (channels : list bytes) (identity : bytes) : bytes :=
+Definition continuation_key_unchecked (channels : list bytes) (ident : bytes) : bytes :=
   v2_magic ++ [continuation_kind; collection_version] ++
   count_byte (length channels) ++ flat_map encode_frame channels ++
-  [0; 1] ++ encode_frame identity.
+  [0; 1] ++ encode_frame ident.
 
 (** The production constructor rejects an empty ordered channel group.  Keep
     that precondition explicit in the formal model rather than admitting a
     byte string that the Rust parser will refuse. *)
-Definition continuation_key (channels : list bytes) (identity : bytes) : option bytes :=
+Definition continuation_key (channels : list bytes) (ident : bytes) : option bytes :=
   match channels with
   | [] => None
-  | _ => Some (continuation_key_unchecked channels identity)
+  | _ => Some (continuation_key_unchecked channels ident)
   end.
 
-Definition join_key (channel identity : bytes) : bytes :=
+Definition join_key (channel ident : bytes) : bytes :=
   v2_magic ++ [join_kind] ++ encode_frame channel ++ [0; 1] ++
-  encode_frame identity.
+  encode_frame ident.
 
 Definition parse_three (input : bytes) : option (bytes * bytes * bytes * bytes) :=
   match parse_frame input with
@@ -61,9 +61,9 @@ Definition parse_datum (input : bytes) : option (bytes * bytes * bytes) :=
   match input with
   | 82 :: 72 :: 80 :: 2 :: 1 :: rest =>
       match parse_three rest with
-      | Some (channel, structure, identity, suffix) =>
+      | Some (channel, structure, ident, suffix) =>
           match suffix with
-          | [] => Some (channel, structure, identity)
+          | [] => Some (channel, structure, ident)
           | _ => None
           end
       | None => None
@@ -79,9 +79,9 @@ Definition parse_join (input : bytes) : option (bytes * bytes) :=
           match suffix with
           | 0 :: 1 :: identity_input =>
               match parse_frame identity_input with
-              | Some (identity, suffix') =>
+              | Some (ident, suffix') =>
                   match suffix' with
-                  | [] => Some (channel, identity)
+                  | [] => Some (channel, ident)
                   | _ => None
                   end
               | None => None
@@ -128,9 +128,9 @@ Definition parse_continuation (input : bytes)
                 match suffix with
                 | 0 :: 1 :: identity_input =>
                     match parse_frame identity_input with
-                    | Some (identity, suffix') =>
+                    | Some (ident, suffix') =>
                         match suffix' with
-                        | [] => Some (channels, identity)
+                        | [] => Some (channels, ident)
                         | _ => None
                         end
                     | None => None
@@ -203,15 +203,15 @@ Theorem empty_continuation_is_rejected :
   continuation_key [] [] = None.
 Proof. reflexivity. Qed.
 
-Theorem nonempty_continuation_has_explicit_count : forall channel identity,
-  continuation_key [channel] identity =
-    Some (continuation_key_unchecked [channel] identity).
+Theorem nonempty_continuation_has_explicit_count : forall channel ident,
+  continuation_key [channel] ident =
+    Some (continuation_key_unchecked [channel] ident).
 Proof. reflexivity. Qed.
 
-Theorem join_identity_is_framed : forall channel identity,
-  join_key channel identity =
+Theorem join_identity_is_framed : forall channel ident,
+  join_key channel ident =
     v2_magic ++ [join_kind] ++ encode_frame channel ++ [0; 1] ++
-    encode_frame identity.
+    encode_frame ident.
 Proof. reflexivity. Qed.
 
 Print Assumptions datum_empty_round_trip.
