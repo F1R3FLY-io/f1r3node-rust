@@ -366,6 +366,44 @@ fn incremental_publication_round_trips_with_target_retention_manifest() {
     assert_eq!(recovered.authority().slot().state(), sealed.receipt().target());
 }
 
+#[test]
+fn incremental_publication_rejects_missing_target_retention_manifest() {
+    let source = checkpoint_source_fixture();
+    let scratch = test_scratch::acquire("rspace-incremental-publication-missing-manifest-");
+    install_checkpoint_image(scratch.path(), &checkpoint_image_from_source(source));
+    let writer = admit(scratch.path());
+    let base = writer.authority().slot().state();
+    let mutation = data_batch(base, "incremental-publication-missing-manifest");
+    let view = crate::rspace::persistence::MutationBatchViewV1::parse(&mutation).unwrap();
+    let sealed = writer
+        .open_transaction(view, crate::rspace::persistence::DagTransactionLimits::UNBOUNDED)
+        .unwrap()
+        .seal()
+        .unwrap();
+    let sequence = writer
+        .authority()
+        .slot()
+        .commit_sequence()
+        .successor()
+        .unwrap();
+    let prepared = writer
+        .prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED)
+        .unwrap();
+    let error = match writer.publish_incremental_transaction_v1(
+        &prepared,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("missing retention manifest was unexpectedly published"),
+    };
+    assert!(matches!(
+        error,
+        crate::rspace::persistence::durable::IncrementalPublicationErrorV1::MissingRetentionManifest
+    ));
+}
+
 fn publication_error(
     result: Result<
         crate::rspace::persistence::durable::SemanticallyAdmittedDurableWriterV1<
