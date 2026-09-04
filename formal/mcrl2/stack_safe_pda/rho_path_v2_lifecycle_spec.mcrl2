@@ -1,0 +1,14 @@
+% Observable V1/V2 lifecycle contract.  The lane and full-image collision
+% admission are explicit visible observations; all state construction between
+% observations is abstracted by the process order.
+act select_v1, select_v2;
+act produce, install, consume, commit, checkpoint, reset, rebuild;
+act export_state, import_state, replay, comm_event, collision_preserved;
+
+proc LaneV1 = select_v1 . produce;
+proc LaneV2 = select_v2 . produce;
+proc Spec = (LaneV1 + LaneV2) . install . consume . commit .
+    collision_preserved . checkpoint . reset . rebuild .
+    export_state . import_state . replay . comm_event . delta;
+
+init Spec;

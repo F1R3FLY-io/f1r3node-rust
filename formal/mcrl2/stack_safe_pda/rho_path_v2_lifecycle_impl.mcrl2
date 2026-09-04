@@ -1,0 +1,14 @@
+% Concrete abstraction: private cursor/bucket/COW work is tau, while the
+% externally observable V1/V2 lifecycle order is identical to the contract.
+act select_v1, select_v2;
+act produce, install, consume, commit, checkpoint, reset, rebuild;
+act export_state, import_state, replay, comm_event, collision_preserved;
+
+proc LaneV1Impl = select_v1 . tau . produce;
+proc LaneV2Impl = select_v2 . tau . produce;
+proc Impl = (LaneV1Impl + LaneV2Impl) . tau . install . tau . consume .
+    tau . commit . tau . collision_preserved . tau . checkpoint .
+    tau . reset . tau . rebuild . tau . export_state . tau . import_state .
+    tau . replay . tau . comm_event . delta;
+
+init Impl;

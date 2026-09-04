@@ -1749,6 +1749,17 @@ fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
     assert!(repository_root()
         .join("formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDecodeLegacyMutant.cfg")
         .is_file());
+    let mcrl2_runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "rho_path_v2_lifecycle_impl.mcrl2",
+        "rho_path_v2_lifecycle_spec.mcrl2",
+        "RhoPath V2 branching bisimulation",
+    ] {
+        assert!(
+            mcrl2_runner.contains(marker),
+            "RhoPath V2 mCRL2 runner is missing `{marker}`"
+        );
+    }
 }
 
 #[test]

@@ -1238,6 +1238,21 @@ for property in log_after_commit stale_refusal; do
 done
 
 tlc_bounded mcrl22lps \
+  "$mcrl2_root/rho_path_v2_lifecycle_impl.mcrl2" "$mcrl2_tmp/rho-v2-impl.lps"
+tlc_bounded mcrl22lps \
+  "$mcrl2_root/rho_path_v2_lifecycle_spec.mcrl2" "$mcrl2_tmp/rho-v2-spec.lps"
+tlc_bounded lps2lts "$mcrl2_tmp/rho-v2-impl.lps" "$mcrl2_tmp/rho-v2-impl.lts"
+tlc_bounded lps2lts "$mcrl2_tmp/rho-v2-spec.lps" "$mcrl2_tmp/rho-v2-spec.lts"
+rho_path_v2_bisimulation="$({
+  tlc_bounded ltscompare --equivalence=branching-bisim \
+    "$mcrl2_tmp/rho-v2-impl.lts" "$mcrl2_tmp/rho-v2-spec.lts" 2>&1
+} | tail -n 1)"
+if [[ "$rho_path_v2_bisimulation" != "true" ]]; then
+  echo "stack-safe-pda: expected RhoPath V2 branching bisimulation; got: $rho_path_v2_bisimulation" >&2
+  exit 1
+fi
+
+tlc_bounded mcrl22lps \
   "$mcrl2_root/free_map_journal_impl.mcrl2" "$mcrl2_tmp/free-map-impl.lps"
 tlc_bounded mcrl22lps \
   "$mcrl2_root/free_map_journal_spec.mcrl2" "$mcrl2_tmp/free-map-spec.lps"
