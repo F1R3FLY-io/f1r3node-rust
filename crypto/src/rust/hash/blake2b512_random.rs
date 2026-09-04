@@ -92,9 +92,12 @@ impl Blake2b512Random {
 
     pub fn create_from_bytes(init: &[u8]) -> Blake2b512Random { Self::create(init, 0, init.len()) }
 
-    pub fn split_byte(&self, index: i8) -> Blake2b512Random {
+    pub fn split_byte(&self, index: u8) -> Blake2b512Random {
         let mut split = self.copy();
-        split.add_byte(index);
+        // Deliberate two's-complement reinterpretation, not a lossy narrowing:
+        // add_byte takes i8, and indices 128..=255 must land on the same byte
+        // pattern Scala produces via `id.toByte`. Do not drop this cast.
+        split.add_byte(index as i8);
         split
     }
 
@@ -446,6 +449,31 @@ mod tests {
     }
 
     #[test]
+    fn blake2b512_random_split_byte_covers_full_unsigned_range() {
+        use std::collections::BTreeSet;
+
+        let base = Blake2b512Random::create_from_bytes(&[]);
+        let mut seen = BTreeSet::new();
+        for index in 0u8..=255 {
+            let mut split = base.split_byte(index);
+            assert!(
+                seen.insert(split.next()),
+                "duplicate stream for index {index}"
+            );
+        }
+        assert_eq!(seen.len(), 256);
+
+        // Indices 128..=255 previously panicked on the i8 conversion. They now
+        // hash as the two's-complement byte pattern of the index (200 -> -56),
+        // the same value the historical i8 path fed to add_byte. This golden
+        // vector locks that encoding against future refactors of split_byte.
+        assert_eq!(base.split_byte(200).next(), [
+            63, 124, 112, -114, 99, -48, -30, -57, -63, -102, 36, -21, 75, -46, 41, 42, -52, 116,
+            -105, 24, -31, 0, 85, 3, 111, 107, 14, -128, 75, 81, 73, -116
+        ]);
+    }
+
+    #[test]
     fn blake2b512_random_should_handle_merge() {
         let b2random_base = Blake2b512Random::create_from_bytes(&[]);
         let b2random_0 = b2random_base.split_byte(0);
@@ -545,7 +573,7 @@ mod tests {
         fn chain() -> Blake2b512Random {
             let mut rand = Blake2b512Random::create_from_bytes(b"deep");
             for i in 0..130 {
-                rand = rand.split_byte((i % 127) as i8);
+                rand = rand.split_byte((i % 127) as u8);
             }
             rand
         }

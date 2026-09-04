@@ -110,7 +110,7 @@ pub fn evaluation_random(
     } else if term_count > 256 {
         Ok(rand.split_short(index as u16 as i16))
     } else {
-        Ok(rand.split_byte(index as u8 as i8))
+        Ok(rand.split_byte(index as u8))
     }
 }
 
@@ -254,7 +254,7 @@ mod tests {
         for index in [0, 127, 128, 255] {
             assert_eq!(
                 evaluation_random(&random, index, 256).unwrap(),
-                random.split_byte(index as u8 as i8)
+                random.split_byte(index as u8)
             );
         }
     }
