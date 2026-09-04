@@ -1049,6 +1049,252 @@ mod tests {
     // `lib_body_*` unit tests moved to
     // `rholang::interpreter::rho_source::tests` (M-14 resolution, 2026-08-11).
 
+    /// A-1 / RH-1 helper: a single name bound in a lib's outer
+    /// `new` clause.  `is_urn_binding` is true iff the name is
+    /// immediately followed by `(` in the source (i.e., it's a
+    /// URN-taking registry binding like `rl(\`rho:registry:lookup\`)`).
+    #[derive(Debug, Clone)]
+    struct OuterNewName {
+        ident: String,
+        is_urn_binding: bool,
+    }
+
+    /// A-1 / RH-1 helper: parse the outermost `new ... in {` clause
+    /// of a lib source and extract the names it binds.  Comment-
+    /// and string-aware scanner mirroring `rho_source::lib_body`'s
+    /// state machine so the name list matches what `lib_body`
+    /// actually strips.  Returns `Err(reason)` if the source
+    /// doesn't contain a well-formed outer `new ... in {` — the
+    /// caller should treat that as an infrastructure bug.
+    fn extract_outer_new_names(src: &str) -> Result<Vec<OuterNewName>, String> {
+        let bytes = src.as_bytes();
+        let n = bytes.len();
+        let mut i = 0usize;
+
+        let mut in_line_comment = false;
+        let mut in_block_comment = false;
+        let mut in_string = false;
+        let mut in_uri = false;
+
+        // Locate the outermost `new ` keyword at top-level scope.
+        let mut new_pos: Option<usize> = None;
+        while i < n {
+            let c = bytes[i];
+            if in_line_comment {
+                if c == b'\n' {
+                    in_line_comment = false;
+                }
+                i += 1;
+                continue;
+            }
+            if in_block_comment {
+                if c == b'*' && i + 1 < n && bytes[i + 1] == b'/' {
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+            if in_string {
+                if c == b'\\' && i + 1 < n {
+                    i += 2;
+                    continue;
+                }
+                if c == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            if in_uri {
+                if c == b'`' {
+                    in_uri = false;
+                }
+                i += 1;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && bytes[i + 1] == b'/' {
+                in_line_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_string = true;
+                i += 1;
+                continue;
+            }
+            if c == b'`' {
+                in_uri = true;
+                i += 1;
+                continue;
+            }
+            // `new` followed by any whitespace (space, newline, tab)
+            // — libs use `new Foo, ...` on one line, but the composer
+            // wraps as `new\n  Foo, ...` so accept both.  Column
+            // anchoring: `new` must sit at start-of-buffer OR be
+            // preceded by whitespace, so we don't false-match against
+            // identifiers like `renew`.
+            if c == b'n'
+                && i + 3 < n
+                && &bytes[i..i + 3] == b"new"
+                && bytes[i + 3].is_ascii_whitespace()
+                && (i == 0 || bytes[i - 1].is_ascii_whitespace())
+            {
+                new_pos = Some(i + 3);
+                break;
+            }
+            i += 1;
+        }
+        let name_start = new_pos.ok_or_else(|| "no top-level `new ` keyword found".to_string())?;
+
+        // Scan forward to the matching ` in {` — same scanner state
+        // machine as above, but this time collecting the substring.
+        let mut clause = String::new();
+        let mut i = name_start;
+        let mut in_line_comment = false;
+        let mut in_block_comment = false;
+        let mut in_string = false;
+        let mut in_uri = false;
+        let mut end_pos: Option<usize> = None;
+        while i < n {
+            let c = bytes[i];
+            if in_line_comment {
+                if c == b'\n' {
+                    in_line_comment = false;
+                    clause.push('\n');
+                }
+                i += 1;
+                continue;
+            }
+            if in_block_comment {
+                if c == b'*' && i + 1 < n && bytes[i + 1] == b'/' {
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+            if in_string {
+                if c == b'\\' && i + 1 < n {
+                    clause.push(c as char);
+                    clause.push(bytes[i + 1] as char);
+                    i += 2;
+                    continue;
+                }
+                if c == b'"' {
+                    in_string = false;
+                }
+                clause.push(c as char);
+                i += 1;
+                continue;
+            }
+            if in_uri {
+                if c == b'`' {
+                    in_uri = false;
+                }
+                clause.push(c as char);
+                i += 1;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && bytes[i + 1] == b'/' {
+                in_line_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_string = true;
+                clause.push(c as char);
+                i += 1;
+                continue;
+            }
+            if c == b'`' {
+                in_uri = true;
+                clause.push(c as char);
+                i += 1;
+                continue;
+            }
+            // ` in {` — the end of the outer new clause.
+            if c == b' '
+                && i + 4 < n
+                && &bytes[i..i + 4] == b" in "
+                && bytes.get(i + 4) == Some(&b'{')
+            {
+                end_pos = Some(i);
+                break;
+            }
+            clause.push(c as char);
+            i += 1;
+        }
+        end_pos.ok_or_else(|| "no ` in {` terminator found for outer `new`".to_string())?;
+
+        // Parse the clause: split on commas AT TOP LEVEL (i.e.,
+        // outside parentheses / backticks — string / comment handling
+        // already stripped above).  Each token is either a bare
+        // identifier `foo` or a URN binding `foo(` ... `)`.
+        let mut names: Vec<OuterNewName> = Vec::new();
+        let mut depth: i32 = 0;
+        let mut cur = String::new();
+        for c in clause.chars() {
+            if c == '(' {
+                depth += 1;
+                cur.push(c);
+                continue;
+            }
+            if c == ')' {
+                depth -= 1;
+                cur.push(c);
+                continue;
+            }
+            if c == ',' && depth == 0 {
+                if let Some(name) = parse_new_clause_token(&cur) {
+                    names.push(name);
+                }
+                cur.clear();
+                continue;
+            }
+            cur.push(c);
+        }
+        if let Some(name) = parse_new_clause_token(&cur) {
+            names.push(name);
+        }
+        Ok(names)
+    }
+
+    /// A-1 / RH-1 helper: turn one comma-separated clause token
+    /// into an `OuterNewName`.  Returns `None` for tokens that
+    /// don't start with an identifier character (e.g., pure
+    /// whitespace after a trailing comma).
+    fn parse_new_clause_token(raw: &str) -> Option<OuterNewName> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let ident_end = trimmed
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(trimmed.len());
+        if ident_end == 0 {
+            return None;
+        }
+        let ident = trimmed[..ident_end].to_string();
+        let is_urn_binding = trimmed[ident_end..].trim_start().starts_with('(');
+        Some(OuterNewName {
+            ident,
+            is_urn_binding,
+        })
+    }
+
     /// PB-B-3 pin: the composed FsGenesis source must invoke
     /// `insertVersion("serve", "fs", "1.0.0", fs, ...)` on the
     /// versioned-registry `v1Api` channel.  A regression that
@@ -1952,6 +2198,144 @@ mod tests {
              `with_libs_composes` catches genuinely-unbound references but \
              cannot detect this class (Rholang creates a fresh name for the \
              unbound reference and compiles cleanly)."
+        );
+    }
+
+    /// A-1 / RH-1 (2026-09-03): companion to
+    /// `every_lib_top_level_helper_is_bound_in_composed_outer_new`.
+    /// The prior test covers `contract` names; this one covers every
+    /// name bound in each lib's OWN outermost `new` clause —
+    /// specifically the module-cell names like `fsRevokedP`, `metaP`,
+    /// `stateP`, `fdP`, etc. that hold module-level tuplespace state.
+    ///
+    /// # Why this pin exists
+    ///
+    /// `lib_body` strips each lib's own outer `new ... in {` at
+    /// composition time and inlines the body directly into the
+    /// composed FsGenesis source.  Every name bound in the stripped
+    /// `new` clause becomes a free reference in the composed body,
+    /// which then resolves against the composed FsGenesis outer
+    /// `new` scope.
+    ///
+    /// **The drift:** a lib author adds a new module-cell name (say
+    /// `fsQuotaP`) to the lib's own outer `new` clause AND uses it
+    /// in the body (`@[*private, *fsQuotaP]!(...)`).  The lib
+    /// compiles cleanly in isolation.  But if the composer's outer
+    /// `new` is not also updated, the reference inside the composed
+    /// body binds to a FRESH unforgeable at parse time (Rholang's
+    /// silent behavior for unbound names inside a `new` scope).
+    /// Every `<<-` peek at that cell then hangs forever waiting for
+    /// a produce that will never arrive — because writer and reader
+    /// are working against different unforgeables.
+    ///
+    /// **Precedent:** the 2026-09-03 `fsRevokedP` addition (DD-Revoke)
+    /// required manual edits in three files (Fs.rho outer `new`,
+    /// `fs_genesis.rs` outer `new`, `file_dir_check.rs` `with_libs`).
+    /// This pin would have caught a two-of-three landing before it
+    /// hit runtime.
+    ///
+    /// # Method
+    ///
+    /// For each lib:
+    ///   1. Find the first top-level `new ... in {` clause (column-0
+    ///      anchored, whitespace-tolerant, comment-aware).
+    ///   2. Extract every name bound in the clause.  Skip URN
+    ///      bindings of the form `name(`rho:...`)` — those are
+    ///      per-lib registry / URN caps that never need composed-
+    ///      scope replication.  Skip agent-class name capitalization
+    ///      (any name whose first char is uppercase) — those are
+    ///      the agent-type names (`File`, `Dir`, `Buffer`, etc.)
+    ///      which ARE bound in composed outer scope, but also
+    ///      appear as `agent File { ... }` declarations that the
+    ///      composed scope binds independently.  (This check is
+    ///      about lower-case module-cell names that alias
+    ///      tuplespace channels.)
+    ///   3. For each surviving name, verify it appears in the
+    ///      composed FsGenesis outer `new` block.
+    ///
+    /// # Deliberately excluded from this pin
+    ///
+    /// Agent-class NAMES (uppercase leading char) are covered by
+    /// `every_lib_top_level_helper_is_bound_in_composed_outer_new`
+    /// via the same missing-binding surface.  URN bindings are
+    /// per-lib by design (each lib mints its own registry-lookup
+    /// name and never shares it) so they need no composed
+    /// replication.
+    #[test]
+    fn every_lib_outer_new_module_cell_is_bound_in_composed_outer_new() {
+        let libs: &[(&str, &str)] = &[
+            ("File.rho", include_str!("../../../main/resources/File.rho")),
+            ("Dir.rho", include_str!("../../../main/resources/Dir.rho")),
+            (
+                "Stream.rho",
+                include_str!("../../../main/resources/Stream.rho"),
+            ),
+            (
+                "Buffer.rho",
+                include_str!("../../../main/resources/Buffer.rho"),
+            ),
+            ("Fs.rho", include_str!("../../../main/resources/Fs.rho")),
+        ];
+        let composed = compose_fs_genesis_source("00", "00", &[], None);
+        // Extract the composer's own outer `new` name list via the
+        // comment-aware scanner — a naive tokenize would count names
+        // that appear inside doc comments (like a "fsRevokedP" mention
+        // in a `//` comment above the actual binding) as bound,
+        // masking the drift the test is meant to catch.
+        let composer_names_vec = extract_outer_new_names(&composed).unwrap_or_else(|reason| {
+            panic!("composed source: could not parse outer `new` clause: {reason}");
+        });
+        let outer_new_names: std::collections::HashSet<String> =
+            composer_names_vec.into_iter().map(|n| n.ident).collect();
+
+        let mut missing: Vec<(String, String)> = Vec::new();
+        for (lib_path, src) in libs {
+            let names = extract_outer_new_names(src).unwrap_or_else(|reason| {
+                panic!("{lib_path}: could not parse outer `new` clause: {reason}");
+            });
+
+            for name in names {
+                // Skip URN bindings — they are lib-local registry
+                // caps and never need composed-scope replication.
+                if name.is_urn_binding {
+                    continue;
+                }
+                // Skip uppercase-leading names (agent classes /
+                // module types) — those are covered by the sister
+                // pin above; module-cell drift is the lowercase-
+                // leading state-channel-alias surface.
+                if name
+                    .ident
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_uppercase())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if !outer_new_names.contains(&name.ident) {
+                    missing.push((lib_path.to_string(), name.ident));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "A-1 / RH-1 module-cell drift regression: the following names \
+             are bound in a lib's OWN outer `new` clause but NOT bound in \
+             the composed FsGenesis outer `new` scope: {missing:?}.  \
+             `lib_body` strips each lib's own outer `new` at composition \
+             time, so a reference to any such name inside the lib body \
+             becomes a free variable that Rholang silently binds to a \
+             fresh unforgeable at parse — every `<<-` peek then hangs \
+             forever waiting for a produce that will never arrive.  \
+             Add each missing name to the outer `new` binding list in \
+             `fs_genesis.rs::compose_fs_genesis_source` (and to the \
+             sibling `file_dir_check::with_libs` composer if the name is \
+             also used from behavioral tests).  Precedent: `fsRevokedP` \
+             (DD-Revoke, 2026-09-03) needed manual edits in three files \
+             — this pin catches that class of drift before it hits \
+             runtime.",
         );
     }
 
