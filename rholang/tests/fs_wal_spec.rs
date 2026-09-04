@@ -1591,6 +1591,206 @@ mod tests {
         );
     }
 
+    /// Consensus ban-lift (2026-09-04): **fs_exists positive path
+    /// matches leader on identical state**.  Mirror of
+    /// `consensus_fs_stat_reexecute_matches_leader_on_identical_state`
+    /// (line 1352) for the newly-lifted fs_exists surface.  Under the
+    /// pre-ban-lift shape, Dir.rho::exists would return FSERR_
+    /// UNSUPPORTED on any Consensus cap; the URN itself lacked a
+    /// cmode slot for `journal_state_read` to gate on.
+    ///
+    /// Post-lift: arity bumped 3 → 4; native handler grew a Phase-5
+    /// re-execute + verify branch (mirror fs_stat's Consensus replay
+    /// arm); `WalOp::Exists` journals the `[true, Bool]` reply hash
+    /// on Consensus caps.  This positive pin exercises the leader/
+    /// follower WAL byte-identity on matching FS state; the
+    /// divergence pin below is the fresh-syscall-engagement proof.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_exists_reexecute_matches_leader_on_identical_state() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"present").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsExists(`rho:io:fs:native:1.0.0/exists`), ackCh in {{
+              fsExists!("{root}", "data.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[96; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate Consensus fs_exists positive path");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert_eq!(
+            leader_wal.len(),
+            1,
+            "expected exactly one Exists WAL entry from the leader; got {}",
+            leader_wal.len()
+        );
+        assert_eq!(leader_wal[0].op, WalOp::Exists);
+        assert_eq!(
+            leader_wal[0].outcome,
+            WalOutcome::Success,
+            "leader's fs_exists on an existing file must journal Success \
+             (reply is [true, true] — the head-bool is true even when the \
+             file is absent, because `[true, false]` is still a Success \
+             outcome from `journal_state_read`'s perspective)"
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate Consensus fs_exists positive path");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(follower_wal.len(), 1);
+        assert_eq!(
+            leader_wal[0], follower_wal[0],
+            "Ban-lift: follower's re-executed Exists WAL entry must be \
+             byte-identical to the leader's on matching fs state"
+        );
+        assert_eq!(follower_wal[0].outcome, WalOutcome::Success);
+
+        follower.check_replay_data().await.expect(
+            "replay data must match — a divergent Par produce would trip \
+             RSpace rig verification",
+        );
+    }
+
+    /// Consensus ban-lift (2026-09-04): **fs_exists divergence
+    /// detection**.  Mirror of
+    /// `consensus_fs_stat_reexecute_detects_divergence` (line 1468).
+    /// The pre-ban-lift Dir.rho::exists had no divergence surface
+    /// (Consensus dispatch returned FSERR_UNSUPPORTED before reaching
+    /// the native).  Post-lift: rm the file between leader + follower
+    /// so the follower's `libc::fstatat` returns ENOENT → fresh
+    /// reply becomes `[true, false]` while leader cached `[true,
+    /// true]` → `verify_reply_hash_matches_cached` mismatch →
+    /// `err(FSERR_CONSENSUS_DIVERGENCE)` reply → WAL entry with
+    /// `WalOutcome::Failure { code: FSERR_CODE_CONSENSUS_DIVERGENCE }`
+    /// + `check_replay_data` Err.
+    ///
+    /// A regression that reverted the Consensus follower branch to
+    /// Phase-0 tautological cached-reply consumption would silently
+    /// accept the mismatch — follower's WAL would show a `Success`
+    /// Exists entry, and this test's assert_eq on
+    /// `Failure { FSERR_CODE_CONSENSUS_DIVERGENCE }` would fail.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_exists_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        // Leader sees the file present → reply [true, true].
+        std::fs::write(&target, b"present-on-leader").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsExists(`rho:io:fs:native:1.0.0/exists`), ackCh in {{
+              fsExists!("{root}", "data.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[97; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate Consensus fs_exists divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), 1);
+        assert_eq!(leader_wal[0].op, WalOp::Exists);
+        assert_eq!(leader_wal[0].outcome, WalOutcome::Success);
+
+        // Remove the file between leader + follower — follower's
+        // fresh fstatat returns ENOENT → reply becomes [true, false]
+        // → hash mismatch → CONSENSUS_DIVERGENCE.
+        std::fs::remove_file(&target).expect("remove target");
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            follower_wal.len(),
+            1,
+            "divergence path must still journal exactly one Exists entry \
+             (Failure outcome, not a journaling skip); got {} entries",
+            follower_wal.len()
+        );
+        assert_eq!(follower_wal[0].op, WalOp::Exists);
+        match follower_wal[0].outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Ban-lift: Exists divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Ban-lift REGRESSION: follower's re-executed fs_exists \
+                 produced a Success outcome despite the on-disk divergence \
+                 between leader and follower.  Either the fresh-syscall path \
+                 is not engaged (Phase-0 tautological cached-reply consumption \
+                 has come back), or verify_reply_hash_matches_cached is broken. \
+                 Leader WAL entry: {leader_entry:?}; follower WAL entry: \
+                 {follower_entry:?}",
+                leader_entry = leader_wal[0],
+                follower_entry = follower_wal[0],
+            ),
+        }
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Ban-lift D1 enforcement: divergent fs_exists reply Par should \
+             trip RSpace rig verification — got Ok, which would silently \
+             accept a leader lie."
+        );
+    }
+
     /// Phase 5 coverage-review addendum (2026-09-02): **fs_stat
     /// symmetric syscall error**.  Attempt fs_stat on a non-existent
     /// path on both sides → both see ENOENT → FSERR_NOT_FOUND →

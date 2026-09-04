@@ -327,7 +327,7 @@ fn with_libs(test_snippet: &str) -> String {
             }}
           }} |
 
-          contract fsExists(@_root, @_rel, ret) = {{
+          contract fsExists(@_root, @_rel, @_cmode, ret) = {{
             ret!([true, true])
           }} |
 

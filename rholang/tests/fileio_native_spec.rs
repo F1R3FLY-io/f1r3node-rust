@@ -407,7 +407,7 @@ mod tests {
         let term = format!(
             r#"
             new op(`rho:io:fs:native:1.0.0/exists`), ret in {{
-              op!("{root}", "f.bin", *ret) |
+              op!("{root}", "f.bin", "oracular", *ret) |
               for (@r <- ret) {{ @"out"!(r) }}
             }}
             "#,

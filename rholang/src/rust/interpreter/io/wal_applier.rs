@@ -385,7 +385,8 @@ where
             | WalOp::Stat
             | WalOp::Entries
             | WalOp::Size
-            | WalOp::EntriesStreamNext => {}
+            | WalOp::EntriesStreamNext
+            | WalOp::Exists => {}
             WalOp::Chmod => {
                 let bits = entry
                     .mode_bits

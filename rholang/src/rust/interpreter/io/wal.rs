@@ -252,6 +252,16 @@ pub enum WalOp {
     ///   consulting the `payload_ref` hash (EOS has a well-known
     ///   2-element reply hash).
     EntriesStreamNext,
+    /// Consensus ban-lift (2026-09-04): `fs_exists(root, rel, cmode)
+    /// -> [true, Bool]` — journaled on Consensus caps only.  Prior to
+    /// this slice, fs_exists was banned under Consensus at the Rholang
+    /// layer (Dir.rho::exists returned FSERR_UNSUPPORTED) because the
+    /// arity-3 URN had no cmode signal for `journal_state_read` to
+    /// gate on.  Arity bumped to 4 in the same slice; verify shape
+    /// matches fs_stat / fs_size — offset = None; length = None;
+    /// payload_ref = Hash(stable_hash of the `[true, Bool]` reply
+    /// Par).  The Bool value is inside the hashed reply.
+    Exists,
 }
 
 impl WalOp {
@@ -289,6 +299,7 @@ impl WalOp {
                 | WalOp::Entries
                 | WalOp::Size
                 | WalOp::EntriesStreamNext
+                | WalOp::Exists
         )
     }
 }
@@ -809,6 +820,7 @@ mod tests {
             WalOp::Entries,
             WalOp::Size,
             WalOp::EntriesStreamNext,
+            WalOp::Exists,
         ] {
             assert!(
                 op.is_observation_only(),

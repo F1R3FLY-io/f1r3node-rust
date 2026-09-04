@@ -234,39 +234,33 @@ new Dir, rootP, cmodeP in {
 
     // -- exists(rel) ------------------------------------------------
     //
-    // Banned under Consensus mode (B1 fix 2026-09-03): the underlying
-    // `fs_exists` native has no Phase 5 re-execute + verify, so under
-    // Consensus a divergent follower FS could silently yield a
-    // different `[true, bool]` reply than the leader.  Rather than
-    // add per-op verify (an arity change + hash-compare on every
-    // exists call), we banned Consensus dispatch at the Rholang
-    // layer — same treatment as `fs_chown` and `fs_entries_stream_*`.
-    // Callers that need presence-check semantics under Consensus can
-    // use `openFile` and catch `FSERR_NOT_FOUND`; the openFile path
-    // is Phase-5-verified end-to-end.
+    // Consensus ban-lift (2026-09-04): the B1 slice (2026-09-03) had
+    // banned Consensus dispatch at the Rholang layer because the
+    // native `fs_exists` URN's arity-3 shape carried no cmode signal
+    // for Phase-5 re-execute + verify to gate on.  This slice bumps
+    // the URN arity 3 → 4 (adding cmode), threads cmode into the
+    // fsExists! call below, and mirrors fs_stat's Phase-5 verify in
+    // the native handler.  Callers under Consensus now get an
+    // authoritatively-verified `[true, Bool]` reply; a divergent
+    // follower FS trips `FSERR_CONSENSUS_DIVERGENCE` instead of
+    // silently returning a leader-lie.
     method exists(@rel) {
       match rel {
         r /\ String => {
           for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-            match cmode {
-              "consensus" => return!([false, "FSERR_UNSUPPORTED",
-                "Dir.exists is banned under Consensus; use openFile + catch FSERR_NOT_FOUND"])
-              _ => {
-                match params {
-                  (canonRoot, subPath, _mode, _fileCtor) => {
-                    new joinedCh in {
-                      joinRel!(subPath, r, *joinedCh) |
-                      for (@joined <- joinedCh) {
-                        new retCh in {
-                          fsExists!(canonRoot, joined, *retCh) |
-                          for (@reply <- retCh) { return!(reply) }
-                        }
-                      }
+            match params {
+              (canonRoot, subPath, _mode, _fileCtor) => {
+                new joinedCh in {
+                  joinRel!(subPath, r, *joinedCh) |
+                  for (@joined <- joinedCh) {
+                    new retCh in {
+                      fsExists!(canonRoot, joined, cmode, *retCh) |
+                      for (@reply <- retCh) { return!(reply) }
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
+              _ => return!([false, "FSERR_IO", "root params malformed"])
             }
           }
         }

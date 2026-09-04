@@ -165,14 +165,17 @@ Whether a given cap + cmode combination:
   FSERR_BUSY` on unlink / removeDir.
 
 Additional Rholang-layer bans (Dir agent):
-- `Dir.exists` — banned under Consensus (B1 fix 2026-09-03) because
-  the underlying `fs_exists` native has no Phase 5 re-execute + verify
-  and a divergent follower FS could silently yield a different
-  `[true, bool]` reply than the leader.  Callers that need presence-
-  check semantics under Consensus should use `openFile` and catch
-  `FSERR_NOT_FOUND`; the openFile path is Phase-5-verified end-to-end.
-  Rholang gate at `Dir.rho::exists`; returns `FSERR_UNSUPPORTED` with
-  a message directing callers to the openFile alternative.
+- `Dir.exists` — Consensus ban LIFTED 2026-09-04.  Prior to this
+  slice, the B1 fix (2026-09-03) had banned Consensus dispatch at
+  the Rholang layer because the underlying `fs_exists` native's
+  arity-3 URN shape had no cmode signal for `journal_state_read` to
+  gate on.  Ban lifted by bumping the URN arity 3 → 4 (adding
+  cmode), threading cmode through `Dir.rho::exists`, and mirroring
+  fs_stat's Phase-5 re-execute + verify branch in the native
+  handler.  Divergent follower FS trips `FSERR_CONSENSUS_DIVERGENCE`
+  at the reply-hash verify (identical mechanism to fs_stat / fs_size
+  / fs_read / fs_entries).  `WalOp::Exists` added at op tag 16;
+  `SNAPSHOT_FORMAT_VERSION` bumped 5 → 6.
 
 Changing any dispatch rule (adding a ban, removing a gate,
 switching a per-cmode journal decision) is a hard fork.

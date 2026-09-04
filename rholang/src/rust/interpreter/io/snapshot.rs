@@ -219,7 +219,7 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 ///   on-disk paths and are handled by the resolver's identity
 ///   fall-through unchanged.  No running network per auto-memory
 ///   `f1r3node_no_running_network.md` — the bump is a normal edit.
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 5;
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 6;
 
 /// M-1 fix (2026-08-06): manifest.jsonl line-format version.
 /// Distinct from `SNAPSHOT_FORMAT_VERSION` because the two are
@@ -383,6 +383,13 @@ fn op_tag(op: WalOp) -> u8 {
         // streams.  Tag 15 appended at the tail; version bumped
         // 3 → 4.
         WalOp::EntriesStreamNext => 15,
+        // Consensus ban-lift (2026-09-04): fs_exists arity bumped
+        // 3 → 4 (adds cmode); native handler grew a Phase-5
+        // re-execute + verify branch; Dir.rho ban removed.  Tag 16
+        // appended at the tail; SNAPSHOT_FORMAT_VERSION bumped
+        // 5 → 6 to distinguish snapshots that may contain Exists
+        // entries from prior-version snapshots that never could.
+        WalOp::Exists => 16,
     }
 }
 
@@ -545,6 +552,7 @@ fn decode_op_tag(bytes: &[u8], cursor: &mut usize) -> Result<WalOp, SnapshotErro
         13 => Ok(WalOp::Entries),
         14 => Ok(WalOp::Size),
         15 => Ok(WalOp::EntriesStreamNext),
+        16 => Ok(WalOp::Exists),
         _ => Err(SnapshotError::MalformedBlob {
             offset: *cursor - 1,
             message: format!("unknown op tag {tag}"),
@@ -2201,18 +2209,19 @@ mod tests {
         );
     }
 
-    /// Boundary companion: op tag 16 is one past the last valid
-    /// variant (EntriesStreamNext = 15).  If a future slice adds a
-    /// tag, this pin flips and the new-variant maintainer must add
-    /// coverage for it.
+    /// Boundary companion: op tag 17 is one past the last valid
+    /// variant (Exists = 16).  If a future slice adds a tag, this
+    /// pin flips and the new-variant maintainer must add coverage
+    /// for it.  Pre-Consensus-ban-lift (2026-09-04) this pinned
+    /// tag 16 as invalid; the ban-lift assigned WalOp::Exists = 16.
     #[test]
-    fn decode_wal_slice_rejects_op_tag_sixteen() {
+    fn decode_wal_slice_rejects_op_tag_seventeen() {
         let mut bytes = encode_wal_slice(&[mk_write_entry(b"x", "/a")]);
-        bytes[5] = 16;
+        bytes[5] = 17;
         let err = decode_wal_slice(&bytes);
         assert!(
             matches!(err, Err(SnapshotError::MalformedBlob { .. })),
-            "op tag 16 must be MalformedBlob (guards the tail of \
+            "op tag 17 must be MalformedBlob (guards the tail of \
              the reserved range); if you added a variant, bump this \
              pin to the next unassigned tag: got {err:?}"
         );
@@ -2313,6 +2322,8 @@ mod tests {
         assert_eq!(op_tag(WalOp::Size), 14);
         // Streaming-backing slice Step 3 (2026-08-25).
         assert_eq!(op_tag(WalOp::EntriesStreamNext), 15);
+        // Consensus ban-lift (2026-09-04).
+        assert_eq!(op_tag(WalOp::Exists), 16);
     }
 
     // ------------------------------------------------------------------
@@ -2350,14 +2361,15 @@ mod tests {
             let _ = write!(acc, "{b:02x}");
             acc
         });
-        // Golden value re-pinned 2026-08-31 (Task 0.4 / Consensus-fs
-        // Shape A: bumped `SNAPSHOT_FORMAT_VERSION` from 4 to 5 to
-        // distinguish the pre-Shape-A snapshot semantics — Consensus
-        // WAL entries' `path` field is now bundle-relative, not an
-        // absolute on-disk canon_path).  Only the version byte
-        // changed for THIS test's entry shape (Write op), so the
-        // hash differs solely because of the leading version-byte
-        // increment.  Prior anchors:
+        // Golden value re-pinned 2026-09-04 (Consensus ban-lift on
+        // fs_exists: bumped `SNAPSHOT_FORMAT_VERSION` from 5 to 6 so
+        // snapshots that may carry Exists entries (op tag 16) are
+        // distinguishable from prior-version snapshots that never
+        // could).  Only the version byte changed for THIS test's
+        // entry shape (Write op), so the hash differs solely
+        // because of the leading version-byte increment.  Prior
+        // anchors:
+        //   pre-ban-lift (v=5): 1bdd5f4536180b811f139ea762c6659f29bf6cf5008ec85b970bb618d10786c9
         //   pre-Shape-A (v=4): 0db9a41865abc2e7e00e96f66a26267f2b9e1815ef55490c237675bff1c60a73
         //   pre-streaming-slice (v=3): 9f2553c38cce8b72bbf6ad78c22f4b32f195b8bed781c952403f5404c25891c4
         //   pre-M-5 (v=2): eaeb49f95ec12631c4d59da9520f23cd9558c98e60529deda1fbc42395b5811a
@@ -2366,7 +2378,7 @@ mod tests {
         // Regenerate via
         //   cargo test -p rholang --lib -- compute_wal_root_golden_hex --nocapture
         // ONLY when intentionally hard-forking the encoding.
-        const EXPECTED: &str = "1bdd5f4536180b811f139ea762c6659f29bf6cf5008ec85b970bb618d10786c9";
+        const EXPECTED: &str = "85d06bfa639c0aa6c4521bb0d9469b1e06f4705487a1b0e394f43ef002b8bad1";
         assert_eq!(
             hex, EXPECTED,
             "WAL root golden-hex mismatch — did you accidentally change the encoding? \

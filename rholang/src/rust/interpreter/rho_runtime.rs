@@ -1344,7 +1344,9 @@ fn std_system_processes() -> Vec<Definition> {
         fs_native_def(
             "rho:io:fs:native:1.0.0/exists",
             FixedChannels::fs_exists(),
-            3, // (rootCanon, rel, ack)
+            // Consensus ban-lift (2026-09-04): arity bumped 3 → 4
+            // to carry cmode.  See handlers.rs::fs_exists.
+            4, // (rootCanon, rel, cmode, ack)
             BodyRefs::FS_EXISTS,
             |sp, args| Box::pin(async move { sp.fs.fs_exists(args).await }),
         ),

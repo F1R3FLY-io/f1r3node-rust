@@ -1187,11 +1187,10 @@ impl FsProcesses {
     /// - Outcome derived from the reply: `[true, ...]` → Success,
     ///   `[false, code, ...]` → Failure { code = fserr_to_code(code) }.
     ///
-    /// A no-op if `cmode != Consensus`.  fs_stat / fs_entries
-    /// take cmode as an arg; fs_size looks up the FileHandle's
-    /// cmode via the fd.  fs_exists deliberately excluded —
-    /// its arity (3) has no cmode signal; a follow-up would
-    /// require an arity bump.
+    /// A no-op if `cmode != Consensus`.  fs_stat / fs_entries /
+    /// fs_exists take cmode as an arg (fs_exists's cmode slot was
+    /// added in the 2026-09-04 ban-lift slice, bumping arity 3 →
+    /// 4); fs_size looks up the FileHandle's cmode via the fd.
     fn journal_state_read(
         &self,
         cmode: ConsensusMode,
@@ -3026,7 +3025,14 @@ impl FsProcesses {
     }
 
     // -------------------------------------------------------------------
-    // exists — (rootCanon, rel) -> [true, Bool]
+    // exists — (rootCanon, rel, cmode) -> [true, Bool]
+    //
+    // Consensus ban-lift (2026-09-04): arity bumped 3 → 4 to carry
+    // cmode, mirroring fs_stat / fs_entries / fs_size shape.  The B1
+    // slice (2026-09-03) banned Consensus dispatch at the Rholang
+    // layer because arity-3 had no cmode signal for `journal_state_
+    // read` to gate on — that ban is lifted in this slice and replaced
+    // with Phase-5 re-execute + verify, mirroring fs_stat's pattern.
     // -------------------------------------------------------------------
     pub async fn fs_exists(
         &self,
@@ -3040,14 +3046,60 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_exists"));
         };
-        let [root_par, rel_par, ack] = args.as_slice() else {
+        // Consensus ban-lift (2026-09-04): `(root, rel, cmode, ack)`.
+        let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_exists"));
         };
-        if is_replay {
+        // Resolve cmode BEFORE the is_replay short-circuit so both
+        // leader + follower can journal symmetrically.  Same pattern
+        // as fs_stat (M-5 fix, 2026-08-06).
+        let mode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                let out = vec![err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                )];
+                produce(&out, ack).await?;
+                return Ok(out);
+            }
+        };
+        // Precompute journal path (used by both branches).
+        let journal_path: Option<PathBuf> =
+            match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+                (Some(root), Some(rel)) => {
+                    let mut p = PathBuf::from(root);
+                    if !rel.is_empty() {
+                        p.push(&rel);
+                    }
+                    Some(p)
+                }
+                _ => None,
+            };
+        // Oracular follower: Phase-0 tautological — per-node local FS
+        // state isn't reproducible on the follower's own fs.  Same
+        // shape as fs_stat's Oracular arm.  `journal_state_read`
+        // self-guards on Consensus so the call is a WAL no-op today,
+        // kept for structural parity with the Consensus branch's
+        // Success path.
+        if is_replay && mode != ConsensusMode::Consensus {
+            if let Some(p) = journal_path.clone() {
+                if let Some(reply_par) = previous.first() {
+                    self.journal_state_read(mode, WalOp::Exists, p, reply_par, ack, None);
+                }
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+        // Fresh syscall reply — required by BOTH the leader (always)
+        // and the Consensus follower (Phase-5 re-execute + verify).
+        // Semantics preserved from the pre-ban-lift shape:
+        //   - Ok descent + fstatat succeeds        → ok_bool(true)
+        //   - Ok descent + fstatat fails           → ok_bool(false)
+        //   - Descent IoError (not-found / EACCES) → ok_bool(false)
+        //   - Descent quarantine failure           → err(code, msg)
+        //   - Non-String args                      → err(BAD_ARG, ...)
+        let fresh_reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
                 let (root_pb, expected_root_id) =
@@ -3056,9 +3108,6 @@ impl FsProcesses {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
-                            // Not-found or symlink → exists is false.  A
-                            // quarantine failure (escape/absolute/etc.)
-                            // is a caller error, surface as bad arg.
                             use super::path::QuarantineError::*;
                             return match qe {
                                 EscapesRoot | SymlinkComponent | RootIdentityChanged => {
@@ -3078,11 +3127,46 @@ impl FsProcesses {
                 })
                 .await
             }
-            _ => err(FSERR_BAD_ARG, "expected (String, String)"),
+            _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        if is_replay {
+            // Consensus follower — Phase-5 re-execute + verify.
+            // Same shape as fs_stat's Consensus replay arm.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    if let Some(p) = journal_path {
+                        self.journal_state_read(mode, WalOp::Exists, p, &fresh_reply, ack, None);
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    let divergence_reply = consensus_divergence_reply("fs_exists", reason);
+                    if let Some(p) = journal_path {
+                        self.journal_state_read(
+                            mode,
+                            WalOp::Exists,
+                            p,
+                            &divergence_reply,
+                            ack,
+                            None,
+                        );
+                    }
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — journal fresh reply, produce it.
+            if let Some(p) = journal_path {
+                self.journal_state_read(mode, WalOp::Exists, p, &fresh_reply, ack, None);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
+        }
     }
 
     // -------------------------------------------------------------------

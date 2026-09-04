@@ -1598,7 +1598,7 @@ mod tests {
             ("size", 2),       // (fd, ack)
             ("flush", 2),      // (fd, ack)
             ("stat", 4),       // (root, rel, cmode, ack) — Slice 26
-            ("exists", 3),     // (root, rel, ack)
+            ("exists", 4),     // (root, rel, cmode, ack) — Consensus ban-lift 2026-09-04
             ("truncate", 3),   // (fd, n, ack)
             ("chmod", 5),      // (root, rel, mode, cmode, ack) — Slice 26
             ("chown", 6),      // (root, rel, owner, group, cmode, ack) — Slice 26
@@ -2160,7 +2160,20 @@ mod tests {
         //   Dir.chmod tables replaced with Int).  Consensus-observable
         //   surface change — free per the f1r3node_no_running_network
         //   invariant.
-        const EXPECTED: &str = "4d8f4c0ea28ff6e4b205e4ae467478b8fa5fd9b3305f5a244bb3eb21cf4d654e";
+        // Prior anchor: 4d8f4c0e (chmod-Int, 2026-09-04).
+        // 2026-09-04: Consensus ban-lift on fs_exists.  Arity of the
+        //   `rho:io:fs:native:1.0.0/exists` URN bumped 3 → 4 to carry
+        //   cmode, mirroring fs_stat / fs_entries / fs_size shape.
+        //   Dir.rho::exists loses its `"consensus" => FSERR_UNSUPPORTED`
+        //   arm and now threads cmode into the fsExists! call.  Native
+        //   handler grew a Phase-5 re-execute + verify branch (mirror
+        //   fs_stat's Consensus replay arm); WAL enum grew `WalOp::
+        //   Exists` (observation-only).  FIP `exists(rel)` row updated
+        //   to reflect Consensus support and drop the openFile + catch
+        //   FSERR_NOT_FOUND workaround.  Consensus-observable URN
+        //   signature change — free per the f1r3node_no_running_
+        //   network invariant.
+        const EXPECTED: &str = "28487bd24cb0d20ccf78140f82378359c1f07bcb21010fa0f3af1e028ac0e50b";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
