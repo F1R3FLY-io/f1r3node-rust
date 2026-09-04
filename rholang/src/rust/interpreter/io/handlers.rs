@@ -3801,10 +3801,17 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // removeDir — (rootCanon, rel, recursive: Bool, cmode) ->
-    //   Non-recursive: [true] / [false, code, msg]
-    //   Recursive Oracular: [true] / [false, code, msg]
-    //   Recursive Consensus: [true, [[path, kind], ...]] / [false, code, msg,
-    //     [[path, kind], ...]]  (manifest of deleted entries in unlink order)
+    // DD-RemoveDirReplyShape (2026-09-03): every code path returns
+    // `nDeleted` at position 1 (success) or position 3 (failure).
+    //   Non-recursive: [true, 1] / [false, code, msg, 0]
+    //   Recursive Oracular: [true, nDeleted] / [false, code, msg,
+    //     nDeletedBeforeError]
+    //   Recursive Consensus: [true, nDeleted, [[path, kind], ...]] /
+    //     [false, code, msg, nDeletedBeforeError, [[path, kind], ...]]
+    //     — manifest at position 2/4 is an implementation-side
+    //     channel for R5(b) follower re-execution; `Dir.rho`'s
+    //     `removeDir` method unwraps to the uniform shape at the
+    //     Rholang boundary.
     //
     // H-29-3 lift slice 2 (2026-08-26): Consensus recursive removeDir
     // walks the tree in sorted post-order, emits one WAL entry per
@@ -5357,16 +5364,18 @@ impl FsProcesses {
     // coordination on the same physical file collapses to one entry
     // regardless of which fresh-mint `File` cap holds it (slice 27).
     //
-    // Wait:false only for MVP.  Blocking acquisition (wait:true) is
-    // slice 8b via Rig-protocol; every acquire here returns immediately
-    // with either `[true, lock_id]` or `[false, FSERR_BUSY, ...]`.
+    // wait:false and wait:true both live (slice 8b landed 2026-08-12):
+    // non-blocking acquires return immediately with either
+    // `[true, lock_id]` or `[false, FSERR_BUSY, ...]`; wait:true
+    // acquires park via the Rig-protocol and either succeed with a
+    // fresh `[true, lock_id]` reply or return `FSERR_CANCELLED` /
+    // `FSERR_DEADLOCK` (NB-7 cross-deploy cycle detection).
     //
-    // WAL journaling of `LockAcquire` / `LockRelease` entries is step 4
-    // of slice 8a — deferred here.  The natives resolve the acquire
-    // outcome but do not yet append WAL entries.  Under consensus mode
-    // they will need to (per X-1 §4); under oracular they will not
-    // (per §Mode-differentiated invariants — oracular locks are
-    // in-process hints, not consensus state).
+    // WAL journaling of `LockAcquire` / `LockRelease` entries is step
+    // 4 of slice 8a — still deferred here.  Under consensus mode
+    // the natives will need to journal (per X-1 §4); under oracular
+    // they will not (per §Mode-differentiated invariants — oracular
+    // locks are in-process hints, not consensus state).
     //
     // Deploy-end auto-release (MUST per X-4 / spec §Explicit locks)
     // is wired at `casper::rholang::runtime::WalDeployScope`'s Drop
@@ -5388,11 +5397,11 @@ impl FsProcesses {
     // `LockAcquire` / `LockRelease` entries, the follower's state
     // MUST be reconstituted from the WAL during replay (mirror slice
     // 29's `journal_write` / `finalize_write_journal` pattern) so
-    // that step 7's consensus-mode unlink gate (`is_locked` in
-    // `fs_remove_file` / `fs_remove_dir`) sees the same state on
-    // leader and follower.  Under oracular mode the LockRegistry is
-    // best-effort per §Mode-differentiated invariants, so follower
-    // state doesn't matter there either way.
+    // that the consensus-mode unlink gate (`is_locked` in
+    // `fs_remove_file` / `fs_remove_dir`, live today) sees the same
+    // state on leader and follower.  Under oracular mode the
+    // LockRegistry is best-effort per §Mode-differentiated
+    // invariants, so follower state doesn't matter there either way.
     // -------------------------------------------------------------------
 
     /// Acquire a positional range lock on the file behind `fd`.

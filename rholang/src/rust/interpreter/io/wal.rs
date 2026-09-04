@@ -7,16 +7,16 @@
 // `consensus-static-*` bucket by replaying the WAL against a known
 // snapshot (see slice 30).
 //
-// # Scope of this slice (MVP)
+// # Scope (post-H-29-3 lift, 2026-08-26)
 //
-// Slice 29 adds the in-memory WAL data structure and the append hooks
-// in FD-based write handlers (`fs_write`, `fs_write_at`,
-// `fs_truncate`).  Path-based mutations (`fs_chmod`, `fs_chown`,
-// `fs_removeFile`, `fs_removeDir`, `fs_rename`, `fs_copyFile`) will
-// be wired in a follow-up slice — those handlers need their
-// signatures extended to accept the caller's cmode, mirroring slice
-// 26's threading through `fs_chown`.  Snapshotting + persistence +
-// on-chain commitment of the WAL Merkle root are slice 30.
+// Every mutating handler now journals:
+//   - FD-based writes (`fs_write`, `fs_write_at`, `fs_truncate`) —
+//     slice 29 MVP.
+//   - Path-based mutations (`fs_chmod`, `fs_chown`, `fs_remove_file`,
+//     `fs_remove_dir` [non-recursive + recursive], `fs_rename`,
+//     `fs_copy_file`) — H-29-3 lift.
+// Snapshotting + persistence + on-chain WAL Merkle root commitment
+// live in slice 30 and Phase 7 (`snapshot.rs`, `verify.rs`).
 //
 // # Payload references
 //

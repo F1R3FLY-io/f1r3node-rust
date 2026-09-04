@@ -1730,7 +1730,14 @@ mod tests {
         //   Composition + Mutation.  Prior positional `@mode` /
         //   `@recursive` args replaced with `@options` maps carrying
         //   `mode` / `recursive` keys.  Callers migrated in same slice.
-        const EXPECTED: &str = "a04d47f989bcc72da72ae880f9e1fa43eb52411abc68d73e2ac2596634bac461";
+        // Prior anchor: a04d47f9 (B4, 2026-09-03).
+        // 2026-09-03: SC-1 stale-comment fix — File.rho's `readInto`
+        //   reachability caveat was contradicted by PB-B-5 (Allocator
+        //   published at rho:serve:1.0.0:<pk>:buffer:1.0.0).  Comment-
+        //   only edit inside File.rho's outer `new` body; `lib_body`
+        //   preserves comments, so the composed source bytes rolled.
+        //   No Rholang semantics changed.
+        const EXPECTED: &str = "f0f14d1e95920e4bed2c1275400e2e9e94a77f1b22404e251a77f0b1ab6e8fc1";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

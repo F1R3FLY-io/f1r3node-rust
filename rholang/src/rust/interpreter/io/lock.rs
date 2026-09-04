@@ -1,4 +1,5 @@
-//! Phase 8 range-lock registry (slice 8a MVP — `wait: false` only).
+//! Phase 8 range-lock registry (slice 8a `wait: false` + slice 8b
+//! `wait: true` blocking acquire — the latter landed 2026-08-12).
 //!
 //! Coordinates cross-cap range-lock state on a single node.  Keyed on
 //! `(dev, inode)` so two fresh-mint `File` caps opened by different

@@ -5717,16 +5717,15 @@ in {
     // Multi-fsRead loop for POSIX short reads — a follow-up
     // slice can wrap this in a retry loop until buffer fills or EOF.
     //
-    // ## Reachability caveat (Phase 6 MVP)
+    // ## Reachability (PB-B-5, 2026-09-01)
     //
     // Buffer-taking methods (this one, `writeFrom`, `readAtInto`,
     // `writeFromAt`, `readLineInto`, `readLinesInto`) require the
-    // caller to hold a `Buffer` cap.  Under the current Phase 6
-    // shared-Fs / no-Allocator-publication model, no path exists for
-    // deploys to obtain one — `Allocator` compiles into the genesis
-    // scope but isn't published (see fs_genesis.rs §MVP simplification
-    // #6 and PB-B-5).  These methods are functionally dead in Phase 6
-    // until a future powerbox slice publishes `rho:lang:buffer:1.0.0`.
+    // caller to hold a `Buffer` cap.  PB-B-5 published the
+    // `Allocator` at `rho:serve:1.0.0:<pk>:buffer:1.0.0`, so any
+    // deploy can now obtain a Buffer via the resolver.  Previously
+    // these methods were reachable only from tests scoping Allocator
+    // via inline `new`; post-PB-B-5 they are live production paths.
     method readInto(@buf) {
       for (@state <- @[*private, *stateP]) {
         match state {

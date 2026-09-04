@@ -8,10 +8,14 @@
 //     `allocUtf8`, `default`.
 //
 // Deferred to follow-up commits:
-//   - `writeByte`, `slice`, `validUtf8PrefixLen`, `view`, `clear`
-//     (§Buffer > Reads / Writes / Lifecycle).
-//   - Publication to a fixed registry URN (currently the allocator is
-//     minted but not published — tests scope it via inline `new`).
+//   - `writeByte`, `slice`, `validUtf8PrefixLen`, `view`
+//     (§Buffer > Reads / Writes).  `clear` LANDED (see `method clear`
+//     on Buffer + Rows agents below).
+//   - Publication LANDED 2026-09-01 (PB-B-5): Allocator is published
+//     at `rho:serve:1.0.0:<pk>:buffer:1.0.0`, so `Buffer` caps are
+//     obtainable by any deploy via the resolver.  Previously the
+//     allocator was minted but not published (tests scoped via
+//     inline `new`).
 //   - ~~The pairwise-merge helper `mergePairs`~~ **LANDED 2026-09-02
 //     (slice 9c-iii)**: `gatherChunks` (module-level helper called
 //     from `read` / `toByteArray`) now uses a divide-and-conquer
