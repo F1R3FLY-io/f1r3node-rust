@@ -815,6 +815,12 @@ new
   // stream constructor stores it in the existing lockCell so release
   // fires from stream termination as today.
   acquireRangeForStream, acquireSequentialForStream,
+  // RH-2 (2026-09-04) stream-lifetime release-once helper — every
+  // stream producer's termination path invokes this to fire
+  // fsReleaseLock exactly once regardless of how many termination
+  // paths race.  See File.rho's `contract releaseSeqLockOnce` for
+  // the invariant.
+  releaseSeqLockOnce,
   // Phase 8 slice 8d-2 — companion loop for writeLines arity-2 that
   // threads the options map (with wait:true) to each internal writeLine
   // arity-2 call.  Same shape as writeLinesLoop but arity 5 not 4.
@@ -2130,7 +2136,18 @@ mod tests {
         //   Comment-only edit inside File.rho's outer `new` body;
         //   `lib_body` preserves comments, so the composed bytes
         //   rolled.  No Rholang semantics changed.
-        const EXPECTED: &str = "9d985fa710ff57f607b3c445d3583279b52b8f471e34c2bb5f609d9b5b72cc37";
+        // Prior anchor: 9d985fa7 (A8-M-2, 2026-09-03).
+        // 2026-09-04: RH-2 stream-lifetime release-once helper —
+        //   `releaseSeqLockOnce` contract added to File.rho +
+        //   bound at composed outer `new` scope; every stream
+        //   producer's release ceremony (50 sites across 7 stream
+        //   methods) migrated to invoke the helper instead of hand-
+        //   inlining `for (@lockState <- lockCell) { match ... }`.
+        //   Composed File.rho body shrinks by ~628 lines.  No
+        //   Rholang semantics changed — the helper preserves the
+        //   pre-RH-2 idempotent-release invariant + tail sequencing
+        //   (via `for (_ <- doneCh)` await in the caller).
+        const EXPECTED: &str = "65b4649940e533f5a640fe5b3eaa8f05c49ec810b26d94e8c0b00817589841b6";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

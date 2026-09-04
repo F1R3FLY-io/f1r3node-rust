@@ -71,7 +71,7 @@ fn with_libs(test_snippet: &str) -> String {
             // the end of File.rho; bound here at the outer scope
             // because lib_body strips File.rho's own top-level `new`.
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions,
             mockFdCell, chmodLog, chownLog, truncLog,
             rmFileLog, rmDirLog, renameLog, copyLog,
@@ -2077,7 +2077,7 @@ async fn file_close_propagates_fs_close_error() {
             fsReleaseAllForHolder,
             LockToken, lockStateP,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions
         in {{
           contract fsRead(@_fd, @_n, ret)  = {{ ret!([true, "".hexToBytes()]) }} |
@@ -6568,7 +6568,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
             fsReleaseAllForHolder,
             LockToken, lockStateP,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions,
             writeCallCount,
             listState, producer, charBuilder
@@ -16912,7 +16912,7 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions,
             Stream,
             releasedFlag
@@ -17030,7 +17030,7 @@ async fn two_caps_overlapping_write_locks_conflict() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId
@@ -17119,7 +17119,7 @@ async fn same_cap_two_overlapping_locks_coexist() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId
@@ -17220,7 +17220,7 @@ async fn bytes_stream_lock_blocks_cross_cap_sequential_write() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId
@@ -17316,7 +17316,7 @@ async fn write_byte_array_releases_lock_on_error_path() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId,
@@ -17420,7 +17420,7 @@ async fn same_cap_sequential_blocks_own_sequential_attempt() {
             fsTruncate, fsChmod, fsChown,
             fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
             withSequentialLock, withRangeLock,
-            acquireRangeForStream, acquireSequentialForStream,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
             writeLinesLoopWithOptions,
             Stream,
             activeHolder, activeKind, activeLockId

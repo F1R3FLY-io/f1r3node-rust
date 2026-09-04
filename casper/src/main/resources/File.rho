@@ -51,7 +51,11 @@ new File, fdP, stateP, cmodeP,
     // Adding a name here does nothing on its own — it must ALSO be
     // added to fs_genesis.rs.  Slice 8c helpers (withSequentialLock,
     // withRangeLock) are bound in fs_genesis.rs.
-    LockToken, lockStateP
+    LockToken, lockStateP,
+    // RH-2 (2026-09-04) stream-lifetime release-once helper —
+    // defined in File.rho at the bottom; must also be bound at the
+    // composed FsGenesis outer `new` (see fs_genesis.rs).
+    releaseSeqLockOnce
 in {
 
   agent File {
@@ -1204,23 +1208,11 @@ in {
                                             match ba.length() {
                                               0 => {
                                                 // TERMINATION: EOF.
-                                                for (@lockState <- lockCell) {
-                                                  match lockState {
-                                                    (lockId, false) => {
-                                                      lockCell!((lockId, true)) |
-                                                      new relCh in {
-                                                        fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                        for (@_r <- relCh) {
-                                                          pendingCell!((pending, idx)) |
-                                                          retCh!([false, "EOS", "end of file"])
-                                                        }
-                                                      }
-                                                    }
-                                                    already => {
-                                                      lockCell!(already) |
-                                                      pendingCell!((pending, idx)) |
-                                                      retCh!([false, "EOS", "end of file"])
-                                                    }
+                                                new relDoneCh in {
+                                                  releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                  for (_ <- relDoneCh) {
+                                                    pendingCell!((pending, idx)) |
+                                                    retCh!([false, "EOS", "end of file"])
                                                   }
                                                 }
                                               }
@@ -1232,23 +1224,11 @@ in {
                                           }
                                           _ => {
                                             // TERMINATION: fsRead error.
-                                            for (@lockState <- lockCell) {
-                                              match lockState {
-                                                (lockId, false) => {
-                                                  lockCell!((lockId, true)) |
-                                                  new relCh in {
-                                                    fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                    for (@_r <- relCh) {
-                                                      pendingCell!((pending, idx)) |
-                                                      retCh!(reply)
-                                                    }
-                                                  }
-                                                }
-                                                already => {
-                                                  lockCell!(already) |
-                                                  pendingCell!((pending, idx)) |
-                                                  retCh!(reply)
-                                                }
+                                            new relDoneCh in {
+                                              releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                              for (_ <- relDoneCh) {
+                                                pendingCell!((pending, idx)) |
+                                                retCh!(reply)
                                               }
                                             }
                                           }
@@ -1355,23 +1335,11 @@ in {
                                                     [true, ba /\ ByteArray] => {
                                                       match ba.length() {
                                                         0 => {
-                                                          for (@lockState <- lockCell) {
-                                                            match lockState {
-                                                              (lockId, false) => {
-                                                                lockCell!((lockId, true)) |
-                                                                new relCh in {
-                                                                  fsReleaseLock!(lockId, *relCh) |
-                                                                  for (@_r <- relCh) {
-                                                                    pendingCell!((pending, idx)) |
-                                                                    retCh!([false, "EOS", "end of file"])
-                                                                  }
-                                                                }
-                                                              }
-                                                              already => {
-                                                                lockCell!(already) |
-                                                                pendingCell!((pending, idx)) |
-                                                                retCh!([false, "EOS", "end of file"])
-                                                              }
+                                                          new relDoneCh in {
+                                                            releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                            for (_ <- relDoneCh) {
+                                                              pendingCell!((pending, idx)) |
+                                                              retCh!([false, "EOS", "end of file"])
                                                             }
                                                           }
                                                         }
@@ -1382,23 +1350,11 @@ in {
                                                       }
                                                     }
                                                     _ => {
-                                                      for (@lockState <- lockCell) {
-                                                        match lockState {
-                                                          (lockId, false) => {
-                                                            lockCell!((lockId, true)) |
-                                                            new relCh in {
-                                                              fsReleaseLock!(lockId, *relCh) |
-                                                              for (@_r <- relCh) {
-                                                                pendingCell!((pending, idx)) |
-                                                                retCh!(reply)
-                                                              }
-                                                            }
-                                                          }
-                                                          already => {
-                                                            lockCell!(already) |
-                                                            pendingCell!((pending, idx)) |
-                                                            retCh!(reply)
-                                                          }
+                                                      new relDoneCh in {
+                                                        releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                        for (_ <- relDoneCh) {
+                                                          pendingCell!((pending, idx)) |
+                                                          retCh!(reply)
                                                         }
                                                       }
                                                     }
@@ -1611,25 +1567,12 @@ in {
                                                                   0 => {
                                                                     // TERMINATION: length exhausted.
                                                                     // Release-once via lockCell.
-                                                                    for (@lockState <- lockCell) {
-                                                                      match lockState {
-                                                                        (lockId, false) => {
-                                                                          lockCell!((lockId, true)) |
-                                                                          new relCh in {
-                                                                            fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                            for (@_r <- relCh) {
-                                                                              posCell!((nextOff, rem, pending, idx)) |
-                                                                              retCh!([false, "EOS",
-                                                                                "length exhausted"])
-                                                                            }
-                                                                          }
-                                                                        }
-                                                                        already => {
-                                                                          lockCell!(already) |
-                                                                          posCell!((nextOff, rem, pending, idx)) |
-                                                                          retCh!([false, "EOS",
-                                                                            "length exhausted"])
-                                                                        }
+                                                                    new relDoneCh in {
+                                                                      releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                      for (_ <- relDoneCh) {
+                                                                        posCell!((nextOff, rem, pending, idx)) |
+                                                                        retCh!([false, "EOS",
+                                                                          "length exhausted"])
                                                                       }
                                                                     }
                                                                   }
@@ -1642,23 +1585,11 @@ in {
                                                                             match ba.length() {
                                                                               0 => {
                                                                                 // TERMINATION: EOF.
-                                                                                for (@lockState <- lockCell) {
-                                                                                  match lockState {
-                                                                                    (lockId, false) => {
-                                                                                      lockCell!((lockId, true)) |
-                                                                                      new relCh in {
-                                                                                        fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                        for (@_r <- relCh) {
-                                                                                          posCell!((nextOff, rem, pending, idx)) |
-                                                                                          retCh!([false, "EOS", "end of file"])
-                                                                                        }
-                                                                                      }
-                                                                                    }
-                                                                                    already => {
-                                                                                      lockCell!(already) |
-                                                                                      posCell!((nextOff, rem, pending, idx)) |
-                                                                                      retCh!([false, "EOS", "end of file"])
-                                                                                    }
+                                                                                new relDoneCh in {
+                                                                                  releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                                  for (_ <- relDoneCh) {
+                                                                                    posCell!((nextOff, rem, pending, idx)) |
+                                                                                    retCh!([false, "EOS", "end of file"])
                                                                                   }
                                                                                 }
                                                                               }
@@ -1680,23 +1611,11 @@ in {
                                                                           }
                                                                           _ => {
                                                                             // TERMINATION: fsReadAt error.
-                                                                            for (@lockState <- lockCell) {
-                                                                              match lockState {
-                                                                                (lockId, false) => {
-                                                                                  lockCell!((lockId, true)) |
-                                                                                  new relCh in {
-                                                                                    fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                    for (@_r <- relCh) {
-                                                                                      posCell!((nextOff, rem, pending, idx)) |
-                                                                                      retCh!(reply)
-                                                                                    }
-                                                                                  }
-                                                                                }
-                                                                                already => {
-                                                                                  lockCell!(already) |
-                                                                                  posCell!((nextOff, rem, pending, idx)) |
-                                                                                  retCh!(reply)
-                                                                                }
+                                                                            new relDoneCh in {
+                                                                              releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                              for (_ <- relDoneCh) {
+                                                                                posCell!((nextOff, rem, pending, idx)) |
+                                                                                retCh!(reply)
                                                                               }
                                                                             }
                                                                           }
@@ -1882,25 +1801,12 @@ in {
                                                                         for (@nToRead <- nToReadCh) {
                                                                           match nToRead {
                                                                             0 => {
-                                                                              for (@lockState <- lockCell) {
-                                                                                match lockState {
-                                                                                  (lockId, false) => {
-                                                                                    lockCell!((lockId, true)) |
-                                                                                    new relCh in {
-                                                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                      for (@_r <- relCh) {
-                                                                                        posCell!((nextOff, rem, pending, idx)) |
-                                                                                        retCh!([false, "EOS",
-                                                                                          "length exhausted"])
-                                                                                      }
-                                                                                    }
-                                                                                  }
-                                                                                  already => {
-                                                                                    lockCell!(already) |
-                                                                                    posCell!((nextOff, rem, pending, idx)) |
-                                                                                    retCh!([false, "EOS",
-                                                                                      "length exhausted"])
-                                                                                  }
+                                                                              new relDoneCh in {
+                                                                                releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                                for (_ <- relDoneCh) {
+                                                                                  posCell!((nextOff, rem, pending, idx)) |
+                                                                                  retCh!([false, "EOS",
+                                                                                    "length exhausted"])
                                                                                 }
                                                                               }
                                                                             }
@@ -1912,23 +1818,11 @@ in {
                                                                                     [true, ba /\ ByteArray] => {
                                                                                       match ba.length() {
                                                                                         0 => {
-                                                                                          for (@lockState <- lockCell) {
-                                                                                            match lockState {
-                                                                                              (lockId, false) => {
-                                                                                                lockCell!((lockId, true)) |
-                                                                                                new relCh in {
-                                                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                                  for (@_r <- relCh) {
-                                                                                                    posCell!((nextOff, rem, pending, idx)) |
-                                                                                                    retCh!([false, "EOS", "end of file"])
-                                                                                                  }
-                                                                                                }
-                                                                                              }
-                                                                                              already => {
-                                                                                                lockCell!(already) |
-                                                                                                posCell!((nextOff, rem, pending, idx)) |
-                                                                                                retCh!([false, "EOS", "end of file"])
-                                                                                              }
+                                                                                          new relDoneCh in {
+                                                                                            releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                                            for (_ <- relDoneCh) {
+                                                                                              posCell!((nextOff, rem, pending, idx)) |
+                                                                                              retCh!([false, "EOS", "end of file"])
                                                                                             }
                                                                                           }
                                                                                         }
@@ -1947,23 +1841,11 @@ in {
                                                                                       }
                                                                                     }
                                                                                     _ => {
-                                                                                      for (@lockState <- lockCell) {
-                                                                                        match lockState {
-                                                                                          (lockId, false) => {
-                                                                                            lockCell!((lockId, true)) |
-                                                                                            new relCh in {
-                                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                              for (@_r <- relCh) {
-                                                                                                posCell!((nextOff, rem, pending, idx)) |
-                                                                                                retCh!(reply)
-                                                                                              }
-                                                                                            }
-                                                                                          }
-                                                                                          already => {
-                                                                                            lockCell!(already) |
-                                                                                            posCell!((nextOff, rem, pending, idx)) |
-                                                                                            retCh!(reply)
-                                                                                          }
+                                                                                      new relDoneCh in {
+                                                                                        releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                                        for (_ <- relDoneCh) {
+                                                                                          posCell!((nextOff, rem, pending, idx)) |
+                                                                                          retCh!(reply)
                                                                                         }
                                                                                       }
                                                                                     }
@@ -2460,23 +2342,11 @@ in {
                                     match eofSeen {
                                       true => {
                                         // TERMINATION: EOS via eofSeen.
-                                        for (@lockState <- lockCell) {
-                                          match lockState {
-                                            (lockId, false) => {
-                                              lockCell!((lockId, true)) |
-                                              new relCh in {
-                                                fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                for (@_r <- relCh) {
-                                                  pendingCell!((pending, idx, true)) |
-                                                  retCh!([false, "EOS", "end of file"])
-                                                }
-                                              }
-                                            }
-                                            already => {
-                                              lockCell!(already) |
-                                              pendingCell!((pending, idx, true)) |
-                                              retCh!([false, "EOS", "end of file"])
-                                            }
+                                        new relDoneCh in {
+                                          releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                          for (_ <- relDoneCh) {
+                                            pendingCell!((pending, idx, true)) |
+                                            retCh!([false, "EOS", "end of file"])
                                           }
                                         }
                                       }
@@ -2489,23 +2359,11 @@ in {
                                                 match ba.length() {
                                                   0 => {
                                                     // TERMINATION: EOS via zero-byte read.
-                                                    for (@lockState <- lockCell) {
-                                                      match lockState {
-                                                        (lockId, false) => {
-                                                          lockCell!((lockId, true)) |
-                                                          new relCh in {
-                                                            fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                            for (@_r <- relCh) {
-                                                              pendingCell!((pending, idx, true)) |
-                                                              retCh!([false, "EOS", "end of file"])
-                                                            }
-                                                          }
-                                                        }
-                                                        already => {
-                                                          lockCell!(already) |
-                                                          pendingCell!((pending, idx, true)) |
-                                                          retCh!([false, "EOS", "end of file"])
-                                                        }
+                                                    new relDoneCh in {
+                                                      releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                      for (_ <- relDoneCh) {
+                                                        pendingCell!((pending, idx, true)) |
+                                                        retCh!([false, "EOS", "end of file"])
                                                       }
                                                     }
                                                   }
@@ -2517,23 +2375,11 @@ in {
                                               }
                                               _ => {
                                                 // TERMINATION: fsRead error on refill.
-                                                for (@lockState <- lockCell) {
-                                                  match lockState {
-                                                    (lockId, false) => {
-                                                      lockCell!((lockId, true)) |
-                                                      new relCh in {
-                                                        fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                        for (@_r <- relCh) {
-                                                          pendingCell!((pending, idx, eofSeen)) |
-                                                          retCh!(reply)
-                                                        }
-                                                      }
-                                                    }
-                                                    already => {
-                                                      lockCell!(already) |
-                                                      pendingCell!((pending, idx, eofSeen)) |
-                                                      retCh!(reply)
-                                                    }
+                                                new relDoneCh in {
+                                                  releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                  for (_ <- relDoneCh) {
+                                                    pendingCell!((pending, idx, eofSeen)) |
+                                                    retCh!(reply)
                                                   }
                                                 }
                                               }
@@ -2552,25 +2398,12 @@ in {
                                         match n {
                                           -1 => {
                                             // TERMINATION: invalid UTF-8.
-                                            for (@lockState <- lockCell) {
-                                              match lockState {
-                                                (lockId, false) => {
-                                                  lockCell!((lockId, true)) |
-                                                  new relCh in {
-                                                    fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                    for (@_r <- relCh) {
-                                                      pendingCell!((pending, idx, eofSeen)) |
-                                                      retCh!([false, "FSERR_IO",
-                                                        "invalid UTF-8 start byte"])
-                                                    }
-                                                  }
-                                                }
-                                                already => {
-                                                  lockCell!(already) |
-                                                  pendingCell!((pending, idx, eofSeen)) |
-                                                  retCh!([false, "FSERR_IO",
-                                                    "invalid UTF-8 start byte"])
-                                                }
+                                            new relDoneCh in {
+                                              releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                              for (_ <- relDoneCh) {
+                                                pendingCell!((pending, idx, eofSeen)) |
+                                                retCh!([false, "FSERR_IO",
+                                                  "invalid UTF-8 start byte"])
                                               }
                                             }
                                           }
@@ -2589,25 +2422,12 @@ in {
                                                 match eofSeen {
                                                   true => {
                                                     // TERMINATION: truncated UTF-8 at EOF (eofSeen).
-                                                    for (@lockState <- lockCell) {
-                                                      match lockState {
-                                                        (lockId, false) => {
-                                                          lockCell!((lockId, true)) |
-                                                          new relCh in {
-                                                            fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                            for (@_r <- relCh) {
-                                                              pendingCell!((pending, idx, true)) |
-                                                              retCh!([false, "FSERR_IO",
-                                                                "truncated UTF-8 at EOF"])
-                                                            }
-                                                          }
-                                                        }
-                                                        already => {
-                                                          lockCell!(already) |
-                                                          pendingCell!((pending, idx, true)) |
-                                                          retCh!([false, "FSERR_IO",
-                                                            "truncated UTF-8 at EOF"])
-                                                        }
+                                                    new relDoneCh in {
+                                                      releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                      for (_ <- relDoneCh) {
+                                                        pendingCell!((pending, idx, true)) |
+                                                        retCh!([false, "FSERR_IO",
+                                                          "truncated UTF-8 at EOF"])
                                                       }
                                                     }
                                                   }
@@ -2620,25 +2440,12 @@ in {
                                                             match ba.length() {
                                                               0 => {
                                                                 // TERMINATION: truncated UTF-8 at EOF (zero-read).
-                                                                for (@lockState <- lockCell) {
-                                                                  match lockState {
-                                                                    (lockId, false) => {
-                                                                      lockCell!((lockId, true)) |
-                                                                      new relCh in {
-                                                                        fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                        for (@_r <- relCh) {
-                                                                          pendingCell!((pending, idx, true)) |
-                                                                          retCh!([false, "FSERR_IO",
-                                                                            "truncated UTF-8 at EOF"])
-                                                                        }
-                                                                      }
-                                                                    }
-                                                                    already => {
-                                                                      lockCell!(already) |
-                                                                      pendingCell!((pending, idx, true)) |
-                                                                      retCh!([false, "FSERR_IO",
-                                                                        "truncated UTF-8 at EOF"])
-                                                                    }
+                                                                new relDoneCh in {
+                                                                  releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                  for (_ <- relDoneCh) {
+                                                                    pendingCell!((pending, idx, true)) |
+                                                                    retCh!([false, "FSERR_IO",
+                                                                      "truncated UTF-8 at EOF"])
                                                                   }
                                                                 }
                                                               }
@@ -2655,23 +2462,11 @@ in {
                                                           }
                                                           _ => {
                                                             // TERMINATION: fsRead error on tail refill.
-                                                            for (@lockState <- lockCell) {
-                                                              match lockState {
-                                                                (lockId, false) => {
-                                                                  lockCell!((lockId, true)) |
-                                                                  new relCh in {
-                                                                    fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                    for (@_r <- relCh) {
-                                                                      pendingCell!((pending, idx, eofSeen)) |
-                                                                      retCh!(reply)
-                                                                    }
-                                                                  }
-                                                                }
-                                                                already => {
-                                                                  lockCell!(already) |
-                                                                  pendingCell!((pending, idx, eofSeen)) |
-                                                                  retCh!(reply)
-                                                                }
+                                                            new relDoneCh in {
+                                                              releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                              for (_ <- relDoneCh) {
+                                                                pendingCell!((pending, idx, eofSeen)) |
+                                                                retCh!(reply)
                                                               }
                                                             }
                                                           }
@@ -2774,23 +2569,11 @@ in {
                                             true => {
                                               match eofSeen {
                                                 true => {
-                                                  for (@lockState <- lockCell) {
-                                                    match lockState {
-                                                      (lockId, false) => {
-                                                        lockCell!((lockId, true)) |
-                                                        new relCh in {
-                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                          for (@_r <- relCh) {
-                                                            pendingCell!((pending, idx, true)) |
-                                                            retCh!([false, "EOS", "end of file"])
-                                                          }
-                                                        }
-                                                      }
-                                                      already => {
-                                                        lockCell!(already) |
-                                                        pendingCell!((pending, idx, true)) |
-                                                        retCh!([false, "EOS", "end of file"])
-                                                      }
+                                                  new relDoneCh in {
+                                                    releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                    for (_ <- relDoneCh) {
+                                                      pendingCell!((pending, idx, true)) |
+                                                      retCh!([false, "EOS", "end of file"])
                                                     }
                                                   }
                                                 }
@@ -2802,23 +2585,11 @@ in {
                                                         [true, ba /\ ByteArray] => {
                                                           match ba.length() {
                                                             0 => {
-                                                              for (@lockState <- lockCell) {
-                                                                match lockState {
-                                                                  (lockId, false) => {
-                                                                    lockCell!((lockId, true)) |
-                                                                    new relCh in {
-                                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                      for (@_r <- relCh) {
-                                                                        pendingCell!((pending, idx, true)) |
-                                                                        retCh!([false, "EOS", "end of file"])
-                                                                      }
-                                                                    }
-                                                                  }
-                                                                  already => {
-                                                                    lockCell!(already) |
-                                                                    pendingCell!((pending, idx, true)) |
-                                                                    retCh!([false, "EOS", "end of file"])
-                                                                  }
+                                                              new relDoneCh in {
+                                                                releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                for (_ <- relDoneCh) {
+                                                                  pendingCell!((pending, idx, true)) |
+                                                                  retCh!([false, "EOS", "end of file"])
                                                                 }
                                                               }
                                                             }
@@ -2829,23 +2600,11 @@ in {
                                                           }
                                                         }
                                                         _ => {
-                                                          for (@lockState <- lockCell) {
-                                                            match lockState {
-                                                              (lockId, false) => {
-                                                                lockCell!((lockId, true)) |
-                                                                new relCh in {
-                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                  for (@_r <- relCh) {
-                                                                    pendingCell!((pending, idx, eofSeen)) |
-                                                                    retCh!(reply)
-                                                                  }
-                                                                }
-                                                              }
-                                                              already => {
-                                                                lockCell!(already) |
-                                                                pendingCell!((pending, idx, eofSeen)) |
-                                                                retCh!(reply)
-                                                              }
+                                                          new relDoneCh in {
+                                                            releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                            for (_ <- relDoneCh) {
+                                                              pendingCell!((pending, idx, eofSeen)) |
+                                                              retCh!(reply)
                                                             }
                                                           }
                                                         }
@@ -2861,25 +2620,12 @@ in {
                                                 for (@n <- lenCh) {
                                                   match n {
                                                     -1 => {
-                                                      for (@lockState <- lockCell) {
-                                                        match lockState {
-                                                          (lockId, false) => {
-                                                            lockCell!((lockId, true)) |
-                                                            new relCh in {
-                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                              for (@_r <- relCh) {
-                                                                pendingCell!((pending, idx, eofSeen)) |
-                                                                retCh!([false, "FSERR_IO",
-                                                                  "invalid UTF-8 start byte"])
-                                                              }
-                                                            }
-                                                          }
-                                                          already => {
-                                                            lockCell!(already) |
-                                                            pendingCell!((pending, idx, eofSeen)) |
-                                                            retCh!([false, "FSERR_IO",
-                                                              "invalid UTF-8 start byte"])
-                                                          }
+                                                      new relDoneCh in {
+                                                        releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                        for (_ <- relDoneCh) {
+                                                          pendingCell!((pending, idx, eofSeen)) |
+                                                          retCh!([false, "FSERR_IO",
+                                                            "invalid UTF-8 start byte"])
                                                         }
                                                       }
                                                     }
@@ -2893,25 +2639,12 @@ in {
                                                         false => {
                                                           match eofSeen {
                                                             true => {
-                                                              for (@lockState <- lockCell) {
-                                                                match lockState {
-                                                                  (lockId, false) => {
-                                                                    lockCell!((lockId, true)) |
-                                                                    new relCh in {
-                                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                      for (@_r <- relCh) {
-                                                                        pendingCell!((pending, idx, true)) |
-                                                                        retCh!([false, "FSERR_IO",
-                                                                          "truncated UTF-8 at EOF"])
-                                                                      }
-                                                                    }
-                                                                  }
-                                                                  already => {
-                                                                    lockCell!(already) |
-                                                                    pendingCell!((pending, idx, true)) |
-                                                                    retCh!([false, "FSERR_IO",
-                                                                      "truncated UTF-8 at EOF"])
-                                                                  }
+                                                              new relDoneCh in {
+                                                                releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                for (_ <- relDoneCh) {
+                                                                  pendingCell!((pending, idx, true)) |
+                                                                  retCh!([false, "FSERR_IO",
+                                                                    "truncated UTF-8 at EOF"])
                                                                 }
                                                               }
                                                             }
@@ -2923,25 +2656,12 @@ in {
                                                                     [true, ba /\ ByteArray] => {
                                                                       match ba.length() {
                                                                         0 => {
-                                                                          for (@lockState <- lockCell) {
-                                                                            match lockState {
-                                                                              (lockId, false) => {
-                                                                                lockCell!((lockId, true)) |
-                                                                                new relCh in {
-                                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                  for (@_r <- relCh) {
-                                                                                    pendingCell!((pending, idx, true)) |
-                                                                                    retCh!([false, "FSERR_IO",
-                                                                                      "truncated UTF-8 at EOF"])
-                                                                                  }
-                                                                                }
-                                                                              }
-                                                                              already => {
-                                                                                lockCell!(already) |
-                                                                                pendingCell!((pending, idx, true)) |
-                                                                                retCh!([false, "FSERR_IO",
-                                                                                  "truncated UTF-8 at EOF"])
-                                                                              }
+                                                                          new relDoneCh in {
+                                                                            releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                            for (_ <- relDoneCh) {
+                                                                              pendingCell!((pending, idx, true)) |
+                                                                              retCh!([false, "FSERR_IO",
+                                                                                "truncated UTF-8 at EOF"])
                                                                             }
                                                                           }
                                                                         }
@@ -2956,23 +2676,11 @@ in {
                                                                       }
                                                                     }
                                                                     _ => {
-                                                                      for (@lockState <- lockCell) {
-                                                                        match lockState {
-                                                                          (lockId, false) => {
-                                                                            lockCell!((lockId, true)) |
-                                                                            new relCh in {
-                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                              for (@_r <- relCh) {
-                                                                                pendingCell!((pending, idx, eofSeen)) |
-                                                                                retCh!(reply)
-                                                                              }
-                                                                            }
-                                                                          }
-                                                                          already => {
-                                                                            lockCell!(already) |
-                                                                            pendingCell!((pending, idx, eofSeen)) |
-                                                                            retCh!(reply)
-                                                                          }
+                                                                      new relDoneCh in {
+                                                                        releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                        for (_ <- relDoneCh) {
+                                                                          pendingCell!((pending, idx, eofSeen)) |
+                                                                          retCh!(reply)
                                                                         }
                                                                       }
                                                                     }
@@ -3111,23 +2819,11 @@ in {
                                 match doneAtLF {
                                   true => {
                                     // TERMINATION: repeat poll after LF.
-                                    for (@lockState <- lockCell) {
-                                      match lockState {
-                                        (lockId, false) => {
-                                          lockCell!((lockId, true)) |
-                                          new relCh in {
-                                            fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                            for (@_r <- relCh) {
-                                              lineCell!((pending, idx, eofSeen, true)) |
-                                              retCh!([false, "EOS", "end of line"])
-                                            }
-                                          }
-                                        }
-                                        already => {
-                                          lockCell!(already) |
-                                          lineCell!((pending, idx, eofSeen, true)) |
-                                          retCh!([false, "EOS", "end of line"])
-                                        }
+                                    new relDoneCh in {
+                                      releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                      for (_ <- relDoneCh) {
+                                        lineCell!((pending, idx, eofSeen, true)) |
+                                        retCh!([false, "EOS", "end of line"])
                                       }
                                     }
                                   }
@@ -3138,23 +2834,11 @@ in {
                                         match eofSeen {
                                           true => {
                                             // TERMINATION: EOS via eofSeen.
-                                            for (@lockState <- lockCell) {
-                                              match lockState {
-                                                (lockId, false) => {
-                                                  lockCell!((lockId, true)) |
-                                                  new relCh in {
-                                                    fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                    for (@_r <- relCh) {
-                                                      lineCell!((pending, idx, true, false)) |
-                                                      retCh!([false, "EOS", "end of file"])
-                                                    }
-                                                  }
-                                                }
-                                                already => {
-                                                  lockCell!(already) |
-                                                  lineCell!((pending, idx, true, false)) |
-                                                  retCh!([false, "EOS", "end of file"])
-                                                }
+                                            new relDoneCh in {
+                                              releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                              for (_ <- relDoneCh) {
+                                                lineCell!((pending, idx, true, false)) |
+                                                retCh!([false, "EOS", "end of file"])
                                               }
                                             }
                                           }
@@ -3167,23 +2851,11 @@ in {
                                                     match ba.length() {
                                                       0 => {
                                                         // TERMINATION: EOS via zero-read.
-                                                        for (@lockState <- lockCell) {
-                                                          match lockState {
-                                                            (lockId, false) => {
-                                                              lockCell!((lockId, true)) |
-                                                              new relCh in {
-                                                                fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                for (@_r <- relCh) {
-                                                                  lineCell!((pending, idx, true, false)) |
-                                                                  retCh!([false, "EOS", "end of file"])
-                                                                }
-                                                              }
-                                                            }
-                                                            already => {
-                                                              lockCell!(already) |
-                                                              lineCell!((pending, idx, true, false)) |
-                                                              retCh!([false, "EOS", "end of file"])
-                                                            }
+                                                        new relDoneCh in {
+                                                          releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                          for (_ <- relDoneCh) {
+                                                            lineCell!((pending, idx, true, false)) |
+                                                            retCh!([false, "EOS", "end of file"])
                                                           }
                                                         }
                                                       }
@@ -3195,23 +2867,11 @@ in {
                                                   }
                                                   _ => {
                                                     // TERMINATION: fsRead error on initial refill.
-                                                    for (@lockState <- lockCell) {
-                                                      match lockState {
-                                                        (lockId, false) => {
-                                                          lockCell!((lockId, true)) |
-                                                          new relCh in {
-                                                            fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                            for (@_r <- relCh) {
-                                                              lineCell!((pending, idx, eofSeen, false)) |
-                                                              retCh!(reply)
-                                                            }
-                                                          }
-                                                        }
-                                                        already => {
-                                                          lockCell!(already) |
-                                                          lineCell!((pending, idx, eofSeen, false)) |
-                                                          retCh!(reply)
-                                                        }
+                                                    new relDoneCh in {
+                                                      releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                      for (_ <- relDoneCh) {
+                                                        lineCell!((pending, idx, eofSeen, false)) |
+                                                        retCh!(reply)
                                                       }
                                                     }
                                                   }
@@ -3248,23 +2908,11 @@ in {
                                                           fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
                                                           for (@_seekReply <- seekCh) {
                                                             // TERMINATION: LF found, with seek-back.
-                                                            for (@lockState <- lockCell) {
-                                                              match lockState {
-                                                                (lockId, false) => {
-                                                                  lockCell!((lockId, true)) |
-                                                                  new relCh in {
-                                                                    fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                    for (@_r <- relCh) {
-                                                                      lineCell!((pending, idx + 1, eofSeen, true)) |
-                                                                      retCh!([false, "EOS", "end of line"])
-                                                                    }
-                                                                  }
-                                                                }
-                                                                already => {
-                                                                  lockCell!(already) |
-                                                                  lineCell!((pending, idx + 1, eofSeen, true)) |
-                                                                  retCh!([false, "EOS", "end of line"])
-                                                                }
+                                                            new relDoneCh in {
+                                                              releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                              for (_ <- relDoneCh) {
+                                                                lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                                retCh!([false, "EOS", "end of line"])
                                                               }
                                                             }
                                                           }
@@ -3272,23 +2920,11 @@ in {
                                                       }
                                                       false => {
                                                         // TERMINATION: LF found, no seek needed.
-                                                        for (@lockState <- lockCell) {
-                                                          match lockState {
-                                                            (lockId, false) => {
-                                                              lockCell!((lockId, true)) |
-                                                              new relCh in {
-                                                                fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                for (@_r <- relCh) {
-                                                                  lineCell!((pending, idx + 1, eofSeen, true)) |
-                                                                  retCh!([false, "EOS", "end of line"])
-                                                                }
-                                                              }
-                                                            }
-                                                            already => {
-                                                              lockCell!(already) |
-                                                              lineCell!((pending, idx + 1, eofSeen, true)) |
-                                                              retCh!([false, "EOS", "end of line"])
-                                                            }
+                                                        new relDoneCh in {
+                                                          releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                          for (_ <- relDoneCh) {
+                                                            lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                            retCh!([false, "EOS", "end of line"])
                                                           }
                                                         }
                                                       }
@@ -3305,25 +2941,12 @@ in {
                                                     match n {
                                                       -1 => {
                                                         // TERMINATION: invalid UTF-8.
-                                                        for (@lockState <- lockCell) {
-                                                          match lockState {
-                                                            (lockId, false) => {
-                                                              lockCell!((lockId, true)) |
-                                                              new relCh in {
-                                                                fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                for (@_r <- relCh) {
-                                                                  lineCell!((pending, idx, eofSeen, false)) |
-                                                                  retCh!([false, "FSERR_IO",
-                                                                    "invalid UTF-8 start byte"])
-                                                                }
-                                                              }
-                                                            }
-                                                            already => {
-                                                              lockCell!(already) |
-                                                              lineCell!((pending, idx, eofSeen, false)) |
-                                                              retCh!([false, "FSERR_IO",
-                                                                "invalid UTF-8 start byte"])
-                                                            }
+                                                        new relDoneCh in {
+                                                          releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                          for (_ <- relDoneCh) {
+                                                            lineCell!((pending, idx, eofSeen, false)) |
+                                                            retCh!([false, "FSERR_IO",
+                                                              "invalid UTF-8 start byte"])
                                                           }
                                                         }
                                                       }
@@ -3339,25 +2962,12 @@ in {
                                                             match eofSeen {
                                                               true => {
                                                                 // TERMINATION: truncated UTF-8 (eofSeen).
-                                                                for (@lockState <- lockCell) {
-                                                                  match lockState {
-                                                                    (lockId, false) => {
-                                                                      lockCell!((lockId, true)) |
-                                                                      new relCh in {
-                                                                        fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                        for (@_r <- relCh) {
-                                                                          lineCell!((pending, idx, true, false)) |
-                                                                          retCh!([false, "FSERR_IO",
-                                                                            "truncated UTF-8 at EOF"])
-                                                                        }
-                                                                      }
-                                                                    }
-                                                                    already => {
-                                                                      lockCell!(already) |
-                                                                      lineCell!((pending, idx, true, false)) |
-                                                                      retCh!([false, "FSERR_IO",
-                                                                        "truncated UTF-8 at EOF"])
-                                                                    }
+                                                                new relDoneCh in {
+                                                                  releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                  for (_ <- relDoneCh) {
+                                                                    lineCell!((pending, idx, true, false)) |
+                                                                    retCh!([false, "FSERR_IO",
+                                                                      "truncated UTF-8 at EOF"])
                                                                   }
                                                                 }
                                                               }
@@ -3370,25 +2980,12 @@ in {
                                                                         match ba.length() {
                                                                           0 => {
                                                                             // TERMINATION: truncated UTF-8 (zero-read).
-                                                                            for (@lockState <- lockCell) {
-                                                                              match lockState {
-                                                                                (lockId, false) => {
-                                                                                  lockCell!((lockId, true)) |
-                                                                                  new relCh in {
-                                                                                    fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                    for (@_r <- relCh) {
-                                                                                      lineCell!((pending, idx, true, false)) |
-                                                                                      retCh!([false, "FSERR_IO",
-                                                                                        "truncated UTF-8 at EOF"])
-                                                                                    }
-                                                                                  }
-                                                                                }
-                                                                                already => {
-                                                                                  lockCell!(already) |
-                                                                                  lineCell!((pending, idx, true, false)) |
-                                                                                  retCh!([false, "FSERR_IO",
-                                                                                    "truncated UTF-8 at EOF"])
-                                                                                }
+                                                                            new relDoneCh in {
+                                                                              releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                              for (_ <- relDoneCh) {
+                                                                                lineCell!((pending, idx, true, false)) |
+                                                                                retCh!([false, "FSERR_IO",
+                                                                                  "truncated UTF-8 at EOF"])
                                                                               }
                                                                             }
                                                                           }
@@ -3406,23 +3003,11 @@ in {
                                                                       }
                                                                       _ => {
                                                                         // TERMINATION: fsRead error on tail refill.
-                                                                        for (@lockState <- lockCell) {
-                                                                          match lockState {
-                                                                            (lockId, false) => {
-                                                                              lockCell!((lockId, true)) |
-                                                                              new relCh in {
-                                                                                fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                for (@_r <- relCh) {
-                                                                                  lineCell!((pending, idx, eofSeen, false)) |
-                                                                                  retCh!(reply)
-                                                                                }
-                                                                              }
-                                                                            }
-                                                                            already => {
-                                                                              lockCell!(already) |
-                                                                              lineCell!((pending, idx, eofSeen, false)) |
-                                                                              retCh!(reply)
-                                                                            }
+                                                                        new relDoneCh in {
+                                                                          releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                          for (_ <- relDoneCh) {
+                                                                            lineCell!((pending, idx, eofSeen, false)) |
+                                                                            retCh!(reply)
                                                                           }
                                                                         }
                                                                       }
@@ -3529,23 +3114,11 @@ in {
                                         for (@(pending, idx, eofSeen, doneAtLF) <- lineCell) {
                                           match doneAtLF {
                                             true => {
-                                              for (@lockState <- lockCell) {
-                                                match lockState {
-                                                  (lockId, false) => {
-                                                    lockCell!((lockId, true)) |
-                                                    new relCh in {
-                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                      for (@_r <- relCh) {
-                                                        lineCell!((pending, idx, eofSeen, true)) |
-                                                        retCh!([false, "EOS", "end of line"])
-                                                      }
-                                                    }
-                                                  }
-                                                  already => {
-                                                    lockCell!(already) |
-                                                    lineCell!((pending, idx, eofSeen, true)) |
-                                                    retCh!([false, "EOS", "end of line"])
-                                                  }
+                                              new relDoneCh in {
+                                                releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                for (_ <- relDoneCh) {
+                                                  lineCell!((pending, idx, eofSeen, true)) |
+                                                  retCh!([false, "EOS", "end of line"])
                                                 }
                                               }
                                             }
@@ -3554,23 +3127,11 @@ in {
                                                 true => {
                                                   match eofSeen {
                                                     true => {
-                                                      for (@lockState <- lockCell) {
-                                                        match lockState {
-                                                          (lockId, false) => {
-                                                            lockCell!((lockId, true)) |
-                                                            new relCh in {
-                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                              for (@_r <- relCh) {
-                                                                lineCell!((pending, idx, true, false)) |
-                                                                retCh!([false, "EOS", "end of file"])
-                                                              }
-                                                            }
-                                                          }
-                                                          already => {
-                                                            lockCell!(already) |
-                                                            lineCell!((pending, idx, true, false)) |
-                                                            retCh!([false, "EOS", "end of file"])
-                                                          }
+                                                      new relDoneCh in {
+                                                        releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                        for (_ <- relDoneCh) {
+                                                          lineCell!((pending, idx, true, false)) |
+                                                          retCh!([false, "EOS", "end of file"])
                                                         }
                                                       }
                                                     }
@@ -3582,23 +3143,11 @@ in {
                                                             [true, ba /\ ByteArray] => {
                                                               match ba.length() {
                                                                 0 => {
-                                                                  for (@lockState <- lockCell) {
-                                                                    match lockState {
-                                                                      (lockId, false) => {
-                                                                        lockCell!((lockId, true)) |
-                                                                        new relCh in {
-                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                          for (@_r <- relCh) {
-                                                                            lineCell!((pending, idx, true, false)) |
-                                                                            retCh!([false, "EOS", "end of file"])
-                                                                          }
-                                                                        }
-                                                                      }
-                                                                      already => {
-                                                                        lockCell!(already) |
-                                                                        lineCell!((pending, idx, true, false)) |
-                                                                        retCh!([false, "EOS", "end of file"])
-                                                                      }
+                                                                  new relDoneCh in {
+                                                                    releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                    for (_ <- relDoneCh) {
+                                                                      lineCell!((pending, idx, true, false)) |
+                                                                      retCh!([false, "EOS", "end of file"])
                                                                     }
                                                                   }
                                                                 }
@@ -3609,23 +3158,11 @@ in {
                                                               }
                                                             }
                                                             _ => {
-                                                              for (@lockState <- lockCell) {
-                                                                match lockState {
-                                                                  (lockId, false) => {
-                                                                    lockCell!((lockId, true)) |
-                                                                    new relCh in {
-                                                                      fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                      for (@_r <- relCh) {
-                                                                        lineCell!((pending, idx, eofSeen, false)) |
-                                                                        retCh!(reply)
-                                                                      }
-                                                                    }
-                                                                  }
-                                                                  already => {
-                                                                    lockCell!(already) |
-                                                                    lineCell!((pending, idx, eofSeen, false)) |
-                                                                    retCh!(reply)
-                                                                  }
+                                                              new relDoneCh in {
+                                                                releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                for (_ <- relDoneCh) {
+                                                                  lineCell!((pending, idx, eofSeen, false)) |
+                                                                  retCh!(reply)
                                                                 }
                                                               }
                                                             }
@@ -3649,46 +3186,22 @@ in {
                                                                   new seekCh in {
                                                                     fsSeek!(fd, 0 - overshot, "cur", *seekCh) |
                                                                     for (@_seekReply <- seekCh) {
-                                                                      for (@lockState <- lockCell) {
-                                                                        match lockState {
-                                                                          (lockId, false) => {
-                                                                            lockCell!((lockId, true)) |
-                                                                            new relCh in {
-                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                              for (@_r <- relCh) {
-                                                                                lineCell!((pending, idx + 1, eofSeen, true)) |
-                                                                                retCh!([false, "EOS", "end of line"])
-                                                                              }
-                                                                            }
-                                                                          }
-                                                                          already => {
-                                                                            lockCell!(already) |
-                                                                            lineCell!((pending, idx + 1, eofSeen, true)) |
-                                                                            retCh!([false, "EOS", "end of line"])
-                                                                          }
+                                                                      new relDoneCh in {
+                                                                        releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                        for (_ <- relDoneCh) {
+                                                                          lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                                          retCh!([false, "EOS", "end of line"])
                                                                         }
                                                                       }
                                                                     }
                                                                   }
                                                                 }
                                                                 false => {
-                                                                  for (@lockState <- lockCell) {
-                                                                    match lockState {
-                                                                      (lockId, false) => {
-                                                                        lockCell!((lockId, true)) |
-                                                                        new relCh in {
-                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                          for (@_r <- relCh) {
-                                                                            lineCell!((pending, idx + 1, eofSeen, true)) |
-                                                                            retCh!([false, "EOS", "end of line"])
-                                                                          }
-                                                                        }
-                                                                      }
-                                                                      already => {
-                                                                        lockCell!(already) |
-                                                                        lineCell!((pending, idx + 1, eofSeen, true)) |
-                                                                        retCh!([false, "EOS", "end of line"])
-                                                                      }
+                                                                  new relDoneCh in {
+                                                                    releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                    for (_ <- relDoneCh) {
+                                                                      lineCell!((pending, idx + 1, eofSeen, true)) |
+                                                                      retCh!([false, "EOS", "end of line"])
                                                                     }
                                                                   }
                                                                 }
@@ -3702,25 +3215,12 @@ in {
                                                             for (@n <- lenCh) {
                                                               match n {
                                                                 -1 => {
-                                                                  for (@lockState <- lockCell) {
-                                                                    match lockState {
-                                                                      (lockId, false) => {
-                                                                        lockCell!((lockId, true)) |
-                                                                        new relCh in {
-                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                          for (@_r <- relCh) {
-                                                                            lineCell!((pending, idx, eofSeen, false)) |
-                                                                            retCh!([false, "FSERR_IO",
-                                                                              "invalid UTF-8 start byte"])
-                                                                          }
-                                                                        }
-                                                                      }
-                                                                      already => {
-                                                                        lockCell!(already) |
-                                                                        lineCell!((pending, idx, eofSeen, false)) |
-                                                                        retCh!([false, "FSERR_IO",
-                                                                          "invalid UTF-8 start byte"])
-                                                                      }
+                                                                  new relDoneCh in {
+                                                                    releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                    for (_ <- relDoneCh) {
+                                                                      lineCell!((pending, idx, eofSeen, false)) |
+                                                                      retCh!([false, "FSERR_IO",
+                                                                        "invalid UTF-8 start byte"])
                                                                     }
                                                                   }
                                                                 }
@@ -3734,25 +3234,12 @@ in {
                                                                     false => {
                                                                       match eofSeen {
                                                                         true => {
-                                                                          for (@lockState <- lockCell) {
-                                                                            match lockState {
-                                                                              (lockId, false) => {
-                                                                                lockCell!((lockId, true)) |
-                                                                                new relCh in {
-                                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                  for (@_r <- relCh) {
-                                                                                    lineCell!((pending, idx, true, false)) |
-                                                                                    retCh!([false, "FSERR_IO",
-                                                                                      "truncated UTF-8 at EOF"])
-                                                                                  }
-                                                                                }
-                                                                              }
-                                                                              already => {
-                                                                                lockCell!(already) |
-                                                                                lineCell!((pending, idx, true, false)) |
-                                                                                retCh!([false, "FSERR_IO",
-                                                                                  "truncated UTF-8 at EOF"])
-                                                                              }
+                                                                          new relDoneCh in {
+                                                                            releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                            for (_ <- relDoneCh) {
+                                                                              lineCell!((pending, idx, true, false)) |
+                                                                              retCh!([false, "FSERR_IO",
+                                                                                "truncated UTF-8 at EOF"])
                                                                             }
                                                                           }
                                                                         }
@@ -3764,25 +3251,12 @@ in {
                                                                                 [true, ba /\ ByteArray] => {
                                                                                   match ba.length() {
                                                                                     0 => {
-                                                                                      for (@lockState <- lockCell) {
-                                                                                        match lockState {
-                                                                                          (lockId, false) => {
-                                                                                            lockCell!((lockId, true)) |
-                                                                                            new relCh in {
-                                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                              for (@_r <- relCh) {
-                                                                                                lineCell!((pending, idx, true, false)) |
-                                                                                                retCh!([false, "FSERR_IO",
-                                                                                                  "truncated UTF-8 at EOF"])
-                                                                                              }
-                                                                                            }
-                                                                                          }
-                                                                                          already => {
-                                                                                            lockCell!(already) |
-                                                                                            lineCell!((pending, idx, true, false)) |
-                                                                                            retCh!([false, "FSERR_IO",
-                                                                                              "truncated UTF-8 at EOF"])
-                                                                                          }
+                                                                                      new relDoneCh in {
+                                                                                        releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                                        for (_ <- relDoneCh) {
+                                                                                          lineCell!((pending, idx, true, false)) |
+                                                                                          retCh!([false, "FSERR_IO",
+                                                                                            "truncated UTF-8 at EOF"])
                                                                                         }
                                                                                       }
                                                                                     }
@@ -3798,23 +3272,11 @@ in {
                                                                                   }
                                                                                 }
                                                                                 _ => {
-                                                                                  for (@lockState <- lockCell) {
-                                                                                    match lockState {
-                                                                                      (lockId, false) => {
-                                                                                        lockCell!((lockId, true)) |
-                                                                                        new relCh in {
-                                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                                          for (@_r <- relCh) {
-                                                                                            lineCell!((pending, idx, eofSeen, false)) |
-                                                                                            retCh!(reply)
-                                                                                          }
-                                                                                        }
-                                                                                      }
-                                                                                      already => {
-                                                                                        lockCell!(already) |
-                                                                                        lineCell!((pending, idx, eofSeen, false)) |
-                                                                                        retCh!(reply)
-                                                                                      }
+                                                                                  new relDoneCh in {
+                                                                                    releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                                    for (_ <- relDoneCh) {
+                                                                                      lineCell!((pending, idx, eofSeen, false)) |
+                                                                                      retCh!(reply)
                                                                                     }
                                                                                   }
                                                                                 }
@@ -4320,29 +3782,14 @@ in {
                                     match eof {
                                       true => {
                                         // TERMINATION: EOF via empty source.
-                                        for (@lockState <- lockCell) {
-                                          match lockState {
-                                            (lockId, false) => {
-                                              lockCell!((lockId, true)) |
-                                              new relCh in {
-                                                fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                for (@_r <- relCh) {
-                                                  activeInnerCell!(Nil) |
-                                                  sourceCell!((p, i, true)) |
-                                                  retCh!(
-                                                    [false, "EOS",
-                                                     "end of file"])
-                                                }
-                                              }
-                                            }
-                                            already => {
-                                              lockCell!(already) |
-                                              activeInnerCell!(Nil) |
-                                              sourceCell!((p, i, true)) |
-                                              retCh!(
-                                                [false, "EOS",
-                                                 "end of file"])
-                                            }
+                                        new relDoneCh in {
+                                          releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                          for (_ <- relDoneCh) {
+                                            activeInnerCell!(Nil) |
+                                            sourceCell!((p, i, true)) |
+                                            retCh!(
+                                              [false, "EOS",
+                                               "end of file"])
                                           }
                                         }
                                       }
@@ -4355,29 +3802,14 @@ in {
                                                 match ba.length() {
                                                   0 => {
                                                     // TERMINATION: EOF via zero-read.
-                                                    for (@lockState <- lockCell) {
-                                                      match lockState {
-                                                        (lockId, false) => {
-                                                          lockCell!((lockId, true)) |
-                                                          new relCh in {
-                                                            fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                            for (@_r <- relCh) {
-                                                              activeInnerCell!(Nil) |
-                                                              sourceCell!((p, i, true)) |
-                                                              retCh!(
-                                                                [false, "EOS",
-                                                                 "end of file"])
-                                                            }
-                                                          }
-                                                        }
-                                                        already => {
-                                                          lockCell!(already) |
-                                                          activeInnerCell!(Nil) |
-                                                          sourceCell!((p, i, true)) |
-                                                          retCh!(
-                                                            [false, "EOS",
-                                                             "end of file"])
-                                                        }
+                                                    new relDoneCh in {
+                                                      releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                      for (_ <- relDoneCh) {
+                                                        activeInnerCell!(Nil) |
+                                                        sourceCell!((p, i, true)) |
+                                                        retCh!(
+                                                          [false, "EOS",
+                                                           "end of file"])
                                                       }
                                                     }
                                                   }
@@ -4389,25 +3821,12 @@ in {
                                               }
                                               _ => {
                                                 // TERMINATION: fsRead error.
-                                                for (@lockState <- lockCell) {
-                                                  match lockState {
-                                                    (lockId, false) => {
-                                                      lockCell!((lockId, true)) |
-                                                      new relCh in {
-                                                        fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                        for (@_r <- relCh) {
-                                                          activeInnerCell!(Nil) |
-                                                          sourceCell!((p, i, eof)) |
-                                                          retCh!(rr)
-                                                        }
-                                                      }
-                                                    }
-                                                    already => {
-                                                      lockCell!(already) |
-                                                      activeInnerCell!(Nil) |
-                                                      sourceCell!((p, i, eof)) |
-                                                      retCh!(rr)
-                                                    }
+                                                new relDoneCh in {
+                                                  releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                  for (_ <- relDoneCh) {
+                                                    activeInnerCell!(Nil) |
+                                                    sourceCell!((p, i, eof)) |
+                                                    retCh!(rr)
                                                   }
                                                 }
                                               }
@@ -4782,29 +4201,14 @@ in {
                                                     true => {
                                                       match eof {
                                                         true => {
-                                                          for (@lockState <- lockCell) {
-                                                            match lockState {
-                                                              (lockId, false) => {
-                                                                lockCell!((lockId, true)) |
-                                                                new relCh in {
-                                                                  fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                  for (@_r <- relCh) {
-                                                                    activeInnerCell!(Nil) |
-                                                                    sourceCell!((p, i, true)) |
-                                                                    retCh!(
-                                                                      [false, "EOS",
-                                                                       "end of file"])
-                                                                  }
-                                                                }
-                                                              }
-                                                              already => {
-                                                                lockCell!(already) |
-                                                                activeInnerCell!(Nil) |
-                                                                sourceCell!((p, i, true)) |
-                                                                retCh!(
-                                                                  [false, "EOS",
-                                                                   "end of file"])
-                                                              }
+                                                          new relDoneCh in {
+                                                            releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                            for (_ <- relDoneCh) {
+                                                              activeInnerCell!(Nil) |
+                                                              sourceCell!((p, i, true)) |
+                                                              retCh!(
+                                                                [false, "EOS",
+                                                                 "end of file"])
                                                             }
                                                           }
                                                         }
@@ -4816,29 +4220,14 @@ in {
                                                                 [true, ba /\ ByteArray] => {
                                                                   match ba.length() {
                                                                     0 => {
-                                                                      for (@lockState <- lockCell) {
-                                                                        match lockState {
-                                                                          (lockId, false) => {
-                                                                            lockCell!((lockId, true)) |
-                                                                            new relCh in {
-                                                                              fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                              for (@_r <- relCh) {
-                                                                                activeInnerCell!(Nil) |
-                                                                                sourceCell!((p, i, true)) |
-                                                                                retCh!(
-                                                                                  [false, "EOS",
-                                                                                   "end of file"])
-                                                                              }
-                                                                            }
-                                                                          }
-                                                                          already => {
-                                                                            lockCell!(already) |
-                                                                            activeInnerCell!(Nil) |
-                                                                            sourceCell!((p, i, true)) |
-                                                                            retCh!(
-                                                                              [false, "EOS",
-                                                                               "end of file"])
-                                                                          }
+                                                                      new relDoneCh in {
+                                                                        releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                        for (_ <- relDoneCh) {
+                                                                          activeInnerCell!(Nil) |
+                                                                          sourceCell!((p, i, true)) |
+                                                                          retCh!(
+                                                                            [false, "EOS",
+                                                                             "end of file"])
                                                                         }
                                                                       }
                                                                     }
@@ -4849,25 +4238,12 @@ in {
                                                                   }
                                                                 }
                                                                 _ => {
-                                                                  for (@lockState <- lockCell) {
-                                                                    match lockState {
-                                                                      (lockId, false) => {
-                                                                        lockCell!((lockId, true)) |
-                                                                        new relCh in {
-                                                                          fsReleaseLock!(lockId, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
-                                                                          for (@_r <- relCh) {
-                                                                            activeInnerCell!(Nil) |
-                                                                            sourceCell!((p, i, eof)) |
-                                                                            retCh!(rr)
-                                                                          }
-                                                                        }
-                                                                      }
-                                                                      already => {
-                                                                        lockCell!(already) |
-                                                                        activeInnerCell!(Nil) |
-                                                                        sourceCell!((p, i, eof)) |
-                                                                        retCh!(rr)
-                                                                      }
+                                                                  new relDoneCh in {
+                                                                    releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+                                                                    for (_ <- relDoneCh) {
+                                                                      activeInnerCell!(Nil) |
+                                                                      sourceCell!((p, i, eof)) |
+                                                                      retCh!(rr)
                                                                     }
                                                                   }
                                                                 }
@@ -8420,6 +7796,56 @@ in {
         match lockReply {
           [true, lid] => { lockOut!(lid) | retCh!([true]) }
           _           => retCh!(lockReply)
+        }
+      }
+    }
+  } |
+
+  // ---------------------------------------------------------------
+  // RH-2 stream-lifetime release-once helper (2026-09-04)
+  // ---------------------------------------------------------------
+  //
+  // Every stream producer (bytes/chars/lines/bytesAt/readLine/
+  // readInto/readLineInto) holds a `lockCell` cell carrying
+  // `(lockId, released_bool)` and fires the release on the FIRST
+  // termination path it reaches (EOS / error / caller-abandonment).
+  // Pre-RH-2 the release ceremony was hand-inlined at every
+  // termination site (~50 identical `for (@lockState <- lockCell)`
+  // blocks across the 7 stream methods): read cell → if (lid,
+  // false) flip to (lid, true) + fsReleaseLock, else preserve.
+  // The review flagged this as a load-bearing hazard — any future
+  // fix to release-once bookkeeping must be applied at every one
+  // manually or the arity-1 (primary) and arity-N+1 (options)
+  // variants would silently diverge.
+  //
+  // Post-RH-2 every termination path invokes this helper:
+  //
+  //   new relDoneCh in {
+  //     releaseSeqLockOnce!(*lockCell, *relDoneCh) |
+  //     for (_ <- relDoneCh) { <tail — pendingCell + retCh reply> }
+  //   }
+  //
+  // The tail runs AFTER the release completes (sequential in the
+  // (lid, false) branch) OR AFTER the cell-restore fires (immediate
+  // in the (lid, true) branch, no fsReleaseLock).  This preserves
+  // the pre-RH-2 parallel-vs-sequential ordering of tail sends.
+  //
+  // The `already` arm matches ANY payload the cell can carry
+  // (idempotent-release invariant: (lid, true) or any other
+  // tuple shape); it never fires fsReleaseLock a second time.
+  contract releaseSeqLockOnce(lockCell, doneCh) = {
+    for (@lockState <- lockCell) {
+      match lockState {
+        (lockId, false) => {
+          lockCell!((lockId, true)) |
+          new relCh in {
+            fsReleaseLock!(lockId, *relCh) |
+            for (@_r <- relCh) { doneCh!(Nil) }
+          }
+        }
+        already => {
+          lockCell!(already) |
+          doneCh!(Nil)
         }
       }
     }
