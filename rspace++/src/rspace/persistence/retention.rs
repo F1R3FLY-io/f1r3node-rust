@@ -263,6 +263,13 @@ impl RetainedRootSnapshotV1 {
     pub fn iter(&self) -> impl ExactSizeIterator<Item = RetainedRootV1> + '_ {
         self.roots.iter().copied()
     }
+
+    /// Borrow the exact object references needed to seed a closure walk. This
+    /// is a zero-allocation projection over the immutable snapshot; callers
+    /// remain responsible for digest-level deduplication in their PDA.
+    pub fn object_refs(&self) -> impl ExactSizeIterator<Item = ObjectRefV1> + '_ {
+        self.roots.iter().map(|retained| retained.root)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -507,6 +514,11 @@ mod registry_tests {
         assert_eq!(snapshot.roots()[2].root(), reference(9));
         assert_eq!(snapshot.roots()[0].lease_id(), 0);
         assert_eq!(snapshot.roots()[1].lease_id(), 0);
+        assert_eq!(snapshot.object_refs().collect::<Vec<_>>(), vec![
+            historical_manifest,
+            current_manifest,
+            reference(9),
+        ]);
         drop(lease);
     }
 }
