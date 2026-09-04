@@ -187,9 +187,9 @@ Theorem join_trailing_bytes_are_rejected :
   parse_join (join_key [] [] ++ [9]) = None.
 Proof. reflexivity. Qed.
 
-Theorem v1_v2_domains_are_disjoint : forall suffix,
-  [82; 72; 80; 1] ++ suffix <> v2_magic ++ suffix.
-Proof. intros suffix H; simpl in H; discriminate. Qed.
+Theorem v1_v2_domains_are_prefix_disjoint : forall v1_suffix v2_suffix,
+  [82; 72; 80; 1] ++ v1_suffix <> v2_magic ++ v2_suffix.
+Proof. intros v1_suffix v2_suffix H; simpl in H; discriminate. Qed.
 
 Theorem datum_kind_is_distinct :
   datum_kind <> continuation_kind /\ datum_kind <> join_kind.
@@ -216,6 +216,6 @@ Proof. reflexivity. Qed.
 
 Print Assumptions datum_empty_round_trip.
 Print Assumptions datum_empty_rejects_trailing_bytes.
-Print Assumptions v1_v2_domains_are_disjoint.
+Print Assumptions v1_v2_domains_are_prefix_disjoint.
 Print Assumptions continuation_count_is_eight_bytes.
 End RhoPathV2.
