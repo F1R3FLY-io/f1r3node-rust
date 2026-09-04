@@ -1339,35 +1339,38 @@ impl FsProcesses {
                     // leader never returns [true, fd] on that
                     // combination so `extract_ok_fd` wouldn't have
                     // succeeded here.  Guard defensively regardless.
-                    let file: Option<std::fs::File> = if cmode == ConsensusMode::Consensus {
-                        match intent {
-                            Some(intent) if !intent.append => {
-                                let root_pb = PathBuf::from(&root);
-                                let (root_pb, expected_root_id) =
-                                    self.handles.root_registry.resolve_or_identity(&root_pb);
-                                let rel_for_open = rel.clone();
-                                let intent_copy = intent;
-                                let opened = spawn_blocking(move || {
-                                    let (flags, mode_bits) = fopen_flags(intent_copy);
-                                    super::path::safe_open_verified(
-                                        &root_pb,
-                                        &rel_for_open,
-                                        flags,
-                                        mode_bits,
-                                        expected_root_id,
-                                    )
-                                })
-                                .await;
-                                match opened {
-                                    Ok(Ok(f)) => Some(f),
-                                    _ => None,
+                    // A4-M-1 fix (2026-09-04): shadow's `file` is now
+                    // Option<Arc<File>>, matching FileHandle.file.
+                    let file: Option<std::sync::Arc<std::fs::File>> =
+                        if cmode == ConsensusMode::Consensus {
+                            match intent {
+                                Some(intent) if !intent.append => {
+                                    let root_pb = PathBuf::from(&root);
+                                    let (root_pb, expected_root_id) =
+                                        self.handles.root_registry.resolve_or_identity(&root_pb);
+                                    let rel_for_open = rel.clone();
+                                    let intent_copy = intent;
+                                    let opened = spawn_blocking(move || {
+                                        let (flags, mode_bits) = fopen_flags(intent_copy);
+                                        super::path::safe_open_verified(
+                                            &root_pb,
+                                            &rel_for_open,
+                                            flags,
+                                            mode_bits,
+                                            expected_root_id,
+                                        )
+                                    })
+                                    .await;
+                                    match opened {
+                                        Ok(Ok(f)) => Some(std::sync::Arc::new(f)),
+                                        _ => None,
+                                    }
                                 }
+                                _ => None,
                             }
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
+                        } else {
+                            None
+                        };
                     // Same canon_path derivation as `open_impl`
                     // (C-29-1 fix) — must be byte-identical so WAL
                     // paths match across leader/follower.
@@ -1513,7 +1516,9 @@ impl FsProcesses {
         // the payload to.
         let deploy = self.current_deploy_scope();
         let handle = FileHandle {
-            file: Some(file),
+            // A4-M-1 fix (2026-09-04): wrap in Arc so `raw_fd()` can
+            // hand out clones that outlive concurrent remove(fd).
+            file: Some(std::sync::Arc::new(file)),
             // M-R2 round-2 fix: lexically normalize so `a/b.txt` and
             // `./a/b.txt` produce byte-identical canon_paths, keeping
             // WAL entries stable across equivalent rel forms.
@@ -1917,11 +1922,16 @@ impl FsProcesses {
         // raw fd, do the syscall on a blocking task, and let `File` be
         // reconstructed from the handle table on the next call.  We use
         // libc::pread directly so we don't need &mut File.
-        let raw_fd = match self.handles.raw_fd(fd).await {
-            Some(rfd) => rfd,
+        // A4-M-1 fix (2026-09-04): Arc<File> moved into the closure
+        // keeps the OS fd alive for the syscall's duration even if
+        // a concurrent remove(fd) drops the table's own Arc.
+        let file_arc = match self.handles.raw_fd(fd).await {
+            Some(f) => f,
             None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
         };
         let result = spawn_blocking(move || {
+            use std::os::fd::AsRawFd;
+            let raw_fd = file_arc.as_raw_fd();
             let mut buf = vec![0u8; n as usize];
             let got = unsafe {
                 if let Some(off) = offset {
@@ -2302,8 +2312,9 @@ impl FsProcesses {
                 format!("write {} exceeds MAX_WRITE_BYTES", bytes.len()),
             );
         }
-        let raw_fd = match self.handles.raw_fd(fd).await {
-            Some(rfd) => rfd,
+        // A4-M-1 fix (2026-09-04): Arc<File> moved into the closure.
+        let file_arc = match self.handles.raw_fd(fd).await {
+            Some(f) => f,
             None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
         };
         // Redesign note: WAL journaling for Consensus caps happens in
@@ -2311,6 +2322,8 @@ impl FsProcesses {
         // so both leader and follower populate identical WALs
         // (C-29-F1 review fix).  Do NOT append here.
         let result = spawn_blocking(move || {
+            use std::os::fd::AsRawFd;
+            let raw_fd = file_arc.as_raw_fd();
             let n = unsafe {
                 if let Some(off) = offset {
                     libc::pwrite(raw_fd, bytes.as_ptr() as *const _, bytes.len(), off as i64)
@@ -2386,15 +2399,19 @@ impl FsProcesses {
                             "end" => Some(libc::SEEK_END),
                             _ => None,
                         };
-                        if let (Some(whence), Some(raw_fd)) =
+                        if let (Some(whence), Some(file_arc)) =
                             (whence_code, self.handles.raw_fd(fd_u).await)
                         {
-                            let r = spawn_blocking(move || unsafe {
-                                let pos = libc::lseek(raw_fd, off, whence);
-                                if pos < 0 {
-                                    Err(std::io::Error::last_os_error())
-                                } else {
-                                    Ok(pos as u64)
+                            let r = spawn_blocking(move || {
+                                use std::os::fd::AsRawFd;
+                                let raw_fd = file_arc.as_raw_fd();
+                                unsafe {
+                                    let pos = libc::lseek(raw_fd, off, whence);
+                                    if pos < 0 {
+                                        Err(std::io::Error::last_os_error())
+                                    } else {
+                                        Ok(pos as u64)
+                                    }
                                 }
                             })
                             .await;
@@ -2464,13 +2481,17 @@ impl FsProcesses {
                     None => err(FSERR_BAD_ARG, "expected whence in {set,cur,end}"),
                     Some(whence) => match self.handles.raw_fd(fd as u64).await {
                         None => err(FSERR_CLOSED, format!("unknown fd {fd}")),
-                        Some(raw_fd) => {
-                            let r = spawn_blocking(move || unsafe {
-                                let pos = libc::lseek(raw_fd, off, whence);
-                                if pos < 0 {
-                                    Err(std::io::Error::last_os_error())
-                                } else {
-                                    Ok(pos as u64)
+                        Some(file_arc) => {
+                            let r = spawn_blocking(move || {
+                                use std::os::fd::AsRawFd;
+                                let raw_fd = file_arc.as_raw_fd();
+                                unsafe {
+                                    let pos = libc::lseek(raw_fd, off, whence);
+                                    if pos < 0 {
+                                        Err(std::io::Error::last_os_error())
+                                    } else {
+                                        Ok(pos as u64)
+                                    }
                                 }
                             })
                             .await;
@@ -2558,20 +2579,24 @@ impl FsProcesses {
         }
         let reply = match RhoNumber::unapply(fd_par) {
             Some(fd) => {
-                let raw_fd = match self.handles.raw_fd(fd as u64).await {
-                    Some(r) => r,
+                let file_arc = match self.handles.raw_fd(fd as u64).await {
+                    Some(f) => f,
                     None => {
                         let out = vec![err(FSERR_CLOSED, format!("unknown fd {fd}"))];
                         produce(&out, ack).await?;
                         return Ok(out);
                     }
                 };
-                let r = spawn_blocking(move || unsafe {
-                    let pos = libc::lseek(raw_fd, 0, libc::SEEK_CUR);
-                    if pos < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(pos as u64)
+                let r = spawn_blocking(move || {
+                    use std::os::fd::AsRawFd;
+                    let raw_fd = file_arc.as_raw_fd();
+                    unsafe {
+                        let pos = libc::lseek(raw_fd, 0, libc::SEEK_CUR);
+                        if pos < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(pos as u64)
+                        }
                     }
                 })
                 .await;
@@ -2654,13 +2679,17 @@ impl FsProcesses {
         // jmode = None so the journal call is a no-op regardless.
         let fresh_reply = match RhoNumber::unapply(fd_par) {
             Some(fd) => match self.handles.raw_fd(fd as u64).await {
-                Some(raw_fd) => {
-                    let r = spawn_blocking(move || unsafe {
-                        let mut sb: libc::stat = std::mem::zeroed();
-                        if libc::fstat(raw_fd, &mut sb) < 0 {
-                            Err(std::io::Error::last_os_error())
-                        } else {
-                            Ok(sb.st_size as u64)
+                Some(file_arc) => {
+                    let r = spawn_blocking(move || {
+                        use std::os::fd::AsRawFd;
+                        let raw_fd = file_arc.as_raw_fd();
+                        unsafe {
+                            let mut sb: libc::stat = std::mem::zeroed();
+                            if libc::fstat(raw_fd, &mut sb) < 0 {
+                                Err(std::io::Error::last_os_error())
+                            } else {
+                                Ok(sb.st_size as u64)
+                            }
                         }
                     })
                     .await;
@@ -2777,12 +2806,16 @@ impl FsProcesses {
                     )
                 } else {
                     match self.handles.raw_fd(fd).await {
-                        Some(raw_fd) => {
-                            let r = spawn_blocking(move || unsafe {
-                                if libc::ftruncate(raw_fd, n as i64) < 0 {
-                                    Err(std::io::Error::last_os_error())
-                                } else {
-                                    Ok(())
+                        Some(file_arc) => {
+                            let r = spawn_blocking(move || {
+                                use std::os::fd::AsRawFd;
+                                let raw_fd = file_arc.as_raw_fd();
+                                unsafe {
+                                    if libc::ftruncate(raw_fd, n as i64) < 0 {
+                                        Err(std::io::Error::last_os_error())
+                                    } else {
+                                        Ok(())
+                                    }
                                 }
                             })
                             .await;
@@ -2864,19 +2897,23 @@ impl FsProcesses {
         }
         let reply = match RhoNumber::unapply(fd_par) {
             Some(fd) => {
-                let raw_fd = match self.handles.raw_fd(fd as u64).await {
-                    Some(r) => r,
+                let file_arc = match self.handles.raw_fd(fd as u64).await {
+                    Some(f) => f,
                     None => {
                         let out = vec![err(FSERR_CLOSED, format!("unknown fd {fd}"))];
                         produce(&out, ack).await?;
                         return Ok(out);
                     }
                 };
-                let r = spawn_blocking(move || unsafe {
-                    if libc::fsync(raw_fd) < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(())
+                let r = spawn_blocking(move || {
+                    use std::os::fd::AsRawFd;
+                    let raw_fd = file_arc.as_raw_fd();
+                    unsafe {
+                        if libc::fsync(raw_fd) < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
                     }
                 })
                 .await;
@@ -5616,11 +5653,13 @@ impl FsProcesses {
     /// caller sees the confusion, and their subsequent reads/writes
     /// on the (now closed) fd will fail with `FSERR_CLOSED` anyway.
     async fn dev_inode_from_fd(&self, fd: u64) -> Result<(u64, u64), (&'static str, String)> {
-        let Some(raw) = self.handles.raw_fd(fd).await else {
+        let Some(file_arc) = self.handles.raw_fd(fd).await else {
             return Err((FSERR_CLOSED, "fd unknown or shadow handle".to_string()));
         };
         #[cfg(unix)]
         {
+            use std::os::fd::AsRawFd;
+            let raw = file_arc.as_raw_fd();
             unsafe {
                 let mut st: libc::stat = std::mem::zeroed();
                 if libc::fstat(raw, &mut st) < 0 {
@@ -5633,7 +5672,7 @@ impl FsProcesses {
         }
         #[cfg(not(unix))]
         {
-            let _ = raw;
+            let _ = file_arc;
             Ok((0, 0))
         }
     }

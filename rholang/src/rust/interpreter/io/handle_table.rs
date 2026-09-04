@@ -46,7 +46,21 @@ const _: () = assert!(
 
 #[derive(Debug)]
 pub struct FileHandle {
-    /// The underlying OS file, or `None` for a shadow handle.
+    /// The underlying OS file wrapped in `Arc`, or `None` for a
+    /// shadow handle.
+    ///
+    /// **A4-M-1 fix (2026-09-04):** wrapped in `Arc` so
+    /// `raw_fd()` can hand out clones that keep the `File` alive
+    /// for the duration of a `spawn_blocking(libc::read/write/...)`
+    /// call.  Pre-fix, `raw_fd()` returned a bare `i32`; a
+    /// concurrent `remove(fd)` (or `close_all_for_deploy` sweep)
+    /// dropped the `File`, closed the OS fd, and a subsequent
+    /// unrelated `open(2)` on the same tokio thread could reuse
+    /// the integer — the pending pwrite then targeted the reused
+    /// fd.  Post-fix, `raw_fd()` returns an `Arc<File>` clone;
+    /// while the closure holds it, `Drop` is deferred, so the OS
+    /// fd stays valid until the syscall returns AND every closure
+    /// clone drops.
     ///
     /// **C-R1 review fix (slice 29 redesign round 2):** on the
     /// follower's `fs_open` replay branch we insert a *shadow*
@@ -61,7 +75,7 @@ pub struct FileHandle {
     /// on a shadow handle gets `FSERR_CLOSED`, which is the
     /// correct failure mode (should never happen in practice
     /// because is_replay short-circuits earlier).
-    pub file: Option<File>,
+    pub file: Option<std::sync::Arc<File>>,
     /// Task 0.4 / Shape A invariant (2026-08-31): this MUST be the
     /// RAW `canonicalize_lexical(rholang_canon_root, rel)` — the
     /// Rholang-side canonRoot as the reducer received it, NOT the
@@ -640,9 +654,10 @@ impl FileHandleTable {
         table.get_mut(&fd).map(f)
     }
 
-    /// Look up the raw OS fd for a given logical fd handle.  Used by the
-    /// spawn_blocking closures so they can issue libc syscalls without
-    /// holding the tokio RwLock across the syscall.
+    /// Look up an `Arc<File>` clone for a given logical fd handle.
+    /// Used by the spawn_blocking closures so they can hand a valid
+    /// OS fd into libc syscalls without holding the tokio RwLock
+    /// across the syscall.
     ///
     /// Returns `None` if the fd is absent OR the handle is a shadow
     /// (`file: None`, C-R1 review fix).  Shadow handles are inserted
@@ -653,17 +668,20 @@ impl FileHandleTable {
     /// return (translated to `FSERR_CLOSED` upstream) is correct if
     /// it ever is.
     ///
-    /// SAFETY: the returned raw fd is valid only until the underlying
-    /// `FileHandle`'s `File` is dropped (i.e., until `remove` is called).
-    /// Callers must not close it directly, and must not use it after any
-    /// intervening `remove(fd)`.
+    /// **A4-M-1 fix (2026-09-04):** the returned value is an
+    /// `Arc<File>` clone.  Callers move it into `spawn_blocking`
+    /// closures and derive the raw fd inside via `.as_raw_fd()`.
+    /// The Arc keeps the underlying `File` alive for the closure's
+    /// lifetime even if a concurrent `remove(fd)` /
+    /// `close_all_for_deploy` drops the table's own Arc — closing
+    /// the TOCTOU window pre-fix left open (raw `i32` returned →
+    /// concurrent remove drops `File` → OS fd closes → unrelated
+    /// `open(2)` reuses the integer → pending syscall targets wrong
+    /// fd).
     #[cfg(unix)]
-    pub async fn raw_fd(&self, fd: u64) -> Option<i32> {
-        use std::os::fd::AsRawFd;
+    pub async fn raw_fd(&self, fd: u64) -> Option<std::sync::Arc<File>> {
         let table = self.inner.table.read().await;
-        table
-            .get(&fd)
-            .and_then(|h| h.file.as_ref().map(|f| f.as_raw_fd()))
+        table.get(&fd).and_then(|h| h.file.clone())
     }
 
     /// Close every file fd owned by `scope`.  Mirrors
@@ -722,7 +740,7 @@ mod tests {
 
     fn make_handle(file: File, path: PathBuf) -> FileHandle {
         FileHandle {
-            file: Some(file),
+            file: Some(std::sync::Arc::new(file)),
             canon_path: path,
             mode: AccessMode::Read,
             cmode: ConsensusMode::Oracular,
@@ -766,17 +784,19 @@ mod tests {
         assert_ne!(fd1, fd2, "distinct opens must yield distinct logical fds");
 
         // Read 3 bytes on fd1; advances fd1's cursor to position 3.
+        // A4-M-1 fix (2026-09-04): raw_fd() returns Arc<File>; compare
+        // via .as_raw_fd() for the distinct-kernel-fds check.
         let mut buf1 = [0u8; 3];
-        let raw1 = table.raw_fd(fd1).await.unwrap();
-        assert_ne!(
-            raw1,
-            table.raw_fd(fd2).await.unwrap(),
-            "distinct kernel fds"
-        );
+        let raw1 = std::os::fd::AsRawFd::as_raw_fd(&*table.raw_fd(fd1).await.unwrap());
+        let raw2 = std::os::fd::AsRawFd::as_raw_fd(&*table.raw_fd(fd2).await.unwrap());
+        assert_ne!(raw1, raw2, "distinct kernel fds");
         // Use the FileHandle::file directly for standard-library read.
+        // Post-A4-M-1: file is Arc<File>; use `&File` (which impls Read)
+        // via Arc::as_ref to advance the shared kernel cursor.
         table
             .with_mut(fd1, |h| {
-                h.file.as_mut().unwrap().read_exact(&mut buf1).unwrap();
+                let mut fref: &File = h.file.as_ref().unwrap().as_ref();
+                fref.read_exact(&mut buf1).unwrap();
             })
             .await
             .unwrap();
@@ -786,7 +806,8 @@ mod tests {
         let mut buf2 = [0u8; 3];
         table
             .with_mut(fd2, |h| {
-                h.file.as_mut().unwrap().read_exact(&mut buf2).unwrap();
+                let mut fref: &File = h.file.as_ref().unwrap().as_ref();
+                fref.read_exact(&mut buf2).unwrap();
             })
             .await
             .unwrap();
@@ -819,7 +840,8 @@ mod tests {
         let mut buf = [0u8; 3];
         table
             .with_mut(fd2, |h| {
-                h.file.as_mut().unwrap().read_exact(&mut buf).unwrap();
+                let mut fref: &File = h.file.as_ref().unwrap().as_ref();
+                fref.read_exact(&mut buf).unwrap();
             })
             .await
             .unwrap();
@@ -1505,6 +1527,77 @@ mod tests {
         assert!(
             table.with_mut(fd, |_| ()).await.is_some(),
             "handle must remain present"
+        );
+    }
+
+    /// A4-M-1 fix regression pin (2026-09-04): `raw_fd(fd)` returns
+    /// an `Arc<File>` clone; a concurrent `remove(fd)` drops the
+    /// table's own Arc, but the closure's clone keeps the OS fd
+    /// alive for the syscall's duration.
+    ///
+    /// The test:
+    /// 1. Insert a file, get its logical fd + a clone of the Arc via
+    ///    `raw_fd()`.
+    /// 2. Call `remove(fd)` — table's Arc is dropped.
+    /// 3. Verify the closure's Arc still has the file open by doing
+    ///    a `libc::read` on `.as_raw_fd()` — must succeed.
+    ///
+    /// Pre-fix (raw_fd returning `i32`): step 3 would race — the OS
+    /// fd may have been closed by the `remove` in step 2 and reused
+    /// by an unrelated `open(2)` on the same thread.  This test
+    /// would flake or silently pass by reading from a wrong file.
+    /// Post-fix, the OS fd is guaranteed live until every Arc clone
+    /// drops.
+    #[tokio::test]
+    async fn raw_fd_arc_keeps_fd_alive_across_concurrent_remove() {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("survives-remove.bin");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"KEEP-ALIVE").unwrap();
+        }
+
+        let table = FileHandleTable::new();
+        let fd = table
+            .insert(make_handle(open_ro(&path), path.clone()))
+            .await
+            .unwrap();
+
+        // Step 1: acquire an Arc<File> clone via raw_fd — this
+        // simulates the spawn_blocking closure grabbing its handle
+        // BEFORE dispatching the syscall.
+        let closure_arc = table.raw_fd(fd).await.expect("raw_fd returns Some");
+        let arc_raw_fd = closure_arc.as_raw_fd();
+
+        // Step 2: concurrent remove — drops the table's Arc.  Pre-
+        // fix, this would close the OS fd because the table's Arc
+        // was the sole owner.  Post-fix, the closure's Arc keeps
+        // the underlying File alive.
+        assert!(table.remove(fd).await, "remove must succeed");
+
+        // Step 3: the closure's Arc is still valid; libc::read on
+        // its raw fd MUST succeed and return the original file
+        // contents.  A regression that reverts to raw i32 would
+        // either return ENBADF (fd closed) or, worse, read from
+        // an unrelated file that reused the integer.
+        let mut buf = [0u8; 10];
+        let got = unsafe { libc::read(arc_raw_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        assert!(
+            got > 0,
+            "libc::read on the Arc's raw fd must succeed after concurrent \
+             remove; got {got} (errno = {:?}).  A4-M-1 regression: the raw fd \
+             was closed by remove(fd), meaning the Arc-keep-alive property \
+             is broken.",
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(
+            &buf[..got as usize],
+            b"KEEP-ALIVE",
+            "content mismatch — did remove reuse the integer for another \
+             open?  The Arc should have kept OUR OS fd alive."
         );
     }
 }
