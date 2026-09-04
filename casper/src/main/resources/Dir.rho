@@ -233,23 +233,40 @@ new Dir, rootP, cmodeP in {
     } |
 
     // -- exists(rel) ------------------------------------------------
+    //
+    // Banned under Consensus mode (B1 fix 2026-09-03): the underlying
+    // `fs_exists` native has no Phase 5 re-execute + verify, so under
+    // Consensus a divergent follower FS could silently yield a
+    // different `[true, bool]` reply than the leader.  Rather than
+    // add per-op verify (an arity change + hash-compare on every
+    // exists call), we banned Consensus dispatch at the Rholang
+    // layer — same treatment as `fs_chown` and `fs_entries_stream_*`.
+    // Callers that need presence-check semantics under Consensus can
+    // use `openFile` and catch `FSERR_NOT_FOUND`; the openFile path
+    // is Phase-5-verified end-to-end.
     method exists(@rel) {
       match rel {
         r /\ String => {
-          for (@params <<- @[*private, *rootP]) {
-            match params {
-              (canonRoot, subPath, _mode, _fileCtor) => {
-                new joinedCh in {
-                  joinRel!(subPath, r, *joinedCh) |
-                  for (@joined <- joinedCh) {
-                    new retCh in {
-                      fsExists!(canonRoot, joined, *retCh) |
-                      for (@reply <- retCh) { return!(reply) }
+          for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+            match cmode {
+              "consensus" => return!([false, "FSERR_UNSUPPORTED",
+                "Dir.exists is banned under Consensus; use openFile + catch FSERR_NOT_FOUND"])
+              _ => {
+                match params {
+                  (canonRoot, subPath, _mode, _fileCtor) => {
+                    new joinedCh in {
+                      joinRel!(subPath, r, *joinedCh) |
+                      for (@joined <- joinedCh) {
+                        new retCh in {
+                          fsExists!(canonRoot, joined, *retCh) |
+                          for (@reply <- retCh) { return!(reply) }
+                        }
+                      }
                     }
                   }
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
-              _ => return!([false, "FSERR_IO", "root params malformed"])
             }
           }
         }
@@ -262,75 +279,109 @@ new Dir, rootP, cmodeP in {
     // Mode-attenuates monotonically against the Dir's own mode.
     // Slice 26: peeks `cmodeP` and threads consensusMode into
     // openFileImpl so the minted File inherits the parent Dir's mode.
-    method openFile(@rel, @mode) {
+    // B4 (2026-09-03): spec §Dir > Composition requires options-map
+    // signatures (matches `Fs.openFile`/`openDir` shape).  Prior
+    // shape took positional `@mode`; changed to `@options` with
+    // extraction pattern mirroring `Fs.openFile` at Fs.rho:305-330.
+    method openFile(@rel, @options) {
       match rel {
         r /\ String => {
-          match mode {
-            m /\ String => {
-              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                match params {
-                  (canonRoot, subPath, dirMode, fileCtor) => {
-                    // Mode whitelist via \/ disjunction — patterns match
-                    // if m equals any of the alternatives.  Disjunction
-                    // arms cannot bind variables (both sides must be
-                    // ground), so we pass `m` through unchanged rather
-                    // than a per-arm literal.
-                    match m {
-                      "r" => openFileImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
-                      "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" => {
-                        match dirMode {
-                          "rw" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
-                          _ => return!([false, "FSERR_UNSUPPORTED",
-                            "requested mode exceeds Dir attenuation"])
+          new modeCh in {
+            match options {
+              {} => modeCh!("r")
+              {"mode": modeVal ..._} => modeCh!(modeVal)
+              {_ : _ ..._} => modeCh!("r")
+              _ => modeCh!(Nil)
+            } |
+            for (@requestedMode <- modeCh) {
+              match requestedMode {
+                Nil => return!([false, "FSERR_BAD_ARG", "options must be a Map"])
+                m /\ String => {
+                  for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                    match params {
+                      (canonRoot, subPath, dirMode, fileCtor) => {
+                        // Mode whitelist via \/ disjunction — patterns
+                        // match if m equals any of the alternatives.
+                        match m {
+                          "r" => openFileImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
+                          "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
+                            match dirMode {
+                              "rw" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                              _ => return!([false, "FSERR_UNSUPPORTED",
+                                "requested mode exceeds Dir attenuation"])
+                            }
+                          }
+                          _ => return!([false, "FSERR_BAD_ARG", "unknown file mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_BAD_ARG", "unknown file mode"])
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
+                _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
               }
             }
-            _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
           }
         }
         _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
       }
     } |
 
-    // -- openDir(rel, mode) -----------------------------------------
+    // -- openDir(rel, options) --------------------------------------
+    //
+    // B4 (2026-09-03): options-map signature per spec §Dir >
+    // Composition line 1097 — supports `mode` and `path` (path: true
+    // enables `mkdir -p`-style ancestor creation per spec §Options
+    // line 863, requires "rw" Dir mode).  Prior shape took bare
+    // `@mode` positional.
     //
     // Mints a nested Dir sharing this Dir's immutable canonRoot, with
     // subPath extended by `rel`.  Validated at mint time via fsStat
     // (M-2): a rel that escapes the sandbox (`..`) or names a non-
     // existent / non-directory path fails eagerly rather than yielding
     // a broken handle whose every method later errors.
-    method openDir(@rel, @mode) {
+    //
+    // `options.path: true` is currently accepted but unimplemented —
+    // returns FSERR_UNSUPPORTED because `openDirImpl` doesn't do
+    // mkdir -p yet.  Ships stub so callers can migrate to the
+    // options-map shape without needing path=true to work.
+    method openDir(@rel, @options) {
       match rel {
         r /\ String => {
-          match mode {
-            m /\ String => {
-              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                match params {
-                  (canonRoot, subPath, dirMode, fileCtor) => {
-                    match m {
-                      "r" => openDirImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
-                      "rw" => {
-                        match dirMode {
-                          "rw" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
-                          _ => return!([false, "FSERR_UNSUPPORTED",
-                            "requested mode exceeds Dir attenuation"])
+          new modeCh in {
+            match options {
+              {} => modeCh!("r")
+              {"mode": modeVal ..._} => modeCh!(modeVal)
+              {_ : _ ..._} => modeCh!("r")
+              _ => modeCh!(Nil)
+            } |
+            for (@requestedMode <- modeCh) {
+              match requestedMode {
+                Nil => return!([false, "FSERR_BAD_ARG", "options must be a Map"])
+                m /\ String => {
+                  for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                    match params {
+                      (canonRoot, subPath, dirMode, fileCtor) => {
+                        match m {
+                          "r" => openDirImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
+                          "rw" => {
+                            match dirMode {
+                              "rw" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                              _ => return!([false, "FSERR_UNSUPPORTED",
+                                "requested mode exceeds Dir attenuation"])
+                            }
+                          }
+                          _ => return!([false, "FSERR_BAD_ARG",
+                            "dir mode must be \"r\" or \"rw\""])
                         }
                       }
-                      _ => return!([false, "FSERR_BAD_ARG",
-                        "dir mode must be \"r\" or \"rw\""])
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
+                _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
               }
             }
-            _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
           }
         }
         _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
@@ -372,12 +423,25 @@ new Dir, rootP, cmodeP in {
       }
     } |
 
-    // -- removeDir(rel, recursive) ----------------------------------
-    method removeDir(@rel, @recursive) {
+    // -- removeDir(rel, options) ------------------------------------
+    //
+    // B4 (2026-09-03): options-map signature per spec §Dir >
+    // Mutation line 1106 — supports `recursive: Bool` (default
+    // `false`).  Prior shape took bare `@recursive` positional.
+    method removeDir(@rel, @options) {
       match rel {
         r /\ String => {
-          match recursive {
-            b /\ Bool => {
+          new recursiveCh in {
+            match options {
+              {} => recursiveCh!(false)
+              {"recursive": rval ..._} => recursiveCh!(rval)
+              {_ : _ ..._} => recursiveCh!(false)
+              _ => recursiveCh!(Nil)
+            } |
+            for (@recursive <- recursiveCh) {
+              match recursive {
+                Nil => return!([false, "FSERR_BAD_ARG", "options must be a Map", 0])
+                b /\ Bool => {
               // DD-RemoveDirReplyShape (2026-09-03): unified per-entry-
               // count reply.  Every removeDir code path (non-recursive,
               // recursive Oracular, recursive Consensus) returns
@@ -398,40 +462,42 @@ new Dir, rootP, cmodeP in {
               // Prior H-29-3-lift shape (surfaced the manifest at the
               // Rholang boundary) was superseded by DD-RemoveDirReplyShape
               // — see FIP §Dir.removeDir + design-decisions.md.
-              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                match params {
-                  (canonRoot, subPath, dirMode, _fileCtor) => {
-                    match dirMode {
-                      "rw" => {
-                        new joinedCh in {
-                          joinRel!(subPath, r, *joinedCh) |
-                          for (@joined <- joinedCh) {
-                            new retCh in {
-                              fsRemoveDir!(canonRoot, joined, b, cmode, *retCh) |
-                              for (@reply <- retCh) {
-                                // Unwrap the 5-element Consensus recursive
-                                // replies to the 4-element uniform failure
-                                // shape (or 2-element uniform success).
-                                match reply {
-                                  [true, n /\ Int, _manifest] => return!([true, n])
-                                  [false, code, msg, n /\ Int, _manifest] =>
-                                    return!([false, code, msg, n])
-                                  _ => return!(reply)
+                  for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                    match params {
+                      (canonRoot, subPath, dirMode, _fileCtor) => {
+                        match dirMode {
+                          "rw" => {
+                            new joinedCh in {
+                              joinRel!(subPath, r, *joinedCh) |
+                              for (@joined <- joinedCh) {
+                                new retCh in {
+                                  fsRemoveDir!(canonRoot, joined, b, cmode, *retCh) |
+                                  for (@reply <- retCh) {
+                                    // Unwrap the 5-element Consensus recursive
+                                    // replies to the 4-element uniform failure
+                                    // shape (or 2-element uniform success).
+                                    match reply {
+                                      [true, n /\ Int, _manifest] => return!([true, n])
+                                      [false, code, msg, n /\ Int, _manifest] =>
+                                        return!([false, code, msg, n])
+                                      _ => return!(reply)
+                                    }
+                                  }
                                 }
                               }
                             }
                           }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "removeDir requires \"rw\" Dir mode", 0])
                         }
                       }
-                      _ => return!([false, "FSERR_UNSUPPORTED",
-                        "removeDir requires \"rw\" Dir mode", 0])
+                      _ => return!([false, "FSERR_IO", "root params malformed", 0])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed", 0])
                 }
+                _ => return!([false, "FSERR_BAD_ARG", "recursive must be a Bool", 0])
               }
             }
-            _ => return!([false, "FSERR_BAD_ARG", "recursive must be a Bool", 0])
           }
         }
         _ => return!([false, "FSERR_BAD_ARG", "rel must be a String", 0])

@@ -1964,7 +1964,7 @@ async fn dir_open_file_mints_a_file_agent() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("openFile", "some/file.txt", "r")) {
+          for (@r <- @d!?("openFile", "some/file.txt", {"mode": "r"})) {
             match r {
               [true, f] => {
                 // Verify we got a usable File — call tell() to check.
@@ -1998,7 +1998,7 @@ async fn dir_open_file_rejects_mode_upgrade() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
-          for (@r <- @d!?("openFile", "some/file.txt", "rw")) {
+          for (@r <- @d!?("openFile", "some/file.txt", {"mode": "rw"})) {
             @"out"!(r)
           }
         }
@@ -2204,7 +2204,7 @@ async fn dir_open_file_rejects_unknown_mode() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("openFile", "some/file.txt", "xyzzy")) {
+          for (@r <- @d!?("openFile", "some/file.txt", {"mode": "xyzzy"})) {
             @"out"!(r)
           }
         }
@@ -2226,7 +2226,7 @@ async fn dir_open_file_accepts_all_whitelisted_modes() {
         let src = with_libs(&format!(
             r#"
             for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {{
-              for (@r <- @d!?("openFile", "some/file.txt", "{}")) {{
+              for (@r <- @d!?("openFile", "some/file.txt", {{"mode": "{}"}})) {{
                 @"out"!(r)
               }}
             }}
@@ -2492,7 +2492,7 @@ async fn dir_open_dir_mints_nested_dir() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("openDir", "subdir", "r")) {
+          for (@r <- @d!?("openDir", "subdir", {"mode": "r"})) {
             match r {
               [true, nested] => {
                 // Verify the nested Dir is usable — call stat on it.
@@ -2525,7 +2525,7 @@ async fn dir_open_dir_rejects_rw_from_readonly() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
-          for (@r <- @d!?("openDir", "subdir", "rw")) { @"out"!(r) }
+          for (@r <- @d!?("openDir", "subdir", {"mode": "rw"})) { @"out"!(r) }
         }
         "#,
     );
@@ -2543,7 +2543,7 @@ async fn dir_open_dir_rejects_invalid_mode() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("openDir", "subdir", "w+")) { @"out"!(r) }
+          for (@r <- @d!?("openDir", "subdir", {"mode": "w+"})) { @"out"!(r) }
         }
         "#,
     );
@@ -2598,7 +2598,7 @@ async fn dir_remove_dir_recursive_succeeds_on_rw() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("removeDir", "olddir", true)) { @"out"!(r) }
+          for (@r <- @d!?("removeDir", "olddir", {"recursive": true})) { @"out"!(r) }
         }
         "#,
     );
@@ -2609,13 +2609,15 @@ async fn dir_remove_dir_recursive_succeeds_on_rw() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dir_remove_dir_non_bool_recursive_rejects() {
+    // B4 (2026-09-03): options-map shape.  Non-Bool recursive value
+    // in the options map → FSERR_BAD_ARG.
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("removeDir", "olddir", "yes")) { @"out"!(r) }
+          for (@r <- @d!?("removeDir", "olddir", {"recursive": "yes"})) { @"out"!(r) }
         }
         "#,
     );
@@ -2654,7 +2656,7 @@ async fn dir_remove_dir_on_readonly_rejects_with_count_shape() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
-          for (@r <- @d!?("removeDir", "olddir", false)) { @"out"!(r) }
+          for (@r <- @d!?("removeDir", "olddir", {"recursive": false})) { @"out"!(r) }
         }
         "#,
     );
@@ -2691,7 +2693,7 @@ async fn dir_remove_dir_success_returns_count_carrying_shape() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("removeDir", "olddir", true)) { @"out"!(r) }
+          for (@r <- @d!?("removeDir", "olddir", {"recursive": true})) { @"out"!(r) }
         }
         "#,
     );
@@ -2866,7 +2868,7 @@ async fn dir_nested_dispatches_with_composed_subpath() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@openReply <- @d!?("openDir", "subdir", "rw")) {
+          for (@openReply <- @d!?("openDir", "subdir", {"mode": "rw"})) {
             match openReply {
               [true, nested] => {
                 for (@chmodReply <- @nested!?("chmod", "f.txt", "rw-r--r--")) {
@@ -3064,7 +3066,7 @@ async fn dir_open_dir_on_non_directory_returns_bad_arg() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("openDir", "regular.txt", "r")) { @"out"!(r) }
+          for (@r <- @d!?("openDir", "regular.txt", {"mode": "r"})) { @"out"!(r) }
         }
         "#,
     );
@@ -3797,7 +3799,7 @@ async fn dir_open_file_on_directory_target_rejects() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("openFile", "subdir", "r")) { @"out"!(r) }
+          for (@r <- @d!?("openFile", "subdir", {"mode": "r"})) { @"out"!(r) }
         }
         "#,
     );
@@ -3818,7 +3820,7 @@ async fn dir_open_file_on_regular_file_still_succeeds() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("openFile", "regular.txt", "r")) { @"out"!(r) }
+          for (@r <- @d!?("openFile", "regular.txt", {"mode": "r"})) { @"out"!(r) }
         }
         "#,
     );
@@ -4009,7 +4011,7 @@ async fn dir_open_file_creation_mode_passes_stat_notfound() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("openFile", "missing.txt", "w")) { @"out"!(r) }
+          for (@r <- @d!?("openFile", "missing.txt", {"mode": "w"})) { @"out"!(r) }
         }
         "#,
     );
@@ -16023,7 +16025,7 @@ async fn dir_open_dir_inherits_parent_consensus_cmode() {
           for (@topOpen <- @fs!?("openDir", "top", {"mode": "rw"})) {
             match topOpen {
               [true, top] => {
-                for (@childOpen <- @top!?("openDir", "subdir2", "rw")) {
+                for (@childOpen <- @top!?("openDir", "subdir2", {"mode": "rw"})) {
                   match childOpen {
                     [true, child] => {
                       for (@_chownReply <- @child!?("chown", "f.txt", "a", "b")) {

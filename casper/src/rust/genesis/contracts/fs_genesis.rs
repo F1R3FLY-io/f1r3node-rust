@@ -1719,16 +1719,18 @@ mod tests {
         //   pairwise-merge + PB-B-5 Buffer versioned URN + prior).
         // Prior anchor: c7884a9f (Fs.revoke ambient-authority off-switch,
         //   2026-09-03).
-        // 2026-09-03: DD-RemoveDirReplyShape — Dir.rho::removeDir now
-        //   unwraps the native reply to `[true, nDeleted]` (success) or
-        //   `[false, code, msg, nDeletedBeforeError]` (failure) at the
-        //   Rholang boundary.  Native handler emits uniform count-carrying
-        //   shape on every code path (non-recursive, recursive Oracular,
-        //   recursive Consensus); the Consensus recursive branch keeps
-        //   the per-entry manifest at position 2/4 as an implementation-
-        //   side channel for R5(b) follower re-execution.  Dir.rho source
-        //   change rolls the composed FsGenesis hash.
-        const EXPECTED: &str = "2040b957cd315fdc74c8dc2902c3e0d2321ab90a36c1a465e44de87d9d687e18";
+        // Prior anchor: 2040b957 (DD-RemoveDirReplyShape unwrap in
+        //   Dir.rho, 2026-09-03).
+        // 2026-09-03: B1 fix — Dir.rho::exists gates on cmode and
+        //   rejects Consensus with FSERR_UNSUPPORTED (the underlying
+        //   fs_exists native has no Phase 5 verify).
+        // Prior anchor: fa812488 (B1, 2026-09-03).
+        // 2026-09-03: B4 fix — Dir.rho::openFile / openDir / removeDir
+        //   changed to options-map signatures per spec §Dir >
+        //   Composition + Mutation.  Prior positional `@mode` /
+        //   `@recursive` args replaced with `@options` maps carrying
+        //   `mode` / `recursive` keys.  Callers migrated in same slice.
+        const EXPECTED: &str = "a04d47f989bcc72da72ae880f9e1fa43eb52411abc68d73e2ac2596634bac461";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

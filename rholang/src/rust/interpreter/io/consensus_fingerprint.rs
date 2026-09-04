@@ -3,26 +3,31 @@
 //
 // # Threat model
 //
-// `MAX_WAL_ENTRIES` (`wal.rs`) is consensus-observable — a validator
-// running a different value would emit `FSERR_QUOTA_EXCEEDED` on
-// different inputs than its peers and silently fork the tuplespace.
-// The compile-time floor check + hard-fork catalog item #11 catch
-// accidental *lowering* of the constant, but a targeted binary patch
-// or a fork of the source (with a different constant) would still
-// build cleanly and start up.
+// Every constant enumerated in `docs/consensus-invariants.md § 5`
+// (byte gates) is consensus-observable — a validator running a
+// different value emits `FSERR_QUOTA_EXCEEDED` on different inputs
+// than its peers and silently forks the tuplespace.  Same threat
+// for `LOCK_ID_CEILING` (per §5 note) and `SNAPSHOT_FORMAT_VERSION`
+// (per §3 WAL entry serialization).  Compile-time floor checks +
+// the hard-fork catalog catch accidental *lowering* of these
+// constants, but a targeted binary patch or a fork of the source
+// (with a different constant) would still build cleanly and start
+// up.
 //
 // # Middle-option fix
 //
 // At boot, node computes a short hex `fingerprint` from every
-// consensus-observable runtime constant (currently just
-// `MAX_WAL_ENTRIES`; new constants can be folded in without a
-// wire-format change).  The fingerprint is appended to the
-// operator's `network_id` as `<network_id>#cf<hex>` before the
-// value is baked into the TLS interceptor.  Peers with different
-// fingerprints see a mismatched `network_id` and get refused by
-// the existing `SslSessionServerInterceptor::validate_network_id`
-// path — the exact same code path that already rejects wrong-
-// network peers.
+// consensus-observable runtime constant listed in §5.  Post B2
+// expansion (2026-09-03): coverage is 10 constants (MAX_WAL_ENTRIES
+// + 7 byte gates + LOCK_ID_CEILING + SNAPSHOT_FORMAT_VERSION).  New
+// constants MUST be appended (never inserted mid-list) — see
+// `consensus_runtime_fingerprint` docstring.  The fingerprint is
+// appended to the operator's `network_id` as `<network_id>#cf<hex>`
+// before the value is baked into the TLS interceptor.  Peers with
+// different fingerprints see a mismatched `network_id` and get
+// refused by the existing `SslSessionServerInterceptor::
+// validate_network_id` path — the exact same code path that
+// already rejects wrong-network peers.
 //
 // # Trade-offs
 //
@@ -44,7 +49,11 @@
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 
+use super::handlers::{MAX_ENTRIES, MAX_WRITE_BYTES};
+use super::lock::{LOCK_ID_CEILING, MAX_RANGES_PER_FILE, MAX_WAITERS_PER_FILE};
+use super::snapshot::SNAPSHOT_FORMAT_VERSION;
 use super::wal::MAX_WAL_ENTRIES;
+use super::{MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
 
 /// Delimiter separating the operator's network_id from the
 /// consensus fingerprint.  `#` chosen because it's URL-safe,
@@ -58,22 +67,46 @@ const FINGERPRINT_DELIMITER: &str = "#cf";
 const FINGERPRINT_HEX_LEN: usize = 16; // 8 bytes × 2
 
 /// Compute the hex fingerprint of all consensus-observable
-/// runtime constants.  Currently:
+/// runtime constants.  Coverage post B2 expansion (2026-09-03) —
+/// every constant enumerated in `docs/consensus-invariants.md § 5`
+/// (byte gates) plus `LOCK_ID_CEILING` and `SNAPSHOT_FORMAT_VERSION`.
 ///
-/// - `MAX_WAL_ENTRIES` (u64, big-endian)
+/// The append order is FIXED — reordering flips the fingerprint of
+/// an unchanged fleet and force-splits peering across a benign
+/// refactor.  New consensus-observable constants MUST be appended
+/// at the END of this list (never inserted mid-list); each addition
+/// is a coordinated peer-upgrade event since it flips the
+/// fingerprint.
 ///
-/// New consensus-observable constants MUST be appended to this
-/// list (never reordered — that would flip the fingerprint of an
-/// unchanged fleet).  Any such addition is a coordinated peer-
-/// upgrade event; the network partitions until every peer runs
-/// the new binary.
+/// Current fold order (do not reorder):
+///  1. `MAX_WAL_ENTRIES` (u64 BE)
+///  2. `MAX_WRITE_BYTES` (u64 BE)
+///  3. `MAX_READ_BYTES` (u64 BE)
+///  4. `MAX_TRUNCATE_BYTES` (u64 BE)
+///  5. `MAX_ENTRIES` (u64 BE)
+///  6. `MAX_OPEN_FDS` (u64 BE)
+///  7. `MAX_RANGES_PER_FILE` (u64 BE)
+///  8. `MAX_WAITERS_PER_FILE` (u64 BE)
+///  9. `LOCK_ID_CEILING` (u64 BE)
+/// 10. `SNAPSHOT_FORMAT_VERSION` (u8)
 ///
 /// Returns 16-char lowercase hex (first 8 bytes of Blake2b256).
 pub fn consensus_runtime_fingerprint() -> String {
-    let mut buf = Vec::with_capacity(8);
-    // MAX_WAL_ENTRIES is usize on this platform but must be
-    // encoded portably.  Cast to u64 explicitly.
+    let mut buf = Vec::with_capacity(8 * 9 + 1);
+    // Cast every usize/u8 to u64/u8 explicitly so the encoding is
+    // portable across 32/64-bit builds — a validator with the same
+    // constants but a different pointer width must produce the
+    // same fingerprint.
     buf.extend_from_slice(&(MAX_WAL_ENTRIES as u64).to_be_bytes());
+    buf.extend_from_slice(&MAX_WRITE_BYTES.to_be_bytes());
+    buf.extend_from_slice(&MAX_READ_BYTES.to_be_bytes());
+    buf.extend_from_slice(&MAX_TRUNCATE_BYTES.to_be_bytes());
+    buf.extend_from_slice(&(MAX_ENTRIES as u64).to_be_bytes());
+    buf.extend_from_slice(&(MAX_OPEN_FDS as u64).to_be_bytes());
+    buf.extend_from_slice(&(MAX_RANGES_PER_FILE as u64).to_be_bytes());
+    buf.extend_from_slice(&(MAX_WAITERS_PER_FILE as u64).to_be_bytes());
+    buf.extend_from_slice(&LOCK_ID_CEILING.to_be_bytes());
+    buf.push(SNAPSHOT_FORMAT_VERSION);
     let hash = Blake2b256::hash(buf);
     let mut hex = String::with_capacity(FINGERPRINT_HEX_LEN);
     for b in hash.iter().take(FINGERPRINT_HEX_LEN / 2) {
@@ -120,30 +153,39 @@ mod tests {
         );
     }
 
-    /// Golden-hex pin: current MAX_WAL_ENTRIES = 65536 yields a
-    /// specific fingerprint.  If MAX_WAL_ENTRIES ever changes,
-    /// this test fires — forcing the maintainer to acknowledge
-    /// the change breaks peering with un-upgraded peers.
+    /// Golden-hex pin: current consensus-observable constants yield
+    /// a specific fingerprint.  Post B2 expansion (2026-09-03) this
+    /// covers 10 constants (see `consensus_runtime_fingerprint`
+    /// docstring); if ANY of them changes, this test fires — forcing
+    /// the maintainer to acknowledge the change breaks peering with
+    /// un-upgraded peers.
+    ///
+    /// Prior anchors (each roll = intentional shard-wide constant
+    /// change requiring coordinated peer upgrade):
+    ///  - `26681741869115a2` (pre-B2, when fingerprint only folded
+    ///    MAX_WAL_ENTRIES).
     #[test]
-    fn fingerprint_pinned_for_current_max_wal_entries() {
-        // MAX_WAL_ENTRIES = 65_536 → u64-be = 00 00 00 00 00 01 00 00
-        // Blake2b256 of that is deterministic; take the first 8 bytes hex.
+    fn fingerprint_pinned_for_current_consensus_constants() {
         let fp = consensus_runtime_fingerprint();
         assert_eq!(
             fp.len(),
             FINGERPRINT_HEX_LEN,
             "fingerprint length locked at {FINGERPRINT_HEX_LEN} chars"
         );
-        // Pinned value: regenerate deliberately when MAX_WAL_ENTRIES
-        // changes.  Coordinated peer-upgrade required.
+        // Pinned value: regenerate deliberately when ANY of the 10
+        // consensus constants changes.  Coordinated peer-upgrade
+        // required for each roll.
         // Regenerate: cargo test -p rholang --lib -- \
-        //   fingerprint_pinned_for_current_max_wal_entries --nocapture
-        const EXPECTED_FOR_65536: &str = "26681741869115a2";
+        //   fingerprint_pinned_for_current_consensus_constants --nocapture
+        const EXPECTED_FOR_CURRENT: &str = "2315df6c0d5b6687";
         assert_eq!(
-            fp, EXPECTED_FOR_65536,
-            "M-8 fingerprint changed — did MAX_WAL_ENTRIES change?  If \
-             yes, that is a coordinated peer-upgrade event.  Update this \
-             constant + re-verify every peer in the fleet is rebuilt."
+            fp, EXPECTED_FOR_CURRENT,
+            "M-8/B2 fingerprint changed — did MAX_WAL_ENTRIES, MAX_WRITE_BYTES, \
+             MAX_READ_BYTES, MAX_TRUNCATE_BYTES, MAX_ENTRIES, MAX_OPEN_FDS, \
+             MAX_RANGES_PER_FILE, MAX_WAITERS_PER_FILE, LOCK_ID_CEILING, or \
+             SNAPSHOT_FORMAT_VERSION change?  If yes, that is a coordinated \
+             peer-upgrade event.  Update this constant + re-verify every peer \
+             in the fleet is rebuilt."
         );
         println!("consensus_runtime_fingerprint = {fp}");
     }

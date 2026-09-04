@@ -552,7 +552,7 @@ in {{
     // the invariant by construction (canonRoot unchanged).
     contract test_dir_openfile_child_succeeds(rhoSpec, _, ackCh) = {{
       for(@[true, dirCap] <- @fs!?("openDir", "shareddir", {{}})) {{
-        for(@openReply <- @dirCap!?("openFile", "child.txt", "r")) {{
+        for(@openReply <- @dirCap!?("openFile", "child.txt", {{"mode": "r"}})) {{
           match openReply {{
             [true, fileCap] => {{
               for(@readReply <- @fileCap!?("readN", 64)) {{

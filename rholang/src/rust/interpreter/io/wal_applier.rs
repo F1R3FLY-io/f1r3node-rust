@@ -1,5 +1,5 @@
 // WAL fresh-tree applier (Phase 7b-2 item (c), 2026-08-28;
-// hardened 2026-08-28 review pass).
+// hardened 2026-08-28 review pass; TOCTOU-hardened 2026-09-03 S-1).
 //
 // Reconstructs on-disk file state from a captured WAL slice + a
 // hash → bytes payload sidecar.  Moved here from the fs_wal_spec.rs
@@ -9,16 +9,36 @@
 // # Callers
 //
 // **Production (Phase 7b-2 joiner):** applies the WAL to its own
-// filesystem tree.  WAL entries' `path` values are already
-// canonical host paths agreed across validators (operator-frozen
-// `consensus-static-*` roots), so the joiner passes an identity
-// `path_map` closure.
+// filesystem tree.  Each WAL entry's `path` is routed through
+// `RootIdentityRegistry::resolve_wal_entry_root_rel`, which returns
+// `(on_disk_root, rel_from_root, expected_root_id)` — the same
+// tuple the leader-side handlers use.  The applier then descends
+// via `safe_descend_verified` + `*at` syscalls, matching the
+// handler-side TOCTOU discipline exactly.
 //
 // **Test (pb_m_14_*, wal_applier_skips_failure_outcome_entries):**
 // uses separate leader/follower tempdirs for isolation and passes
-// a translation closure that rewrites the WAL's absolute paths
-// from `leader_root/rel` to `follower_root/rel`.  The `translate_path`
+// a translation closure that decomposes the leader WAL path
+// (`leader_root/rel`) into `(follower_root, rel, None)` for
+// safe-descent under the follower tree.  The `translate_path`
 // helper stays in the test module — it's a test-harness artifact.
+//
+// # TOCTOU discipline (2026-09-03 S-1)
+//
+// Pre-S-1 the applier used absolute-path `std::fs::*` / `libc::chown`
+// against the closure-derived path.  A local attacker (or a race
+// with a legit local process) could rename/symlink-swap a path
+// component between the closure evaluation and the syscall, causing
+// the applier to write outside the on-disk root.  The `allowed_roots`
+// check bounded the blast radius after the fact but did not close
+// the race.
+//
+// Post-S-1 the applier follows the same discipline as the fs
+// handlers: `safe_descend_verified(root, rel, expected_root_id)`
+// yields a `SafeParent` (a dirfd + a leaf `CString`), and every
+// mutation is a `*at` syscall against that dirfd.  Any intermediate
+// component swap between descent and syscall fails cleanly at the
+// `*at` boundary rather than escaping the root.
 //
 // # Path validation (defense-in-depth)
 //
@@ -66,7 +86,41 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
+use super::path::{safe_descend_verified, QuarantineError, SafeParent};
 use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+
+/// Result of decomposing a WAL entry's absolute path into the
+/// `(on_disk_root, rel_from_root, expected_root_id)` triple the
+/// applier hands to `safe_descend_verified`.
+///
+/// Production callers construct this via
+/// `RootIdentityRegistry::resolve_wal_entry_root_rel`, which
+/// consults the boot-populated registry for the on-disk root and
+/// identity.  Test callers construct it directly from tempdir
+/// roots + relative subpaths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedWalPath {
+    pub root: PathBuf,
+    pub rel: PathBuf,
+    pub expected_root_id: Option<(u64, u64)>,
+}
+
+impl ResolvedWalPath {
+    /// Convenience for tests: `<parent>/<file_name>` split with no
+    /// identity check.  Callers that already know the tempdir root
+    /// + relative filename should construct the struct directly
+    /// (this fallback only works for depth-1 paths).
+    pub fn identity_leaf_split(p: &Path) -> Self {
+        ResolvedWalPath {
+            root: p
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/")),
+            rel: p.file_name().map(PathBuf::from).unwrap_or_default(),
+            expected_root_id: None,
+        }
+    }
+}
 
 /// Every failure mode the applier can surface.  Callers pattern-
 /// match to distinguish "byzantine input" (log + skip) from
@@ -100,10 +154,11 @@ pub enum ApplierError {
     MissingOwner { entry_index: usize },
     /// A Rename/CopyFile entry is missing `extra_path`.
     MissingExtraPath { entry_index: usize, op: WalOp },
-    /// The WAL entry's path contains a NULL byte, which would
-    /// cause `CString::new` to fail before any syscall.  Only
-    /// reachable via a byzantine WAL (Blake2b256 preimage would
-    /// have to be forged); pre-hardening this triggered a panic.
+    /// The WAL entry's path contains a NULL byte, which the
+    /// `safe_descend_verified` layer catches at `to_c` before any
+    /// syscall.  Post-S-1 this variant is retained for callers
+    /// that may synthesize path-level pre-checks; the primary
+    /// path routes NULL through `SafeDescendFailed`.
     PathContainsNull { entry_index: usize },
     /// The WAL entry's path is not under any of the caller-
     /// supplied `allowed_roots`.  Defense-in-depth: blocks a
@@ -128,13 +183,25 @@ pub enum ApplierError {
         path: PathBuf,
         message: String,
     },
-    /// Chown's `libc::chown` returned a non-zero rc that is
+    /// Chown's `libc::fchownat` returned a non-zero rc that is
     /// not EPERM (EPERM is treated as a no-op success for
     /// unprivileged hosts — see the Chown branch's comment).
     ChownFailed {
         entry_index: usize,
         path: PathBuf,
         errno: i32,
+    },
+    /// `safe_descend_verified` failed for this entry's
+    /// (on-disk-root, rel) — e.g., a symlink component was found,
+    /// the root's boot-captured identity no longer matches, or the
+    /// rel escaped the root.  Post-S-1 the applier surfaces
+    /// descent failures explicitly rather than papering over them
+    /// with a downstream open error.
+    SafeDescendFailed {
+        entry_index: usize,
+        root: PathBuf,
+        rel: PathBuf,
+        reason: String,
     },
 }
 
@@ -197,6 +264,15 @@ impl std::fmt::Display for ApplierError {
                 f,
                 "WAL entry {entry_index}: chown {path:?} failed with errno {errno}"
             ),
+            ApplierError::SafeDescendFailed {
+                entry_index,
+                root,
+                rel,
+                reason,
+            } => write!(
+                f,
+                "WAL entry {entry_index}: safe_descend {root:?} / {rel:?} failed: {reason}"
+            ),
         }
     }
 }
@@ -207,6 +283,14 @@ impl std::error::Error for ApplierError {}
 ///
 /// See module docstring for supported ops, path_map semantics,
 /// path validation, and error variants.
+///
+/// `path_map` receives the WAL entry's `path` (or `extra_path`)
+/// and returns a `ResolvedWalPath` — the `(on_disk_root,
+/// rel_from_root, expected_root_id)` triple the applier hands to
+/// `safe_descend_verified`.  Every mutation runs as a `*at`
+/// syscall against the descended dirfd, so a component swap
+/// between descent and syscall cannot escape the on-disk root
+/// (S-1 TOCTOU discipline, 2026-09-03).
 pub fn apply_wal_to_fresh_tree<F>(
     wal: &[WalEntry],
     payload_bytes: &HashMap<[u8; 32], Vec<u8>>,
@@ -214,24 +298,14 @@ pub fn apply_wal_to_fresh_tree<F>(
     allowed_roots: &[PathBuf],
 ) -> Result<(), ApplierError>
 where
-    F: Fn(&Path) -> PathBuf,
+    F: Fn(&Path) -> ResolvedWalPath,
 {
-    use std::io::{Seek, SeekFrom, Write};
     for (i, entry) in wal.iter().enumerate() {
         if matches!(entry.outcome, WalOutcome::Failure { .. }) {
             continue; // H-6: leader never mutated disk on Failure
         }
-        // Defense-in-depth: path validation against caller-supplied
-        // consensus-static roots.  Empty allowed_roots skips.
-        if !allowed_roots.is_empty() {
-            check_path_allowed(i, &entry.path, allowed_roots)?;
-            if let Some(ep) = &entry.extra_path {
-                check_path_allowed(i, ep, allowed_roots)?;
-            }
-        }
         match entry.op {
             WalOp::Write | WalOp::WriteAt => {
-                let dst = path_map(&entry.path);
                 let hash = match entry.payload_ref {
                     Some(PayloadRef::Hash(h)) => h,
                     Some(PayloadRef::DeployRef { .. }) => {
@@ -255,52 +329,55 @@ where
                     entry_index: i,
                     op: entry.op,
                 })?;
-                let mut f = std::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(false)
-                    .open(&dst)
-                    .map_err(|e| ApplierError::IoFailure {
-                        entry_index: i,
-                        op: entry.op,
-                        path: dst.clone(),
-                        message: format!("open: {e}"),
-                    })?;
-                f.seek(SeekFrom::Start(off))
-                    .map_err(|e| ApplierError::IoFailure {
-                        entry_index: i,
-                        op: entry.op,
-                        path: dst.clone(),
-                        message: format!("seek: {e}"),
-                    })?;
-                f.write_all(bytes).map_err(|e| ApplierError::IoFailure {
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let fd = openat_leaf(
+                    i,
+                    entry.op,
+                    &parent,
+                    &dst,
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC,
+                    0o644,
+                )?;
+                let write_res = pwrite_all(fd, bytes, off);
+                unsafe { libc::close(fd) };
+                write_res.map_err(|e| ApplierError::IoFailure {
                     entry_index: i,
                     op: entry.op,
-                    path: dst.clone(),
-                    message: format!("write: {e}"),
+                    path: dst,
+                    message: format!("pwrite: {e}"),
                 })?;
             }
             WalOp::Truncate => {
-                let dst = path_map(&entry.path);
                 let n = entry.offset.ok_or(ApplierError::MissingOffset {
                     entry_index: i,
                     op: entry.op,
                 })?;
-                let f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(&dst)
-                    .map_err(|e| ApplierError::IoFailure {
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let fd = openat_leaf(
+                    i,
+                    entry.op,
+                    &parent,
+                    &dst,
+                    libc::O_WRONLY | libc::O_CLOEXEC,
+                    0,
+                )?;
+                let rc = unsafe { libc::ftruncate(fd, n as libc::off_t) };
+                let ftrunc_err = if rc < 0 {
+                    Some(std::io::Error::last_os_error())
+                } else {
+                    None
+                };
+                unsafe { libc::close(fd) };
+                if let Some(e) = ftrunc_err {
+                    return Err(ApplierError::IoFailure {
                         entry_index: i,
                         op: entry.op,
-                        path: dst.clone(),
-                        message: format!("open: {e}"),
-                    })?;
-                f.set_len(n).map_err(|e| ApplierError::IoFailure {
-                    entry_index: i,
-                    op: entry.op,
-                    path: dst.clone(),
-                    message: format!("set_len: {e}"),
-                })?;
+                        path: dst,
+                        message: format!("ftruncate: {e}"),
+                    });
+                }
             }
             // Observation-only — nothing to reconstruct on disk.
             WalOp::Read
@@ -310,21 +387,30 @@ where
             | WalOp::Size
             | WalOp::EntriesStreamNext => {}
             WalOp::Chmod => {
-                let dst = path_map(&entry.path);
                 let bits = entry
                     .mode_bits
                     .ok_or(ApplierError::MissingModeBits { entry_index: i })?;
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(bits);
-                std::fs::set_permissions(&dst, perms).map_err(|e| ApplierError::IoFailure {
-                    entry_index: i,
-                    op: entry.op,
-                    path: dst.clone(),
-                    message: format!("set_permissions: {e}"),
-                })?;
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let rc = unsafe {
+                    libc::fchmodat(
+                        parent.as_raw_fd(),
+                        parent.leaf_ptr(),
+                        bits as libc::mode_t,
+                        0,
+                    )
+                };
+                if rc != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: dst,
+                        message: format!("fchmodat: {e}"),
+                    });
+                }
             }
             WalOp::Chown => {
-                let dst = path_map(&entry.path);
                 let owner = entry
                     .owner
                     .as_ref()
@@ -339,9 +425,17 @@ where
                     None | Some("") => u32::MAX,
                     Some(g) => resolve_gid(g)?,
                 };
-                let cpath = os_str_to_cstring(dst.as_os_str())
-                    .map_err(|_| ApplierError::PathContainsNull { entry_index: i })?;
-                let rc = unsafe { libc::chown(cpath.as_ptr(), uid, gid) };
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let rc = unsafe {
+                    libc::fchownat(
+                        parent.as_raw_fd(),
+                        parent.leaf_ptr(),
+                        uid,
+                        gid,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                };
                 if rc != 0 {
                     let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                     // Unprivileged hosts (typical CI) can't chown
@@ -361,25 +455,36 @@ where
                 }
             }
             WalOp::RemoveFile => {
-                let dst = path_map(&entry.path);
-                std::fs::remove_file(&dst).map_err(|e| ApplierError::IoFailure {
-                    entry_index: i,
-                    op: entry.op,
-                    path: dst.clone(),
-                    message: format!("remove_file: {e}"),
-                })?;
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let rc = unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), 0) };
+                if rc != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: dst,
+                        message: format!("unlinkat: {e}"),
+                    });
+                }
             }
             WalOp::RemoveDir => {
-                let dst = path_map(&entry.path);
-                std::fs::remove_dir(&dst).map_err(|e| ApplierError::IoFailure {
-                    entry_index: i,
-                    op: entry.op,
-                    path: dst.clone(),
-                    message: format!("remove_dir: {e}"),
-                })?;
+                let (parent, dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let rc = unsafe {
+                    libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), libc::AT_REMOVEDIR)
+                };
+                if rc != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: dst,
+                        message: format!("unlinkat(AT_REMOVEDIR): {e}"),
+                    });
+                }
             }
             WalOp::Rename => {
-                let from = path_map(&entry.path);
                 let extra = entry
                     .extra_path
                     .as_ref()
@@ -387,16 +492,29 @@ where
                         entry_index: i,
                         op: entry.op,
                     })?;
-                let to = path_map(extra);
-                std::fs::rename(&from, &to).map_err(|e| ApplierError::IoFailure {
-                    entry_index: i,
-                    op: entry.op,
-                    path: from.clone(),
-                    message: format!("rename → {to:?}: {e}"),
-                })?;
+                let (from_parent, from_dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let (to_parent, to_dst) =
+                    descend_entry(i, entry.op, extra, &path_map, allowed_roots)?;
+                let rc = unsafe {
+                    libc::renameat(
+                        from_parent.as_raw_fd(),
+                        from_parent.leaf_ptr(),
+                        to_parent.as_raw_fd(),
+                        to_parent.leaf_ptr(),
+                    )
+                };
+                if rc != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(ApplierError::IoFailure {
+                        entry_index: i,
+                        op: entry.op,
+                        path: from_dst,
+                        message: format!("renameat → {to_dst:?}: {e}"),
+                    });
+                }
             }
             WalOp::CopyFile => {
-                let from = path_map(&entry.path);
                 let extra = entry
                     .extra_path
                     .as_ref()
@@ -404,17 +522,198 @@ where
                         entry_index: i,
                         op: entry.op,
                     })?;
-                let to = path_map(extra);
-                std::fs::copy(&from, &to).map_err(|e| ApplierError::IoFailure {
+                let (from_parent, from_dst) =
+                    descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                let (to_parent, to_dst) =
+                    descend_entry(i, entry.op, extra, &path_map, allowed_roots)?;
+                copy_at(&from_parent, &to_parent).map_err(|e| ApplierError::IoFailure {
                     entry_index: i,
                     op: entry.op,
-                    path: from.clone(),
-                    message: format!("copy → {to:?}: {e}"),
+                    path: from_dst.clone(),
+                    message: format!("copy → {to_dst:?}: {e}"),
                 })?;
             }
         }
     }
     Ok(())
+}
+
+/// Common prologue for every op: run the closure, apply
+/// `allowed_roots` defense-in-depth against the derived on-disk
+/// root, then `safe_descend_verified` to obtain the SafeParent
+/// dirfd.  Returns the descended parent + the joined on-disk
+/// path for error messages.
+fn descend_entry<F>(
+    entry_index: usize,
+    op: WalOp,
+    entry_path: &Path,
+    path_map: &F,
+    allowed_roots: &[PathBuf],
+) -> Result<(SafeParent, PathBuf), ApplierError>
+where
+    F: Fn(&Path) -> ResolvedWalPath,
+{
+    let resolved = path_map(entry_path);
+    if !allowed_roots.is_empty() {
+        check_path_allowed(entry_index, &resolved.root, allowed_roots)?;
+    }
+    let rel_str = resolved.rel.to_string_lossy().into_owned();
+    let dst = resolved.root.join(&resolved.rel);
+    let parent = safe_descend_verified(&resolved.root, &rel_str, resolved.expected_root_id)
+        .map_err(|qe| ApplierError::SafeDescendFailed {
+            entry_index,
+            root: resolved.root.clone(),
+            rel: resolved.rel.clone(),
+            reason: format_quarantine(&qe),
+        })?;
+    // Silence "unused op" warning on paths that skip IoFailure
+    // wrapping — retained for future error variants that carry op.
+    let _ = op;
+    Ok((parent, dst))
+}
+
+fn format_quarantine(qe: &QuarantineError) -> String {
+    match qe {
+        QuarantineError::Empty => "empty rel".to_string(),
+        QuarantineError::RootSelf => "rel resolves to root itself".to_string(),
+        QuarantineError::EscapesRoot => "rel escapes root".to_string(),
+        QuarantineError::SymlinkComponent => "symlink component in path".to_string(),
+        QuarantineError::RootIdentityChanged => "root identity changed post-boot".to_string(),
+        QuarantineError::IoError(kind, msg) => format!("{kind:?}: {msg}"),
+    }
+}
+
+fn openat_leaf(
+    entry_index: usize,
+    op: WalOp,
+    parent: &SafeParent,
+    dst: &Path,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> Result<libc::c_int, ApplierError> {
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            parent.leaf_ptr(),
+            flags | libc::O_NOFOLLOW,
+            mode as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        let e = std::io::Error::last_os_error();
+        return Err(ApplierError::IoFailure {
+            entry_index,
+            op,
+            path: dst.to_path_buf(),
+            message: format!("openat: {e}"),
+        });
+    }
+    Ok(fd)
+}
+
+fn pwrite_all(fd: libc::c_int, bytes: &[u8], off: u64) -> std::io::Result<()> {
+    let mut written: usize = 0;
+    while written < bytes.len() {
+        let n = unsafe {
+            libc::pwrite(
+                fd,
+                bytes.as_ptr().add(written) as *const _,
+                bytes.len() - written,
+                (off + written as u64) as libc::off_t,
+            )
+        };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "pwrite returned 0",
+            ));
+        }
+        written += n as usize;
+    }
+    Ok(())
+}
+
+/// Portable file-to-file copy via two openat'd fds + a read/write
+/// loop.  Avoids `libc::sendfile` / `copy_file_range` for macOS
+/// compatibility (per FIP scope).  The destination is created
+/// with 0o644 and truncated — matches `std::fs::copy` semantics
+/// closely enough for WAL replay (leader's Chmod entries adjust
+/// perms after the fact).
+fn copy_at(from_parent: &SafeParent, to_parent: &SafeParent) -> std::io::Result<()> {
+    let from_fd = unsafe {
+        libc::openat(
+            from_parent.as_raw_fd(),
+            from_parent.leaf_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0,
+        )
+    };
+    if from_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    struct FdGuard(libc::c_int);
+    impl Drop for FdGuard {
+        fn drop(&mut self) { unsafe { libc::close(self.0) }; }
+    }
+    let _from_guard = FdGuard(from_fd);
+    let to_fd = unsafe {
+        libc::openat(
+            to_parent.as_raw_fd(),
+            to_parent.leaf_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o644,
+        )
+    };
+    if to_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let _to_guard = FdGuard(to_fd);
+
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = unsafe { libc::read(from_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let mut written = 0usize;
+        while written < n as usize {
+            let w = unsafe {
+                libc::write(
+                    to_fd,
+                    buf.as_ptr().add(written) as *const _,
+                    n as usize - written,
+                )
+            };
+            if w < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if w == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "write returned 0",
+                ));
+            }
+            written += w as usize;
+        }
+    }
 }
 
 fn check_path_allowed(
@@ -430,12 +729,6 @@ fn check_path_allowed(
             path: path.to_path_buf(),
         })
     }
-}
-
-/// Convert an `OsStr` to a nul-terminated C string suitable for
-/// libc syscalls.  Fails cleanly on embedded NULL bytes.
-fn os_str_to_cstring(s: &std::ffi::OsStr) -> Result<CString, std::ffi::NulError> {
-    CString::new(s.as_encoded_bytes())
 }
 
 /// Thread-safe `getpwnam` — uses `getpwnam_r` under the hood so
@@ -574,7 +867,13 @@ mod tests {
         let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
         sidecar.insert(h, payload.clone());
 
-        apply_wal_to_fresh_tree(&[entry], &sidecar, |p| p.to_path_buf(), &[]).unwrap();
+        apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .unwrap();
 
         let got = std::fs::read(&dst).unwrap();
         assert_eq!(&got[..2], &[0, 0]);
@@ -608,7 +907,13 @@ mod tests {
         };
         // Empty sidecar — a Failure entry must not touch it.
         let sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
-        apply_wal_to_fresh_tree(&[failure_entry], &sidecar, |p| p.to_path_buf(), &[]).unwrap();
+        apply_wal_to_fresh_tree(
+            &[failure_entry],
+            &sidecar,
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .unwrap();
 
         // Byte state unchanged.
         assert_eq!(std::fs::read(&dst).unwrap(), vec![0xAA; 8]);
@@ -636,7 +941,11 @@ mod tests {
             &sidecar,
             |p| {
                 let rel = p.strip_prefix(&src).unwrap();
-                dst.join(rel)
+                ResolvedWalPath {
+                    root: dst.clone(),
+                    rel: rel.to_path_buf(),
+                    expected_root_id: None,
+                }
             },
             &[],
         )
@@ -669,8 +978,13 @@ mod tests {
         let (entry, h) = write_entry_at(&dst, 0, &payload);
         // Empty sidecar — hash h is not present.
         let sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
-        let err = apply_wal_to_fresh_tree(&[entry], &sidecar, |p| p.to_path_buf(), &[])
-            .expect_err("missing sidecar must Err");
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .expect_err("missing sidecar must Err");
         assert_eq!(err, ApplierError::MissingSidecarEntry {
             entry_index: 0,
             hash_hex: hex::encode(h),
@@ -703,8 +1017,13 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         };
-        let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
-            .expect_err("DeployRef must Err");
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .expect_err("DeployRef must Err");
         assert_eq!(err, ApplierError::UnsupportedPayloadRef { entry_index: 0 });
     }
 
@@ -724,8 +1043,13 @@ mod tests {
         sidecar.insert(h, payload.clone());
 
         let allowed = vec![root.path().to_path_buf()];
-        let err = apply_wal_to_fresh_tree(&[entry], &sidecar, |p| p.to_path_buf(), &allowed)
-            .expect_err("out-of-root must Err");
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &allowed,
+        )
+        .expect_err("out-of-root must Err");
         assert!(
             matches!(err, ApplierError::PathOutsideAllowedRoots {
                 entry_index: 0,
@@ -751,15 +1075,29 @@ mod tests {
         sidecar.insert(h, payload.clone());
         // allowed_roots empty AND dst is a tempdir path outside
         // any "consensus-static" prefix — validation must not fire.
-        apply_wal_to_fresh_tree(&[entry], &sidecar, |p| p.to_path_buf(), &[]).unwrap();
+        apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .unwrap();
         let got = std::fs::read(&dst).unwrap();
         assert_eq!(&got[..2], payload.as_slice());
     }
 
     /// A NULL byte inside a chown target path is caught by
-    /// os_str_to_cstring and surfaces as PathContainsNull.  Pre-
+    /// `safe_descend_verified`'s `to_c` step (post-S-1
+    /// 2026-09-03) and surfaces as `SafeDescendFailed`.  Pre-
     /// hardening this triggered a `.unwrap()` panic that killed
-    /// the boot subscriber loop.
+    /// the boot subscriber loop; pre-S-1 it surfaced as
+    /// `PathContainsNull` via the applier's own `os_str_to_cstring`
+    /// pre-check.
+    ///
+    /// Chown resolves NSS names BEFORE descent, so a nonexistent
+    /// owner must NOT be used here (that would fire `NssNotFound`
+    /// first).  Use a name that exists on virtually every host
+    /// (`root`) so we exercise the descent-side NULL check.
     #[test]
     fn chown_path_with_null_byte_returns_error() {
         use std::os::unix::ffi::OsStrExt;
@@ -773,13 +1111,21 @@ mod tests {
             length: None,
             payload_ref: None,
             mode_bits: None,
-            owner: Some("root".to_string()),
-            group: None,
+            owner: Some(String::new()),
+            group: Some(String::new()),
             outcome: WalOutcome::Success,
         };
-        let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
-            .expect_err("path with NULL must Err");
-        assert_eq!(err, ApplierError::PathContainsNull { entry_index: 0 });
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .expect_err("path with NULL must Err");
+        assert!(
+            matches!(err, ApplierError::SafeDescendFailed { entry_index: 0, .. }),
+            "got {err:?}"
+        );
     }
 
     /// Empty owner + empty group short-circuits to (u32::MAX,
@@ -807,7 +1153,13 @@ mod tests {
             outcome: WalOutcome::Success,
         };
         // Should return Ok on any host, no NSS involvement.
-        apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[]).unwrap();
+        apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .unwrap();
     }
 
     /// Chown NSS lookup with a nonexistent owner name surfaces as
@@ -831,8 +1183,13 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         };
-        let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
-            .expect_err("nonexistent owner must Err");
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .expect_err("nonexistent owner must Err");
         assert!(
             matches!(err, ApplierError::NssNotFound { .. }),
             "got {err:?}"
@@ -859,8 +1216,13 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         };
-        let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
-            .expect_err("missing extra_path must Err");
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .expect_err("missing extra_path must Err");
         assert_eq!(err, ApplierError::MissingExtraPath {
             entry_index: 0,
             op: WalOp::Rename,
@@ -886,8 +1248,13 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         };
-        let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
-            .expect_err("missing offset on Truncate must Err");
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .expect_err("missing offset on Truncate must Err");
         assert_eq!(err, ApplierError::MissingOffset {
             entry_index: 0,
             op: WalOp::Truncate,
@@ -912,8 +1279,13 @@ mod tests {
             group: None,
             outcome: WalOutcome::Success,
         };
-        let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
-            .expect_err("truncate on missing file must Err");
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &HashMap::new(),
+            |p| ResolvedWalPath::identity_leaf_split(p),
+            &[],
+        )
+        .expect_err("truncate on missing file must Err");
         assert!(
             matches!(err, ApplierError::IoFailure {
                 entry_index: 0,
@@ -922,5 +1294,89 @@ mod tests {
             }),
             "got {err:?}"
         );
+    }
+
+    /// S-1 TOCTOU pin (2026-09-03): a symlink component along the
+    /// on-disk path is rejected by `safe_descend_verified`'s
+    /// `openat(O_NOFOLLOW)` step, surfacing as `SafeDescendFailed`
+    /// rather than silently traversing into the symlink target.
+    /// Pre-S-1 the applier's `std::fs::*` calls followed the
+    /// symlink, letting a race with a local process redirect the
+    /// write outside the on-disk root.
+    #[test]
+    fn symlink_intermediate_component_returns_safe_descend_failed() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let evil = tempfile::tempdir().unwrap();
+        // /root/sub is a symlink to /evil (the attacker's tree).
+        symlink(evil.path(), root.path().join("sub")).unwrap();
+        // Target the applier at /root/sub/target.bin — a Write op
+        // that pre-S-1 would follow the symlink and land in /evil.
+        let target = root.path().join("sub").join("target.bin");
+        let payload = b"hello".to_vec();
+        let (entry, h) = write_entry_at(&target, 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+
+        let root_pb = root.path().to_path_buf();
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |p| {
+                let rel = p.strip_prefix(&root_pb).unwrap();
+                ResolvedWalPath {
+                    root: root_pb.clone(),
+                    rel: rel.to_path_buf(),
+                    expected_root_id: None,
+                }
+            },
+            &[],
+        )
+        .expect_err("symlink component must Err");
+        assert!(
+            matches!(err, ApplierError::SafeDescendFailed { entry_index: 0, .. }),
+            "got {err:?}"
+        );
+        // The attacker's tree is untouched.
+        assert!(!evil.path().join("target.bin").exists());
+    }
+
+    /// S-1 TOCTOU pin (2026-09-03): a mismatched `expected_root_id`
+    /// (as would happen under the H-5 rename-and-recreate attack)
+    /// is rejected by `safe_descend_verified` and surfaces as
+    /// `SafeDescendFailed`.  Pre-S-1 the applier had no identity
+    /// check at all — a swapped root's contents were silently
+    /// mutated.
+    #[test]
+    fn mismatched_root_identity_returns_safe_descend_failed() {
+        let root = tempfile::tempdir().unwrap();
+        let dst = root.path().join("t.bin");
+        std::fs::write(&dst, vec![0u8; 8]).unwrap();
+
+        let payload = b"data".to_vec();
+        let (entry, h) = write_entry_at(&dst, 0, &payload);
+        let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+        sidecar.insert(h, payload.clone());
+
+        let root_pb = root.path().to_path_buf();
+        // Synthesize a bogus identity — root's real (dev, inode)
+        // will not match, forcing RootIdentityChanged.
+        let err = apply_wal_to_fresh_tree(
+            &[entry],
+            &sidecar,
+            |_p| ResolvedWalPath {
+                root: root_pb.clone(),
+                rel: std::path::PathBuf::from("t.bin"),
+                expected_root_id: Some((u64::MAX, u64::MAX)),
+            },
+            &[],
+        )
+        .expect_err("mismatched root identity must Err");
+        assert!(
+            matches!(err, ApplierError::SafeDescendFailed { entry_index: 0, .. }),
+            "got {err:?}"
+        );
+        // File unchanged.
+        assert_eq!(std::fs::read(&dst).unwrap(), vec![0u8; 8]);
     }
 }

@@ -7327,32 +7327,37 @@ mod tests {
         }
     }
 
-    /// Rewrite an absolute path from `leader_root/rel` to
-    /// `follower_root/rel`.  Panics if the path isn't rooted under
-    /// `leader_root` — that's a WAL entry the applier can't handle
-    /// safely (an out-of-tree canon_path would mean the leader saw a
-    /// symlink escape, which boot-time validation forbids in the
-    /// consensus-static trees this test targets).
+    /// Rewrite an absolute path from `leader_root/rel` into the
+    /// `(follower_root, rel, None)` triple the TOCTOU-safe applier
+    /// hands to `safe_descend_verified` (S-1 hardening 2026-09-03).
+    /// Panics if the path isn't rooted under `leader_root` — that's
+    /// a WAL entry the applier can't handle safely (an out-of-tree
+    /// canon_path would mean the leader saw a symlink escape, which
+    /// boot-time validation forbids in the consensus-static trees
+    /// this test targets).
     fn translate_path(
         leader_root: &std::path::Path,
         follower_root: &std::path::Path,
         p: &std::path::Path,
-    ) -> std::path::PathBuf {
+    ) -> rholang::rust::interpreter::io::wal_applier::ResolvedWalPath {
         let rel = p.strip_prefix(leader_root).unwrap_or_else(|_| {
             panic!(
                 "WAL entry path {p:?} is not rooted under leader_root {leader_root:?}; \
                  test harness invariant violated"
             )
         });
-        follower_root.join(rel)
+        rholang::rust::interpreter::io::wal_applier::ResolvedWalPath {
+            root: follower_root.to_path_buf(),
+            rel: rel.to_path_buf(),
+            expected_root_id: None,
+        }
     }
 
     /// Test-only wrapper for `apply_wal_to_fresh_tree` that
     /// translates leader-tree WAL paths onto a follower tree via
-    /// `translate_path`.  Production joiners pass an identity
-    /// closure directly (the WAL already carries the joiner's
-    /// canonical paths); this helper keeps the four `pb_m_14_*`
-    /// call sites terse.
+    /// `translate_path`.  Production joiners construct the
+    /// resolver from the boot registry (`resolve_wal_entry_root_rel`);
+    /// this helper keeps the `pb_m_14_*` call sites terse.
     ///
     /// Passes empty `allowed_roots` — the test fixtures use
     /// tempdirs so operator-frozen consensus-static-root

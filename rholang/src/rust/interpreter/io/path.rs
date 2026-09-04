@@ -547,6 +547,69 @@ impl RootIdentityRegistry {
             None => entry_path.to_path_buf(),
         }
     }
+
+    /// Consensus-fs Shape A / S-1 hardening (2026-09-03): same
+    /// longest-prefix logic as `resolve_wal_entry_path`, but returns
+    /// the decomposed `(on_disk_root, rel_from_root, expected_root_id)`
+    /// triple the TOCTOU-safe applier hands to `safe_descend_verified`
+    /// / `*at` syscalls.  Falls through to `(entry_path.parent(),
+    /// entry_path.file_name(), None)` for unregistered legacy paths
+    /// — preserves pre-Shape-A behavior for callers whose WAL entries
+    /// carry absolute on-disk paths that were never registered.
+    ///
+    /// # Fall-through split rationale
+    ///
+    /// Unregistered legacy paths carry no identity (`None`) and lose
+    /// the H-5 rename-and-recreate defense — matching pre-S-1
+    /// behavior, since the pre-S-1 applier's `std::fs::*` calls
+    /// had no defense at all.  The parent/basename split still
+    /// closes the deeper-component TOCTOU by handing safe_descend
+    /// a single-component rel.  Callers that need identity
+    /// verification MUST register the logical root at boot via
+    /// `register_with_remap`.
+    pub fn resolve_wal_entry_root_rel(
+        &self,
+        entry_path: &std::path::Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf, Option<(u64, u64)>) {
+        let backing = self.current_backing();
+        let guard = backing
+            .read()
+            .expect("root-identity registry inner poisoned");
+        let mut best: Option<(&std::path::PathBuf, &RegisteredRoot)> = None;
+        for (logical, reg) in guard.entries.iter() {
+            if entry_path.starts_with(logical) {
+                let is_better = match best {
+                    None => true,
+                    Some((cur_logical, _)) => {
+                        logical.components().count() > cur_logical.components().count()
+                    }
+                };
+                if is_better {
+                    best = Some((logical, reg));
+                }
+            }
+        }
+        match best {
+            Some((logical, reg)) => {
+                let rel = entry_path
+                    .strip_prefix(logical)
+                    .expect("starts_with matched above; strip_prefix must succeed")
+                    .to_path_buf();
+                (reg.on_disk_root.clone(), rel, Some(reg.identity))
+            }
+            None => {
+                let root = entry_path
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+                    .unwrap_or_else(|| std::path::PathBuf::from("/"));
+                let rel = entry_path
+                    .file_name()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default();
+                (root, rel, None)
+            }
+        }
+    }
 }
 
 /// Descend to the leaf itself as a fresh `File` handle, using the caller-

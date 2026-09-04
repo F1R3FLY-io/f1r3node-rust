@@ -147,7 +147,7 @@ in {{
   for(@(_, fs) <- fsCh) {{
     contract test_openfile_mode_attenuation(rhoSpec, _, ackCh) = {{
       for(@[true, dir] <- @fs!?("openDir", "shareddir", {{}})) {{
-        for(@r <- @dir!?("openFile", "child.txt", "rw")) {{
+        for(@r <- @dir!?("openFile", "child.txt", {{"mode": "rw"}})) {{
           match r {{
             [false, "FSERR_UNSUPPORTED", _] => {{
               rhoSpec!("assert", (true, "==", true),
@@ -210,7 +210,7 @@ in {{
   for(@(_, fs) <- fsCh) {{
     contract test_dir_openfile_readn_roundtrip(rhoSpec, _, ackCh) = {{
       for(@[true, dir] <- @fs!?("openDir", "shareddir", {{}})) {{
-        for(@[true, file] <- @dir!?("openFile", "child.txt", "r")) {{
+        for(@[true, file] <- @dir!?("openFile", "child.txt", {{"mode": "r"}})) {{
           for(@[true, bytes] <- @file!?("readN", 64)) {{
             // "hello dir spec".toUtf8Bytes() as hex.
             rhoSpec!("assert",
@@ -343,7 +343,7 @@ in {{
   for(@(_, fs) <- fsCh) {{
     contract test_remove_dir_recursive(rhoSpec, _, ackCh) = {{
       for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
-        for(@r <- @d!?("removeDir", "subdir", true)) {{
+        for(@r <- @d!?("removeDir", "subdir", {{"recursive": true}})) {{
           // DD-RemoveDirReplyShape: subdir contains 2 files + subdir itself
           // = 3 filesystem entries removed.
           rhoSpec!("assert", (r, "==", [true, 3]),
@@ -424,7 +424,7 @@ in {{
   for(@(_, fs) <- fsCh) {{
     contract test_remove_dir_consensus_truncated(rhoSpec, _, ackCh) = {{
       for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
-        for(@r <- @d!?("removeDir", "subdir", true)) {{
+        for(@r <- @d!?("removeDir", "subdir", {{"recursive": true}})) {{
           // Native returns [true, 3, [[path, kind], ...]] for
           // Consensus recursive; Dir.rho unwraps to [true, 3].
           // Callers observe the same 2-element shape as Oracular

@@ -925,12 +925,22 @@ pub async fn apply_wal_slice_after_fetch(
     // panic surfaces as ApplierPanic so a future refactor that
     // reintroduces a panic path can't take down the subscriber.
     //
-    // Shape A / Task 0.4 (2026-08-31): build the path resolver
-    // closure from the registry.  Each entry.path (bundle-relative
-    // for Consensus, absolute for Oracular) is routed through
-    // `resolve_wal_entry_path` which does longest-prefix + rejoin
-    // or identity fall-through.
-    let path_map = move |p: &std::path::Path| registry.resolve_wal_entry_path(p);
+    // Shape A / Task 0.4 (2026-08-31, S-1 TOCTOU-hardened
+    // 2026-09-03): build the path resolver closure from the
+    // registry.  Each entry.path (bundle-relative for Consensus,
+    // absolute for Oracular) is routed through
+    // `resolve_wal_entry_root_rel` which returns the
+    // `(on_disk_root, rel_from_root, expected_root_id)` triple the
+    // TOCTOU-safe applier hands to `safe_descend_verified` +
+    // `*at` syscalls.
+    let path_map = move |p: &std::path::Path| {
+        let (root, rel, expected_root_id) = registry.resolve_wal_entry_root_rel(p);
+        rholang::rust::interpreter::io::wal_applier::ResolvedWalPath {
+            root,
+            rel,
+            expected_root_id,
+        }
+    };
     let join_result = tokio::task::spawn_blocking(move || {
         rholang::rust::interpreter::io::wal_applier::apply_wal_to_fresh_tree(
             &wal,
@@ -2165,14 +2175,19 @@ mod tests {
         let src_path = src_dir.path().join("f.bin");
         let wal = vec![write_entry(src_path.to_str().unwrap(), 0, &payload)];
 
-        // Register logical=src_dir → on_disk=dst_dir.  Identity is
-        // synthesized (0, 0) — the applier does not enforce it, only
-        // the `resolve_wal_entry_path` prefix rewrite matters here.
+        // Register logical=src_dir → on_disk=dst_dir.  Post-S-1
+        // (2026-09-03) the applier's `safe_descend_verified` step
+        // enforces the boot-captured (dev, inode) pair on the
+        // on-disk root, so this test captures the real identity
+        // of the dst tempdir instead of a synthetic (0, 0).
+        let dst_identity =
+            rholang::rust::interpreter::io::path::capture_root_identity(dst_dir.path())
+                .expect("capture dst identity");
         let registry = RootIdentityRegistry::new();
         registry.register_with_remap(
             src_dir.path().to_path_buf(),
             dst_dir.path().to_path_buf(),
-            (0, 0),
+            dst_identity,
         );
         apply_wal_slice_after_fetch(
             Arc::clone(&driver),

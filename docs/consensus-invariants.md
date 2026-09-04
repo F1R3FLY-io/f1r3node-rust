@@ -164,6 +164,16 @@ Whether a given cap + cmode combination:
 - Applies mode-differentiated gates like `Consensus + locked →
   FSERR_BUSY` on unlink / removeDir.
 
+Additional Rholang-layer bans (Dir agent):
+- `Dir.exists` — banned under Consensus (B1 fix 2026-09-03) because
+  the underlying `fs_exists` native has no Phase 5 re-execute + verify
+  and a divergent follower FS could silently yield a different
+  `[true, bool]` reply than the leader.  Callers that need presence-
+  check semantics under Consensus should use `openFile` and catch
+  `FSERR_NOT_FOUND`; the openFile path is Phase-5-verified end-to-end.
+  Rholang gate at `Dir.rho::exists`; returns `FSERR_UNSUPPORTED` with
+  a message directing callers to the openFile alternative.
+
 Changing any dispatch rule (adding a ban, removing a gate,
 switching a per-cmode journal decision) is a hard fork.
 

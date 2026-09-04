@@ -2300,39 +2300,32 @@ impl FsProcesses {
             return Err(illegal_argument_error("fs_seek"));
         };
         if is_replay {
-            // Position-follow-up (2026-08-26): the follower must
-            // update its shadow position from the leader's cached
-            // reply so subsequent sequential fs_write / fs_read
-            // journal the correct absolute offset.  Extract the
-            // new position from `previous` (leader cached
-            // ok_u64(new_pos) on success; error replies leave
-            // position unchanged, mirroring POSIX lseek's
-            // failure-doesn't-move-position semantics).
+            // B1 fix (2026-09-03): Consensus follower now verifies
+            // that its own lseek result matches the leader's cached
+            // position — closes the divergence-hiding gap A1 flagged
+            // where the follower silently overrode its own lseek's
+            // return with the leader's cached position.
             //
-            // Phase 3 prerequisite (Consensus re-execute + verify,
-            // 2026-09-01): under Consensus, the follower's shadow
-            // fd is now backed by a REAL OS fd (installed by
-            // fs_open's Phase-2 real-open).  Phase 3's fs_write
-            // re-execute advances that OS-fd position via real
-            // libc::write; Phase 2's fs_read re-execute reads from
-            // it.  For the OS-fd position to track the leader's
-            // seek movements, the Consensus follower must ALSO
-            // call libc::lseek on the real fd — not just update
-            // the shadow tracker.  Otherwise OS position drifts
-            // from shadow, and subsequent fs_read re-executes hit
-            // wrong offsets and trip spurious CONSENSUS_DIVERGENCE.
+            // Prior shape (position-follow-up 2026-08-26 + Phase 3
+            // Consensus re-execute 2026-09-01):
+            //   - follower reissued libc::lseek but discarded return;
+            //   - shadow position was set from leader's cached reply;
+            //   - a divergent follower-lseek result was invisible.
             //
-            // Oracular follower keeps the shadow-only path
-            // (Oracle-mode fd is metadata-only shadow, no real OS
-            // fd to seek).  jmode lookup below dispatches.
+            // Post-B1:
+            //   - Consensus follower reissues libc::lseek, builds a
+            //     fresh reply Par (ok_u64(pos) on success / err(...)
+            //     on failure), and hash-verifies against
+            //     previous.first() via verify_reply_hash_matches_cached.
+            //   - Divergence → FSERR_CONSENSUS_DIVERGENCE.  Match →
+            //     advance shadow to the (matched) position.
+            //   - Oracular follower keeps the shadow-only path (no
+            //     real OS fd to seek); shadow set from cached
+            //     previous, no verify (Oracular is per-node local).
             if let Some(fd) = RhoNumber::unapply(fd_par) {
                 let fd_u = fd as u64;
                 let cmode_opt = self.handles.with_mut(fd_u, |h| h.cmode).await;
                 if cmode_opt == Some(ConsensusMode::Consensus) {
-                    // Real lseek on the shadow's OS fd to keep OS
-                    // position tracking leader's play.  Re-execute
-                    // the same syscall the leader made — args are
-                    // deterministic from the same Rholang deploy.
                     if let (Some(off), Some(w)) =
                         (RhoNumber::unapply(off_par), RhoString::unapply(whence_par))
                     {
@@ -2345,13 +2338,56 @@ impl FsProcesses {
                         if let (Some(whence), Some(raw_fd)) =
                             (whence_code, self.handles.raw_fd(fd_u).await)
                         {
-                            let _ =
-                                spawn_blocking(move || unsafe { libc::lseek(raw_fd, off, whence) })
-                                    .await;
+                            let r = spawn_blocking(move || unsafe {
+                                let pos = libc::lseek(raw_fd, off, whence);
+                                if pos < 0 {
+                                    Err(std::io::Error::last_os_error())
+                                } else {
+                                    Ok(pos as u64)
+                                }
+                            })
+                            .await;
+                            let fresh_reply = match r {
+                                Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
+                                Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
+                                Ok(Ok(pos)) => ok_u64(pos),
+                            };
+                            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                                Ok(()) => {
+                                    // Match — advance shadow to the
+                                    // verified position (byte-identical
+                                    // with leader's cached position).
+                                    if let Some(new_pos) =
+                                        extract_ok_u64(std::slice::from_ref(&fresh_reply))
+                                    {
+                                        let _ = self
+                                            .handles
+                                            .with_mut(fd_u, |h| h.position = new_pos)
+                                            .await;
+                                    }
+                                    let out = vec![fresh_reply];
+                                    produce(&out, ack).await?;
+                                    return Ok(out);
+                                }
+                                Err(reason) => {
+                                    let divergence_reply = err(
+                                        FSERR_CONSENSUS_DIVERGENCE,
+                                        format!(
+                                            "fs_seek follower re-execute diverges from \
+                                             leader: {reason}",
+                                        ),
+                                    );
+                                    let out = vec![divergence_reply];
+                                    produce(&out, ack).await?;
+                                    return Ok(out);
+                                }
+                            }
                         }
                     }
                 }
             }
+            // Oracular follower (or arg-parse-failure path): shadow-
+            // only advance from leader's cached reply, no verify.
             if let (Some(fd), Some(new_pos)) =
                 (RhoNumber::unapply(fd_par), extract_ok_u64(&previous))
             {
@@ -2414,6 +2450,20 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // tell — (fd) -> [true, pos]
+    //
+    // No Phase 5 re-execute + verify (B1 review 2026-09-03).
+    // `fs_tell` is a pure query of the shadow position, which is
+    // set only by `fs_seek` (post-B1: verified), `fs_read`/`_at`
+    // (Phase 2: verified), and `fs_write`/`_at` (Phase 3: verified).
+    // If every state-shaping op above `fs_tell` verifies, the
+    // shadow cannot silently drift; a divergent shadow would have
+    // been caught at the prior op's reply-hash verify.  So
+    // `fs_tell`'s tautological `previous` echo on the follower is
+    // safe as a derivative of the verified state-shaping surface.
+    // Adding a redundant verify here would double the syscall cost
+    // of every `tell()` without catching any divergence class the
+    // upstream ops don't already.  Same derivative-safety argument
+    // as the lock handlers (see `fs_lock_range` etc.).
     // -------------------------------------------------------------------
     pub async fn fs_tell(
         &self,
@@ -4005,14 +4055,21 @@ impl FsProcesses {
                                 &[],
                             );
                         }
-                        let canon_target =
-                            canonicalize_lexical(&on_disk_root_pb.to_string_lossy(), &rel_owned);
-                        let manifest = match collect_recursive_manifest(&canon_target) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                return err_with_manifest(io_err_code(&e), io_msg_scrub(&e), &[]);
-                            }
-                        };
+                        // S-2 (2026-09-03): symlink-safe walker via
+                        // parent-dirfd + O_NOFOLLOW; canon_target is no
+                        // longer used to enumerate children.
+                        let manifest =
+                            match collect_recursive_manifest(parent.as_raw_fd(), parent.leaf_ptr())
+                            {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    return err_with_manifest(
+                                        io_err_code(&e),
+                                        io_msg_scrub(&e),
+                                        &[],
+                                    );
+                                }
+                            };
                         let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
                         for (rel_path, kind) in manifest {
                             // Empty rel_path marks the target root itself
@@ -4230,8 +4287,10 @@ impl FsProcesses {
                     // R5(b) Shape A gap where absolute per-validator
                     // paths in the recursive manifest wouldn't
                     // resolve on a joiner via the registry.
-                    let canon_target =
-                        canonicalize_lexical(&on_disk_root_pb.to_string_lossy(), &rel);
+                    // S-2 (2026-09-03): canon_target removed — the
+                    // recursive Consensus walker now uses parent's dirfd
+                    // + openat(O_NOFOLLOW) instead of a canonical path
+                    // enumeration.
                     if !recursive {
                         // Non-recursive: single unlinkat(AT_REMOVEDIR).
                         if cmode == ConsensusMode::Consensus {
@@ -4308,15 +4367,25 @@ impl FsProcesses {
                         // subdir → byte-identical relative manifests
                         // → byte-identical WAL (via canon_wal_target
                         // .join(rel)) → byte-identical replies.
-                        let manifest = match collect_recursive_manifest(&canon_target) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                // DD-RemoveDirReplyShape: manifest-walk
-                                // failure on recursive Consensus (walk
-                                // didn't start → empty deleted list).
-                                return err_with_manifest(io_err_code(&e), io_msg_scrub(&e), &[]);
-                            }
-                        };
+                        //
+                        // S-2 (2026-09-03): symlink-safe walker via
+                        // parent-dirfd + O_NOFOLLOW; canon_target is no
+                        // longer used to enumerate children.
+                        let manifest =
+                            match collect_recursive_manifest(parent.as_raw_fd(), parent.leaf_ptr())
+                            {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    // DD-RemoveDirReplyShape: manifest-walk
+                                    // failure on recursive Consensus (walk
+                                    // didn't start → empty deleted list).
+                                    return err_with_manifest(
+                                        io_err_code(&e),
+                                        io_msg_scrub(&e),
+                                        &[],
+                                    );
+                                }
+                            };
                         let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
                         for (rel_path, kind) in manifest {
                             // wal_path is bundle-relative (Shape A
@@ -6025,50 +6094,182 @@ impl RemoveKind {
 /// (bundle-relative under Shape A, absolute under identity
 /// resolution).
 ///
-/// Uses `std::fs::read_dir` because consensus trees reject
-/// symlinks at boot; the lexical-sort requirement makes std::fs
-/// the ergonomic choice over raw readdir.  If a symlink or
-/// non-file/non-dir entry is encountered here, returns Unsupported
-/// — same failure mode as boot-time validation.
+/// TOCTOU-safe recursive-rmdir walker for the Consensus branch.
+/// Descends from `parent_fd` into `leaf` (must be a directory;
+/// ELOOP if symlink) via `openat(O_NOFOLLOW)`, walks children via
+/// `fdopendir` + `fstatat(AT_SYMLINK_NOFOLLOW)`, and returns the
+/// sorted post-order manifest of `(relative_path, kind)` tuples.
+///
+/// Symlink safety: post S-2 security review fix (2026-09-03) —
+/// prior version used `std::fs::read_dir(absolute_path)` which
+/// follows symlinks and let attacker-planted symlinks under a
+/// Consensus root leak arbitrary directory names into the on-chain
+/// WAL manifest + cause cross-validator divergence.  Now every
+/// descent goes through `openat(..., O_NOFOLLOW)` and every kind-
+/// probe uses `fstatat(..., AT_SYMLINK_NOFOLLOW)`.  Any non-file
+/// / non-dir entry (symlink, fifo, socket, device) returns
+/// `Unsupported` — same failure mode as boot-time validation.
 ///
 /// Ordering: children first, then the containing directory itself
-/// (post-order).  Sibling entries are sorted by `file_name()`.
+/// (post-order).  Sibling entries sorted by name for cross-validator
+/// byte-identity of the manifest (readdir order is fs-specific).
+///
+/// Sibling: `remove_dir_recursive` below (used by the Oracular
+/// branch) — same openat+fdopendir idiom.  The two walkers are not
+/// merged because the Oracular walker inlines the unlink loop
+/// while the Consensus walker returns a manifest that the caller
+/// unlinks + journals per entry.
 fn collect_recursive_manifest(
-    target_root: &std::path::Path,
+    parent_fd: libc::c_int,
+    leaf: *const libc::c_char,
 ) -> std::io::Result<Vec<(std::path::PathBuf, RemoveKind)>> {
-    fn walk(
-        dir: &std::path::Path,
-        rel_base: &std::path::Path,
-        out: &mut Vec<(std::path::PathBuf, RemoveKind)>,
-    ) -> std::io::Result<()> {
-        let mut entries: Vec<(std::ffi::OsString, std::path::PathBuf, std::fs::FileType)> =
-            std::fs::read_dir(dir)?
-                .map(|r| r.and_then(|e| e.file_type().map(|ft| (e.file_name(), e.path(), ft))))
-                .collect::<std::io::Result<Vec<_>>>()?;
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, path, ft) in entries {
-            let rel = rel_base.join(&name);
-            if ft.is_dir() {
-                walk(&path, &rel, out)?;
-                out.push((rel, RemoveKind::Dir));
-            } else if ft.is_file() {
-                out.push((rel, RemoveKind::File));
-            } else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    format!("unexpected filesystem entry kind at {path:?}"),
-                ));
-            }
-        }
-        Ok(())
+    // Open the target dir with O_NOFOLLOW so a symlinked `leaf`
+    // fails ELOOP rather than escaping.
+    let target_fd = unsafe {
+        libc::openat(
+            parent_fd,
+            leaf,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if target_fd < 0 {
+        return Err(std::io::Error::last_os_error());
     }
     let mut out = Vec::new();
-    walk(target_root, std::path::Path::new(""), &mut out)?;
+    let walk_result = walk_dirfd_recursive(target_fd, std::path::Path::new(""), &mut out);
+    unsafe {
+        libc::close(target_fd);
+    }
+    walk_result?;
     // Final entry: target_root itself, represented by an empty
     // relative path.  Callers do canon_wal_target.join(rel) which
     // returns canon_wal_target unchanged for an empty rel.
     out.push((std::path::PathBuf::new(), RemoveKind::Dir));
     Ok(out)
+}
+
+/// Recurse into `dir_fd`, collecting `(rel_base/child_name, kind)`
+/// tuples into `out` in sorted post-order.  Called by
+/// `collect_recursive_manifest`; caller owns `dir_fd` and is
+/// responsible for closing it.
+///
+/// This function dup-then-fdopendir on `dir_fd` (dup so caller's
+/// fd stays valid for openat on subdirs), reads all entries via
+/// readdir, sorts them by name for determinism, then processes
+/// each entry:
+/// - fstatat(AT_SYMLINK_NOFOLLOW) → determine kind.
+/// - S_IFREG → push as file.
+/// - S_IFDIR → openat(O_NOFOLLOW) → recurse → close → push as dir.
+/// - Anything else (S_IFLNK, S_IFIFO, S_IFSOCK, S_IFCHR, S_IFBLK)
+///   → return Unsupported.
+fn walk_dirfd_recursive(
+    dir_fd: libc::c_int,
+    rel_base: &std::path::Path,
+    out: &mut Vec<(std::path::PathBuf, RemoveKind)>,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    // Dup the fd so fdopendir consumes the copy and dir_fd stays
+    // usable for openat on subdirs.  F_DUPFD_CLOEXEC per the same
+    // rationale as fs_entries (L-3 fix, 2026-08-06).
+    let dup_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if dup_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let dir_ptr = unsafe { libc::fdopendir(dup_fd) };
+    if dir_ptr.is_null() {
+        let e = std::io::Error::last_os_error();
+        unsafe {
+            libc::close(dup_fd);
+        }
+        return Err(e);
+    }
+    // Collect all entries; kind determined via fstatat below.
+    let mut names: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        unsafe {
+            errno_reset();
+        }
+        let ent = unsafe { libc::readdir(dir_ptr) };
+        if ent.is_null() {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(0) {
+                break;
+            }
+            unsafe {
+                libc::closedir(dir_ptr);
+            }
+            return Err(e);
+        }
+        let name_ptr = unsafe { (*ent).d_name.as_ptr() };
+        let name_c = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
+        let name_bytes = name_c.to_bytes();
+        if name_bytes == b"." || name_bytes == b".." {
+            continue;
+        }
+        names.push(std::ffi::OsStr::from_bytes(name_bytes).to_os_string());
+    }
+    unsafe {
+        libc::closedir(dir_ptr);
+    }
+    // Sort by name for cross-validator byte-identity of the manifest.
+    names.sort();
+    for name in names {
+        let rel = rel_base.join(&name);
+        // fstatat with AT_SYMLINK_NOFOLLOW: rejects symlinks by
+        // returning their symlink stat (S_IFLNK) rather than
+        // following.
+        let name_c = std::ffi::CString::new(name.as_bytes())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        let stat_rc = unsafe {
+            libc::fstatat(
+                dir_fd,
+                name_c.as_ptr(),
+                &mut stat as *mut _,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if stat_rc < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mode_kind = stat.st_mode & libc::S_IFMT;
+        if mode_kind == libc::S_IFDIR {
+            // Descend via openat(O_NOFOLLOW) — belt+suspenders
+            // after the fstatat kind check (an attacker racing
+            // between the two can't get us to follow a symlink).
+            let sub_fd = unsafe {
+                libc::openat(
+                    dir_fd,
+                    name_c.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if sub_fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let walk_result = walk_dirfd_recursive(sub_fd, &rel, out);
+            unsafe {
+                libc::close(sub_fd);
+            }
+            walk_result?;
+            out.push((rel, RemoveKind::Dir));
+        } else if mode_kind == libc::S_IFREG {
+            out.push((rel, RemoveKind::File));
+        } else {
+            // Symlink (S_IFLNK), FIFO (S_IFIFO), socket (S_IFSOCK),
+            // char device (S_IFCHR), block device (S_IFBLK).
+            // Reject uniformly.  Consensus trees are supposed to be
+            // symlink-free per boot validation; hitting one here
+            // indicates either boot-validation drift or an
+            // attacker-plant race, both worth failing loudly.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("unexpected filesystem entry kind (S_IFMT={:o})", mode_kind),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Recursive symlink-safe rmdir.  Descends from `parent` into `leaf`
