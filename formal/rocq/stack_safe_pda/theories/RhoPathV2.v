@@ -118,27 +118,29 @@ Definition parse_continuation (input : bytes)
     : option (list bytes * bytes) :=
   match input with
   | 82 :: 72 :: 80 :: 2 :: 2 :: 1 :: b0 :: b1 :: b2 :: b3 :: b4 :: b5 :: b6 :: b7 :: rest =>
-      let count := bytes_value [b7; b6; b5; b4; b3; b2; b1; b0] in
-      match count with
-      | 0 => None
-      | S _ =>
-          match take_frames count rest with
-          | Some (channels, suffix) =>
-              match suffix with
-              | 0 :: 1 :: identity_input =>
-                  match parse_frame identity_input with
-                  | Some (identity, suffix') =>
-                      match suffix' with
-                      | [] => Some (channels, identity)
-                      | _ => None
-                      end
-                  | None => None
-                  end
-              | _ => None
-              end
-          | None => None
-          end
-      end
+      if bytes_valid [b0; b1; b2; b3; b4; b5; b6; b7] then
+        let count := bytes_value [b7; b6; b5; b4; b3; b2; b1; b0] in
+        match count with
+        | 0 => None
+        | S _ =>
+            match take_frames count rest with
+            | Some (channels, suffix) =>
+                match suffix with
+                | 0 :: 1 :: identity_input =>
+                    match parse_frame identity_input with
+                    | Some (identity, suffix') =>
+                        match suffix' with
+                        | [] => Some (channels, identity)
+                        | _ => None
+                        end
+                    | None => None
+                    end
+                | _ => None
+                end
+            | None => None
+            end
+        end
+      else None
   | _ => None
   end.
 
