@@ -177,6 +177,16 @@ Theorem continuation_zero_count_bytes_are_rejected :
       0; 0; 0; 0; 0; 0; 0; 0] ++ [0; 1] ++ encode_frame []) = None.
 Proof. reflexivity. Qed.
 
+Theorem continuation_count_mismatch_is_rejected :
+  parse_continuation
+    (v2_magic ++ [continuation_kind; collection_version;
+      0; 0; 0; 0; 0; 0; 0; 1] ++ encode_frame []) = None.
+Proof. reflexivity. Qed.
+
+Theorem join_trailing_bytes_are_rejected :
+  parse_join (join_key [] [] ++ [9]) = None.
+Proof. reflexivity. Qed.
+
 Theorem v1_v2_domains_are_disjoint : forall suffix,
   [82; 72; 80; 1] ++ suffix <> v2_magic ++ suffix.
 Proof. intros suffix H; simpl in H; discriminate. Qed.
