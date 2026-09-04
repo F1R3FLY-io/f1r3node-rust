@@ -1737,7 +1737,13 @@ mod tests {
         //   only edit inside File.rho's outer `new` body; `lib_body`
         //   preserves comments, so the composed source bytes rolled.
         //   No Rholang semantics changed.
-        const EXPECTED: &str = "f0f14d1e95920e4bed2c1275400e2e9e94a77f1b22404e251a77f0b1ab6e8fc1";
+        // Prior anchor: f0f14d1e (SC-1, 2026-09-03).
+        // 2026-09-03: FS-4 spec/code alignment — File.rho's `readN`
+        //   method comment updated from "Non-normative extension" to
+        //   reference the new §Read-side stream producers > Bounded
+        //   convenience spec entry.  Comment-only edit inside File.rho's
+        //   outer `new` body; no Rholang semantics changed.
+        const EXPECTED: &str = "98ff01d3cd7cc7e616e0a43398c512cb6484d9843a943f0b0c4a7e222590e900";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

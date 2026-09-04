@@ -269,15 +269,14 @@ in {
 
     // -- readN(n) ---------------------------------------------------
     //
-    // ## Non-normative extension
-    //
-    // Not in the spec's §Read-side stream producers table (§915-989).
-    // MVP convenience: a bounded, non-streaming read that returns the
-    // next n bytes at cursor as a single ByteArray.  Spec-mandated
-    // callers use `bytes()` (unbounded stream) or `readInto(buf)`
-    // (bounded fill into a caller-owned buffer).  Kept because a
-    // handful of Phase 5 tests use it as a lightweight verification
-    // primitive; can be removed at spec-freeze if callers migrate.
+    // Spec: §Read-side stream producers > Bounded convenience.  A
+    // bounded, non-streaming read that returns the next n bytes at
+    // cursor as a single ByteArray.  Streaming callers use `bytes()`;
+    // callers that want to fill a preallocated buffer use
+    // `readInto(buf)`.  readN covers the middle ground: a bounded
+    // read into a fresh ByteArray reply payload, useful for
+    // verification / probing / small-fixture reads where allocating
+    // a Buffer would be overkill.
     //
     // n = 0 is a no-op returning [true, empty ByteArray] — matches
     // Unix read(2) semantics.  Negative n is rejected as FSERR_BAD_ARG.
