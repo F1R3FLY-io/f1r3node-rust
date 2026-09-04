@@ -259,6 +259,10 @@ pub struct RetainedRootSnapshotV1 {
 impl RetainedRootSnapshotV1 {
     pub const fn revision(&self) -> u64 { self.revision }
     pub fn roots(&self) -> &[RetainedRootV1] { &self.roots }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = RetainedRootV1> + '_ {
+        self.roots.iter().copied()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
