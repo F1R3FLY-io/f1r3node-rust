@@ -335,6 +335,10 @@ impl RetainedRootRegistryV1 {
             roots: roots.into_boxed_slice(),
         })
     }
+
+    pub fn release(&self, lease: RootLeaseV1) -> Result<(), RetentionRegistryError> {
+        lease.release()
+    }
 }
 
 pub struct RootLeaseV1 {
