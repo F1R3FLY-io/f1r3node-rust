@@ -2504,17 +2504,27 @@ impl FsProcesses {
     //
     // No Phase 5 re-execute + verify (B1 review 2026-09-03).
     // `fs_tell` is a pure query of the shadow position, which is
-    // set only by `fs_seek` (post-B1: verified), `fs_read`/`_at`
-    // (Phase 2: verified), and `fs_write`/`_at` (Phase 3: verified).
-    // If every state-shaping op above `fs_tell` verifies, the
-    // shadow cannot silently drift; a divergent shadow would have
-    // been caught at the prior op's reply-hash verify.  So
-    // `fs_tell`'s tautological `previous` echo on the follower is
-    // safe as a derivative of the verified state-shaping surface.
-    // Adding a redundant verify here would double the syscall cost
-    // of every `tell()` without catching any divergence class the
-    // upstream ops don't already.  Same derivative-safety argument
-    // as the lock handlers (see `fs_lock_range` etc.).
+    // set only by handlers in `super::verify::FdPositionMutator`
+    // (fs_seek / fs_read / fs_write).  fs_read_at (pread) and
+    // fs_write_at (pwrite) do NOT advance OS-fd position per POSIX,
+    // so they are deliberately absent from that enum.  If every
+    // state-shaping op above `fs_tell` verifies, the shadow cannot
+    // silently drift; a divergent shadow would have been caught at
+    // the prior op's reply-hash verify.  So `fs_tell`'s tautological
+    // `previous` echo on the follower is safe as a derivative of
+    // the verified state-shaping surface.  Adding a redundant
+    // verify here would double the syscall cost of every `tell()`
+    // without catching any divergence class the upstream ops don't
+    // already.  Same derivative-safety argument as the lock
+    // handlers (see `fs_lock_range` etc.).
+    //
+    // F-3 (2026-09-04): the derivative-safety argument is now
+    // pinned by `super::verify::FdPositionMutator` — a compile-
+    // time-exhaustive list of every handler that writes
+    // `FileHandle.position`.  Adding an unverified mutator without
+    // touching that enum leaves fs_tell unsound; touching the enum
+    // triggers an exhaustive-match compile error until the new
+    // mutator names its Phase-5 verify call site.
     // -------------------------------------------------------------------
     pub async fn fs_tell(
         &self,
@@ -2532,6 +2542,17 @@ impl FsProcesses {
             return Err(illegal_argument_error("fs_tell"));
         };
         if is_replay {
+            // F-3 (2026-09-04): compile-time link to the fd-position
+            // mutator invariant.  `FdPositionMutator::ALL` is the
+            // authoritative list of handlers that mutate shadow
+            // position; this reference ensures the const-eval guard
+            // in verify.rs is part of this handler's compilation
+            // unit's link footprint.  Runtime overhead: zero (const
+            // pointer read, DCE-eligible).  Compile-time value:
+            // clicking through this identifier lands you at the
+            // invariant that justifies the tautological pass-through
+            // on the next line.
+            let _fd_position_mutator_invariant = super::verify::FdPositionMutator::ALL;
             produce(&previous, ack).await?;
             return Ok(previous);
         }

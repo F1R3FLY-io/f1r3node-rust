@@ -91,6 +91,98 @@ pub fn verify_reply_hash_matches_cached(
     }
 }
 
+/// F-3 fix (2026-09-04): compile-time enforcement of `fs_tell`'s
+/// derivative-safety property.
+///
+/// `fs_tell`'s Consensus follower branch (see
+/// `handlers.rs::fs_tell` around line 2519) tautologically echoes
+/// `previous` without re-executing `libc::lseek(SEEK_CUR)`.  This
+/// is sound as long as the shadow position it reads is byte-
+/// identical between leader and follower — which holds IFF every
+/// handler that writes `FileHandle.position` is itself Phase-5
+/// verified (i.e., calls `verify_reply_hash_matches_cached` on
+/// its fresh reply and trips `FSERR_CONSENSUS_DIVERGENCE` on
+/// mismatch).
+///
+/// This enum is the AUTHORITATIVE, exhaustive list of fd-position
+/// mutators.  Every variant here MUST have a Phase-5 verify
+/// branch; the `phase_5_verify_site` method's exhaustive match
+/// forces a new-variant author to name the verify call site.
+///
+/// # Non-mutating peers deliberately excluded
+///
+/// - `libc::pread` (fs_read_at) — POSIX-guaranteed to NOT advance
+///   OS-fd position.
+/// - `libc::pwrite` (fs_write_at) — same POSIX guarantee.
+/// - `libc::ftruncate` (fs_truncate) — does not touch position.
+/// - `libc::open` (fs_open) — initializes position to 0 as a
+///   constant, not a mutation of prior state.
+///
+/// # What a new fd-position-mutating handler needs
+///
+/// Suppose a future slice adds `fs_pread_advance` that couples
+/// read-then-seek in one call.  The invariant discipline is:
+///
+/// 1. The handler MUST have a Consensus follower re-execute +
+///    verify branch (mirror `fs_seek` / `fs_read` / `fs_write`).
+/// 2. Add a variant `FsPreadAdvance` to `FdPositionMutator`.
+/// 3. `phase_5_verify_site`'s match becomes non-exhaustive
+///    (compile error E0004) — add the arm pointing at the new
+///    handler's verify call site.
+/// 4. Add the variant to `ALL` so the `fd_position_mutator_all_
+///    is_exhaustive` test passes.
+///
+/// Skipping any step 1 leaves `fs_tell` unsound.  Skipping step
+/// 3 fails to compile.  Skipping step 4 fails the test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FdPositionMutator {
+    /// `libc::lseek` in `fs_seek` sets OS-fd position.
+    /// B1 verified (2026-09-03).
+    FsSeek,
+    /// `libc::read` in `fs_read` advances OS-fd position by the
+    /// count of bytes read.  Phase-2 verified (2026-09-01).
+    FsRead,
+    /// `libc::write` in `fs_write` advances OS-fd position by the
+    /// count of bytes written.  Phase-3 verified (2026-09-01).
+    FsWrite,
+}
+
+impl FdPositionMutator {
+    /// All known fd-position-mutating handlers.  Manually
+    /// maintained alongside the enum variants; the
+    /// `fd_position_mutator_all_is_exhaustive` test in this
+    /// module fires if a variant is added to the enum without
+    /// being appended here.
+    pub const ALL: &'static [Self] = &[Self::FsSeek, Self::FsRead, Self::FsWrite];
+
+    /// Grep-verifiable pointer to the
+    /// `verify_reply_hash_matches_cached` call site for this
+    /// handler.  A regression that reverted the verify branch to
+    /// a Phase-0 tautological pass-through would leave this
+    /// string pointing at code that no longer verifies — a code-
+    /// review-catchable smell.  The exhaustive `match` forces
+    /// every new variant to name its verify site.
+    pub const fn phase_5_verify_site(self) -> &'static str {
+        match self {
+            Self::FsSeek => {
+                "rholang/src/rust/interpreter/io/handlers.rs::fs_seek — \
+                 Consensus is_replay branch (search: \
+                 `verify_reply_hash_matches_cached(&fresh_reply` in fs_seek)"
+            }
+            Self::FsRead => {
+                "rholang/src/rust/interpreter/io/handlers.rs::fs_read — \
+                 Consensus is_replay branch (search: \
+                 `verify_reply_hash_matches_cached(&fresh_reply` in fs_read)"
+            }
+            Self::FsWrite => {
+                "rholang/src/rust/interpreter/io/handlers.rs::fs_write — \
+                 Consensus is_replay branch (search: \
+                 `verify_reply_hash_matches_cached(&fresh_reply` in fs_write)"
+            }
+        }
+    }
+}
+
 fn par_stable_hash(par: &Par) -> [u8; 32] {
     let h = stable_hash_provider::hash(par).bytes();
     assert_eq!(
@@ -104,6 +196,26 @@ fn par_stable_hash(par: &Par) -> [u8; 32] {
     buf
 }
 
+/// Const-eval guard: every variant in `FdPositionMutator::ALL`
+/// must return a non-empty `phase_5_verify_site` string.  A
+/// regression that returned `""` for a variant (or added a new
+/// variant to `ALL` with a placeholder string) fires here at
+/// compile time rather than at runtime.  Complements the
+/// `fd_position_mutator_all_is_exhaustive` test's exhaustive-
+/// variant coverage.
+const _: () = {
+    let mut i = 0;
+    while i < FdPositionMutator::ALL.len() {
+        let site = FdPositionMutator::ALL[i].phase_5_verify_site();
+        assert!(
+            !site.is_empty(),
+            "F-3: FdPositionMutator variant has empty phase_5_verify_site — \
+             fs_tell's tautological pass-through is unsound"
+        );
+        i += 1;
+    }
+};
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -112,6 +224,78 @@ mod tests {
     use crate::rust::interpreter::io::response::{err, ok_par};
     use crate::rust::interpreter::io::stat::stat_record;
     use crate::rust::interpreter::io::ConsensusMode;
+
+    /// F-3 pin (2026-09-04): `FdPositionMutator::ALL` must be
+    /// exhaustive with respect to the enum's variants.  The
+    /// pattern-match arm below fails to compile (E0004
+    /// non-exhaustive) if a new variant is added.  The runtime
+    /// `assert!(ALL.contains(&m))` then fails if the new variant
+    /// wasn't appended to `ALL`.
+    ///
+    /// Together with the const-eval guard above, this pins:
+    ///   - Every enum variant is reachable through `ALL`.
+    ///   - Every enum variant has a non-empty verify-site pointer.
+    ///   - Adding a new variant forces the new-variant author to
+    ///     touch this test AND `phase_5_verify_site`, giving
+    ///     three compile-time reminders that fs_tell's tautology
+    ///     depends on Phase-5 verify being in place.
+    #[test]
+    fn fd_position_mutator_all_is_exhaustive() {
+        // Any variant addition without a match arm here fails to
+        // compile.
+        fn tag(m: FdPositionMutator) -> &'static str {
+            match m {
+                FdPositionMutator::FsSeek => "seek",
+                FdPositionMutator::FsRead => "read",
+                FdPositionMutator::FsWrite => "write",
+            }
+        }
+        // Every variant must ALSO be in `ALL` — the const array is
+        // manually maintained and this is where discipline gets
+        // enforced at test time.
+        for m in [
+            FdPositionMutator::FsSeek,
+            FdPositionMutator::FsRead,
+            FdPositionMutator::FsWrite,
+        ] {
+            assert!(
+                FdPositionMutator::ALL.contains(&m),
+                "F-3 discipline: {} is a FdPositionMutator variant but \
+                 missing from ALL — fs_tell's tautological pass-through \
+                 is unsound",
+                tag(m),
+            );
+        }
+        // Cross-check ALL doesn't carry duplicates.
+        let mut seen: Vec<FdPositionMutator> = Vec::new();
+        for m in FdPositionMutator::ALL {
+            assert!(
+                !seen.contains(m),
+                "F-3 discipline: {} appears twice in ALL",
+                tag(*m),
+            );
+            seen.push(*m);
+        }
+    }
+
+    /// Belt-and-suspenders: pin the current-slice contents of
+    /// `ALL` at 3 variants (fs_seek / fs_read / fs_write).  A
+    /// future slice that adds an fd-position-mutating handler
+    /// must intentionally bump this pin, which is a hook for a
+    /// reviewer to check that the new handler ALSO added a
+    /// Phase-5 verify branch — the compile-time enforcement
+    /// above handles the enum-level discipline, but the human-
+    /// review step is what catches a bogus verify site.
+    #[test]
+    fn fd_position_mutator_all_size_is_pinned() {
+        assert_eq!(
+            FdPositionMutator::ALL.len(),
+            3,
+            "F-3 pin: adding an fd-position mutator?  Confirm the new \
+             handler has a Consensus follower verify_reply_hash_matches_\
+             cached branch, then bump this pin to reflect the new count."
+        );
+    }
 
     /// Baseline: identical reply Pars hash equal → verify returns Ok.
     #[test]
