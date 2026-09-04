@@ -15,9 +15,10 @@
 // FIPS/fileio/.../powerbox-requirements.md), all deploys hold the
 // same Fs cap, but per-open fresh-mint gives Alice and Bob distinct
 // File caps.  The isolation property therefore holds without needing
-// per-principal Fs instances — the powerbox would ADD per-principal
-// bundles (a stronger property), but the core §867 invariant is
-// exercisable via a single Fs today.
+// per-principal Fs instances — a future powerbox slice COULD add
+// per-principal bundles as a stronger property, but such a slice is
+// not scheduled post-PB-M-1 narrowing; the core §867 invariant is
+// exercisable via a single Fs today and stays exercisable regardless.
 //
 // Sequence:
 //   1. Look up the ambient Fs.

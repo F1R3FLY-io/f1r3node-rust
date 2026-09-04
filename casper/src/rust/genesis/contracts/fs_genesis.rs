@@ -31,9 +31,13 @@
 //! 1. **Shared-Fs model.**  A single Fs instance is published at the
 //!    registry URI derived from FS_GENERATOR_PK.  All deploys look up
 //!    the same handle and thus share the cache and stdio caps.  Spec
-//!    §867 wants per-principal Fs instances from the powerbox — that
-//!    requires runtime changes to the URN resolver (each grantee sees
-//!    a distinct cap) and is deferred to a future powerbox slice.
+//!    §867 sketches per-principal Fs instances from the powerbox as
+//!    the eventual production shape — IF a future powerbox slice
+//!    lands that shape it would require runtime changes to the URN
+//!    resolver (each grantee sees a distinct cap).  Post-PB-M-1
+//!    narrowing, the per-principal delegation is a candidate design
+//!    rather than a scheduled slice: shards may ship shared-Fs
+//!    permanently or roll their own delegation mechanism.
 //!
 //! 2. **Empty static bundle.**  The published Fs has `bMap = {}`, so
 //!    `openFile` / `openDir` return `FSERR_UNSUPPORTED` for every
@@ -95,8 +99,10 @@
 //!    Buffer / Rows instances.  This unblocks the buffer-taking File
 //!    methods (`readInto` / `writeFrom` / `readLineInto` /
 //!    `readLinesInto` + their arity-N+1 variants) for user deploys.
-//!    Per-principal Allocator delegation via the real Powerbox is a
-//!    future slice (mirrors the PB-B-3 → PB-B-5 relationship).
+//!    Per-principal Allocator delegation via a real Powerbox is a
+//!    candidate follow-up (would mirror the PB-B-3 → PB-B-5 shape)
+//!    but is not scheduled — post-PB-M-1 narrowing left it as an
+//!    optional shard-authored capability rather than a core slice.
 //!    Spec §Table 4's aspirational `rho:lang:buffer:1.0.0` shape
 //!    awaits the same URN-parser extension slice that would add
 //!    `rho:io:fs:1.0.0` aliasing.
@@ -886,8 +892,9 @@ in {{
   // Slice 25: mint one shared Fs instance (stdio fds 0/1/2, static
   // bundle populated from operator config+CLI merge) and publish
   // it at the registry URI derived from FS_GENERATOR_PK.  Per-
-  // principal delegation via powerbox is a future slice (see
-  // fs_genesis.rs docstring).
+  // principal delegation via powerbox is a candidate follow-up
+  // (see fs_genesis.rs docstring MVP simplifications §1);
+  // shards may keep the shared-Fs shape indefinitely.
   for (@fs <- Fs!?(0, 1, 2, {bundle_rho})) {{
     rs!(
       "{pk_hex}".hexToBytes(),
@@ -921,9 +928,10 @@ in {{
   // so user deploys can obtain Buffer / Rows caps.  Same delegation
   // shape as the fs cap above (single shared instance per node via
   // insertVersion under the serve namespace).  Per-principal
-  // delegation via the real Powerbox is a future slice (mirrors PB-B-3
-  // → PB-B-5 relationship: same authenticated-caller discipline,
-  // deferred to when the Powerbox FIP lands).
+  // delegation is a candidate powerbox slice (would mirror PB-B-3 →
+  // PB-B-5 authenticated-caller discipline) but is not scheduled —
+  // post-PB-M-1 narrowing left shard-specific delegation shapes as
+  // optional add-ons rather than core FIP substrate.
   //
   // No `insertSigned` counterpart — legacy `rho:id:<hash>` publication
   // was a compatibility affordance for the Fs cap; Allocator ships
@@ -2111,7 +2119,15 @@ mod tests {
         //   f1r3node_no_running_network invariant, but any future
         //   external caller that had bound to the retired URN would
         //   need to migrate.
-        const EXPECTED: &str = "ff7d928fc33ad51f2fdc01b14717894cb31817ca7da3a68c528163eaf8af32a9";
+        // Prior anchor: ff7d928f (A8-M-1, 2026-09-03).
+        // 2026-09-03: A8-M-2 comment softening — File.rho's
+        //   `bytes()` method comment reworded from "Fixed when
+        //   per-principal Fs delegation lands" to reflect the post-
+        //   PB-M-1 narrowing (delegation is candidate, not scheduled).
+        //   Comment-only edit inside File.rho's outer `new` body;
+        //   `lib_body` preserves comments, so the composed bytes
+        //   rolled.  No Rholang semantics changed.
+        const EXPECTED: &str = "9d985fa710ff57f607b3c445d3583279b52b8f471e34c2bb5f609d9b5b72cc37";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

@@ -702,9 +702,10 @@ in {{
 /// PB-M-1 resolution (2026-07-30 — shared Fs is safe under uniform-
 /// per-bucket bundles + no cache) combined with slice-27 fresh-mint.
 /// The core §867 property is fully demonstrable under the shared-Fs
-/// MVP; the Powerbox stub would ADD per-principal bundle scoping
-/// (a stronger claim), but is not required for the isolation
-/// invariant.
+/// MVP; a future powerbox slice COULD add per-principal bundle
+/// scoping as a stronger claim, but such a slice is not scheduled
+/// post-PB-M-1 narrowing — the isolation invariant this test pins
+/// holds regardless.
 ///
 /// Sequence:
 ///   1. Alice opens "shared" → fA.

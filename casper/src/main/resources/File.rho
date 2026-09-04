@@ -1150,8 +1150,11 @@ in {
     // discipline ("don't create overlapping sequential streams")
     // silently becomes a cross-deploy hazard.  Alice's `bytes()`
     // stream and Bob's `bytes()` stream on the shared File interleave
-    // reads on the same fd.  Fixed when per-principal Fs delegation
-    // lands (PB-M-1).
+    // reads on the same fd.  A per-principal Fs delegation slice
+    // (candidate PB-M-1 successor) would close this, but post-PB-M-1
+    // narrowing the delegation shape isn't scheduled — shards that
+    // need strict cross-deploy stream isolation today should provision
+    // per-deploy file caps out of band.
     method bytes() {
       for (@state <- @[*private, *stateP]) {
         match state {

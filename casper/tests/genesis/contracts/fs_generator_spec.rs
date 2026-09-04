@@ -90,7 +90,8 @@ in {{
 
     // Test 3: stdout() must return [true, cap].  Under shared-Fs MVP
     // this cap wraps fd 1 for all deploys; per-principal delegation
-    // is a future powerbox slice.
+    // is a candidate powerbox slice (not scheduled post-PB-M-1
+    // narrowing — shards may keep the shared-fd shape).
     contract test_stdout_returns_working_cap(rhoSpec, _, ackCh) = {{
       for(@reply <- @fs!?("stdout")) {{
         match reply {{

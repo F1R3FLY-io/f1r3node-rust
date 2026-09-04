@@ -14588,10 +14588,13 @@ async fn fs_open_dir_twice_yields_distinct_handles() {
 // cells inside Fs / Stdin / Stdout — NOT the currently deployed shape.
 // Under the shared-Fs MVP (see powerbox-requirements.md PB-M-1 / PB-M-11),
 // production has ONE Fs published at the registry; deploys cannot mint a
-// new one.  So these tests demonstrate the invariant we EXPECT to hold
-// once per-principal Fs delegation lands, not what production currently
-// enforces.  When PB-M-1 lands, replace the direct-mint pattern with a
-// dual-lookup-via-getFS pattern.
+// new one.  These tests demonstrate the isolation invariant a hypothetical
+// per-principal delegation slice would rely on — the invariant is
+// preserved regardless of whether such a slice ever lands.  Post-PB-M-1
+// narrowing, per-principal delegation isn't scheduled; shards choosing
+// to deliver it should keep this test as-is (it already pins the
+// library's independent-mint isolation) and add a companion test that
+// exercises the delegation call graph.
 // ==========================================================================
 
 /// Cross-Fs isolation (spec §867): two SEPARATE Fs instances mint
