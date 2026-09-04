@@ -13,7 +13,7 @@ use std::path::Path;
 use super::admission::{
     AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
     DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1, DurableObjectReadErrorV1,
-    SemanticallyAdmittedDurableWriterV1, admit_physical_writer,
+    SemanticallyAdmittedDurableWriterV1, SuccessorRetainedUnionError, admit_physical_writer,
 };
 use super::catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1, CatalogSlotV1,
@@ -260,6 +260,7 @@ pub(crate) enum IncrementalPublicationErrorV1 {
     },
     ProfileMismatch,
     MissingRetentionManifest,
+    SuccessorRetainedUnion(Box<SuccessorRetainedUnionError>),
 }
 
 impl From<IncrementalAppendErrorV1> for IncrementalPublicationErrorV1 {
@@ -705,10 +706,9 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         wal_limits: LogPackDecodeLimits,
         admission_limits: DurableAdmissionLimitsV1,
     ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, IncrementalPublicationErrorV1> {
-        let (mut lease, source) = self.into_parts();
-        let authority = source.authority().clone();
-        let current = authority.slot();
         let receipt = prepared.receipt();
+        let authority = self.authority().clone();
+        let current = authority.slot();
         if receipt.base() != current.state() {
             return Err(IncrementalPublicationErrorV1::BaseStateMismatch {
                 expected: current.state(),
@@ -721,7 +721,12 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         let retention_manifest = prepared
             .retention_manifest()
             .ok_or(IncrementalPublicationErrorV1::MissingRetentionManifest)?;
-
+        let retained_union = self
+            .successor_retained_union(prepared, admission_limits)
+            .map_err(|error| {
+                IncrementalPublicationErrorV1::SuccessorRetainedUnion(Box::new(error))
+            })?;
+        let (mut lease, source) = self.into_parts();
         let (prepare_address, prepare_identity, index_tail) =
             append_incremental_prepare_and_index(&mut lease, current, prepared)?;
         let commit_address = LogPackAddress::from_pack(
@@ -729,14 +734,7 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
             prepare_address.end(),
             TRANSACTION_COMMIT_RECORD_LEN_V1,
         )?;
-        let retained_bytes = current
-            .pack()
-            .retained_canonical_bytes()
-            .checked_add(prepared.inline_object_bytes())
-            .ok_or(LogPackFormatError::ByteInventory {
-                current_state: prepared.current_state_canonical_bytes(),
-                retained: u64::MAX,
-            })?;
+        let retained_bytes = retained_union.canonical_bytes;
         let current_state_bytes = source
             .report()
             .current_structural

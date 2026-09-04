@@ -335,7 +335,7 @@ fn publish(
 }
 
 #[test]
-fn incremental_publication_requires_attached_retention_manifest() {
+fn incremental_publication_round_trips_with_target_retention_manifest() {
     let source = checkpoint_source_fixture();
     let scratch = test_scratch::acquire("rspace-incremental-publication-");
     install_checkpoint_image(scratch.path(), &checkpoint_image_from_source(source.clone()));
@@ -354,19 +354,19 @@ fn incremental_publication_requires_attached_retention_manifest() {
         .commit_sequence()
         .successor()
         .unwrap();
+    let sealed = writer.attach_target_retention_manifest(sealed).unwrap();
     let prepared = writer
         .prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED)
         .unwrap();
-    let error = match writer.publish_incremental_transaction_v1(
-        &prepared,
-        limits(),
-        LogPackDecodeLimits::UNBOUNDED,
-        DurableAdmissionLimitsV1::UNBOUNDED,
-    ) {
-        Err(error) => error,
-        Ok(_) => panic!("missing retention manifest was unexpectedly published"),
-    };
-    assert!(matches!(error, crate::rspace::persistence::durable::IncrementalPublicationErrorV1::MissingRetentionManifest));
+    let recovered = writer
+        .publish_incremental_transaction_v1(
+            &prepared,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    assert_eq!(recovered.authority().slot().state(), sealed.receipt().target());
 }
 
 fn publication_error(

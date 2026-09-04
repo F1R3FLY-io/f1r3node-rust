@@ -417,6 +417,10 @@ impl<'transaction, 'mutation, P: SemanticProfile>
         self.transaction.retention_manifest()
     }
 
+    pub(crate) fn objects(&self) -> &[crate::rspace::persistence::SealedObject] {
+        self.transaction.objects()
+    }
+
     pub(crate) const fn store_id(&self) -> StoreId { self.store_id }
 
     pub(crate) const fn sequence(&self) -> LogPackSequence { self.sequence }

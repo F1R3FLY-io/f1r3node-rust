@@ -192,6 +192,7 @@ struct DigestState {
 /// manifest.  Epochs deduplicate one state's closure while the membership bit
 /// deduplicates the union across states.  The ledger is itself a PathMap, so no
 /// flattened object list, sort, or surrogate identifier is introduced.
+#[derive(Clone)]
 pub(crate) struct StructuralClosureLedgerV1 {
     states: PathMap<DigestState>,
     next_epoch: u64,

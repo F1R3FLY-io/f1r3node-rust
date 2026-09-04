@@ -39,7 +39,9 @@ use crate::rspace::persistence::semantic::{
     SemanticProfile, SemanticValidationLimits, SemanticValidationReport,
     SemanticallyAdmittedStateV1, verify_rspace_semantics_after_structural,
 };
-use crate::rspace::persistence::store::ImmutableObjectStore;
+use crate::rspace::persistence::store::{
+    ImmutableObjectStore, StagingObjectStore, StagingStoreError,
+};
 use crate::rspace::persistence::transaction::{
     DagTransactionError, DagTransactionLimits, OpenDagTransaction,
 };
@@ -1128,6 +1130,12 @@ pub(crate) struct SemanticallyAdmittedDurableWriterV1<P: SemanticProfile> {
 }
 
 #[derive(Debug)]
+pub(crate) enum SuccessorRetainedUnionError {
+    Staging(StagingStoreError<DurableObjectReadErrorV1>),
+    Closure(ClosureError<StagingStoreError<DurableObjectReadErrorV1>>),
+}
+
+#[derive(Debug)]
 pub(crate) enum DurableTransactionPreparationError {
     ObjectPlan(LogPackObjectPlanError<DurableObjectReadErrorV1>),
     Format(crate::rspace::persistence::LogPackFormatError),
@@ -1192,8 +1200,17 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         let mut historical = current.historical().collect::<Result<Vec<_>, _>>()?;
         historical.push(current.current());
         let target = sealed.receipt().target();
-        let target_state =
-            RetainedStateV1::new(target, sealed.diagnostics().closure.canonical_bytes)?;
+        let target_bytes = self
+            .source
+            .report()
+            .current_structural
+            .canonical_bytes
+            .checked_add(sealed.diagnostics().closure.canonical_bytes)
+            .and_then(|bytes| bytes.checked_sub(target.manifest().encoded_len()))
+            .ok_or(CanonicalFormatError::LengthOverflow {
+                field: "target state canonical bytes",
+            })?;
+        let target_state = RetainedStateV1::new(target, target_bytes)?;
         let manifest = RetentionManifestV1::new(target_state, historical.into_boxed_slice())?;
         sealed.with_retention_manifest(manifest)
     }
@@ -1240,6 +1257,34 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
             limits,
         )
         .map_err(DurableTransactionPreparationError::Format)
+    }
+
+    /// Recompute the exact retained-object union for an incremental successor
+    /// over the immutable source ledger plus the prepared canonical objects.
+    pub(crate) fn successor_retained_union(
+        &self,
+        prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
+        limits: DurableAdmissionLimitsV1,
+    ) -> Result<RetainedUnionClosureReportV1, SuccessorRetainedUnionError> {
+        let staging = StagingObjectStore::new(&self.source.store);
+        for object in prepared.objects() {
+            staging
+                .stage(object.canonical_bytes_arc())
+                .map_err(SuccessorRetainedUnionError::Staging)?;
+        }
+        let mut ledger = self.source.retained_closure.clone();
+        verify_structural_closure_in_ledger_with_limits(
+            &staging,
+            prepared.receipt().target().manifest(),
+            limits.per_state_structural,
+            &mut ledger,
+            RetainedUnionClosureLimitsV1 {
+                max_distinct_objects: limits.max_union_objects,
+                max_canonical_bytes: limits.max_union_canonical_bytes,
+            },
+        )
+        .map_err(SuccessorRetainedUnionError::Closure)?;
+        Ok(ledger.retained_union_report())
     }
 
     pub(crate) fn into_checkpoint_publication(self) -> CheckpointPublicationAuthorityV1<P> {

@@ -539,6 +539,8 @@ impl SealedObject {
     pub const fn reference(&self) -> ObjectRefV1 { self.reference }
 
     pub fn canonical_bytes(&self) -> &[u8] { &self.canonical_bytes }
+
+    pub(crate) fn canonical_bytes_arc(&self) -> Arc<[u8]> { Arc::clone(&self.canonical_bytes) }
 }
 
 /// Immutable, profile-typed WAL input with no base-store lifetime, lock,
