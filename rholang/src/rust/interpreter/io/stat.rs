@@ -21,14 +21,23 @@ use super::super::rho_type::{RhoNumber, RhoString};
 use super::nss::{gid_to_name, uid_to_name};
 use super::ConsensusMode;
 
-/// Kinds we recognize in `stat` / `entries`.  Non-regular non-directory
-/// entries fold into `"other"` — a `stat` call on them succeeds
-/// (informational), but `open` on them fails with `FSERR_UNSUPPORTED`.
+/// Kinds we recognize in `stat` / `entries`.  Non-regular non-
+/// directory entries fold into `"other"` — a `stat` call on them
+/// succeeds (informational), but `open` on them fails with
+/// `FSERR_UNSUPPORTED`.
+///
+/// **M-07 (2026-09-04):** the enum has no `Symlink` variant.
+/// Symlinks are excluded at boot by `Fs::validate_root_tree`'s
+/// `is_symlink()` walk (§Static provisioning in the FIP), and the
+/// spec treats their absence as an invariant.  A symlink that
+/// somehow appears post-boot (e.g., under Oracular with an
+/// external mutator ignoring the spec) folds through the `Other`
+/// arm in `from_meta` below.  There is no code path that emits
+/// `"symlink"` on the wire.
 #[derive(Clone, Copy)]
 pub enum Kind {
     File,
     Directory,
-    Symlink,
     Other,
 }
 
@@ -39,9 +48,12 @@ impl Kind {
             Kind::File
         } else if ft.is_dir() {
             Kind::Directory
-        } else if ft.is_symlink() {
-            Kind::Symlink
         } else {
+            // M-07 (2026-09-04): symlinks fold to Other.  See the
+            // `Kind` docstring above — the enum has no Symlink
+            // variant by design; the boot-time walk enforces
+            // absence, and this arm is defense-in-depth for
+            // Oracular's external-mutator threat model.
             Kind::Other
         }
     }
@@ -50,7 +62,6 @@ impl Kind {
         match self {
             Kind::File => "file",
             Kind::Directory => "directory",
-            Kind::Symlink => "symlink",
             Kind::Other => "other",
         }
     }
@@ -350,9 +361,12 @@ mod stat_record_tests {
         let rec = stat_record("d", &dir_meta, ConsensusMode::Consensus);
         assert_eq!(expect_kind_str(&rec), "directory");
 
-        // Symlink — must NOT follow into target's kind.  Create a
-        // symlink to a regular file; symlink_metadata must report
-        // `symlink`, not `file`.
+        // M-07 (2026-09-04): symlinks fold to "other" instead of
+        // producing a dedicated "symlink" wire string.  Symlinks
+        // are excluded at boot by `Fs::validate_root_tree`; this
+        // arm is defense-in-depth for Oracular's external-mutator
+        // threat model.  A regression that reintroduces the
+        // Symlink variant would surface here as "symlink" != "other".
         let sym_dir = tempfile::tempdir().unwrap();
         let target = sym_dir.path().join("target");
         std::fs::write(&target, b"x").unwrap();
@@ -360,7 +374,13 @@ mod stat_record_tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let sym_meta = std::fs::symlink_metadata(&link).unwrap();
         let rec = stat_record("link", &sym_meta, ConsensusMode::Consensus);
-        assert_eq!(expect_kind_str(&rec), "symlink");
+        assert_eq!(
+            expect_kind_str(&rec),
+            "other",
+            "M-07: symlinks must fold to \"other\" (Kind enum has no \
+             Symlink variant); a regression reintroducing the variant \
+             would surface here as \"symlink\""
+        );
     }
 
     #[test]
