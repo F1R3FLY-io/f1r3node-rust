@@ -36,7 +36,7 @@ fn rspace_v2_adapters_use_rci2_bytes_without_projection() {
     let continuation = rho_path_v2_continuation_key(&[channel.clone()], b"continuation").unwrap();
     let continuation_view =
         rspace_plus_plus::rspace::rho_path::RhoPathV2::parse_continuation(&continuation).unwrap();
-    assert_eq!(continuation_view.channel_frames.len(), 1);
+    assert_eq!(continuation_view.channel_frames().len(), 1);
     let join = rho_path_v2_join_key(&channel, b"join").unwrap();
     assert!(rspace_plus_plus::rspace::rho_path::RhoPathV2::parse_join(&join).is_ok());
 }
