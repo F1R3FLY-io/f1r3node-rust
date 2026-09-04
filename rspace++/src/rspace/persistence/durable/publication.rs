@@ -519,6 +519,14 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
         // durable before the catalog is allowed to make them reachable.
         lease.sync_directory()?;
 
+        // Persist the authenticated cleanup intent before catalog CAS.  A
+        // pre-CAS crash leaves the old catalog authoritative; a post-CAS
+        // restart can validate this exact candidate before reclaiming files.
+        let reclamation =
+            super::ReclamationCandidateV1::from_catalogs(authority.slot(), durable.successor)
+                .expect("fresh generation must strictly supersede its captured authority");
+        lease.write_reclamation_candidate(reclamation)?;
+
         #[cfg(test)]
         run_generation_checkpoint_publication_hook(
             GenerationCheckpointPublicationHookPointV1::AfterArtifactDirectorySync,
