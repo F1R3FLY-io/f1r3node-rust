@@ -7,6 +7,7 @@
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::{
     GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseV1, LogPackDecodeLimits,
+    VerifiedDagState,
 };
 
 mod admission;
@@ -118,6 +119,17 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
 
     pub(crate) fn state(&self) -> crate::rspace::persistence::StateVersionV1 {
         self.catalog().state()
+    }
+
+    /// Borrow the exact restart-admitted semantic state for read-only
+    /// projections.  The returned token is tied to this authority's pinned
+    /// object index and catalog generation; callers cannot substitute a
+    /// reopened path or a caller-selected root.  This is intentionally a
+    /// read-only seam: mutation and publication remain on the writer path.
+    pub(crate) fn verified_state(
+        &self,
+    ) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
+        self.writer.verified_state()
     }
 
     pub(crate) fn manifest(&self) -> crate::rspace::persistence::ObjectRefV1 {
