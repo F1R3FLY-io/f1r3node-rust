@@ -196,6 +196,20 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
     ) -> Result<S::Object, crate::rspace::persistence::ClosureError<S::Error>> {
         crate::rspace::persistence::semantic::load_reference(self.store, reference)
     }
+
+    /// Parse the semantic manifest named by this exact state version.  The
+    /// manifest is loaded through the same authenticated object path as trie
+    /// nodes, so its roots cannot be supplied independently by a caller.
+    pub(crate) fn semantic_manifest(
+        &self,
+    ) -> Result<
+        crate::rspace::persistence::SemanticStateManifestView,
+        crate::rspace::persistence::ClosureError<S::Error>,
+    > {
+        let bytes = self.load_object(self.version.manifest())?;
+        crate::rspace::persistence::SemanticStateManifestView::parse(bytes.as_ref())
+            .map_err(crate::rspace::persistence::ClosureError::Format)
+    }
 }
 
 /// Caller-content phase. Only exact continuation-source blobs may enter;
