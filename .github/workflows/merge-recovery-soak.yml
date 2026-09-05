@@ -204,7 +204,31 @@ env:
   # review remediations) WITH the dev-merge that cured the stale base, on
   # top of main's current harness. Verified: descends from 8b4da0f
   # (merge-base --is-ancestor), per the rule above.
-  SYSTEM_INTEGRATION_REF: 5858f2a26096376f4c2ac6c1636ec45959613782
+  # 2026-08-31: 5858f2a -> ce5a825 (SI PR #132 branch, cut from main
+  # 5858f2a — descends per the rule above): retires ftt=-1 from the
+  # joiner-boundary/trim_state/synchrony shards (a negative FTT legally
+  # permits divergent floors that the suite's forbidden-log check treats as
+  # fatal — run 33220782199's arm64-docker failure), makes the joiner test
+  # round-driven, and routes hardcoded timeouts through the hierarchy.
+  # Verified: the three migrated tests green locally at the production FTT;
+  # SI CI full green on ce5a825. Re-pin to the merged main SHA once #132
+  # lands.
+  # 2026-08-31: ce5a825 -> e4a26eb (system-integration MAIN — the #132 merge
+  # commit; the branch pin's content, now immutable on main). Verified:
+  # descends from ce5a825 (merge-base --is-ancestor), and full node CI green
+  # on the ce5a825 content (this PR's heavy pipeline, all six legs).
+  # 2026-09-02: e4a26eb -> af0ab83 (SI PR #134 branch, cut from main —
+  # descends per the rule above): the bridge-lock test gates starvation
+  # exactly and tolerates bounded merge contention (floor 10 of 12,
+  # accounting reconciled to the locks that landed) — run 33548073107's
+  # 1-of-12 contention expiry, budget exonerated. Verified: SI CI green
+  # on af0ab83; test green locally on this branch's image. Re-pin to the
+  # merged main SHA once #134 lands.
+  # 2026-09-02: af0ab83 -> 0fb6337 (system-integration MAIN — the #134 merge
+  # commit; the branch pin's content, now immutable on main). Verified:
+  # descends from af0ab83 (merge-base --is-ancestor), and this PR's CI ran
+  # full green on the af0ab83 content.
+  SYSTEM_INTEGRATION_REF: 0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

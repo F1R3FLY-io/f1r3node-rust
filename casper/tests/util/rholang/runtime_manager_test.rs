@@ -148,6 +148,102 @@ async fn comput_state_should_charge_for_deploys() {
     .unwrap()
 }
 
+/// Builds three distinct, individually-cheap deploys for the play-budget tests.
+fn three_budget_probe_deploys() -> Vec<Signed<DeployData>> {
+    [
+        "@\"budget-a\"!(1)",
+        "@\"budget-b\"!(2)",
+        "@\"budget-c\"!(3)",
+    ]
+    .iter()
+    .map(|source| {
+        construct_deploy::source_deploy_now_full(
+            source.to_string(),
+            Some(100000),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    })
+    .collect()
+}
+
+#[tokio::test]
+async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let deploys = three_budget_probe_deploys();
+            let time_stamp = deploys[0].data.time_stamp;
+
+            let (_state, processed, _sys, _bonds) = runtime_manager
+                .compute_state_with_bonds(
+                    &gen_post_state,
+                    deploys,
+                    Vec::new(),
+                    BlockData {
+                        time_stamp,
+                        block_number: 0,
+                        sender: genesis_context.validator_pks()[0].clone(),
+                        seq_num: 0,
+                    },
+                    None,
+                    Some(std::time::Duration::ZERO),
+                )
+                .await
+                .unwrap();
+
+            // The floor: a spent budget defers the remainder but must never
+            // produce an empty carrier — that would be starvation by budget.
+            assert_eq!(
+                processed.len(),
+                1,
+                "a zero budget must carry exactly the first deploy and defer the rest"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_ample_play_budget_carries_the_whole_pool() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let gen_post_state = genesis_block.body.state.post_state_hash;
+            let deploys = three_budget_probe_deploys();
+            let time_stamp = deploys[0].data.time_stamp;
+
+            let (_state, processed, _sys, _bonds) = runtime_manager
+                .compute_state_with_bonds(
+                    &gen_post_state,
+                    deploys,
+                    Vec::new(),
+                    BlockData {
+                        time_stamp,
+                        block_number: 0,
+                        sender: genesis_context.validator_pks()[0].clone(),
+                        seq_num: 0,
+                    },
+                    None,
+                    Some(std::time::Duration::from_secs(120)),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                processed.len(),
+                3,
+                "an unspent budget must not defer anything"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
 async fn compare_successful_system_deploys<S: SystemDeployTrait, F>(
     runtime_manager: &mut RuntimeManager,
     genesis_context: &GenesisContext,
@@ -3844,6 +3940,9 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         lifecycle: Arc::new(PlRwLock::new(
             block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+        )),
+        carrier_index: Arc::new(PlRwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
     };
 

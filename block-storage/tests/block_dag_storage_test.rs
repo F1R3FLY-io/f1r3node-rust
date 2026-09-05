@@ -1318,11 +1318,13 @@ fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
     });
 }
 
-/// The lifecycle event ingest rides `insert`'s body pass: a valid block's
-/// executions and records project into per-sig rows; an invalid block's
-/// body contributes nothing (it is not canonical history).
+/// The ingest rides `insert`'s body pass: a valid block's executions and
+/// records project into per-sig lifecycle rows, an invalid block's body
+/// contributes no lifecycle events, and EVERY block's body sigs — valid
+/// and invalid alike — land in the repeat-deploy carrier index, which
+/// must cover the same block universe the ancestor scan reads.
 #[test]
-fn insert_projects_lifecycle_events_from_valid_bodies_only() {
+fn insert_projects_lifecycle_events_and_carrier_entries() {
     use models::rust::block_implicits::processed_deploy_gen;
     use models::rust::casper::protocol::casper_message::RejectedDeploy;
     use proptest::strategy::{Strategy, ValueTree};
@@ -1443,7 +1445,211 @@ fn insert_projects_lifecycle_events_from_valid_bodies_only() {
             dag.deploy_lifecycle_events(&invalid_deploy.deploy.sig)
                 .expect("read row")
                 .is_none(),
-            "an invalid block's body must contribute no lifecycle events"
+            "an invalid block's body contributes no lifecycle events"
+        );
+        assert!(
+            dag.deploy_canonical_appearance(&invalid_deploy.deploy.sig)
+                .expect("appearance")
+                .is_none(),
+            "an invalid block's body is not canonical history"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(&invalid_deploy.deploy.sig)
+                .expect("probe"),
+            "an invalid carrier is in the carrier index and routes to the exact scan"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(&executed.deploy.sig)
+                .expect("probe"),
+            "a valid carrier is in the carrier index"
+        );
+        assert!(
+            dag.carrier_index_proves_absence(b"never-carried-sig")
+                .expect("probe"),
+            "a fresh sig has no carrier"
+        );
+    });
+}
+
+/// The watermark is written once per database: 0 on an empty DAG
+/// (complete from the first insert), the next height above the current
+/// max on an existing DAG, and never overwritten on a later start.
+#[test]
+fn carrier_watermark_initializes_once_per_database() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        assert_eq!(
+            dag_storage.ensure_carrier_watermark().unwrap(),
+            0,
+            "an empty database is complete from the first insert"
+        );
+
+        let genesis = genesis_block();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let block = chain_block(1, vec![genesis.block_hash.clone()]);
+        dag_storage.insert(&block, InsertMode::Normal).unwrap();
+        assert_eq!(
+            dag_storage.ensure_carrier_watermark().unwrap(),
+            0,
+            "the watermark is write-once"
+        );
+
+        // A database that predates the index gets max height + 1: the
+        // fast path stays off until the scan window clears the heights
+        // the index never saw.
+        let mut kvm2 = InMemoryStoreManager::new();
+        let pre_existing = BlockDagKeyValueStorage::new(&mut kvm2).await.unwrap();
+        let genesis2 = genesis_block();
+        pre_existing
+            .insert(&genesis2, InsertMode::Approved)
+            .unwrap();
+        let b1 = chain_block(1, vec![genesis2.block_hash.clone()]);
+        pre_existing.insert(&b1, InsertMode::Normal).unwrap();
+        let dag = pre_existing.get_representation().unwrap();
+        assert_eq!(dag.carrier_index_watermark().unwrap(), None);
+        assert_eq!(pre_existing.ensure_carrier_watermark().unwrap(), 2);
+        let dag = pre_existing.get_representation().unwrap();
+        assert_eq!(dag.carrier_index_watermark().unwrap(), Some(2));
+    });
+}
+
+/// Crash-retry idempotence for the ingest-first window: the ingest half
+/// of an insert ran (lifecycle rows and carrier entries written), the
+/// metadata add was lost, and the block is redelivered — the re-run must
+/// not duplicate lifecycle events or carrier entries. The pre-crash
+/// state is staged through the public fixture handles, because the
+/// cfg-gated corruption helpers are unreachable from this crate's own
+/// integration tests (a crate cannot dev-depend on itself).
+#[test]
+fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::deploy_lifecycle_types::{LifecycleEvent, LifecycleEventKind};
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+
+        // Stage the crash: the ingest half ran, the metadata add did not.
+        let dag = dag_storage.get_representation().unwrap();
+        dag.carrier_index
+            .write()
+            .record_once(&deploy.deploy.sig, 1, block.block_hash.to_vec())
+            .unwrap();
+        dag.lifecycle
+            .write()
+            .append_event_once(
+                &deploy.deploy.sig,
+                Some(deploy.deploy.data.valid_after_block_number),
+                LifecycleEvent {
+                    height: 1,
+                    block_hash: block.block_hash.to_vec(),
+                    kind: LifecycleEventKind::Included {
+                        is_failed: deploy.is_failed,
+                    },
+                },
+            )
+            .unwrap();
+
+        // Redelivery: the block arrives again and inserts normally.
+        dag_storage.insert(&block, InsertMode::Normal).unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        let row = dag
+            .deploy_lifecycle_events(&deploy.deploy.sig)
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(
+            row.events.len(),
+            1,
+            "the redelivery re-run must not duplicate the Included event"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(&deploy.deploy.sig)
+                .unwrap(),
+            "the carrier entry stands"
+        );
+        assert_eq!(
+            dag.deploy_canonical_appearance(&deploy.deploy.sig).unwrap(),
+            Some(block.block_hash.clone()),
+            "after the successful re-insert the appearance resolves"
+        );
+    });
+}
+
+/// Orphan events from a crash inside the ingest-first window never resolve
+/// as a canonical appearance: the visibility filter drops events whose
+/// block is not in the DAG set.
+#[test]
+fn orphan_lifecycle_event_is_not_a_canonical_appearance() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::deploy_lifecycle_types::{LifecycleEvent, LifecycleEventKind};
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        let phantom_block: Vec<u8> = vec![0xEE; 32];
+        dag.carrier_index
+            .write()
+            .record_once(b"orphan-sig", 1, phantom_block.clone())
+            .unwrap();
+        dag.lifecycle
+            .write()
+            .append_events(b"orphan-sig", Some(0), vec![LifecycleEvent {
+                height: 1,
+                block_hash: phantom_block,
+                kind: LifecycleEventKind::Included { is_failed: false },
+            }])
+            .unwrap();
+
+        assert!(
+            dag.deploy_canonical_appearance(b"orphan-sig")
+                .unwrap()
+                .is_none(),
+            "an event for a never-DAG-visible block must not resolve"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(b"orphan-sig").unwrap(),
+            "the orphan carrier entry still routes the sig to the exact scan"
         );
     });
 }

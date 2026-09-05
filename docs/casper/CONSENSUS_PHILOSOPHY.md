@@ -72,6 +72,14 @@ The benchmark uses a floor distance of 256 blocks and a visible scope of 512 blo
 
 The benchmark is a release gate. Node-local timing must never control block validity or consensus admission.
 
+### 4.4 Repeat-deploy scan and the signature-index fast path
+
+The repeat-deploy ancestor scan is `O(DAG-in-window)` for each validated block. Under sustained load this scan is the residual cost of issue #24. The remedy is the repeat-deploy signature index (see the glossary): a per-signature carrier record over valid, invalid, and approved blocks.
+
+The fast path preserves the ratified predicate exactly. An index absence inside the expiration window skips the scan for that signature. An index hit routes to window and parent-scope verification, never directly to a verdict. An index read failure or an incomplete index falls back to the unchanged ancestor scan. This refusal rule follows the same principle as the `BlockNotHeld` precedent in section 4.1: unreadable history is no information, never an absence proof.
+
+A node-local index may decide a verdict only when it is a provably complete cache of the on-chain data that the ratified predicate reads. Completeness requires crash-safe write ordering (index entries before DAG visibility) and a persisted height watermark: the height since which every insert has recorded carriers on this database. The fast path engages only for scan windows that start at or above the watermark, so no backfill walk exists and no walk-completeness state exists to certify or to forge. The index lives in a dedicated store: it must never share a keyspace with rows that unverified wire data can key (the PR #382 review demonstrated a completeness-marker forgery through an unverified `rejected_deploys` signature landing in a shared table). The verdict-equivalence obligation is testable: index-served verdicts must equal scan-served verdicts for every block, and one test must pin engagement itself (a verdict reachable only through the skip).
+
 ## 5. The remedy ladder for base-bias starvation
 
 The options are ordered by guarantee strength and by risk. The axes are fairness strength, consensus-layer stability, and coordination cost. Coordination cost separates node-local policy from a lockstep upgrade.
@@ -86,7 +94,7 @@ The fork-choice tie-break is the stake score, then the ascending block hash. The
 
 ### Option B1 — merged-frontier retry packaging (recommended next step)
 
-The owner packages a gated retry only when its own tip already merges every same-key contender that the owner can see. The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
+The owner packages a gated retry only when one selected parent covers all valid latest messages (the canonical predicate — see the glossary entry [Merged-frontier retry packaging](./GLOSSARY.md#merged-frontier-retry-packaging), which matches the implemented gate in `block_creator.rs`). The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
 
 - **Pros:** The policy is node-local. It needs no consensus change, no wire change, and no upgrade coordination. The diff in `prepare_user_deploys_with_policy` is small. Ground Truth 2 makes the deferral safe from peer rejection.
 - **Cons:** The policy is a heuristic, not a guarantee. Under saturated contention, a merged frontier without contenders never occurs. Each deferral spends validity window to increase the success probability. The policy does not influence merges that other validators build.
@@ -210,6 +218,7 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 | 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. |
 | 2026-08-22 | Four production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
 | 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
+| 2026-09-01 | The repeat-deploy signature index is a consensus-complete carrier cache over valid, invalid, and approved blocks. An in-window absence skips the ancestor scan, a hit requires scope verification, and a read failure falls back to the scan. | Proposed in the issue #24 fast-path PR. Pending ratification. |
 
 The phase-2 working record lives in the TDD plan
 [`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).

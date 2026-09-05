@@ -486,6 +486,15 @@ impl DeployLifecycle {
                 hash: adopted_hash,
                 block_number: adopted_number,
             });
+            // Carrier-index retention: entries below the adopted floor
+            // minus the lifespan sit below every future scan window
+            // (earliest = maxParent + 1 − lifespan, and parents sit above
+            // the floor). The prune is strided inside the index, so most
+            // advances no-op. A failure must not affect the verdict path —
+            // retention is an optimization, never consensus input.
+            if let Err(e) = dag.prune_carriers_below(adopted_number - deploy_lifespan) {
+                tracing::warn!("carrier-index prune failed (retention only): {}", e);
+            }
         }
 
         // Due: crossed thresholds plus the block's own touched sigs.
@@ -672,11 +681,18 @@ fn evaluate(
 /// Display fields for a terminal record, frozen from the event row it
 /// prunes: every record event counts toward `rejection_count` (duplicates
 /// included — the count is observability, not the causal ordering), and
-/// the latest INCLUSION event names the sig's most recent canonical
-/// appearance. A rejection record's block does not carry the deploy — a
+/// the latest DAG-VISIBLE inclusion event names the sig's most recent
+/// canonical appearance. The visibility filter matters here because the
+/// terminal record outlives the row: an orphan event from a crash inside
+/// the ingest-first insert window must not freeze into a write-once
+/// record that `canonical_appearance` then returns unfiltered forever.
+/// A rejection record's block does not carry the deploy — a
 /// record-carrier here sends every consumer that fetches the named block
 /// looking for a deploy that is not in it.
-fn frozen_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
+fn frozen_display(
+    row: &LifecycleEvents,
+    is_visible: &dyn Fn(&[u8]) -> bool,
+) -> (u32, i64, Vec<u8>) {
     let rejection_count = row
         .events
         .iter()
@@ -686,6 +702,7 @@ fn frozen_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
         .events
         .iter()
         .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
+        .filter(|e| is_visible(&e.block_hash))
         .max_by(|a, b| {
             a.height
                 .cmp(&b.height)
@@ -703,7 +720,9 @@ fn write_terminal(
     row: &LifecycleEvents,
     terminalized: &mut Vec<Bytes>,
 ) -> Result<(), CasperError> {
-    let (rejection_count, latest_height, latest_block_hash) = frozen_display(row);
+    let (rejection_count, latest_height, latest_block_hash) = frozen_display(row, &|h| {
+        dag.contains(&prost::bytes::Bytes::copy_from_slice(h))
+    });
     let written = dag
         .put_deploy_terminal_if_absent(sig, TerminalRecord {
             state,
@@ -1028,7 +1047,15 @@ mod tests {
             ],
         };
 
-        let (rejection_count, latest_height, latest_block_hash) = frozen_display(&row);
+        let (rejection_count, latest_height, latest_block_hash) = frozen_display(&row, &|_| true);
+        assert_eq!(rejection_count, 1);
+
+        let (_, orphan_height, orphan_hash) = frozen_display(&row, &|_| false);
+        assert_eq!(
+            (orphan_height, orphan_hash),
+            (0, Vec::new()),
+            "a never-DAG-visible inclusion must not freeze into the display"
+        );
         assert_eq!(rejection_count, 1);
         assert_eq!(
             (latest_height, latest_block_hash),

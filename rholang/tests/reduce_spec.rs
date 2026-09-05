@@ -551,6 +551,32 @@ async fn eval_of_send_should_place_something_in_the_tuplespace() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_of_par_with_129_sends_should_not_overflow_random_split() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let n = 129;
+    let sends: Vec<Send> = (0..n)
+        .map(|i| Send {
+            chan: Some(new_gstring_par(format!("c{i}"), Vec::new(), false)),
+            data: vec![new_gint_par(i, Vec::new(), false)],
+            persistent: false,
+            locally_free: Vec::new(),
+            connective_used: false,
+        })
+        .collect();
+    let par = Par::default().with_sends(sends);
+
+    let env: Env<Par> = Env::new();
+    let result = reducer.eval(par, &env, rand().split_byte(0)).await;
+    assert!(result.is_ok(), "reduction failed: {result:?}");
+
+    let tuplespace = space.to_map().await;
+    assert_eq!(tuplespace.len(), n as usize);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_should_verify_that_bundle_is_writeable_before_sending_on_bundle() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
