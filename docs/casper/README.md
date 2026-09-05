@@ -18,7 +18,7 @@ replication.
 | Vocabulary | [Casper Glossary](./GLOSSARY.md) (canonical casper-domain terms; repo-wide terms stay in [docs/Glossary.md](../Glossary.md)) |
 | Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
 | Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
-| Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) |
+| Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) · [Cost-accounting CbC and FV reconciliation](./design/cost-accounting-cbc-fv-reconciliation.md) |
 | CbC claims | [Repeat-deploy carrier-index equivalence](../claims/repeat-deploy-carrier-index-equivalence.md) · [Replay liveness bound](../claims/replay-liveness-bound.md) |
 | Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |
 
