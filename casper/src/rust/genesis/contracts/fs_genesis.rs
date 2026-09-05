@@ -2190,6 +2190,18 @@ mod tests {
         //   makes readN return FSERR_BUSY (wait:false) instead of
         //   racing the cursor.  Hard-fork-free per the
         //   f1r3node_no_running_network invariant.
+        // Prior anchor: 1676f235 (M-15/M-18, 2026-09-04).
+        // 2026-09-04: M-22 fix (A5-RH-A5-3) — options-map mode/
+        //   recursive extraction now type-guards the value at the
+        //   `{"mode": v /\ String ..._}` (or `Bool` for recursive)
+        //   arm.  A `{"mode": Nil}` (or any non-String) no longer
+        //   collapses through the outer Nil sentinel and produces
+        //   the misleading "options must be a Map" error; instead
+        //   the distinct arm returns "mode must be a String".  Same
+        //   fix at 4 sites: Fs.openFile, Fs.openDir, Dir.openFile,
+        //   Dir.removeDir.  Dir.openDir already used `options.get`
+        //   with a proper type-guard.  Hard-fork-free per the
+        //   f1r3node_no_running_network invariant.
         // Prior anchor: f068fdbd (M-13, 2026-09-04).
         // 2026-09-04: M-18 fix (A1-F-15) — Fs.openFile / openDir now
         //   return `[false, "FSERR_UNSUPPORTED", "logical name
@@ -2241,7 +2253,7 @@ mod tests {
         //   Dir.openFile create + exclusive) is scoped to a separate
         //   slice.  Hard-fork-free per the f1r3node_no_running_network
         //   invariant.
-        const EXPECTED: &str = "1676f23523a8c06aa8d05347e35d38e4bee0fe239c5f4c7a1e0a82ef42f3dd9e";
+        const EXPECTED: &str = "bbc2ab4c1b8e82626012c542bc5f22a51b6c311e6d684546a34012b1ff849562";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

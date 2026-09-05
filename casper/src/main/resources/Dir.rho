@@ -50,9 +50,24 @@
 //
 // Directory modes are `"r"` (read-only) or `"rw"` (read/write).
 //   Dir mode "r"  → File modes {"r"};  openDir "r"
-//   Dir mode "rw" → File modes {"r", "rw", "w", "w+", "a", "a+",
+//   Dir mode "rw" → File modes {"r", "r+", "w", "w+", "a", "a+",
 //                                "wx", "w+x"};  openDir "r" or "rw"
 // A downgrade is fine; an upgrade returns FSERR_UNSUPPORTED.
+//
+// ## Reply shape asymmetry — `removeDir` is the 4-elem exception
+//
+// M-25 (2026-09-04, RH-A5-6): every method in this file returns a
+// 3-element `[false, code, msg]` on failure EXCEPT `removeDir`,
+// which returns a 4-element `[false, code, msg, nDeletedBeforeError]`.
+// The trailing count is per DD-RemoveDirReplyShape (2026-09-03) —
+// unified per-entry-count reply across `removeDir`'s non-recursive,
+// recursive-Oracular, and recursive-Consensus paths.  Callers
+// writing a uniform Dir-error handler pattern-match on
+// `[false, code, msg]` will fall through on `removeDir`'s reply
+// and must include a specific `[false, code, msg, count]` arm.
+// A future slice may promote the 4-element shape across all Dir
+// mutation methods for uniformity; the FIP §Dir.removeDir reply
+// shape section is the canonical description.
 
 new Dir, rootP, cmodeP in {
 
@@ -281,15 +296,19 @@ new Dir, rootP, cmodeP in {
       match rel {
         r /\ String => {
           new modeCh in {
+            // M-22 (2026-09-04, RH-A5-3): type-guard mode value.
             match options {
               {} => modeCh!("r")
-              {"mode": modeVal ..._} => modeCh!(modeVal)
+              {"mode": v /\ String ..._} => modeCh!(v)
+              {"mode": _ ..._} => modeCh!(
+                (false, "FSERR_BAD_ARG", "mode must be a String"))
               {_ : _ ..._} => modeCh!("r")
               _ => modeCh!(Nil)
             } |
             for (@requestedMode <- modeCh) {
               match requestedMode {
                 Nil => return!([false, "FSERR_BAD_ARG", "options must be a Map"])
+                (false, code, msg) => return!([false, code, msg])
                 m /\ String => {
                   for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
                     match params {
@@ -446,15 +465,24 @@ new Dir, rootP, cmodeP in {
       match rel {
         r /\ String => {
           new recursiveCh in {
+            // M-22 (2026-09-04, RH-A5-3): type-guard `recursive`
+            // value.  A `{"recursive": Nil}` (or any non-Bool value
+            // at the key) now returns the accurate "recursive must
+            // be a Bool" error instead of collapsing through the
+            // Nil sentinel and producing the misleading "options
+            // must be a Map" reply.
             match options {
               {} => recursiveCh!(false)
-              {"recursive": rval ..._} => recursiveCh!(rval)
+              {"recursive": v /\ Bool ..._} => recursiveCh!(v)
+              {"recursive": _ ..._} => recursiveCh!(
+                (false, "FSERR_BAD_ARG", "recursive must be a Bool", 0))
               {_ : _ ..._} => recursiveCh!(false)
               _ => recursiveCh!(Nil)
             } |
             for (@recursive <- recursiveCh) {
               match recursive {
                 Nil => return!([false, "FSERR_BAD_ARG", "options must be a Map", 0])
+                (false, code, msg, count) => return!([false, code, msg, count])
                 b /\ Bool => {
               // DD-RemoveDirReplyShape (2026-09-03): unified per-entry-
               // count reply.  Every removeDir code path (non-recursive,

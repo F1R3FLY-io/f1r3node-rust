@@ -13783,6 +13783,68 @@ async fn fs_open_dir_upgrade_rw_on_r_provisioned_rejects() {
     assert_eq!(code, "FSERR_UNSUPPORTED");
 }
 
+/// M-22 (2026-09-04, RH-A5-3): `{"mode": Nil}` now reports the
+/// accurate "mode must be a String" error instead of the misleading
+/// "options must be a Map".  Type-guarded `modeVal` at extraction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_file_mode_nil_returns_mode_must_be_string() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "cfg": ("/root", "cfg.json", "rw", "file", "oracular")
+        })) {
+          for (@r <- @fs!?("openFile", "cfg", {"mode": Nil})) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(
+        code, "FSERR_BAD_ARG",
+        "M-22: {{\"mode\": Nil}} must reject with FSERR_BAD_ARG"
+    );
+    let msg = extract_failure_msg(&reply);
+    assert!(
+        msg.contains("mode"),
+        "M-22: msg must mention `mode` (was: {msg})"
+    );
+    assert!(
+        !msg.contains("options"),
+        "M-22: msg must NOT say the options was not a Map — it WAS \
+         a Map, only the value at `mode` was Nil.  msg: {msg}"
+    );
+}
+
+/// M-22 (2026-09-04, RH-A5-3): `Dir.removeDir` with
+/// `{"recursive": Nil}` reports the accurate "recursive must be a
+/// Bool" error instead of the misleading "options must be a Map".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_dir_recursive_nil_returns_recursive_must_be_bool() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
+          for (@r <- @d!?("removeDir", "sub", {"recursive": Nil})) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+    let msg = extract_failure_msg(&reply);
+    assert!(
+        msg.contains("recursive"),
+        "M-22: msg must mention `recursive` (was: {msg})"
+    );
+}
+
 /// M-10 A5-RH-A5-1 fix (2026-09-04): Dir.openDir rejects
 /// `path: true` with FSERR_UNSUPPORTED.  Pre-fix the key was
 /// silently dropped by the `{"mode": modeVal ..._}` remainder

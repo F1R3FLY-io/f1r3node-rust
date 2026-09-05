@@ -1403,6 +1403,269 @@ fn stream_chunk_enforces_max_chunk_items_cap() {
     );
 }
 
+/// M-28 (2026-09-04, RH-A5-9) — pin `Stream.rho`'s inner-new
+/// clause names so cross-lib references would surface as drift.
+///
+/// `Stream.rho` has TWO stacked `new` clauses at line 88 and 89:
+///   `new Stream, paramsP, stateP, gatherN, foldLoop, ... in {`
+///   `new foldConcurrentDispatch, foldConcurrentWorker,
+///        mapReduceDispatch, mapReduceWorker, collectDone,
+///        collectPartials, foldPartials in {`
+/// `lib_body` (rho_source.rs::extract_lib_body) strips only the
+/// OUTERMOST `new ... in {`, so the inner `new` is preserved inline
+/// in the composed FsGenesis body.  This works today because no
+/// other lib references the 7 inner-scope names, but the RH-1 outer-
+/// new drift test (`extract_outer_new_names`) reads only the FIRST
+/// `new` clause per file and cannot detect a cross-lib reference
+/// against an inner-scope name.
+///
+/// This source-scan pin enumerates the inner-new names and asserts:
+///
+/// 1. They appear inside Stream.rho's SECOND `new` clause (proving
+///    the two-stacked-clause structure hasn't been rearranged).
+/// 2. They do NOT appear in any other library's outer-new clause
+///    (proving no cross-lib reference exists).
+///
+/// A regression that extracts one of the 7 inner-scope names to a
+/// cross-lib reference would fail assertion (2) — surfacing the
+/// drift the RH-1 test cannot see.
+#[test]
+fn stream_rho_inner_new_names_are_not_cross_lib_referenced() {
+    const INNER_NEW_NAMES: &[&str] = &[
+        "foldConcurrentDispatch",
+        "foldConcurrentWorker",
+        "mapReduceDispatch",
+        "mapReduceWorker",
+        "collectDone",
+        "collectPartials",
+        "foldPartials",
+    ];
+    let stream_src = include_str!("../../casper/src/main/resources/Stream.rho");
+
+    // Assertion (1): every inner-new name appears in Stream.rho's
+    // SECOND top-level new clause.  We locate the first `new ... in
+    // {` end and search forward for the next `new ... in {`; the
+    // inner-new names must all appear in the substring between the
+    // second `new` and its `in {`.
+    let first_in_idx = stream_src
+        .find(" in {")
+        .expect("Stream.rho must have an outer `new ... in {`");
+    let after_first = &stream_src[first_in_idx + 5..];
+    let second_new_idx = after_first
+        .find("new ")
+        .expect("Stream.rho must have a second nested `new` clause");
+    let second_new_start = &after_first[second_new_idx..];
+    let second_in_idx = second_new_start
+        .find(" in {")
+        .expect("Second `new` clause must have `in {`");
+    let second_clause = &second_new_start[..second_in_idx];
+    for name in INNER_NEW_NAMES {
+        assert!(
+            second_clause.contains(name),
+            "RH-A5-9 regression: Stream.rho's inner-new clause is \
+             expected to bind `{name}` but the name was not found in \
+             the clause between the second `new` keyword and its \
+             `in {{` — either the clause structure changed or a \
+             variable was renamed.  Second clause was: {second_clause:?}"
+        );
+    }
+
+    // Assertion (2): none of the inner-new names appears in any
+    // other library's outer-new clause.  Check File.rho, Dir.rho,
+    // Fs.rho, Buffer.rho, Stdin.rho, Stdout.rho — the six sibling
+    // libs whose outer news share the composer's scope.
+    let sibling_libs: &[(&str, &str)] = &[
+        (
+            "File.rho",
+            include_str!("../../casper/src/main/resources/File.rho"),
+        ),
+        (
+            "Dir.rho",
+            include_str!("../../casper/src/main/resources/Dir.rho"),
+        ),
+        (
+            "Fs.rho",
+            include_str!("../../casper/src/main/resources/Fs.rho"),
+        ),
+        (
+            "Buffer.rho",
+            include_str!("../../casper/src/main/resources/Buffer.rho"),
+        ),
+        (
+            "Stdin.rho",
+            include_str!("../../casper/src/main/resources/Stdin.rho"),
+        ),
+        (
+            "Stdout.rho",
+            include_str!("../../casper/src/main/resources/Stdout.rho"),
+        ),
+    ];
+    for (lib_name, lib_src) in sibling_libs {
+        // Only inspect the sibling lib's own outer-new clause; a
+        // stray occurrence inside a method body (say a String literal
+        // that happens to contain "foldPartials") is fine.
+        let lib_in_idx = lib_src
+            .find(" in {")
+            .unwrap_or_else(|| panic!("{lib_name} must have an outer `new ... in {{`"));
+        let lib_new_clause = &lib_src[..lib_in_idx];
+        for name in INNER_NEW_NAMES {
+            // Word-boundary match: look for the name preceded and
+            // followed by non-identifier chars.
+            let has = lib_new_clause
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|tok| tok == *name);
+            assert!(
+                !has,
+                "RH-A5-9 regression: Stream.rho's inner-new name \
+                 `{name}` appears in `{lib_name}`'s outer-new clause \
+                 — a cross-lib reference has been introduced against \
+                 an inner-scope name, and `lib_body` composition will \
+                 bind it to a fresh unforgeable (silent hang on first \
+                 `<<-` peek).  Either promote `{name}` to Stream.rho's \
+                 OUTER new clause (so it's shared at the composer's \
+                 outer scope) or remove the cross-lib reference from \
+                 `{lib_name}`."
+            );
+        }
+    }
+}
+
+/// M-26 (2026-09-04, RH-A5-7) — pin arity-1 stream methods to
+/// `wait:false` in their `fsLockSequential!` invocations.
+///
+/// Arity-1 methods (`bytes`, `chars`, `readLine`, `lines`,
+/// `writeChars`, `writeLine`) execute `for (@state <- stateP) {
+/// ... fsLockSequential(...); for (@lockReply <- lockCh) { ... }}` —
+/// stateP is held during the lock-acquire wait.  Today safe because
+/// every arity-1 method passes `wait:false` so the native returns
+/// quickly.  A future maintainer who accepts `wait:true` at arity-1
+/// (mimicking arity-2) would deadlock — a concurrent `close()`
+/// waiting for stateP couldn't proceed while the current call is
+/// parked in the lock waiter queue.
+///
+/// This test source-scans `File.rho` for every `fsLockSequential!`
+/// invocation and asserts the wait arg is the literal `false`.  Any
+/// call with `wait:true` fires this pin and forces the author to
+/// document the deadlock analysis (via arity-2 early-release
+/// migration) before the change lands.
+#[test]
+fn arity_one_stream_methods_pin_wait_false_on_fs_lock_sequential() {
+    let src = include_str!("../../casper/src/main/resources/File.rho");
+    // The arity-5 native call shape is
+    // `fsLockSequential!(fd, *this, cmode, <wait>, *lockCh)` — locate
+    // every such invocation, extract the 4th argument, and assert it
+    // is `false`.  Callers accepting wait:true (the arity-2 options-
+    // map methods) invoke `fsLockSequential!` INDIRECTLY via the
+    // `withSequentialLock` / `acquireSequentialForStream` helpers,
+    // which is precisely why those helpers exist — that pattern is
+    // exempt from this pin.
+    let calls: Vec<&str> = src
+        .match_indices("fsLockSequential!(")
+        .map(|(idx, _)| {
+            let after = &src[idx..];
+            let end = after
+                .find(')')
+                .expect("fsLockSequential! call must have closing paren");
+            &after[..=end]
+        })
+        .collect();
+    assert!(
+        !calls.is_empty(),
+        "File.rho must have at least one direct fsLockSequential! call"
+    );
+    for call in &calls {
+        // The 4th positional arg is the wait flag.  Split on comma,
+        // trim, and assert the token is `false`.
+        let args_start = call.find('(').expect("call must have `(`") + 1;
+        let args_end = call.rfind(')').expect("call must have `)`");
+        let args_str = &call[args_start..args_end];
+        let tokens: Vec<&str> = args_str.split(',').map(str::trim).collect();
+        assert!(
+            tokens.len() >= 5,
+            "fsLockSequential! call must have >=5 positional args \
+             (fd, holder, cmode, wait, ack); got {tokens:?}"
+        );
+        let wait = tokens[3];
+        // Skip variable-passthrough patterns like the helper
+        // contracts (`withSequentialLock`, `acquireSequentialForStream`)
+        // which take `wait` as a parameter and forward it — those are
+        // called by both arity-1 (with the literal false) and arity-2
+        // (with the caller's requested wait) so the discipline lives
+        // at the CALLER of the helper, not inside the helper itself.
+        // Literal `true` is always a violation; literal `false` is
+        // always fine; identifiers (variables) get skipped.
+        if wait == "true" {
+            panic!(
+                "RH-A5-7 regression: fsLockSequential! call with \
+                 wait:true literal.  arity-1 stream methods must use \
+                 wait:false to avoid the stateP-held-during-wait \
+                 deadlock hazard; a wait:true invocation must migrate \
+                 to the arity-2 early-release + withSequentialLock \
+                 helper pattern.  Offending call: {call}"
+            );
+        } else if wait != "false" && !wait.chars().all(|c| c.is_ascii_alphabetic() || c == '_') {
+            panic!(
+                "RH-A5-7 regression: fsLockSequential! 4th arg is \
+                 neither `false` (arity-1 direct call convention) nor \
+                 an identifier passthrough (helper contract): {wait:?}.  \
+                 Offending call: {call}"
+            );
+        }
+    }
+}
+
+/// M-24 (2026-09-04, RH-A5-5) — pin `Stream.rho::method chunk(@n)`
+/// to `<<-` peek on the state cell, and pin the header
+/// §Concurrency docstring to admit chunk is the exception.
+///
+/// The blanket claim at Stream.rho:82-86 (`every named method
+/// acquires the state token via linear-receive`) is contradicted by
+/// `chunk`'s use of `<<-` (peek) at the entry check.  Peek is
+/// correct — `chunk` is a peek-then-delegate to `next()`, which
+/// linearly consumes stateP internally — but the docstring drifted.
+/// Fix per review recommendation was to convert docstring OR add a
+/// test; this pin does the latter, ensuring:
+///   1. `chunk`'s body uses `<<-` on stateP (proving the exception
+///      is real).
+///   2. The header concurrency docstring mentions `chunk` as the
+///      peek-delegate exception (proving the exception is
+///      documented near where a maintainer would look).
+///
+/// A regression that converts `chunk` to `<-` (linear consume)
+/// silently strengthens serialization but breaks the docstring
+/// promise about parallel chunk callers.  A regression that
+/// removes the chunk-exception note fires the second assertion.
+#[test]
+fn stream_chunk_uses_peek_on_state_p() {
+    let src = include_str!("../../casper/src/main/resources/Stream.rho");
+    let start = src
+        .find("method chunk(@n) {")
+        .expect("Stream.rho must define method chunk(@n)");
+    let after = &src[start..];
+    let end = after[1..]
+        .find("method ")
+        .map(|i| i + 1)
+        .unwrap_or(after.len());
+    let body = &after[..end];
+    assert!(
+        body.contains("<<- @[*private, *stateP]"),
+        "RH-A5-5 regression: Stream.rho::chunk(@n) must peek stateP \
+         via `<<-`, not linearly consume it.  A silent conversion to \
+         `<-` (linear consume) would break the concurrency contract \
+         allowing parallel chunk callers."
+    );
+    // Header docstring must warn maintainers about the peek exception.
+    let header_end = src.find("agent Stream {").expect("agent block start");
+    let header = &src[..header_end];
+    assert!(
+        header.contains("chunk") && header.contains("peek"),
+        "RH-A5-5 regression: Stream.rho's header must mention that \
+         `chunk` is the peek-delegate exception to the linear-receive \
+         concurrency discipline.  A silent removal of the exception \
+         note leaves the header docstring inconsistent with the code."
+    );
+}
+
 /// **Slice 9c-ii landed-pin — Buffer.toByteArray(@cap) materialization cap.**
 ///
 /// Replaces the prior deferral pin (`buffer_to_byte_array_deferral_still_holds`).

@@ -80,10 +80,20 @@
 //
 // ## Concurrency
 //
-// Same discipline as Buffer.rho: every named method acquires the
-// state token via linear-receive, matches "closed" first, does its
-// work, re-parks on every exit path.  Third-arm _ catch-all keeps
-// the mutex robust against a hypothetical fourth payload shape.
+// Same discipline as Buffer.rho: every named method except `chunk`
+// acquires the state token via linear-receive, matches "closed"
+// first, does its work, re-parks on every exit path.  Third-arm _
+// catch-all keeps the mutex robust against a hypothetical fourth
+// payload shape.
+//
+// `chunk` is the peek exception (M-24 fix, RH-A5-5, 2026-09-04):
+// it uses `<<-` to peek stateP for the terminal-state check, then
+// delegates to `next()` which itself linearly consumes stateP on
+// each per-item dispatch.  Peek is safe here because `chunk`
+// doesn't mutate state itself — it only decides whether to start
+// gathering or short-circuit on a terminal state — and admits
+// unbounded parallel `chunk` callers.  Pinned by
+// `stream_chunk_uses_peek_on_state_p` in `fileio_cost_spec.rs`.
 
 new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop, foldChunksLoop in {
 new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWorker, collectDone, collectPartials, foldPartials in {
