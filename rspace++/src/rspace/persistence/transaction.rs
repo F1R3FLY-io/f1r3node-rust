@@ -163,6 +163,30 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
     pub const fn version(self) -> StateVersionV1 { self.version }
 
     pub const fn admission_report(self) -> SemanticValidationReport { self.admission }
+
+    /// Perform a bounded, stack-safe lookup in one authenticated semantic
+    /// trie.  The caller supplies the root and canonical byte key; no trie is
+    /// flattened or reconstructed.  This is the primitive used by read-only
+    /// durable projections before a legacy hash-key bridge is selected.
+    pub(crate) fn lookup_endpoint(
+        &self,
+        root: ObjectRefV1,
+        key: &[u8],
+        max_steps: u64,
+    ) -> Result<
+        Option<crate::rspace::persistence::EndpointValue>,
+        crate::rspace::persistence::ClosureError<S::Error>,
+    > {
+        let mut steps = 0;
+        crate::rspace::persistence::semantic::lookup_endpoint_counted(
+            self.store,
+            root,
+            key,
+            max_steps,
+            &mut steps,
+            "durable semantic lookup steps",
+        )
+    }
 }
 
 /// Caller-content phase. Only exact continuation-source blobs may enter;

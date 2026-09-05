@@ -866,7 +866,7 @@ where
     )
 }
 
-fn lookup_endpoint_counted<S>(
+pub(crate) fn lookup_endpoint_counted<S>(
     store: &S,
     root: ObjectRefV1,
     key: &[u8],
