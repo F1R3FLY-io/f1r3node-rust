@@ -947,12 +947,21 @@ where
                 }));
             }
         };
-        if !prefix[offset..].starts_with(node.prefix()) {
+        let node_parent_path = path.clone();
+        let remaining = &prefix[offset..];
+        if node.prefix().starts_with(remaining) {
+            // The requested prefix ends inside this compressed line.  The
+            // complete node subtree is therefore already within the query.
+            path = node_parent_path;
+            break;
+        }
+        if !remaining.starts_with(node.prefix()) {
             return Ok(Vec::new());
         }
         path.extend_from_slice(node.prefix());
         offset += node.prefix().len();
         if offset == prefix.len() {
+            path = node_parent_path;
             break;
         }
         let edge = prefix[offset];
