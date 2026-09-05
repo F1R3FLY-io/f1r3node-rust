@@ -12,7 +12,7 @@
 
 This ledger exists to rectify and ratify the Casper design decisions that the cost-accounting work changes. Its goal is one Casper specification on `dev` that the cost-accounting changes are congruent with. It records each Casper consensus design decision on which `dev` and PR #216 differ. Each entry states both positions, the divergence, the options, and one unification proposal. Maintainers ratify or reject each decision here before any specification text changes.
 
-The ledger covers Casper consensus decisions only. Cost-accounting economics, token semantics, signature algebra, and settlement stay out of scope. An entry cites a PR #216 decision record (DR) as evidence, not as authority. A DR carries no ratification weight until its ledger entry is ratified.
+The ledger covers Casper consensus decisions only. Cost-accounting economics, token semantics, signature algebra, and settlement stay out of scope. Entry D-12 is the one exception. It reviews the removal of the deploy cost fields because that removal changes a block-validity rule and the client deploy contract. An entry cites a PR #216 decision record (DR) as evidence, not as authority. A DR carries no ratification weight until its ledger entry is ratified.
 
 ## 2. Ratification workflow
 
@@ -58,6 +58,7 @@ The statuses `accepted and implemented`, `superseded`, and `user-ratified` in th
 | [D-09](./09-slashing-authorization.md) | Slashing authorization, evidence identity, and neglect | Protocol | Replaces the rejected-slash recovery loop. Removes a gated proof. |
 | [D-10](./10-repeat-deploy-carrier-index.md) | Repeat-deploy carrier index | Protocol refinement | Amends the pending 2026-09-01 row. |
 | [D-11](./11-cbc-fv-governance.md) | CbC and FV governance | Governance | Yes. Rewrites two ratified rows in prose. |
+| [D-12](./12-deploy-cost-limits.md) | Deploy cost limits, removal of `phloLimit` and `phloPrice` | Protocol and economics boundary | Removes the minimum-price validation rule. |
 
 ## 5. Merge notes for `feature/cost-accounted-rho`
 
