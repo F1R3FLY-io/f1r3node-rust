@@ -1403,6 +1403,114 @@ fn stream_chunk_enforces_max_chunk_items_cap() {
     );
 }
 
+/// M-29 (2026-09-05, RH-A5-10) — pin `Dir.rho`'s header method
+/// summary to the current arity-2 signatures for `openFile` and
+/// `openDir`.  Pre-fix (B4, 2026-09-03) both methods took bare
+/// positional `@mode`; post-B4 both take `(@rel, @options)`.  A
+/// stale docstring at the top of Dir.rho listed the arity-1 form,
+/// which contradicted the actual signatures.  The comment is now
+/// updated; this pin catches a regression that reverts the header
+/// to the arity-1 form.
+#[test]
+fn dir_rho_header_lists_options_signatures_for_open_methods() {
+    let src = include_str!("../../casper/src/main/resources/Dir.rho");
+    let header_end = src.find("new Dir,").expect("Dir.rho outer new");
+    let header = &src[..header_end];
+    for name in ["openFile", "openDir"] {
+        let sig_options = format!("`{name}(rel, options)`");
+        let sig_mode = format!("`{name}(rel, mode)`");
+        assert!(
+            header.contains(&sig_options),
+            "RH-A5-10 regression: Dir.rho's header method summary \
+             must list `{name}(rel, options)` (post-B4 arity-2 form)."
+        );
+        assert!(
+            !header.contains(&sig_mode),
+            "RH-A5-10 regression: Dir.rho's header method summary \
+             still lists the retired arity-1 form `{name}(rel, mode)`. \
+             The `B4` slice (2026-09-03) migrated these methods to \
+             `(@rel, @options)`; the header docstring must not \
+             advertise the old shape."
+        );
+    }
+}
+
+/// M-30 (2026-09-05, RH-A5-11) — pin the `Fs.rho` module-level
+/// `@[*fsRevokedP]!(false)` init at module scope.
+///
+/// The reviewer flagged this as non-atomic in principle: if any
+/// Fs method could race with genesis composition, its `<<-` peek
+/// at `fsRevokedP` would read `Nil`.  In practice module init runs
+/// before any user code — the composed FsGenesis pipeline evaluates
+/// the module body to quiescence before publishing the
+/// `bundle+{*fs}` at the registry URI, so no method can race with
+/// the init.  We accept the current shape as-is (no defensive
+/// `new snapCh in { ... }` wrapper) and pin it here so a future
+/// slice that changes the composition semantics has to update this
+/// pin and re-verify the invariant.
+///
+/// The pin also asserts the init is at MODULE scope (outside the
+/// `agent Fs {` block) — moving it into a per-method arm would
+/// break the "false parked before any method activates" invariant.
+#[test]
+fn fs_rho_module_level_fs_revoked_init_is_at_outer_scope() {
+    let src = include_str!("../../casper/src/main/resources/Fs.rho");
+    let init_idx = src
+        .find("@[*fsRevokedP]!(false)")
+        .expect("RH-A5-11 regression: Fs.rho must initialize fsRevokedP to false at module scope");
+    let agent_start = src.find("agent Fs {").expect("Fs.rho agent Fs block");
+    assert!(
+        init_idx < agent_start,
+        "RH-A5-11 regression: `@[*fsRevokedP]!(false)` must appear \
+         BEFORE the `agent Fs {{` block (module scope).  Found at \
+         byte {init_idx}, agent starts at {agent_start}.  Moving it \
+         inside a method body would break the \"false parked before \
+         any method activates\" invariant."
+    );
+}
+
+/// M-32 (2026-09-05, RH-A5-13) — pin `Buffer.beginFill`'s return
+/// shape to the bare dereferenced `*fillToken` (not a `bundle+` wrap).
+///
+/// The reviewer flagged this as a design subtlety: `endFill`'s
+/// equality check `lease == presented` needs the same Par shape on
+/// both sides, so `beginFill` returns `*fillToken` directly (the
+/// unforgeable Name's dereferenced form) rather than
+/// `bundle+{*fillToken}`.  The token is still unforgeable — a
+/// caller cannot construct it — and can only be used by presenting
+/// it back to endFill.
+///
+/// This pin catches a regression that adds a `bundle+` wrap on the
+/// beginFill return — a change that would look "more secure" at
+/// first glance but would silently break endFill's equality check.
+#[test]
+fn buffer_begin_fill_returns_bare_dereferenced_fill_token() {
+    let src = include_str!("../../casper/src/main/resources/Buffer.rho");
+    let start = src
+        .find("method beginFill() {")
+        .expect("Buffer.rho::method beginFill");
+    let after = &src[start..];
+    let end = after[1..]
+        .find("method ")
+        .map(|i| i + 1)
+        .unwrap_or(after.len());
+    let body = &after[..end];
+    assert!(
+        body.contains("return!([true, *fillToken])"),
+        "RH-A5-13 regression: Buffer.beginFill must return \
+         `[true, *fillToken]` (bare dereferenced Name).  A bundle+ \
+         wrap would break endFill's `lease == presented` equality \
+         check (Par shape mismatch)."
+    );
+    assert!(
+        !body.contains("bundle+{*fillToken}") && !body.contains("bundle+{ *fillToken}"),
+        "RH-A5-13 regression: Buffer.beginFill introduced a `bundle+` \
+         wrap around fillToken — this looks more secure but breaks \
+         endFill's equality check.  If bundle wrapping is desired, \
+         endFill must also unwrap before comparing."
+    );
+}
+
 /// M-28 (2026-09-04, RH-A5-9) — pin `Stream.rho`'s inner-new
 /// clause names so cross-lib references would surface as drift.
 ///

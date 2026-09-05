@@ -11218,6 +11218,63 @@ async fn file_read_lines_into_line_exactly_at_cap_plus_lf() {
 // Phase 6 Slice 14: Stdin.rho — read-only, sequential-forward agent.
 // ---------------------------------------------------------------------
 
+/// M-33 (2026-09-05, RH-A5-14) — pin `Stdin.readLine`'s behavior
+/// on an invalid UTF-8 lead byte: reply is
+/// `[false, "FSERR_IO", "invalid UTF-8 start byte"]`.
+///
+/// The reviewer noted an asymmetry with `writeString` (which uses
+/// `FSERR_BAD_ARG` for a malformed String argument) and suggested
+/// the choice should be pinned by a design-decision doc.  Current
+/// design: input-validity decoding failure at the syscall boundary
+/// is `FSERR_IO`, not `FSERR_BAD_ARG` — the byte was fine at the
+/// read layer, the failure is downstream in the codepoint scan.
+/// A regression that flips this to `FSERR_BAD_ARG` fires here so
+/// the maintainer can re-verify the taxonomy call.
+///
+/// Test setup: place a byte >= 0x80 with no valid UTF-8 lead-byte
+/// classification into stdin, then call `readLine`, dispatch
+/// `next` on the returned stream — the first `next` fires the
+/// codepointLen `-1` arm which produces the FSERR_IO reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stdin_read_line_invalid_utf8_lead_byte_returns_fserr_io() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // 0xC0 is a forbidden UTF-8 lead byte (§Unicode: over-long
+    // encoding of 7-bit ASCII).  `codepointLen(0xC0)` returns -1,
+    // which readLine surfaces as `[false, "FSERR_IO", "invalid
+    // UTF-8 start byte"]`.
+    let src = with_libs(
+        r#"
+        for (@_ <- mockFdCell) {
+          mockFdCell!(("C0".hexToBytes(), 0)) |
+          for (@sin <- Stdin!?(1)) {
+            for (@[true, stream] <- @sin!?("readLine")) {
+              for (@r <- @stream!?("next")) { @"out"!(r) }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "invalid UTF-8 lead byte must reject");
+    assert_eq!(
+        code, "FSERR_IO",
+        "M-33 (RH-A5-14): Stdin.readLine's invalid UTF-8 lead byte \
+         must reply FSERR_IO (input-decoding failure at the syscall \
+         boundary), not FSERR_BAD_ARG.  A regression flipping this \
+         to FSERR_BAD_ARG is a taxonomy change; re-verify the \
+         reviewer's design-decision note before landing.  Got: \
+         {code:?}"
+    );
+    let msg = extract_failure_msg(&reply);
+    assert!(
+        msg.contains("UTF-8"),
+        "message must mention UTF-8; got: {msg}"
+    );
+}
+
 /// bytes() over stdin emits one Int per next() then EOS.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stdin_bytes_emits_each_byte_then_eos() {

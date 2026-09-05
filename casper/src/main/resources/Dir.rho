@@ -9,9 +9,9 @@
 //
 //   - `stat(rel)` — record for the file/dir at `root/subPath/rel`
 //   - `exists(rel)` — Bool
-//   - `openFile(rel, mode)` — quarantine + open + mint a File agent
-//   - `openDir(rel, mode)`  — mint a nested Dir agent
-//   - `removeFile(rel)`, `removeDir(rel, recursive)`, `rename`,
+//   - `openFile(rel, options)` — quarantine + open + mint a File agent
+//   - `openDir(rel, options)`  — mint a nested Dir agent
+//   - `removeFile(rel)`, `removeDir(rel, options)`, `rename`,
 //     `copyFile`, `chmod`, `chown` — mutation methods, rw-gated
 //   - `default(...@args)` — FSERR_UNSUPPORTED
 //
