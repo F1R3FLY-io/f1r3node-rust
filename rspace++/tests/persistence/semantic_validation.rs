@@ -215,6 +215,47 @@ fn verified_state_prefix_projection_preserves_path_and_multiplicity() {
 }
 
 #[test]
+fn verified_state_prefix_projection_enforces_step_and_endpoint_budgets() {
+    let image = valid_image();
+    let state = VerifiedDagState::<_, TestSemanticProfile>::admit(
+        &image.store,
+        StateVersionV1::new(1, image.manifest),
+        SemanticValidationLimits::unbounded(),
+    )
+    .expect("semantic state admits");
+    let roots = state.semantic_manifest().expect("manifest is authenticated").roots();
+    let prefix = RhoPathV1::datum_prefix(&"channel".to_owned());
+
+    let endpoint_limited = state
+        .collect_endpoints_under_prefix(roots.data_bag, &prefix, u64::MAX, 0)
+        .expect_err("zero endpoint budget must reject the first endpoint");
+    assert!(matches!(
+        endpoint_limited,
+        crate::rspace::persistence::ClosureError::Format(
+            crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
+                resource: "durable prefix endpoints",
+                limit: 0,
+                attempted: 1,
+            }
+        )
+    ));
+
+    let step_limited = state
+        .collect_endpoints_under_prefix(roots.data_bag, &prefix, 0, u64::MAX)
+        .expect_err("zero step budget must reject traversal work");
+    assert!(matches!(
+        step_limited,
+        crate::rspace::persistence::ClosureError::Format(
+            crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
+                resource: "durable prefix lookup steps",
+                limit: 0,
+                attempted: 1,
+            }
+        )
+    ));
+}
+
+#[test]
 fn semantic_completion_consumes_structural_evidence_without_rewalking_the_manifest() {
     let image = valid_image();
     let store = CountingStore::new(&image.store);
