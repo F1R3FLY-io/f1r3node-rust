@@ -4,11 +4,14 @@
 //! identify which verified root is current and where its immutable objects are
 //! stored; they never redefine RSpace semantics.
 
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::{
     ClosureError, EndpointValue, GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseV1,
     LogPackDecodeLimits, SemanticRoots, VerifiedDagState,
 };
+use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 mod admission;
 mod catalog;
@@ -126,9 +129,7 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// object index and catalog generation; callers cannot substitute a
     /// reopened path or a caller-selected root.  This is intentionally a
     /// read-only seam: mutation and publication remain on the writer path.
-    pub(crate) fn verified_state(
-        &self,
-    ) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
+    pub(crate) fn verified_state(&self) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
         self.writer.verified_state()
     }
 
@@ -153,9 +154,156 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
         max_steps: u64,
         max_endpoints: u64,
     ) -> Result<Vec<(Vec<u8>, EndpointValue)>, ClosureError<DurableObjectReadErrorV1>> {
-        self.writer
-            .verified_state()
-            .collect_endpoints_under_prefix(root, prefix, max_steps, max_endpoints)
+        self.writer.verified_state().collect_endpoints_under_prefix(
+            root,
+            prefix,
+            max_steps,
+            max_endpoints,
+        )
+    }
+
+    /// Decode the authenticated DataBag projection for one canonical channel
+    /// directly from trie endpoints.  The channel path is the query key; no
+    /// channel hash inversion or flattened legacy leaf is involved.
+    pub(crate) fn data_for_channel(
+        &self,
+        channel: &P::Channel,
+        max_steps: u64,
+        max_endpoints: u64,
+        max_values: u64,
+    ) -> Result<Vec<crate::rspace::internal::Datum<P::Datum>>, ClosureError<DurableObjectReadErrorV1>>
+    where
+        P::Datum: Clone + ColdStoreDecode + RhoPathEncode + serde::Serialize,
+    {
+        let roots = self.semantic_roots()?;
+        let prefix = RhoPathV1::datum_prefix(channel);
+        let endpoints = self.project_prefix(roots.data_bag, &prefix, max_steps, max_endpoints)?;
+        let mut result = Vec::new();
+        for (path, endpoint) in endpoints {
+            let (datum, multiplicity) =
+                crate::rspace::persistence::semantic::decode_data_endpoint::<P::Datum>(
+                    &path, endpoint,
+                )
+                .map_err(ClosureError::Format)?;
+            let count = multiplicity.get();
+            let next = result.len() as u64 + count;
+            if next > max_values {
+                return Err(ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
+                        resource: "durable data materialization",
+                        limit: max_values,
+                        attempted: next,
+                    },
+                ));
+            }
+            let count = usize::try_from(count).map_err(|_| {
+                ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
+                        field: "durable data multiplicity",
+                        value: multiplicity.get(),
+                    },
+                )
+            })?;
+            result.try_reserve(count).map_err(|_| {
+                ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
+                        requested: count as u64,
+                    },
+                )
+            })?;
+            result.extend(std::iter::repeat(datum).take(count));
+        }
+        Ok(result)
+    }
+
+    /// Decode authenticated continuation records for one exact ordered
+    /// channel group.  Source payloads are loaded through the pinned object
+    /// index and validated by the same semantic round-trip machine used at
+    /// admission.
+    pub(crate) fn continuations_for_channels(
+        &self,
+        channels: &[P::Channel],
+        max_steps: u64,
+        max_endpoints: u64,
+        max_payload_bytes: u64,
+    ) -> Result<
+        Vec<crate::rspace::internal::WaitingContinuation<P::Pattern, P::Continuation>>,
+        ClosureError<DurableObjectReadErrorV1>,
+    >
+    where
+        P::Channel: Clone,
+        P::Pattern: Clone + ColdStoreDecode + StableHashSerialize,
+        P::Continuation: Clone + ColdStoreDecode + StableHashSerialize,
+    {
+        let roots = self.semantic_roots()?;
+        let prefix = RhoPathV1::continuation_prefix(channels);
+        let endpoints =
+            self.project_prefix(roots.continuation_map, &prefix, max_steps, max_endpoints)?;
+        let state = self.verified_state();
+        let mut result = Vec::with_capacity(endpoints.len());
+        for (path, endpoint) in endpoints {
+            result.push(crate::rspace::persistence::semantic::decode_continuation_endpoint::<
+                P::Channel,
+                P::Pattern,
+                P::Continuation,
+                _,
+            >(state.object_store(), &path, endpoint, max_payload_bytes)?);
+        }
+        Ok(result)
+    }
+
+    /// Decode authenticated JoinBag records for one indexed channel.  Each
+    /// endpoint multiplicity is expanded only at this legacy typed boundary;
+    /// the trie remains the sole authority.
+    pub(crate) fn joins_for_channel(
+        &self,
+        channel: &P::Channel,
+        max_steps: u64,
+        max_endpoints: u64,
+        max_values: u64,
+    ) -> Result<Vec<Vec<P::Channel>>, ClosureError<DurableObjectReadErrorV1>>
+    where
+        P::Channel: Clone + ColdStoreDecode,
+    {
+        let roots = self.semantic_roots()?;
+        let prefix = RhoPathV1::join_prefix(channel);
+        let endpoints = self.project_prefix(roots.join_bag, &prefix, max_steps, max_endpoints)?;
+        let mut result = Vec::new();
+        for (path, endpoint) in endpoints {
+            let (join, multiplicity) =
+                crate::rspace::persistence::semantic::decode_join_endpoint::<P::Channel>(
+                    &path, endpoint,
+                )
+                .map_err(ClosureError::Format)?;
+            let count = multiplicity.get();
+            let next = result.len() as u64 + count;
+            if next > max_values {
+                return Err(ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
+                        resource: "durable join materialization",
+                        limit: max_values,
+                        attempted: next,
+                    },
+                ));
+            }
+            let count = usize::try_from(count).map_err(|_| {
+                ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
+                        field: "durable join multiplicity",
+                        value: multiplicity.get(),
+                    },
+                )
+            })?;
+            result.try_reserve(count).map_err(|_| {
+                ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
+                        requested: count as u64,
+                    },
+                )
+            })?;
+            result.extend(std::iter::repeat_with(|| join.clone()).take(count));
+        }
+        Ok(result)
     }
 
     pub(crate) fn manifest(&self) -> crate::rspace::persistence::ObjectRefV1 {

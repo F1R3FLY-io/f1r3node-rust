@@ -284,6 +284,19 @@ fn read_authority_view_reopens_the_authenticated_catalog_state() {
         .project_prefix(roots.data_bag, &[], u64::MAX, u64::MAX)
         .expect("authenticated empty-prefix projection must succeed");
     assert!(projected.is_empty(), "fixture data root is intentionally empty");
+
+    let data = view
+        .data_for_channel(&"missing-channel".to_owned(), u64::MAX, u64::MAX, u64::MAX)
+        .expect("typed data projection must preserve an empty channel");
+    assert!(data.is_empty());
+    let continuations = view
+        .continuations_for_channels(&["missing-channel".to_owned()], u64::MAX, u64::MAX, u64::MAX)
+        .expect("typed continuation projection must preserve an empty channel group");
+    assert!(continuations.is_empty());
+    let joins = view
+        .joins_for_channel(&"missing-channel".to_owned(), u64::MAX, u64::MAX, u64::MAX)
+        .expect("typed join projection must preserve an empty channel");
+    assert!(joins.is_empty());
 }
 
 #[test]

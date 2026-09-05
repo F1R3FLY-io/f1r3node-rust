@@ -164,6 +164,11 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
 
     pub const fn admission_report(self) -> SemanticValidationReport { self.admission }
 
+    /// Borrow the exact object store sealed by this admission token.  The
+    /// returned reference cannot outlive the token, so callers cannot detach
+    /// typed projections from the authenticated catalog generation.
+    pub(crate) fn object_store(&self) -> &'store S { self.store }
+
     /// Perform a bounded, stack-safe lookup in one authenticated semantic
     /// trie.  The caller supplies the root and canonical byte key; no trie is
     /// flattened or reconstructed.  This is the primitive used by read-only
