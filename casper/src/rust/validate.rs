@@ -709,10 +709,26 @@ impl Validate {
         // carrier must not poison this block). Any read failure keeps the
         // sig in the scan: unreadable index state is no information, never
         // an absence proof.
+        let index_read_failures = metrics::counter!(
+            REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC,
+            "source" => CASPER_METRICS_SOURCE
+        );
         let deploy_key_set: HashSet<Vec<u8>> = match s.dag.carrier_index_watermark() {
             Ok(Some(w)) if w <= earliest_block_number.max(0) => {
                 metrics::counter!(REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .increment(1);
+                let row_reads = metrics::counter!(
+                    REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC,
+                    "source" => CASPER_METRICS_SOURCE
+                );
+                let index_absences = metrics::counter!(
+                    REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC,
+                    "source" => CASPER_METRICS_SOURCE
+                );
+                let index_hits = metrics::counter!(
+                    REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC,
+                    "source" => CASPER_METRICS_SOURCE
+                );
                 let mut probe_failed = false;
                 let scan_set: HashSet<Vec<u8>> = deploy_key_set
                     .into_iter()
@@ -720,22 +736,18 @@ impl Validate {
                         if probe_failed {
                             return true;
                         }
-                        metrics::counter!(REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC, "source" => CASPER_METRICS_SOURCE)
-                            .increment(1);
+                        row_reads.increment(1);
                         match s.dag.carrier_index_proves_absence(sig) {
                             Ok(true) => {
-                                metrics::counter!(REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC, "source" => CASPER_METRICS_SOURCE)
-                                    .increment(1);
+                                index_absences.increment(1);
                                 false
                             }
                             Ok(false) => {
-                                metrics::counter!(REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC, "source" => CASPER_METRICS_SOURCE)
-                                    .increment(1);
+                                index_hits.increment(1);
                                 true
                             }
                             Err(e) => {
-                                metrics::counter!(REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC, "source" => CASPER_METRICS_SOURCE)
-                                    .increment(1);
+                                index_read_failures.increment(1);
                                 tracing::warn!(
                                     "repeat-deploy carrier-index probe failed for block {}; \
                                      falling back to the ancestor scan: {}",
@@ -756,8 +768,7 @@ impl Validate {
                 deploy_key_set
             }
             Err(e) => {
-                metrics::counter!(REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(1);
+                index_read_failures.increment(1);
                 tracing::warn!(
                     "repeat-deploy carrier-index watermark read failed for block {}; \
                      falling back to the ancestor scan: {}",
@@ -777,11 +788,18 @@ impl Validate {
         // A failed expansion is not an empty one: swallowing it ends the scan
         // early, and "found no duplicate" is then a statement about what could
         // be read, not about the chain. That verdict admits the repeat.
+        let ancestor_metadata_visits = metrics::counter!(
+            REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC,
+            "source" => CASPER_METRICS_SOURCE
+        );
+        let ancestor_body_reads = metrics::counter!(
+            REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC,
+            "source" => CASPER_METRICS_SOURCE
+        );
         let maybe_duplicated_block_metadata = match dag_ops::try_bf_traverse_find(
             init_parents,
             |block_metadata| {
-                metrics::counter!(REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(1);
+                ancestor_metadata_visits.increment(1);
                 proto_util::get_parent_metadatas_above_block_number(
                     block_metadata,
                     earliest_block_number,
@@ -789,8 +807,7 @@ impl Validate {
                 )
             },
             |block_metadata| {
-                metrics::counter!(REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(1);
+                ancestor_body_reads.increment(1);
                 block_store
                     .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
                     .map_err(CasperError::from)

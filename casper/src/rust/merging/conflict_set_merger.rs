@@ -209,7 +209,6 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
 
     // Compute rejection options that leave only non-conflicting branches with timing
     use rspace_plus_plus::rspace::merger::merging_logic::compute_rejection_options;
-    let rejection_selection_start = Instant::now();
     let (rejection_options, rejection_options_time) =
         measure_time(|| compute_rejection_options(&conflict_map));
     metrics::histogram!(
@@ -277,6 +276,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     }
 
     // Get merged result rejection options
+    let rejection_selection_start = Instant::now();
     let rejection_options_with_overflow = get_merged_result_rejection(
         &branches_set,
         &rejection_options,
