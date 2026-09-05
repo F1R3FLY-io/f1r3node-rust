@@ -878,6 +878,38 @@ pub(crate) fn decode_data_endpoint<A: Clone + ColdStoreDecode>(
     Ok((datum, multiplicity))
 }
 
+/// Decode one authenticated DataBag endpoint together with its structural
+/// channel identity. The channel identity is checked for an exact
+/// decode/re-encode round trip before the datum is returned.
+pub(crate) fn decode_data_endpoint_with_channel<C, A>(
+    path: &[u8],
+    endpoint: EndpointValue,
+) -> Result<(C, crate::rspace::internal::Datum<A>, std::num::NonZeroU64), CanonicalFormatError>
+where
+    C: ColdStoreDecode + RhoPathEncode,
+    A: Clone + ColdStoreDecode,
+{
+    let view = RhoPathV1::parse_datum(path).map_err(|error| CanonicalFormatError::SemanticKey {
+        namespace: SemanticNamespace::DataBag.name(),
+        detail: error.to_string(),
+    })?;
+    let channel_identity = view.channel_identity();
+    let channel = decode_exact::<C>(&channel_identity, "data channel").map_err(|detail| {
+        CanonicalFormatError::SemanticKey {
+            namespace: SemanticNamespace::DataBag.name(),
+            detail,
+        }
+    })?;
+    if channel.rho_path_identity() != channel_identity {
+        return Err(CanonicalFormatError::SemanticKey {
+            namespace: SemanticNamespace::DataBag.name(),
+            detail: "data channel identity does not re-encode exactly".to_owned(),
+        });
+    }
+    let (datum, multiplicity) = decode_data_endpoint(path, endpoint)?;
+    Ok((channel, datum, multiplicity))
+}
+
 /// Decode one authenticated JoinBag endpoint.  The path carries the complete
 /// ordered join record, so no legacy leaf projection or sorting is needed.
 pub(crate) fn decode_join_endpoint<C: Clone + ColdStoreDecode>(
@@ -904,6 +936,37 @@ pub(crate) fn decode_join_endpoint<C: Clone + ColdStoreDecode>(
         },
     )?;
     Ok((join, multiplicity))
+}
+
+/// Decode one authenticated JoinBag endpoint together with its indexed
+/// channel identity, checking the channel's exact identity round trip.
+pub(crate) fn decode_join_endpoint_with_channel<C>(
+    path: &[u8],
+    endpoint: EndpointValue,
+) -> Result<(C, Vec<C>, std::num::NonZeroU64), CanonicalFormatError>
+where
+    C: Clone + ColdStoreDecode + RhoPathEncode,
+{
+    let view = RhoPathV1::parse_join(path).map_err(|error| CanonicalFormatError::SemanticKey {
+        namespace: SemanticNamespace::JoinBag.name(),
+        detail: error.to_string(),
+    })?;
+    let indexed_identity = view.indexed_channel_identity();
+    let indexed =
+        decode_exact::<C>(&indexed_identity, "join indexed channel").map_err(|detail| {
+            CanonicalFormatError::SemanticKey {
+                namespace: SemanticNamespace::JoinBag.name(),
+                detail,
+            }
+        })?;
+    if indexed.rho_path_identity() != indexed_identity {
+        return Err(CanonicalFormatError::SemanticKey {
+            namespace: SemanticNamespace::JoinBag.name(),
+            detail: "join indexed channel identity does not re-encode exactly".to_owned(),
+        });
+    }
+    let (join, multiplicity) = decode_join_endpoint(path, endpoint)?;
+    Ok((indexed, join, multiplicity))
 }
 
 /// Decode one authenticated ContinuationMap endpoint, including its exact
@@ -940,6 +1003,40 @@ where
         &mut source_payload_bytes,
     )?
     .waiting)
+}
+
+/// Decode one authenticated continuation endpoint and retain its exact
+/// ordered channel group for startup/state projections.
+pub(crate) fn decode_continuation_endpoint_with_channels<C, P, K, S>(
+    store: &S,
+    path: &[u8],
+    endpoint: EndpointValue,
+    max_payload_bytes: u64,
+) -> Result<(Vec<C>, WaitingContinuation<P, K>), ClosureError<S::Error>>
+where
+    C: ColdStoreDecode + RhoPathEncode,
+    P: Clone + ColdStoreDecode + StableHashSerialize,
+    K: Clone + ColdStoreDecode + StableHashSerialize,
+    S: ImmutableObjectStore,
+{
+    let source = match endpoint {
+        EndpointValue::Content(reference) => reference,
+        other => {
+            return Err(format_error(CanonicalFormatError::EndpointPolicy {
+                namespace: SemanticNamespace::ContinuationMap.name(),
+                endpoint: other.name(),
+            }));
+        }
+    };
+    let mut source_payload_bytes = 0;
+    let validated = validate_continuation_record::<C, P, K, S>(
+        store,
+        path,
+        source,
+        max_payload_bytes,
+        &mut source_payload_bytes,
+    )?;
+    Ok((validated.channels, validated.waiting))
 }
 
 fn lookup_endpoint<S>(

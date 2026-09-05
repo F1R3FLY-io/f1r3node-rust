@@ -248,6 +248,60 @@ fn verified_state_streaming_prefix_projection_matches_materialized_projection() 
 }
 
 #[test]
+fn typed_endpoint_decoders_preserve_structural_channels_and_multiplicity() {
+    let image = valid_image();
+    let state = VerifiedDagState::<_, TestSemanticProfile>::admit(
+        &image.store,
+        StateVersionV1::new(1, image.manifest),
+        SemanticValidationLimits::unbounded(),
+    )
+    .expect("semantic state admits");
+    let roots = state
+        .semantic_manifest()
+        .expect("manifest is authenticated")
+        .roots();
+
+    let data = state
+        .collect_endpoints_under_prefix(roots.data_bag, &[], u64::MAX, u64::MAX)
+        .expect("data projection succeeds");
+    let (channel, datum, data_count) =
+        crate::rspace::persistence::semantic::decode_data_endpoint_with_channel::<String, String>(
+            &data[0].0, data[0].1,
+        )
+        .expect("data endpoint decodes");
+    assert_eq!(channel, "channel");
+    assert_eq!(datum, Datum::create(&"channel".to_owned(), "datum".to_owned(), true));
+    assert_eq!(data_count, nonzero(3));
+
+    let joins = state
+        .collect_endpoints_under_prefix(roots.join_bag, &[], u64::MAX, u64::MAX)
+        .expect("join projection succeeds");
+    let (indexed, join, join_count) =
+        crate::rspace::persistence::semantic::decode_join_endpoint_with_channel::<String>(
+            &joins[0].0,
+            joins[0].1,
+        )
+        .expect("join endpoint decodes");
+    assert_eq!(indexed, "channel");
+    assert_eq!(join, vec!["channel".to_owned()]);
+    assert_eq!(join_count, nonzero(2));
+
+    let continuations = state
+        .collect_endpoints_under_prefix(roots.continuation_map, &[], u64::MAX, u64::MAX)
+        .expect("continuation projection succeeds");
+    let (continuation_channels, waiting) =
+        crate::rspace::persistence::semantic::decode_continuation_endpoint_with_channels::<
+            String,
+            String,
+            String,
+            _,
+        >(state.object_store(), &continuations[0].0, continuations[0].1, u64::MAX)
+        .expect("continuation endpoint decodes");
+    assert_eq!(continuation_channels, vec!["channel".to_owned()]);
+    assert_eq!(waiting.continuation.as_ref(), "continuation");
+}
+
+#[test]
 fn verified_state_prefix_projection_enforces_step_and_endpoint_budgets() {
     let image = valid_image();
     let state = VerifiedDagState::<_, TestSemanticProfile>::admit(

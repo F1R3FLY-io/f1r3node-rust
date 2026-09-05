@@ -237,7 +237,7 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
         ClosureError<DurableObjectReadErrorV1>,
     >
     where
-        P::Channel: Clone,
+        P::Channel: Clone + RhoPathEncode,
         P::Pattern: Clone + ColdStoreDecode + StableHashSerialize,
         P::Continuation: Clone + ColdStoreDecode + StableHashSerialize,
     {
@@ -319,6 +319,120 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
                     )
                 })?;
                 result.extend(std::iter::repeat_with(|| join.clone()).take(count));
+                Ok(())
+            },
+        )?;
+        Ok(result)
+    }
+
+    /// Enumerate the authenticated DataBag without converting it through a
+    /// legacy channel projection. This is intended for a bounded startup
+    /// compatibility bridge; each endpoint retains its checked multiplicity
+    /// so callers can build a PathMap-backed state without expanding counts.
+    pub(crate) fn data_entries(
+        &self,
+        max_steps: u64,
+        max_endpoints: u64,
+    ) -> Result<
+        Vec<(P::Channel, crate::rspace::internal::Datum<P::Datum>, std::num::NonZeroU64)>,
+        ClosureError<DurableObjectReadErrorV1>,
+    >
+    where
+        P::Channel: Clone + ColdStoreDecode + RhoPathEncode,
+        P::Datum: Clone + ColdStoreDecode + RhoPathEncode + serde::Serialize,
+    {
+        let roots = self.semantic_roots()?;
+        let state = self.verified_state();
+        let mut result = Vec::new();
+        state.visit_endpoints_under_prefix(
+            roots.data_bag,
+            &[],
+            max_steps,
+            max_endpoints,
+            |path, endpoint| {
+                let entry =
+                    crate::rspace::persistence::semantic::decode_data_endpoint_with_channel::<
+                        P::Channel,
+                        P::Datum,
+                    >(path, endpoint)
+                    .map_err(ClosureError::Format)?;
+                result.push(entry);
+                Ok(())
+            },
+        )?;
+        Ok(result)
+    }
+
+    /// Enumerate authenticated ContinuationMap records while preserving each
+    /// ordered channel group. Source payloads are validated through the same
+    /// pinned generation and bounded decoder as keyed reads.
+    pub(crate) fn continuation_entries(
+        &self,
+        max_steps: u64,
+        max_endpoints: u64,
+        max_payload_bytes: u64,
+    ) -> Result<
+        Vec<(
+            Vec<P::Channel>,
+            crate::rspace::internal::WaitingContinuation<P::Pattern, P::Continuation>,
+        )>,
+        ClosureError<DurableObjectReadErrorV1>,
+    >
+    where
+        P::Channel: Clone + RhoPathEncode,
+        P::Pattern: Clone + ColdStoreDecode + StableHashSerialize,
+        P::Continuation: Clone + ColdStoreDecode + StableHashSerialize,
+    {
+        let roots = self.semantic_roots()?;
+        let state = self.verified_state();
+        let mut result = Vec::new();
+        state.visit_endpoints_under_prefix(
+            roots.continuation_map,
+            &[],
+            max_steps,
+            max_endpoints,
+            |path, endpoint| {
+                let entry = crate::rspace::persistence::semantic::decode_continuation_endpoint_with_channels::<
+                    P::Channel,
+                    P::Pattern,
+                    P::Continuation,
+                    _,
+                >(state.object_store(), path, endpoint, max_payload_bytes)?;
+                result.push(entry);
+                Ok(())
+            },
+        )?;
+        Ok(result)
+    }
+
+    /// Enumerate authenticated JoinBag records while preserving endpoint
+    /// multiplicity and the indexed channel identity.
+    pub(crate) fn join_entries(
+        &self,
+        max_steps: u64,
+        max_endpoints: u64,
+    ) -> Result<
+        Vec<(P::Channel, Vec<P::Channel>, std::num::NonZeroU64)>,
+        ClosureError<DurableObjectReadErrorV1>,
+    >
+    where
+        P::Channel: Clone + ColdStoreDecode + RhoPathEncode,
+    {
+        let roots = self.semantic_roots()?;
+        let state = self.verified_state();
+        let mut result = Vec::new();
+        state.visit_endpoints_under_prefix(
+            roots.join_bag,
+            &[],
+            max_steps,
+            max_endpoints,
+            |path, endpoint| {
+                let entry =
+                    crate::rspace::persistence::semantic::decode_join_endpoint_with_channel::<
+                        P::Channel,
+                    >(path, endpoint)
+                    .map_err(ClosureError::Format)?;
+                result.push(entry);
                 Ok(())
             },
         )?;
