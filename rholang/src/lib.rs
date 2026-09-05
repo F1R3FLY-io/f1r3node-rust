@@ -93,7 +93,9 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rholang_scala_rust_types::*;
 use models::rspace_plus_plus_types::*;
 use models::rust::rholang::protobuf_schema::CertifiedEgressNode;
+use pathmap::PathMap;
 use prost::Message;
+use rspace_plus_plus::rspace::bag::BagDelta;
 use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hot_store::{new_hashmap, HotStoreState};
@@ -778,6 +780,14 @@ extern "C" fn revert_to_soft_checkpoint(
         cache_snapshot,
         log,
         produce_counter: produce_counter_map,
+        // The legacy FFI checkpoint schema predates the persistence journals.
+        // A payload produced by that schema has no pending-journal bytes, so
+        // restore the semantically neutral empty journals explicitly.
+        pending_data_delta: BagDelta::new(),
+        pending_continuation_delta: BagDelta::new(),
+        pending_continuation_content: PathMap::new(),
+        pending_continuation_source_bytes: PathMap::new(),
+        pending_join_delta: BagDelta::new(),
     };
 
     let runtime = unsafe { &mut (*runtime_ptr).runtime };
