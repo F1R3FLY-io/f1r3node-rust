@@ -234,6 +234,19 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 | 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
 | 2026-09-01 | The repeat-deploy signature index is a consensus-complete carrier cache over valid, invalid, and approved blocks. An in-window absence skips the ancestor scan, a hit requires scope verification, and a read failure falls back to the scan. | Implemented as an issue #24 fast path. Semantic ratification and final issue resolution remain pending. |
 | 2026-09-03 | `validate.rs`, `carrier_index.rs`, and `block_dag_key_value_storage.rs` join the mandatory issue #24 CbC scope. | Ratified for `CLAIM-FINALITY-002`. Claim discharge remains pending. |
+| 2026-09-05 | D-01: Protocol-version authority and activation. | Proposed in the [decision ledger](./design/decision-ledger/01-protocol-version-authority.md). Pending maintainer ratification. |
+| 2026-09-05 | D-02: Certified finalized floor and authority committee. | Proposed in the [decision ledger](./design/decision-ledger/02-certified-floor-authority.md). Pending maintainer ratification. |
+| 2026-09-05 | D-03: Fork choice over a certified context. | Proposed in the [decision ledger](./design/decision-ledger/03-fork-choice-certified-context.md). Pending maintainer ratification. |
+| 2026-09-05 | D-04: State-preserving finality and effect provenance, including threshold strictness. | Proposed in the [decision ledger](./design/decision-ledger/04-state-preserving-finality.md). Pending maintainer ratification. |
+| 2026-09-05 | D-05: Durable finalization publication and its three consensus-visible invariants. | Proposed in the [decision ledger](./design/decision-ledger/05-finalization-publication.md). Pending maintainer ratification. |
+| 2026-09-05 | D-06: Heartbeat intents and stale-LFB recovery leadership. | Proposed in the [decision ledger](./design/decision-ledger/06-heartbeat-recovery-leadership.md). Pending maintainer ratification. |
+| 2026-09-05 | D-07: Exact-occurrence recovery, carrier-owner custody, and collective-coverage retry packaging. | Proposed in the [decision ledger](./design/decision-ledger/07-deploy-recovery-custody.md). Pending maintainer ratification. |
+| 2026-09-05 | D-08: Additive merge semantics, causal rejection closure, and locally replayed mergeable evidence. | Proposed in the [decision ledger](./design/decision-ledger/08-merge-algebra-and-rejection-records.md). Pending maintainer ratification. |
+| 2026-09-05 | D-09: Slash authorization from canonical evidence, validator lifetime identity, and the neglect penalty. | Proposed in the [decision ledger](./design/decision-ledger/09-slashing-authorization.md). Pending maintainer ratification. |
+| 2026-09-05 | D-10: Carrier-index key, models, and claim text. | Proposed in the [decision ledger](./design/decision-ledger/10-repeat-deploy-carrier-index.md). Pending maintainer ratification. |
+| 2026-09-05 | D-11: CbC and FV governance after the cost-accounting work. | Proposed in the [decision ledger](./design/decision-ledger/11-cbc-fv-governance.md). Pending maintainer ratification. |
+
+The 2026-09-05 rows compare `dev` with PR #216. The [decision ledger](./design/decision-ledger/README.md) holds each position, the options, and the unification proposal. A row changes to ratified only after a maintainer approves the ledger entry.
 
 The phase-2 working record lives in the TDD plan
 [`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).
