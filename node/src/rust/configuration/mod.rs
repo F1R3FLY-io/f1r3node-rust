@@ -217,6 +217,35 @@ pub mod builder {
             }
         }
 
+        // A dropped delivery freezes the receiver's view until the retriever
+        // recovers it, and the recovery that must fit inside the citability
+        // window is the FULL re-request ladder (every backoff interval until
+        // the retry budget exhausts), not just the first anchor interval.
+        let recovery_span = std::time::Duration::from_millis(
+            casper::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+        );
+        if max_parent_depth != i32::MAX && max_parent_depth > 0 {
+            let citability_window = node_conf
+                .casper
+                .heartbeat_conf
+                .check_interval
+                .saturating_mul(max_parent_depth as u32);
+            if citability_window < recovery_span {
+                warnings.push(format!(
+                    "the citability window (max-parent-depth {} x heartbeat.check-interval \
+                    {:?} = {:?}) is smaller than the full dependency-recovery re-request \
+                    span ({:?} across the whole retry budget): a lost block delivery \
+                    cannot finish recovering before its blocks fall below the parent-depth \
+                    horizon, converting a dropped packet into a finality stall. Raise \
+                    max-parent-depth or slow the cadence.",
+                    max_parent_depth,
+                    node_conf.casper.heartbeat_conf.check_interval,
+                    citability_window,
+                    recovery_span,
+                ));
+            }
+        }
+
         Ok(warnings)
     }
 
@@ -519,6 +548,43 @@ mod embedded_defaults_tests {
         assert!(
             !warnings.iter().any(|w| w.contains("deploy-play-budget")),
             "a disabled parent-depth check must not warn on any budget, got {warnings:?}"
+        );
+    }
+
+    /// A citability window smaller than the FULL re-request recovery span
+    /// warns; shipped geometry and a disabled depth check stay silent. The
+    /// span, not the first anchor interval, is what has to fit: recovery is
+    /// the whole backoff ladder up to the retry budget.
+    #[test]
+    fn a_citability_window_under_the_recovery_span_warns_at_startup() {
+        let mut cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("re-request span")),
+            "shipped geometry must not warn, got {warnings:?}"
+        );
+
+        // 15 x 1s = 15s window against a ~58s full recovery span.
+        cfg.casper.max_parent_depth = 15;
+        cfg.casper.heartbeat_conf.check_interval = Duration::from_secs(1);
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("re-request span") && w.contains("max-parent-depth")),
+            "a citability window under the recovery span must warn, got {warnings:?}"
+        );
+
+        cfg.casper.max_parent_depth = i32::MAX;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("re-request span")),
+            "a disabled parent-depth check must not warn, got {warnings:?}"
         );
     }
 
