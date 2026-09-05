@@ -63,11 +63,15 @@ pub trait HistoryReader<Key, C: Clone, P: Clone, A: Clone, K: Clone> {
  * hashed keys
  */
 pub trait HistoryReaderBase<C: Clone, P: Clone, A: Clone, K: Clone>: Sync + Send {
-    fn get_data_proj(&self, key: &C) -> Vec<Datum<A>>;
+    /// Read the canonical datum projection for one typed channel. Durable
+    /// trie implementations derive their RhoPath key at this boundary.
+    fn get_data_canonical(&self, key: &C) -> Vec<Datum<A>>;
 
-    fn get_continuations_proj(&self, key: &Vec<C>) -> Vec<WaitingContinuation<P, K>>;
+    /// Read one ordered channel group; duplicate positions remain significant.
+    fn get_continuations_canonical(&self, key: &[C]) -> Vec<WaitingContinuation<P, K>>;
 
-    fn get_joins_proj(&self, key: &C) -> Vec<Vec<C>>;
+    /// Read the canonical join projection for one indexed channel.
+    fn get_joins_canonical(&self, key: &C) -> Vec<Vec<C>>;
 
     /**                                                                      
      *                                                                      
@@ -76,11 +80,11 @@ pub trait HistoryReaderBase<C: Clone, P: Clone, A: Clone, K: Clone>: Sync + Send
      *                                                                      
      *
      */
-    fn get_data(&self, key: &C) -> Vec<Datum<A>> { self.get_data_proj(key) }
+    fn get_data(&self, key: &C) -> Vec<Datum<A>> { self.get_data_canonical(key) }
 
     fn get_continuations(&self, key: &Vec<C>) -> Vec<WaitingContinuation<P, K>> {
-        self.get_continuations_proj(key)
+        self.get_continuations_canonical(key)
     }
 
-    fn get_joins(&self, key: &C) -> Vec<Vec<C>> { self.get_joins_proj(key) }
+    fn get_joins(&self, key: &C) -> Vec<Vec<C>> { self.get_joins_canonical(key) }
 }

@@ -223,19 +223,19 @@ where
             A: Clone + ColdStoreDecode + 'static + Sync + Send,
             K: Clone + ColdStoreDecode + 'static + Sync + Send,
         {
-            fn get_data_proj(&self, key: &C) -> Vec<Datum<A>> {
+            fn get_data_canonical(&self, key: &C) -> Vec<Datum<A>> {
                 self.outer
                     .get_data_proj(&hash(key))
                     .expect("Failed to get data proj")
             }
 
-            fn get_continuations_proj(&self, key: &Vec<C>) -> Vec<WaitingContinuation<P, K>> {
+            fn get_continuations_canonical(&self, key: &[C]) -> Vec<WaitingContinuation<P, K>> {
                 self.outer
-                    .get_continuations_proj(&hash_from_vec(key))
+                    .get_continuations_proj(&hash_from_vec(&key.to_vec()))
                     .expect("Failed to get continuations proj")
             }
 
-            fn get_joins_proj(&self, key: &C) -> Vec<Vec<C>> {
+            fn get_joins_canonical(&self, key: &C) -> Vec<Vec<C>> {
                 self.outer
                     .get_joins_proj(&hash(key))
                     .expect("Failed to get joins proj")

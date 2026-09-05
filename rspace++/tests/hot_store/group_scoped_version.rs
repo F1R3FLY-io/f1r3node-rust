@@ -9,16 +9,16 @@ use crate::rspace::trace::event::Consume;
 struct EmptyHistory;
 
 impl HistoryReaderBase<String, String, String, String> for EmptyHistory {
-    fn get_data_proj(&self, _key: &String) -> Vec<Datum<String>> { Vec::new() }
+    fn get_data_canonical(&self, _key: &String) -> Vec<Datum<String>> { Vec::new() }
 
-    fn get_continuations_proj(
+    fn get_continuations_canonical(
         &self,
-        _key: &Vec<String>,
+        _key: &[String],
     ) -> Vec<WaitingContinuation<String, String>> {
         Vec::new()
     }
 
-    fn get_joins_proj(&self, _key: &String) -> Vec<Vec<String>> { Vec::new() }
+    fn get_joins_canonical(&self, _key: &String) -> Vec<Vec<String>> { Vec::new() }
 }
 
 fn continuation(source: u8, name: &str) -> WaitingContinuation<String, String> {

@@ -1183,7 +1183,7 @@ impl<
     K: Clone + Send + Sync,
 > HistoryReaderBase<C, P, A, K> for TestHistory<C, P, A, K>
 {
-    fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
+    fn get_data_canonical(&self, channel: &C) -> Vec<Datum<A>> {
         let state_lock = self.state.lock().unwrap();
         let data = state_lock
             .data
@@ -1193,7 +1193,7 @@ impl<
         data
     }
 
-    fn get_continuations(&self, channels: &Vec<C>) -> Vec<WaitingContinuation<P, K>> {
+    fn get_continuations_canonical(&self, channels: &[C]) -> Vec<WaitingContinuation<P, K>> {
         let state_lock = self.state.lock().unwrap();
         let continuations = state_lock
             .continuations
@@ -1203,7 +1203,7 @@ impl<
         continuations
     }
 
-    fn get_joins(&self, channel: &C) -> Vec<Vec<C>> {
+    fn get_joins_canonical(&self, channel: &C) -> Vec<Vec<C>> {
         let state_lock = self.state.lock().unwrap();
         let joins = state_lock
             .joins
@@ -1212,12 +1212,6 @@ impl<
             .unwrap_or_else(|| Vec::new());
         joins
     }
-
-    fn get_data_proj(&self, _key: &C) -> Vec<Datum<A>> { todo!() }
-
-    fn get_continuations_proj(&self, _key: &Vec<C>) -> Vec<WaitingContinuation<P, K>> { todo!() }
-
-    fn get_joins_proj(&self, _key: &C) -> Vec<Vec<C>> { todo!() }
 }
 
 impl<C: Eq + Hash, P: Clone, A: Clone, K: Clone> TestHistory<C, P, A, K> {

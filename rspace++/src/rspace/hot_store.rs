@@ -1637,7 +1637,9 @@ where
         let result = match entry {
             Entry::Occupied(o) => o.get().clone(),
             Entry::Vacant(v) => {
-                let ks = self.history_reader_base.get_continuations(&channels_vec);
+                let ks = self
+                    .history_reader_base
+                    .get_continuations_canonical(&channels_vec);
                 v.insert(ks.clone());
                 ks
             }
@@ -1656,7 +1658,7 @@ where
         let result = match entry {
             Entry::Occupied(o) => o.get().clone(),
             Entry::Vacant(v) => {
-                let datums = self.history_reader_base.get_data(channel);
+                let datums = self.history_reader_base.get_data_canonical(channel);
                 v.insert(datums.clone());
                 datums
             }
@@ -1697,7 +1699,7 @@ where
         let result = match entry {
             Entry::Occupied(o) => o.get().clone(),
             Entry::Vacant(v) => {
-                let joins = self.history_reader_base.get_joins(channel);
+                let joins = self.history_reader_base.get_joins_canonical(channel);
                 v.insert(joins.clone());
                 joins
             }

@@ -283,13 +283,13 @@ mod tests {
     struct EmptyHistoryReaderBase;
 
     impl HistoryReaderBase<(), (), (), ()> for EmptyHistoryReaderBase {
-        fn get_data_proj(&self, _key: &()) -> Vec<Datum<()>> { vec![] }
+        fn get_data_canonical(&self, _key: &()) -> Vec<Datum<()>> { vec![] }
 
-        fn get_continuations_proj(&self, _key: &Vec<()>) -> Vec<WaitingContinuation<(), ()>> {
+        fn get_continuations_canonical(&self, _key: &[()]) -> Vec<WaitingContinuation<(), ()>> {
             vec![]
         }
 
-        fn get_joins_proj(&self, _key: &()) -> Vec<Vec<()>> { vec![] }
+        fn get_joins_canonical(&self, _key: &()) -> Vec<Vec<()>> { vec![] }
     }
 
     impl HistoryReader<Blake2b256Hash, (), (), (), ()> for StubHistoryReaderBinary {
