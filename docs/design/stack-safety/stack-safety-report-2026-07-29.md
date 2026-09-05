@@ -12864,6 +12864,29 @@ and must survive future edits (or the citing comment must be updated in the same
 Appendix G's four lines; the historical evidence this revision compressed remains in git history
 and in the three cited audit ledgers.*
 
+## Appendix J — bounded ACT/LMDB persistence comparison (2026-09-05)
+
+The first matched persistence experiment is recorded here as a measurement, not as a production
+performance claim.  The benchmark uses identical shared-prefix byte keys and 128-byte payloads.
+The ACT arm writes PathMap's `ArenaCompactTree` plus a fixed-width payload sidecar; the LMDB arm
+uses the production batched key/value API.  The run used Criterion's short 10-sample configuration
+under `systemd-run` with `MemoryMax=2G`, `MemorySwapMax=0`, `CPUQuota=400%`, and `TasksMax=64`.
+
+| entries | ACT dump + payload write | LMDB batched put | ACT warm exact lookup | LMDB batched get | ACT bytes | LMDB bytes |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 2.87 M/s | 1.10 M/s | 2.07 M/s | 3.07 M/s | 33,386 | 86,016 |
+| 4,096 | 7.09 M/s | 1.95 M/s | 1.72 M/s | 2.86 M/s | 540,825 | 884,736 |
+| 16,384 | 7.02 M/s | 1.97 M/s | 1.46 M/s | 2.56 M/s | 2,164,585 | 3,436,544 |
+
+The result supports two bounded hypotheses: ACT's prefix-compressed bulk image is smaller (about
+1.6–2.6× in this fixture) and faster to emit, while the current direct ACT lookup path is slower
+than LMDB's batched read path.  The lookup result is therefore not a universal verdict: it includes
+ACT trie descent plus sidecar slicing, whereas LMDB performs its own batched cursor traversal.
+Workloads with incremental WAL updates, concurrent readers, crash recovery, and RSpace's three
+semantic namespaces still require separate measurements before selecting a production backend.
+The reproducible harness is `rspace++/benches/rspace_act_lmdb.rs` (commits `53b5ef356` and
+`0c1d01ceb`).
+
 ## Appendix I — checkpoint coordination boundary (2026-09-03)
 
 The RSpace checkpoint path now uses an asynchronous read/write operation gate. Ordinary mutation
