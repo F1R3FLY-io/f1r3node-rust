@@ -122,3 +122,93 @@ pub fn blob(sender: &PeerNode, type_id: &str, content: &[u8]) -> Blob {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer(name: &str, host: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new(host.to_string(), 40400, 40404),
+        }
+    }
+
+    #[test]
+    fn to_protocol_bytes_returns_utf8_bytes() {
+        assert_eq!(to_protocol_bytes("abc"), b"abc".to_vec());
+    }
+
+    #[test]
+    fn sender_round_trips_through_node() {
+        let src = peer("sender-id", "sender-host");
+        let proto = protocol(&src, "net");
+        assert_eq!(sender(&proto), src);
+        assert!(proto.message.is_none());
+        assert_eq!(proto.header.as_ref().unwrap().network_id, "net");
+    }
+
+    #[test]
+    fn disconnect_carries_disconnect_message() {
+        let src = peer("id", "host");
+        let proto = disconnect(&src, "net");
+        assert_eq!(
+            proto.message,
+            Some(models::routing::protocol::Message::Disconnect(
+                Disconnect {}
+            ))
+        );
+        assert_eq!(sender(&proto), src);
+    }
+
+    #[test]
+    fn handshake_response_carries_response_message() {
+        let src = peer("id", "host");
+        let proto = protocol_handshake_response(&src, "net");
+        assert_eq!(
+            proto.message,
+            Some(
+                models::routing::protocol::Message::ProtocolHandshakeResponse(
+                    ProtocolHandshakeResponse {
+                        nonce: Bytes::new(),
+                    }
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn to_packet_extracts_packet_message() {
+        let src = peer("id", "host");
+        let pkt = Packet {
+            type_id: "BlockMessage".to_string(),
+            content: Bytes::from_static(b"payload"),
+        };
+        let proto = packet(&src, "net", pkt.clone());
+        assert_eq!(to_packet(&proto).unwrap(), pkt);
+    }
+
+    #[test]
+    fn to_packet_rejects_non_packet_message() {
+        let src = peer("id", "host");
+        let proto = heartbeat(&src, "net");
+        let err = to_packet(&proto).unwrap_err();
+        match err {
+            CommError::UnknownProtocolError(msg) => {
+                assert!(msg.contains("Was expecting Packet"));
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn blob_copies_content_into_packet() {
+        let src = peer("id", "host");
+        let b = blob(&src, "DataMessage", b"data");
+        assert_eq!(b.sender, src);
+        assert_eq!(b.packet.type_id, "DataMessage");
+        assert_eq!(b.packet.content, Bytes::from_static(b"data"));
+    }
+}

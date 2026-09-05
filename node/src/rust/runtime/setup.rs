@@ -141,6 +141,17 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
+    // First-boot repeat-deploy carrier-index watermark (same pattern as
+    // the LFB migration above): records the height since which every
+    // insert records carriers, which gates the fast path's absence
+    // proofs. No backfill walk exists — blocks below the watermark are
+    // never claimed.
+    let carrier_index_watermark = block_dag_storage.ensure_carrier_watermark()?;
+    info!(
+        carrier_index_watermark,
+        "repeat-deploy carrier index checked"
+    );
+
     // Casper requesting blocks cache
     let casper_buffer_storage = {
         use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -903,7 +914,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             height_constraint_threshold: conf.casper.height_constraint_threshold,
             deploy_lifespan: 50,
             // Packaging-only policy; the GC sweep never builds blocks.
-            deploy_play_budget_millis: 0,
+            deploy_play_budget: None,
             casper_version: 1,
             config_version: 1,
             bond_minimum: conf.casper.genesis_block_data.bond_minimum,

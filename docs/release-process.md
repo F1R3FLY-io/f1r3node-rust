@@ -227,6 +227,8 @@ The promotion controller evaluates gates against `source_sha` from the candidate
 
 Optional and nightly slashing jobs do not block a release. The required slashing job catalog remains version-controlled.
 
+The per-crate `Coverage (<crate>)` jobs and the `Coverage Summary` job are pull-request reports. They do not run on the `master` push that creates a candidate. They are not in the required CI job catalog. Therefore, coverage results cannot satisfy or fail a stable-release gate. A future coverage threshold requires maintainer ratification before it becomes a release gate.
+
 The regression verdict is advisory because it is a relative week-over-week measure. A `regress` verdict on a release-eligible run publishes an alert through the existing OCI Notifications topic, to the same subscriber list as the soak reports. Promotion then waits for documented maintainer review instead of failing outright.
 
 The promotion controller validates workflow identity through the GitHub API. A commit status alone is not sufficient evidence.
@@ -464,6 +466,8 @@ The setup workflow performs these actions. Steps marked *stack* apply only to a 
 
 Pull-request CI runs checks for all base branches. Each same-repository pull request into `dev` or `master` must run Heavy Pipeline.
 
+Each pull-request CI run also measures per-crate line coverage with cargo-llvm-cov and cargo-nextest. The `Coverage Summary` job reports the percentages before merge. Coverage is advisory and does not become Deployment Train evidence.
+
 Intermediate stack layers remain lightweight while they target another feature branch. A base change reruns CI before the layer merges into an integration branch.
 
 Deployment Train dispatches one additional Heavy Pipeline from the default branch controls. The dispatch checks out the exact top synthetic merge.
@@ -582,6 +586,10 @@ Implementation adds or changes these components.
 
 | Component | Change |
 |---|---|
+| `.github/workflows/ci.yml` | Run unit-test line coverage on pull requests and enforce the 80% gates |
+| `.github/scripts/coverage-summary.sh` | Enforce 80% line coverage for each crate and the weighted workspace total |
+| `.github/scripts/test-coverage-summary.sh` | Verify thresholds, weighted totals, and fail-closed missing-report behavior |
+| `scripts/coverage.sh`, `Justfile` | Provide a local unit-test coverage gate that mirrors CI |
 | `.github/workflows/canary-publish.yml` | Publish immutable canaries from tested CI artifacts on run completion |
 | `.github/workflows/release.yml` | Replace branch auto-bump behavior with exact-candidate promotion |
 | `.github/workflows/merge-recovery-soak.yml` | Add candidate image-digest mode and exact soak evidence |
@@ -614,11 +622,23 @@ flowchart TD
     SI --> TN["Test net<br/>soaking node becomes an Anchor"]
 ```
 
+Pull-request runs add a parallel coverage matrix after lint. The matrix measures every in-crate test target with cargo-llvm-cov over nextest, the same runner as the test matrix. The measured denominator excludes src-shipped test scaffolding and node's process bootstrap and wiring (the exact file set is the shared regex in `scripts/coverage.sh` and ci.yml).
+
+The summary job requires 80% line coverage for each crate. The summary job also requires an 80% weighted workspace total.
+
+A missing or malformed crate report fails the summary job. The workflow retains JSON, LCOV, and summary artifacts for 30 days.
+
+Push and workflow-dispatch runs skip both coverage jobs. On pull requests, the required `Test (casper)` check also requires a successful `Coverage Summary` result.
+
+Add `Coverage Summary` directly to `devProtect` and `masterProtect` when the repository token has ruleset write access.
+
+A same-repository pull request can upload LCOV data to Codecov when a maintainer enables the integration. Fork pull requests skip Codecov and cannot access its token.
+
 This table defines the target state after the Section 17 workflow changes are complete. The Basis column states whether time, an event, or an operator starts the workflow. Durations marked *measured* are medians of recent successful runs. Durations marked *estimated* have no run history yet.
 
 | Workflow | Trigger | Basis | Typical duration | Role |
 |---|---|---|---|---|
-| `ci.yml` | `push` (dev, master, tags), all `pull_request` bases, `workflow_dispatch` | Event + manual | 25–65 min *measured*; runner queues can extend wall time | PR checks with protected-base and exact-merge Heavy Pipelines |
+| `ci.yml` | `push` (dev, master, tags), all `pull_request` bases, `workflow_dispatch` | Event + manual | Release path: 25–65 min *measured*; PR coverage duration is not measured | PR checks, PR-only coverage reports, and protected-base or exact-merge Heavy Pipelines |
 | `canary-publish.yml` | `workflow_run` (CI completed, master push, success), `workflow_dispatch` (ci_run_id) | Event + manual | 10–20 min *estimated* | Publishes the immutable canary when the source is release-eligible; skips cleanly otherwise |
 | `ci-fork-pr.yml` | `pull_request_target` (dev, master) | Event | Seconds, then the gated pipeline after maintainer approval | Fork lane into the gated pipeline |
 | `_integration-pipeline.yml` | `workflow_call` | Called by ci.yml and ci-fork-pr.yml | 35–50 min *measured* | Heavy pipeline: image build, ephemeral runners, integration matrix, smoke tests |

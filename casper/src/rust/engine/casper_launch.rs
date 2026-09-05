@@ -170,14 +170,18 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             height_constraint_threshold: conf.height_constraint_threshold,
             deploy_lifespan: 50,
             // Zero derives the budget from the citability window
-            // (max-parent-depth heights of cadence) with a 5x margin.
-            deploy_play_budget_millis: if conf.deploy_play_budget.is_zero() {
-                (conf.max_parent_depth as i64).max(1)
-                    * (conf.heartbeat_conf.check_interval.as_millis() as i64)
-                    / 5
+            // (max-parent-depth heights of cadence) with a 5x margin. The
+            // launch always produces a bound: `None` (unbounded) is
+            // reserved for constructions that bypass operator conf.
+            deploy_play_budget: Some(if conf.deploy_play_budget.is_zero() {
+                std::time::Duration::from_millis(
+                    ((conf.max_parent_depth as i64).max(1)
+                        * (conf.heartbeat_conf.check_interval.as_millis() as i64)
+                        / 5) as u64,
+                )
             } else {
-                conf.deploy_play_budget.as_millis() as i64
-            },
+                conf.deploy_play_budget
+            }),
             casper_version: 1,
             config_version: 1,
             bond_minimum: conf.genesis_block_data.bond_minimum,

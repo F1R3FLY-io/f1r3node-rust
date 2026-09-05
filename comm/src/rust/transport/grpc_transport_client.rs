@@ -587,3 +587,58 @@ impl TransportLayer for GrpcTransportClient {
         Ok(channels_map.keys().cloned().collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+        }
+    }
+
+    fn client(network_timeout: Duration) -> GrpcTransportClient {
+        GrpcTransportClient::new(
+            "test".to_string(),
+            "cert".to_string(),
+            "key".to_string(),
+            1024,
+            256,
+            16,
+            Arc::new(Mutex::new(HashMap::new())),
+            network_timeout,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn new_accepts_normal_and_too_low_timeouts() {
+        client(Duration::from_secs(5));
+        client(Duration::from_millis(1));
+    }
+
+    #[tokio::test]
+    async fn disconnect_unknown_peer_is_a_noop() {
+        let c = client(Duration::from_secs(5));
+        assert!(c.disconnect(&peer("unknown")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn broadcast_and_stream_mult_with_no_peers_succeed() {
+        let c = client(Duration::from_secs(5));
+        let msg = Protocol::default();
+        assert!(c.broadcast(&[], &msg).await.is_ok());
+
+        let blob = crate::rust::rp::protocol_helper::blob(&peer("s"), "T", b"x");
+        assert!(c.stream_mult(&[], &blob).await.is_ok());
+
+        assert!(c.get_channeled_peers().await.unwrap().is_empty());
+    }
+}

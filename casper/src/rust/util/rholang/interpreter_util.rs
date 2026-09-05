@@ -838,9 +838,7 @@ pub async fn compute_deploys_checkpoint(
 
     // Compute state and bonds using one spawned runtime
     let compute_state_started = std::time::Instant::now();
-    let budget_millis = s.on_chain_state.shard_conf.deploy_play_budget_millis;
-    let play_budget =
-        (budget_millis > 0).then(|| std::time::Duration::from_millis(budget_millis as u64));
+    let play_budget = s.on_chain_state.shard_conf.deploy_play_budget;
     let result = runtime_manager
         .compute_state_with_bonds(
             &pre_state_hash,
@@ -1780,11 +1778,15 @@ pub async fn compute_parents_post_state(
                     cursor = s.dag.main_parent(&hash);
                     count_visible.insert(hash);
                 }
+                // Records load through the lineage-step cache (one decode
+                // per block process-wide, store-revalidated) instead of a
+                // full body decode per visible block per merge — the same
+                // batching CLAIM-FINALITY-001 applied to the settled
+                // probes, for the walk that was next in the run
+                // 33099406770 attribution (~47ms/merge).
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
-                    block_store
-                        .get(hash)?
-                        .map(|b| b.body.rejected_deploys)
-                        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
+                    crate::rust::finality::deploy_lifecycle::rejected_records_of(block_store, hash)
+                        .map(|records| records.as_ref().clone())
                 })?
             };
             let prior_rejection_elapsed = prior_rejection_started.elapsed();

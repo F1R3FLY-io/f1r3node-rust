@@ -179,7 +179,56 @@ env:
   # full green x3 on the d94fffd content (run 32691266446 attempts 1+2, run
   # 32759382579), and 8b4da0f is d94fffd merged to main with no further
   # changes.
-  SYSTEM_INTEGRATION_REF: 8b4da0f9395fc951b68af1be8ae023fb1aeb9d09
+  # 2026-08-28: 8b4da0f -> b5cbb63 (SI branch chore/soak-preflight-20260828):
+  # soak runner hardening — runner oom_score_adj -1000 shield, durable
+  # post_mortem via freeform tags, launch-parameterized idle timeout
+  # (RUNNER_IDLE_TIMEOUT_SECS; the pipeline's arm64 launches now pass 7200
+  # so the sequential subprocess leg's runner survives — run 33208755550
+  # hang), and the parents-post-state metrics.py refresh incl. the
+  # COUNTERS_TO_SCRAPE path for counter-rendered metrics. Cross-repo
+  # request/result: SI docs/discoveries/2026-08-28-soak-runner-hardening-*.
+  # Verified: 265 SI unit tests + ruff green on the pushed tree; cloud-init
+  # dry render clean. Incidents: f1r3node-rust#365, run 33136185540.
+  # Re-pin to the merged main SHA once the SI PR lands.
+  # 2026-08-29: b5cbb63 -> 8b4da0f (ROLLBACK). b5cbb63's branch forked from
+  # SI dev at ffcf4c1d — 21 commits BEHIND SI main — so the pin silently
+  # rolled back three weeks of integration-harness fixes and all six
+  # integration legs failed deterministically (run 33222681493:
+  # finality_stall_recovery, joiner_self_proposes_at_epoch_boundary,
+  # observer_lfs_sync — old test expectations vs current node). Lesson for
+  # every future bump: verify the candidate DESCENDS from the current pin
+  # (git merge-base --is-ancestor) before repinning. Re-bump once SI
+  # rebases the hardening commit onto main and pushes a descendant SHA.
+  # 2026-08-29: 8b4da0f -> 5858f2a (system-integration MAIN — the #131
+  # dev->main merge). Carries both hardening commits (b5cbb63 + 56ebc9e
+  # review remediations) WITH the dev-merge that cured the stale base, on
+  # top of main's current harness. Verified: descends from 8b4da0f
+  # (merge-base --is-ancestor), per the rule above.
+  # 2026-08-31: 5858f2a -> ce5a825 (SI PR #132 branch, cut from main
+  # 5858f2a — descends per the rule above): retires ftt=-1 from the
+  # joiner-boundary/trim_state/synchrony shards (a negative FTT legally
+  # permits divergent floors that the suite's forbidden-log check treats as
+  # fatal — run 33220782199's arm64-docker failure), makes the joiner test
+  # round-driven, and routes hardcoded timeouts through the hierarchy.
+  # Verified: the three migrated tests green locally at the production FTT;
+  # SI CI full green on ce5a825. Re-pin to the merged main SHA once #132
+  # lands.
+  # 2026-08-31: ce5a825 -> e4a26eb (system-integration MAIN — the #132 merge
+  # commit; the branch pin's content, now immutable on main). Verified:
+  # descends from ce5a825 (merge-base --is-ancestor), and full node CI green
+  # on the ce5a825 content (this PR's heavy pipeline, all six legs).
+  # 2026-09-02: e4a26eb -> af0ab83 (SI PR #134 branch, cut from main —
+  # descends per the rule above): the bridge-lock test gates starvation
+  # exactly and tolerates bounded merge contention (floor 10 of 12,
+  # accounting reconciled to the locks that landed) — run 33548073107's
+  # 1-of-12 contention expiry, budget exonerated. Verified: SI CI green
+  # on af0ab83; test green locally on this branch's image. Re-pin to the
+  # merged main SHA once #134 lands.
+  # 2026-09-02: af0ab83 -> 0fb6337 (system-integration MAIN — the #134 merge
+  # commit; the branch pin's content, now immutable on main). Verified:
+  # descends from af0ab83 (merge-base --is-ancestor), and this PR's CI ran
+  # full green on the af0ab83 content.
+  SYSTEM_INTEGRATION_REF: 0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -947,8 +996,11 @@ jobs:
     concurrency:
       # Grouped by series (not raw duration — a restart's remainder is
       # arbitrary) so the next night's launch still cancels a lingering
-      # previous run of the same series, restarts included.
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
+      # previous run of the same series, restarts included. A preflight-only
+      # run is NOT a series run: it gets a per-run group so the nightly slot
+      # cannot cancel it (run 33130708285 lost 1h45m of preflight to the
+      # 02:31Z daily launch this way) and it cannot cancel the nightly.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
@@ -1358,7 +1410,10 @@ jobs:
     # restarted weekend with >24h left must still get the weekend ceiling.
     timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 190 || (needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440) }}
     concurrency:
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
+      # Same preflight-only carve-out as the launch job: a per-run group so
+      # a diagnostic preflight and the scheduled series never cancel each
+      # other.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Record soak job start
@@ -1641,6 +1696,16 @@ jobs:
 
       - name: Dispatch integration preflight success status
         if: always() && needs.schedule_gate.outputs.canary != 'true' && steps.integration_preflight.outputs.result == 'passed'
+        # continue-on-error: the early status publication is a convenience —
+        # `preflight_finalize` publishes the terminal status from
+        # `outputs.preflight` at run end regardless — and a publication
+        # hiccup must never fail a soak whose preflight just PASSED. Run
+        # 33136185540 (the first green preflight on an OCI runner) failed
+        # here with `gh: command not found`: the ephemeral VM image does not
+        # carry the gh CLI that GitHub-hosted runners preinstall, so the
+        # dispatch uses curl against the REST endpoint instead — the runner
+        # cannot function without curl-compatible HTTP.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
@@ -1648,10 +1713,27 @@ jobs:
           WORKFLOW_REF: ${{ github.ref_name }}
         shell: bash -euo pipefail {0}
         run: |
-          gh workflow run soak-preflight-status.yml \
-            --ref "$WORKFLOW_REF" \
-            -f target_sha="$TARGET_SHA" \
-            -f source_run_url="$RUN_URL"
+          # JSON built by a real serializer, never printf: ref_name is a
+          # branch name and must arrive escaped, whatever it contains.
+          payload="$(python3 -c 'import json, os; print(json.dumps({"ref": os.environ["WORKFLOW_REF"], "inputs": {"target_sha": os.environ["TARGET_SHA"], "source_run_url": os.environ["RUN_URL"]}}))')"
+          # -sS with a captured status, not -sf: this step is
+          # continue-on-error, so a swallowed error body would make a failed
+          # dispatch invisible. The response and HTTP code go to the log and
+          # the step still concludes failure (visibly, without failing the
+          # job) when the dispatch was rejected.
+          response="$(mktemp)"
+          http_code="$(curl -sS -o "$response" -w '%{http_code}' \
+            --retry 4 --retry-connrefused -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/soak-preflight-status.yml/dispatches" \
+            -d "$payload")" || http_code="000"
+          if [ "$http_code" != "204" ]; then
+            echo "::warning::preflight success-status dispatch failed (HTTP ${http_code}); preflight_finalize will publish the terminal status at run end"
+            cat "$response" || true
+            exit 1
+          fi
+          echo "dispatched soak-preflight-status for ${TARGET_SHA}"
 
       - name: Reset integration telemetry after preflight
         id: reset_telemetry

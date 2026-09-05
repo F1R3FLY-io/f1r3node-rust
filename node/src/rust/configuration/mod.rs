@@ -205,8 +205,10 @@ pub mod builder {
                     "casper.deploy-play-budget ({:?}) exceeds a third of the citability \
                     window (max-parent-depth {} x heartbeat.check-interval {:?} = {:?}): \
                     a carrier built for that long risks being born below the parent-depth \
-                    horizon, where its deploys can only expire. Lower the budget or raise \
-                    max-parent-depth.",
+                    horizon, where its deploys can only expire — and every validator must \
+                    REPLAY the block inside the same window, so the binding bound is the \
+                    slowest validator's replay, not this proposer's build speed. Lower the \
+                    budget or raise max-parent-depth.",
                     play_budget,
                     max_parent_depth,
                     node_conf.casper.heartbeat_conf.check_interval,

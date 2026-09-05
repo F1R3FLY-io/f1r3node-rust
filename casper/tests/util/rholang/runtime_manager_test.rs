@@ -3941,6 +3941,9 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         lifecycle: Arc::new(PlRwLock::new(
             block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
         )),
+        carrier_index: Arc::new(PlRwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+        )),
     };
 
     // The node's live floor is the chain tip. Seeding the persisted floor cache
