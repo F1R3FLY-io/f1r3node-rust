@@ -553,8 +553,6 @@ fn checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease()
     let old_index_path = scratch
         .path()
         .join(index_file_name(IndexGenerationV1::FIRST));
-    let old_pack = fs::read(&old_pack_path).unwrap();
-    let old_index = fs::read(&old_index_path).unwrap();
     let writer = admit(scratch.path());
     let initial_contention = DurableDirectoryV1::open(scratch.path())
         .unwrap()
@@ -595,8 +593,11 @@ fn checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease()
     assert_eq!(fs::read(&successor_pack_path).unwrap(), expected.pack);
     assert_eq!(fs::read(&successor_index_path).unwrap(), expected.index);
     assert_eq!(fs::read(scratch.path().join("catalog.v1")).unwrap(), expected.catalog);
-    assert_eq!(fs::read(old_pack_path).unwrap(), old_pack);
-    assert_eq!(fs::read(old_index_path).unwrap(), old_index);
+    // Publication has released the predecessor generation, so reclamation
+    // removes its physical pack and index.
+    assert!(!old_pack_path.exists());
+    assert!(!old_index_path.exists());
+    assert!(!scratch.path().join("reclaim.v1").exists());
 
     let contention = DurableDirectoryV1::open(scratch.path())
         .unwrap()
