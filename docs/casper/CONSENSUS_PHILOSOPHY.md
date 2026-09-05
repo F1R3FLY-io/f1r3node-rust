@@ -245,6 +245,7 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 | 2026-09-05 | D-09: Slash authorization from canonical evidence, validator lifetime identity, and the neglect penalty. | Proposed ([D-09](./design/decision-ledger/09-slashing-authorization.md)). Protocol. Replaces the rejected-slash recovery loop and removes a gated proof. Pending maintainer ratification. |
 | 2026-09-05 | D-10: Carrier-index key, models, and claim text. | Proposed ([D-10](./design/decision-ledger/10-repeat-deploy-carrier-index.md)). Protocol refinement. Amends the pending 2026-09-01 row. Pending maintainer ratification. |
 | 2026-09-05 | D-11: CbC and FV governance after the cost-accounting work. | Proposed ([D-11](./design/decision-ledger/11-cbc-fv-governance.md)). Governance. Rewrites two ratified rows in prose. Pending maintainer ratification. |
+| 2026-09-05 | D-12: Removal of the deploy cost fields `phloLimit` and `phloPrice` and their replacements. | Proposed ([D-12](./design/decision-ledger/12-deploy-cost-limits.md)). Protocol and economics boundary. Removes the minimum-price validation rule. Pending maintainer ratification. |
 
 The 2026-09-05 rows compare `dev` with PR #216. The [decision ledger](./design/decision-ledger/README.md) holds each position, the options, and the unification proposal. Each row is one decision, so each row flips alone. A row changes to ratified only after a ratifier approves the ledger entry in a linked review comment.
 
