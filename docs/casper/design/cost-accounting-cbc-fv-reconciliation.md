@@ -1,15 +1,18 @@
 # Cost-Accounting Branch: CbC and Formal-Verification Reconciliation
 
-**Status:** Review record. This document decides nothing.
-**Date:** 2026-09-05
-**Compared:** `dev` at the PR #382 merge (`231067178`), PR #387 at `30c428335`, and PR #216 (`feature/cost-accounted-rho`) at `3980ed402`.
-**Related:** [Consensus Philosophy](../CONSENSUS_PHILOSOPHY.md), [CbC repair plan](./cbc-repair-plan.md), [formal-verification.md](../../formal-verification.md).
+**Status.** Review record. This document decides nothing.
+
+**Date.** 2026-09-05
+
+**Compared.** `dev` at the PR #382 merge (`231067178`), PR #387 at `30c428335`, and PR #216 (`feature/cost-accounted-rho`) at `3980ed402`.
+
+**Related.** [Consensus Philosophy](../CONSENSUS_PHILOSOPHY.md), [CbC repair plan](./cbc-repair-plan.md), [formal-verification.md](../../formal-verification.md).
 
 ## 1. Purpose and scope
 
-This document records how PR #216 and PR #387 each change the Correct by Construction (CbC) ledger and the formal-verification (FV) practice of the Casper consensus. It separates decisions that `dev` has ratified from decisions that a branch introduces without a ratification record.
+This document records how PR #216 and PR #387 each change the Correct by Construction (CbC) ledger and the formal-verification (FV) practice of the Casper consensus. It separates decisions that `dev` has ratified from decisions that a branch introduces without a ratification record. It supports the [decision ledger](./decision-ledger/README.md), whose goal is one Casper specification on `dev` that the cost-accounting changes are congruent with.
 
-The scope is limited to CbC and FV artifacts. Economic semantics, protocol-version changes, and merge-conflict resolution are out of scope. A later change will use this record to bring the cost-accounting work into `dev`.
+The scope is limited to CbC and FV artifacts. CbC artifacts are the `cbc=mandatory` attributes in `.gitattributes`, the claim documents in `docs/claims/`, and the evidence records in `docs/cbc-evidence/`. FV artifacts are the models and proofs under `formal/`, the practice rules in `docs/formal-verification.md`, the gate scripts under `scripts/ci/`, and the verification dossiers under `docs/casper/theory/`. Economic semantics, protocol-version changes, and merge-conflict resolution are out of scope. A later change will use this record to bring the cost-accounting work into `dev`.
 
 Paths under `formal/` and `docs/casper/theory/` that exist only on PR #216 appear as code spans, not links, because they are not present on this branch.
 
@@ -34,9 +37,9 @@ PR #387 extends the existing mechanisms without changing them.
 | Formal model | Adds `formal/tlaplus/carrier_index/CarrierIndex.tla` with two invariants, `IndexCompleteForWindow` and `AbsenceProofSound`, and two negative controls. |
 | CI gate | Registers `carrier_index/MC_CarrierIndex` in the TLA+ gating list. |
 | Umbrella doc | Adds one row to the verified-areas table. |
-| Repair plan | Adds telemetry counters, a forced on and off differential, and the rule that a passing model for existing behavior is baseline evidence, not the RED test. |
+| Repair plan | Adds telemetry counters and a forced on and off differential. Adds the rule that a passing model for existing behavior is baseline evidence, not the RED test. |
 
-The decision table row dated 2026-09-03 marks the scope extension as ratified for `CLAIM-FINALITY-002`. The PR author wrote that row. Maintainer acceptance is pending.
+On PR #387, the decision table row dated 2026-09-03 labels the scope extension as ratified for `CLAIM-FINALITY-002`. The PR author wrote that row, and no maintainer has approved it. This branch changes the row to Proposed. It becomes Ratified only through the ledger workflow.
 
 ## 4. PR #216 delta
 
@@ -46,7 +49,7 @@ PR #216 adds a second governance model beside the Consensus Philosophy.
 
 - `docs/casper/theory/cost-accounting-decision-records.md` holds fifty-seven decision records, DR-1 to DR-57. Its preamble names the cost-accounting paper as the law of the implementation. Records use the statuses `accepted and implemented`, `superseded`, and `user-ratified`. The file does not use the Consensus Philosophy decision table.
 - `docs/casper/theory/cost-accounting-executable-conformance-matrix.md` maps obligations to executable evidence. Every matched status cell reads `Verified complete`.
-- `formal/README.md` defines a seven-item completion criterion for a formal area: a substantive source, a checked safe configuration, a checked unsafe control per defect, a model-to-code map, tests for the transition, an executing gate, and documentation of bounded assumptions.
+- `formal/README.md` defines a seven-item completion criterion for a formal area. The items are a substantive source, a checked safe configuration, and a checked unsafe control per defect. They continue with a model-to-code map, tests for the transition, an executing gate, and documentation of bounded assumptions.
 
 The branch also edits the FV practice section of `docs/formal-verification.md`. It removes practice rules 3, 4, and 5. It removes the sentence that keeps expected-violation configurations outside the gating list. The cause can be a deliberate edit or a merge-resolution loss. The diff alone cannot decide.
 
@@ -80,7 +83,7 @@ PR #216 adds about 1,550 files under `formal/`. The table lists the areas that t
 |---|---|---|---|
 | `tlaplus/finalized_floor` | 566 | 47 (`rocq/finalized_floor`) | Certified floor, finalization ledger, restore horizon, certificate carriers |
 | `tlaplus/cost_accounted_rho` | 391 | 124 (`rocq/cost_accounted_rho`) | Cost authority, settlement, admission |
-| `tlaplus/deploy_recovery` | 79 | none | Carrier index soundness, protocol lifecycle, rejection reasons |
+| `tlaplus/deploy_recovery` | 79 added or modified | none | Carrier index soundness, protocol lifecycle, rejection reasons. The directory exists on `dev`. |
 | `tlaplus/slashing` | 62 | 22 (`rocq/slashing`) | Objective evidence, redemption |
 | `tlaplus/block_admission` | 42 | none | Byte-bounded admission, transport residency |
 | `tlaplus/deterministic_parallel_reduction` | 33 | included above | Intra-deploy reduction order |
@@ -118,23 +121,31 @@ The theory index at `docs/casper/theory/README.md` is unchanged. It does not lis
 
 ## 5. Decided versus unratified
 
-The table classifies each CbC or FV position on PR #216 against `dev`.
+The table classifies each CbC or FV position on PR #216 against `dev`. The classification column uses five values.
+
+| Value | Meaning |
+|---|---|
+| Ratified, unchanged | A ratified `dev` position that PR #216 keeps. |
+| Unratified addition | A new position with no `dev` record. |
+| Unratified change | A `dev` position, not ratified in the table, that PR #216 changes. |
+| Unratified removal | A gated check or stated rule that PR #216 removes. |
+| Conflict | A position that contradicts a ratified `dev` rule or a PR #387 claim. |
 
 | Item | dev status | PR #216 position | Classification |
 |---|---|---|---|
-| Phase-1 CbC scope, four artifacts | Ratified 2026-08-22 | Unchanged | Compatible |
-| CbC attributes for new consensus files | Ratified mechanism | Thirteen new files untagged | Gap. Needs attributes and claims or a recorded waiver. |
+| Phase-1 CbC scope, four artifacts | Ratified 2026-08-22 | Unchanged | Ratified, unchanged |
+| CbC attributes for new consensus files | Ratified mechanism | Thirteen new files untagged | Conflict. The ratified mechanism requires attributes and claims or a recorded waiver. |
 | FV practice rules 3 to 5 | Stated on `dev` since 2026-08 | Removed | Conflict. Needs a decision or a restore. |
-| Expected-violation configs outside the gate | Stated on `dev` | Statement removed. Unsafe controls remain outside `POST_FIX_CONFIGS`. | Text conflict, practice compatible |
-| Decision-record governance with the paper as law | No record | Introduced | Unratified. Needs a Consensus Philosophy row that relates DR statuses to table statuses. |
-| Formal-area completion criterion, seven items | No record | Introduced in `formal/README.md` | Unratified, compatible with rules 1 and 2 |
+| Expected-violation configs outside the gate | Stated on `dev` | Statement removed. Unsafe controls remain outside `POST_FIX_CONFIGS`. | Unratified removal of the statement. The practice is unchanged. |
+| Decision-record governance with the paper as law | No record | Introduced | Unratified addition. Needs a Consensus Philosophy row that relates DR statuses to table statuses. |
+| Formal-area completion criterion, seven items | No record | Introduced in `formal/README.md` | Unratified addition. Compatible with rules 1 and 2. |
 | Slashing bisimilarity theorems | Gated in CI | Removed per DR-8 | Unratified removal of a CI check |
 | Six TLA+ gate entries | Gated in CI | Removed | Unratified removal. Three have no replacement. |
-| Property-test case counts | 10,000 and 100,000 | 2,000 and 10,000 | Unratified reduction |
-| Carrier-index model | None | `CarrierIndexSoundness.tla` gated | Compatible with PR #387. Two models need one decision. |
-| Carrier-index key | Body signature, pending ratification 2026-09-01 | Protocol-tagged deploy identity | Conflict with the PR #387 claim text |
+| Property-test case counts | 10,000 and 100,000 | 2,000 and 10,000 | Unratified change |
+| Carrier-index model | None | `CarrierIndexSoundness.tla` gated | Unratified addition. The model agrees with the PR #387 model on every shared rule. The key row below and section 6 item 4 record the conflict. |
+| Carrier-index key | Body signature, pending ratification 2026-09-01 | Protocol-tagged deploy identity | Conflict with the PR #387 claim text. Entry D-10 in the ledger resolves it. |
 | Settled-effect claim `applied` predicate | Claim on `dev` | Widened to settled failed bodies | Unratified claim change |
-| Proof-to-code obligation scripts | `scripts/ci` only | Forty scripts outside workflows | Unratified. Needs a wiring decision. |
+| Proof-to-code obligation scripts | `scripts/ci` only | Forty scripts outside workflows | Unratified addition. Needs a wiring decision. |
 
 ## 6. Conflict points between PR #387 and PR #216
 

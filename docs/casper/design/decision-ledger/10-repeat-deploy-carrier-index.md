@@ -1,8 +1,14 @@
 # D-10 Repeat-Deploy Carrier Index
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Protocol refinement. The predicate is unchanged. The evidence and the key are decided here.
-**Sources:** dev [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) section 4.4 and the 2026-09-01 row. PR #387 [`CLAIM-FINALITY-002`](../../../claims/repeat-deploy-carrier-index-equivalence.md), [`formal/tlaplus/carrier_index/`](../../../../formal/tlaplus/carrier_index), [CbC repair plan](../cbc-repair-plan.md). PR #216 `deploy-occurrence-verification.md` carrier-index refinement, `CarrierIndexSoundness.tla`, `DeployIdentitySeparation.tla`, `DeployIdentitySeparation.v`, [CbC and FV reconciliation](../cost-accounting-cbc-fv-reconciliation.md) section 4.3.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Protocol refinement. The predicate is unchanged. The evidence and the key are decided here.
+
+**Sources.**
+
+- dev [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) section 4.4 and the 2026-09-01 row.
+- PR #387 [`CLAIM-FINALITY-002`](../../../claims/repeat-deploy-carrier-index-equivalence.md), [`formal/tlaplus/carrier_index/`](../../../../formal/tlaplus/carrier_index), [CbC repair plan](../cbc-repair-plan.md).
+- PR #216 `deploy-occurrence-verification.md` carrier-index refinement, `CarrierIndexSoundness.tla`, `DeployIdentitySeparation.tla`, `DeployIdentitySeparation.v`, [CbC and FV reconciliation](../cost-accounting-cbc-fv-reconciliation.md) section 4.3.
 
 ## 1. Question
 
@@ -18,7 +24,9 @@ Section 4.4 narrows the index to one measured cost. It removes the ancestor scan
 
 ## 4. Position on PR #216
 
-The index key is a protocol-tagged deploy lookup identity. A legacy block uses the signature domain. A protocol-6 block uses the envelope-commitment domain. Equal bytes in the two domains are different keys. `DeployIdentitySeparation` shows that an untagged key can suppress the wrong deploy. Protocol-6 admission commits carrier, metadata, occurrence, and lifecycle rows in one transaction. A bounded in-process decoded-identity cache serves the exact scan and proves nothing. `CarrierIndexSoundness.tla` has thirteen invariants, five unsafe controls, and two validators, and is registered in the PR #216 gate list. The PR #216 row keeps "the remedy" wording.
+The index key is a protocol-tagged deploy lookup identity. A legacy block uses the signature domain. A protocol-6 block uses the envelope-commitment domain. Equal bytes in the two domains are different keys. `DeployIdentitySeparation` shows that an untagged key can suppress the wrong deploy.
+
+Protocol-6 admission commits carrier, metadata, occurrence, and lifecycle rows in one transaction. A bounded in-process decoded-identity cache serves the exact scan and proves nothing. `CarrierIndexSoundness.tla` has thirteen invariants, five unsafe controls, and two validators, and is registered in the PR #216 gate list. The PR #216 row keeps "the remedy" wording.
 
 ## 5. Divergence
 
@@ -41,7 +49,7 @@ The index key is a protocol-tagged deploy lookup identity. A legacy block uses t
 
 Adopt option A.
 
-The typed key is only meaningful when a second identity domain exists, which is a protocol-6 fact under D-01. Until then the signature domain is the only domain and the two keys coincide. The claim ledger should state the predicate over a deploy identity function that returns the signature on legacy blocks and the envelope commitment on protocol-6 blocks. `DeployIdentitySeparation` becomes the obligation that the function is injective across domains.
+The typed key is only meaningful when a second identity domain exists, which is a protocol-6 fact under D-01. Until then the signature domain is the only domain and the two keys coincide. The claim ledger should state the predicate over a deploy identity function. That function returns the signature on a legacy block and the envelope commitment on a protocol-6 block. `DeployIdentitySeparation` becomes the obligation that the function is injective across domains.
 
 Adopt the PR #387 role wording. The soak evidence shows the index is not a complete repair.
 

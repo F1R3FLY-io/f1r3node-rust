@@ -1,25 +1,36 @@
 # Casper Decision Ledger: Cost-Accounting Unification
 
-**Status:** Open. Every entry starts as Proposed.
-**Opened:** 2026-09-05
-**Compared:** `dev` at the PR #382 merge (`231067178`), PR #387 at `30c428335`, and PR #216 (`feature/cost-accounted-rho`) at `3980ed402`.
-**Related:** [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) section 8, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md), [CbC and FV reconciliation](../cost-accounting-cbc-fv-reconciliation.md).
+**Status.** Open. Every entry starts as Proposed.
+
+**Opened.** 2026-09-05
+
+**Compared.** `dev` at the PR #382 merge (`231067178`), PR #387 at `30c428335`, and PR #216 (`feature/cost-accounted-rho`) at `3980ed402`.
+
+**Related.** [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) section 8, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md), [CbC and FV reconciliation](../cost-accounting-cbc-fv-reconciliation.md).
 
 ## 1. Purpose
 
-This ledger records each Casper consensus design decision on which `dev` and PR #216 differ. Each entry states both positions, the divergence, the options, and one unification proposal. The ledger exists so that maintainers can ratify or reject each decision before any specification text changes.
+This ledger exists to rectify and ratify the Casper design decisions that the cost-accounting work changes. Its goal is one Casper specification on `dev` that the cost-accounting changes are congruent with. It records each Casper consensus design decision on which `dev` and PR #216 differ. Each entry states both positions, the divergence, the options, and one unification proposal. Maintainers ratify or reject each decision here before any specification text changes.
 
 The ledger covers Casper consensus decisions only. Cost-accounting economics, token semantics, signature algebra, and settlement stay out of scope. An entry cites a PR #216 decision record (DR) as evidence, not as authority. A DR carries no ratification weight until its ledger entry is ratified.
 
 ## 2. Ratification workflow
 
-1. An entry is **Proposed** when this ledger opens. Its row in the Consensus Philosophy decision table reads `Proposed in the decision ledger. Pending maintainer ratification.`
-2. A maintainer reviews the entry in the review pull request. The maintainer approves, rejects, or asks for a change under the entry heading. This branch merges into `dev` and into `feature/cost-accounted-rho`. Either merge review can ratify an entry. An entry stays Proposed through both merges until a maintainer decides.
-3. On approval, the entry status becomes **Ratified** with the date and the approver handle. The table row changes to `Ratified.` with the same date and handle.
+1. An entry is **Proposed** when this ledger opens. Its row in the Consensus Philosophy decision table starts with `Proposed`, then names the entry kind and its conflict with `dev`, then reads `Pending maintainer ratification.`
+2. A ratifier reviews the entry in the review pull request. The ratifier approves, rejects, or asks for a change in a review comment under the entry heading. This branch merges into `dev` and into `feature/cost-accounted-rho`. Either merge review can ratify an entry. An entry stays Proposed through both merges until a ratifier decides.
+3. On approval, the entry status becomes **Ratified**. The status line records the date, the ratifier handle, and the URL of the approving review comment. The table row changes to `Ratified <date> by <handle>.` with the same URL.
 4. On rejection, the entry status becomes **Rejected** with the reason. The row records the rejection. The rejected option stays in the entry as history.
 5. After ratification, a separate change edits the protocol and theory specifications to the ratified position. This ledger never edits them.
 
 An entry can hold several numbered sub-decisions. A sub-decision can be ratified alone. The table row flips only when every sub-decision in the entry has a final status.
+
+### 2.1 Ratification authority and proof
+
+A **ratifier** is a maintainer with merge rights on `dev`. For an entry that changes a PR #216 position, the author of PR #216 must also approve. No other approval counts.
+
+The **proof** of a decision is the approving or rejecting review comment on the pull request. The entry status line and the table row both link to that comment. A decision with no linked comment is not ratified, whatever the text says.
+
+This rule also answers the ownership question in entry D-11. The same ratifiers own sub-decisions 11.4 and 11.8.
 
 ## 3. Status vocabulary
 

@@ -1,8 +1,13 @@
 # D-11 CbC and FV Governance
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Governance.
-**Sources:** [CbC and FV reconciliation](../cost-accounting-cbc-fv-reconciliation.md), [formal-verification.md](../../../formal-verification.md), [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) sections 4.2, 4.3, 7.1, and 8, [`scripts/ci/check-tla-invariants.sh`](../../../../scripts/ci/check-tla-invariants.sh). PR #216 `cost-accounting-decision-records.md` preamble, `formal/README.md` completion criterion, `scripts/ci/check-tla-invariants.sh`, `scripts/ci/check-formal-invariants.sh`.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Governance.
+
+**Sources.**
+
+- [CbC and FV reconciliation](../cost-accounting-cbc-fv-reconciliation.md), [formal-verification.md](../../../formal-verification.md), [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) sections 4.2, 4.3, 7.1, and 8, [`scripts/ci/check-tla-invariants.sh`](../../../../scripts/ci/check-tla-invariants.sh).
+- PR #216 `cost-accounting-decision-records.md` preamble, `formal/README.md` completion criterion, `scripts/ci/check-tla-invariants.sh`, `scripts/ci/check-formal-invariants.sh`.
 
 ## 1. Question
 
@@ -87,5 +92,5 @@ The 2026-08-22 row ratifies the benchmark as a merge gate. PR #216 section 4.3 s
 
 ## 4. Open questions
 
-1. Who owns the decision on 11.4 and 11.8? Both need a named maintainer.
+1. Sub-decisions 11.4 and 11.8 need a named ratifier. Section 2.1 of the ledger index defines the ratifier set.
 2. Does the completion criterion apply retroactively to dev formal areas that lack an unsafe control?

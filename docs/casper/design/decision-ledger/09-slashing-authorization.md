@@ -1,8 +1,13 @@
 # D-09 Slashing Authorization, Evidence Identity, and Neglect
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Protocol.
-**Sources:** dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 9, [slashing specification](../../theory/slashing/slashing-specification.md) sections 4, 8, and 9, [`formal/rocq/slashing/`](../../../../formal/rocq/slashing), [`formal/tlaplus/slashing/`](../../../../formal/tlaplus/slashing). PR #216 DR-3, DR-7, DR-8, DR-18, `slashing-specification.md` sections 8, 9, and 15, `slashing_authorization.rs`, rules R-ADMISSION-CLOSURE, R-EVIDENCE-TRAVERSAL, R-EVIDENCE-CANONICAL, models `ObjectiveEquivocation.tla`, `ObjectiveEvidenceAuthorization.tla`, `CertifiedRejectionDependency.tla`, `TwoLevelSlashing.tla`, `SlashFlowProofs.tla`.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Protocol.
+
+**Sources.**
+
+- dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 9, [slashing specification](../../theory/slashing/slashing-specification.md) sections 4, 8, and 9, [`formal/rocq/slashing/`](../../../../formal/rocq/slashing), [`formal/tlaplus/slashing/`](../../../../formal/tlaplus/slashing).
+- PR #216 DR-3, DR-7, DR-8, DR-18, `slashing-specification.md` sections 8, 9, and 15, `slashing_authorization.rs`, rules R-ADMISSION-CLOSURE, R-EVIDENCE-TRAVERSAL, R-EVIDENCE-CANONICAL, models `ObjectiveEquivocation.tla`, `ObjectiveEvidenceAuthorization.tla`, `CertifiedRejectionDependency.tla`, `TwoLevelSlashing.tla`, `SlashFlowProofs.tla`.
 
 ## 1. Question
 
