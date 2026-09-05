@@ -178,6 +178,12 @@ pub(crate) fn post_validation(status: &ValidBlockProcessing) -> PostValidation {
 /// alarmed storage. Past it the node degrades to today's deferral, loudly.
 const SETTLED_ADMISSION_BUDGET: u64 = 512;
 
+/// Ceiling on detached block-hash announces in flight. An announce is
+/// best-effort gossip (peers also learn hashes from proposals and the casper
+/// loop), so past the ceiling further announces are dropped rather than
+/// queued — bounded loss under saturation instead of unbounded task growth.
+pub const ANNOUNCE_MAX_IN_FLIGHT: usize = 128;
+
 const CASPER_BUFFER_PRUNE_INTERVAL_MS: u64 = 5_000;
 const CASPER_BUFFER_STALE_TTL_MS: u64 = 180_000;
 const CASPER_BUFFER_MAX_APPROX_NODES: usize = 16_384;
@@ -725,6 +731,10 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     /// in test constructions; without it a missing root still defers safely,
     /// it just never heals.
     state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
+    /// Permits bounding detached block-hash announces in flight. Each spawned
+    /// announce holds one until its sends resolve, so slow peers cap the task
+    /// count at the permit count instead of block-rate x send-timeout.
+    announce_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
@@ -754,6 +764,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             settled_solicitations: Arc::new(Mutex::new(HashSet::new())),
             settled_admissions: Arc::new(AtomicU64::new(0)),
             state_root_fetch_tx,
+            announce_permits: Arc::new(tokio::sync::Semaphore::new(ANNOUNCE_MAX_IN_FLIGHT)),
         }
     }
 
@@ -1560,15 +1571,32 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         Ok(dag)
     }
 
+    /// Test-only: drive the announce spawn directly.
+    pub fn spawn_block_hash_announce_for_test(&self, block: &BlockMessage) {
+        self.spawn_block_hash_announce(block)
+    }
+
     /// The announce is one-way gossip, so it runs detached: awaited inline,
     /// one unreachable peer's send timeout taxes every processed block.
+    /// Detached tasks are permit-bounded: without the cap, in-flight count is
+    /// block-processing rate times the slowest peer's send timeout.
     fn spawn_block_hash_announce(&self, block: &BlockMessage) {
+        let Ok(permit) = self.announce_permits.clone().try_acquire_owned() else {
+            tracing::debug!(
+                block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                cap = ANNOUNCE_MAX_IN_FLIGHT,
+                "dropping block-hash announce: every announce slot is held by a \
+                 slow peer send; peers learn the hash from gossip instead"
+            );
+            return;
+        };
         let transport = self.transport.clone();
         let connections_cell = self.connections_cell.clone();
         let conf = self.conf.clone();
         let block_hash = block.block_hash.clone();
         let sender = block.sender.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(err) = transport
                 .send_block_hash(&connections_cell, &conf, &block_hash, &sender)
                 .await

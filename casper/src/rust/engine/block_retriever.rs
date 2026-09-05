@@ -87,6 +87,30 @@ enum AckReceiveResult {
 /// that relation.
 pub const UNRESOLVED_REREQUEST_ANCHOR_MS: u64 = 500;
 
+/// Retry budget per unresolved hash: attempts past this evict the entry into
+/// the retry-budget quarantine.
+pub const MAX_RETRIES_PER_HASH: u32 = 32;
+
+/// Per-attempt re-request interval: the base for the first attempts, then an
+/// adaptive multiplier so repeatedly unresolved hashes retry less aggressively.
+pub fn unresolved_rerequest_interval_ms(attempts: u32, base_interval_ms: u64) -> u64 {
+    if attempts <= 4 {
+        return base_interval_ms;
+    }
+    let multiplier = 1 + std::cmp::min(((attempts - 4) / 4) as u64, 7);
+    base_interval_ms.saturating_mul(multiplier)
+}
+
+/// Full wall-clock span of the unresolved-re-request ladder: the sum of every
+/// per-attempt interval until the retry budget exhausts. This — not the
+/// anchor — is what a citability window must fit for a lost delivery to
+/// recover before its blocks fall below the parent-depth horizon.
+pub fn total_unresolved_rerequest_span_ms() -> u64 {
+    (0..MAX_RETRIES_PER_HASH)
+        .map(|attempts| unresolved_rerequest_interval_ms(attempts, UNRESOLVED_REREQUEST_ANCHOR_MS))
+        .sum()
+}
+
 #[derive(Debug, Clone)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     requested_blocks: RequestedBlocks,
@@ -107,7 +131,6 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     const PEER_REQUERY_COOLDOWN_MS: u64 = 500;
     const BROADCAST_ONLY_COOLDOWN_MS: u64 = 500;
     const MIN_REREQUEST_INTERVAL_MS: u64 = UNRESOLVED_REREQUEST_ANCHOR_MS;
-    const MAX_RETRIES_PER_HASH: u32 = 32;
     const DEPENDENCY_RECOVERY_COOLDOWN_MS: u64 = 500;
     const STALE_REQUEST_LIFETIME_MULTIPLIER: u64 = 6;
     const KNOWN_PEER_REQUERY_SOFT_LIMIT: u32 = 8;
@@ -207,7 +230,13 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         Ok(())
     }
 
-    fn cleanup_aux_tracking_for_hash(&self, hash: &BlockHash) -> Result<(), CasperError> {
+    /// Clear the request cursors a live entry accumulates, but NOT the
+    /// retry-attempt count or the retry-budget quarantine: a budget eviction
+    /// marks the quarantine an instant before calling this, and erasing it
+    /// here re-admits a just-proved-unfetchable hash immediately with the
+    /// backoff ladder reset — re-requesting forever at full aggression.
+    /// The quarantine expiry sweep owns their removal.
+    fn cleanup_request_cursors_for_hash(&self, hash: &BlockHash) -> Result<(), CasperError> {
         {
             let mut last_requests = self.dependency_recovery_last_request.lock().map_err(|_| {
                 CasperError::RuntimeError(
@@ -233,14 +262,6 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             peer_requery_last.remove(hash);
         }
         {
-            let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
-                CasperError::RuntimeError(
-                    "Failed to acquire retry_attempts_by_hash lock".to_string(),
-                )
-            })?;
-            retry_attempts.remove(hash);
-        }
-        {
             let mut peer_requery_attempts =
                 self.peer_requery_attempts_by_hash.lock().map_err(|_| {
                     CasperError::RuntimeError(
@@ -248,6 +269,19 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     )
                 })?;
             peer_requery_attempts.remove(hash);
+        }
+        Ok(())
+    }
+
+    fn cleanup_aux_tracking_for_hash(&self, hash: &BlockHash) -> Result<(), CasperError> {
+        self.cleanup_request_cursors_for_hash(hash)?;
+        {
+            let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire retry_attempts_by_hash lock".to_string(),
+                )
+            })?;
+            retry_attempts.remove(hash);
         }
         {
             let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
@@ -304,13 +338,27 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             })?;
             peer_requery_last.retain(|hash, _| active_hashes.contains(hash));
         }
+        // Quarantine entries outlive their evicted request on purpose — the
+        // expiry sweep below owns their removal — and a quarantined hash
+        // keeps its attempt count so the eviction's spent budget is not
+        // erased between mark and expiry.
+        let quarantined_hashes: HashSet<BlockHash> = {
+            let quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire retry_budget_quarantine_until lock".to_string(),
+                )
+            })?;
+            quarantine.keys().cloned().collect()
+        };
         {
             let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
                 CasperError::RuntimeError(
                     "Failed to acquire retry_attempts_by_hash lock".to_string(),
                 )
             })?;
-            retry_attempts.retain(|hash, _| active_hashes.contains(hash));
+            retry_attempts.retain(|hash, _| {
+                active_hashes.contains(hash) || quarantined_hashes.contains(hash)
+            });
         }
         {
             let mut peer_requery_attempts =
@@ -321,25 +369,39 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 })?;
             peer_requery_attempts.retain(|hash, _| active_hashes.contains(hash));
         }
-        {
+
+        Ok(())
+    }
+
+    /// Remove lapsed quarantine entries, and their attempt counts with them:
+    /// the cool-off is what earns a re-cited hash a fresh retry budget.
+    fn sweep_expired_retry_budget_quarantine(&self, now: u64) -> Result<(), CasperError> {
+        let expired: Vec<BlockHash> = {
             let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
                 CasperError::RuntimeError(
                     "Failed to acquire retry_budget_quarantine_until lock".to_string(),
                 )
             })?;
-            quarantine.retain(|hash, _| active_hashes.contains(hash));
+            let expired = quarantine
+                .iter()
+                .filter(|(_, until)| **until <= now)
+                .map(|(hash, _)| hash.clone())
+                .collect::<Vec<_>>();
+            for hash in &expired {
+                quarantine.remove(hash);
+            }
+            expired
+        };
+        if !expired.is_empty() {
+            let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
+                CasperError::RuntimeError(
+                    "Failed to acquire retry_attempts_by_hash lock".to_string(),
+                )
+            })?;
+            for hash in &expired {
+                retry_attempts.remove(hash);
+            }
         }
-
-        Ok(())
-    }
-
-    fn sweep_expired_retry_budget_quarantine(&self, now: u64) -> Result<(), CasperError> {
-        let mut quarantine = self.retry_budget_quarantine_until.lock().map_err(|_| {
-            CasperError::RuntimeError(
-                "Failed to acquire retry_budget_quarantine_until lock".to_string(),
-            )
-        })?;
-        quarantine.retain(|_, until| *until > now);
         Ok(())
     }
 
@@ -446,7 +508,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             })?;
             retry_attempts.get(hash).copied().unwrap_or(0)
         };
-        Ok(attempts >= Self::MAX_RETRIES_PER_HASH)
+        Ok(attempts >= MAX_RETRIES_PER_HASH)
     }
 
     fn retry_attempt_count(&self, hash: &BlockHash) -> Result<u32, CasperError> {
@@ -487,12 +549,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     ) -> Result<u64, CasperError> {
         // Apply adaptive backoff so repeatedly unresolved hashes are retried less aggressively.
         let attempts = self.retry_attempt_count(hash)?;
-        if attempts <= 4 {
-            return Ok(base_interval_ms);
-        }
-
-        let multiplier = 1 + std::cmp::min(((attempts - 4) / 4) as u64, 7);
-        Ok(base_interval_ms.saturating_mul(multiplier))
+        Ok(unresolved_rerequest_interval_ms(attempts, base_interval_ms))
     }
 
     fn register_retry_attempt(&self, hash: &BlockHash) -> Result<(), CasperError> {
@@ -992,12 +1049,12 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         let now = Self::current_millis();
                         drop(state);
                         self.mark_retry_budget_quarantine(&hash, now)?;
-                        self.cleanup_aux_tracking_for_hash(&hash)?;
+                        self.cleanup_request_cursors_for_hash(&hash)?;
                         metrics::counter!(BLOCK_REQUESTS_STALE_EVICTIONS_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "reason" => "retry_budget").increment(1);
                         debug!(
                             "Evicting unresolved block request {} after reaching retry budget {}. Quarantine for {}ms.",
                             PrettyPrinter::build_string_bytes(&hash),
-                            Self::MAX_RETRIES_PER_HASH,
+                            MAX_RETRIES_PER_HASH,
                             Self::RETRY_BUDGET_QUARANTINE_MS
                         );
                     }
@@ -1066,7 +1123,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             if state.remove(&hash).is_some() {
                 drop(state);
                 self.mark_retry_budget_quarantine(&hash, now)?;
-                self.cleanup_aux_tracking_for_hash(&hash)?;
+                self.cleanup_request_cursors_for_hash(&hash)?;
                 metrics::counter!(
                     BLOCK_REQUESTS_STALE_EVICTIONS_METRIC,
                     "source" => BLOCK_RETRIEVER_METRICS_SOURCE,
@@ -1475,6 +1532,44 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     }
 
     /// Test-only helper methods for setting up specific test scenarios
+    /// Test-only: read a hash's retry-attempt count.
+    pub fn retry_attempts_for_test(&self, hash: &BlockHash) -> Result<u32, CasperError> {
+        let retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire retry_attempts_by_hash lock".to_string())
+        })?;
+        Ok(retry_attempts.get(hash).copied().unwrap_or(0))
+    }
+
+    /// Test-only: set a hash's retry-attempt count (e.g. to the budget).
+    pub fn set_retry_attempts_for_test(
+        &self,
+        hash: &BlockHash,
+        attempts: u32,
+    ) -> Result<(), CasperError> {
+        let mut retry_attempts = self.retry_attempts_by_hash.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire retry_attempts_by_hash lock".to_string())
+        })?;
+        retry_attempts.insert(hash.clone(), attempts);
+        Ok(())
+    }
+
+    /// Test-only: whether the hash sits in retry-budget quarantine at `now`.
+    pub fn retry_budget_quarantined_for_test(
+        &self,
+        hash: &BlockHash,
+        now: u64,
+    ) -> Result<bool, CasperError> {
+        self.is_retry_budget_quarantined(hash, now)
+    }
+
+    /// Test-only: run the quarantine-expiry sweep at a synthetic `now`.
+    pub fn sweep_expired_retry_budget_quarantine_for_test(
+        &self,
+        now: u64,
+    ) -> Result<(), CasperError> {
+        self.sweep_expired_retry_budget_quarantine(now)
+    }
+
     pub async fn set_request_state_for_test(
         &self,
         hash: BlockHash,
@@ -1527,6 +1622,14 @@ mod tests {
                 udp_port: port as u32,
             },
         }
+    }
+
+    /// The startup citability-window guard compares against this exact span,
+    /// so the pin here is what keeps the guard's inequality meaning what its
+    /// message says when the ladder constants move.
+    #[test]
+    fn the_full_rerequest_span_matches_the_ladder() {
+        assert_eq!(super::total_unresolved_rerequest_span_ms(), 58_000);
     }
 
     #[tokio::test]
