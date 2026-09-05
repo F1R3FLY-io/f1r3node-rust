@@ -1521,6 +1521,19 @@ impl RSpaceDataIndex {
         Ok(prepared)
     }
 
+    /// Prepare a channel-local Bag from authenticated endpoint multiplicities
+    /// without expanding repeated occurrences into a temporary `Vec`.
+    pub(crate) fn prepare_channel_replacement_counts<A>(
+        entries: impl IntoIterator<Item = (Datum<A>, Multiplicity)>,
+    ) -> Result<Bag, DataIndexError>
+    where A: Clone + Serialize + RhoPathEncode {
+        let mut prepared = Bag::new();
+        for (datum, multiplicity) in entries {
+            prepared.insert_many(&Self::relative_datum_path(&datum), multiplicity)?;
+        }
+        Ok(prepared)
+    }
+
     pub fn insert<C, A>(
         &mut self,
         channel: &C,
@@ -1971,6 +1984,29 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         let marker = RhoPathV1::datum_prefix(&channel);
         self.index.preflight_new_channel(&marker)?;
         let prepared = RSpaceDataIndex::prepare_channel_replacement(datums)?;
+        let catalogs = self
+            .candidate_catalogs
+            .get_mut()
+            .expect("candidate catalog write lock");
+        self.index.replace_channel_at_marker(&marker, prepared)?;
+        catalogs.remove(&marker);
+        Ok(())
+    }
+
+    /// Replace one channel from exact authenticated multiplicities. Counts
+    /// stay in the Bag/PathMap representation throughout construction.
+    pub(crate) fn set_channel_counts(
+        &mut self,
+        channel: C,
+        entries: impl IntoIterator<Item = (Datum<A>, Multiplicity)>,
+    ) -> Result<(), DataIndexError>
+    where
+        C: RhoPathEncode,
+        A: Clone + Serialize + RhoPathEncode,
+    {
+        let marker = RhoPathV1::datum_prefix(&channel);
+        self.index.preflight_new_channel(&marker)?;
+        let prepared = RSpaceDataIndex::prepare_channel_replacement_counts(entries)?;
         let catalogs = self
             .candidate_catalogs
             .get_mut()
@@ -2497,6 +2533,30 @@ mod candidate_identity_order_tests {
             before,
             "set_channel must not manufacture a full-store COW version"
         );
+    }
+
+    #[test]
+    fn set_channel_counts_preserves_authenticated_multiplicity_without_expansion() {
+        let mut store = RSpaceDataStore::<String, String>::new();
+        let channel = "counted-channel".to_owned();
+        let datum = Datum {
+            a: Arc::new("counted-payload".to_owned()),
+            persist: false,
+            source: crate::rspace::trace::event::Produce::new(
+                Blake2b256Hash::new(b"counted-produce"),
+                Blake2b256Hash::new(b"counted-sequence"),
+                false,
+            ),
+        };
+        store
+            .set_channel_counts(channel.clone(), [(
+                datum.clone(),
+                Multiplicity::new(7).expect("positive count"),
+            )])
+            .expect("counted channel replacement");
+        assert_eq!(store.index().count(&channel, &datum), 7);
+        assert_eq!(store.cardinality(), 7);
+        assert_eq!(store.distinct_len(), 1);
     }
 
     #[test]
