@@ -40,6 +40,14 @@ The functions of the two fields move to three places.
 
 Multi-wallet funding has a specification on the branch. The funding authority is the composition of the selected members' ground authorities. Each selected lane `a` must satisfy `B_A(a) + B_Q(a) + F(a) <= Σ(a)`. One payer cannot rescue an underfunded lane. Two cosigner sets that share a wallet draw it down through one live residual ledger in canonical order. DR-28 added that ledger after a red-team finding of cross-group over-admission.
 
+Apportionment across wallets has an implementation and a directive, but no normative rule. The branch defines a trait `ApportionmentPolicy` in `rholang/src/rust/interpreter/accounting/resource_logic.rs`. Its contract has three parts.
+
+The policy is a pure function of the group shape and the demand. It settles exactly the demanded units when the pools can fund them. It never overdraws a pool. The trait comment names the settlement debit as consensus state that replay recomputes.
+
+The built-in policy `DefaultApportionment` drains the jointly owned combined pool first. It then debits the two component wallets by the same amount for the remainder. The comment cites a directive of 2026-06-15 that cost is balanced across all wallets. The balance means each wallet pays an equal amount, not that the demand is halved. One unit of compound authority consumes one unit from every cosigner. A separate flat-fee policy draws the fee from the combined pool first and then from one component only.
+
+The group shape is binary at the top level. A fold of three or more signatures presents as one compound with a left side and a right side. No policy today addresses more than two component wallets directly. The policy is a Rust value, not a wire field. Every validator uses the same default, and no envelope field selects a policy.
+
 Transfer of funding authority has no specification on the branch. The linear-logic document describes the lollipop connective as a capability that delegates authorization. The migration document lists delegated metering as achievable in user space and not formalized. DR-27 finding F-A separates the capability connectives from the funding signature at ingress. The funding grammar is ground, quote, and composition only.
 
 ## 4. Review finding
@@ -62,6 +70,7 @@ The protocol document on PR #216 keeps the sentence that the phlogiston price me
 | Funding parties | One deployer key | Selected members of a signed policy, one lane each |
 | Shared wallet across deploys | Not possible | Live residual ledger in canonical order |
 | Transfer of funding authority | Not possible | Not specified. Capability connectives are separated from funding. |
+| Apportionment across wallets | One wallet | Combined pool first, then equal amounts from each component. A pluggable trait with no wire parameter. |
 | Wire | Fields present | Tags 7, 8, and 15 reserved |
 
 ## 6. Options
@@ -78,6 +87,12 @@ Adopt option A at the protocol-6 boundary, with three specification items as con
 2. **Transfer of funding authority.** State in the protocol document that funding authority does not transfer inside a deploy. Delegation is a user-space pattern over signature channels. If a later change formalizes it, that change needs its own row.
 3. **Client exposure.** State what bounds a deployer's loss on one deploy. On the branch the bound is the selected purse balance after the fee. A maintainer must decide whether that bound is acceptable or whether option B is required.
 
+**Sub-decision 12.4, apportionment policy as a future parameter.** Record the apportionment rule as a decision, and reserve room for a client-selected policy. Three candidates exist. The first is the current balanced draw. The second is a sequential draw that exhausts one wallet before the next, in a stated order. The third is a proportional draw by balance.
+
+Each candidate must meet the trait contract: pure, conserving, and never overdrawing.
+
+A client-selected policy changes the settlement debit. It must therefore be part of the signed intent that `DeployIdV6` commits. It must ratify with D-01 as a protocol-6 wire change. Until then the default is the only policy, and the specification must say so.
+
 Correct the validation step 8 sentence on PR #216 so it matches D3 section D.5.
 
 This entry follows principle P2. Admission derives from authenticated on-chain supply, not from a client-declared number that validators cannot check against custody.
@@ -87,6 +102,7 @@ This entry follows principle P2. Admission derives from authenticated on-chain s
 - The three specification items above exist as normative text.
 - The DR-28 cross-group regression and the envelope negative cases are in a gate.
 - The `min_phlo_price` ingress floor is documented in the node API reference as an ingress rule, not a consensus rule.
+- 12.4: the default apportionment rule is stated as normative text. The policy trait contract is stated as the admission rule for any future policy.
 - After ratification, update the Consensus Protocol sections 2 step 4, 4 step 8, and 10, and the Rholang cost-model and deployment-workflow documents.
 
 ## 9. Open questions
@@ -94,3 +110,5 @@ This entry follows principle P2. Admission derives from authenticated on-chain s
 1. Does any client-side control bound the cost of one deploy after `phloLimit` is gone? The sources name none.
 2. The read-only API fields `phloPrice` and `phloLimit` still appear in the OpenAPI schema on PR #216. Are they removed, or reported as zero for legacy deploys?
 3. Does the `min_phlo_price` floor apply to each selected lane or to the deploy as a whole?
+4. How does the balanced policy apply to three or more selected wallets? The shape is then a nested fold. The sources define the draw for a left side and a right side only.
+5. If a client selects a sequential policy, who states the wallet order, and does the order survive a change of the selected subset?
