@@ -6,8 +6,8 @@
 
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::{
-    GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseV1, LogPackDecodeLimits,
-    VerifiedDagState,
+    ClosureError, EndpointValue, GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseV1,
+    LogPackDecodeLimits, SemanticRoots, VerifiedDagState,
 };
 
 mod admission;
@@ -130,6 +130,32 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
         &self,
     ) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
         self.writer.verified_state()
+    }
+
+    /// Return the namespace roots authenticated by this authority's exact
+    /// semantic manifest.
+    pub(crate) fn semantic_roots(
+        &self,
+    ) -> Result<SemanticRoots, ClosureError<DurableObjectReadErrorV1>> {
+        self.writer
+            .verified_state()
+            .semantic_manifest()
+            .map(|manifest| manifest.roots())
+    }
+
+    /// Project one canonical namespace prefix through the pinned durable
+    /// object index. The result contains encoded paths and endpoint states;
+    /// decoding into application values remains the caller's typed boundary.
+    pub(crate) fn project_prefix(
+        &self,
+        root: crate::rspace::persistence::ObjectRefV1,
+        prefix: &[u8],
+        max_steps: u64,
+        max_endpoints: u64,
+    ) -> Result<Vec<(Vec<u8>, EndpointValue)>, ClosureError<DurableObjectReadErrorV1>> {
+        self.writer
+            .verified_state()
+            .collect_endpoints_under_prefix(root, prefix, max_steps, max_endpoints)
     }
 
     pub(crate) fn manifest(&self) -> crate::rspace::persistence::ObjectRefV1 {
