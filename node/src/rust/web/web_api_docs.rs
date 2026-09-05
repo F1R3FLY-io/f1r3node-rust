@@ -11,6 +11,7 @@ use crate::rust::web::{
 #[openapi(
     paths(
         status_info::status_info_handler,
+        web_api_routes::ready_handler,
         shared_handlers::deploy_handler,
         shared_handlers::explore_deploy_handler,
         shared_handlers::explore_deploy_by_block_hash_handler,
@@ -49,6 +50,7 @@ pub struct PublicApi;
 #[openapi(
     paths(
         status_info::status_info_handler,
+        web_api_routes::ready_handler,
         shared_handlers::deploy_handler,
         shared_handlers::explore_deploy_handler,
         shared_handlers::explore_deploy_by_block_hash_handler,

@@ -38,6 +38,7 @@ impl WebApiRoutes {
     pub fn create_router() -> Router<AppState> {
         Router::new()
             .route("/status", get(shared_handlers::status_handler))
+            .route("/ready", get(ready_handler))
             .route("/prepare-deploy", get(prepare_deploy_get_handler))
             .route("/prepare-deploy", post(prepare_deploy_post_handler))
             .route("/deploy", post(shared_handlers::deploy_handler))
@@ -74,6 +75,25 @@ impl WebApiRoutes {
             .route("/estimate-cost", post(estimate_cost_handler))
             .route("/bond-status/{pubkey}", get(bond_status_handler))
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/ready",
+    responses(
+        (status = 200, description = "Casper is Running and the node can serve deploys"),
+        (status = 503, description = "Casper has not finished initializing (`service_unavailable`)"),
+    ),
+    tag = "Status"
+)]
+pub async fn ready_handler(State(app_state): State<AppState>) -> Response {
+    let ready = app_state.web_api.is_ready();
+    let code = if ready {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (code, Json(serde_json::json!({ "ready": ready }))).into_response()
 }
 
 #[utoipa::path(
@@ -645,6 +665,7 @@ mod tests {
     #[async_trait::async_trait]
     impl WebApi for StubWebApi {
         async fn status(&self) -> eyre::Result<ApiStatus> { unimplemented!() }
+        fn is_ready(&self) -> bool { unimplemented!() }
         async fn prepare_deploy(
             &self,
             _: Option<crate::rust::api::web_api::PrepareRequest>,
@@ -1044,10 +1065,14 @@ mod router_tests {
 
     fn block_info() -> BlockInfoSerde { BlockInfoSerde::from(models::casper::BlockInfo::default()) }
 
-    struct CannedWebApi;
+    struct CannedWebApi {
+        is_ready: bool,
+    }
 
     #[async_trait::async_trait]
     impl WebApi for CannedWebApi {
+        fn is_ready(&self) -> bool { self.is_ready }
+
         async fn status(&self) -> eyre::Result<ApiStatus> {
             Ok(ApiStatus {
                 version: VersionInfo {
@@ -1067,7 +1092,7 @@ mod router_tests {
                 last_finalized_block_number: 5,
                 is_validator: false,
                 is_read_only: true,
-                is_ready: true,
+                is_ready: self.is_ready,
                 current_epoch: 0,
                 epoch_length: 100,
             })
@@ -1256,7 +1281,9 @@ mod router_tests {
         }
     }
 
-    fn app_state() -> AppState {
+    fn app_state() -> AppState { app_state_with_readiness(true) }
+
+    fn app_state_with_readiness(is_ready: bool) -> AppState {
         let engine_cell = EngineCell::init();
         let block_report_api = BlockReportAPI::new(
             casper::rust::reporting_casper::noop(),
@@ -1290,7 +1317,7 @@ mod router_tests {
 
         AppState::new(
             Arc::new(StubAdminWebApi),
-            Arc::new(CannedWebApi),
+            Arc::new(CannedWebApi { is_ready }),
             Arc::new(block_report_api),
             RPConfCell::new(rp_conf),
             Arc::new(ConnectionsCell::new()),
@@ -1341,6 +1368,35 @@ mod router_tests {
         assert_eq!(json["shardId"], "root");
         assert_eq!(json["isReady"], true);
         assert_eq!(json["lastFinalizedBlockNumber"], 5);
+    }
+
+    async fn ready_response(is_ready: bool) -> (StatusCode, serde_json::Value) {
+        let response = WebApiRoutes::create_router()
+            .with_state(app_state_with_readiness(is_ready))
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ready_route_reports_503_until_casper_running() {
+        let (status, json) = ready_response(false).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(json["ready"], false);
+
+        let (status, json) = ready_response(true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["ready"], true);
     }
 
     #[tokio::test(flavor = "multi_thread")]
