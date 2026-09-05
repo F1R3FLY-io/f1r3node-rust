@@ -913,6 +913,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             synchrony_constraint_threshold: conf.casper.synchrony_constraint_threshold,
             height_constraint_threshold: conf.casper.height_constraint_threshold,
             deploy_lifespan: 50,
+            // Packaging-only policy; the GC sweep never builds blocks.
+            deploy_play_budget: None,
             casper_version: 1,
             config_version: 1,
             bond_minimum: conf.casper.genesis_block_data.bond_minimum,
