@@ -1364,12 +1364,28 @@ fn stream_chunk_enforces_max_chunk_items_cap() {
         .unwrap_or(after.len());
     let body = &after[..end];
 
+    // M-19 review follow-up (2026-09-04, Gap 2): the Rholang literal
+    // `65536` MUST match the Rust `MAX_CHUNK_ITEMS` constant folded
+    // into `consensus_runtime_fingerprint`.  A per-validator patch of
+    // the Rholang literal without also updating the Rust constant
+    // would peer silently (fingerprint unchanged, but the runtime
+    // caps diverge).  Reading the Rust constant here proves the
+    // pair-alignment at test time.
+    let rust_cap: u64 = rholang::rust::interpreter::io::MAX_CHUNK_ITEMS;
+    assert_eq!(
+        rust_cap, 65536,
+        "MAX_CHUNK_ITEMS Rust constant must be 65536 (the value the \
+         Rholang literal in Stream.rho encodes)"
+    );
     assert!(
-        body.contains("65536"),
+        body.contains(&rust_cap.to_string()),
         "slice 9c-i cap regression: Stream.rho::chunk(@n) must enforce \
-         MAX_CHUNK_ITEMS=65536.  The literal `65536` was not found in the \
-         method body; a silent removal of the cap opens an unbounded \
-         reply-payload allocation vector."
+         MAX_CHUNK_ITEMS={rust_cap}.  The literal `{rust_cap}` was not \
+         found in the method body; a silent removal of the cap opens an \
+         unbounded reply-payload allocation vector.  If MAX_CHUNK_ITEMS \
+         was intentionally changed on the Rust side, update Stream.rho \
+         to match AND regenerate the consensus fingerprint golden hex \
+         in `consensus_fingerprint.rs`."
     );
     assert!(
         body.contains("FSERR_QUOTA_EXCEEDED"),

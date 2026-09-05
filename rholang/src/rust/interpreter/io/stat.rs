@@ -353,6 +353,80 @@ mod stat_record_tests {
         }
     }
 
+    /// M-15 (2026-09-04) review follow-up (Gap 4): freeze the
+    /// Consensus-mode directory record key set at exactly `{name,
+    /// kind, mode}`.  Under Consensus, host-transient fields
+    /// (`mtime`/`ctime`/`atime`/`owner`/`group`) are stripped and
+    /// `size` is omitted for non-regular entries — so a directory
+    /// record has three keys and only three keys.  A regression
+    /// that added a new field (e.g. re-adding `size`, or leaking a
+    /// per-host field like `dev`) would flip this assertion long
+    /// before it reached Phase-5 verify at runtime.
+    #[test]
+    fn consensus_directory_record_key_set_is_frozen() {
+        use std::collections::BTreeSet;
+        let dir = tempfile::tempdir().unwrap();
+        let dir_meta = std::fs::metadata(dir.path()).unwrap();
+        let rec = stat_record("d", &dir_meta, ConsensusMode::Consensus);
+        let keys: BTreeSet<String> = expect_map_keys(&rec);
+        let expected: BTreeSet<String> = ["name", "kind", "mode"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            keys, expected,
+            "M-15: Consensus dir record key set must be exactly \
+             {{name, kind, mode}} — a regression adding a new key (or \
+             re-adding `size`) is a Consensus surface change; catch it \
+             here before the Phase-5 verify surface at runtime.  Prior \
+             frozen shape: {{name, kind, mode}}; got {keys:?}"
+        );
+    }
+
+    /// M-15 (2026-09-04) review follow-up (Gap 1): `Kind::Other`
+    /// records (FIFOs, sockets, char/block devices) must also omit
+    /// `size`.  Spec §Dir > Listing says `size` is present only for
+    /// regular files; every non-regular kind — Directory and Other —
+    /// must omit.  A regression that changed the gate from
+    /// `matches!(kind, Kind::File)` to `matches!(kind, Kind::File |
+    /// Kind::Other)` would still pass `directory_record_omits_size_
+    /// field` (Directory case unchanged) but would leak size on
+    /// Other; this pin catches that.
+    #[test]
+    fn other_kind_record_omits_size_field() {
+        use std::os::unix::fs::FileTypeExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("f.fifo");
+        // Create a FIFO — the classic non-regular non-directory
+        // entry.  `Metadata::len()` returns 0 for FIFOs; we don't
+        // want that 0 leaking through the wire either.
+        let fifo_c = std::ffi::CString::new(fifo_path.to_str().unwrap()).unwrap();
+        let rc = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o644) };
+        assert_eq!(
+            rc,
+            0,
+            "mkfifo failed; errno = {:?}",
+            std::io::Error::last_os_error()
+        );
+        let meta = std::fs::symlink_metadata(&fifo_path).unwrap();
+        assert!(
+            meta.file_type().is_fifo(),
+            "test setup: expected FIFO, got {:?}",
+            meta.file_type()
+        );
+        // The FIFO folds through Kind::Other (not File, not Directory,
+        // not the retired Symlink), and its stat record must omit size.
+        for mode in [ConsensusMode::Consensus, ConsensusMode::Oracular] {
+            let rec = stat_record("f.fifo", &meta, mode);
+            let keys = expect_map_keys(&rec);
+            assert!(
+                !keys.contains("size"),
+                "M-15: Kind::Other record (FIFO here) must omit `size`; \
+                 got {keys:?} under {mode:?}"
+            );
+        }
+    }
+
     // L-P7-1 (Phase 7 whole-review): pin the `kind` bundle to the
     // exact string values downstream Rho code branches on
     // (`file` / `directory` / `symlink` / `other`).  A rename

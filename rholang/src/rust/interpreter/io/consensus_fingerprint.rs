@@ -53,7 +53,7 @@ use super::handlers::{MAX_ENTRIES, MAX_WRITE_BYTES};
 use super::lock::{LOCK_ID_CEILING, MAX_RANGES_PER_FILE, MAX_WAITERS_PER_FILE};
 use super::snapshot::SNAPSHOT_FORMAT_VERSION;
 use super::wal::MAX_WAL_ENTRIES;
-use super::{MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
+use super::{MAX_CHUNK_ITEMS, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
 
 /// Delimiter separating the operator's network_id from the
 /// consensus fingerprint.  `#` chosen because it's URL-safe,
@@ -89,10 +89,14 @@ const FINGERPRINT_HEX_LEN: usize = 16; // 8 bytes × 2
 ///  8. `MAX_WAITERS_PER_FILE` (u64 BE)
 ///  9. `LOCK_ID_CEILING` (u64 BE)
 /// 10. `SNAPSHOT_FORMAT_VERSION` (u8)
+/// 11. `MAX_CHUNK_ITEMS` (u64 BE) — M-19 review follow-up
+///     (2026-09-04, Gap 2): appended so a per-validator patch of
+///     the `Stream.rho::chunk(@n)` cap doesn't silently peer with
+///     divergent nodes.
 ///
 /// Returns 16-char lowercase hex (first 8 bytes of Blake2b256).
 pub fn consensus_runtime_fingerprint() -> String {
-    let mut buf = Vec::with_capacity(8 * 9 + 1);
+    let mut buf = Vec::with_capacity(8 * 10 + 1);
     // Cast every usize/u8 to u64/u8 explicitly so the encoding is
     // portable across 32/64-bit builds — a validator with the same
     // constants but a different pointer width must produce the
@@ -107,6 +111,7 @@ pub fn consensus_runtime_fingerprint() -> String {
     buf.extend_from_slice(&(MAX_WAITERS_PER_FILE as u64).to_be_bytes());
     buf.extend_from_slice(&LOCK_ID_CEILING.to_be_bytes());
     buf.push(SNAPSHOT_FORMAT_VERSION);
+    buf.extend_from_slice(&MAX_CHUNK_ITEMS.to_be_bytes());
     let hash = Blake2b256::hash(buf);
     let mut hex = String::with_capacity(FINGERPRINT_HEX_LEN);
     for b in hash.iter().take(FINGERPRINT_HEX_LEN / 2) {
@@ -172,20 +177,25 @@ mod tests {
             FINGERPRINT_HEX_LEN,
             "fingerprint length locked at {FINGERPRINT_HEX_LEN} chars"
         );
-        // Pinned value: regenerate deliberately when ANY of the 10
+        // Pinned value: regenerate deliberately when ANY of the 11
         // consensus constants changes.  Coordinated peer-upgrade
         // required for each roll.
         // Regenerate: cargo test -p rholang --lib -- \
         //   fingerprint_pinned_for_current_consensus_constants --nocapture
-        const EXPECTED_FOR_CURRENT: &str = "2315df6c0d5b6687";
+        //
+        // Prior anchor: 2315df6c0d5b6687 (pre-M-19-Gap-2, 2026-09-04)
+        //   — 10 constants (MAX_WAL_ENTRIES through
+        //   SNAPSHOT_FORMAT_VERSION).
+        // Current anchor: MAX_CHUNK_ITEMS appended at position 11.
+        const EXPECTED_FOR_CURRENT: &str = "0982cf37fab162be";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "M-8/B2 fingerprint changed — did MAX_WAL_ENTRIES, MAX_WRITE_BYTES, \
              MAX_READ_BYTES, MAX_TRUNCATE_BYTES, MAX_ENTRIES, MAX_OPEN_FDS, \
-             MAX_RANGES_PER_FILE, MAX_WAITERS_PER_FILE, LOCK_ID_CEILING, or \
-             SNAPSHOT_FORMAT_VERSION change?  If yes, that is a coordinated \
-             peer-upgrade event.  Update this constant + re-verify every peer \
-             in the fleet is rebuilt."
+             MAX_RANGES_PER_FILE, MAX_WAITERS_PER_FILE, LOCK_ID_CEILING, \
+             SNAPSHOT_FORMAT_VERSION, or MAX_CHUNK_ITEMS change?  If yes, that \
+             is a coordinated peer-upgrade event.  Update this constant + \
+             re-verify every peer in the fleet is rebuilt."
         );
         println!("consensus_runtime_fingerprint = {fp}");
     }

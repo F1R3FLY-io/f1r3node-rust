@@ -14634,7 +14634,7 @@ async fn m6_provisioned_r_rejects_write_request() {
 /// Bundle entry with wrong tuple arity (3-tuple) → FSERR_IO
 /// "malformed bundle entry" via the catchall.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_malformed_bundle_wrong_arity_returns_fserr_io() {
+async fn fs_open_file_malformed_bundle_wrong_arity_returns_fserr_unsupported() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
@@ -14662,7 +14662,7 @@ async fn fs_open_file_malformed_bundle_wrong_arity_returns_fserr_io() {
 
 /// Bundle entry with wrong kind string (not "file"/"dir") → FSERR_IO.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_file_malformed_bundle_wrong_kind_returns_fserr_io() {
+async fn fs_open_file_malformed_bundle_wrong_kind_returns_fserr_unsupported() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
@@ -14685,7 +14685,7 @@ async fn fs_open_file_malformed_bundle_wrong_kind_returns_fserr_io() {
 
 /// Bundle entry with wrong tuple arity — openDir surfaces FSERR_UNSUPPORTED.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fs_open_dir_malformed_bundle_wrong_arity_returns_fserr_io() {
+async fn fs_open_dir_malformed_bundle_wrong_arity_returns_fserr_unsupported() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
