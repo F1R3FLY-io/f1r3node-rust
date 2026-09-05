@@ -187,6 +187,15 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
             "durable semantic lookup steps",
         )
     }
+
+    /// Load one authenticated canonical object named by this state's object
+    /// graph.  Length and digest are checked before the bytes are returned.
+    pub(crate) fn load_object(
+        &self,
+        reference: ObjectRefV1,
+    ) -> Result<S::Object, crate::rspace::persistence::ClosureError<S::Error>> {
+        crate::rspace::persistence::semantic::load_reference(self.store, reference)
+    }
 }
 
 /// Caller-content phase. Only exact continuation-source blobs may enter;

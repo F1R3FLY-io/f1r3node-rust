@@ -1002,7 +1002,7 @@ fn try_visit_paths<E>(
     Ok(())
 }
 
-fn load_reference<S>(
+pub(crate) fn load_reference<S>(
     store: &S,
     reference: ObjectRefV1,
 ) -> Result<S::Object, ClosureError<S::Error>>
