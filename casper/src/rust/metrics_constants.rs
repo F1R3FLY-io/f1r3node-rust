@@ -82,6 +82,12 @@ pub const DAG_MERGE_SCOPE_METRIC: &str = "dag.merge.scope";
 pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";
 pub const DAG_MERGE_CONFLICTS_MAP_TIME_METRIC: &str = "dag.merge.conflicts-map.time";
 pub const DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC: &str = "dag.merge.rejection-options.time";
+pub const DAG_MERGE_REJECTION_SELECTION_TIME_METRIC: &str = "dag.merge.rejection-selection.time";
+pub const DAG_MERGE_RELATION_ITEMS_METRIC: &str = "dag.merge.relation.items";
+pub const DAG_MERGE_RELATION_BRANCHES_METRIC: &str = "dag.merge.relation.branches";
+pub const DAG_MERGE_CONFLICT_EDGES_METRIC: &str = "dag.merge.conflict.edges";
+pub const DAG_MERGE_REJECTION_OPTIONS_METRIC: &str = "dag.merge.rejection.options";
+pub const DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC: &str = "dag.merge.state-application.actions";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
 pub const CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC: &str = "casper.init.time-to-approved-block";
@@ -97,6 +103,13 @@ pub const BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC: &str =
     "block.replay.phase.system-deploys.time";
 pub const BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC: &str =
     "block.replay.phase.create-checkpoint.time";
+pub const BLOCK_REPLAY_PHASE_RESET_CALLS_METRIC: &str = "block.replay.phase.reset.calls";
+pub const BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC: &str =
+    "block.replay.phase.user-deploys.work";
+pub const BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_WORK_METRIC: &str =
+    "block.replay.phase.system-deploys.work";
+pub const BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC: &str =
+    "block.replay.phase.create-checkpoint.calls";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC: &str =
     "block.replay.sysdeploy.checkpoint-mergeable.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_RIG_TIME_METRIC: &str = "block.replay.sysdeploy.rig.time";
@@ -181,6 +194,7 @@ pub const BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC: &str = "block.play.deploy.refund
 // Runtime spawn timing metrics
 pub const RUNTIME_SPAWN_TIME_METRIC: &str = "runtime.spawn.time";
 pub const RUNTIME_SPAWN_REPLAY_TIME_METRIC: &str = "runtime.spawn-replay.time";
+pub const RUNTIME_SPAWN_REPLAY_CALLS_METRIC: &str = "runtime.spawn-replay.calls";
 
 // Block validation step time metrics (7 variants)
 pub const BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC: &str =
@@ -226,6 +240,24 @@ pub const BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC: &str =
 pub const BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC: &str =
     "block.validation.deploys-shard-identifier.time";
 pub const BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC: &str = "block.validation.repeat-deploy.time";
+pub const REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.watermark-engaged";
+pub const REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.watermark-not-ready";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-absence";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-hit";
+pub const REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.index-read-failure";
+pub const REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.fallback-scan";
+pub const REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC: &str =
+    "block.validation.repeat-deploy.carrier.row-reads";
+pub const REPEAT_DEPLOY_ANCESTOR_METADATA_VISITS_METRIC: &str =
+    "block.validation.repeat-deploy.ancestor.metadata-visits";
+pub const REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC: &str =
+    "block.validation.repeat-deploy.ancestor.body-reads";
 pub const BLOCK_VALIDATION_BLOCK_NUMBER_TIME_METRIC: &str = "block.validation.block-number.time";
 pub const BLOCK_VALIDATION_FUTURE_TRANSACTION_TIME_METRIC: &str =
     "block.validation.future-transaction.time";

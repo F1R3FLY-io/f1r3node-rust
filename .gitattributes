@@ -9,6 +9,9 @@ casper/src/rust/merging/deploy_chain_index.rs cbc=mandatory cbc-weight=high
 casper/src/rust/rholang/replay_runtime.rs cbc=mandatory cbc-weight=high
 casper/src/rust/util/rholang/interpreter_util.rs cbc=mandatory cbc-weight=high
 casper/src/rust/util/rholang/runtime_manager.rs cbc=mandatory cbc-weight=high
+casper/src/rust/validate.rs cbc=mandatory cbc-weight=high
+block-storage/src/rust/dag/carrier_index.rs cbc=mandatory cbc-weight=high
+block-storage/src/rust/dag/block_dag_key_value_storage.rs cbc=mandatory cbc-weight=high
 rspace++/src/rspace/replay_rspace.rs cbc=mandatory cbc-weight=high
 rholang/src/rust/interpreter/reduce.rs cbc=mandatory cbc-weight=high
 crypto/src/rust/hash/blake2b512_random.rs cbc=mandatory cbc-weight=high
