@@ -5,9 +5,9 @@
 [![Stability](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-stability.json)](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend)
 [![Performance](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-perf.json)](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend)
 
-Pure Rust implementation of the F1R3FLY blockchain node.
+F1R3node Rust is the pure Rust implementation of the F1R3FLY blockchain node.
 
-This pure Rust repository supersedes and deprecates the previous hybrid Scala/Rust `f1r3node` implementation. It is a standalone Cargo workspace. Local development uses standard Rust tooling and native system packages only.
+This repository replaces the previous hybrid Scala and Rust `f1r3node` implementation. It is a standalone Cargo workspace. Local development uses standard Rust tooling and native system packages only.
 
 ## Soak Dashboard
 
@@ -42,7 +42,7 @@ Use [`docker/README.md`](docker/README.md) for Docker-based node and shard workf
 F1R3node Rust provides:
 
 - Concurrent smart contract execution with Rholang and RSpace
-- Proof-of-stake consensus and finalization via the `casper` crate
+- Proof-of-stake consensus and finalization in the `casper` crate
 - gRPC and HTTP APIs for deploys, proposals, status, and data queries
 - Docker and local standalone workflows for development and testing
 
@@ -50,13 +50,14 @@ Use the [project glossary](docs/Glossary.md) for canonical protocol, consensus, 
 
 ## Formal Verification
 
-Consensus-critical areas are verified with a layered stack — TLA+ models
-whose gating configurations run in CI (with pre-fix violation
-configurations kept as formal counter-examples), axiom-free Rocq
-mechanizations, Kani proof harnesses, and property/mutation testing tiers —
-under [`formal/`](formal). The methodology, the index of verified areas,
-and the obligations verification places on implementation work are
-documented in [docs/formal-verification.md](docs/formal-verification.md).
+Consensus-critical areas are verified with a layered stack under [`formal/`](formal). The stack has four layers.
+
+- TLA+ models. Their gating configurations run in CI. Pre-fix violation configurations stay in the tree as formal counterexamples.
+- Axiom-free Rocq mechanizations.
+- Kani proof harnesses.
+- Property-based and mutation testing tiers.
+
+[docs/formal-verification.md](docs/formal-verification.md) documents the method, the index of verified areas, and the obligations that verification places on implementation work. Install the tools with [Formal Verification Tooling](#formal-verification-tooling).
 
 ## Workspace Crates
 
@@ -93,7 +94,7 @@ sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev 
 cargo install just
 ```
 
-The workspace is pinned to `nightly-2026-02-09` in `rust-toolchain.toml`.
+`rust-toolchain.toml` pins the workspace to `nightly-2026-02-09`.
 
 ### Git Hooks (Required)
 
@@ -109,16 +110,16 @@ cargo install cargo-deny --locked   # one-time, required by the pre-commit deny 
 | `pre-commit` | Every commit | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo deny check` |
 | `pre-push` | Every push | CI script tests, `cargo clippy`, `cargo test --release` (per-crate) |
 
-Both hooks auto-skip in CI environments (the same gates run server-side in `.github/workflows/ci.yml`).
+Both hooks skip themselves in CI environments. The same gates run server-side in `.github/workflows/ci.yml`.
 
 **Mandatory for all contributors:**
 
 - All three pre-commit checks (fmt, clippy, deny) must pass.
 - The pre-push test suite must pass.
-- Do **not** use `git commit --no-verify` or `git push --no-verify`. The same checks run in CI; bypassing locally only defers the failure.
-- The `SKIP_FMT` / `SKIP_CLIPPY` / `SKIP_DENY` / `SKIP_TESTS` / `SKIP_CI_TESTS` / `QUICK` / `TEST_CRATES` env-var skips are for local experiments only. Every remote commit must pass without skips.
+- Do **not** use `git commit --no-verify` or `git push --no-verify`. The same checks run in CI. A local bypass only defers the failure.
+- The `SKIP_FMT`, `SKIP_CLIPPY`, `SKIP_DENY`, `SKIP_TESTS`, `SKIP_CI_TESTS`, `QUICK`, and `TEST_CRATES` environment variables are for local experiments only. Every remote commit must pass without skips.
 
-See [DEVELOPER.md](DEVELOPER.md#git-hooks) for the full skip-flag reference and `setup-hooks.sh --status` / `--remove` management commands.
+See [DEVELOPER.md](DEVELOPER.md#git-hooks) for the full skip-flag reference and the `setup-hooks.sh --status` and `--remove` management commands.
 
 ### Build
 
@@ -135,9 +136,122 @@ cargo test --release
 ./scripts/run_rust_tests.sh
 ```
 
+### Formal Verification Tooling
+
+The formal gates need three tools that the Rust prerequisites do not install. They are a Java runtime for TLC, the Rocq prover through opam, and GNU `timeout`. Kani, cargo-mutants, cargo-fuzz, and nextest are optional and serve the deeper tiers.
+
+#### Install TLC
+
+TLC is the TLA+ model checker. CI pins release `v1.7.4` of `tla2tools.jar` and checks its SHA-256 digest. Install the same release.
+
+macOS:
+
+```bash
+brew install openjdk coreutils
+```
+
+Ubuntu or Debian:
+
+```bash
+sudo apt-get install -y default-jre coreutils
+```
+
+Then download the pinned jar and verify the digest:
+
+```bash
+mkdir -p ~/.tla
+curl -sSL -o ~/.tla/tla2tools.jar \
+  https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $HOME/.tla/tla2tools.jar" | shasum -a 256 -c -
+```
+
+The gate script finds the jar at `~/.tla/tla2tools.jar`. Set `TLA_TOOLS_JAR` to use another path. On macOS, the `coreutils` package supplies the GNU `timeout` that caps each configuration run.
+
+#### Install Rocq
+
+The Rocq proofs build with `coq_makefile`, `coqc`, and `coqchk`. CI installs the prover through opam.
+
+macOS:
+
+```bash
+brew install opam
+```
+
+Ubuntu or Debian:
+
+```bash
+sudo apt-get install -y opam
+```
+
+Then initialize opam and install the prover:
+
+```bash
+opam init -y
+eval "$(opam env)"
+opam install -y coq
+```
+
+Run `eval "$(opam env)"` in each new shell before you run a Rocq gate. Replace `default` in `opam env --switch=default` when the prover lives in another switch.
+
+#### Run The Gates
+
+`scripts/ci/check-formal-invariants.sh` runs the same bounded gates as scheduled CI.
+
+```bash
+# TLA+ and Rocq gates (the default)
+bash scripts/ci/check-formal-invariants.sh --all
+
+# One gate only
+bash scripts/ci/check-formal-invariants.sh --tla
+bash scripts/ci/check-formal-invariants.sh --rocq
+
+# Add the exhaustive TLA+ tier. Each configuration has a 45-minute limit.
+bash scripts/ci/check-formal-invariants.sh --all --exhaustive
+```
+
+The TLA+ gate runs every configuration in the `POST_FIX_CONFIGS` list of `scripts/ci/check-tla-invariants.sh`. Expected-violation configurations stay outside that list. Run one of them by hand to confirm its counterexample:
+
+```bash
+cd formal/tlaplus/block_admission
+java -jar ~/.tla/tla2tools.jar -workers auto -config MC_BlockAdmission_pre_fix.cfg MC_BlockAdmission_pre_fix.tla
+```
+
+The Rocq gate rebuilds the `slashing`, `fork_choice`, and `rspace_guards` projects and checks that each headline theorem closes under the global context. Each theory area also has a local script that runs its complete evidence set:
+
+```bash
+scripts/check-finalized-floor-ALL.sh
+scripts/check-fork-choice-ALL.sh
+scripts/check-merge-algebra-ALL.sh
+scripts/check-slashing-ALL.sh
+```
+
+See [`scripts/`](scripts) for the full list.
+
+#### Optional Tiers
+
+Install these tools only for the tier you run.
+
+```bash
+cargo install cargo-nextest --locked   # loom interleaving tests
+cargo install --locked kani-verifier && cargo kani setup   # Kani proof harnesses
+cargo install --locked cargo-mutants   # mutation coverage
+cargo install --locked cargo-fuzz      # search-horizon fuzz tiers
+```
+
+```bash
+# Property-based tier at the CI case count
+PROPTEST_CASES=2000 cargo test --release -p casper
+
+# Loom exhaustive interleaving check
+cargo nextest run --release -p casper slashing::loom_t_9_2
+
+# One Kani harness
+cargo kani -p casper --harness <harness_name>
+```
+
 ### Run A Local Standalone Node (without Docker)
 
-[`just`](https://github.com/casey/just) is a command runner included in the prerequisites above.
+[`just`](https://github.com/casey/just) is a command runner. The prerequisites above install it.
 
 ```bash
 just run-standalone           # build + run standalone node
@@ -157,11 +271,11 @@ docker compose -f docker/standalone.yml up
 docker compose -f docker/shard.yml up
 ```
 
-See [`docker/README.md`](docker/README.md) for building local images, port map, validator setup, and monitoring.
+See [`docker/README.md`](docker/README.md) for local image builds, the port map, validator setup, and monitoring.
 
 #### Pull The Prebuilt Image
 
-CI publishes multi-arch images (`linux/amd64` and `linux/arm64`) to Oracle Container Registry (OCIR) on pushes to `master`, on release tags, and on a nightly schedule. The repository is public. **No Oracle Cloud account or `docker login` is required** to pull.
+CI publishes multi-arch images (`linux/amd64` and `linux/arm64`) to Oracle Container Registry (OCIR). It publishes on pushes to `master`, on release tags, and on a nightly schedule. The repository is public. **You do not need an Oracle Cloud account or `docker login` to pull.**
 
 ```bash
 docker pull sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
@@ -175,7 +289,7 @@ Tag conventions:
 | `:VERSION` (e.g. `:v0.4.12`) | Release tag push |
 | `:nightly` / `:nightly-YYYYMMDD` | Nightly scheduled build |
 
-Use a pulled image with the compose files by overriding `F1R3FLY_IMAGE`:
+To use a pulled image with the compose files, set `F1R3FLY_IMAGE`:
 
 ```bash
 F1R3FLY_IMAGE=sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest \
@@ -195,9 +309,10 @@ To build a local image:
 | [DEVELOPER.md](DEVELOPER.md) | Native toolchain setup, build, test, and troubleshooting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow and review expectations |
 | [docs/Glossary.md](docs/Glossary.md) | Canonical project and protocol terminology |
+| [docs/formal-verification.md](docs/formal-verification.md) | Verification method, verified areas, and implementation obligations |
 | [docs/soak-benchmarks.md](docs/soak-benchmarks.md) | Soak lifecycle, metrics, dashboard, and release gate |
 | [docs/vps-cloud-testing.md](docs/vps-cloud-testing.md) | Testbed setup guide: local Docker, generic SSH VPSes, or Oracle Cloud |
-| [docs/neutralCloud_benchmark_review.md](docs/neutralCloud_benchmark_review.md) | Provider-neutral cloud benchmark plan: distributed shard, integration tests, latency/throughput |
+| [docs/neutralCloud_benchmark_review.md](docs/neutralCloud_benchmark_review.md) | Provider-neutral cloud benchmark plan: distributed shard, integration tests, latency and throughput |
 | [run-local/README.md](run-local/README.md) | Local standalone node workflow without Docker |
 | [docker/README.md](docker/README.md) | Docker image, standalone, shard, monitoring, smoke tests |
 | [node/README.md](node/README.md) | Node binary crate and CLI entry points |
@@ -228,7 +343,7 @@ To build a local image:
 
 - `.cargo/config.toml` sets `RUST_MIN_STACK=8388608` for deep Rholang recursion in tests.
 - `node`, `models`, and `comm` use `build.rs` to generate gRPC and protobuf bindings.
-- `rholang` and `rspace++` depend on the external `rholang-parser` crate fetched from Git.
+- `rholang` and `rspace++` depend on the external `rholang-parser` crate, which Cargo fetches from Git.
 
 ## Security Notice
 
