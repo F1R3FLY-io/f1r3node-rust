@@ -912,6 +912,91 @@ where
     }
 }
 
+/// Collect endpoint paths below one canonical prefix using an explicit work
+/// list.  This is a projection primitive for compatibility readers; the
+/// authoritative representation remains the compressed DAG and no sorted
+/// intermediate collection is used to perform the lookup.
+pub(crate) fn collect_endpoints_under_prefix<S>(
+    store: &S,
+    root: ObjectRefV1,
+    prefix: &[u8],
+    max_steps: u64,
+    max_endpoints: u64,
+) -> Result<Vec<(Vec<u8>, EndpointValue)>, ClosureError<S::Error>>
+where
+    S: ImmutableObjectStore,
+{
+    let mut reference = root;
+    let mut offset = 0usize;
+    let mut path = Vec::new();
+    let mut steps = 0u64;
+    loop {
+        if prefix.is_empty() {
+            break;
+        }
+        increment(&mut steps, 1, "durable prefix lookup steps")?;
+        check_limit("durable prefix lookup steps", max_steps, steps)?;
+        let bytes = load_reference(store, reference)?;
+        let node = match CanonicalObjectView::parse(bytes.as_ref()).map_err(format_error)? {
+            CanonicalObjectView::DagNode(node) => node,
+            object => {
+                return Err(format_error(CanonicalFormatError::UnexpectedObjectKind {
+                    digest: reference.digest(),
+                    expected: CanonicalObjectKind::DagNode.name(),
+                    actual: object.kind().name(),
+                }));
+            }
+        };
+        if !prefix[offset..].starts_with(node.prefix()) {
+            return Ok(Vec::new());
+        }
+        path.extend_from_slice(node.prefix());
+        offset += node.prefix().len();
+        if offset == prefix.len() {
+            break;
+        }
+        let edge = prefix[offset];
+        offset += 1;
+        let Some(next) = node.children().get(edge) else {
+            return Ok(Vec::new());
+        };
+        path.push(edge);
+        reference = next;
+    }
+
+    let mut work = vec![(reference, path)];
+    let mut result = Vec::new();
+    let mut endpoint_count = 0u64;
+    while let Some((reference, parent_path)) = work.pop() {
+        increment(&mut steps, 1, "durable prefix traversal steps")?;
+        check_limit("durable prefix traversal steps", max_steps, steps)?;
+        let bytes = load_reference(store, reference)?;
+        let node = match CanonicalObjectView::parse(bytes.as_ref()).map_err(format_error)? {
+            CanonicalObjectView::DagNode(node) => node,
+            object => {
+                return Err(format_error(CanonicalFormatError::UnexpectedObjectKind {
+                    digest: reference.digest(),
+                    expected: CanonicalObjectKind::DagNode.name(),
+                    actual: object.kind().name(),
+                }));
+            }
+        };
+        let mut node_path = parent_path;
+        node_path.extend_from_slice(node.prefix());
+        if !matches!(node.endpoint(), EndpointValue::Absent) {
+            increment(&mut endpoint_count, 1, "durable prefix endpoints")?;
+            check_limit("durable prefix endpoints", max_endpoints, endpoint_count)?;
+            result.push((node_path.clone(), node.endpoint()));
+        }
+        for child in node.children().iter() {
+            let mut child_parent = node_path.clone();
+            child_parent.push(child.edge);
+            work.push((child.target, child_parent));
+        }
+    }
+    Ok(result)
+}
+
 fn subtree_has_endpoint_counted<S>(
     store: &S,
     root: ObjectRefV1,

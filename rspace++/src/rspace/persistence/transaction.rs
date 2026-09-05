@@ -210,6 +210,28 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
         crate::rspace::persistence::SemanticStateManifestView::parse(bytes.as_ref())
             .map_err(crate::rspace::persistence::ClosureError::Format)
     }
+
+    /// Project authenticated endpoints under one canonical byte prefix with
+    /// explicit work and result budgets.  The traversal is iterative and
+    /// preserves the trie paths exactly as encoded by the durable DAG.
+    pub(crate) fn collect_endpoints_under_prefix(
+        &self,
+        root: ObjectRefV1,
+        prefix: &[u8],
+        max_steps: u64,
+        max_endpoints: u64,
+    ) -> Result<
+        Vec<(Vec<u8>, crate::rspace::persistence::EndpointValue)>,
+        crate::rspace::persistence::ClosureError<S::Error>,
+    > {
+        crate::rspace::persistence::semantic::collect_endpoints_under_prefix(
+            self.store,
+            root,
+            prefix,
+            max_steps,
+            max_endpoints,
+        )
+    }
 }
 
 /// Caller-content phase. Only exact continuation-source blobs may enter;
