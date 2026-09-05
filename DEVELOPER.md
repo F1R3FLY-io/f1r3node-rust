@@ -4,6 +4,8 @@ Native development setup for the Rust workspace.
 
 This repository is built with Cargo, Docker, and system packages only.
 
+The formal-verification gates need more tools. See [Formal Verification Tooling](README.md#formal-verification-tooling) in the repository README for the Java runtime, the pinned TLC jar, opam, and the Rocq prover.
+
 ## Required Tooling
 
 ### macOS

@@ -142,6 +142,8 @@ profile from run 30880995655.
 
 ## Running the tools locally
 
+Install the tools first. The [Formal Verification Tooling](../README.md#formal-verification-tooling) section of the repository README gives the install steps for macOS and Ubuntu. It covers the Java runtime, the pinned TLC jar, opam, and the Rocq prover. The commands below assume those tools are installed.
+
 ```bash
 # TLC (pinned jar, same release + sha256 as CI)
 mkdir -p ~/.tla
