@@ -791,6 +791,7 @@ mod tests {
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
                 fork_choice_check_if_stale_interval: Duration::from_secs(30),
                 synchrony_constraint_threshold: 0.0,

@@ -31,6 +31,16 @@ pub struct CasperConf {
     pub max_number_of_parents: i32,
     #[serde(rename = "max-parent-depth")]
     pub max_parent_depth: i32,
+    /// Wall-clock ceiling on user-deploy execution per proposed block.
+    /// Zero means derived: `max-parent-depth * heartbeat.check-interval / 5`,
+    /// resolved at launch — see `deploy_play_budget` on `CasperShardConf`
+    /// for the semantics.
+    #[serde(
+        rename = "deploy-play-budget",
+        deserialize_with = "de_duration",
+        default = "default_deploy_play_budget"
+    )]
+    pub deploy_play_budget: Duration,
     #[serde(
         rename = "fork-choice-stale-threshold",
         deserialize_with = "de_duration"
@@ -130,6 +140,8 @@ pub struct CasperConf {
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
 }
+
+fn default_deploy_play_budget() -> Duration { Duration::ZERO }
 
 fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 

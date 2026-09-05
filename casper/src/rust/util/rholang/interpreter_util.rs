@@ -838,6 +838,7 @@ pub async fn compute_deploys_checkpoint(
 
     // Compute state and bonds using one spawned runtime
     let compute_state_started = std::time::Instant::now();
+    let play_budget = s.on_chain_state.shard_conf.deploy_play_budget;
     let result = runtime_manager
         .compute_state_with_bonds(
             &pre_state_hash,
@@ -845,6 +846,7 @@ pub async fn compute_deploys_checkpoint(
             system_deploys,
             block_data,
             Some(invalid_blocks),
+            play_budget,
         )
         .await?;
     let compute_state_ms = compute_state_started.elapsed().as_millis();
