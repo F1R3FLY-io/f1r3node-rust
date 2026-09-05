@@ -1,8 +1,13 @@
 # D-08 Merge Algebra, Rejection Records, and Mergeable Evidence
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Protocol. Changes observable merge results.
-**Sources:** dev [merge-algebra specification](../../theory/merge-algebra/merge-algebra-specification.md) rules R-ORDER, R-KEEP1, R-FOLD, R-NET, N-SEMANTICS, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 6. PR #216 `merge-algebra-specification.md` rules R-ORDER, R-WITNESS, R-CAUSAL, R-CAUSAL-REJECT, R-FOLD, R-NUMERIC, R-NET, R-ACTIVATION, R-RECORD-VERSION, N-MAX, N-WHOLE, invariants S8 to S12, DR-51, DR-53, `mergeable-evidence-authentication.md`, `admission-effect-alignment.md`, `MergeableEvidenceAuthentication.tla`, `AdmissionEffectAlignment.tla`, `formal/z3/merge_algebra`.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Protocol. Changes observable merge results.
+
+**Sources.**
+
+- dev [merge-algebra specification](../../theory/merge-algebra/merge-algebra-specification.md) rules R-ORDER, R-KEEP1, R-FOLD, R-NET, N-SEMANTICS, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 6.
+- PR #216 `merge-algebra-specification.md` rules R-ORDER, R-WITNESS, R-CAUSAL, R-CAUSAL-REJECT, R-FOLD, R-NUMERIC, R-NET, R-ACTIVATION, R-RECORD-VERSION, N-MAX, N-WHOLE, invariants S8 to S12, DR-51, DR-53, `mergeable-evidence-authentication.md`, `admission-effect-alignment.md`, `MergeableEvidenceAuthentication.tla`, `AdmissionEffectAlignment.tla`, `formal/z3/merge_algebra`.
 
 ## 1. Question
 
@@ -13,7 +18,7 @@ How do surviving deploy chains compose into one state, what identifies an execut
 - **R-ORDER.** The keep-one comparator is a strict total order with a five-key sequence ending in the injective `deploys_with_cost` key.
 - **R-FOLD.** The merged-state fold proceeds in the single canonical order induced by the comparator, because the fold operator is non-associative.
 - **R-NET, Finding A.** The per-channel `ChannelChange::combine` is an idempotent max-multiset union with cancellation. It is commutative but not associative. This is a disclosed property, benign only because R-ORDER pins one fold order.
-- **N-SEMANTICS.** The hardening must not change merge semantics. The non-associative max-union must not be replaced by the associative sum-union monoid as part of a determinism fix, because that alters which data survive a merge. A detection-only runtime guard is allowed because it changes no post-state.
+- **N-SEMANTICS.** The hardening must not change merge semantics. A determinism fix must not replace the non-associative max-union with the associative sum-union monoid. That replacement alters which data survive a merge. A detection-only runtime guard is allowed because it changes no post-state.
 - Mergeable-channel vectors come from the block index cache keyed by post-state, creator, and sequence number. Last-finalized-state synchronization imports peer-supplied vectors.
 
 ## 3. Position on PR #216

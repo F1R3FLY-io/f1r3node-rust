@@ -1,8 +1,16 @@
 # D-05 Durable Finalization Publication and Concurrency
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Node-local architecture with three consensus-visible invariants.
-**Sources:** dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 7 trigger and FT caching, [Byzantine fault tolerance](../../BYZANTINE_FAULT_TOLERANCE.md) FT propagation. PR #216 DR-54, DR-55 finalization boundary, rules R-FINALIZATION-APPEND, R-FINALIZATION-BASE, R-FINALIZATION-LINEAGE, R-FINALIZATION-PROJECTION, R-FINALIZATION-EFFECTS, R-FINALIZATION-COMPACTION, R-FINALIZATION-SCHEDULER, R-FINALIZATION-PROPOSAL-READINESS, R-VALIDATOR-LOCAL-TRANSACTION, R-LOCAL-ROOT-AUTHORITY, R-LOCAL-SUPPORT, R-ATOMIC-FLOOR-PUBLICATION, R-PARALLEL-FRAME, R-VALIDATION-RESTART, invariants S35 to S38, `finalization_ledger.rs`, `finalization-atomicity-and-recovery.md`, `FinalizationAtomicity.tla`.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Node-local architecture with three consensus-visible invariants.
+
+**Sources.**
+
+- dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 7 trigger and FT caching, [Byzantine fault tolerance](../../BYZANTINE_FAULT_TOLERANCE.md) FT propagation.
+- PR #216 DR-54 and the DR-55 finalization boundary.
+- PR #216 rules R-FINALIZATION-APPEND, R-FINALIZATION-BASE, R-FINALIZATION-LINEAGE, R-FINALIZATION-PROJECTION, R-FINALIZATION-EFFECTS, R-FINALIZATION-COMPACTION, R-FINALIZATION-SCHEDULER, and R-FINALIZATION-PROPOSAL-READINESS.
+- PR #216 rules R-VALIDATOR-LOCAL-TRANSACTION, R-LOCAL-ROOT-AUTHORITY, R-LOCAL-SUPPORT, R-ATOMIC-FLOOR-PUBLICATION, R-PARALLEL-FRAME, and R-VALIDATION-RESTART, with invariants S35 to S38.
+- PR #216 `finalization_ledger.rs`, `finalization-atomicity-and-recovery.md`, and `FinalizationAtomicity.tla`.
 
 ## 1. Question
 

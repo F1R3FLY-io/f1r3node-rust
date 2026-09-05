@@ -1,8 +1,13 @@
 # D-02 Certified Finalized Floor and Authority Committee
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Protocol.
-**Sources:** dev [finalized-floor specification](../../theory/finalized-floor/finalized-floor-specification.md) rules R-FLOOR, R-COMM, and S8, [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) ground truth 1, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 2 step 2. PR #216 rules R-AUTHORITY, R-POST-STATE-BONDS, R-PROPOSAL-AUTHORITY, R-PARENT-FLOOR, R-CERTIFICATE-DEPENDENCY to R-CERTIFICATE-RESTART, R-CARRIER-EQUIVALENCE, R-CARRIER-PAIR, R-CARRIER-WAKE, invariants S8, S42, S44, models `CertifiedFloorCommitment.tla`, `FinalizationCertificateRetrieval.tla`, `WitnessEquivalentCarrier.tla`, `WitnessEquivalentCarrier.v`.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Protocol.
+
+**Sources.**
+
+- dev [finalized-floor specification](../../theory/finalized-floor/finalized-floor-specification.md) rules R-FLOOR, R-COMM, and S8, [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) ground truth 1, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 2 step 2.
+- PR #216 rules R-AUTHORITY, R-POST-STATE-BONDS, R-PROPOSAL-AUTHORITY, R-PARENT-FLOOR, R-CERTIFICATE-DEPENDENCY to R-CERTIFICATE-RESTART, R-CARRIER-EQUIVALENCE, R-CARRIER-PAIR, R-CARRIER-WAKE, invariants S8, S42, S44, models `CertifiedFloorCommitment.tla`, `FinalizationCertificateRetrieval.tla`, `WitnessEquivalentCarrier.tla`, `WitnessEquivalentCarrier.v`.
 
 ## 1. Question
 
@@ -10,7 +15,7 @@ Which committee authorizes a block, and does a block carry a signed commitment t
 
 ## 2. Position on dev
 
-R-COMM says the committee that validates a block's bonds is `bonds_of(floor(B))`, a pure function of the floor. S8 forbids validation against a non-floor committee. The protocol document's proposal constraint says the sender must be in the bonded validator set with non-zero stake, and the synchrony constraint counts other validators' recent blocks.
+R-COMM says the committee that validates a block's bonds is `bonds_of(floor(B))`, a pure function of the floor. S8 forbids validation against a non-floor committee. The protocol document's proposal constraint says the sender must be in the bonded validator set with non-zero stake. The synchrony constraint counts recent blocks from other validators.
 
 Ground truth 1 says validators replay declared parents and never recompute fork choice. Only the recomputed merge base and the bond check bind the main-parent order. A block carries no floor commitment. The floor is derived from the block's frozen justifications on every node.
 
@@ -23,7 +28,7 @@ Ground truth 1 says validators replay declared parents and never recompute fork 
 - **Certificate rules.** A block that names an unavailable certificate is stored detached and waits on a typed dependency. Requests are content-addressed, bounded, and retried with backoff. Responses mutate storage only when they hash to the requested digest. Detached blocks and sidecars survive restart.
 - **Carrier rules.** A predecessor certificate carrier is eligible by accepted causal membership, protocol version, exact floor hash, and exact post-state. Two honest nodes can certify the same state from different latest-message snapshots, so the digest may differ. Selection returns the carrier and its own digest as one pair. A parked finalizer wakes on any eligible carrier.
 
-The Consensus Philosophy on PR #216 adds one boundary to ground truth 1: a declared parent must carry the block's signed floor, and the receiver still does not require frontier equality. The floor rule R-FLOOR gains a third source, universal certified advancement, which entry D-04 covers.
+The Consensus Philosophy on PR #216 adds one boundary to ground truth 1. A declared parent must carry the block's signed floor. The receiver still does not require frontier equality. The floor rule R-FLOOR gains a third source, universal certified advancement. Entry D-04 covers that source.
 
 ## 4. Divergence
 

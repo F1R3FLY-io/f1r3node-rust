@@ -1,8 +1,13 @@
 # D-07 Deploy Recovery, Custody, and Retry Packaging
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Mixed. Occurrence identity and record keys are protocol. Custody and packaging are proposer policy.
-**Sources:** dev [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) sections 4, 5, and 8, [Casper glossary](../../GLOSSARY.md) entries retry gate, merged-frontier retry packaging, retry frontier lease, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 2 step 3, [`formal/tlaplus/deploy_recovery/`](../../../../formal/tlaplus/deploy_recovery). PR #216 DR-33, DR-35, DR-55, DR-56, `deploy-occurrence-specification.md` obligations O1 to O14, rules R-REASON-CONFLUENCE, R-CARRIER-RETRY-CUSTODY, models `DeployRecovery.tla`, `StaleSiblingRecovery.tla`, `RecoveryFrontierCoverage.tla`, `RejectionReasonConfluence.tla`.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Mixed. Occurrence identity and record keys are protocol. Custody and packaging are proposer policy.
+
+**Sources.**
+
+- dev [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) sections 4, 5, and 8, [Casper glossary](../../GLOSSARY.md) entries retry gate, merged-frontier retry packaging, retry frontier lease, [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 2 step 3, [`formal/tlaplus/deploy_recovery/`](../../../../formal/tlaplus/deploy_recovery).
+- PR #216 DR-33, DR-35, DR-55, DR-56, `deploy-occurrence-specification.md` obligations O1 to O14, rules R-REASON-CONFLUENCE, R-CARRIER-RETRY-CUSTODY, models `DeployRecovery.tla`, `StaleSiblingRecovery.tla`, `RecoveryFrontierCoverage.tla`, `RejectionReasonConfluence.tla`.
 
 ## 1. Question
 
@@ -18,10 +23,10 @@ What identifies a rejected deploy, who may retry it, and when may a proposer pac
 
 ## 3. Position on PR #216
 
-- **Exact occurrence (DR-33).** A retry is a transition over occurrence state. With `O_d` the source occurrences visible from the selected-parent closure and `T_d` their exact tombstones, recovery requires `O_d \ T_d` to be empty and the same strict lifespan as ordinary admission. Missing bodies fail closed.
+- **Exact occurrence (DR-33).** A retry is a transition over occurrence state. Let `O_d` be the source occurrences visible from the selected-parent closure and `T_d` their exact tombstones. Recovery requires `O_d \ T_d` to be empty. It also requires the same strict lifespan as ordinary admission. Missing bodies fail closed.
 - **Record key and reason (DR-35, R-REASON-CONFLUENCE).** A rejection record is keyed by `(deploy signature, source block)`. The reason is diagnostic and joins under the order `unspecified < collateral < merge conflict < duplicate`. The join is commutative, associative, and idempotent, so parent arrival order cannot change the block body.
 - **Custody (DR-55, R-CARRIER-RETRY-CUSTODY).** The sender of the rejected source carrier owns the retry. Only that owner packages it after the floor gate opens. Distinct owners retry independent carriers concurrently. No global lock and no recovery leader.
-- **Packaging (DR-56).** The frontier is ready when **the selected parent set collectively covers every valid latest message**: for every valid latest message there exists a selected parent that descends from it. One-parent coverage implies collective coverage. The converse fails on a split frontier. Lease expiry cannot bypass the floor gate, custody, lifespan, replay, or validation.
+- **Packaging (DR-56).** The frontier is ready when **the selected parent set collectively covers every valid latest message**. For every valid latest message, some selected parent descends from it. One-parent coverage implies collective coverage. The converse fails on a split frontier. Lease expiry cannot bypass the floor gate, custody, lifespan, replay, or validation.
 - **Exclusion rule.** Step 3 excludes deploys with an active occurrence in the selected-parent closure. A historical self-chain occurrence outside the closure does not count.
 - **Identity.** The glossary changes "deploy signature" to "deploy identity" in the prior-rejection count. Entry D-10 covers the identity tag.
 

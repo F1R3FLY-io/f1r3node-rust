@@ -1,8 +1,13 @@
 # D-06 Heartbeat Intents and Recovery Leadership
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Node-local liveness policy. It changes no block validity rule.
-**Sources:** dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 8, [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) ground truth 4, [heartbeat amplification claim](../../../claims/heartbeat-proposal-amplification-bound.md), [`formal/tlaplus/recovery_leader/`](../../../../formal/tlaplus/recovery_leader). PR #216 `finalized-floor-specification.md` section 2.1.1 rules R-HEARTBEAT-SEPARATION to R-HEARTBEAT-ASYNC, R-PROPOSAL-INTENT, R-PROPOSER-COALESCING, invariants S34 and S39, liveness L13 and L15, models `HeartbeatRecoveryCadence.tla`, `RecoveryCommitteeTransition.tla`, `ProposerAdmissionCoalescing.tla`, `PendingDeployHeartbeatComposition.tla`.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Node-local liveness policy. It changes no block validity rule.
+
+**Sources.**
+
+- dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 8, [Consensus Philosophy](../../CONSENSUS_PHILOSOPHY.md) ground truth 4, [heartbeat amplification claim](../../../claims/heartbeat-proposal-amplification-bound.md), [`formal/tlaplus/recovery_leader/`](../../../../formal/tlaplus/recovery_leader).
+- PR #216 `finalized-floor-specification.md` section 2.1.1 rules R-HEARTBEAT-SEPARATION to R-HEARTBEAT-ASYNC, R-PROPOSAL-INTENT, R-PROPOSER-COALESCING, invariants S34 and S39, liveness L13 and L15, models `HeartbeatRecoveryCadence.tla`, `RecoveryCommitteeTransition.tla`, `ProposerAdmissionCoalescing.tla`, `PendingDeployHeartbeatComposition.tla`.
 
 ## 1. Question
 
@@ -17,7 +22,7 @@ The heartbeat decision tree has four lanes.
 3. Stale-LFB recovery: when the LFB is older than `max_lfb_age`, **every bonded validator proposes**, at most once per `stale-recovery-min-interval`. The text says recovery is never leader-gated because certification needs mutual witnessing and one proposer cannot rebuild it alone. A deterministic leader survives only for the one-shot multi-parent convergence proposal.
 4. The self-propose cooldown gates lanes 1 and 2, never lane 3.
 
-Ground truth 4 says per-scope inclusion leadership exists on the proposer side with a lease-based escape, and that the recovery path dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate. `RecoveryLeader.tla` models cross-view leader agreement for one bonded validator set and is in the CI gate.
+Ground truth 4 says per-scope inclusion leadership exists on the proposer side with a lease-based escape. It also says the recovery path dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate. `RecoveryLeader.tla` models cross-view leader agreement for one bonded validator set and is in the CI gate.
 
 ## 3. Position on PR #216
 
@@ -55,7 +60,7 @@ Adopt option B as the position to test, and defer the choice between A and B to 
 
 The heartbeat is proposer-side policy. Principle P3 places it in the safe extension surface, and principle P5 requires evidence before a liveness change. The dev text and the PR #216 text make opposite liveness claims. Dev says one proposer cannot rebuild certification. PR #216 says rotation supplies witnesses across rounds and states the assumptions as L13. Neither branch cites a soak comparison.
 
-Ratify now, without waiting for the soak: the intent taxonomy, the rule that peer block arrival is evidence and not proposal authority, permit revalidation at execution, and single-flight coalescing. These follow principle P2. They do not decide the leader question.
+Four items can ratify now, without the soak. They are the intent taxonomy, the rule that peer block arrival is evidence and not proposal authority, permit revalidation at execution, and single-flight coalescing. These follow principle P2. They do not decide the leader question.
 
 ## 7. Ratification checklist
 

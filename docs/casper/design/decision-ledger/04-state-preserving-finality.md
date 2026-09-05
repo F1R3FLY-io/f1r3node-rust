@@ -1,8 +1,16 @@
 # D-04 State-Preserving Finality and Effect Provenance
 
-**Status:** Proposed. Pending maintainer ratification.
-**Kind:** Protocol.
-**Sources:** dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 7, [finalized-floor specification](../../theory/finalized-floor/finalized-floor-specification.md) R-FLOOR and R-SNAP, [settled-effect probe claim](../../../claims/settled-effect-probe-equivalence.md), [`formal/tlaplus/finalized_floor/`](../../../../formal/tlaplus/finalized_floor). PR #216 DR-43, DR-44, DR-45, DR-46, DR-54, DR-57, rules R-FLOOR, R-STATE-CERT, R-FLOOR-STATE, R-LFB-STATE, R-EFFECT-ID, R-EFFECT-WIRE, R-EFFECT-ACTIVE, R-STATE-PRESERVATION, R-UNIVERSAL-FRONTIER, R-COVERAGE-EQUIVALENCE, R-FINALIZER-SNAPSHOT to R-FINALIZER-YIELD, R-FINALIZATION-CLOSURE, R-SHARD-FINALITY, R-REBASE, R-VALIDITY-STABILITY, invariants S24 to S31 and S41, models `StateEffectProvenance.v`, `CertifiedFloorPromotion.tla`, `FinalizerFloorMaterialization.tla`, `LatestMessageCoverage`.
+**Status.** Proposed. Pending maintainer ratification.
+
+**Kind.** Protocol.
+
+**Sources.**
+
+- dev [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 7, [finalized-floor specification](../../theory/finalized-floor/finalized-floor-specification.md) R-FLOOR and R-SNAP, [settled-effect probe claim](../../../claims/settled-effect-probe-equivalence.md), [`formal/tlaplus/finalized_floor/`](../../../../formal/tlaplus/finalized_floor).
+- PR #216 decision records DR-43, DR-44, DR-45, DR-46, DR-54, and DR-57.
+- PR #216 rules R-FLOOR, R-STATE-CERT, R-FLOOR-STATE, R-LFB-STATE, R-EFFECT-ID, R-EFFECT-WIRE, R-EFFECT-ACTIVE, R-STATE-PRESERVATION, R-UNIVERSAL-FRONTIER, and R-COVERAGE-EQUIVALENCE.
+- PR #216 rules R-FINALIZER-SNAPSHOT to R-FINALIZER-YIELD, R-FINALIZATION-CLOSURE, R-SHARD-FINALITY, R-REBASE, and R-VALIDITY-STABILITY, with invariants S24 to S31 and S41.
+- PR #216 models `StateEffectProvenance.v`, `CertifiedFloorPromotion.tla`, `FinalizerFloorMaterialization.tla`, and `LatestMessageCoverage`.
 
 ## 1. Question
 
@@ -70,7 +78,7 @@ Adopt option B, with three sub-decisions recorded separately.
 
 ## 7. Ratification checklist
 
-- 4.1: a differential test showing that every LFB promotion valid on dev is valid under the state certificate, and a case where the state certificate refuses a promotion the signature gate would allow.
+- 4.1: a differential test that shows every LFB promotion valid on dev is valid under the state certificate. Also one case where the state certificate refuses a promotion that the signature gate would allow.
 - 4.2: the DR-46 timing evidence on the 132-block regression, and a bound statement in the specification.
 - 4.3: none beyond the text fix.
 - 4.4: a named metric and log target.
