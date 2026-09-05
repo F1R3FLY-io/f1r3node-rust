@@ -276,6 +276,14 @@ fn read_authority_view_reopens_the_authenticated_catalog_state() {
             .expect("an absent digest is a valid lookup result")
             .is_none()
     );
+
+    let roots = view
+        .semantic_roots()
+        .expect("semantic roots must come from the admitted manifest");
+    let projected = view
+        .project_prefix(roots.data_bag, &[], u64::MAX, u64::MAX)
+        .expect("authenticated empty-prefix projection must succeed");
+    assert!(projected.is_empty(), "fixture data root is intentionally empty");
 }
 
 #[test]
