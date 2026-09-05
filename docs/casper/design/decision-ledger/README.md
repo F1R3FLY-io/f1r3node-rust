@@ -14,7 +14,7 @@ The ledger covers Casper consensus decisions only. Cost-accounting economics, to
 ## 2. Ratification workflow
 
 1. An entry is **Proposed** when this ledger opens. Its row in the Consensus Philosophy decision table reads `Proposed in the decision ledger. Pending maintainer ratification.`
-2. A maintainer reviews the entry in the review pull request. The maintainer approves, rejects, or asks for a change under the entry heading.
+2. A maintainer reviews the entry in the review pull request. The maintainer approves, rejects, or asks for a change under the entry heading. This branch merges into `dev` and into `feature/cost-accounted-rho`. Either merge review can ratify an entry. An entry stays Proposed through both merges until a maintainer decides.
 3. On approval, the entry status becomes **Ratified** with the date and the approver handle. The table row changes to `Ratified.` with the same date and handle.
 4. On rejection, the entry status becomes **Rejected** with the reason. The row records the rejection. The rejected option stays in the entry as history.
 5. After ratification, a separate change edits the protocol and theory specifications to the ratified position. This ledger never edits them.
@@ -48,7 +48,16 @@ The statuses `accepted and implemented`, `superseded`, and `user-ratified` in th
 | [D-10](./10-repeat-deploy-carrier-index.md) | Repeat-deploy carrier index | Protocol refinement | Amends the pending 2026-09-01 row. |
 | [D-11](./11-cbc-fv-governance.md) | CbC and FV governance | Governance | Yes. Rewrites two ratified rows in prose. |
 
-## 5. Entry template
+## 5. Merge notes for `feature/cost-accounted-rho`
+
+This branch merges into PR #216's branch as well as into `dev`. Two files conflict textually with that branch.
+
+- `docs/casper/CONSENSUS_PHILOSOPHY.md`. Both branches edit the 2026-09-01 row. Keep the PR #216 wording for the mechanism and the PR #387 status text. Keep every 2026-09-05 row. Entry D-10 records the intended final wording.
+- `docs/formal-verification.md`. Both branches add a carrier-index row to the verified-areas table. Keep both rows. Entry D-10 says both models gate.
+
+The PR #216 protocol and theory documents already hold the positions this ledger records for that branch. The ledger does not edit them. A ratified entry is applied to those documents in a later change on whichever branch carries the ratified position.
+
+## 6. Entry template
 
 Each entry uses the same sections so a reviewer can compare entries directly.
 
