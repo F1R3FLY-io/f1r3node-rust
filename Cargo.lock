@@ -5224,6 +5224,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "openai-api-rs",
+ "paste",
  "pretty_assertions",
  "proptest",
  "prost 0.14.4",

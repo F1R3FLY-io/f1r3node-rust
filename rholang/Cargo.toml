@@ -48,6 +48,9 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 k256 = { workspace = true }
 openai-api-rs = "6.0.3"
+# S-2 fix (2026-09-04): declarative-macro identifier concatenation
+# for the `consensus_error_codes!` macro in `interpreter/io/errors.rs`.
+paste = "1.0"
 dotenv = "0.15.0"
 indexmap = { workspace = true }
 rayon = { workspace = true }
