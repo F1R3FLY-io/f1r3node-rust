@@ -1008,19 +1008,23 @@ where
     }
 }
 
-/// Collect endpoint paths below one canonical prefix using an explicit work
-/// list.  This is a projection primitive for compatibility readers; the
-/// authoritative representation remains the compressed DAG and no sorted
-/// intermediate collection is used to perform the lookup.
-pub(crate) fn collect_endpoints_under_prefix<S>(
+/// Visit endpoint paths below one canonical prefix using an explicit work
+/// list. This is the allocation-bounded projection primitive: callers can
+/// decode or stream each endpoint immediately instead of first materializing
+/// a channel-wide `Vec`. The authoritative representation remains the
+/// compressed DAG and no sorted intermediate collection is used to perform
+/// the lookup.
+pub(crate) fn visit_endpoints_under_prefix<S, F>(
     store: &S,
     root: ObjectRefV1,
     prefix: &[u8],
     max_steps: u64,
     max_endpoints: u64,
-) -> Result<Vec<(Vec<u8>, EndpointValue)>, ClosureError<S::Error>>
+    mut visit: F,
+) -> Result<(), ClosureError<S::Error>>
 where
     S: ImmutableObjectStore,
+    F: FnMut(&[u8], EndpointValue) -> Result<(), ClosureError<S::Error>>,
 {
     let mut reference = root;
     let mut offset = 0usize;
@@ -1046,13 +1050,13 @@ where
         let node_parent_path = path.clone();
         let remaining = &prefix[offset..];
         if node.prefix().starts_with(remaining) {
-            // The requested prefix ends inside this compressed line.  The
+            // The requested prefix ends inside this compressed line. The
             // complete node subtree is therefore already within the query.
             path = node_parent_path;
             break;
         }
         if !remaining.starts_with(node.prefix()) {
-            return Ok(Vec::new());
+            return Ok(());
         }
         path.extend_from_slice(node.prefix());
         offset += node.prefix().len();
@@ -1063,14 +1067,13 @@ where
         let edge = prefix[offset];
         offset += 1;
         let Some(next) = node.children().get(edge) else {
-            return Ok(Vec::new());
+            return Ok(());
         };
         path.push(edge);
         reference = next;
     }
 
     let mut work = vec![(reference, path)];
-    let mut result = Vec::new();
     let mut endpoint_count = 0u64;
     while let Some((reference, parent_path)) = work.pop() {
         increment(&mut steps, 1, "durable prefix traversal steps")?;
@@ -1091,7 +1094,7 @@ where
         if !matches!(node.endpoint(), EndpointValue::Absent) {
             increment(&mut endpoint_count, 1, "durable prefix endpoints")?;
             check_limit("durable prefix endpoints", max_endpoints, endpoint_count)?;
-            result.push((node_path.clone(), node.endpoint()));
+            visit(&node_path, node.endpoint())?;
         }
         for child in node.children().iter() {
             let mut child_parent = node_path.clone();
@@ -1099,6 +1102,35 @@ where
             work.push((child.target, child_parent));
         }
     }
+    Ok(())
+}
+
+/// Collect endpoint paths below one canonical prefix using an explicit work
+/// list. This compatibility wrapper is retained for callers that need a
+/// complete projection; new typed readers should use
+/// `visit_endpoints_under_prefix` to avoid the intermediate endpoint vector.
+pub(crate) fn collect_endpoints_under_prefix<S>(
+    store: &S,
+    root: ObjectRefV1,
+    prefix: &[u8],
+    max_steps: u64,
+    max_endpoints: u64,
+) -> Result<Vec<(Vec<u8>, EndpointValue)>, ClosureError<S::Error>>
+where
+    S: ImmutableObjectStore,
+{
+    let mut result = Vec::new();
+    visit_endpoints_under_prefix(
+        store,
+        root,
+        prefix,
+        max_steps,
+        max_endpoints,
+        |path, endpoint| {
+            result.push((path.to_vec(), endpoint));
+            Ok(())
+        },
+    )?;
     Ok(result)
 }
 

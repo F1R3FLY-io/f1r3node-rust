@@ -10,10 +10,9 @@ use crate::rspace::persistence::{
     CanonicalBlob, CanonicalBlobKind, CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore,
     ClosureError, DagChild, EndpointValue, ImmutableObjectStore, ObjectDigest,
     RetainedUnionClosureLimitsV1, SemanticProfileId, SemanticRoots, SemanticStateManifestV1,
-    SemanticValidationLimits, StateVersionV1, StructuralClosureLedgerV1, StructuralValidationLimits,
-    VerifiedDagState,
-    verify_rspace_semantics, verify_rspace_semantics_after_structural,
-    verify_structural_closure_in_ledger_with_limits,
+    SemanticValidationLimits, StateVersionV1, StructuralClosureLedgerV1,
+    StructuralValidationLimits, VerifiedDagState, verify_rspace_semantics,
+    verify_rspace_semantics_after_structural, verify_structural_closure_in_ledger_with_limits,
 };
 use crate::rspace::rho_path::RhoPathV1;
 use crate::rspace::serializers::serializers::{
@@ -196,22 +195,56 @@ fn verified_state_prefix_projection_preserves_path_and_multiplicity() {
         SemanticValidationLimits::unbounded(),
     )
     .expect("semantic state admits");
-    let roots = state.semantic_manifest().expect("manifest is authenticated").roots();
+    let roots = state
+        .semantic_manifest()
+        .expect("manifest is authenticated")
+        .roots();
     let prefix = RhoPathV1::datum_prefix(&"channel".to_owned());
     let endpoints = state
-        .collect_endpoints_under_prefix(
+        .collect_endpoints_under_prefix(roots.data_bag, &prefix, u64::MAX, u64::MAX)
+        .expect("prefix projection succeeds");
+    assert_eq!(endpoints.len(), 1);
+    assert_eq!(
+        endpoints[0].0,
+        RSpaceDataIndex::datum_path(
+            &"channel".to_owned(),
+            &Datum::create(&"channel".to_owned(), "datum".to_owned(), true),
+        )
+    );
+    assert_eq!(endpoints[0].1, EndpointValue::Multiplicity(nonzero(3)));
+}
+
+#[test]
+fn verified_state_streaming_prefix_projection_matches_materialized_projection() {
+    let image = valid_image();
+    let state = VerifiedDagState::<_, TestSemanticProfile>::admit(
+        &image.store,
+        StateVersionV1::new(1, image.manifest),
+        SemanticValidationLimits::unbounded(),
+    )
+    .expect("semantic state admits");
+    let roots = state
+        .semantic_manifest()
+        .expect("manifest is authenticated")
+        .roots();
+    let prefix = RhoPathV1::datum_prefix(&"channel".to_owned());
+    let materialized = state
+        .collect_endpoints_under_prefix(roots.data_bag, &prefix, u64::MAX, u64::MAX)
+        .expect("materialized projection succeeds");
+    let mut streamed = Vec::new();
+    state
+        .visit_endpoints_under_prefix(
             roots.data_bag,
             &prefix,
             u64::MAX,
             u64::MAX,
+            |path, endpoint| {
+                streamed.push((path.to_vec(), endpoint));
+                Ok(())
+            },
         )
-        .expect("prefix projection succeeds");
-    assert_eq!(endpoints.len(), 1);
-    assert_eq!(endpoints[0].0, RSpaceDataIndex::datum_path(
-        &"channel".to_owned(),
-        &Datum::create(&"channel".to_owned(), "datum".to_owned(), true),
-    ));
-    assert_eq!(endpoints[0].1, EndpointValue::Multiplicity(nonzero(3)));
+        .expect("streaming projection succeeds");
+    assert_eq!(streamed, materialized);
 }
 
 #[test]
@@ -223,7 +256,10 @@ fn verified_state_prefix_projection_enforces_step_and_endpoint_budgets() {
         SemanticValidationLimits::unbounded(),
     )
     .expect("semantic state admits");
-    let roots = state.semantic_manifest().expect("manifest is authenticated").roots();
+    let roots = state
+        .semantic_manifest()
+        .expect("manifest is authenticated")
+        .roots();
     let prefix = RhoPathV1::datum_prefix(&"channel".to_owned());
 
     let endpoint_limited = state

@@ -177,42 +177,48 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     {
         let roots = self.semantic_roots()?;
         let prefix = RhoPathV1::datum_prefix(channel);
-        let endpoints = self.project_prefix(roots.data_bag, &prefix, max_steps, max_endpoints)?;
         let mut result = Vec::new();
-        for (path, endpoint) in endpoints {
-            let (datum, multiplicity) =
-                crate::rspace::persistence::semantic::decode_data_endpoint::<P::Datum>(
-                    &path, endpoint,
-                )
-                .map_err(ClosureError::Format)?;
-            let count = multiplicity.get();
-            let next = result.len() as u64 + count;
-            if next > max_values {
-                return Err(ClosureError::Format(
-                    crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
-                        resource: "durable data materialization",
-                        limit: max_values,
-                        attempted: next,
-                    },
-                ));
-            }
-            let count = usize::try_from(count).map_err(|_| {
-                ClosureError::Format(
-                    crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
-                        field: "durable data multiplicity",
-                        value: multiplicity.get(),
-                    },
-                )
-            })?;
-            result.try_reserve(count).map_err(|_| {
-                ClosureError::Format(
-                    crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
-                        requested: count as u64,
-                    },
-                )
-            })?;
-            result.extend(std::iter::repeat(datum).take(count));
-        }
+        self.writer.verified_state().visit_endpoints_under_prefix(
+            roots.data_bag,
+            &prefix,
+            max_steps,
+            max_endpoints,
+            |path, endpoint| {
+                let (datum, multiplicity) =
+                    crate::rspace::persistence::semantic::decode_data_endpoint::<P::Datum>(
+                        path, endpoint,
+                    )
+                    .map_err(ClosureError::Format)?;
+                let count = multiplicity.get();
+                let next = result.len() as u64 + count;
+                if next > max_values {
+                    return Err(ClosureError::Format(
+                        crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
+                            resource: "durable data materialization",
+                            limit: max_values,
+                            attempted: next,
+                        },
+                    ));
+                }
+                let count = usize::try_from(count).map_err(|_| {
+                    ClosureError::Format(
+                        crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
+                            field: "durable data multiplicity",
+                            value: multiplicity.get(),
+                        },
+                    )
+                })?;
+                result.try_reserve(count).map_err(|_| {
+                    ClosureError::Format(
+                        crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
+                            requested: count as u64,
+                        },
+                    )
+                })?;
+                result.extend(std::iter::repeat(datum).take(count));
+                Ok(())
+            },
+        )?;
         Ok(result)
     }
 
@@ -237,18 +243,25 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     {
         let roots = self.semantic_roots()?;
         let prefix = RhoPathV1::continuation_prefix(channels);
-        let endpoints =
-            self.project_prefix(roots.continuation_map, &prefix, max_steps, max_endpoints)?;
         let state = self.verified_state();
-        let mut result = Vec::with_capacity(endpoints.len());
-        for (path, endpoint) in endpoints {
-            result.push(crate::rspace::persistence::semantic::decode_continuation_endpoint::<
-                P::Channel,
-                P::Pattern,
-                P::Continuation,
-                _,
-            >(state.object_store(), &path, endpoint, max_payload_bytes)?);
-        }
+        let mut result = Vec::new();
+        state.visit_endpoints_under_prefix(
+            roots.continuation_map,
+            &prefix,
+            max_steps,
+            max_endpoints,
+            |path, endpoint| {
+                result.push(crate::rspace::persistence::semantic::decode_continuation_endpoint::<
+                    P::Channel,
+                    P::Pattern,
+                    P::Continuation,
+                    _,
+                >(
+                    state.object_store(), path, endpoint, max_payload_bytes
+                )?);
+                Ok(())
+            },
+        )?;
         Ok(result)
     }
 
@@ -267,42 +280,48 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     {
         let roots = self.semantic_roots()?;
         let prefix = RhoPathV1::join_prefix(channel);
-        let endpoints = self.project_prefix(roots.join_bag, &prefix, max_steps, max_endpoints)?;
         let mut result = Vec::new();
-        for (path, endpoint) in endpoints {
-            let (join, multiplicity) =
-                crate::rspace::persistence::semantic::decode_join_endpoint::<P::Channel>(
-                    &path, endpoint,
-                )
-                .map_err(ClosureError::Format)?;
-            let count = multiplicity.get();
-            let next = result.len() as u64 + count;
-            if next > max_values {
-                return Err(ClosureError::Format(
-                    crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
-                        resource: "durable join materialization",
-                        limit: max_values,
-                        attempted: next,
-                    },
-                ));
-            }
-            let count = usize::try_from(count).map_err(|_| {
-                ClosureError::Format(
-                    crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
-                        field: "durable join multiplicity",
-                        value: multiplicity.get(),
-                    },
-                )
-            })?;
-            result.try_reserve(count).map_err(|_| {
-                ClosureError::Format(
-                    crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
-                        requested: count as u64,
-                    },
-                )
-            })?;
-            result.extend(std::iter::repeat_with(|| join.clone()).take(count));
-        }
+        self.writer.verified_state().visit_endpoints_under_prefix(
+            roots.join_bag,
+            &prefix,
+            max_steps,
+            max_endpoints,
+            |path, endpoint| {
+                let (join, multiplicity) =
+                    crate::rspace::persistence::semantic::decode_join_endpoint::<P::Channel>(
+                        path, endpoint,
+                    )
+                    .map_err(ClosureError::Format)?;
+                let count = multiplicity.get();
+                let next = result.len() as u64 + count;
+                if next > max_values {
+                    return Err(ClosureError::Format(
+                        crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
+                            resource: "durable join materialization",
+                            limit: max_values,
+                            attempted: next,
+                        },
+                    ));
+                }
+                let count = usize::try_from(count).map_err(|_| {
+                    ClosureError::Format(
+                        crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
+                            field: "durable join multiplicity",
+                            value: multiplicity.get(),
+                        },
+                    )
+                })?;
+                result.try_reserve(count).map_err(|_| {
+                    ClosureError::Format(
+                        crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
+                            requested: count as u64,
+                        },
+                    )
+                })?;
+                result.extend(std::iter::repeat_with(|| join.clone()).take(count));
+                Ok(())
+            },
+        )?;
         Ok(result)
     }
 

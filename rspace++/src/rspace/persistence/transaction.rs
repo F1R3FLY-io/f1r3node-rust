@@ -237,6 +237,33 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
             max_endpoints,
         )
     }
+
+    /// Visit authenticated endpoints without materializing the whole
+    /// projection. The callback runs in traversal order and may decode or
+    /// stream each canonical endpoint immediately.
+    pub(crate) fn visit_endpoints_under_prefix<F>(
+        &self,
+        root: ObjectRefV1,
+        prefix: &[u8],
+        max_steps: u64,
+        max_endpoints: u64,
+        visit: F,
+    ) -> Result<(), crate::rspace::persistence::ClosureError<S::Error>>
+    where
+        F: FnMut(
+            &[u8],
+            crate::rspace::persistence::EndpointValue,
+        ) -> Result<(), crate::rspace::persistence::ClosureError<S::Error>>,
+    {
+        crate::rspace::persistence::semantic::visit_endpoints_under_prefix(
+            self.store,
+            root,
+            prefix,
+            max_steps,
+            max_endpoints,
+            visit,
+        )
+    }
 }
 
 /// Caller-content phase. Only exact continuation-source blobs may enter;
