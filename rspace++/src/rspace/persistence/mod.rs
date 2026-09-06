@@ -42,6 +42,7 @@ pub use durable::{
     ObjectIndexRecordV1, ObjectLocationV1, PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1,
     PackTerminalIdentityV1,
 };
+pub(crate) use durable::{DurableAuthorityViewV1, DurableObjectReadErrorV1};
 pub use manifest::{
     AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, AcceleratorManifestView,
     LegacyHistoryRoot, NamespaceRoot, SemanticNamespace, SemanticProfileId, SemanticRoots,

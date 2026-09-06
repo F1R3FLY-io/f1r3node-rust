@@ -48,8 +48,9 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::persistence::{
-    CanonicalFormatError, ContentTransition, DagTransactionError, ImmutableObjectStore,
-    MutationError, OpenDagTransaction, RSpaceMutationBatchV1, SemanticProfile, StateVersionV1,
+    CanonicalFormatError, ContentTransition, DagTransactionError, DurableAuthorityViewV1,
+    DurableObjectReadErrorV1, ImmutableObjectStore, MutationError, OpenDagTransaction,
+    RSpaceMutationBatchV1, RSpaceSemanticProfile, SemanticProfile, StateVersionV1,
 };
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
@@ -1720,7 +1721,155 @@ pub mod accepted_match_transition_experiment;
 
 pub struct HotStoreInstances;
 
+/// Resource ceilings used while reconstructing the live PathMap state from a
+/// fully authenticated durable generation. These are startup budgets, not
+/// semantic traversal-depth limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DurableHotStoreBootstrapLimits {
+    pub max_steps: u64,
+    pub max_endpoints: u64,
+    pub max_payload_bytes: u64,
+    pub max_join_occurrences: u64,
+}
+
+impl Default for DurableHotStoreBootstrapLimits {
+    fn default() -> Self {
+        Self {
+            max_steps: u64::MAX,
+            max_endpoints: u64::MAX,
+            max_payload_bytes: u64::MAX,
+            max_join_occurrences: u64::MAX,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum DurableHotStoreBootstrapError {
+    AuthenticatedRead(crate::rspace::persistence::ClosureError<DurableObjectReadErrorV1>),
+    Data(DataIndexError),
+    JoinMultiplicityOverflow {
+        channel: String,
+        attempted: u64,
+        limit: u64,
+    },
+}
+
+struct ClosedDurableHistoryReader;
+
+impl<C: Clone, P: Clone, A: Clone, K: Clone> HistoryReaderBase<C, P, A, K>
+    for ClosedDurableHistoryReader
+{
+    fn get_data_canonical(&self, _key: &C) -> Vec<Datum<A>> { Vec::new() }
+
+    fn get_continuations_canonical(&self, _key: &[C]) -> Vec<WaitingContinuation<P, K>> {
+        Vec::new()
+    }
+
+    fn get_joins_canonical(&self, _key: &C) -> Vec<Vec<C>> { Vec::new() }
+}
+
 impl HotStoreInstances {
+    /// Reconstruct the live PathMap-backed HotStore from one authenticated,
+    /// generation-pinned durable view. The complete namespace enumeration is
+    /// performed before publication; any authenticated read or checked Bag
+    /// failure aborts construction and cannot become an empty fallback.
+    pub(crate) fn create_from_durable<C, P, A, K>(
+        authority: &DurableAuthorityViewV1<RSpaceSemanticProfile<C, P, A, K>>,
+        limits: DurableHotStoreBootstrapLimits,
+    ) -> Result<Box<dyn HotStore<C, P, A, K>>, DurableHotStoreBootstrapError>
+    where
+        C: Default
+            + Clone
+            + Debug
+            + Eq
+            + Hash
+            + RhoPathEncode
+            + ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
+        P: Default + Clone + Debug + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+        A: Default
+            + Clone
+            + Debug
+            + Serialize
+            + RhoPathEncode
+            + ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
+        K: Default + Clone + Debug + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+    {
+        let data_entries = authority
+            .data_entries(limits.max_steps, limits.max_endpoints)
+            .map_err(DurableHotStoreBootstrapError::AuthenticatedRead)?;
+        let continuation_entries = authority
+            .continuation_entries(limits.max_steps, limits.max_endpoints, limits.max_payload_bytes)
+            .map_err(DurableHotStoreBootstrapError::AuthenticatedRead)?;
+        let join_entries = authority
+            .join_entries(limits.max_steps, limits.max_endpoints)
+            .map_err(DurableHotStoreBootstrapError::AuthenticatedRead)?;
+
+        let mut state = InMemHotStoreState::default();
+        let mut data_groups: HashMap<C, Vec<(Datum<A>, super::bag::Multiplicity)>> = HashMap::new();
+        for (channel, datum, multiplicity) in data_entries {
+            let multiplicity = super::bag::Multiplicity::new(multiplicity.get())
+                .expect("authenticated durable multiplicity is nonzero");
+            data_groups
+                .entry(channel)
+                .or_default()
+                .push((datum, multiplicity));
+        }
+        for (channel, entries) in data_groups {
+            state
+                .data
+                .set_channel_counts(channel, entries)
+                .map_err(DurableHotStoreBootstrapError::Data)?;
+        }
+
+        let mut continuation_groups: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>> =
+            HashMap::new();
+        for (channels, continuation) in continuation_entries {
+            continuation_groups
+                .entry(channels)
+                .or_default()
+                .push(continuation);
+        }
+        for (channels, continuations) in continuation_groups {
+            state.continuations.set_group(channels, continuations);
+        }
+
+        let mut join_groups: HashMap<C, Vec<Vec<C>>> = HashMap::new();
+        for (channel, join, multiplicity) in join_entries {
+            let group = join_groups.entry(channel.clone()).or_default();
+            let attempted = group.len() as u64 + multiplicity.get();
+            if attempted > limits.max_join_occurrences {
+                return Err(DurableHotStoreBootstrapError::JoinMultiplicityOverflow {
+                    channel: format!("{channel:?}"),
+                    attempted,
+                    limit: limits.max_join_occurrences,
+                });
+            }
+            let count = usize::try_from(multiplicity.get()).map_err(|_| {
+                DurableHotStoreBootstrapError::JoinMultiplicityOverflow {
+                    channel: format!("{channel:?}"),
+                    attempted,
+                    limit: limits.max_join_occurrences,
+                }
+            })?;
+            group.extend(std::iter::repeat_with(|| join.clone()).take(count));
+        }
+        for (channel, joins) in join_groups {
+            state.joins.set_channel(channel, joins);
+        }
+
+        Ok(Box::new(InMemHotStore {
+            state: std::sync::RwLock::new(state),
+            history_cache: std::sync::RwLock::new(HistoryStoreCache::default()),
+            history_reader_base: Box::new(ClosedDurableHistoryReader),
+        }))
+    }
+
     pub fn create_from_hs_and_hr<C, P, A, K>(
         cache: HotStoreState<C, P, A, K>,
         history_reader: Box<dyn HistoryReaderBase<C, P, A, K>>,
