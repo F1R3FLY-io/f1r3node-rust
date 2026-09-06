@@ -13,7 +13,9 @@ use super::admission::{
 };
 use super::publication::IncrementalPublicationErrorV1;
 use super::{DurableAuthorityViewV1, DurableObjectReadErrorV1, recover_read_authority};
-use crate::rspace::hot_store::{PendingDeltas, stage_pending_continuation_sources};
+use crate::rspace::hot_store::{
+    PendingMutationObservation, stage_pending_continuation_sources,
+};
 use crate::rspace::persistence::mutation::{MutationError, MutationBatchViewV1};
 use crate::rspace::persistence::{
     CanonicalEncode, DagTransactionError, DagTransactionLimits, GenerationLeaseError,
@@ -146,7 +148,7 @@ impl<P: SemanticProfile> DurableRSpaceAuthorityV1<P> {
     pub(crate) fn publish_mutation<'mutation>(
         &mut self,
         mutation: &'mutation crate::rspace::persistence::RSpaceMutationBatchV1,
-        pending: &PendingDeltas,
+        observation: &PendingMutationObservation,
         limits: DurableRSpacePublicationLimitsV1,
     ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
         let (directory, writer) = match &self.state {
@@ -162,7 +164,7 @@ impl<P: SemanticProfile> DurableRSpaceAuthorityV1<P> {
         let view = MutationBatchViewV1::parse(&mutation_bytes)?;
         let sequence = writer.authority().slot().commit_sequence().successor()?;
         let mut transaction = writer.open_transaction(view, limits.transaction)?;
-        stage_pending_continuation_sources(&mut transaction, pending)?;
+        stage_pending_continuation_sources(&mut transaction, &observation.pending)?;
         let sealed = transaction.seal()?;
         let sealed = writer.attach_target_retention_manifest(sealed)?;
         let prepared = writer.prepare_transaction(&sealed, sequence, limits.wal)?;

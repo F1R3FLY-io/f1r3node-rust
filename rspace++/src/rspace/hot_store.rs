@@ -82,6 +82,16 @@ pub(crate) struct PendingDeltas {
     pub joins: Option<BagDelta>,
 }
 
+/// One coherent read-boundary observation of the journal and the post-state
+/// endpoint counts needed to invert its deltas. The count maps contain only
+/// endpoints named by the journal, never a materialized copy of a namespace.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PendingMutationObservation {
+    pub pending: PendingDeltas,
+    pub data_counts: PathMap<u64>,
+    pub join_counts: PathMap<u64>,
+}
+
 /// Build one exact three-namespace mutation batch from a coherent hot-store
 /// journal snapshot. The caller supplies authoritative base Bags; no typed
 /// record projection or continuation re-encoding occurs here.
@@ -158,6 +168,18 @@ pub(crate) fn mutation_batch_from_pending_with_counts(
     Ok(batch)
 }
 
+pub(crate) fn mutation_batch_from_observation(
+    base: StateVersionV1,
+    observation: &PendingMutationObservation,
+) -> Result<RSpaceMutationBatchV1, MutationError> {
+    mutation_batch_from_pending_with_counts(
+        base,
+        &observation.pending,
+        |path| observation.data_counts.get(path).copied().unwrap_or(0),
+        |path| observation.join_counts.get(path).copied().unwrap_or(0),
+    )
+}
+
 /// Stage the exact continuation sources retained by one coherent journal
 /// snapshot. Missing journal capabilities are rejected rather than treated as
 /// empty, and source bytes flow directly to transaction admission.
@@ -231,6 +253,12 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
             joins: self.pending_join_delta()?,
         })
     }
+
+    /// Capture journals and all referenced post-state counts under one
+    /// implementation-defined state boundary. This is the required input to
+    /// durable publication; separate calls to `pending_deltas` and count
+    /// lookups are not a coherent checkpoint observation.
+    fn pending_mutation_observation(&self) -> Result<PendingMutationObservation, RSpaceError>;
 
     /// Commit one exact revision-local journal snapshot after its durable
     /// publication succeeds. Implementations must compare all namespaces
@@ -1027,12 +1055,41 @@ where
 
     fn pending_deltas(&self) -> Result<PendingDeltas, RSpaceError> {
         let state = self.state.read().expect("hot store state read lock");
-        Ok(PendingDeltas {
+        let pending = PendingDeltas {
             data: Some(state.data.pending_delta().clone()),
             continuations: Some(state.continuations.pending_delta().clone()),
             continuation_content: Some(state.continuations.pending_content().clone()),
             continuation_source_bytes: Some(state.continuations.pending_source_bytes().clone()),
             joins: Some(state.joins.pending_delta().clone()),
+        };
+        Ok(pending)
+    }
+
+    fn pending_mutation_observation(&self) -> Result<PendingMutationObservation, RSpaceError> {
+        let state = self.state.read().expect("hot store state read lock");
+        let pending = PendingDeltas {
+            data: Some(state.data.pending_delta().clone()),
+            continuations: Some(state.continuations.pending_delta().clone()),
+            continuation_content: Some(state.continuations.pending_content().clone()),
+            continuation_source_bytes: Some(state.continuations.pending_source_bytes().clone()),
+            joins: Some(state.joins.pending_delta().clone()),
+        };
+        let mut data_counts = PathMap::new();
+        if let Some(data) = pending.data.as_ref() {
+            for (path, _) in data.additions().iter().chain(data.removals().iter()) {
+                data_counts.insert(&path, state.data.count_path(&path));
+            }
+        }
+        let mut join_counts = PathMap::new();
+        if let Some(joins) = pending.joins.as_ref() {
+            for (path, _) in joins.additions().iter().chain(joins.removals().iter()) {
+                join_counts.insert(&path, state.joins.count_path(&path));
+            }
+        }
+        Ok(PendingMutationObservation {
+            pending,
+            data_counts,
+            join_counts,
         })
     }
 

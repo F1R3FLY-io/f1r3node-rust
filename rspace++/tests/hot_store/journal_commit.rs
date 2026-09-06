@@ -96,8 +96,11 @@ fn mutation_adapter_reads_counts_from_resident_pathmaps() {
     );
     store.put_datum(&"channel".to_owned(), datum("seed"));
     store.put_datum(&"channel".to_owned(), datum("value"));
-    let pending = store.pending_deltas().expect("journal snapshot");
-    let path = pending
+    let observation = store
+        .pending_mutation_observation()
+        .expect("coherent journal/count observation");
+    let path = observation
+        .pending
         .data
         .as_ref()
         .unwrap()
@@ -118,12 +121,8 @@ fn mutation_adapter_reads_counts_from_resident_pathmaps() {
         )
         .unwrap(),
     );
-    let batch = mutation_batch_from_pending_with_counts(
-        base,
-        &pending,
-        |candidate| store.data_count_at_path(candidate).unwrap(),
-        |candidate| store.join_count_at_path(candidate).unwrap(),
-    )
+    assert_eq!(observation.data_counts.get(&path), Some(&1));
+    let batch = mutation_batch_from_observation(base, &observation)
     .expect("resident lookup adapter builds an exact batch");
     assert_eq!(
         batch.data_transition(&path),
