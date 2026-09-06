@@ -1,5 +1,12 @@
 # nextest configuration.
 #
+# One override gives a small set of scheduling-sensitive tests the whole machine.
+# `threads-required = "num-cpus"` makes nextest run each matched test with no
+# co-tenant tests. Each test keeps its full-parallelism speed everywhere else in
+# the run. Add a test to the filter below only when it fails from CPU or lock
+# starvation in a full parallel run and passes deterministically in isolation.
+# Record the evidence for each entry in the notes that follow.
+#
 # `pos_spec` is by far the heaviest genesis-contract RhoSpec test: it runs the full
 # 16-test PoSTest.rho suite through the interpreter over a CUSTOM-parameter genesis
 # (minimum_bond=2 / maximum_bond=100000 => a GENESIS_CACHE miss => a full genesis
@@ -9,14 +16,9 @@
 # tests) it is starved for CPU + the shared LMDB environment badly enough to exceed its
 # RhoSpec execution timeout — a scheduling artifact, not a hang or a correctness issue
 # (it passes deterministically in isolation and alongside the 22 genesis siblings).
+# Islanded, it runs at its isolated ~50s speed. Every other genesis spec is light
+# enough to pass at full parallelism.
 #
-# `threads-required = "num-cpus"` makes nextest schedule it with the whole machine to
-# itself (no co-tenant tests), so it runs at its isolated ~50s speed. It is one short
-# island in the run; every other genesis spec is light enough to pass at full parallelism.
-[[profile.default.overrides]]
-filter = 'test(/genesis::contracts::pos_spec::pos_spec/)'
-threads-required = "num-cpus"
-
 # `soft_checkpoint_cost_does_not_scale_with_accumulated_store_size` is a
 # timing-invariant regression guard (issue-43: O(store-size) HotStore
 # snapshots) that compares microsecond-scale cost at two store sizes. Its 8x
@@ -25,8 +27,24 @@ threads-required = "num-cpus"
 # a fully parallel run skew the two measurement windows unevenly — the
 # issue-283 flake class. A 2026-08-31 pre-push run measured 15.7x under full
 # suite load; the same build passed twice in isolation moments later. Same
-# remedy as pos_spec above: schedule it with the machine to itself. It runs
-# in well under a second, so the island costs the run nothing.
+# remedy as pos_spec above. It runs in well under a second, so the island
+# costs the run nothing.
+#
+# The rspace event-log sentinels measure lock contention and concurrent-vs-
+# sequential cost with spin-probe observers and wall-clock timers, so they
+# are the same scheduling-artifact class as the two islands above. PR #392
+# run 34011689113 failed `event_log_mutex_does_not_contend_under_concurrent_produces`
+# at 31.8% contention against the 20% threshold on a tree that had passed the
+# same job minutes earlier (run 33998820395) and passed the push-event run of
+# the same commit. Schedule the assert-bearing sentinels with the machine to
+# themselves; `event_log_isolated_cost_at_rholang_par_scale` prints a readout
+# only and needs no island. The island cannot stop noise from outside the
+# process on a shared runner, so the two contention sentinels also carry a
+# 50% threshold with the measured margins recorded beside each constant.
 [[profile.default.overrides]]
-filter = 'test(/soft_checkpoint_cost_does_not_scale_with_accumulated_store_size/)'
+filter = '''
+  test(/genesis::contracts::pos_spec::pos_spec/)
+  | test(/soft_checkpoint_cost_does_not_scale_with_accumulated_store_size/)
+  | test(/rspace::rspace::tests::(event_log_mutex_does_not_contend_under_concurrent_produces|par_branch_event_log_does_not_contend_at_rholang_par_scale|event_log_and_produce_counter_isolated_cost_at_rholang_par_scale|get_store_read_lock_isolated_cost_at_rholang_par_scale)$/)
+'''
 threads-required = "num-cpus"

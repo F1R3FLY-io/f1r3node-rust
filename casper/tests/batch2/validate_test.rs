@@ -10,6 +10,12 @@ use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::CasperSnapshot;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::metrics_constants::{
+    REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC,
+    REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC, REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC,
+    REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC,
+    REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC,
+};
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};
@@ -20,6 +26,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
+use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::{
@@ -39,6 +46,31 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 const SHARD_ID: &str = "root-shard";
 
 fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
+
+fn record_metrics<T>(f: impl FnOnce() -> T) -> (T, Snapshotter) {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let result = metrics::with_local_recorder(&recorder, f);
+    (result, snapshotter)
+}
+
+#[allow(clippy::mutable_key_type)]
+fn counter_value(snapshotter: &Snapshotter, metric_name: &str) -> u64 {
+    snapshotter
+        .snapshot()
+        .into_hashmap()
+        .iter()
+        .filter_map(|(key, (_, _, value))| {
+            if key.key().name() != metric_name {
+                return None;
+            }
+            match value {
+                DebugValue::Counter(value) => Some(*value),
+                _ => None,
+            }
+        })
+        .sum()
+}
 
 fn create_chain(
     block_store: &mut KeyValueBlockStore,
@@ -989,11 +1021,25 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None);
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None)
+        });
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
         );
+        assert_eq!(
+            counter_value(
+                &snapshotter,
+                REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC
+            ),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC),
+            1
+        );
+        assert!(counter_value(&snapshotter, REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC) >= 1);
     })
     .await
 }
@@ -1091,11 +1137,34 @@ async fn repeat_deploy_certified_index_still_flags_a_repeated_deploy() {
             .expect("certify");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None);
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None)
+        });
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
         );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC),
+            0
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC),
+            1
+        );
+        assert!(counter_value(&snapshotter, REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC) >= 1);
     })
     .await
 }
@@ -1143,9 +1212,34 @@ async fn repeat_deploy_certified_index_accepts_fresh_deploys() {
             .expect("certify");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result =
-            Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50, None);
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50, None)
+        });
         assert_eq!(result, Either::Right(ValidBlock::Valid));
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_ROW_READS_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_INDEX_ABSENCE_METRIC),
+            1
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_INDEX_HIT_METRIC),
+            0
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC),
+            0
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_ANCESTOR_BODY_READS_METRIC),
+            0
+        );
     })
     .await
 }

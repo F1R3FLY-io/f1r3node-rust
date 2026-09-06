@@ -42,6 +42,12 @@ async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {
 //
 // Passes when event_log uses O(1) append: hold time drops to ~10 ns and
 // the observer almost never catches the mutex held.
+//
+// Threshold margin (measured 2026-09-06, release, in isolation): correct
+// code 2.1%, the guarded Vec::insert(0) regression 84.7%, and the worst
+// observed CI scheduling noise 31.8% (PR #392 run 34011689113). 50% sits
+// clear of the noise while the regression stays far above it; nextest
+// also schedules this test with the machine to itself (.config/nextest.toml).
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn event_log_mutex_does_not_contend_under_concurrent_produces() {
@@ -54,7 +60,7 @@ async fn event_log_mutex_does_not_contend_under_concurrent_produces() {
     //   shift ≈ 1.2 MB / 50 GB/s ≈ 24 μs per insert → detectable.
     const PRE_FILL: usize = 8_000;
     // Fraction of observer probes that find the mutex already held.
-    const MAX_CONTENTION_RATE: f64 = 0.20;
+    const MAX_CONTENTION_RATE: f64 = 0.50;
 
     let rspace = make_rspace().await;
 
@@ -146,12 +152,16 @@ async fn event_log_mutex_does_not_contend_under_concurrent_produces() {
 //
 // The log grows naturally from zero to PAR_BRANCHES * OPS_PER_BRANCH entries.
 // Passes when event_log uses O(1) append.
+//
+// Threshold margin (measured 2026-09-06, release, in isolation): correct
+// code 1.3%, the guarded Vec::insert(0) regression 96.4%. Same 50% bound
+// and nextest island as the sentinel above.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn par_branch_event_log_does_not_contend_at_rholang_par_scale() {
     const PAR_BRANCHES: usize = 32;
     const OPS_PER_BRANCH: usize = 500;
-    const MAX_CONTENTION_RATE: f64 = 0.20;
+    const MAX_CONTENTION_RATE: f64 = 0.50;
 
     let rspace = make_rspace().await;
 
