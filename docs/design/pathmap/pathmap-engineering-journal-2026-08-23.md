@@ -4109,6 +4109,62 @@ review motivated these corrections; its follow-up was unavailable due to a usage
 limit, so no second independent approval is claimed. This checkpoint changes the
 model, controls and traceability only: the runtime owner and task 6626 remain open.
 
+### J-060 — 2026-09-06: borrowed preparation and a single-pass successor witness
+
+**DERIVED REQUIREMENT.** The owner must retain its writer lease separately from the
+admitted source while preparing and publishing a transaction. Recovering an exact
+successor also requires its full physical terminal, not merely the semantic target
+root. Computing that terminal by serializing PREPARE a second time would add another
+payload traversal and hash pass solely for ownership bookkeeping.
+
+**IMPLEMENTATION.** Transaction opening, sealing, exact successor inventory, object
+classification and WAL preparation now operate on the admitted source. Existing
+writer methods are thin delegates. A shared identity check ties that source to its
+original generation registry and borrowed writer lease before sealing, binding,
+preparation or publication. Two separately opened stores with equal catalog bytes
+remain distinct authorities. No new lock, source projection or registry is created.
+
+The publisher retains the streamed PREPARE identity, checked index frontier and
+COMMIT constructor already used for its output. It derives the complete successor
+slot from those values once and invokes a synchronous terminal-capture callback
+before COMMIT is written. The same slot is then published. The wrapper for callers
+that do not retain a witness uses a statically dispatched empty callback. This adds
+no second serialization, payload hashing pass, callback allocation or background
+writer. Retaining the expected terminal does not mean publication succeeded.
+
+**REFINEMENT COVERAGE.** The source/lease regression crosses byte-identical stores,
+rejects wrong sequences and low preparation limits without file mutation, retains
+the writer lock, rejects stale prepared state and checks exact output plus cold
+reopen. The existing sixteen-phase, torn-prefix and unwind matrix now checks the
+complete captured slot. A separate callback-unwind test inspects the unchanged
+catalog and exact PREPARE/index bytes before COMMIT, retains the original authority,
+recovers the predecessor and retries to the uninterrupted control's exact files.
+The finite owner model and JO-03/04/09/12 requirements precede these source changes;
+the invariant catalog records the concrete streaming-to-model boundary.
+
+**MEASURED CORRECTNESS.** The final persistence module passes 319/319 in debug
+(6.73 s) and release (3.76 s), with zero failures or ignored tests. Both commands
+select `rspace::persistence::tests::` from the `rspace_plus_plus` library, configure
+256 property cases and four test workers, and use the same systemd envelope:
+8 GiB memory maximum, 6 GiB high watermark, zero swap and four build workers.
+Scratch is on disk. These are configured ceilings and correctness-test durations,
+not measured RSS, throughput or LMDB comparison results. The final release build
+took 44.23 s; debug incremental compilation took 7.09 s. A new test-only warning
+about observing an assignment after intentional unwind was removed with an explicit
+`Cell`; the assertions remain unchanged. Existing library warnings are not waived.
+
+| Final raw log | SHA-256 |
+|---|---|
+| `/tmp/rspace-owner-preparation-terminal-debug-r2-20260906.log` | `bdefa642d8b83d4b0be1eefd016609835c9ab7abe1b9e4609d4c04371fa1dd63` |
+| `/tmp/rspace-owner-preparation-terminal-release-r2-20260906.log` | `ea702957062cb88d3e175a47a298af02e72accb6e7a4ca6af4cab064f465637e` |
+
+**VALIDITY BOUNDARY.** These are component refinements for task 6626, not completed
+runtime-owner integration. The next implementation must put the observation, permit
+and captured terminal in the owner and implement identity-bound HotStore
+acknowledgement. The one-publication model does not discharge repeated-history ABA
+tests. No backend activation, LMDB comparison, stack-depth/RSS result or campaign
+completion is inferred. Existing broader-library PathMap failure remains open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

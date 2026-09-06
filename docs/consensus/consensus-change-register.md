@@ -6235,3 +6235,14 @@ catalog/pack/index comparisons, every torn prefix, same-lease recovery and retry
 Runtime owner/gate/acknowledgement composition remains open. Classification remains
 `NO_PRODUCTION_CHANGE_DERIVED`, not an activation or complete recovery guarantee. See
 [J-058](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-058--2026-09-06-exact-incremental-publication-recovery-and-retry).
+
+Borrowed preparation and terminal capture, 2026-09-06: preparation now borrows the
+original writer lease and admitted source, rejecting crossed authorities even when
+their catalogs are byte-identical. A synchronous callback retains the complete
+expected successor before COMMIT, using the same streamed PREPARE identity and
+checked COMMIT/index/catalog construction as publication. Expected identity is not
+evidence of successful publication. Canonical file layouts, semantic roots, Rholang
+behavior, charges and default backend selection are unchanged. Final persistence
+gates pass 319/319 in debug and release; runtime owner/acknowledgement and cutover
+remain open. Classification stays `NO_PRODUCTION_CHANGE_DERIVED`. See
+[J-060](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-060--2026-09-06-borrowed-preparation-and-a-single-pass-successor-witness).

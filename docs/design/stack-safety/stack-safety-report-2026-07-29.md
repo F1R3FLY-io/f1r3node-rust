@@ -12956,3 +12956,14 @@ an 8 GiB systemd cap and four workers; Rocq used 2 GiB, both with swap disabled 
 test scratch on disk. Runtime owner cancellation and exact acknowledgement remain
 unimplemented boundaries of task 6626; the broader PathMap failure is not waived.
 See [J-058](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-058--2026-09-06-exact-incremental-publication-recovery-and-retry).
+
+Borrowed preparation and terminal capture, 2026-09-06: the full persistence module
+passes 319/319 in final debug (6.73 s) and release (3.76 s) gates. The publisher
+retains its expected successor from the actual streamed PREPARE identity and checked
+index layout before COMMIT, without a second serialization or payload hash pass.
+Crossed-source/lease, exact catalog/pack/index, callback-unwind and cold-retry tests
+refine authority ownership; they do not measure stack growth, allocation counts or
+RSS slopes. Runs used an 8 GiB systemd maximum, four build/test workers, zero swap
+and disk-backed scratch. The fifteen-invariant owner model and runtime component
+tests still do not close owner acknowledgement, repeated-history ABA or the broader
+PathMap correctness gate. See [J-059 and J-060](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-060--2026-09-06-borrowed-preparation-and-a-single-pass-successor-witness).

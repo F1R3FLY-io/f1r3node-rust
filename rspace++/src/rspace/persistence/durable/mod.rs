@@ -71,7 +71,7 @@ pub(crate) use publication::require_incremental_retention_manifest;
 pub(crate) use publication::{
     GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationOutcomeV1,
     IncrementalAppendErrorV1, IncrementalPublicationErrorV1, append_incremental_prepare_and_index,
-    publish_incremental_from_lease_v1,
+    publish_incremental_from_lease_v1, publish_incremental_with_terminal_v1,
 };
 #[cfg(test)]
 pub(crate) use publication::{

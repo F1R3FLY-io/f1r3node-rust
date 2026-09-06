@@ -377,6 +377,153 @@ enum IncrementalCrash {
     Unwind(GenerationCheckpointPublicationHookPointV1),
 }
 
+#[test]
+fn borrowed_source_preparation_keeps_exact_authority_through_refusal_and_publication() {
+    use crate::rspace::persistence::durable::{
+        DurableTransactionPreparationError, publish_incremental_from_lease_v1,
+    };
+    use crate::rspace::persistence::{DagTransactionLimits, MutationBatchViewV1};
+    let image = checkpoint_image_from_source(checkpoint_source_fixture());
+    let first = trial_scratch("borrowed-preparation-first-");
+    let second = trial_scratch("borrowed-preparation-foreign-");
+    install_checkpoint_image(first.path(), &image);
+    install_checkpoint_image(second.path(), &image);
+    let writer = admit(first.path());
+    let registry = writer.generation_leases();
+    let pin = registry
+        .acquire(crate::rspace::persistence::GenerationLeaseKeyV1::from_catalog(writer.catalog()))
+        .unwrap();
+    let (mut lease, source) = writer.into_parts();
+    let (foreign_lease, foreign_source) = admit(second.path()).into_parts();
+    assert_eq!(source.authority(), foreign_source.authority());
+    let before = incremental_store_bytes(first.path());
+    let foreign_before = incremental_store_bytes(second.path());
+    let mutation = data_batch(source.authority().slot().state(), "borrowed-incremental");
+    let seal = || {
+        source
+            .open_transaction(
+                MutationBatchViewV1::parse(&mutation).unwrap(),
+                DagTransactionLimits::UNBOUNDED,
+            )
+            .unwrap()
+            .seal()
+            .unwrap()
+    };
+    assert!(matches!(
+        source.bind_durable_transaction(
+            &foreign_lease,
+            seal(),
+            DurableAdmissionLimitsV1::UNBOUNDED
+        ),
+        Err(DurableTransactionPreparationError::AuthorityMismatch)
+    ));
+    let sealed = source
+        .bind_durable_transaction(&lease, seal(), DurableAdmissionLimitsV1::UNBOUNDED)
+        .unwrap();
+    let sequence = source
+        .authority()
+        .slot()
+        .commit_sequence()
+        .successor()
+        .unwrap();
+    assert!(matches!(
+        source.prepare_transaction(
+            &foreign_lease,
+            &sealed,
+            sequence,
+            LogPackDecodeLimits::UNBOUNDED
+        ),
+        Err(DurableTransactionPreparationError::AuthorityMismatch)
+    ));
+    assert!(matches!(
+        foreign_source.prepare_transaction(
+            &lease,
+            &sealed,
+            sequence,
+            LogPackDecodeLimits::UNBOUNDED
+        ),
+        Err(DurableTransactionPreparationError::AuthorityMismatch)
+    ));
+    assert!(matches!(
+        source.prepare_transaction(
+            &lease,
+            &sealed,
+            sequence.successor().unwrap(),
+            LogPackDecodeLimits::UNBOUNDED
+        ),
+        Err(DurableTransactionPreparationError::AuthorityMismatch)
+    ));
+    let mut short = LogPackDecodeLimits::UNBOUNDED;
+    short.max_record_bytes = 0;
+    assert!(matches!(
+        source.prepare_transaction(&lease, &sealed, sequence, short),
+        Err(DurableTransactionPreparationError::Format(_))
+    ));
+    assert_eq!(incremental_store_bytes(first.path()), before);
+    assert_eq!(incremental_store_bytes(second.path()), foreign_before);
+    assert!(registry.shares_registry(&lease.generation_leases()));
+    assert!(
+        DurableDirectoryV1::open(first.path())
+            .unwrap()
+            .try_acquire_writer()
+            .is_err()
+    );
+    let prepared = source
+        .prepare_transaction(&lease, &sealed, sequence, LogPackDecodeLimits::UNBOUNDED)
+        .unwrap();
+    assert!(matches!(
+        publish_incremental_from_lease_v1(
+            &mut lease,
+            &foreign_source,
+            &prepared,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        ),
+        Err(crate::rspace::persistence::durable::IncrementalPublicationErrorV1::Preparation(
+            DurableTransactionPreparationError::AuthorityMismatch
+        ))
+    ));
+    assert_eq!(incremental_store_bytes(first.path()), before);
+    assert_eq!(incremental_store_bytes(second.path()), foreign_before);
+    let successor = publish_incremental_from_lease_v1(
+        &mut lease,
+        &source,
+        &prepared,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    )
+    .unwrap();
+    let expected = expected_incremental_successor();
+    assert_eq!(successor.authority().slot(), expected.slot);
+    let [catalog, pack, index] = incremental_store_bytes(first.path());
+    assert_eq!(catalog, expected.catalog);
+    assert_eq!(pack, expected.pack);
+    assert_eq!(index, expected.index);
+    assert!(matches!(
+        successor.prepare_transaction(&lease, &sealed, sequence, LogPackDecodeLimits::UNBOUNDED),
+        Err(DurableTransactionPreparationError::AuthorityMismatch)
+    ));
+    assert!(registry.shares_registry(&lease.generation_leases()));
+    assert!(
+        DurableDirectoryV1::open(first.path())
+            .unwrap()
+            .try_acquire_writer()
+            .is_err()
+    );
+    assert_eq!(incremental_store_bytes(second.path()), foreign_before);
+    drop(pin);
+    drop(lease);
+    assert!(
+        DurableDirectoryV1::open(first.path())
+            .unwrap()
+            .try_acquire_writer()
+            .is_ok()
+    );
+    assert_eq!(admit(first.path()).catalog(), expected.slot);
+}
+
 fn expected_incremental_successor() -> ExpectedSuccessor {
     let scratch = trial_scratch("borrowed-incremental-control-");
     install_checkpoint_image(
@@ -422,7 +569,8 @@ fn check_borrowed_incremental_crash(crash: IncrementalCrash, expected: &Expected
     use crate::rspace::persistence::GenerationLeaseKeyV1;
     use crate::rspace::persistence::durable::{
         DurableTransactionPreparationError, IncrementalPublicationErrorV1, admit_physical_source,
-        admit_physical_writer, publish_incremental_from_lease_v1, recover_physical_from_lease_v1,
+        admit_physical_writer, publish_incremental_from_lease_v1,
+        publish_incremental_with_terminal_v1, recover_physical_from_lease_v1,
         recover_physical_with_lease_v1,
     };
 
@@ -465,16 +613,35 @@ fn check_borrowed_incremental_crash(crash: IncrementalCrash, expected: &Expected
             })
         }
     }
+    let mut terminal = None;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        publish_incremental_from_lease_v1(
+        publish_incremental_with_terminal_v1(
             &mut lease,
             &source,
             &prepared,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
             DurableAdmissionLimitsV1::UNBOUNDED,
+            |expected| {
+                assert!(terminal.replace(expected).is_none());
+            },
         )
     }));
+    let before_terminal = matches!(
+        crash,
+        IncrementalCrash::Phase(
+            Point::AfterPrepareWrite |
+                Point::AfterPrepareSync |
+                Point::AfterIndexWrite |
+                Point::AfterIndexSync
+        ) | IncrementalCrash::Unwind(
+            Point::AfterPrepareWrite |
+                Point::AfterPrepareSync |
+                Point::AfterIndexWrite |
+                Point::AfterIndexSync
+        )
+    );
+    assert_eq!(terminal, (!before_terminal).then_some(expected.slot), "{crash:?}");
     if matches!(crash, IncrementalCrash::Unwind(_)) {
         assert!(result.is_err(), "{crash:?}");
     } else {
@@ -659,6 +826,108 @@ fn borrowed_incremental_publication_recovers_and_retries_every_phase() {
     for point in FORMAL_PUBLICATION_PHASE_ORDER.into_iter().skip(2) {
         check_borrowed_incremental_crash(IncrementalCrash::Phase(point), &expected);
     }
+}
+
+#[test]
+fn incremental_terminal_capture_precedes_commit_and_survives_callback_unwind() {
+    use crate::rspace::persistence::durable::{
+        admit_physical_source, publish_incremental_with_terminal_v1, recover_physical_from_lease_v1,
+    };
+    use crate::rspace::persistence::{
+        DagTransactionLimits, GenerationLeaseKeyV1, MutationBatchViewV1,
+    };
+    let expected = expected_incremental_successor();
+    let scratch = trial_scratch("incremental-terminal-capture-");
+    install_checkpoint_image(
+        scratch.path(),
+        &checkpoint_image_from_source(checkpoint_source_fixture()),
+    );
+    let (mut lease, source) = admit(scratch.path()).into_parts();
+    let old = source.authority().slot();
+    let registry = lease.generation_leases();
+    let generation = GenerationLeaseKeyV1::from_catalog(old);
+    let pin = registry.acquire(generation).unwrap();
+    let mutation = data_batch(old.state(), "borrowed-incremental");
+    let sealed = source
+        .seal_transaction(
+            &lease,
+            MutationBatchViewV1::parse(&mutation).unwrap(),
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    let prepared = source
+        .prepare_transaction(
+            &lease,
+            &sealed,
+            old.commit_sequence().successor().unwrap(),
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap();
+    let old_catalog = fs::read(scratch.path().join("catalog.v1")).unwrap();
+    let captured = std::cell::Cell::new(None);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        publish_incremental_with_terminal_v1(
+            &mut lease,
+            &source,
+            &prepared,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+            |terminal| {
+                captured.set(Some(terminal));
+                let [catalog, pack, index] = incremental_store_bytes(scratch.path());
+                assert_eq!(catalog, old_catalog);
+                assert_eq!(pack.len() as u64, terminal.commit_address().offset());
+                assert_eq!(pack, expected.pack[..pack.len()]);
+                assert_eq!(index, expected.index);
+                panic!("injected unwind after exact terminal capture");
+            },
+        )
+    }));
+    assert!(result.is_err());
+    assert_eq!(captured.get(), Some(expected.slot));
+    assert!(registry.has_active(generation).unwrap());
+    assert!(
+        lease
+            .directory()
+            .try_clone_reader()
+            .unwrap()
+            .try_acquire_writer()
+            .is_err()
+    );
+    let physical =
+        recover_physical_from_lease_v1(&mut lease, limits(), LogPackDecodeLimits::UNBOUNDED)
+            .unwrap();
+    let recovered = admit_physical_source::<TestSemanticProfile>(
+        &lease,
+        physical,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    )
+    .unwrap();
+    assert_eq!(recovered.authority().slot(), old);
+    let mut calls = 0;
+    let successor = publish_incremental_with_terminal_v1(
+        &mut lease,
+        &recovered,
+        &prepared,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+        |terminal| {
+            calls += 1;
+            assert_eq!(Some(terminal), captured.get());
+        },
+    )
+    .unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(successor.authority().slot(), expected.slot);
+    let [catalog, pack, index] = incremental_store_bytes(scratch.path());
+    assert_eq!(catalog, expected.catalog);
+    assert_eq!(pack, expected.pack);
+    assert_eq!(index, expected.index);
+    assert!(registry.has_active(generation).unwrap());
+    drop(pin);
 }
 
 #[test]

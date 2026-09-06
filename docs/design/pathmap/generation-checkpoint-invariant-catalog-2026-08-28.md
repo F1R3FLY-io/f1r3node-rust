@@ -179,6 +179,35 @@ asynchronous cancellation or all JO-01..JO-11 properties. In particular, retaini
 an outer test scope through panic is not proof that the unfinished owner remains recoverable
 after every panic. Publication outcome classification and journal acknowledgement remain open.
 
+### Borrowed preparation and streamed terminal witness refinement (2026-09-06)
+
+The admitted source now supports transaction opening, sealing, exact successor inventory,
+object classification and WAL preparation while its original writer lease is retained separately.
+Existing writer methods delegate to these bodies. The source retains the original generation
+registry identity and checks a borrowed lease before sealing, binding, preparation or publication;
+equal catalog bytes from another opened store do not establish this authority.
+
+The publisher exposes the exact successor slot through a synchronous `FnOnce` callback before
+writing COMMIT. This slot uses the PREPARE identity computed during the actual streaming write,
+the existing checked index append frontier and the same COMMIT/catalog constructors used for
+publication. No second PREPARE serialization, payload hash pass or copied object projection is
+required. The callback receives an expected terminal, not proof that publication has succeeded.
+
+| JO obligations | Executable refinement |
+|---|---|
+| JO-03, JO-04 | `borrowed_source_preparation_keeps_exact_authority_through_refusal_and_publication` tests byte-identical foreign stores, crossed source/lease pairs, wrong sequence, preparation limit refusal, stale predecessor preparation, continuous writer exclusion, complete output bytes and cold reopen. |
+| JO-09, JO-12 | The existing phase/torn-prefix/unwind matrix now checks that the retained terminal equals the uninterrupted control's complete catalog slot whenever capture has occurred. Failures during PREPARE/index emission leave capture absent and cannot have published a successor. |
+| JO-03, JO-12 | `incremental_terminal_capture_precedes_commit_and_survives_callback_unwind` inspects the exact PREPARE/index bytes and unchanged catalog during capture, then unwinds, recovers the predecessor and retries to the exact final files. |
+
+Physical PREPARE/index staging precedes terminal capture, but no COMMIT or catalog publication
+can precede it. These unselected bytes have no authority under the catalog-appointed recovery
+model and the checked suffix-retry laws. The abstract model's expected successor remains the
+intended transaction throughout; the concrete owner may leave its physical terminal unset until
+capture. In that case recovery must accept only the predecessor, never guess a successor from
+its target root. Once captured, retain the complete slot through every later failure. Tests of
+this callback do not establish owner permit ownership, atomic HotStore acknowledgement or
+repeated-epoch ABA safety; those JO obligations still require owner implementation and tests.
+
 ## Exact incremental-successor inventory refinement — 2026-09-06
 
 `GenerationCheckpointPublication.v::ExactSuccessorInventory` proves byte conservation,

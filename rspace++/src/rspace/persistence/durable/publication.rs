@@ -802,6 +802,29 @@ pub(crate) fn publish_incremental_from_lease_v1<P: SemanticProfile>(
     wal_limits: LogPackDecodeLimits,
     admission_limits: DurableAdmissionLimitsV1,
 ) -> Result<AdmittedCheckpointSourceV1<P>, IncrementalPublicationErrorV1> {
+    publish_incremental_with_terminal_v1(
+        lease,
+        source,
+        prepared,
+        recovery_limits,
+        wal_limits,
+        admission_limits,
+        |_| {},
+    )
+}
+
+pub(crate) fn publish_incremental_with_terminal_v1<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    source: &AdmittedCheckpointSourceV1<P>,
+    prepared: &PreparedDurableLogPackTransactionV1<'_, '_, P>,
+    recovery_limits: DurableLimits,
+    wal_limits: LogPackDecodeLimits,
+    admission_limits: DurableAdmissionLimitsV1,
+    retain_terminal: impl FnOnce(CatalogSlotV1),
+) -> Result<AdmittedCheckpointSourceV1<P>, IncrementalPublicationErrorV1> {
+    source
+        .preflight_writer(lease)
+        .map_err(IncrementalPublicationErrorV1::Preparation)?;
     let authority = source.authority().clone();
     prepared
         .preflight(&authority, &lease.generation_leases(), admission_limits)
@@ -858,6 +881,26 @@ pub(crate) fn publish_incremental_from_lease_v1<P: SemanticProfile>(
         prepare_identity,
         publication,
     )?;
+    let pack = CatalogPackStateV1::new(
+        current.pack().first_live_pack(),
+        current.pack().active_pack(),
+        commit_address.end(),
+        current.pack().index_generation(),
+        index_tail,
+        publication.retention_manifest(),
+        publication.current_state_canonical_bytes(),
+        publication.retained_canonical_bytes(),
+    )?;
+    let successor = current.successor(
+        current.state(),
+        receipt.target(),
+        commit.digest(),
+        prepare_identity.sequence(),
+        commit_address,
+        pack,
+    )?;
+    let successor_image = authority.successor_image(successor)?;
+    retain_terminal(successor);
     {
         let mut pack = lease.open_pack(prepare_address.pack_id())?;
         pack.require_length(FileLengthExpectation::Exact(prepare_address.end()))?;
@@ -882,25 +925,6 @@ pub(crate) fn publish_incremental_from_lease_v1<P: SemanticProfile>(
         lease.directory().path(),
     )?;
 
-    let pack = CatalogPackStateV1::new(
-        current.pack().first_live_pack(),
-        current.pack().active_pack(),
-        commit_address.end(),
-        current.pack().index_generation(),
-        index_tail,
-        publication.retention_manifest(),
-        publication.current_state_canonical_bytes(),
-        publication.retained_canonical_bytes(),
-    )?;
-    let successor = current.successor(
-        current.state(),
-        receipt.target(),
-        commit.digest(),
-        prepare_identity.sequence(),
-        commit_address,
-        pack,
-    )?;
-    let successor_image = authority.successor_image(successor)?;
     publish_catalog_slot_compare_and_swap(lease, &authority, successor_image)?;
     #[cfg(test)]
     incremental_publication_test_point(
