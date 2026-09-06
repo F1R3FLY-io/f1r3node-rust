@@ -510,6 +510,7 @@ impl RuntimeManager {
                 system_deploys,
                 block_data,
                 invalid_blocks,
+                None,
             )
             .await?;
 
@@ -577,6 +578,7 @@ impl RuntimeManager {
         system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<
         (
             StateHash,
@@ -608,6 +610,7 @@ impl RuntimeManager {
                 system_deploys,
                 block_data,
                 invalid_blocks,
+                play_budget,
             )
             .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {

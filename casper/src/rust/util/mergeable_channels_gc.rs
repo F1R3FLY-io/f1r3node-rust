@@ -826,6 +826,9 @@ mod tests {
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
             )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
         }
     }
 
@@ -1066,6 +1069,9 @@ mod tests {
             lifecycle: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
     }

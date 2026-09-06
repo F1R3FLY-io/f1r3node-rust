@@ -251,6 +251,14 @@ impl BlockMetadataStore {
         self.store.get_one(&BlockHashSerde(hash.clone()))
     }
 
+    /// Test-only corruption helper: deletes the persisted row while the
+    /// in-memory `dag_state` still lists the hash (simulates a DAG set /
+    /// metadata inconsistency for fail-closed tests).
+    #[doc(hidden)]
+    pub fn delete_kv_row_for_tests(&self, hash: &BlockHash) -> Result<(), KvStoreError> {
+        self.store.delete(vec![BlockHashSerde(hash.clone())])
+    }
+
     pub fn get_unsafe(&self, hash: &BlockHash) -> Result<BlockMetadata, KvStoreError> {
         self.get(hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(

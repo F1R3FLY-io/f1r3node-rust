@@ -309,11 +309,96 @@ blocks; rejected deploys are block-body records of a particular merge result.
 *Avoid*: "rejection cache" because persistence and retry eligibility are
 load-bearing properties.
 
+### Latest message
+
+A latest message is the most recent block a bonded validator has produced,
+as recorded in a view or in a block's frozen justifications. Fork choice
+scores from the latest messages, and the
+[merged-frontier retry packaging](#merged-frontier-retry-packaging) gate
+tests whether one selected parent covers all valid latest messages.
+
+**Preferred usage.** Use for the per-validator tip a view or a
+justification set records.
+*Distinguish from* a justification: a justification is the recorded
+reference to a latest message inside a block.
+*Avoid*: "tip" unqualified, because the DAG has many tips and only one
+latest message per validator.
+
+### Finalized floor
+
+The finalized floor of a block is the finalized ancestor that the block's
+own frozen justifications witness. Both floor sources are block-structural
+facts, so every node derives the same floor for the same block. The floor
+bounds the [merge scope](#merge-scope), anchors the
+[merge base](#merge-base) fallback, supplies the validation committee,
+and paces the [retry gate](#retry-gate). The normative rules live in
+[finalized-floor-specification.md](./theory/finalized-floor/finalized-floor-specification.md).
+
+**Preferred usage.** Use for the block-derived finalization bound that
+consensus rules read.
+*Distinguish from* [Last finalized block (LFB)](#last-finalized-block-lfb):
+the floor is a pure function of the block; the LFB is a node-local
+observation.
+*Avoid*: "floor" unqualified in a document that also discusses numeric
+floors or limits.
+
+### Last finalized block (LFB)
+
+The last finalized block is the highest block a node's finalization
+oracle has finalized in its own view. The LFB is node-local: two healthy
+nodes can briefly hold different LFBs. No consensus rule may read the
+LFB, because a node-local input would fork the network.
+
+**Preferred usage.** Use for the node's own finalization progress marker,
+such as metrics, pruning, and API output.
+*Distinguish from* [Finalized floor](#finalized-floor): the merge scope
+and the validation committee read the block-derived floor, never the LFB.
+*Avoid*: "finalized block" unqualified when the node-local marker is
+intended.
+
+### Lowest common ancestor (LCA)
+
+The lowest common ancestor is the deepest block that is an ancestor of
+every latest message in a fork-choice computation. Fork choice scores
+stake weight from each latest message down to the LCA and then ranks
+greedily downward from it. The many-input variant is LUCA (lowest
+universal common ancestor). The fork-choice dossier holds the algorithm
+and the T-LCA obligation
+([fork-choice-glossary.md](./theory/fork-choice/fork-choice-glossary.md)).
+
+**Preferred usage.** Use only for the fork-choice scoring base.
+*Distinguish from* [Merge scope](#merge-scope): the merge scope is
+bounded by the [finalized floor](#finalized-floor) of the block, never
+by the LCA. The
+protocol overview carried this confusion before the finalized-floor
+migration.
+*Avoid*: "common ancestor" without the lowest qualifier, and any use of
+LCA to describe a merge bound.
+
+### Merge base
+
+The merge base is the state a multi-parent merge starts from. The base is
+the main parent's post-state when that state holds the
+[settled content](#settled-content) of the
+[finalized floor](#finalized-floor). Otherwise the base falls back to the
+floor's post-state (`compute_parents_post_state`). Validators recompute
+the choice from the block's recorded justifications, so the base is
+node-identical.
+
+**Preferred usage.** Use for the starting state of a merge and its
+deterministic fallback rule.
+*Distinguish from* [Merge scope](#merge-scope): the base is one state;
+the scope is the set of blocks whose effects merge onto it.
+*Avoid*: "parent state" unqualified, because only the main parent can
+supply the base.
+
 ### Merge scope
 
 Merge scope is the bounded ancestry whose state effects participate in
-multi-parent merging for a [consensus snapshot](#consensus-snapshot). A merge
-can place eligible work in the [rejected deploy buffer](#rejected-deploy-buffer)
+multi-parent merging for a [consensus snapshot](#consensus-snapshot),
+bounded by the [finalized floor](#finalized-floor) of the block:
+`closure(parents) \ closure(floor)`. A merge can place eligible work in
+the [rejected deploy buffer](#rejected-deploy-buffer)
 when competing effects cannot all be retained.
 
 **Preferred usage.** Use for the bounded ancestry whose state effects
@@ -324,6 +409,24 @@ selected for state merging; an ancestor set may be an unconstrained graph
 traversal.
 *Avoid*: "merge window" unless referring specifically to a numeric depth or
 time parameter.
+
+### Floor distance (Δ)
+
+The floor distance is `Δ = num(maxParent) − num(floor)`: the height span
+between the highest parent and the [finalized floor](#finalized-floor).
+Δ is a pure function of the block's frozen justifications, so every node
+computes the same value. When Δ exceeds `MAX_FLOOR_DISTANCE_BLOCKS`
+(256), the merge fails with a deterministic error keyed on Δ alone: the
+proposer parks the round, and a validator rejects the block (R-BACKSTOP).
+The visible-scope size (`MAX_PARENT_MERGE_SCOPE_BLOCKS` = 512) is an
+advisory metric and never gates admission, because branch width is not
+node-deterministic.
+
+**Preferred usage.** Use for the deterministic merge-span bound and its
+backstop.
+*Distinguish from* the scope-size metric: Δ gates, scope size only warns.
+*Avoid*: "merge depth", and any phrasing that revives the removed lossy
+single-parent fallback.
 
 ### Content ordering
 
@@ -350,7 +453,10 @@ among its member signatures.
 **Preferred usage.** Use for the consensus-visible priority input to
 [loss-aware adjudication](#loss-aware-adjudication).
 *Distinguish from* the lifecycle `rejection_count`, which is a node-local
-observability value that includes duplicate records.
+observability value that includes duplicate records. The
+[repeat-deploy signature index](#repeat-deploy-signature-index) is the one
+lifecycle-backed structure with a ratified consensus-reading role, and it
+holds that role only under its completeness invariant.
 *Avoid*: "loss count" without qualification.
 
 ### Loss-aware adjudication
@@ -392,11 +498,60 @@ owner-scoped: only the sender of the carrier buffers the retry of that copy.
 holds the rejection record.
 *Avoid*: "source block" without qualification.
 
+### Deploy lifespan
+
+The deploy lifespan is the validity window of a deploy, measured in
+blocks. A deploy is eligible from its `valid_after_block_number` until
+the window closes, and it terminates `Expired` if it never lands. The
+same window bounds the repeat-deploy ancestor scan
+(`expiration_threshold`) and the record view of the
+[prior-rejection count](#prior-rejection-count): records older than
+`deploy_lifespan` do not count.
+
+**Preferred usage.** Use for the block-height validity window and the
+scan bounds derived from it.
+*Distinguish from* the [retry frontier lease](#retry-frontier-lease),
+which bounds proposer deferral, not deploy validity.
+*Avoid*: "timeout" and "TTL", because the window uses block height, not
+wall-clock time.
+
+### Deploy lifecycle
+
+The deploy lifecycle is the per-signature progression a node records for
+each deploy: open event rows (inclusions and rejections projected from
+block bodies) and a WRITE-ONCE terminal record (`Finalized`, `Expired`,
+or `Failed`). Event rows are pruned at the terminal write, so the events
+table holds open signatures only. The status API reads these tables as
+lookups.
+
+**Preferred usage.** Use for the recorded progression and its storage
+tables (`deploy-lifecycle-events`, `deploy-lifecycle-terminal`).
+*Distinguish from* finalization: a terminal record is a node's durable
+verdict about one deploy; finalization is a property of blocks.
+*Avoid*: "deploy status" for the storage internals — status is the API
+view over the lifecycle tables.
+
+### Settled content
+
+Settled content is what the [finalized floor](#finalized-floor) closure
+commits: effects and records contained in the state the floor stands
+for. A state "holds the settled content of the floor" when everything
+the floor commits is present in that state. The
+[merge base](#merge-base) rule and the [retry gate](#retry-gate) both
+key on settlement, so both stay pure functions of the block.
+
+**Preferred usage.** Use for floor-committed effects and records that a
+rule tests for containment.
+*Distinguish from* finalized: settled is containment in the block-derived
+floor closure; finalized is the oracle's property of a block.
+*Avoid*: "confirmed", "committed" unqualified.
+
 ### Retry gate
 
 The retry gate is the rule that makes a retry legal only after the latest
 [kept rejection record](#kept-rejection-record) of the signature settles
-inside the frozen floor closure. The gate is a pure function of the block, so
+inside the frozen [finalized floor](#finalized-floor) closure. The gate is a
+pure function of the block, so
 every validator computes the same verdict (`PrematureDeployRetry`).
 
 **Preferred usage.** Use for the floor-paced legality rule on re-proposal.
@@ -404,6 +559,38 @@ every validator computes the same verdict (`PrematureDeployRetry`).
 a lower bound on when a retry may appear, not a selection policy.
 *Avoid*: "retry timer" and "cooldown", because the gate keys on floor
 settlement, not on wall-clock time.
+
+### Repeat-deploy signature index
+
+The repeat-deploy signature index is the per-signature carrier record in
+a dedicated store: for each body signature, the carrier blocks that hold
+it. The index covers valid blocks, invalid blocks, and approved blocks,
+because the repeat-deploy ancestor scan reads block bodies without a
+validity qualifier. Every insert records a block's carriers before the
+block becomes DAG-visible, and a persisted height watermark names the
+height since which that has held on this database. For a scan window
+that starts at or above the watermark, an index absence is a proof of no
+prior inclusion, so validation skips the ancestor scan for that
+signature. An index hit is not a verdict: the hit routes to window and
+parent-scope verification, because a fork-only inclusion must not
+invalidate a legal re-inclusion. An index read failure grants no proof,
+and validation falls back to the unchanged ancestor scan. Entries below
+the expiration window are pruned on floor advances.
+
+The index is a deterministic cache of on-chain block bodies, not a new
+consensus input. The predicate it serves is unchanged: the signature
+appears in a parent-scope ancestor inside the expiration window. The
+dedicated store is load-bearing: the index must never share a keyspace
+with rows that unverified wire data can key.
+
+**Preferred usage.** Use for the validation-side fast path of
+`Validate::repeat_deploy`.
+*Distinguish from* the [deploy lifecycle](#deploy-lifecycle) tables,
+which are node-local observability with terminal pruning and never
+decide a verdict.
+*Avoid*: "deploy index" without qualification, because the removed
+last-write-wins `lookup_by_deploy_id` index resolved display carriers,
+not validity.
 
 ### Retry frontier lease
 

@@ -551,9 +551,22 @@ impl CliqueOracle {
             // at one height and every join derivation refuses forever (the
             // ucc 00e6a2e3 consensus halt). Matches the Scala reference
             // (CliqueOracle.scala `dag.isInMainChain(targetMsg, ...)`).
-            latest_messages
-                .get(validator)
-                .map_or(Ok(false), |hash| dag.is_in_main_chain(message, hash))
+            //
+            // An unheld hash in the walk resolves to false DETERMINISTICALLY,
+            // not node-locally: any unheld hash reachable from held
+            // references sits below the restore horizon (above-horizon
+            // dependencies are fetched before admission; the LFS restore
+            // inserts the anchor and above), hence below every held
+            // candidate — a fully-held node's walk returns false at the
+            // same point by height comparison alone. The verdict is
+            // bit-identical with or without the block.
+            let Some(hash) = latest_messages.get(validator) else {
+                return Ok(false);
+            };
+            match dag.is_in_main_chain(message, hash) {
+                Err(KvStoreError::MissingBlock { .. }) => Ok(false),
+                other => other,
+            }
         }
 
         let mut agreeing_map = HashMap::new();
@@ -677,6 +690,24 @@ impl CliqueOracle {
             if full_weight_map.values().sum::<i64>() <= 0 {
                 return Ok(MIN_FAULT_TOLERANCE);
             }
+            // A latest message this node does not hold (a stale slot below an
+            // LFS restore horizon) abstains its validator: it can neither
+            // agree nor witness, and erroring here would fail every
+            // fault-tolerance read on the node. Abstention only ever
+            // understates the clique.
+            let mut held_latest_messages = BTreeMap::new();
+            for (validator, hash) in latest_messages.iter() {
+                if dag.lookup(hash)?.is_some() {
+                    held_latest_messages.insert(validator.clone(), hash.clone());
+                } else {
+                    tracing::debug!(
+                        target: "f1r3fly.casper.safety.clique_oracle",
+                        "abstaining validator with unheld latest message {:?}",
+                        hash
+                    );
+                }
+            }
+            let latest_messages = &held_latest_messages;
             let agreeing_weight_map =
                 Self::agreeing_weight_map(&full_weight_map, target_msg, dag, latest_messages)
                     .await?;

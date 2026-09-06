@@ -145,6 +145,7 @@ impl RuntimeOps {
         system_deploys: Vec<crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum>,
         block_data: BlockData,
         invalid_blocks: HashMap<BlockHash, Validator>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<
         (
             StateHash,
@@ -181,8 +182,9 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_invalid_blocks", rss_kb);
         }
 
-        let (start_hash, processed_deploys) =
-            self.play_deploys_for_state(start_hash, terms).await?;
+        let (start_hash, processed_deploys) = self
+            .play_deploys_for_state(start_hash, terms, play_budget)
+            .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_play_deploys_for_state", rss_kb);
         }
@@ -292,6 +294,7 @@ impl RuntimeOps {
         &mut self,
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
         tracing::info!(target: "f1r3fly.casper.play_deploys", "play-deploys-started");
@@ -305,9 +308,27 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_reset", rss_kb);
         }
 
-        let mut res = Vec::with_capacity(terms.len());
+        // Checked after each deploy, so one always plays and a spent budget
+        // defers the rest to the next proposal; the block carries exactly
+        // the played prefix.
+        let budget_started = std::time::Instant::now();
+        let total_terms = terms.len();
+        let mut res = Vec::with_capacity(total_terms);
         for deploy in terms {
             res.push(self.play_deploy_with_cost_accounting(deploy).await?);
+            if let Some(budget) = play_budget {
+                if budget_started.elapsed() >= budget && res.len() < total_terms {
+                    tracing::info!(
+                        target: "f1r3fly.casper.play_deploys",
+                        executed = res.len(),
+                        deferred = total_terms - res.len(),
+                        budget_ms = budget.as_millis() as u64,
+                        elapsed_ms = budget_started.elapsed().as_millis() as u64,
+                        "play budget spent: remaining deploys deferred to a later proposal"
+                    );
+                    break;
+                }
+            }
         }
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {

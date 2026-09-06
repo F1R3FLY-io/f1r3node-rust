@@ -101,7 +101,7 @@ Proposals are triggered by the [heartbeat proposer](#8-liveness-heartbeat-propos
 3. **Select parents** via [fork choice](#5-fork-choice-lmd-ghost) (LMD GHOST)
    - One parent per validator, deduplicated
    - Limited by `max_number_of_parents` and `max_parent_depth`
-4. **Compute LCA** (Lowest Common Ancestor) of selected parents — bounds the [merge scope](#6-state-merging-multi-parent)
+4. **Compute LCA** (Lowest Common Ancestor) of selected parents — an input to [fork-choice scoring](#5-fork-choice-lmd-ghost); the [merge scope](#6-state-merging-multi-parent) is bounded by the finalized floor, not the LCA
 5. **Build justifications**: Each bonded validator's latest message hash
 6. **Compute deploy scope**: BFS traversal within `deploy_lifespan` window to find all deploys already included in ancestor blocks
 
@@ -223,6 +223,9 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 
 ### Step 8: Deploy & State Validation
 - Deploys are within scope, not duplicated
+  - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window, without a validity qualifier: a signature carried only by an invalid ancestor is still a repeat
+  - A rejected-in-scope signature is exempt when its retry gate is open (see the glossary); a closed gate returns `PrematureDeployRetry`
+  - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
 - Phlogiston price meets minimum
 - Invalid block tracking applied
 
@@ -265,7 +268,7 @@ In a multi-parent DAG, different validators may have included different deploys 
 
 ### Algorithm (`dag_merger.rs` + `conflict_set_merger.rs`)
 
-1. **Identify visible blocks**: All blocks between the LCA and the parents (exclusive of LCA, inclusive of parents)
+1. **Identify visible blocks**: `closure(parents) \ closure(floor)` — every block above the finalized floor that a parent can reach (exclusive of the floor closure, inclusive of parents). See [finalized-floor-specification.md](./theory/finalized-floor/finalized-floor-specification.md) R-SCOPE.
 2. **Collect deploys**: Extract user deploys from all visible blocks
 3. **Detect conflicts**: Branches conflict if they contain the **same user deploy ID** (not content — just the deploy signature)
 4. **Resolve**: `ConflictSetMerger` selects the highest-value subset
@@ -278,13 +281,14 @@ In a multi-parent DAG, different validators may have included different deploys 
 
 ### Determinism Constraint
 
-The merge scope is derived entirely from DAG structure (parent pointers and block heights), not from local finalization state. Two validators with different finalization views must compute the same merge result for identical parent sets. This is why the LCA (not the LFB) bounds the scope.
+The merge scope is bounded by the finalized floor of the block. The floor is a pure function of the block's frozen justifications, so every node derives the same floor for the same block. Two validators with different local finalization views therefore compute the same merge result for identical parent sets. The node-local last finalized block (LFB) never bounds the scope — only the block-derived floor does.
 
 ### Performance Bounds
 
 - Merge cost: O(visible_blocks^2 x deploys^2) for conflict resolution
-- LCA scoping keeps visible_blocks bounded
-- **Fallback**: If visible_blocks > 512 or LCA distance > 256, falls back to latest parent's post-state (discards non-selected parent deploys — they land in the rejected-deploy buffer and a subsequent proposer re-includes them via `prepare_user_deploys`)
+- Floor scoping keeps visible_blocks bounded
+- **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On propose the round parks and retries after finality advances. On validate an over-Δ block is deterministically invalid. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug).
+- The visible-scope size (`MAX_PARENT_MERGE_SCOPE_BLOCKS` = 512) is an advisory metric only. Branch width is not node-deterministic, so scope size never gates admission.
 
 ### System Deploys
 
