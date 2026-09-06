@@ -7581,9 +7581,23 @@ mod tests {
                 group: None,
                 outcome: WalOutcome::Success,
             }];
-            // Retention pruning uses mtime; sleep past APFS's 1s
-            // granularity between writes so pruning has a stable
-            // ordering to work with.
+            // M-31 (2026-09-06, A6-F-3): retention pruning
+            // (`prune_snapshot_dir`) sorts by filesystem mtime.  On
+            // APFS the mtime granularity is 1 second, so consecutive
+            // writes can tie and leave the retention ordering
+            // implementation-defined.  On ext4 / xfs / zfs the
+            // granularity is nanosecond and consecutive writes yield
+            // distinct mtimes without any sleep.  Gate the 1.1s
+            // per-iteration sleep behind `target_os = "macos"` so
+            // Linux CI drops ~4.4s of pure wall time; macOS keeps
+            // its coverage identical.
+            //
+            // Not folded into a monotone-counter arg to `maybe_write`
+            // because the retention policy's mtime semantics are a
+            // consensus surface (peer-fetch tier reads the same
+            // directory + retention convention) and changing the
+            // ordering key is out of scope for this test-suite fix.
+            #[cfg(target_os = "macos")]
             if i > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(1100));
             }
