@@ -64,6 +64,7 @@ fn stale_journal_cannot_clear_a_newer_revision() {
         HotStoreState::default(),
         Box::new(EmptyHistory),
     );
+    store.put_datum(&"channel".to_owned(), datum("seed"));
     store.put_datum(&"channel".to_owned(), datum("old"));
     let stale = store.pending_deltas().expect("journal snapshot");
     store.put_datum(&"channel".to_owned(), datum("new"));
@@ -73,6 +74,18 @@ fn stale_journal_cannot_clear_a_newer_revision() {
         .expect_err("stale journal must be rejected");
     assert!(matches!(error, RSpaceError::JournalConflict(_)));
     assert!(!store.pending_deltas().unwrap().data.unwrap().is_empty());
+}
+
+#[test]
+fn first_write_to_a_cold_channel_is_journaled() {
+    let store = HotStoreInstances::create_from_hs_and_hr::<String, String, String, String>(
+        HotStoreState::default(),
+        Box::new(EmptyHistory),
+    );
+    store.put_datum(&"channel".to_owned(), datum("first"));
+    let pending = store.pending_deltas().expect("journal snapshot");
+    assert_eq!(pending.data.as_ref().unwrap().additions().distinct_len(), 1);
+    assert!(pending.data.as_ref().unwrap().removals().is_empty());
 }
 
 #[test]

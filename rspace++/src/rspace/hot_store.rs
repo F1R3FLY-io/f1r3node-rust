@@ -15,7 +15,7 @@ use serde::Serialize;
 use tracing::warn;
 
 use super::bag::{BagDelta, BagError};
-use super::data_index::{CandidatePool, DataIndexError, RSpaceDataStore};
+use super::data_index::{CandidatePool, DataIndexError, RSpaceDataIndex, RSpaceDataStore};
 use super::errors::RSpaceError;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::history::history_reader::HistoryReaderBase;
@@ -881,12 +881,17 @@ where
                 .insert(channel, &d)
                 .expect("datum multiplicity must fit in u64");
         } else {
+            let inserted_path = RSpaceDataIndex::datum_path(channel, &d);
             let mut new_data = from_history_store.unwrap_or_default();
             new_data.push(d);
             state
                 .data
                 .set_channel(channel.clone(), new_data)
                 .expect("history data must fit the PathMap multiplicity model");
+            state
+                .data
+                .record_pending_datum_addition(&inserted_path)
+                .expect("a cold-channel datum insertion is representable");
         }
         metrics::counter!(HOT_STORE_PUT_DATUM_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__start.elapsed().as_nanos() as u64);
@@ -1078,13 +1083,27 @@ where
                 "hot-store journal changed before durable commit acknowledgement".to_owned(),
             ));
         }
-        debug_assert!(state.data.commit_pending_delta(data));
-        debug_assert!(
-            state
-                .continuations
-                .commit_pending(continuations, content, source_bytes)
-        );
-        debug_assert!(state.joins.commit_pending_delta(joins));
+        // These calls perform the actual acknowledgement.  They must not be
+        // hidden inside `debug_assert!`: release builds still need to clear
+        // exactly the journal that was durably published.
+        if !state.data.commit_pending_delta(data) {
+            return Err(RSpaceError::JournalConflict(
+                "data journal changed during durable commit acknowledgement".to_owned(),
+            ));
+        }
+        if !state
+            .continuations
+            .commit_pending(continuations, content, source_bytes)
+        {
+            return Err(RSpaceError::JournalConflict(
+                "continuation journal changed during durable commit acknowledgement".to_owned(),
+            ));
+        }
+        if !state.joins.commit_pending_delta(joins) {
+            return Err(RSpaceError::JournalConflict(
+                "join journal changed during durable commit acknowledgement".to_owned(),
+            ));
+        }
         Ok(())
     }
 

@@ -1976,6 +1976,19 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
 
     pub(crate) fn count_path(&self, path: &[u8]) -> u64 { self.index.count_path(path) }
 
+    /// Record a datum inserted while hydrating a previously cold channel.
+    /// Channel replacement is intentionally journal-free because it is a
+    /// history projection; the caller must record the one new datum after the
+    /// projection has been installed.
+    pub(crate) fn record_pending_datum_addition(
+        &mut self,
+        path: &[u8],
+    ) -> Result<(), DataIndexError> {
+        self.pending_delta
+            .record_addition(path, Multiplicity::ONE)
+            .map_err(Into::into)
+    }
+
     pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
 
     pub fn is_loaded(&self, channel: &C) -> bool
