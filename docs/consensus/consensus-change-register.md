@@ -6276,3 +6276,15 @@ switched. Classification remains `NO_PRODUCTION_CHANGE_DERIVED`; no new consensu
 decision is added to the register. The actual RSpace gate/teardown wiring and
 single-authority migration gates remain required before activation. See
 [J-062](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-062--2026-09-06-retain-the-journal-owner-through-exact-durable-resolution).
+
+Incremental-admission design review, 2026-09-06: replacing the flat retained-root
+list requires a separately versioned metadata closure and checkpoint inventory,
+not an extra semantic root. The candidate preserves full retained-state identity
+and existing three-root semantics. Current catalog selection can ignore an
+unsupported-version slot when the other slot parses, so a mixed V1/V2 slot update
+is not by itself a safe upgrade fence. Selected unsupported content must fail
+before adoption without exposing stale authority. Format, reset-identity and
+transfer-version decisions remain subject to tasks 7755/7756 and migration/state-sync
+review; no format or runtime change is activated by this documentation.
+See [J-063](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-063--2026-09-06-incremental-admission-and-retained-root-format-review)
+for the source evidence and outstanding executable compatibility controls.

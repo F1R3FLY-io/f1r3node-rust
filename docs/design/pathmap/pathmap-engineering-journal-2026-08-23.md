@@ -4326,6 +4326,110 @@ required before activation. Incremental admission performance (7755), broader
 lifecycle/consensus gates, the separate PathMap construction failure and the LMDB
 comparison remain open. This entry establishes the owner slice, not campaign completion.
 
+### J-063 — 2026-09-06: incremental admission and retained-root format review
+
+**QUESTION AND STATUS.** After the owner implementation in `e3861226c`, what
+prevents task 7755 from making ordinary successful commits proportional to changed
+work? This entry records source inspection and two bounded plan reviews, not a
+new implementation, activated format, benchmark, or completed proof.
+
+**SOURCE BASELINE.** There are three distinct costs:
+
+| Boundary | Existing behavior | Required replacement |
+|---|---|---|
+| `admission.rs::successor_inventory` | CoW-clones the existing digest-keyed PathMap ledger, then traverses the target closure and updates visit metadata. The clone itself is not an eager whole-ledger copy. | Sharing-aware current/retained reachability updates, with changed-entry CoW work measured. |
+| `admission.rs::bind_durable_transaction` | Collects and re-encodes the entire flat historical-retention list. | Structurally shared retained-root metadata; removing closure scans alone cannot remove this cost. |
+| `publication.rs::publish_incremental_with_terminal_v1` | Performs full physical recovery and retained-closure admission after a successful catalog publication. | Exact receipt-bound successor construction; cold admission remains the independent restart and uncertainty oracle. |
+
+These observations locate the already planned work; they do not establish new
+latency, allocation, RSS, or storage measurements.
+
+**LEDGER PROOF REFINEMENT.** Current-state and retained-union incoming counts are
+separate domains. Each reachable parent contributes its outgoing edge occurrences
+once, regardless of how many paths reach that parent; repeated child and root
+references remain separate contributions. Unique canonical bytes are counted once
+per reachable digest. The proof needs a finite acyclic graph and immutable,
+validated object identities, lengths, kinds and outgoing references, not merely
+nonnegative counters.
+
+The activation phase uses old roots plus additions; only after it finishes does
+deactivation use those roots minus removals. Pending contributions include both
+explicit work items and the unprocessed suffixes of suspended child/root cursors.
+Installing a complete cursor at a zero crossing and advancing each occurrence
+exactly once preserves the pending balance without eagerly queuing every child.
+A deactivation cursor must retain its immutable object capability even after the
+ledger count reaches zero. Formal models and mutants must cover skipped, duplicated
+and prematurely discarded cursor contributions, repeated edges, sharing, refusal
+and separate final-state versus transient scratch budgets before Rust changes.
+
+Reachability is not a replacement for semantic provenance or verifier diagnostics.
+The cold structural verifier can expand a digest under multiple expected roles;
+its reference count is therefore not automatically the ledger's unique-parent
+edge total. Likewise, logical-path visits, join-probe work and maximum worklist
+occupancy are not compositional state summaries. Preserve exact namespace/path
+rewrite evidence and distinguish stable state/resource summaries from cold-run
+and incremental-run diagnostics. Cold admission currently validates historical
+roots structurally but validates semantics for the current root: resetting to a
+retained root cannot infer semantic admission from union membership alone.
+
+The exact existing cold-demand preflight is also a contract, not merely logging:
+`DurableAdmissionRequirementsV1` uses these diagnostics to reject an insufficient
+cold-admission budget. A JoinBag topology change can alter lookup work for unchanged
+continuations. Reusing old values, setting them to zero, or substituting changed-work
+counts would therefore weaken that preflight. Before source changes, prove either
+the needed exact demand derivation or an explicit separation of cold-execution
+certificates and trusted-successor work certificates. Preserve cold restart/import
+and full-generation checkpoint checks; a bound must be identified as a bound, not
+an exact report. Changed resource-refusal behavior requires its own formal contract.
+
+Stable summaries need their own derivation: endpoint counts follow checked
+before/after presence rather than multiplicity; continuation payload bytes are per
+logical endpoint rather than unique blob. Unfolded logical-node counts and maximum
+path length require proved sum/max-plus summaries if retained incrementally. The
+incoming ledger alone supplies none of those logical-path properties. Preserve the
+existing continuation-to-join law without accidentally imposing its converse.
+
+**RETAINED-ROOT REPRESENTATION CANDIDATE.** Existing ordering is the complete
+`(generation, ObjectRefV1)` tuple. V1 fixtures permit different references at the
+same historical generation; distinct generations can also share a manifest.
+Neither generation alone nor digest alone is a lossless key. A proposed key is
+48 bytes: big-endian generation, 32-byte digest, then big-endian encoded length.
+It preserves the existing ordering and identity without creating surrogate IDs.
+
+A constant-size V2 anchor would reference the current entry and a path-copied
+historical radix root with an exact entry count. Reuse the canonical radix body,
+iterative editor, staging store and zipper machinery behind metadata-specific
+domain envelopes. An entry retains the complete state identity and byte claim,
+with key-to-entry equality checked at admission. This is not a fourth semantic
+namespace, a replacement for PathMap, or a new storage framework. Separate metadata
+domains avoid identical semantic/metadata empty-node encodings; full-byte digest
+collision checks remain mandatory.
+
+**COMPATIBILITY CONSTRAINTS, NOT ACTIVATION DECISIONS.**
+
+| Source observation | Consequence for the proposed format |
+|---|---|
+| `retention.rs::state_precedes` and the existing retention round-trip fixture preserve the full state tuple. | Preserve same-generation/different-reference and different-generation/same-reference entries. |
+| `checkpoint.rs::CheckpointObjectInventoryV1` defines physical DATA as retained semantic union plus exactly one retention object. | A metadata DAG needs explicitly versioned physical checkpoint inventory and a validated metadata closure; changing only the retention parser is insufficient. |
+| `CatalogSlotV1::parse` rejects unsupported versions, but `CatalogSelectionV1::select` may ignore any erroneous slot when the other parses. | Merely writing a V2 catalog slot beside a V1 predecessor can let an old reader select the stale predecessor. Preserve the supported catalog envelope and version its appointed content, or prove an explicit whole-store upgrade fence. |
+| Cold admission requires historical generations to precede the current generation. | Resetting directly to an old generation while retaining newer entries violates current admission. Task 7756 must settle state identity and semantic re-admission; this review does not silently redefine reset. |
+| Existing export/import sessions implement the legacy history protocol. | Task 5690 must bind any new durable transfer session to its original format/version and authenticated roots; no cross-version resume is implicit. |
+
+The compatibility matrix must cover V1 stores, V2 stores, unsupported appointed
+content, mixed/torn catalog slots, migration, cold recovery and interrupted
+transfers. Unsupported selected content must fail before adoption rather than
+fallback to an older authority. The mixed-version concern above is source-audit
+evidence; an executed old-reader compatibility fixture remains required.
+
+**NEXT GATES.** Complete the ledger/cursor preservation proof and extracted
+properties, freeze the retained-metadata and compatibility contract, implement
+their exact incremental composition, then compare every generated successor with
+cold admission. Measure fixed changes against geometrically increasing current
+state and retained history, and vary changed paths, entering/leaving objects,
+edge occurrences and evictions independently. Preserve owner/gate/pin semantics
+and the three semantic roots throughout. No production source or on-disk bytes
+changed in this review.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
