@@ -607,15 +607,66 @@ duplicate references and sharing, and assertions cover every intermediate micros
 | IR-12 | Any two coherent quiescent ledgers for the same acyclic graph and roots have identical counts and membership. |
 | IR-13 | Every permitted microstep preserves balance, coherence, domain support and cursor suffixes; a completed run has exact support. |
 | IR-14 | A rootless self-cycle admits a positive quiescent ledger; omitting acyclicity makes the intended reachability claim false. |
+| IR-15 | Every legal microstep spends exactly one unit of the ghost potential, in either phase and any event/cursor schedule. |
+| IR-16 | Every valid finite-domain machine reaches drainage; independent event/transfer/discard counters agree with the exact abstract step count, including empty-frame disposal. |
+| IR-17 | Only vertices changing sign spend expansion credit; extending an unchanged, unreachable part of the graph does not change cursor work. |
+| IR-18 | A resumed execution must count its initial cursor suffixes and frame disposal, not just its remaining explicit events. |
+| IR-19 | Termination and exact work do not require acyclicity; a terminating self-cycle can still have unsupported positive membership after root removal. |
+| IR-20 | Drainage is zero pending work, not zero total potential; untouched expansion credits may remain. A drained machine cannot step. |
+| IR-21 | Wrong edge-occurrence weights, omitted frame-disposal cost and incorrect transition behavior must be distinguished from the exact potential law. |
+
+### Exact abstract work and termination
+
+Let $`d(v)`$ count outgoing edge occurrences of vertex $`v`$, including duplicates,
+and define its one-time expansion credit as $`g(v)=1+2d(v)`$. The one counts the
+eventual disposal of its child frame; the two counts transfer and consumption of
+each child occurrence. Let $`E`$ be the explicit event list and $`F`$ the suspended
+frames, with $`s_f`$ the unprocessed suffix in frame $`f`$. The pending-step cost is
+
+```math
+Q = |E| + \sum_{f\in F}(1+2|s_f|).
+```
+
+For the finite, duplicate-free vertex domain $`V`$, let $`U`$ sum $`g(v)`$ over
+inactive vertices during activation, or active vertices during deactivation.
+The ghost potential is $`\Phi=Q+U`$. It is mathematical proof instrumentation,
+not a production initialization scan, stored counter or fuel parameter.
+Every actual cursor transition satisfies
+
+```math
+\Phi_{\mathrm{before}} = 1 + \Phi_{\mathrm{after}}.
+```
+
+An event without a zero crossing removes one pending unit. A crossing installs
+the full cursor and releases exactly its expansion credit. A transfer removes
+two suffix units and adds one event; disposal removes the final frame unit.
+Progress holds whenever events or frames remain, and the strictly decreasing
+natural-number potential excludes infinite sequences of actual steps. Indefinite
+external stuttering or a scheduler that never calls the machine is not covered.
+
+Let $`\Delta`$ be the vertices whose active bit changes during one phase. Each
+changes at most once. For a drained execution of $`k`$ actual steps,
+
+```math
+k = Q_{\mathrm{initial}} + \sum_{v\in\Delta}(1+2d(v)).
+```
+
+With initially empty frames, $`Q_{\mathrm{initial}}`$ is exactly the explicit
+root-event count. A resumed cursor requires the full expression for $`Q`$.
+Untouched vertices can leave positive $`U`$ after drainage; only $`Q=0`$ is the
+drainage criterion. These termination/work results do not need a ranked graph;
+acyclicity is still required for the separate exact rooted-support result.
 
 **Coverage boundary.** Natural-number proofs and bounded test arithmetic do not yet
 establish checked production `u64` overflow/refusal, failed CoW-trial nonmutation,
-termination of every legal schedule, changed-edge complexity, unique-byte/kind
-inventories, or cold-resource certificates. The tests' work-bound observations are
-not substituted for those outstanding proofs. `authenticated_cursor` means only
+unique-byte/kind inventories, or cold-resource certificates. Abstract termination
+and the exact changed-frontier step formula are proved; runtime initialization,
+byte access, lookup, validation, allocation and CoW costs need separate refinement.
+The test-only graph scans and vector operations are not production complexity
+evidence. `authenticated_cursor` means only
 an exact suffix of an abstract parent's children; digest/length/kind, source identity
 and namespace/exact-path authorization require their own concrete refinement.
-Acyclicity and complete drainage are essential assumptions, not optional checks.
+Acyclicity and complete drainage remain essential for exact rooted support.
 
 ## Formal-to-executable derivation matrix
 
@@ -637,6 +688,13 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | IR-12 | `EXEC_ONLY` | `IncrementalReachability.incoming_extensional`, `IncrementalReachability.quiescent_ledger_is_unique` | P | Test-only model extraction; production refinement remains open. Any two coherent quiescent ledgers for the same acyclic graph and roots have identical counts and membership. |
 | IR-13 | `EXEC_ONLY` | `IncrementalReachability.cursor_step_preserves_configuration`, `IncrementalReachability.cursor_execution_preserves_configuration`, `IncrementalReachability.drained_execution_has_exact_root_reachability` | P | Test-only model extraction; production refinement remains open. Every permitted microstep preserves balance, coherence, domain support and cursor suffixes; a completed run has exact support. |
 | IR-14 | `EXEC_ONLY` | `IncrementalReachability.no_roots_no_reachability`, `IncrementalReachability.rootless_cycle_has_a_spurious_quiescent_ledger` | P | Test-only model extraction; production refinement remains open. A rootless self-cycle admits a positive quiescent ledger; omitting acyclicity makes the intended reachability claim false. |
+| IR-15 | `EXEC_ONLY` | `IncrementalReachability.selected_sum_extensional`, `IncrementalReachability.selected_sum_replace_absent`, `IncrementalReachability.selected_sum_replace_present`, `IncrementalReachability.increment_releases_exact_expansion_credit`, `IncrementalReachability.decrement_releases_exact_expansion_credit`, `IncrementalReachability.every_cursor_step_spends_exactly_one` | P | Every generated microstep checks the exact ghost-potential identity; checked production arithmetic and runtime cost refinement remain open. |
+| IR-16 | `EXEC_ONLY` | `IncrementalReachability.cursor_machine_progress`, `IncrementalReachability.valid_cursor_steps_are_well_founded`, `IncrementalReachability.measured_execution_erases`, `IncrementalReachability.every_execution_has_a_step_count`, `IncrementalReachability.measured_execution_prepend`, `IncrementalReachability.execution_conserves_exact_work`, `IncrementalReachability.every_valid_machine_reaches_drainage` | P | Actual transitions terminate and counted executions conserve work; independent executable action counters include repeated occurrences and empty-frame disposal. External stuttering is excluded. |
+| IR-17 | `EXEC_ONLY` | `IncrementalReachability.cursor_step_cannot_restore_expansion_credit`, `IncrementalReachability.cursor_execution_cannot_restore_expansion_credit`, `IncrementalReachability.selected_sum_partition`, `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work` | P | Untouched credit cancels from the exact drained-work equation. Unrelated-graph extension checks abstract locality, not PathMap allocation or byte-access costs. |
+| IR-18 | `EXEC_ONLY` | `IncrementalReachability.drained_execution_has_exact_changed_frontier_work` | P | General initial configurations account for all residual cursor occurrences and disposal steps; the root-count specialization requires initially empty frames. |
+| IR-19 | `EXEC_ONLY` | `IncrementalReachability.every_valid_machine_reaches_drainage`, `IncrementalReachability.rootless_cycle_has_a_spurious_quiescent_ledger` | P | The self-cycle witness separates termination from rooted-support correctness; production acyclic admission remains mandatory. |
+| IR-20 | `EXEC_ONLY` | `IncrementalReachability.zero_pending_work_is_exactly_drained`, `IncrementalReachability.drained_machine_cannot_step` | P | Only pending work must vanish; positive unspent credit is allowed at drainage. |
+| IR-21 | `EXEC_ONLY` | `IncrementalReachability.every_cursor_step_spends_exactly_one` | P | Wrong-cost and transition negative controls discriminate the exact model law; they are not an alternative implementation proof. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -757,6 +815,18 @@ Two implementation controls were deliberately observed red before their fixes:
 The focused executable gate passes exact 74-ID traceability, the complete 34-axis resource-boundary matrix, and selected-successor damage/repair without old-authority fallback. The parallel `rspace_plus_plus` library gate passes **392/392** in **52.20 s** under a 10 GiB hard memory cap, zero swap, and a 12-core quota. The complete package gate passes **817/817** across every registered library and integration target in **4 min 36.055 s**, peaking at **5.4 GiB** inside a 10 GiB hard cap with zero swap and a ten-core quota. The integrated formal gate passes Rocq, Verus, Z3, TLC, and mCRL2 under explicit per-tool memory ceilings. A fresh bounded TLC run on 2026-09-03 also checked the unchanged publication model with 8,344 generated states, 7,896 distinct states, depth 22, and no invariant error under a 2 GiB Java heap and 4 GiB RSS cap. Ignored `scratch/` transcripts retain the local measurement detail; the tracked scripts, models, configurations, properties, and this catalog are the reproducible authority. These results do not discharge unrelated open campaign tasks; the physical write/sync seam and its generated publication matrix are now covered by commits `018620a20`, `92c603126`, and `8c8f570fe`.
 
 On 2026-09-03, commit `94513d0f0` added `every_checkpoint_pack_truncation_fails_before_authority`. It exercises every shorter prefix of a valid checkpoint pack, including all byte boundaries in the header, checkpoint `PREPARE`, checkpoint `COMMIT`, and indexed object bodies. The fully qualified test passed under a `MemoryMax=4G`, zero-swap, `CPUQuota=600%` systemd scope. Commit `a6f373419` additionally verifies that the positioned-write helper resumes correctly after a positive short write. Commit `c94efc7de` adds a real durable-pack truncation test through `DurableFileV1::read_exact_at`, asserting the typed positional short-read contract after the file is physically shortened. Commit `018620a20` adds test-only failpoints at the actual positioned-write and file-sync boundaries, with a focused test proving typed path-aware failures and no file extension after a failed write. Commit `92c603126` connects those failpoints to generation publication and restart admission, proving both physical failures remain definitely unpublished and restart selects the old authority. Commit `8c8f570fe` adds both physical failpoints to the existing table-driven publication outcome matrix; the matrix passes with the expected trace prefixes and old-authority restart result. These changes close the checkpoint-pack truncation, physical exact-read, physical write/sync interception, publication integration, generated matrix, and pure helper-loop slices; final formal artifact/trace documentation and the focused completion gate remain open.
+
+The 2026-09-06 incremental cursor extension adds `IR-01` through `IR-21`; the
+current catalog/derivation/binding registry contains **118** IDs. After the twenty
+work/termination lemmas were compiled and independently kernel-checked, the focused
+gate passed **16/16** in debug (0.09 s) and release (0.02 s): fifteen test-only
+cursor-model checks plus the central traceability check. All 94 assumption reports
+are closed. The original 256-case DAG property checks exact per-step potential
+loss and both complementary schedules; resumed/cyclic/unused-credit/cost controls
+distinguish the theorem boundaries. The remaining 635 library tests were not
+selected. These results do not update the earlier full-package counts or establish
+production successor refinement. See engineering journal J-065 for caps, evidence
+hashes and remaining checked-resource/implementation obligations.
 
 ## Refinement completion rule
 

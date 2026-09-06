@@ -2338,6 +2338,364 @@ Proof.
   eapply quiescent_ledger_is_unique; eauto.
 Qed.
 
+Fixpoint selected_sum (vertices : list nat) (selected : membership)
+  (weight : nat -> nat) : nat :=
+  match vertices with
+  | [] => 0
+  | vertex :: rest =>
+      (if selected vertex then weight vertex else 0) + selected_sum rest selected weight
+  end.
+
+Lemma selected_sum_extensional : forall vertices left right weight,
+  (forall vertex, left vertex = right vertex) ->
+  selected_sum vertices left weight = selected_sum vertices right weight.
+Proof.
+  induction vertices as [|head tail IH]; intros left right weight agreement;
+    [reflexivity|].
+  cbn [selected_sum]. rewrite (agreement head), (IH left right weight agreement).
+  reflexivity.
+Qed.
+
+Lemma selected_sum_replace_absent : forall vertices selected vertex enabled weight,
+  ~ In vertex vertices ->
+  selected_sum vertices (replace selected vertex enabled) weight =
+  selected_sum vertices selected weight.
+Proof.
+  induction vertices as [|head tail IH]; intros selected vertex enabled weight absent;
+    [reflexivity|].
+  assert (different : Nat.eqb head vertex = false).
+  { apply Nat.eqb_neq. intros same. subst head. apply absent; now left. }
+  cbn [selected_sum]. unfold replace at 1. rewrite different.
+  rewrite IH; [reflexivity|]. intros member. apply absent; now right.
+Qed.
+
+Lemma selected_sum_replace_present : forall vertices selected vertex enabled weight,
+  NoDup vertices -> In vertex vertices ->
+  selected_sum vertices (replace selected vertex enabled) weight +
+    (if selected vertex then weight vertex else 0) =
+  selected_sum vertices selected weight + (if enabled then weight vertex else 0).
+Proof.
+  induction vertices as [|head tail IH]; intros selected vertex enabled weight unique member;
+    [contradiction|].
+  inversion unique as [|? ? absent tail_unique]; subst.
+  destruct member as [same|member].
+  - subst head. cbn [selected_sum]. unfold replace at 1. rewrite Nat.eqb_refl.
+    rewrite selected_sum_replace_absent by exact absent. lia.
+  - assert (different : Nat.eqb head vertex = false).
+    { apply Nat.eqb_neq. intros same. subst head. contradiction. }
+    cbn [selected_sum]. unfold replace at 1. rewrite different.
+    pose proof (IH selected vertex enabled weight tail_unique member) as conserved. lia.
+Qed.
+
+Definition expansion_credit (vertex : nat) : nat := 1 + 2 * length (children vertex).
+
+Definition unexpanded (mode : phase) (state : ledger) (vertex : nat) : bool :=
+  match mode with
+  | Activation => negb (active state vertex)
+  | Deactivation => active state vertex
+  end.
+
+Definition unspent_credit (mode : phase) (vertices : list nat) (state : ledger) : nat :=
+  selected_sum vertices (unexpanded mode state) expansion_credit.
+
+Fixpoint cursor_work (cursors : list child_cursor) : nat :=
+  match cursors with
+  | [] => 0
+  | (_, remaining) :: rest => 1 + 2 * length remaining + cursor_work rest
+  end.
+
+Definition pending_work (machine : configuration) : nat :=
+  length (events machine) + cursor_work (frames machine).
+
+Definition remaining_work (mode : phase) (vertices : list nat)
+  (machine : configuration) : nat :=
+  pending_work machine + unspent_credit mode vertices (resident machine).
+
+Lemma increment_releases_exact_expansion_credit : forall vertices state vertex,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  unspent_credit Activation vertices (increment state vertex) +
+    (if Nat.eqb (counts state vertex) 0 then expansion_credit vertex else 0) =
+  unspent_credit Activation vertices state.
+Proof.
+  intros vertices state vertex unique member agreement.
+  assert (updated : unspent_credit Activation vertices (increment state vertex) =
+    selected_sum vertices (replace (unexpanded Activation state) vertex false)
+      expansion_credit).
+  { unfold unspent_credit. apply selected_sum_extensional. intros query.
+    unfold unexpanded, increment; cbn [active]. unfold replace.
+    destruct (Nat.eqb query vertex); reflexivity. }
+  rewrite updated.
+  pose proof (@selected_sum_replace_present vertices (unexpanded Activation state)
+    vertex false expansion_credit unique member) as changed.
+  unfold unexpanded in changed. rewrite (agreement vertex) in changed.
+  unfold unspent_credit, unexpanded.
+  destruct (counts state vertex); cbn in changed |- *; lia.
+Qed.
+
+Lemma decrement_releases_exact_expansion_credit : forall vertices state vertex,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  unspent_credit Deactivation vertices (decrement state vertex) +
+    (if Nat.eqb (counts state vertex) 1 then expansion_credit vertex else 0) =
+  unspent_credit Deactivation vertices state.
+Proof.
+  intros vertices state vertex unique member agreement.
+  pose proof (@selected_sum_replace_present vertices (active state) vertex
+    (1 <? counts state vertex) expansion_credit unique member) as changed.
+  rewrite (agreement vertex) in changed.
+  change (selected_sum vertices (replace (active state) vertex
+    (1 <? counts state vertex)) expansion_credit +
+    (if Nat.eqb (counts state vertex) 1 then expansion_credit vertex else 0) =
+    selected_sum vertices (active state) expansion_credit).
+  destruct (counts state vertex) as [|[|count]]; cbn in changed |- *; lia.
+Qed.
+
+Theorem every_cursor_step_spends_exactly_one : forall vertices roots mode before after,
+  NoDup vertices -> valid_configuration mode vertices roots before ->
+  cursor_step mode before after ->
+  remaining_work mode vertices before = S (remaining_work mode vertices after).
+Proof.
+  intros vertices roots mode before after unique valid transition.
+  destruct transition as [state vertex explicit cursors|state vertex explicit cursors|
+    mode state explicit parent child remaining cursors|mode state explicit parent cursors];
+    destruct valid as [agreement [balance [event_domain cursor_domain]]];
+    cbn [resident events frames] in *.
+  - inversion event_domain as [|? ? member _]; subst.
+    pose proof (@increment_releases_exact_expansion_credit vertices state vertex
+      unique member agreement) as spent.
+    unfold remaining_work, pending_work. cbn [resident events frames length].
+    unfold increment_cursors. destruct (Nat.eqb (counts state vertex) 0);
+      cbn [cursor_work] in *; unfold expansion_credit in *; lia.
+  - inversion event_domain as [|? ? member _]; subst.
+    pose proof (@decrement_releases_exact_expansion_credit vertices state vertex
+      unique member agreement) as spent.
+    unfold remaining_work, pending_work. cbn [resident events frames length].
+    unfold decrement_cursors. destruct (Nat.eqb (counts state vertex) 1);
+      cbn [cursor_work] in *; unfold expansion_credit in *; lia.
+  - unfold remaining_work, pending_work. cbn [resident events frames cursor_work length]. lia.
+  - unfold remaining_work, pending_work. cbn [resident events frames cursor_work length]. lia.
+Qed.
+
+Definition drained (machine : configuration) : Prop :=
+  events machine = [] /\ frames machine = [].
+
+Theorem zero_pending_work_is_exactly_drained : forall machine,
+  pending_work machine = 0 <-> drained machine.
+Proof.
+  intros [state explicit cursors].
+  unfold pending_work, drained. cbn [events frames]. split.
+  - intros zero. destruct explicit as [|vertex explicit];
+      [|cbn [length] in zero; lia].
+    split; [reflexivity|]. destruct cursors as [|[parent remaining] cursors];
+      [reflexivity|cbn [length cursor_work] in zero; lia].
+  - intros [-> ->]. reflexivity.
+Qed.
+
+Theorem cursor_machine_progress : forall mode machine,
+  drained machine \/ exists next, cursor_step mode machine next.
+Proof.
+  intros mode [state explicit cursors]. destruct explicit as [|vertex explicit].
+  - destruct cursors as [|[parent remaining] cursors].
+    + left; split; reflexivity.
+    + right. destruct remaining as [|child remaining]; eexists; constructor.
+  - right. destruct mode; eexists; constructor.
+Qed.
+
+Theorem drained_machine_cannot_step : forall mode machine next,
+  drained machine -> ~ cursor_step mode machine next.
+Proof.
+  intros mode machine next done transition. destruct transition;
+    destruct done as [empty_events empty_frames];
+    cbn [events frames] in *; discriminate.
+Qed.
+
+Definition valid_cursor_predecessor (mode : phase) (vertices : list nat) (roots : counter)
+  (after before : configuration) : Prop :=
+  valid_configuration mode vertices roots before /\ cursor_step mode before after.
+
+Theorem valid_cursor_steps_are_well_founded : forall vertices roots mode,
+  NoDup vertices -> well_founded (valid_cursor_predecessor mode vertices roots).
+Proof.
+  intros vertices roots mode unique.
+  apply (@well_founded_lt_compat configuration (remaining_work mode vertices)
+    (valid_cursor_predecessor mode vertices roots)).
+  intros after before [valid transition].
+  pose proof (@every_cursor_step_spends_exactly_one vertices roots mode before after
+    unique valid transition) as spent. lia.
+Qed.
+
+Inductive measured_execution (mode : phase) (initial : configuration) :
+  nat -> configuration -> Prop :=
+| measured_start : measured_execution mode initial 0 initial
+| measured_step : forall steps before after,
+    measured_execution mode initial steps before -> cursor_step mode before after ->
+    measured_execution mode initial (S steps) after.
+
+Lemma measured_execution_erases : forall mode initial steps final,
+  measured_execution mode initial steps final -> cursor_execution mode initial final.
+Proof.
+  intros mode initial steps final execution. induction execution.
+  - constructor.
+  - eapply execution_step; eauto.
+Qed.
+
+Lemma every_execution_has_a_step_count : forall mode initial final,
+  cursor_execution mode initial final ->
+  exists steps, measured_execution mode initial steps final.
+Proof.
+  intros mode initial final execution. induction execution.
+  - exists 0; constructor.
+  - destruct IHexecution as [steps measured]. exists (S steps).
+    eapply measured_step; eauto.
+Qed.
+
+Lemma measured_execution_prepend : forall mode initial next steps final,
+  cursor_step mode initial next -> measured_execution mode next steps final ->
+  measured_execution mode initial (S steps) final.
+Proof.
+  intros mode initial next steps final first rest. induction rest.
+  - eapply measured_step; [constructor|exact first].
+  - eapply measured_step; eauto.
+Qed.
+
+Theorem execution_conserves_exact_work : forall vertices roots mode initial steps final,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  valid_configuration mode vertices roots initial ->
+  measured_execution mode initial steps final ->
+  steps + remaining_work mode vertices final = remaining_work mode vertices initial.
+Proof.
+  intros vertices roots mode initial steps final unique closed valid execution.
+  induction execution; [reflexivity|].
+  pose proof (@measured_execution_erases mode initial steps before execution) as erased.
+  pose proof (@cursor_execution_preserves_configuration vertices roots mode initial before
+    unique closed valid erased) as before_valid.
+  pose proof (@every_cursor_step_spends_exactly_one vertices roots mode before after
+    unique before_valid H) as spent. lia.
+Qed.
+
+Theorem every_valid_machine_reaches_drainage : forall vertices roots mode,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  forall initial, valid_configuration mode vertices roots initial ->
+    exists steps final,
+      measured_execution mode initial steps (Configuration final [] []).
+Proof.
+  intros vertices roots mode unique closed.
+  apply (@well_founded_induction configuration
+    (valid_cursor_predecessor mode vertices roots)
+    (@valid_cursor_steps_are_well_founded vertices roots mode unique)
+    (fun initial => valid_configuration mode vertices roots initial ->
+      exists steps final,
+        measured_execution mode initial steps (Configuration final [] []))).
+  intros initial IH valid.
+  destruct (cursor_machine_progress mode initial) as [done|[next transition]].
+  - destruct initial as [state explicit cursors].
+    destruct done as [empty_events empty_frames]. cbn [events frames] in *.
+    subst explicit cursors. exists 0, state. constructor.
+  - assert (next_valid : valid_configuration mode vertices roots next).
+    { eapply cursor_step_preserves_configuration; eauto. }
+    destruct (IH next (conj valid transition) next_valid) as [steps [final execution]].
+    exists (S steps), final. eapply measured_execution_prepend; eauto.
+Qed.
+
+Theorem cursor_step_cannot_restore_expansion_credit : forall mode before after,
+  coherent (resident before) -> cursor_step mode before after ->
+  forall vertex, unexpanded mode (resident after) vertex = true ->
+    unexpanded mode (resident before) vertex = true.
+Proof.
+  intros mode before after agreement transition query enabled.
+  destruct transition; cbn [resident] in *; [| |exact enabled|exact enabled].
+  - unfold unexpanded, increment in enabled; cbn [active] in enabled.
+    unfold replace in enabled. destruct (Nat.eqb query vertex);
+      [discriminate|exact enabled].
+  - unfold unexpanded, decrement in enabled; cbn [active] in enabled.
+    unfold replace in enabled. destruct (Nat.eqb query vertex) eqn:same;
+      [|exact enabled].
+    apply Nat.eqb_eq in same. subst query.
+    unfold unexpanded. rewrite (agreement vertex). apply Nat.ltb_lt.
+    apply Nat.ltb_lt in enabled. lia.
+Qed.
+
+Theorem cursor_execution_cannot_restore_expansion_credit :
+  forall vertices roots mode initial final,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  valid_configuration mode vertices roots initial ->
+  cursor_execution mode initial final ->
+  forall vertex, unexpanded mode (resident final) vertex = true ->
+    unexpanded mode (resident initial) vertex = true.
+Proof.
+  intros vertices roots mode initial final unique closed valid execution.
+  induction execution; [auto|].
+  pose proof (@cursor_execution_preserves_configuration vertices roots mode initial before
+    unique closed valid execution) as before_valid.
+  destruct before_valid as [agreement _]. intros vertex enabled.
+  apply IHexecution. eapply cursor_step_cannot_restore_expansion_credit; eauto.
+Qed.
+
+Lemma selected_sum_partition : forall vertices before after weight,
+  (forall vertex, after vertex = true -> before vertex = true) ->
+  selected_sum vertices before weight = selected_sum vertices after weight +
+    selected_sum vertices (fun vertex => before vertex && negb (after vertex)) weight.
+Proof.
+  induction vertices as [|head tail IH]; intros before after weight monotone;
+    [reflexivity|].
+  cbn [selected_sum]. rewrite (IH before after weight monotone).
+  specialize (monotone head).
+  destruct (before head), (after head); cbn in *; try congruence; lia.
+Qed.
+
+Definition changed_expansion_work (mode : phase) (vertices : list nat)
+  (before after : ledger) : nat :=
+  selected_sum vertices
+    (fun vertex => unexpanded mode before vertex && negb (unexpanded mode after vertex))
+    expansion_credit.
+
+Theorem drained_execution_has_exact_changed_frontier_work :
+  forall vertices roots mode initial steps final,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  valid_configuration mode vertices roots initial ->
+  measured_execution mode initial steps (Configuration final [] []) ->
+  steps = pending_work initial +
+    changed_expansion_work mode vertices (resident initial) final.
+Proof.
+  intros vertices roots mode initial steps final unique closed valid execution.
+  pose proof (@execution_conserves_exact_work vertices roots mode initial steps
+    (Configuration final [] []) unique closed valid execution) as conserved.
+  pose proof (@measured_execution_erases mode initial steps
+    (Configuration final [] []) execution) as erased.
+  pose proof (@cursor_execution_cannot_restore_expansion_credit vertices roots mode
+    initial (Configuration final [] []) unique closed valid erased) as monotone.
+  pose proof (@selected_sum_partition vertices (unexpanded mode (resident initial))
+    (unexpanded mode final) expansion_credit monotone) as partitioned.
+  unfold remaining_work, unspent_credit in conserved.
+  unfold pending_work in conserved at 1.
+  cbn [events frames resident cursor_work length] in conserved.
+  unfold changed_expansion_work. lia.
+Qed.
+
+Theorem root_delta_execution_has_exact_changed_frontier_work :
+  forall vertices roots mode initial explicit steps final,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  valid_configuration mode vertices roots (Configuration initial explicit []) ->
+  measured_execution mode (Configuration initial explicit []) steps
+    (Configuration final [] []) ->
+  steps = length explicit + changed_expansion_work mode vertices initial final.
+Proof.
+  intros vertices roots mode initial explicit steps final unique closed valid execution.
+  pose proof (@drained_execution_has_exact_changed_frontier_work vertices roots mode
+    (Configuration initial explicit []) steps final unique closed valid execution) as exact_work.
+  unfold pending_work in exact_work. cbn [events frames resident cursor_work] in exact_work.
+  lia.
+Qed.
+
 Lemma no_roots_no_reachability : forall vertices roots,
   (forall vertex, roots vertex = 0) ->
   forall vertex, ~ reachable vertices roots vertex.
@@ -2398,6 +2756,27 @@ Proof.
 Qed.
 
 End CatalogAppointedPrefix.
+
+Print Assumptions IncrementalReachability.selected_sum_extensional.
+Print Assumptions IncrementalReachability.selected_sum_replace_absent.
+Print Assumptions IncrementalReachability.selected_sum_replace_present.
+Print Assumptions IncrementalReachability.increment_releases_exact_expansion_credit.
+Print Assumptions IncrementalReachability.decrement_releases_exact_expansion_credit.
+Print Assumptions IncrementalReachability.every_cursor_step_spends_exactly_one.
+Print Assumptions IncrementalReachability.zero_pending_work_is_exactly_drained.
+Print Assumptions IncrementalReachability.cursor_machine_progress.
+Print Assumptions IncrementalReachability.drained_machine_cannot_step.
+Print Assumptions IncrementalReachability.valid_cursor_steps_are_well_founded.
+Print Assumptions IncrementalReachability.measured_execution_erases.
+Print Assumptions IncrementalReachability.every_execution_has_a_step_count.
+Print Assumptions IncrementalReachability.measured_execution_prepend.
+Print Assumptions IncrementalReachability.execution_conserves_exact_work.
+Print Assumptions IncrementalReachability.every_valid_machine_reaches_drainage.
+Print Assumptions IncrementalReachability.cursor_step_cannot_restore_expansion_credit.
+Print Assumptions IncrementalReachability.cursor_execution_cannot_restore_expansion_credit.
+Print Assumptions IncrementalReachability.selected_sum_partition.
+Print Assumptions IncrementalReachability.drained_execution_has_exact_changed_frontier_work.
+Print Assumptions IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work.
 
 Print Assumptions IncrementalReachability.incoming_replace_absent.
 Print Assumptions IncrementalReachability.incoming_replace_present.

@@ -13017,3 +13017,28 @@ constructor remain part of task 7755. Rust/Rocq maxima were 8/2 GiB with zero sw
 not measured peaks; no benchmark was run. No production backend, persisted format,
 consensus encoding or metering behavior changed. See
 [J-064](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-064--2026-09-06-prove-cursor-ledger-reachability-before-successor-construction).
+
+Incremental cursor work/termination, 2026-09-06: twenty additional Rocq lemmas
+discharge the abstract termination and changed-frontier work obligations identified
+in the preceding J-064 entry. Every actual cursor step decreases a ghost potential
+by exactly one; progress plus well-foundedness yields drainage without runtime
+fuel. With initially empty frames, the exact step count is initial root events,
+twice the outgoing edge occurrences of sign-changing vertices, and one frame
+disposal per sign-changing vertex. Suspended initial frames require their residual
+costs too. Drainage requires zero pending work, not zero unused expansion credit.
+Termination does not replace the acyclic-admission requirement for exact rooted
+support. All 94 assumption reports are closed, and independent kernel checking
+passes under a 2 GiB hard ceiling with zero swap. All fifteen extracted model
+tests and the exhaustive 118-ID traceability check pass **16/16** in debug
+(0.09 s) and release (0.02 s), with 635 other library tests excluded. The original
+256-case DAG property now checks exact potential loss after every microstep;
+independent event/transfer/disposal counters cover resumed suffixes as well as
+fresh phases. Six new controls include cycles, unused terminal credit, unchanged
+graph extensions and incorrect costs. Rust runs use an 8 GiB hard ceiling, zero
+swap and four workers; those ceilings are not measured peaks. No production
+runtime, native-stack, allocation, RSS-slope, I/O or throughput improvement is
+inferred from this abstract operation count.
+Checked production counters, scratch/final resource separation, object/provenance
+validation, concrete PathMap/CoW costs and successor integration remain task 7755
+obligations. See
+[J-065](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-065--2026-09-06-prove-exact-cursor-work-and-termination-without-runtime-fuel).

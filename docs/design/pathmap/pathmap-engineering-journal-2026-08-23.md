@@ -4517,6 +4517,92 @@ the full cold differential. Bounded `usize` model arithmetic and test work count
 are not promoted to those proofs. No production admission check, pin, authority
 binding, consensus byte, runtime budget or backend choice changed in this slice.
 
+### J-065 — 2026-09-06: prove exact cursor work and termination without runtime fuel
+
+**QUESTION AND STATUS.** Does the actual cursor transition system terminate, and
+can its work be stated in terms of the changed frontier rather than the entire
+stored graph? Twenty additional lemmas in `GenerationCheckpointPublication.v`
+establish both claims at the abstract-machine level. This discharges the abstract
+termination/work obligations left open in J-064, not the remaining production
+successor, checked-resource or format-refinement obligations of task 7755.
+
+**MECHANISM.** The derivation uses one expansion credit per vertex per phase,
+equal to one frame-disposal step plus two steps per outgoing edge occurrence.
+The two steps are cursor transfer and event consumption. A zero crossing spends
+that credit while installing the complete cursor. Other event consumption,
+single-edge transfer and empty-frame disposal each spend one pending-work unit.
+Thus every actual transition decreases the natural-number ghost potential by
+exactly one. Progress whenever a frame or event remains establishes drainage
+without a runtime fuel parameter or depth limit.
+
+The [invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#exact-abstract-work-and-termination)
+defines all quantities and gives the equations. For an execution starting without
+suspended frames, the exact step count is initial root events plus twice the
+outgoing edge occurrences of sign-changing vertices plus one disposal per such
+vertex. For example, adding two occurrences of a root whose only two children
+are the same leaf requires eight steps: two root events, five units of released
+parent credit and one unit of leaf credit, with no extra expansion for the
+duplicate root event. Equivalently: four event consumptions, two transfers
+and two disposals. Incoming references remain a multiset; parent expansion is
+once per reachability transition.
+
+**BOUNDARIES THAT THE PROOF MAKES EXPLICIT.**
+
+- A resumed cursor has residual edge and disposal costs. Counting only remaining
+  root events would understate its work.
+- Drainage means no pending events or frames. Untouched vertices may retain
+  positive ghost credit; the total potential need not reach zero.
+- Cycles do not invalidate termination or this work formula. They do invalidate
+  the separate positive-count/rooted-support equivalence: adding a self-referencing
+  root drains in four steps with count two, and removing the root drains in one
+  step with an unsupported count of one. Production acyclic admission stays.
+- The potential is proof instrumentation, not a production full-graph scan.
+  The theorem counts abstract transitions, not bytes, allocations or CPU cycles.
+  Initialization, object access, validation, checked arithmetic and PathMap lookup/
+  CoW costs still require concrete refinement. External indefinite stuttering is
+  not an actual machine transition and is not a liveness guarantee of this proof.
+
+**EXTRACTION AND VERIFICATION.** `IR-15` through `IR-21` map all twenty added
+lemmas into the existing catalog and test-binding registry. Executable extraction
+adds per-step potential conservation and independent event/transfer/disposal
+counters to the generated DAG histories, with controls for repeated references,
+zero-degree vertices, unrelated graph extension, suspended cursors, cycles,
+positive terminal credit and deliberately incorrect costs. These are test-only
+model checks; production PathMap storage is not projected into a vector.
+
+All **94** assumption reports are closed under the global context. Independent
+kernel checking of the compiled theory exits zero. The theory SHA-256 is
+`4cd46ac7b265720af457048b7a6758982b36e01d65fafda0518dd8172d346200`.
+Both proof commands used a 1 GiB high threshold, 2 GiB hard memory maximum, zero
+swap and a two-core quota. These are ceilings, not measured peaks. The explicit
+kernel recheck records the exit status because the earlier silent kernel log
+alone did not establish successful termination. Evidence files are
+`rspace-incremental-work-formal-final-20260906.log` and
+`rspace-incremental-work-kernel-audit-20260906.log`; pgmcp records their hashes.
+The focused executable gate passes **16/16** in debug (0.09 s) and release
+(0.02 s): all fifteen model tests plus the exhaustive **118-ID** derivation check.
+The generated property retains 256 DAG histories and both complementary schedules.
+Each command explicitly requires sixteen passes; 635 other library tests remain
+outside this selection. The six new controls pass without weakening the existing
+cold-DAG checks. Existing transition mutants now fail the exact-potential law as
+well as conservation, and five wrong-cost variants are detected in both phases.
+The test-model SHA-256 is
+`16128d79484ffcc9b70d96306bfc05fc5d05950beaaa42921f72d45e41396b9d`.
+Rust runs use a 6 GiB high threshold, 8 GiB maximum, zero swap, four build/test
+workers and disk-backed scratch with `RUST_MIN_STACK` unset. The existing 80
+library-test warnings remain visible. Logs are
+`rspace-incremental-work-model-debug-20260906.log` and
+`rspace-incremental-work-model-release-20260906.log`; pgmcp records their hashes.
+These are model correctness results, not production cold-admission differentials,
+full-workspace verification or performance measurements. No benchmark was run.
+
+**NEXT ACCEPTANCE BOUNDARY.** Prove checked reference/inventory arithmetic,
+temporary versus final resource budgets and
+failure-atomic trial behavior. The cold/trusted requirement-certificate contract,
+separate current/retained/metadata domains, retained-format compatibility and
+production successor construction remain open. No source runtime behavior,
+consensus encoding, persistence bytes, metering or backend selection changes here.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

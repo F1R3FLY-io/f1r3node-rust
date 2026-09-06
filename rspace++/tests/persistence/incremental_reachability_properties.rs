@@ -265,30 +265,154 @@ impl Machine {
     }
 }
 
-fn drain(graph: &Graph, machine: &mut Machine, schedule: &[bool]) -> Vec<usize> {
+fn pending_work(machine: &Machine) -> usize {
+    machine.events.len() +
+        machine
+            .cursors
+            .iter()
+            .map(|cursor| 1 + 2 * cursor.remaining.len())
+            .sum::<usize>()
+}
+
+fn unspent_credit(graph: &Graph, machine: &Machine) -> usize {
+    graph
+        .iter()
+        .enumerate()
+        .filter(|(vertex, _)| match machine.phase {
+            Phase::Activation => !machine.ledger.active[*vertex],
+            Phase::Deactivation => machine.ledger.active[*vertex],
+        })
+        .map(|(_, children)| 1 + 2 * children.len())
+        .sum()
+}
+
+fn potential(graph: &Graph, machine: &Machine) -> usize {
+    pending_work(machine) + unspent_credit(graph, machine)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TraceWork {
+    steps: usize,
+    event_consumptions: usize,
+    cursor_transfers: usize,
+    cursor_discards: usize,
+    sign_changes: Vec<usize>,
+}
+
+impl TraceWork {
+    fn new(vertex_count: usize) -> Self {
+        Self {
+            steps: 0,
+            event_consumptions: 0,
+            cursor_transfers: 0,
+            cursor_discards: 0,
+            sign_changes: vec![0; vertex_count],
+        }
+    }
+
+    fn action_counts(&self) -> [usize; 4] {
+        [self.steps, self.event_consumptions, self.cursor_transfers, self.cursor_discards]
+    }
+}
+
+fn take_checked_step(
+    graph: &Graph,
+    machine: &mut Machine,
+    prefer_cursor: bool,
+    work: &mut TraceWork,
+) {
+    let before = machine.clone();
+    assert!(valid_configuration(graph, &before));
+    assert_eq!(pending_work(&before) == 0, before.drained());
+    assert!(machine.step(graph, prefer_cursor, Mutation::None).unwrap());
+    assert!(valid_configuration(graph, machine), "after microstep {}: {machine:?}", work.steps);
+    assert_eq!(before.phase, machine.phase);
+    assert_eq!(before.roots, machine.roots);
+    assert_eq!(potential(graph, &before), 1 + potential(graph, machine));
+    assert_eq!(pending_work(machine) == 0, machine.drained());
+    if machine.events.len() + 1 == before.events.len() {
+        assert_eq!(machine.events, before.events[..before.events.len() - 1]);
+        work.event_consumptions += 1;
+    } else if machine.events.len() == before.events.len() + 1 {
+        assert_eq!(machine.events[..before.events.len()], before.events);
+        assert_eq!(machine.events.last(), before.cursors.last().unwrap().remaining.first());
+        assert_eq!(machine.cursors.len(), before.cursors.len());
+        work.cursor_transfers += 1;
+    } else {
+        assert_eq!(machine.events, before.events);
+        assert_eq!(machine.cursors.len() + 1, before.cursors.len());
+        assert!(before.cursors.last().unwrap().remaining.is_empty());
+        work.cursor_discards += 1;
+    }
+    for vertex in 0..graph.len() {
+        let was_active = before.ledger.active[vertex];
+        let is_active = machine.ledger.active[vertex];
+        match machine.phase {
+            Phase::Activation => {
+                assert!(before.ledger.counts[vertex] <= machine.ledger.counts[vertex]);
+                assert!(!was_active || is_active);
+            }
+            Phase::Deactivation => {
+                assert!(machine.ledger.counts[vertex] <= before.ledger.counts[vertex]);
+                assert!(!is_active || was_active);
+            }
+        }
+        work.sign_changes[vertex] += usize::from(was_active != is_active);
+        assert!(work.sign_changes[vertex] <= 1);
+    }
+    work.steps += 1;
+}
+
+fn drain_cursor_trace(graph: &Graph, machine: &mut Machine, schedule: &[bool]) -> TraceWork {
     assert!(!schedule.is_empty());
     assert!(valid_configuration(graph, machine), "initial configuration: {machine:?}");
-    let step_bound =
-        machine.events.len() + 2 * graph.iter().map(Vec::len).sum::<usize>() + graph.len();
-    let mut steps = 0;
-    let mut sign_changes = vec![0; graph.len()];
+    let initial = machine.clone();
+    let initial_potential = potential(graph, &initial);
+    let initial_pending = pending_work(&initial);
+    let initial_suffix_edges = initial
+        .cursors
+        .iter()
+        .map(|cursor| cursor.remaining.len())
+        .sum::<usize>();
+    let mut work = TraceWork::new(graph.len());
     while !machine.drained() {
-        assert!(steps < step_bound, "bounded-model work exceeded: {machine:?}");
-        let before = machine.ledger.active.clone();
-        assert!(
-            machine
-                .step(graph, schedule[steps % schedule.len()], Mutation::None)
-                .unwrap()
-        );
-        assert!(valid_configuration(graph, machine), "after microstep {steps}: {machine:?}");
-        for (vertex, was_active) in before.into_iter().enumerate() {
-            sign_changes[vertex] += usize::from(was_active != machine.ledger.active[vertex]);
-            assert!(sign_changes[vertex] <= 1);
-        }
-        steps += 1;
+        assert!(work.steps < initial_potential, "bounded-model potential exhausted: {machine:?}");
+        let prefer_cursor = schedule[work.steps % schedule.len()];
+        take_checked_step(graph, machine, prefer_cursor, &mut work);
+        assert_eq!(work.steps + potential(graph, machine), initial_potential);
     }
+    assert_eq!(pending_work(machine), 0);
+    let mut expanded_vertices = 0;
+    let mut expanded_edges = 0;
+    let mut expanded_work = 0;
+    for (vertex, children) in graph.iter().enumerate() {
+        let changed = initial.ledger.active[vertex] != machine.ledger.active[vertex];
+        assert_eq!(work.sign_changes[vertex], usize::from(changed));
+        if changed {
+            expanded_vertices += 1;
+            expanded_edges += children.len();
+            expanded_work += 1 + 2 * children.len();
+        }
+    }
+    assert_eq!(work.steps, initial_pending + expanded_work);
+    assert_eq!(work.cursor_transfers, initial_suffix_edges + expanded_edges);
+    assert_eq!(
+        work.event_consumptions,
+        initial.events.len() + initial_suffix_edges + expanded_edges
+    );
+    assert_eq!(work.cursor_discards, initial.cursors.len() + expanded_vertices);
+    assert_eq!(work.steps, work.event_consumptions + work.cursor_transfers + work.cursor_discards);
+    assert_eq!(unspent_credit(graph, &initial), unspent_credit(graph, machine) + expanded_work);
+    let completed = machine.clone();
+    assert!(!machine.step(graph, schedule[0], Mutation::None).unwrap());
+    assert_eq!(*machine, completed);
+    work
+}
+
+fn drain(graph: &Graph, machine: &mut Machine, schedule: &[bool]) -> Vec<usize> {
+    let work = drain_cursor_trace(graph, machine, schedule);
     assert_eq!(machine.ledger, cold_graph_oracle(graph, &machine.roots));
-    sign_changes
+    work.sign_changes
 }
 
 fn replace_roots(
@@ -381,9 +505,16 @@ fn add_before_remove_preserves_shared_roots_and_releases_last_references() {
 
 fn assert_mutant_violates_conservation(graph: &Graph, mut machine: Machine, mutation: Mutation) {
     assert!(valid_configuration(graph, &machine));
-    for step in 0..64 {
+    let initial_potential = potential(graph, &machine);
+    for step in 0..initial_potential {
+        let before_potential = potential(graph, &machine);
         assert!(machine.step(graph, step % 2 == 1, mutation).unwrap());
         if !valid_configuration(graph, &machine) {
+            assert_ne!(
+                before_potential,
+                1 + potential(graph, &machine),
+                "mutant escaped exact work: {mutation:?}"
+            );
             assert!(coherent(&machine.ledger));
             assert!(
                 (0..graph.len()).any(|vertex| {
@@ -401,6 +532,7 @@ fn assert_mutant_violates_conservation(graph: &Graph, mut machine: Machine, muta
             );
             return;
         }
+        assert_eq!(before_potential, 1 + potential(graph, &machine));
         assert!(!machine.drained(), "mutant reached a valid terminal: {mutation:?}");
     }
     panic!("mutant escaped the bounded witness: {mutation:?}");
@@ -573,4 +705,295 @@ fn rootless_cycle_witness_requires_acyclicity() {
     assert_eq!(cold.counts, [0, 0]);
     assert_eq!(cold.active, [false, false]);
     assert_ne!(unsupported.ledger, cold);
+}
+
+#[test]
+fn cursor_work_counts_edges_and_frame_disposal_exactly() {
+    for (graph, roots, expected_actions) in [
+        (vec![vec![]], vec![0], [2, 1, 0, 1]),
+        (vec![vec![]], vec![0, 0], [3, 2, 0, 1]),
+        (vec![vec![], vec![0, 0]], vec![1, 1], [8, 4, 2, 2]),
+    ] {
+        for schedule in [vec![false], vec![true], vec![true, false, false]] {
+            let empty_roots = vec![0; graph.len()];
+            let mut activation =
+                Machine::activate(&cold_graph_oracle(&graph, &empty_roots), &empty_roots, &roots);
+            let activated = drain_cursor_trace(&graph, &mut activation, &schedule);
+            assert_eq!(activated.action_counts(), expected_actions);
+            assert_eq!(activation.ledger, cold_graph_oracle(&graph, &activation.roots));
+            let mut deactivation = activation.begin_deactivation(&roots).unwrap();
+            let deactivated = drain_cursor_trace(&graph, &mut deactivation, &schedule);
+            assert_eq!(deactivated.action_counts(), expected_actions);
+            assert_eq!(deactivation.ledger, cold_graph_oracle(&graph, &empty_roots));
+        }
+    }
+}
+
+#[test]
+fn unrelated_graph_extension_does_not_change_cursor_work() {
+    let graph = vec![vec![], vec![0, 0]];
+    let mut extended_graph = graph.clone();
+    for parent in 2..12 {
+        extended_graph.push(if parent == 2 {
+            vec![]
+        } else {
+            vec![parent - 1, parent - 1, 2]
+        });
+    }
+    for retain_unrelated_root in [false, true] {
+        let roots = vec![0; graph.len()];
+        let mut extended_roots = vec![0; extended_graph.len()];
+        if retain_unrelated_root {
+            extended_roots[11] = 1;
+        }
+        let mut activation = Machine::activate(&cold_graph_oracle(&graph, &roots), &roots, &[1, 1]);
+        let mut extended_activation = Machine::activate(
+            &cold_graph_oracle(&extended_graph, &extended_roots),
+            &extended_roots,
+            &[1, 1],
+        );
+        let initial_extra_support = extended_activation.ledger.active[2..].to_vec();
+        let activated = drain_cursor_trace(&graph, &mut activation, &[false, true]);
+        let extended_activated =
+            drain_cursor_trace(&extended_graph, &mut extended_activation, &[true, false]);
+        assert_eq!(activated.action_counts(), extended_activated.action_counts());
+        assert_eq!(activated.sign_changes, extended_activated.sign_changes[..graph.len()]);
+        assert!(
+            extended_activated.sign_changes[graph.len()..]
+                .iter()
+                .all(|&changes| changes == 0)
+        );
+        assert_eq!(extended_activation.ledger.active[2..], initial_extra_support);
+        assert_eq!(activation.ledger, cold_graph_oracle(&graph, &activation.roots));
+        assert_eq!(
+            extended_activation.ledger,
+            cold_graph_oracle(&extended_graph, &extended_activation.roots)
+        );
+        let mut deactivation = activation.begin_deactivation(&[1, 1]).unwrap();
+        let mut extended_deactivation = extended_activation.begin_deactivation(&[1, 1]).unwrap();
+        let deactivated = drain_cursor_trace(&graph, &mut deactivation, &[true]);
+        let extended_deactivated =
+            drain_cursor_trace(&extended_graph, &mut extended_deactivation, &[false]);
+        assert_eq!(deactivated.action_counts(), extended_deactivated.action_counts());
+        assert_eq!(deactivated.sign_changes, extended_deactivated.sign_changes[..graph.len()]);
+        assert!(
+            extended_deactivated.sign_changes[graph.len()..]
+                .iter()
+                .all(|&changes| changes == 0)
+        );
+        assert_eq!(extended_deactivation.ledger.active[2..], initial_extra_support);
+        assert_eq!(deactivation.ledger, cold_graph_oracle(&graph, &roots));
+        assert_eq!(
+            extended_deactivation.ledger,
+            cold_graph_oracle(&extended_graph, &extended_roots)
+        );
+    }
+}
+
+#[test]
+fn suspended_cursor_work_uses_remaining_suffix_not_root_count() {
+    let graph = vec![vec![], vec![0, 0], vec![1, 0]];
+    for phase in [Phase::Activation, Phase::Deactivation] {
+        let mut machine = match phase {
+            Phase::Activation => {
+                Machine::activate(&cold_graph_oracle(&graph, &[0; 3]), &[0; 3], &[2, 2])
+            }
+            Phase::Deactivation => {
+                let roots = root_counts(graph.len(), &[2, 2]);
+                Machine::activate(&cold_graph_oracle(&graph, &roots), &roots, &[])
+                    .begin_deactivation(&[2, 2])
+                    .unwrap()
+            }
+        };
+        let mut uninterrupted = machine.clone();
+        let complete_work = drain_cursor_trace(&graph, &mut uninterrupted, &[true, false, true]);
+        let mut prefix_work = TraceWork::new(graph.len());
+        let prefix_schedule: &[bool] = match phase {
+            Phase::Activation => &[false, true, false, true],
+            Phase::Deactivation => &[false, true, false],
+        };
+        for &prefer_cursor in prefix_schedule {
+            take_checked_step(&graph, &mut machine, prefer_cursor, &mut prefix_work);
+        }
+        let suspended = machine.clone();
+        assert!(!suspended.cursors.is_empty());
+        assert!(suspended.cursors.iter().any(|cursor| {
+            !cursor.remaining.is_empty() && cursor.remaining.len() < graph[cursor.parent].len()
+        }));
+        let whole_parent_work = suspended.events.len() +
+            suspended
+                .cursors
+                .iter()
+                .map(|cursor| 1 + 2 * graph[cursor.parent].len())
+                .sum::<usize>();
+        assert!(pending_work(&suspended) > suspended.events.len());
+        assert!(whole_parent_work > pending_work(&suspended));
+        for schedule in [vec![false], vec![true, false]] {
+            let mut resumed = suspended.clone();
+            let work = drain_cursor_trace(&graph, &mut resumed, &schedule);
+            let changed_work = work
+                .sign_changes
+                .iter()
+                .enumerate()
+                .filter(|(_, changes)| **changes != 0)
+                .map(|(vertex, _)| 1 + 2 * graph[vertex].len())
+                .sum::<usize>();
+            assert_eq!(work.steps, pending_work(&suspended) + changed_work);
+            assert_ne!(work.steps, suspended.events.len() + changed_work);
+            assert_ne!(work.steps, whole_parent_work + changed_work);
+            assert_eq!(prefix_work.steps + work.steps, complete_work.steps);
+            assert_eq!(
+                prefix_work.event_consumptions + work.event_consumptions,
+                complete_work.event_consumptions
+            );
+            assert_eq!(
+                prefix_work.cursor_transfers + work.cursor_transfers,
+                complete_work.cursor_transfers
+            );
+            assert_eq!(
+                prefix_work.cursor_discards + work.cursor_discards,
+                complete_work.cursor_discards
+            );
+            assert_eq!(resumed, uninterrupted);
+            assert_eq!(resumed.ledger, cold_graph_oracle(&graph, &resumed.roots));
+        }
+    }
+}
+
+#[test]
+fn cyclic_cursor_execution_terminates_without_rooted_support() {
+    let graph = vec![vec![0]];
+    for schedule in [vec![false], vec![true], vec![true, false]] {
+        let mut activation = Machine::activate(&cold_graph_oracle(&graph, &[0]), &[0], &[0]);
+        let activated = drain_cursor_trace(&graph, &mut activation, &schedule);
+        assert_eq!(activated.action_counts(), [4, 2, 1, 1]);
+        assert_eq!(activation.ledger.counts, [2]);
+        assert_eq!(activation.ledger, cold_graph_oracle(&graph, &[1]));
+        let mut deactivation = activation.begin_deactivation(&[0]).unwrap();
+        let deactivated = drain_cursor_trace(&graph, &mut deactivation, &schedule);
+        assert_eq!(deactivated.action_counts(), [1, 1, 0, 0]);
+        assert_eq!(deactivated.sign_changes, [0]);
+        assert_eq!(deactivation.roots, [0]);
+        assert_eq!(deactivation.ledger.counts, [1]);
+        assert_eq!(deactivation.ledger.active, [true]);
+        let cold = cold_graph_oracle(&graph, &[0]);
+        assert_eq!(cold.counts, [0]);
+        assert_ne!(deactivation.ledger, cold);
+    }
+}
+
+#[test]
+fn zero_pending_work_does_not_require_zero_unspent_credit() {
+    let graph = vec![vec![], vec![0]];
+    for phase in [Phase::Activation, Phase::Deactivation] {
+        let roots = match phase {
+            Phase::Activation => vec![0, 0],
+            Phase::Deactivation => vec![0, 1],
+        };
+        let mut machine = Machine::activate(&cold_graph_oracle(&graph, &roots), &roots, &[]);
+        machine.phase = phase;
+        assert!(machine.drained());
+        assert_eq!(pending_work(&machine), 0);
+        assert_eq!(unspent_credit(&graph, &machine), 4);
+        assert_eq!(potential(&graph, &machine), 4);
+        let before = machine.clone();
+        let work = drain_cursor_trace(&graph, &mut machine, &[true, false]);
+        assert_eq!(work.action_counts(), [0, 0, 0, 0]);
+        assert_eq!(machine, before);
+    }
+    let leaf_graph = vec![vec![]];
+    let mut empty_frame = Machine::activate(&cold_graph_oracle(&leaf_graph, &[0]), &[0], &[0]);
+    take_checked_step(&leaf_graph, &mut empty_frame, false, &mut TraceWork::new(1));
+    assert_eq!(pending(&empty_frame, 0), 0);
+    assert_eq!(pending_work(&empty_frame), 1);
+    assert!(!empty_frame.drained());
+    let work = drain_cursor_trace(&leaf_graph, &mut empty_frame, &[true]);
+    assert_eq!(work.action_counts(), [1, 0, 0, 1]);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum WrongCost {
+    OmitExpansionDisposal,
+    OmitCursorDisposal,
+    SingleCursorEdgeUnit,
+    DeduplicateExpansionEdges,
+    InvertCreditDomain,
+}
+
+fn wrong_potential(graph: &Graph, machine: &Machine, mutation: WrongCost) -> usize {
+    let frame_base = usize::from(!matches!(mutation, WrongCost::OmitCursorDisposal));
+    let suffix_unit = if matches!(mutation, WrongCost::SingleCursorEdgeUnit) {
+        1
+    } else {
+        2
+    };
+    let pending = machine.events.len() +
+        machine
+            .cursors
+            .iter()
+            .map(|cursor| frame_base + suffix_unit * cursor.remaining.len())
+            .sum::<usize>();
+    let credit = graph
+        .iter()
+        .enumerate()
+        .filter(|(vertex, _)| {
+            let selected = match machine.phase {
+                Phase::Activation => !machine.ledger.active[*vertex],
+                Phase::Deactivation => machine.ledger.active[*vertex],
+            };
+            selected != matches!(mutation, WrongCost::InvertCreditDomain)
+        })
+        .map(|(_, children)| {
+            let base = usize::from(!matches!(mutation, WrongCost::OmitExpansionDisposal));
+            let degree = if matches!(mutation, WrongCost::DeduplicateExpansionEdges) {
+                children
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, child)| !children[..*index].contains(child))
+                    .count()
+            } else {
+                children.len()
+            };
+            base + 2 * degree
+        })
+        .sum::<usize>();
+    pending + credit
+}
+
+#[test]
+fn wrong_credit_and_cursor_costs_are_detected() {
+    let graph = vec![vec![], vec![0, 0]];
+    for phase in [Phase::Activation, Phase::Deactivation] {
+        let initial = match phase {
+            Phase::Activation => {
+                Machine::activate(&cold_graph_oracle(&graph, &[0, 0]), &[0, 0], &[1])
+            }
+            Phase::Deactivation => {
+                Machine::activate(&cold_graph_oracle(&graph, &[0, 1]), &[0, 1], &[])
+                    .begin_deactivation(&[1])
+                    .unwrap()
+            }
+        };
+        for mutation in [
+            WrongCost::OmitExpansionDisposal,
+            WrongCost::OmitCursorDisposal,
+            WrongCost::SingleCursorEdgeUnit,
+            WrongCost::DeduplicateExpansionEdges,
+            WrongCost::InvertCreditDomain,
+        ] {
+            let mut machine = initial.clone();
+            let mut work = TraceWork::new(graph.len());
+            let initial_potential = potential(&graph, &machine);
+            let mut detected = false;
+            while !machine.drained() {
+                assert!(work.steps < initial_potential);
+                let wrong_before = wrong_potential(&graph, &machine, mutation);
+                let prefer_cursor = work.steps % 2 == 1;
+                take_checked_step(&graph, &mut machine, prefer_cursor, &mut work);
+                detected |= wrong_before != 1 + wrong_potential(&graph, &machine, mutation);
+            }
+            assert!(detected, "wrong cost escaped {phase:?}: {mutation:?}");
+            assert_eq!(machine.ledger, cold_graph_oracle(&graph, &machine.roots));
+        }
+    }
 }
