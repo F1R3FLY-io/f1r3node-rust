@@ -1161,6 +1161,10 @@ impl std::fmt::Display for DurableTransactionPreparationError {
 impl std::error::Error for DurableTransactionPreparationError {}
 
 impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
+    pub(crate) fn directory_path(&self) -> std::path::PathBuf {
+        self.lease.directory().path().to_path_buf()
+    }
+
     pub(crate) fn into_parts(self) -> (DurableWriterLeaseV1, AdmittedCheckpointSourceV1<P>) {
         (self.lease, self.source)
     }

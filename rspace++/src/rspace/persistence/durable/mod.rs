@@ -24,6 +24,7 @@ mod pack;
 mod publication;
 mod reclaim;
 mod recovery;
+mod rspace_authority;
 mod startup;
 
 #[cfg(test)]
@@ -34,6 +35,10 @@ pub(crate) use admission::{
     DurableAdmissionReportV1, DurableIndexedObjectStoreV1, DurableObjectCopyErrorV1,
     DurableObjectReadErrorV1, DurableTransactionPreparationError, InventoryMismatchKindV1,
     SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
+};
+pub(crate) use rspace_authority::{
+    DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1,
+    DurableRSpaceTransactionError,
 };
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
@@ -101,6 +106,9 @@ pub(crate) struct DurableAuthorityViewV1<P: SemanticProfile> {
 }
 
 impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
+    pub(crate) fn into_rspace_authority(self) -> DurableRSpaceAuthorityV1<P> {
+        DurableRSpaceAuthorityV1::from_view(self)
+    }
     /// Return the exact catalog image selected during restart recovery.
     ///
     /// A caller that keeps this read view alive can use the immutable image to
