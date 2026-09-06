@@ -388,6 +388,13 @@ pub struct CasperShardConf {
     // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
     // Required to enable protection from re-submitting duplicate deploys
     pub deploy_lifespan: i64,
+    /// Wall-clock ceiling on user-deploy execution per proposed block
+    /// (`None` = unbounded). Packaging policy, not a validity rule: the
+    /// block carries exactly the deploys that executed in budget. The
+    /// operator conf's zero-means-derive sentinel is resolved at launch
+    /// (`casper_launch`), so a construction that bypasses launch is
+    /// explicitly unbounded, never a misread sentinel.
+    pub deploy_play_budget: Option<std::time::Duration>,
     pub casper_version: i64,
     pub config_version: i64,
     pub bond_minimum: i64,
@@ -446,6 +453,7 @@ impl CasperShardConf {
             synchrony_constraint_threshold: 0.0,
             height_constraint_threshold: 0,
             deploy_lifespan: 0,
+            deploy_play_budget: None,
             casper_version: 0,
             config_version: 0,
             bond_minimum: 0,
@@ -565,6 +573,9 @@ pub mod test_helpers {
                 frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 lifecycle: Arc::new(RwLock::new(
                     block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+                )),
+                carrier_index: Arc::new(RwLock::new(
+                    block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
                 )),
             };
 

@@ -43,7 +43,7 @@ use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
     BLOCK_INDEX_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, PARENTS_POST_STATE_CACHE_SIZE_METRIC,
     REPLAY_CACHE_ENTRIES_METRIC, REPLAY_CACHE_RETAINED_BYTES_METRIC,
-    RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
+    RUNTIME_SPAWN_REPLAY_CALLS_METRIC, RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -481,6 +481,8 @@ impl RuntimeManager {
             self.external_services.clone(),
         )
         .await;
+        metrics::counter!(RUNTIME_SPAWN_REPLAY_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -510,6 +512,7 @@ impl RuntimeManager {
                 system_deploys,
                 block_data,
                 invalid_blocks,
+                None,
             )
             .await?;
 
@@ -577,6 +580,7 @@ impl RuntimeManager {
         system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        play_budget: Option<std::time::Duration>,
     ) -> Result<
         (
             StateHash,
@@ -608,6 +612,7 @@ impl RuntimeManager {
                 system_deploys,
                 block_data,
                 invalid_blocks,
+                play_budget,
             )
             .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {

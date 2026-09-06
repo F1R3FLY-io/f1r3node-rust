@@ -109,6 +109,20 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            // Repeat-deploy carrier index: per-sig carrier records over valid,
+            // invalid, and settled blocks, in a dedicated store (no shared
+            // keyspace with wire-keyed rows). Opened in
+            // BlockDagKeyValueStorage::new (mirrors "floor-index").
+            Db::new("carrier-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Carrier-index metadata: the write-once engagement watermark and
+            // the prune stride cursor.
+            Db::new("carrier-index-meta".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             // WRITE-ONCE terminal deploy verdicts (Finalized/Expired/Failed),
             // written by the finality layer's lifecycle register.
             Db::new("deploy-lifecycle-terminal".to_string(), None),

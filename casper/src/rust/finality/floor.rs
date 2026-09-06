@@ -365,14 +365,27 @@ pub async fn floor_of_view(
     // A latest-message slot whose held target the validator never signed
     // is a seed — the newly-bonded genesis placeholder — not testimony,
     // and it must not drag a height-0 tip into this derivation. A slot
-    // whose target has no local metadata stays in: if a walk needs the
-    // block, the absence hold below covers it. Node-local filtering is
-    // sound here because this is the finalizer's own LFB clock, not a
-    // consensus-visible derivation.
+    // whose target is not held is abstained too: it names a block below
+    // the restore horizon, which catch-up can never deliver. Node-local
+    // filtering is sound here because this is the finalizer's own LFB
+    // clock, not a consensus-visible derivation.
     let mut testimony: Vec<(Validator, BlockHash)> = Vec::new();
     for (validator, hash) in dag.latest_message_hashes() {
-        if let Some(metadata) = dag.lookup(&hash).map_err(CasperError::from)? {
-            if metadata.sender != validator {
+        match dag.lookup(&hash).map_err(CasperError::from)? {
+            Some(metadata) if metadata.sender != validator => continue,
+            Some(_) => {}
+            // An unheld slot names a block below the restore horizon —
+            // catch-up can never deliver it, so keeping the slot turns
+            // the absence hold below into a permanent, silent LFB freeze.
+            // Skipping it abstains the validator from this node's clock,
+            // sound by the same node-local argument as the seed filter.
+            None => {
+                tracing::debug!(
+                    target: "f1r3fly.finalizer",
+                    validator = %PrettyPrinter::build_string_bytes(&validator),
+                    lm = %PrettyPrinter::build_string_bytes(&hash),
+                    "abstaining unheld latest-message slot from the floor derivation"
+                );
                 continue;
             }
         }
@@ -1144,6 +1157,9 @@ mod frontier_determinism_tests {
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
             )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
         };
         (dag, v, (g, b1, b2, b3))
     }
@@ -1203,6 +1219,9 @@ mod frontier_determinism_tests {
             lifecycle: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         };
         (dag, absent, held)
@@ -1456,6 +1475,9 @@ mod frontier_determinism_tests {
             lifecycle: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
     }

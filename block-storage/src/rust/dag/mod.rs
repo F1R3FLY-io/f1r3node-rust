@@ -1,4 +1,5 @@
 pub mod block_dag_key_value_storage;
+pub mod carrier_index;
 pub mod block_metadata_store;
 pub mod buffer_dag_transition;
 pub mod deploy_lifecycle_types;
