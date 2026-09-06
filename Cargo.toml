@@ -12,6 +12,7 @@ members = [
 	"block-storage",
 	"comm",
 	"graphz",
+	"scripts/supply-chain",
 ]
 
 [workspace.dependencies]

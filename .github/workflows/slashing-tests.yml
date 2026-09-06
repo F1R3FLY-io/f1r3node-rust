@@ -75,6 +75,8 @@ jobs:
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install nextest
         uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6
         with:
@@ -99,6 +101,8 @@ jobs:
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install nextest
         uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6
         with:
@@ -155,6 +159,8 @@ jobs:
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install nextest
         uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6
         with:
@@ -182,6 +188,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: loom
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install nextest
         uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6
         with:
@@ -266,6 +273,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: fuzz
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install nextest
         uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6
         with:
@@ -295,6 +303,8 @@ jobs:
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -325,6 +335,8 @@ jobs:
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install nextest
         uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6
         with:
@@ -367,6 +379,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: fuzz
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
       - name: Install nextest
         uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6
         with:

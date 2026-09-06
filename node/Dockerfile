@@ -61,6 +61,7 @@ COPY comm/ ./comm/
 COPY rho-pure-eval/ ./rho-pure-eval/
 COPY rholang/ ./rholang/
 COPY node/ ./node/
+COPY scripts/supply-chain/ ./scripts/supply-chain/
 
 # Configure pkg-config for cross-compilation to find target OpenSSL libraries
 # xx-apt installs target libs in the xx sysroot, we need to tell pkg-config where they are

@@ -286,9 +286,6 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
 
-      - name: Verify supply-chain controls
-        run: python3 -m unittest discover -s scripts/ci -p 'test_supply_chain.py'
-
       - name: Verify pre-push hook
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-pre-push-hook.sh
@@ -374,6 +371,9 @@ jobs:
           toolchain: nightly-2026-02-09
           components: rustfmt, clippy
 
+      - name: Verify supply-chain controls
+        run: cargo test --locked -p supply-chain
+
       - name: Cache dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
@@ -409,11 +409,11 @@ jobs:
 
       - name: Install verified cargo-deny
         run: |
-          python3 scripts/ci/check_supply_chain.py install --install-dir "$RUNNER_TEMP/cargo-deny"
+          bash scripts/ci/check-supply-chain.sh install --install-dir "$RUNNER_TEMP/cargo-deny"
           echo "$RUNNER_TEMP/cargo-deny" >> "$GITHUB_PATH"
 
       - name: Check all dependency graphs
-        run: python3 scripts/ci/check_supply_chain.py check
+        run: bash scripts/ci/check-supply-chain.sh check
 
       - name: Upload supply-chain evidence
         if: always()

@@ -31,11 +31,11 @@ jobs:
 
       - name: Install verified cargo-deny
         run: |
-          python3 scripts/ci/check_supply_chain.py install --install-dir "$RUNNER_TEMP/cargo-deny"
+          bash scripts/ci/check-supply-chain.sh install --install-dir "$RUNNER_TEMP/cargo-deny"
           echo "$RUNNER_TEMP/cargo-deny" >> "$GITHUB_PATH"
 
       - name: Check all dependency graphs
-        run: python3 scripts/ci/check_supply_chain.py check
+        run: bash scripts/ci/check-supply-chain.sh check
 
       - name: Upload supply-chain evidence
         if: always()

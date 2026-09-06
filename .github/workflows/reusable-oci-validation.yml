@@ -78,7 +78,7 @@ jobs:
               ]
     steps:
       - name: Checkout pull request head
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ inputs.head_repo }}
           ref: ${{ inputs.head_sha }}
@@ -86,7 +86,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
       - name: Enable Containerd Image Store
         shell: bash -ex {0}
@@ -145,7 +145,7 @@ jobs:
               | gzip > /tmp/rust-node-docker.tar.gz
 
       - name: Save Docker Image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp/rust-node-docker.tar.gz
@@ -178,14 +178,14 @@ jobs:
               ]
     steps:
       - name: Checkout pull request head
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ inputs.head_repo }}
           ref: ${{ inputs.head_sha }}
           persist-credentials: false
 
       - name: Clone trusted system-integration tests
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ inputs.system_integration_ref }}
@@ -193,7 +193,7 @@ jobs:
           persist-credentials: false
 
       - name: Load Docker Image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp
@@ -258,7 +258,7 @@ jobs:
 
       - name: Upload Integration Test Logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-slot${{ matrix.slot }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/

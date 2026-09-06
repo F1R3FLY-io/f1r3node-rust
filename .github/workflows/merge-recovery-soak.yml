@@ -1004,7 +1004,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -1421,7 +1421,7 @@ jobs:
         run: echo "SOAK_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Checkout CI control files
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -1530,7 +1530,7 @@ jobs:
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
 
       - name: Checkout code under test
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ needs.schedule_gate.outputs.target_sha }}
           path: node-under-test
@@ -1549,7 +1549,7 @@ jobs:
           echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
 
       - name: Clone trusted integration harness
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -2052,7 +2052,7 @@ jobs:
 
       - name: Upload soak results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/merge-recovery-soak
@@ -2311,7 +2311,7 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - name: Checkout CI control files
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ github.workflow_sha }}
           path: ci-control
@@ -2326,7 +2326,7 @@ jobs:
       - name: Download soak results
         id: results
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: soak-results
@@ -2589,13 +2589,13 @@ jobs:
           render "-daily" daily
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:
           path: site
 
       - name: Deploy to GitHub Pages
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e
 
       - name: Gate on regression verdict
         shell: bash -euo pipefail {0}
@@ -2928,7 +2928,7 @@ jobs:
 
       - name: Upload post-mortem
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: soak-postmortem-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/postmortem
