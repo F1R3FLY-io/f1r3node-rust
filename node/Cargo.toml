@@ -66,7 +66,7 @@ tokio-tungstenite = "0.28"
 futures-util = "0.3"
 tokio-stream = { workspace = true }
 utoipa = { workspace = true, features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 # Metrics dependencies (analog of Scala's Kamon + NewPrometheusReporter)
 metrics = { workspace = true }
 metrics-exporter-prometheus = "0.15"
