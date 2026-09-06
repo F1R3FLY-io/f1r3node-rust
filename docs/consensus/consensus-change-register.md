@@ -6182,3 +6182,16 @@ bytes, legacy history roots, state hashes, matching, COMM order, accepted progra
 charges. The durable DAG remains dormant for production callers; the owning durable authority and its
 legacy compatibility adapter are still required before activation. Accordingly this is
 `NO_PRODUCTION_CHANGE_DERIVED`, not permission to activate the new persistence identity.
+
+Verification correction, 2026-09-06: the original two debug tests did not establish release
+acknowledgement or nonempty coverage of every journal domain. Commit `d4002ea3c` repaired the
+release-side clearing and first cold datum write. The expanded journal suite passes 9/9 in debug
+and release; the transaction-sealing suite passes 17/17, including actual hot-store mutations.
+Ten new journal/path/count lemmas are closed in the existing publication theory. Regressions
+required correction of extra framing on JoinBag journal keys, overcounted single-copy datum
+removals, and missing count evidence treated as zero. These fixes make dormant durable mutation
+metadata match resident state and the canonical parser. They change neither live multiplicities
+nor canonical key encoding, legacy checkpoint roots, matching, charges, or backend selection.
+Owner/recovery/gate composition remains required. See
+[J-053](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-053--2026-09-06-exact-journals-must-address-the-resident-trie-and-record-actual-changes)
+for the failing baseline and refinement limits.

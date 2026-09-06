@@ -50,7 +50,7 @@ use crate::rspace::metrics_constants::{
 use crate::rspace::persistence::{
     CanonicalFormatError, ContentTransition, DagTransactionError, DurableAuthorityViewV1,
     DurableObjectReadErrorV1, ImmutableObjectStore, MutationError, OpenDagTransaction,
-    RSpaceMutationBatchV1, RSpaceSemanticProfile, SemanticProfile, StateVersionV1,
+    RSpaceMutationBatchV1, RSpaceSemanticProfile, SemanticNamespace, SemanticProfile, StateVersionV1,
 };
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
@@ -123,8 +123,8 @@ pub(crate) fn mutation_batch_from_pending(
 pub(crate) fn mutation_batch_from_pending_with_counts(
     base: StateVersionV1,
     pending: &PendingDeltas,
-    mut data_count: impl FnMut(&[u8]) -> u64,
-    mut join_count: impl FnMut(&[u8]) -> u64,
+    mut data_count: impl FnMut(&[u8]) -> Option<u64>,
+    mut join_count: impl FnMut(&[u8]) -> Option<u64>,
 ) -> Result<RSpaceMutationBatchV1, MutationError> {
     let data = pending.data.as_ref().ok_or(MutationError::EmptyBatch)?;
     let continuations = pending
@@ -134,14 +134,18 @@ pub(crate) fn mutation_batch_from_pending_with_counts(
     let joins = pending.joins.as_ref().ok_or(MutationError::EmptyBatch)?;
     let mut batch = RSpaceMutationBatchV1::new(base)?;
     for (path, amount) in data.additions().iter() {
-        let after = data_count(&path);
+        let after = data_count(&path).ok_or(MutationError::MissingCountObservation {
+            namespace: SemanticNamespace::DataBag,
+        })?;
         let before = after
             .checked_sub(amount.get())
             .ok_or(MutationError::DeltaCountUnderflow)?;
         batch.record_data(&path, before, after)?;
     }
     for (path, amount) in data.removals().iter() {
-        let after = data_count(&path);
+        let after = data_count(&path).ok_or(MutationError::MissingCountObservation {
+            namespace: SemanticNamespace::DataBag,
+        })?;
         let before = after
             .checked_add(amount.get())
             .ok_or(MutationError::DeltaCountOverflow)?;
@@ -149,14 +153,18 @@ pub(crate) fn mutation_batch_from_pending_with_counts(
     }
     batch.record_continuation_transitions(continuations)?;
     for (path, amount) in joins.additions().iter() {
-        let after = join_count(&path);
+        let after = join_count(&path).ok_or(MutationError::MissingCountObservation {
+            namespace: SemanticNamespace::JoinBag,
+        })?;
         let before = after
             .checked_sub(amount.get())
             .ok_or(MutationError::DeltaCountUnderflow)?;
         batch.record_join(&path, before, after)?;
     }
     for (path, amount) in joins.removals().iter() {
-        let after = join_count(&path);
+        let after = join_count(&path).ok_or(MutationError::MissingCountObservation {
+            namespace: SemanticNamespace::JoinBag,
+        })?;
         let before = after
             .checked_add(amount.get())
             .ok_or(MutationError::DeltaCountOverflow)?;
@@ -175,8 +183,8 @@ pub(crate) fn mutation_batch_from_observation(
     mutation_batch_from_pending_with_counts(
         base,
         &observation.pending,
-        |path| observation.data_counts.get(path).copied().unwrap_or(0),
-        |path| observation.join_counts.get(path).copied().unwrap_or(0),
+        |path| observation.data_counts.get(path).copied(),
+        |path| observation.join_counts.get(path).copied(),
     )
 }
 

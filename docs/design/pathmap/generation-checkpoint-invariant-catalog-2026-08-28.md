@@ -19,6 +19,43 @@ The required refinement order is:
 
 No Rust implementation claim is justified by the abstract model alone. Filesystem durability, checksums, bounded parsing, partial writes, and semantic admission are executable proof obligations.
 
+## Hot-store journal refinement (2026-09-06)
+
+The `HotStoreJournalAcknowledgement` section of `GenerationCheckpointPublication.v` adds
+ten closed lemmas to the seventeen publication capstones. Its journals are abstract finite
+encodings of five domains: data deltas, continuation deltas, continuation content transitions,
+continuation source bytes, and join deltas. Equality in this model must be refined by exact
+PathMap equality in Rust. It establishes the local capture/acknowledgement obligations below;
+it does not establish the unfinished owner/publication/recovery composition.
+
+| ID | Formal lemma | Executable obligation in `tests/hot_store/journal_commit.rs` |
+|---|---|---|
+| HJ-01 | `acknowledgement_preserves_live_state` | `acknowledgement_clears_five_populated_journals_and_preserves_live_records` compares resident and installed values. |
+| HJ-02 | `exact_acknowledgement_clears_all_five_journals` | The same test populates every domain before clearing; run in debug and release. |
+| HJ-03 | `stale_acknowledgement_changes_nothing` | `mismatch_or_missing_capability_in_any_journal_rejects_without_partial_clear` compares all journals after each refusal. |
+| HJ-04 | `successful_acknowledgement_requires_exact_journal` | `stale_journal_cannot_clear_a_newer_revision` and ten missing/changed-domain cases. |
+| HJ-05 | `post_state_addition_recovers_base` | `journal_count_inversion_matches_live_multiplicities` varies the base and successor counts. |
+| HJ-06 | `post_state_removal_recovers_base` | The same property covers removal to a positive count and to zero. |
+| HJ-07 | `one_occurrence_removal_requires_unit_delta` | Persisted counterexample `before=3, after=0` detects journaling the prior multiplicity at every removal. |
+| HJ-08 | `missing_count_is_distinct_from_captured_zero` | `absent_count_evidence_is_not_a_captured_zero` deletes captured evidence and requires refusal. |
+| HJ-09 | `journal_lookup_uses_exact_native_record_key` | `join_journal_uses_native_key_and_repeated_channel_positions` checks native bytes, duplicates, additions and removals. |
+| HJ-10 | `reframed_join_key_misses_native_record` | The same test rejected the previous extra-framed producer before its correction. |
+
+The model was checked before producer changes under `MemoryMax=2G`, `MemorySwapMax=0`.
+The focused baseline passed six tests and failed three; the corrected debug and release gates
+pass nine tests each under `MemoryMax=8G`, `MemorySwapMax=0`, with four build jobs.
+These are configured resource ceilings, not measurements of peak resident memory.
+The arithmetic lemmas use natural numbers; checked `u64` overflow/underflow remains an
+executable refinement requirement. The finite randomized multiplicity property is not an
+exhaustive proof over the Rust integer domain.
+
+`tests/persistence/transaction_sealing.rs::live_cold_journals_seal_exact_three_namespace_successor`
+adds the composition check from actual hot-store mutations through source staging and semantic
+sealing, including first-representative source retention and repeated receive-channel positions.
+Sealing alone must leave the durable base and hot journals unchanged. Durable publication,
+unknown-outcome reconciliation, receipt identity and acknowledgement under the operation gate
+remain separate required obligations.
+
 ## Vocabulary and notation
 
 - **Canonical object reference**: a pair `$(h, n)$`, where `$h$` is the canonical-object digest and `$n$` is its declared canonical byte length.

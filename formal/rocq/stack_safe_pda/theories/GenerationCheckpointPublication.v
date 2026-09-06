@@ -1439,6 +1439,119 @@ Qed.
 
 End AffinePublicationProtocol.
 
+Module HotStoreJournalAcknowledgement.
+
+Record journal := Journal {
+  data_delta : list nat;
+  continuation_delta : list nat;
+  continuation_content : list nat;
+  continuation_sources : list nat;
+  join_delta : list nat
+}.
+
+Definition journal_eq_dec (left right : journal) : {left = right} + {left <> right}.
+Proof. decide equality; apply list_eq_dec; apply Nat.eq_dec. Defined.
+
+Definition empty_journal := Journal [] [] [] [] [].
+
+Definition acknowledge_journal {Live : Type}
+    (state : Live * journal) (expected : journal) : bool * (Live * journal) :=
+  if journal_eq_dec (snd state) expected
+  then (true, (fst state, empty_journal))
+  else (false, state).
+
+Theorem acknowledgement_preserves_live_state : forall Live
+    (state : Live * journal) expected,
+  fst (snd (acknowledge_journal state expected)) = fst state.
+Proof.
+  intros. unfold acknowledge_journal.
+  destruct (journal_eq_dec (snd state) expected); reflexivity.
+Qed.
+
+Theorem exact_acknowledgement_clears_all_five_journals : forall Live
+    (state : Live * journal),
+  acknowledge_journal state (snd state) = (true, (fst state, empty_journal)).
+Proof.
+  intros. unfold acknowledge_journal.
+  destruct (journal_eq_dec (snd state) (snd state)); [reflexivity | contradiction].
+Qed.
+
+Theorem stale_acknowledgement_changes_nothing : forall Live
+    (state : Live * journal) expected,
+  snd state <> expected -> acknowledge_journal state expected = (false, state).
+Proof.
+  intros Live state expected H. unfold acknowledge_journal.
+  destruct (journal_eq_dec (snd state) expected); [contradiction | reflexivity].
+Qed.
+
+Theorem successful_acknowledgement_requires_exact_journal : forall Live
+    (state : Live * journal) expected,
+  fst (acknowledge_journal state expected) = true -> snd state = expected.
+Proof.
+  intros Live state expected. unfold acknowledge_journal.
+  destruct (journal_eq_dec (snd state) expected); simpl; congruence.
+Qed.
+
+Theorem post_state_addition_recovers_base : forall before added,
+  (before + added) - added = before.
+Proof. intros; lia. Qed.
+
+Theorem post_state_removal_recovers_base : forall before removed,
+  removed <= before -> (before - removed) + removed = before.
+Proof. intros; lia. Qed.
+
+Theorem one_occurrence_removal_requires_unit_delta : forall before,
+  0 < before -> (before - 1) + 1 = before.
+Proof. intros; lia. Qed.
+
+Definition invert_removal_observation (observed : option nat) (removed : nat) :=
+  match observed with None => None | Some after => Some (after + removed) end.
+
+Theorem missing_count_is_distinct_from_captured_zero : forall removed,
+  invert_removal_observation None removed = None /\
+  invert_removal_observation (Some 0) removed = Some removed.
+Proof. intro; split; reflexivity. Qed.
+
+Definition native_record_key (prefix record : list nat) := prefix ++ record.
+
+Definition singleton_count (stored queried : list nat) :=
+  if list_eq_dec Nat.eq_dec stored queried then 1 else 0.
+
+Theorem journal_lookup_uses_exact_native_record_key : forall prefix record,
+  singleton_count (native_record_key prefix record)
+    (native_record_key prefix record) = 1.
+Proof.
+  intros. unfold singleton_count.
+  destruct (list_eq_dec Nat.eq_dec
+    (native_record_key prefix record) (native_record_key prefix record));
+    [reflexivity | contradiction].
+Qed.
+
+Theorem reframed_join_key_misses_native_record : forall prefix record framed,
+  length record < length framed ->
+  singleton_count (native_record_key prefix record)
+    (native_record_key prefix framed) = 0.
+Proof.
+  intros prefix record framed Hlength.
+  unfold singleton_count, native_record_key.
+  destruct (list_eq_dec Nat.eq_dec (prefix ++ record) (prefix ++ framed))
+    as [Heq | Hneq]; [| reflexivity].
+  apply app_inv_head in Heq. subst. lia.
+Qed.
+
+End HotStoreJournalAcknowledgement.
+
+Print Assumptions HotStoreJournalAcknowledgement.acknowledgement_preserves_live_state.
+Print Assumptions HotStoreJournalAcknowledgement.exact_acknowledgement_clears_all_five_journals.
+Print Assumptions HotStoreJournalAcknowledgement.stale_acknowledgement_changes_nothing.
+Print Assumptions HotStoreJournalAcknowledgement.successful_acknowledgement_requires_exact_journal.
+Print Assumptions HotStoreJournalAcknowledgement.post_state_addition_recovers_base.
+Print Assumptions HotStoreJournalAcknowledgement.post_state_removal_recovers_base.
+Print Assumptions HotStoreJournalAcknowledgement.one_occurrence_removal_requires_unit_delta.
+Print Assumptions HotStoreJournalAcknowledgement.missing_count_is_distinct_from_captured_zero.
+Print Assumptions HotStoreJournalAcknowledgement.journal_lookup_uses_exact_native_record_key.
+Print Assumptions HotStoreJournalAcknowledgement.reframed_join_key_misses_native_record.
+
 Print Assumptions successful_merge_is_exact_permutation.
 Print Assumptions successful_merge_adds_exactly_one_member.
 Print Assumptions successful_merge_adds_exactly_declared_bytes.

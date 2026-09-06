@@ -2282,7 +2282,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
             .expect("candidate catalog write lock");
         self.index.remove_path(path);
         self.pending_delta
-            .record_removal(path, previous)
+            .record_removal(path, Multiplicity::new(1).expect("one is nonzero"))
             .expect("a removed positive multiplicity is representable");
         if let Some(catalog) = catalogs.get_mut(marker) {
             let catalog = Arc::make_mut(catalog);

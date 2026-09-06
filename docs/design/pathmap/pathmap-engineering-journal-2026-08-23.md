@@ -3748,6 +3748,41 @@ hard-RSS/zero-swap envelopes, and artifact hashes are recorded in
 This checkpoint changes no Rholang value, matching or COMM result, multiplicity, candidate order,
 wire/persistence byte, hash, charge, PathMap algebra, manifest, lockfile, or upstream crate.
 
+### J-053 — 2026-09-06: exact journals must address the resident trie and record actual changes
+
+**QUESTION.** Does a coherent snapshot of live PathMap journals describe exactly the mutation
+that semantic persistence will apply? A shared read boundary cannot repair a producer using
+the wrong key or recording the wrong multiplicity.
+
+**METHOD.** Extend the existing publication theory with ten journal/path/count lemmas, verify
+them before producer changes, then derive executable tests. Populate all five journals, vary
+datum counts, exercise repeated channel positions, and omit or alter each journal independently.
+An integration test starts from actual cold hot-store mutations and stages their retained source
+bytes through semantic DAG sealing, including first-representative continuation semantics.
+
+**BASELINE.** Six of nine focused tests passed; three failed. The join journal added a framing
+layer to the canonical suffix although the resident trie and parser use the raw canonical join
+record. Single-copy datum removal journaled the whole previous count, so removing three copies
+one at a time recorded six removals. Absent count evidence was also incorrectly interpreted as zero.
+
+**CORRECTION.** Join journals use the resident trie's `record_path` constructor. Datum removal
+records `Multiplicity::ONE`. The adapter rejects absent evidence with `MissingCountObservation`;
+a captured zero remains valid. Work remains proportional to changed paths, using native lookups.
+No whole-namespace projection, secondary index, element sorting, or upstream change is introduced.
+
+**RESULT.** Ten new lemmas and seventeen existing publication capstones close under the global
+context. The corrected debug and release journal gates each pass 9/9, and the release transaction
+sealing gate passes 17/17. The generated `before=3, after=0` counterexample is retained as a
+regression seed. Rocq ran with a 2 GiB memory cap; Rust checks used an 8 GiB cap and four build
+jobs; both used `systemd-run` with swap disabled. These ceilings are not peak-RSS measurements
+or performance results. The
+[invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#hot-store-journal-refinement-2026-09-06)
+records the model boundary and executable mapping.
+
+**LIMIT.** Exact receipt identity, unknown-outcome reconciliation, successor acknowledgement,
+continuous leases, and the RSpace operation-gate composition remain required. The journal task
+has returned from `claimed_done` to `in_progress`; these passes do not authorize production cutover.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

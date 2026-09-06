@@ -1520,7 +1520,7 @@ where C: Clone + RhoPathEncode + Send + Sync
             )
             .expect("typed join records must have an injective frozen encoding");
         if inserted {
-            let path = RhoPathV1::collection_record_path(&prefix, &identity);
+            let path = OrderedGroupStore::<C, Vec<C>, false>::record_path(&prefix, &identity);
             self.pending_delta
                 .record_addition(&path, Multiplicity::new(1).expect("one is nonzero"))
                 .expect("a successful join insertion is representable");
@@ -1558,7 +1558,7 @@ where C: Clone + RhoPathEncode + Send + Sync
         let identity = encode_join_record(join);
         let removed = self.resting.remove_identity(&prefix, &identity);
         if removed.is_some() {
-            let path = RhoPathV1::collection_record_path(&prefix, &identity);
+            let path = OrderedGroupStore::<C, Vec<C>, false>::record_path(&prefix, &identity);
             self.pending_delta
                 .record_removal(&path, Multiplicity::new(1).expect("one is nonzero"))
                 .expect("a successful join removal is representable");

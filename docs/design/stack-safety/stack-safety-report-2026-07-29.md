@@ -12899,3 +12899,12 @@ PathMap projection.
 Evidence is commit `c8aeb790e`. A bounded `cargo check -p rspace_plus_plus` succeeded, and the four
 architecture regression tests passed under a 3 GiB memory cap, zero swap, and 128-task limit. The full
 lossless semantic write-set and durable publication work is deliberately not claimed by this addendum.
+
+Journal refinement, 2026-09-06: focused hot-store journal tests pass 9/9 in debug and release;
+the release transaction-sealing gate passes 17/17 after corrections to canonical join-path
+alignment, single-occurrence removal deltas, and missing-count evidence handling. Ten added
+journal lemmas close in the existing publication theory. Checks ran through `systemd-run`,
+with a 2 GiB cap for Rocq and an 8 GiB cap for Rust, and zero allowed swap. These are resource
+ceilings, not measured peak RSS. This adds correctness evidence, without a speedup or memory-slope
+claim. The [invariant catalog](../pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#hot-store-journal-refinement-2026-09-06)
+records the proof boundary and remaining owner/publication composition obligations.

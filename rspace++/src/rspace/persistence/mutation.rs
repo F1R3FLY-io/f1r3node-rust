@@ -971,6 +971,9 @@ pub enum MutationError {
     },
     DeltaCountOverflow,
     DeltaCountUnderflow,
+    MissingCountObservation {
+        namespace: SemanticNamespace,
+    },
     InvalidContinuationSourceKind,
 }
 
@@ -1026,6 +1029,11 @@ impl Display for MutationError {
             Self::DeltaCountUnderflow => {
                 formatter.write_str("BagDelta removal exceeds the authoritative multiplicity")
             }
+            Self::MissingCountObservation { namespace } => write!(
+                formatter,
+                "{} mutation has no captured post-state count for a changed path",
+                namespace.name()
+            ),
             Self::InvalidContinuationSourceKind => formatter.write_str(
                 "continuation transition requires a ContinuationSourceV1 canonical blob",
             ),

@@ -376,6 +376,65 @@ fn pending_journals_form_one_exact_mutation_batch() {
 }
 
 #[test]
+fn live_cold_journals_seal_exact_three_namespace_successor() {
+    use crate::rspace::history::history_reader::HistoryReaderBase;
+    use crate::rspace::hot_store::{
+        HotStoreInstances, HotStoreState, mutation_batch_from_observation,
+        stage_pending_continuation_sources,
+    };
+
+    struct EmptyHistory;
+    impl HistoryReaderBase<String, String, String, String> for EmptyHistory {
+        fn get_data_canonical(&self, _: &String) -> Vec<Datum<String>> { Vec::new() }
+        fn get_continuations_canonical(&self, _: &[String]) -> Vec<WaitingContinuation<String, String>> {
+            Vec::new()
+        }
+        fn get_joins_canonical(&self, _: &String) -> Vec<Vec<String>> { Vec::new() }
+    }
+
+    let store = CanonicalObjectStore::new();
+    let base = base_state(&store, 12, None);
+    let hot = HotStoreInstances::create_from_hs_and_hr(
+        HotStoreState::default(), Box::new(EmptyHistory),
+    );
+    let channels = vec!["channel".to_owned(), "channel".to_owned()];
+    let first = WaitingContinuation::create(
+        &channels, &vec!["a".to_owned(), "b".to_owned()], &"body".to_owned(),
+        false, BTreeSet::new(),
+    );
+    let mut source_payload = Vec::new();
+    encode_continuation_source_into(&first, &mut source_payload);
+    let source = CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, source_payload).unwrap();
+    let mut alias = first.clone();
+    alias.source.hash = crate::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes(vec![0x55; 32]);
+    hot.put_datum(&channels[0], Datum::create(&channels[0], "datum".to_owned(), false));
+    assert_eq!(hot.put_continuation(&channels, first), Some(true));
+    assert_eq!(hot.put_continuation(&channels, alias), Some(false));
+    hot.put_join(&channels[0], &channels).unwrap();
+    let observation = hot.pending_mutation_observation().unwrap();
+    let batch = mutation_batch_from_observation(base, &observation).unwrap();
+    let bytes = encode(&batch.plan().unwrap());
+    let verified = VerifiedDagState::<_, TestSemanticProfile>::admit(
+        &store, base, SemanticValidationLimits::unbounded(),
+    ).unwrap();
+    let mut transaction = OpenDagTransaction::new(
+        verified, MutationBatchViewV1::parse(&bytes).unwrap(), DagTransactionLimits::UNBOUNDED,
+    ).unwrap();
+    stage_pending_continuation_sources(&mut transaction, &observation.pending).unwrap();
+    let sealed = transaction.seal().unwrap();
+    let report = sealed.diagnostics().semantic;
+    assert_eq!(report.changed_data, 1);
+    assert_eq!(report.changed_continuations, 1);
+    assert_eq!(report.changed_joins, 1);
+    assert!(sealed.objects().iter().any(|object|
+        object.reference() == source.object_ref() && object.canonical_bytes() == encode(&source)));
+    assert_eq!(sealed.receipt().base(), base);
+    assert_eq!(sealed.receipt().target().generation(), base.generation() + 1);
+    assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
+    assert_eq!(store.len().unwrap(), 2, "sealing does not publish into the admitted base store");
+}
+
+#[test]
 fn ambient_equal_source_bytes_remain_in_the_portable_sealed_delta() {
     let store = CanonicalObjectStore::new();
     let base = base_state(&store, 10, None);
