@@ -56,6 +56,60 @@ Sealing alone must leave the durable base and hot journals unchanged. Durable pu
 unknown-outcome reconciliation, receipt identity and acknowledgement under the operation gate
 remain separate required obligations.
 
+## Publication owner composition (2026-09-06)
+
+`RSpaceJournalPublicationOwner.tla` models one nonempty checkpoint and its retries. A receipt
+binds store identity, semantic profile, hot-store incarnation, journal epoch, durable base, target,
+transaction identity and all five journals. Two incarnations and two epochs permit a stale
+receipt to carry byte-identical journal contents. The model also admits foreign stores/profiles,
+the same target with a different transaction, and a third recovery state as candidate inputs.
+
+The required sequence is `Ready → Captured → Publishing → AwaitingAck → Done`. Unknown
+publication outcomes enter `RecoveryRequired`. An authenticated exact predecessor returns to
+`Ready` with the journal retained; an authenticated exact successor enters `AwaitingAck` without
+publishing the mutation again. A successor generation lease is acquired while predecessor
+protection remains held. Only exact acknowledgement clears the journals and rebases the live
+store. Reopening after process termination reconstructs fresh volatile journals from the selected
+durable state; it does not resume arbitrary unfinished interpreter execution.
+
+| ID | Model invariant | Required Rust property before owner activation |
+|---|---|---|
+| JO-01 | `TypeInvariant` | Every success/error/recovery result contains the appropriate typed authority; no path-only recovery state. |
+| JO-02 | `GateHeldUntilResolution` | An exclusive operation permit remains held through capture, publication, uncertain recovery and acknowledgement; cancellation cannot release it while a worker still commits. |
+| JO-03 | `ContinuousAuthority` | The same writer lease and generation registry survive every error; predecessor protection overlaps successor acquisition. |
+| JO-04 | `ExactPendingReceipt` | Foreign store/profile/incarnation/epoch/base and byte-identical stale receipts are rejected without journal mutation. |
+| JO-05 | `WholeJournalAcknowledgement` | A mismatch in any domain leaves all five journals unchanged. |
+| JO-06 | `AcknowledgementRequiresExactSuccessor` | No clear before authenticated publication and successor lease acquisition; failed acquisition retains the admitted successor. |
+| JO-07 | `AcknowledgementRequiresExactReceipt` | The consumed receipt is the exact captured intent, including all journals. |
+| JO-08 | `ReadyHasCoherentBase` | Published-but-unacknowledged state cannot become ready with a journal still relative to its predecessor. |
+| JO-09 | `RecoveryAcceptsOnlyExactTerminal` | Compare authenticated store/profile/base/target/transaction bindings; equal target identity alone is insufficient. |
+| JO-10 | `AtMostOnePublication` | Retry after an ambiguous successful commit acknowledges the original intent and never applies it twice. |
+| JO-11 | `ReopenDiscardsVolatileJournal` | Restart reconstructs a fresh hot-store incarnation with empty pending journals relative to the recovered checkpoint. |
+
+The final control explores 544 distinct states with all eleven invariants satisfied. Eight
+single-defect configurations fail their designated invariants: foreign receipt, early clear,
+partial clear, generation-lease gap, premature ready/rebase, duplicate publication, gate release,
+and wrong recovery terminal. Four reachability witnesses establish successful acknowledgement,
+recovery of the predecessor, recovery of the successor, and refused receipt binding.
+`bash scripts/check-rspace-journal-owner-model.sh` verifies the control and checks each
+counterexample's named invariant, so a parse error or resource failure cannot count as a pass.
+The runner is included in the existing stack-safe proof gate and uses its shared bounded TLC
+helper: 512 MiB JVM heap, 2 GiB memory cap, two workers, no swap, and on-disk state storage.
+
+This is bounded protocol evidence, not a proof of the Rust owner implementation. Journals are
+abstract equality values; object validation and filesystem write/sync behavior are supplied by
+the existing publication models and executable failure-injection suites. The model does not
+establish fairness, eventual repair of permanent I/O faults, or unbounded multi-transaction
+progress. Empty mutations use the separate no-op obligations. The JO properties above are
+required implementation tests, not yet executed owner tests.
+
+The concrete implementation must preserve `DurableWriterLeaseV1` through physical recovery and
+semantic-admission errors. `DurableDirectoryV1::try_clone_reader` shares the opened directory
+capability and generation registry; reopening `PathBuf` does not. Factor borrowed recovery and
+source admission, or return failures carrying the original lease. Retain the admitted successor
+when its new generation lease is unavailable. The owner must construct mutations from its
+private observation and retain the sealed intent through reconciliation and acknowledgement.
+
 ## Vocabulary and notation
 
 - **Canonical object reference**: a pair `$(h, n)$`, where `$h$` is the canonical-object digest and `$n$` is its declared canonical byte length.

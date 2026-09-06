@@ -790,6 +790,7 @@ do
     exit 1
   fi
 done
+bash "$repo_root/scripts/check-rspace-journal-owner-model.sh"
 tlc_run "$tla_metadir" \
   RSpaceIncrementalPrepareStreaming.cfg \
   RSpaceIncrementalPrepareStreaming.tla -cleanup
