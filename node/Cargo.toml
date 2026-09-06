@@ -36,6 +36,8 @@ hex = { workspace = true }
 parking_lot = "0.12"
 num-bigint = { workspace = true }
 clap = { workspace = true }
+# url-support pulls reqwest 0.11 and the rustls 0.21 chain flagged by Dependabot. The
+# node config loader reads only local and embedded files, so URL includes stay off.
 hocon = { version = "0.9.0", default-features = false, features = ["serde-support"] }
 eyre = { workspace = true }
 humantime = { workspace = true }
