@@ -1398,6 +1398,29 @@ where
 
     pub(crate) fn pending_source_bytes(&self) -> &PathMap<Arc<[u8]>> { &self.pending_source_bytes }
 
+    /// Clear the exact committed continuation journal while retaining all
+    /// resident continuation records and installed startup state.
+    pub(crate) fn commit_pending(
+        &mut self,
+        expected_delta: &BagDelta,
+        expected_content: &PathMap<ContentTransition>,
+        expected_source_bytes: &PathMap<Arc<[u8]>>,
+    ) -> bool {
+        if &self.pending_delta != expected_delta
+            || !self.pending_content.iter().eq(expected_content.iter())
+            || !self
+                .pending_source_bytes
+                .iter()
+                .eq(expected_source_bytes.iter())
+        {
+            return false;
+        }
+        self.pending_delta = BagDelta::new();
+        self.pending_content = PathMap::new();
+        self.pending_source_bytes = PathMap::new();
+        true
+    }
+
     pub(crate) fn restore_pending_content(&mut self, content: PathMap<ContentTransition>) {
         self.pending_content = content;
     }
@@ -1535,6 +1558,16 @@ where C: Clone + RhoPathEncode + Send + Sync
     }
 
     pub(crate) fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
+
+    /// Clear the exact committed join journal without changing the resident
+    /// join PathMap.
+    pub(crate) fn commit_pending_delta(&mut self, expected: &BagDelta) -> bool {
+        if &self.pending_delta != expected {
+            return false;
+        }
+        self.pending_delta = BagDelta::new();
+        true
+    }
 
     pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
 

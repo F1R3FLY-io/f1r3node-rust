@@ -13,6 +13,7 @@ pub enum RSpaceError {
     KvStoreError(KvStoreError),
     DataIndexError(DataIndexError),
     RecordIndexError(String),
+    JournalConflict(String),
     BugFoundError(String),
     ReportingError(String),
 }
@@ -26,6 +27,7 @@ impl std::fmt::Display for RSpaceError {
             RSpaceError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
             RSpaceError::DataIndexError(err) => write!(f, "RSpace Data Index Error: {}", err),
             RSpaceError::RecordIndexError(err) => write!(f, "RSpace Record Index Error: {}", err),
+            RSpaceError::JournalConflict(err) => write!(f, "RSpace Journal Conflict: {}", err),
             RSpaceError::BugFoundError(err) => write!(f, "RSpace Bug Found Error: {}", err),
             RSpaceError::ReportingError(err) => write!(f, "Reporting Error: {}", err),
         }

@@ -174,6 +174,11 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
             joins: self.pending_join_delta()?,
         })
     }
+
+    /// Commit one exact revision-local journal snapshot after its durable
+    /// publication succeeds. Implementations must compare all namespaces
+    /// while holding their state boundary and must not clear a newer journal.
+    fn commit_pending_deltas(&self, expected: &PendingDeltas) -> Result<(), RSpaceError>;
     /// Restore revision-local journals captured by a soft checkpoint.
     fn restore_pending_deltas(
         &self,
@@ -951,6 +956,63 @@ where
         })
     }
 
+    fn commit_pending_deltas(&self, expected: &PendingDeltas) -> Result<(), RSpaceError> {
+        let mut state = hot_state_write(&self.state);
+        let Some(data) = expected.data.as_ref() else {
+            return Err(RSpaceError::JournalConflict(
+                "durable commit omitted the data journal".to_owned(),
+            ));
+        };
+        let Some(continuations) = expected.continuations.as_ref() else {
+            return Err(RSpaceError::JournalConflict(
+                "durable commit omitted the continuation journal".to_owned(),
+            ));
+        };
+        let Some(content) = expected.continuation_content.as_ref() else {
+            return Err(RSpaceError::JournalConflict(
+                "durable commit omitted the continuation content journal".to_owned(),
+            ));
+        };
+        let Some(source_bytes) = expected.continuation_source_bytes.as_ref() else {
+            return Err(RSpaceError::JournalConflict(
+                "durable commit omitted the continuation source journal".to_owned(),
+            ));
+        };
+        let Some(joins) = expected.joins.as_ref() else {
+            return Err(RSpaceError::JournalConflict(
+                "durable commit omitted the join journal".to_owned(),
+            ));
+        };
+        // Preflight every namespace before mutating any journal so a stale
+        // snapshot cannot clear only a prefix of the committed revision.
+        if state.data.pending_delta() != data
+            || state.continuations.pending_delta() != continuations
+            || !state
+                .continuations
+                .pending_content()
+                .iter()
+                .eq(content.iter())
+            || !state
+                .continuations
+                .pending_source_bytes()
+                .iter()
+                .eq(source_bytes.iter())
+            || state.joins.pending_delta() != joins
+        {
+            return Err(RSpaceError::JournalConflict(
+                "hot-store journal changed before durable commit acknowledgement".to_owned(),
+            ));
+        }
+        debug_assert!(state.data.commit_pending_delta(data));
+        debug_assert!(
+            state
+                .continuations
+                .commit_pending(continuations, content, source_bytes)
+        );
+        debug_assert!(state.joins.commit_pending_delta(joins));
+        Ok(())
+    }
+
     fn restore_pending_deltas(
         &self,
         data: BagDelta,
@@ -1713,6 +1775,10 @@ where
 #[cfg(test)]
 #[path = "../../tests/hot_store/group_scoped_version.rs"]
 mod group_scoped_version_tests;
+
+#[cfg(test)]
+#[path = "../../tests/hot_store/journal_commit.rs"]
+mod journal_commit_tests;
 
 #[cfg(feature = "accepted-match-transition-experiment")]
 #[doc(hidden)]
