@@ -10,12 +10,8 @@ unmaintained = "all"
 unsound = "all"
 maximum-db-staleness = "P7D"
 ignore = [
-  { id = "RUSTSEC-2026-0098", reason = "Legacy reqwest uses rustls-webpki 0.101.7. URI constraints require certificate misissuance. Replace the legacy HTTP dependencies." },
-  { id = "RUSTSEC-2026-0099", reason = "Legacy reqwest uses rustls-webpki 0.101.7. Wildcard constraints require certificate misissuance. Replace the legacy HTTP dependencies." },
-  { id = "RUSTSEC-2026-0104", reason = "Legacy reqwest uses rustls-webpki 0.101.7. CRL parsing can panic before signature verification. CRL reachability requires review." },
   { id = "RUSTSEC-2026-0258", reason = "Legacy reqwest uses h2 0.3.27. Undrained streams can queue empty DATA frames. Replace the legacy HTTP dependencies." },
   { id = "RUSTSEC-2025-0134", reason = "comm directly uses rustls-pemfile 2.2.0. Legacy reqwest also uses 1.0.4. Migrate to rustls-pki-types." },
-  { id = "RUSTSEC-2024-0387", reason = "The legacy OpenTelemetry stack uses opentelemetry_api. Upgrade the telemetry dependencies together." },
   { id = "RUSTSEC-2025-0141", reason = "The workspace uses bincode 1.3.3. Replacement requires storage and serialization compatibility tests." },
   { id = "RUSTSEC-2021-0141", reason = "rholang directly uses dotenv 0.15.0. Migrate the OpenAI configuration loader to a maintained implementation." },
   { id = "RUSTSEC-2021-0153", reason = "hocon uses encoding through java-properties. Replace HOCON under TASK-012-5." },
@@ -62,8 +58,7 @@ allow-wildcard-paths = true
 highlight = "all"
 deny = [
   { crate = "bitmaps:>=3.2.0", reason = "RUSTSEC-2025-0167 affects byte conversions introduced in 3.2.0. Use 3.1.0 until a reviewed replacement is available." },
-  { crate = "rustls-webpki:<0.101.7", reason = "Only the existing legacy exception can use an unpatched certificate verifier." },
-  { crate = "rustls-webpki:>0.101.7,<0.103.13", reason = "Do not extend the legacy certificate-verifier exception to other versions." },
+  { crate = "rustls-webpki:<0.103.13", reason = "The legacy certificate verifier has been removed. Require the patched version." },
   { crate = "h2:<0.3.27", reason = "Only h2 0.3.27 has a legacy HTTP exception." },
   { crate = "h2:>0.3.27,<0.4.16", reason = "The maintained HTTP stack must include the empty DATA frame fix." },
 ]

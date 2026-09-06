@@ -25,13 +25,13 @@ def report(*records):
     )
 
 
-def advisory(version="0.101.7"):
+def advisory(version="0.3.27"):
     return {
         "type": "diagnostic",
         "fields": {
             "severity": "note",
-            "advisory": {"id": "RUSTSEC-2026-0104"},
-            "graphs": [{"Krate": {"name": "rustls-webpki", "version": version}}],
+            "advisory": {"id": "RUSTSEC-2026-0258"},
+            "graphs": [{"Krate": {"name": "h2", "version": version}}],
         },
     }
 
@@ -46,12 +46,12 @@ class PolicyTests(unittest.TestCase):
         controls.validate_manifests(ROOT, self.policy["manifests"])
 
     def test_exception_expires_on_review_date(self):
-        self.policy["exceptions"]["RUSTSEC-2026-0104"]["review-by"] = TODAY
+        self.policy["exceptions"]["RUSTSEC-2026-0258"]["review-by"] = TODAY
         with self.assertRaisesRegex(ValueError, "requires review"):
             controls.validate_policy(self.policy, self.deny, TODAY)
 
     def test_exception_requires_owner(self):
-        del self.policy["exceptions"]["RUSTSEC-2026-0104"]["owner"]
+        del self.policy["exceptions"]["RUSTSEC-2026-0258"]["owner"]
         with self.assertRaises(ValueError):
             controls.validate_policy(self.policy, self.deny, TODAY)
 
@@ -63,7 +63,7 @@ class PolicyTests(unittest.TestCase):
             controls.validate_policy(self.policy, self.deny, TODAY)
 
     def test_exception_cannot_use_a_version_range(self):
-        self.policy["exceptions"]["RUSTSEC-2026-0104"]["versions"] = [">=0.101"]
+        self.policy["exceptions"]["RUSTSEC-2026-0258"]["versions"] = [">=0.3"]
         with self.assertRaises(ValueError):
             controls.validate_policy(self.policy, self.deny, TODAY)
 
@@ -142,9 +142,9 @@ class PolicyTests(unittest.TestCase):
             report(advisory()), self.policy["exceptions"]
         )
         self.assertFalse(errors)
-        self.assertEqual(seen, {"RUSTSEC-2026-0104"})
+        self.assertEqual(seen, {"RUSTSEC-2026-0258"})
         errors, _ = controls.validate_report(
-            report(advisory("0.102.8")), self.policy["exceptions"]
+            report(advisory("0.4.15")), self.policy["exceptions"]
         )
         self.assertTrue(errors)
 
