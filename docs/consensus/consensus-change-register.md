@@ -6206,3 +6206,18 @@ limit; it does not alter production storage. The durable owner still requires pu
 acknowledgement integration before activation. This remains `NO_PRODUCTION_CHANGE_DERIVED`
 with respect to consensus behavior; it is not evidence of completed owner/cutover semantics.
 See [J-054](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-054--2026-09-06-recovery-must-borrow-the-retained-writer-capability).
+
+Inventory correction, 2026-09-06: dormant incremental sealing and publication now share
+one exact current/retained semantic-closure inventory. A reproduced second-checkpoint
+overcount (1,021 bytes versus an independently verified 789) came from combining predecessor
+and staged diagnostics without removing replaced objects. The corrected values change
+previously incorrect retention-manifest/WAL/catalog metadata, not their layouts, semantic
+state-manifest bytes, RhoPath/protobuf/bincode bytes, legacy roots, matching or charges.
+Cold admission still rejects inconsistent old metadata; no invalid image is reinterpreted as
+valid. The durable-only capability additionally binds catalog, existing generation registry,
+transition and admission policy before writes. The complete persistence module passes
+312/312 in debug and release, with four closed inventory capstones and an exhaustive
+89-ID property matrix. This remains `NO_PRODUCTION_CHANGE_DERIVED`: default backend,
+storage tariffs and consensus identity are not activated or changed. Owner acknowledgement,
+single-authority migration and consensus cutover remain open. See
+[J-056](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-056--2026-09-06-one-exact-inventory-through-sealing-and-publication).

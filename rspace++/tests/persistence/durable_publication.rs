@@ -344,7 +344,11 @@ fn incremental_publication_round_trips_with_target_retention_manifest() {
     let mutation = data_batch(base, "incremental-publication");
     let view = crate::rspace::persistence::MutationBatchViewV1::parse(&mutation).unwrap();
     let sealed = writer
-        .seal_transaction(view, crate::rspace::persistence::DagTransactionLimits::UNBOUNDED)
+        .seal_transaction(
+            view,
+            crate::rspace::persistence::DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
         .unwrap();
     let sequence = writer
         .authority()
@@ -366,8 +370,306 @@ fn incremental_publication_round_trips_with_target_retention_manifest() {
     assert_eq!(recovered.authority().slot().state(), sealed.receipt().target());
 }
 
+fn check_incremental_inventory_history(operations: &[(u8, u8)]) {
+    for source in [checkpoint_source_fixture(), semantic_checkpoint_source_fixture()] {
+        check_incremental_inventory_history_from(source, operations);
+    }
+}
+
+fn check_incremental_inventory_history_from(
+    source: SyntheticCheckpointSource,
+    operations: &[(u8, u8)],
+) {
+    use crate::rspace::data_index::RSpaceDataIndex;
+    use crate::rspace::internal::Datum;
+    use crate::rspace::persistence::{
+        CanonicalObjectStore, DagTransactionLimits, MutableObjectStore, MutationBatchViewV1,
+        RSpaceMutationBatchV1, RetainedUnionClosureLimitsV1, RetentionManifestView,
+        StructuralClosureLedgerV1, verify_structural_closure,
+        verify_structural_closure_in_ledger_with_limits,
+    };
+
+    let oracle = CanonicalObjectStore::default();
+    for (reference, bytes) in &source.objects {
+        oracle
+            .put_if_absent_or_equal(*reference, bytes.clone().into())
+            .unwrap();
+    }
+    let scratch = trial_scratch("incremental-inventory-");
+    install_checkpoint_image(scratch.path(), &checkpoint_image_from_source(source));
+    let mut writer = admit(scratch.path());
+    let mut counts = [0u64; 4];
+    for (step, &(identity, after)) in operations.iter().enumerate() {
+        let index = usize::from(identity);
+        let before = counts[index];
+        let after = u64::from(after);
+        if before == after {
+            continue;
+        }
+        let channel = "inventory-channel".to_owned();
+        let datum = Datum::create(&channel, format!("datum-{identity}"), false);
+        let path = RSpaceDataIndex::datum_path(&channel, &datum);
+        let mut mutation = RSpaceMutationBatchV1::new(writer.catalog().state()).unwrap();
+        mutation.record_data(&path, before, after).unwrap();
+        let bytes = mutation.plan().unwrap().try_canonical_bytes().unwrap();
+        let sealed = writer
+            .seal_transaction(
+                MutationBatchViewV1::parse(&bytes).unwrap(),
+                DagTransactionLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            )
+            .unwrap();
+        for object in sealed.objects() {
+            oracle
+                .put_if_absent_or_equal(object.reference(), object.canonical_bytes_arc())
+                .unwrap();
+        }
+        let target = sealed.receipt().target();
+        let current = verify_structural_closure(&oracle, target.manifest()).unwrap();
+        let retention_object = sealed
+            .objects()
+            .iter()
+            .find(|object| Some(object.reference()) == sealed.retention_manifest())
+            .unwrap();
+        let retention = RetentionManifestView::parse(retention_object.canonical_bytes()).unwrap();
+        assert_eq!(retention.current().state(), target);
+        assert_eq!(
+            retention.current().canonical_bytes(),
+            current.canonical_bytes,
+            "step {step}: identity {identity}, count {before} -> {after}"
+        );
+        let mut retained = StructuralClosureLedgerV1::new();
+        for state in std::iter::once(Ok(retention.current())).chain(retention.historical()) {
+            verify_structural_closure_in_ledger_with_limits(
+                &oracle,
+                state.unwrap().state().manifest(),
+                StructuralValidationLimits::unbounded(),
+                &mut retained,
+                RetainedUnionClosureLimitsV1::UNBOUNDED,
+            )
+            .unwrap();
+        }
+        let sequence = writer.catalog().commit_sequence().successor().unwrap();
+        let prepared = writer
+            .prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED)
+            .unwrap();
+        writer = writer
+            .publish_incremental_transaction_v1(
+                &prepared,
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            )
+            .unwrap();
+        assert_eq!(
+            writer.catalog().pack().current_state_canonical_bytes(),
+            current.canonical_bytes
+        );
+        assert_eq!(
+            writer.catalog().pack().retained_canonical_bytes(),
+            retained.retained_union_report().canonical_bytes
+        );
+        drop(writer);
+        writer = admit(scratch.path());
+        assert_eq!(writer.catalog().state(), target);
+        assert_eq!(writer.report().current_structural, current);
+        assert_eq!(writer.report().retained_union, retained.retained_union_report());
+        counts[index] = after;
+    }
+}
+
 #[test]
-fn incremental_publication_rejects_missing_target_retention_manifest() {
+fn incremental_inventory_tracks_replacement_removal_sharing_and_reuse() {
+    check_incremental_inventory_history(&[
+        (0, 1),
+        (1, 1),
+        (0, 3),
+        (1, 0),
+        (0, 0),
+        (0, 1),
+        (2, 4),
+        (0, 0),
+        (2, 0),
+    ]);
+}
+
+proptest! {
+    #[test]
+    fn incremental_inventory_matches_cold_admission_at_every_history_step(
+        operations in prop::collection::vec((0u8..4, 0u8..5), 1..12),
+    ) {
+        check_incremental_inventory_history(&operations);
+    }
+}
+
+fn incremental_store_bytes(root: &Path) -> [Vec<u8>; 3] {
+    [
+        fs::read(root.join("catalog.v1")).unwrap(),
+        fs::read(root.join(pack_file_name(PackId::GENESIS))).unwrap(),
+        fs::read(root.join(index_file_name(IndexGenerationV1::FIRST))).unwrap(),
+    ]
+}
+
+#[test]
+fn incremental_inventory_limits_refuse_before_any_durable_mutation() {
+    use crate::rspace::persistence::{DagTransactionLimits, MutationBatchViewV1};
+    let scratch = trial_scratch("inventory-limits-");
+    install_checkpoint_image(
+        scratch.path(),
+        &checkpoint_image_from_source(checkpoint_source_fixture()),
+    );
+    let writer = admit(scratch.path());
+    let before = incremental_store_bytes(scratch.path());
+    let mutation = data_batch(writer.catalog().state(), "inventory-limits");
+    for axis in 0..9 {
+        let mut limits = DurableAdmissionLimitsV1::UNBOUNDED;
+        match axis {
+            0 => limits.max_retained_states = 0,
+            1 => limits.max_union_objects = 0,
+            2 => limits.max_union_canonical_bytes = 0,
+            3 => limits.max_object_reads = 0,
+            4 => limits.max_object_read_bytes = 0,
+            5 => limits.per_state_structural.max_distinct_objects = 0,
+            6 => limits.per_state_structural.max_canonical_bytes = 0,
+            7 => limits.per_state_structural.max_references = 0,
+            8 => limits.per_state_structural.max_worklist = 0,
+            _ => unreachable!(),
+        }
+        let error = match writer.seal_transaction(
+            MutationBatchViewV1::parse(&mutation).unwrap(),
+            DagTransactionLimits::UNBOUNDED,
+            limits,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("inventory resource axis {axis} was not enforced"),
+        };
+        let detail = format!("{error:?}");
+        let expected = [
+            "RetainedStates",
+            "retained union objects",
+            "retained union canonical bytes",
+            "object reads",
+            "object-read bytes",
+            "distinct objects",
+            "canonical bytes",
+            "object references",
+            "worklist",
+        ][axis];
+        assert!(detail.contains(expected), "axis {axis}: {detail}");
+        assert_eq!(incremental_store_bytes(scratch.path()), before);
+    }
+    writer
+        .seal_transaction(
+            MutationBatchViewV1::parse(&mutation).unwrap(),
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    assert_eq!(incremental_store_bytes(scratch.path()), before);
+}
+
+#[test]
+fn incremental_inventory_is_bound_to_its_opened_authority_and_exact_sequence() {
+    use crate::rspace::persistence::durable::DurableTransactionPreparationError;
+    use crate::rspace::persistence::{DagTransactionLimits, MutationBatchViewV1};
+    let image = checkpoint_image_from_source(checkpoint_source_fixture());
+    let first = trial_scratch("inventory-authority-first-");
+    let second = trial_scratch("inventory-authority-second-");
+    install_checkpoint_image(first.path(), &image);
+    install_checkpoint_image(second.path(), &image);
+    let writer = admit(first.path());
+    let foreign = admit(second.path());
+    assert_eq!(writer.authority(), foreign.authority());
+    let before = incremental_store_bytes(second.path());
+    let mutation = data_batch(writer.catalog().state(), "inventory-authority");
+    let sealed = writer
+        .seal_transaction(
+            MutationBatchViewV1::parse(&mutation).unwrap(),
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    let sequence = writer.catalog().commit_sequence().successor().unwrap();
+    assert!(matches!(
+        foreign.prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED),
+        Err(DurableTransactionPreparationError::AuthorityMismatch)
+    ));
+    assert!(matches!(
+        writer.prepare_transaction(
+            &sealed,
+            sequence.successor().unwrap(),
+            LogPackDecodeLimits::UNBOUNDED
+        ),
+        Err(DurableTransactionPreparationError::AuthorityMismatch)
+    ));
+    let prepared = writer
+        .prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED)
+        .unwrap();
+    let outcome = foreign.publish_incremental_transaction_v1(
+        &prepared,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    );
+    assert!(matches!(
+        outcome,
+        Err(crate::rspace::persistence::durable::IncrementalPublicationErrorV1::Preparation(
+            DurableTransactionPreparationError::AuthorityMismatch
+        ))
+    ));
+    assert_eq!(incremental_store_bytes(second.path()), before);
+    let successor = writer
+        .publish_incremental_transaction_v1(
+            &prepared,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    assert!(matches!(
+        successor.prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED),
+        Err(DurableTransactionPreparationError::AuthorityMismatch)
+    ));
+}
+
+#[test]
+fn incremental_inventory_policy_cannot_change_after_preparation() {
+    use crate::rspace::persistence::{DagTransactionLimits, MutationBatchViewV1};
+    let scratch = trial_scratch("inventory-policy-");
+    install_checkpoint_image(
+        scratch.path(),
+        &checkpoint_image_from_source(checkpoint_source_fixture()),
+    );
+    let writer = admit(scratch.path());
+    let before = incremental_store_bytes(scratch.path());
+    let mutation = data_batch(writer.catalog().state(), "inventory-policy");
+    let sealed = writer
+        .seal_transaction(
+            MutationBatchViewV1::parse(&mutation).unwrap(),
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .unwrap();
+    let prepared = writer
+        .prepare_transaction(
+            &sealed,
+            writer.catalog().commit_sequence().successor().unwrap(),
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap();
+    let changed = DurableAdmissionLimitsV1 {
+        max_object_reads: 0,
+        ..DurableAdmissionLimitsV1::UNBOUNDED
+    };
+    assert!(matches!(writer.publish_incremental_transaction_v1(
+        &prepared, limits(), LogPackDecodeLimits::UNBOUNDED, changed,
+    ), Err(crate::rspace::persistence::durable::IncrementalPublicationErrorV1::Preparation(
+        crate::rspace::persistence::durable::DurableTransactionPreparationError::AdmissionPolicyMismatch))));
+    assert_eq!(incremental_store_bytes(scratch.path()), before);
+}
+
+#[test]
+fn incremental_publication_preflight_rejects_missing_target_retention_manifest() {
     let source = checkpoint_source_fixture();
     let scratch = test_scratch::acquire("rspace-incremental-publication-missing-manifest-");
     install_checkpoint_image(scratch.path(), &checkpoint_image_from_source(source));
@@ -386,17 +688,19 @@ fn incremental_publication_rejects_missing_target_retention_manifest() {
         .commit_sequence()
         .successor()
         .unwrap();
-    let prepared = writer
-        .prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED)
-        .unwrap();
-    let error = match writer.publish_incremental_transaction_v1(
-        &prepared,
-        limits(),
+    let prepared = crate::rspace::persistence::PreparedLogPackTransactionV1::new(
+        &sealed,
+        writer.classify_transaction_objects(&sealed).unwrap(),
+        writer.catalog().store_id(),
+        sequence,
         LogPackDecodeLimits::UNBOUNDED,
-        DurableAdmissionLimitsV1::UNBOUNDED,
+    )
+    .unwrap();
+    let error = match crate::rspace::persistence::durable::require_incremental_retention_manifest(
+        &prepared,
     ) {
         Err(error) => error,
-        Ok(_) => panic!("missing retention manifest was unexpectedly published"),
+        Ok(_) => panic!("missing retention manifest passed publication preflight"),
     };
     assert!(matches!(
         error,

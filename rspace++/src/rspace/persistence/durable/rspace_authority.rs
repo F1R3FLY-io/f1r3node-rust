@@ -7,22 +7,21 @@
 //! usable and no caller can accidentally continue from an unauthenticated
 //! pathname or a stale catalog image.
 
+use std::path::PathBuf;
+
 use super::admission::{
     DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableTransactionPreparationError,
     SemanticallyAdmittedDurableWriterV1,
 };
 use super::publication::IncrementalPublicationErrorV1;
 use super::{DurableAuthorityViewV1, DurableObjectReadErrorV1, recover_read_authority};
-use crate::rspace::hot_store::{
-    PendingMutationObservation, stage_pending_continuation_sources,
-};
-use crate::rspace::persistence::mutation::{MutationError, MutationBatchViewV1};
+use crate::rspace::hot_store::{PendingMutationObservation, stage_pending_continuation_sources};
+use crate::rspace::persistence::mutation::{MutationBatchViewV1, MutationError};
 use crate::rspace::persistence::{
-    CanonicalEncode, DagTransactionError, DagTransactionLimits, GenerationLeaseError,
-    GenerationLeaseKeyV1, GenerationLeaseV1, LogPackDecodeLimits, LogPackFormatError, StateVersionV1,
+    CanonicalEncode, DagTransactionError, DagTransactionLimits, DurableLimits,
+    GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseV1, LogPackDecodeLimits,
+    LogPackFormatError, SemanticProfile, StateVersionV1,
 };
-use crate::rspace::persistence::{DurableLimits, SemanticProfile};
-use std::path::PathBuf;
 
 /// Limits and recovery policy used by one durable RSpace publication.
 #[derive(Clone, Copy, Debug)]
@@ -102,7 +101,10 @@ enum DurableRSpaceAuthorityState<P: SemanticProfile> {
 
 impl<P: SemanticProfile> DurableRSpaceAuthorityV1<P> {
     pub(crate) fn from_view(view: DurableAuthorityViewV1<P>) -> Self {
-        let DurableAuthorityViewV1 { writer, _generation_lease } = view;
+        let DurableAuthorityViewV1 {
+            writer,
+            _generation_lease,
+        } = view;
         Self {
             state: DurableRSpaceAuthorityState::Ready {
                 writer,
@@ -125,13 +127,12 @@ impl<P: SemanticProfile> DurableRSpaceAuthorityV1<P> {
         directory: PathBuf,
         limits: DurableRSpacePublicationLimitsV1,
     ) -> Result<(), DurableAdmissionErrorV1> {
-        let view = recover_read_authority::<P>(
-            directory,
-            limits.recovery,
-            limits.wal,
-            limits.admission,
-        )?;
-        let DurableAuthorityViewV1 { writer, _generation_lease } = view;
+        let view =
+            recover_read_authority::<P>(directory, limits.recovery, limits.wal, limits.admission)?;
+        let DurableAuthorityViewV1 {
+            writer,
+            _generation_lease,
+        } = view;
         self.state = DurableRSpaceAuthorityState::Ready {
             writer,
             generation_lease: _generation_lease,
@@ -152,9 +153,7 @@ impl<P: SemanticProfile> DurableRSpaceAuthorityV1<P> {
         limits: DurableRSpacePublicationLimitsV1,
     ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
         let (directory, writer) = match &self.state {
-            DurableRSpaceAuthorityState::Ready { writer, .. } => {
-                (writer.directory_path(), writer)
-            }
+            DurableRSpaceAuthorityState::Ready { writer, .. } => (writer.directory_path(), writer),
             DurableRSpaceAuthorityState::RecoveryRequired { directory } => {
                 return Err(DurableRSpaceTransactionError::RecoveryRequired(directory.clone()));
             }
@@ -166,14 +165,12 @@ impl<P: SemanticProfile> DurableRSpaceAuthorityV1<P> {
         let mut transaction = writer.open_transaction(view, limits.transaction)?;
         stage_pending_continuation_sources(&mut transaction, &observation.pending)?;
         let sealed = transaction.seal()?;
-        let sealed = writer.attach_target_retention_manifest(sealed)?;
+        let sealed = writer.bind_durable_transaction(sealed, limits.admission)?;
         let prepared = writer.prepare_transaction(&sealed, sequence, limits.wal)?;
-        let prior = std::mem::replace(
-            &mut self.state,
-            DurableRSpaceAuthorityState::RecoveryRequired {
+        let prior =
+            std::mem::replace(&mut self.state, DurableRSpaceAuthorityState::RecoveryRequired {
                 directory: directory.clone(),
-            },
-        );
+            });
         let DurableRSpaceAuthorityState::Ready {
             writer,
             generation_lease,

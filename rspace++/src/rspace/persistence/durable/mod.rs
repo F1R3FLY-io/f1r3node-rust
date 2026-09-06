@@ -64,6 +64,8 @@ pub(crate) use io::{
 pub use layout::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, DurableLimits};
 pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
+#[cfg(test)]
+pub(crate) use publication::require_incremental_retention_manifest;
 pub(crate) use publication::{
     GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationOutcomeV1,
     IncrementalAppendErrorV1, IncrementalPublicationErrorV1, append_incremental_prepare_and_index,

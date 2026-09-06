@@ -409,7 +409,7 @@ impl<'transaction, 'mutation, P: SemanticProfile>
 
     pub const fn receipt(&self) -> SealedTransitionV1 { self.transaction.receipt() }
 
-    pub const fn current_state_canonical_bytes(&self) -> u64 {
+    pub const fn incremental_validation_canonical_bytes(&self) -> u64 {
         self.transaction.diagnostics().closure.canonical_bytes
     }
 

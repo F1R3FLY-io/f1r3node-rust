@@ -406,20 +406,19 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         .iter()
         .map(|(id, _)| *id)
         .collect::<BTreeSet<_>>();
-    let catalog_ids =
-        catalog
-            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
-            .filter(|token| {
-                let Some((family, index)) = token.split_once('-') else {
-                    return false;
-                };
-                matches!(
-                    family,
-                    "INV" | "DES" | "WIR" | "WAL" | "CAT" | "PUB" | "SEM" | "RES" | "NV"
-                ) && index.len() == 2 &&
-                    index.bytes().all(|byte| byte.is_ascii_digit())
-            })
-            .collect::<BTreeSet<_>>();
+    let catalog_ids = catalog
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+        .filter(|token| {
+            let Some((family, index)) = token.split_once('-') else {
+                return false;
+            };
+            matches!(
+                family,
+                "INV" | "DES" | "WIR" | "WAL" | "CAT" | "PUB" | "SEM" | "RES" | "NV" | "HJ" | "SI"
+            ) && index.len() == 2 &&
+                index.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        .collect::<BTreeSet<_>>();
     assert_eq!(formal_ids, catalog_ids, "catalog and executable property IDs diverged");
 
     let derivation_section = catalog
@@ -439,8 +438,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         let Some((family, index)) = id.split_once('-') else {
             continue;
         };
-        if !matches!(family, "INV" | "DES" | "WIR" | "WAL" | "CAT" | "PUB" | "SEM" | "RES" | "NV") ||
-            index.len() != 2 ||
+        if !matches!(
+            family,
+            "INV" | "DES" | "WIR" | "WAL" | "CAT" | "PUB" | "SEM" | "RES" | "NV" | "HJ" | "SI"
+        ) || index.len() != 2 ||
             !index.bytes().all(|byte| byte.is_ascii_digit())
         {
             continue;
@@ -504,9 +505,18 @@ fn model_property_manifest_is_unique_and_exhaustive() {
             if *symbol == "EXEC_ONLY" {
                 continue;
             }
+            let declaration = if let Some((module, name)) = symbol.rsplit_once('.') {
+                assert!(
+                    rocq_source.contains(&format!("Module {module}.")),
+                    "derivation row {id} cites missing Rocq module {module}"
+                );
+                name
+            } else {
+                symbol
+            };
             assert!(
-                rocq_source.contains(&format!("Theorem {symbol}")) ||
-                    rocq_source.contains(&format!("Lemma {symbol}")),
+                rocq_source.contains(&format!("Theorem {declaration}")) ||
+                    rocq_source.contains(&format!("Lemma {declaration}")),
                 "derivation row {id} cites missing Rocq theorem/lemma {symbol}",
             );
             cited_rocq.insert(*symbol);
@@ -568,6 +578,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("durable_recovery.rs"),
         include_str!("generation_checkpoint_properties.rs"),
         include_str!("wal_codec.rs"),
+        include_str!("../hot_store/journal_commit.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {
@@ -578,7 +589,9 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         );
     }
 
-    for required_family in ["INV-", "DES-", "WIR-", "WAL-", "CAT-", "PUB-", "SEM-", "RES-", "NV-"] {
+    for required_family in
+        ["INV-", "DES-", "WIR-", "WAL-", "CAT-", "PUB-", "SEM-", "RES-", "NV-", "HJ-", "SI-"]
+    {
         assert!(
             PROPERTY_BINDINGS
                 .iter()

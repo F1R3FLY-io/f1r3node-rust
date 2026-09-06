@@ -13,7 +13,8 @@ use std::path::Path;
 use super::admission::{
     AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
     DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1, DurableObjectReadErrorV1,
-    SemanticallyAdmittedDurableWriterV1, SuccessorRetainedUnionError, admit_physical_writer,
+    DurableTransactionPreparationError, PreparedDurableLogPackTransactionV1,
+    SemanticallyAdmittedDurableWriterV1, admit_physical_writer,
 };
 use super::catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1, CatalogSlotV1,
@@ -260,7 +261,7 @@ pub(crate) enum IncrementalPublicationErrorV1 {
     },
     ProfileMismatch,
     MissingRetentionManifest,
-    SuccessorRetainedUnion(Box<SuccessorRetainedUnionError>),
+    Preparation(DurableTransactionPreparationError),
 }
 
 impl From<IncrementalAppendErrorV1> for IncrementalPublicationErrorV1 {
@@ -735,18 +736,31 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
     prepare_successor_catalog(authority, current, &prepared, commit_durable)
 }
 
+pub(crate) fn require_incremental_retention_manifest<P: SemanticProfile>(
+    prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
+) -> Result<crate::rspace::persistence::ObjectRefV1, IncrementalPublicationErrorV1> {
+    prepared
+        .retention_manifest()
+        .ok_or(IncrementalPublicationErrorV1::MissingRetentionManifest)
+}
+
 impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     /// Publish one sealed transaction into the active generation. The old
     /// authority remains the recovery source until the catalog CAS succeeds.
     pub(crate) fn publish_incremental_transaction_v1(
         self,
-        prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
+        prepared: &PreparedDurableLogPackTransactionV1<'_, '_, P>,
         recovery_limits: DurableLimits,
         wal_limits: LogPackDecodeLimits,
         admission_limits: DurableAdmissionLimitsV1,
     ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, IncrementalPublicationErrorV1> {
-        let receipt = prepared.receipt();
         let authority = self.authority().clone();
+        prepared
+            .preflight(&authority, &self.generation_leases(), admission_limits)
+            .map_err(IncrementalPublicationErrorV1::Preparation)?;
+        let inventory = prepared.inventory();
+        let prepared = prepared.prepared();
+        let receipt = prepared.receipt();
         let current = authority.slot();
         if receipt.base() != current.state() {
             return Err(IncrementalPublicationErrorV1::BaseStateMismatch {
@@ -757,15 +771,8 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         if receipt.profile_id() != P::ID {
             return Err(IncrementalPublicationErrorV1::ProfileMismatch);
         }
-        let retention_manifest = prepared
-            .retention_manifest()
-            .ok_or(IncrementalPublicationErrorV1::MissingRetentionManifest)?;
-        let retained_union = self
-            .successor_retained_union(prepared, admission_limits)
-            .map_err(|error| {
-                IncrementalPublicationErrorV1::SuccessorRetainedUnion(Box::new(error))
-            })?;
-        let (mut lease, source) = self.into_parts();
+        let retention_manifest = require_incremental_retention_manifest(prepared)?;
+        let (mut lease, _source) = self.into_parts();
         let (prepare_address, prepare_identity, index_tail) =
             append_incremental_prepare_and_index(&mut lease, current, prepared)?;
         let commit_address = LogPackAddress::from_pack(
@@ -773,17 +780,8 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
             prepare_address.end(),
             TRANSACTION_COMMIT_RECORD_LEN_V1,
         )?;
-        let retained_bytes = retained_union.canonical_bytes;
-        let current_state_bytes = source
-            .report()
-            .current_structural
-            .canonical_bytes
-            .checked_add(prepared.current_state_canonical_bytes())
-            .and_then(|bytes| bytes.checked_sub(receipt.target().manifest().encoded_len()))
-            .ok_or(LogPackFormatError::ByteInventory {
-                current_state: u64::MAX,
-                retained: retained_bytes,
-            })?;
+        let retained_bytes = inventory.retained_union.canonical_bytes;
+        let current_state_bytes = inventory.current.canonical_bytes;
         let publication = crate::rspace::persistence::CommitPublicationV1::new(
             current.pack().first_live_pack(),
             current.pack().index_generation(),

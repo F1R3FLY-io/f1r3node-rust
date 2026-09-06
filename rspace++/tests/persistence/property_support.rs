@@ -166,6 +166,21 @@ pub(super) fn apply_inventory_mutation(
 }
 
 pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
+    ("HJ-01", "acknowledgement_clears_five_populated_journals_and_preserves_live_records"),
+    ("HJ-02", "acknowledgement_clears_five_populated_journals_and_preserves_live_records"),
+    ("HJ-03", "mismatch_or_missing_capability_in_any_journal_rejects_without_partial_clear"),
+    ("HJ-04", "stale_journal_cannot_clear_a_newer_revision"),
+    ("HJ-05", "journal_count_inversion_matches_live_multiplicities"),
+    ("HJ-06", "journal_count_inversion_matches_live_multiplicities"),
+    ("HJ-07", "journal_count_inversion_matches_live_multiplicities"),
+    ("HJ-08", "absent_count_evidence_is_not_a_captured_zero"),
+    ("HJ-09", "join_journal_uses_native_key_and_repeated_channel_positions"),
+    ("HJ-10", "join_journal_uses_native_key_and_repeated_channel_positions"),
+    ("SI-01", "incremental_inventory_tracks_replacement_removal_sharing_and_reuse"),
+    ("SI-02", "incremental_inventory_matches_cold_admission_at_every_history_step"),
+    ("SI-03", "incremental_inventory_tracks_replacement_removal_sharing_and_reuse"),
+    ("SI-04", "incremental_inventory_is_bound_to_its_opened_authority_and_exact_sequence"),
+    ("SI-05", "incremental_inventory_limits_refuse_before_any_durable_mutation"),
     ("INV-01", "checkpoint_union_is_exact_disjoint_ordered_merge"),
     ("INV-02", "checkpoint_union_is_exact_disjoint_ordered_merge"),
     ("INV-03", "checkpoint_union_is_exact_disjoint_ordered_merge"),

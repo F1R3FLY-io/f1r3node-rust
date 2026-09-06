@@ -3896,6 +3896,121 @@ authority, then migration and cutover gates. Task 6424's proposed Nix/Node boots
 not an authorized dependency or prerequisite: preserve honest proof provenance using
 existing tooling, and require separate approval for any new provisioning system.
 
+### J-056 — 2026-09-06: one exact inventory through sealing and publication
+
+**BASELINE AND FORMAL ORDER.** The J-055 source finding was reproduced before production
+changes: the second checkpoint in a deterministic history reported 1,021 current bytes,
+while independent full traversal found 789. No expected bytes were changed to make that
+test pass. Four new `ExactSuccessorInventory` Rocq capstones prove replacement conservation,
+the subtraction bound, exact partition accounting and a counterexample to staged-only
+arithmetic. The existing theory now reports 31 capstones closed under the global context.
+The SI-01 through SI-05 implementation obligations were recorded before the production fix.
+These finite partition laws do not themselves prove the Rust graph traversal or owner protocol.
+
+**IMPLEMENTATION.** Durable-only sealed/prepared wrappers retain the exact current and
+retained-union reports from one staged-overlay traversal. Generic transaction/WAL types
+remain generic. The wrappers bind that evidence to the exact predecessor catalog, the
+existing opened authority's generation registry, the sealed transition and the admission
+policy. Preparation also checks the exact successor sequence. Retention metadata construction
+and WAL/catalog publication consume this same inventory; the two approximate calculations
+and the second publication-time inventory walk are gone. The staged diagnostic accessor is
+named `incremental_validation_canonical_bytes`, not `current_state_canonical_bytes`.
+
+The current report includes the target semantic manifest. The retained union counts shared
+objects once. Retention-manifest metadata is attached afterward and remains separately
+admitted. An early guard checks that current object count and bytes fit within the retained
+union. Structural, union, history and closure-read budgets are checked before publication.
+The closure-read budget counts declared bytes requested from both staged and inherited
+objects before loading; it is not a physical disk-I/O counter.
+
+**EXECUTABLE EVIDENCE.** The full persistence module passes 312/312 in debug (6.75 s test
+execution) and release (3.32 s). Generated histories use 256 cases, each from both an empty
+state and a populated three-namespace state, comparing every sealed target and physically
+reopened successor with cold admission. Coverage includes replacements, removals, reused
+digests, return to the initial state, shared descendants, and retained continuation content
+and joins. Separate controls reject nine exhausted inventory-resource axes, a separately
+opened store with byte-identical catalog authority, stale state, wrong sequence and changed
+admission policy without changing catalog/pack/index bytes. The missing-retention-manifest
+control is explicitly a publication-preflight test: the production durable wrapper always
+attaches the manifest, and no test forges an inventory capability to bypass that type boundary.
+
+**VERIFICATION CORRECTION.** The first broad release run passed 311/312. Its exhaustive
+derivation check found the new proofs absent from the central matrix, although their separate
+catalog section existed. The same audit found ten prior journal capstones missing from that
+matrix. All 89 property IDs now have central bindings, including HJ-01 through HJ-10 and
+SI-01 through SI-05; all 31 capstones remain required. The existing declaration check resolves
+the module-qualified names and the new test-source bindings. No completeness check was
+disabled, and no parser, bootstrap or dependency was introduced. Both complete persistence
+gates passed after this correction.
+
+**REPRODUCTION AND LIMITS.** Run `cargo test -p rspace_plus_plus --lib
+rspace::persistence::tests:: -- --test-threads=4`, and the same command with `--release`,
+with `PROPTEST_CASES=256`. Run `coqc -Q theories StackSafePDA
+theories/GenerationCheckpointPublication.v` from `formal/rocq/stack_safe_pda`. Rust checks
+used an 8 GiB systemd memory cap, four build workers and zero permitted swap; Rocq used
+2 GiB. Test scratch was on disk. Caps are not measured RSS, and test durations are not
+benchmarks. Build warnings remain; this is not a whole-workspace CI result.
+
+**REMAINING BOUNDARY.** This corrects task 6647's inventory prerequisite without activating
+the durable backend. Task 6626 still requires continuous owner authority through ambiguous
+publication, exact recovery and journal acknowledgement. Task 7755 still owns replacement
+of full trusted-successor traversal/readmission and flat retained-history encoding with the
+proved incremental design. No delta-proportional performance, LMDB speedup, Rust-refinement
+proof or completed campaign claim follows from these focused results.
+
+### J-057 — 2026-09-06: preserve the broad gate and reconcile recovery plans
+
+**BROAD-GATE RESULT.** After J-056's passing persistence checks, the complete RSpace
+library release run reported 600 passed, one failed and one ignored. The failure is
+`arbitrary_pathmap_writer_images_are_accepted_with_exact_preorder_plans`, before ACT
+encoding or admission. Its minimized valid source construction is:
+
+```rust
+let mut map = pathmap::PathMap::<u64>::new();
+map.create_path([1]);
+map.create_path([2]);
+map.create_path([3]);
+map.create_path([1, 0]);
+```
+
+PathMap 0.2.2 panics when mutable descent attempts to make an empty sentinel node
+unique. Astra's source review found that dense-child mutable lookup exposes the
+dangling sentinel, whereas line-list lookup filters it. The saved seed is
+`9a6e97c52636b423eab32ba35a95b29a94015e85b3a8a9086d19f102da382efa` in
+`rspace++/proptest-regressions/support/pathmap_codec_validated_plan.txt`.
+The test ran with an 8 GiB systemd cap and zero swap; no memory-limit failure was
+reported. Its 3.96 s test duration is not a benchmark.
+
+**REACHABILITY AND DECISION.** Production EPathMap Set/Map `create_path`, the Rholang
+`createPath` method and guarded topology creation forward to this released API.
+The failure is therefore not dismissed as malformed input or a test-only concern.
+No `create_path` use was found in the integration-owned persistence subtree, so
+tasks 6647/6626 can proceed while 6023/6038 retain this explicit campaign gate.
+PMU-006 records the upstream contract. A public-API leaf-boundary graft is only a
+candidate: qualify sibling/value preservation, `graft_root_vals`, compressed paths,
+branch promotion, related value insertion, CoW snapshots and stack-safe ownership
+before adoption. Do not filter cases, insert dummy values, reorder the test, remove
+the sentinel assertion, or patch/fork PathMap. The complete library is not green.
+
+**PLAN RECONCILIATION.** Astra and an independent plan agent reviewed existing task
+bodies and dependencies; ten bodies were amended without new tasks or edges. The
+graph remained acyclic. Existing V1 recovery is catalog-appointed: synchronized
+COMMIT bytes beyond the selected frontier are not independently adopted. A torn
+inactive catalog slot can leave the predecessor selected; damaged authoritative
+data in a selected successor fails closed. Proven reconstructible indexes may be
+repaired. Existing checkpoint model/crash witnesses establish this boundary;
+task 6626 still needs the incremental-owner composition witnesses.
+
+Task 7755 now distinguishes final inventory limits from temporary add-before-remove
+budgets and binds the retained-root format decision to migration/state-sync readers.
+Tasks 5689/6191 specify divergent shadow checkpoints, exact WAL replay protections
+and bounded pressure when reclamation is held by pins. Object-only snapshot pins
+need not preserve unrelated log history. Component/shadow evidence must be obtainable
+before default cutover; rejected optional accelerators do not require new dependencies.
+These are reviewed acceptance refinements, not newly executed proofs, implementation
+or measurements. The depth-first owner, successor, authority and migration sequence
+remains unchanged. Full review evidence is in pgmcp progress notes 9050 and 9051.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -3912,6 +4027,8 @@ still requires measurement.
 | PMU-003 | Construction API; **candidate, profile before proposing** | Canonical Bag/EPathMap import validates ACT once, then reconstructs a live `PathMap` by replaying endpoints through public insertion and `create_path` APIs. | Consider a fallible `PathMap` constructor or write-zipper graft operation from an already validated canonical ACT plan, preserving prefix compression and value-free endpoints without a `Vec` projection or per-key reparsing. The API must not bypass value decoding/validation owned by the caller. | Compare endpoint replay with plan-to-trie construction over deep lines, wide branches, shared prefixes, value-free endpoints, Set, Map, and Bag; require identical zipper topology, lookups, algebra/lattice behavior, CoW sharing, merkleization, drop safety, and consensus encodings. | Adopt only if measurement shows a material win and upstream supplies topology/CoW equivalence; otherwise retain the simpler public insertion route and mark the request rejected. |
 | PMU-004 | Correctness + performance API; **demonstrated need against PathMap 0.2.2** | `models/src/rust/epathmap_trie_codec.rs` must associate each canonical ACT value body with its logical endpoint occurrence. The current integration cannot derive that association from `ArenaCompactTree::from_zipper` without relying on `T` addresses: the public value mapper receives no logical path or occurrence ordinal and PathMap may invoke it more than once while compressing one leaf. CoW grafting can also expose one stored `T` at several logical endpoints. | Add a fallible canonical ACT emission cursor or callback that visits every logical value endpoint exactly once in canonical producer order and supplies a borrowed logical path, stable occurrence ordinal, or equivalent endpoint token. Its observable result must be independent of allocation address, node sharing, graft history, and mapper re-entry. It must compose with checked preflight and sink streaming, retain value-free endpoints, preserve canonical `ArenaCompactTree::from_zipper` bytes, and use heap-bounded stack-safe traversal. | Required local evidence is an executable shared-versus-independently-allocated graft differential with repeated equal and pointer-identical values; an address-collapse mutant that maps two endpoints to ordinal zero; exact EPM1/ACT byte equality; malformed/sink-failure controls; and geometric time, allocation, RSS, and native-stack measurements. The formal EPM1 V2 authority must prove that ordinals enumerate logical occurrences, not value identities. | A released PathMap API supplies the exactly-once logical-occurrence contract and passes the same EPM1, sharing-topology, failure-atomicity, and resource gates. The integration then deletes its local occurrence-association traversal while retaining its EPM1 schema and transaction policy. |
 | PMU-005 | Stack-safety + ownership + allocation API; **demonstrated need against PathMap 0.2.2, measured local guard active** | Campaign-owned maps require an outer `Arc<AnchorRoot<PathMap<V>>>`, a reverse-prune zipper PDA, temporary immediate-parent barriers, guarded builders/iterators, and closure of every detached subtree before an owned raw map can fall out of scope. The barriers prevent recursive detached-subtrie destruction but split compressed line-list nodes. | Make destruction of arbitrary branching and non-branching `PathMap` topology iterative in the crate itself. Prefer intrinsic iterative `Drop`; otherwise add a fallible, nonallocating consuming physical-node drain whose owned temporaries remain stack-safe on success, sink error, panic, and early exit. It must visit each stored value exactly once, preserve CoW siblings and shared snapshots, avoid whole-version cloning and per-logical-byte barriers, and compose safely with replacement, join, meet, subtract, restrict, graft, and destructive subtree operations. If public finalization is explicit, unique-root authority must be race-free and failure must never let a nonempty raw subtrie reach recursive `Drop`. | PathMap 0.2.2 source inspection demonstrates the recursive-drop boundary. Local Rocq proves 18 invariants and rejects 19 causal mutants; Verus proves edge/payload conservation; TLA+ and Loom cover outer-anchor schedules. Deep line/dense/comb/root/topology-only tests pass on a 256 KiB stack with exact payload-drop counts and failure/alias coverage. Four teardown geometries measure time exponents 0.95785–0.98911, but headless Heaptrack attributes 181,708 temporary line-list splits to barriers for the realistic size-256 case; see J-052 and its measurement report. | A released PathMap version passes the same fixed-stack, ownership, topology, failure, CoW, exactly-once disposal, geometric time, and allocation gates without per-logical-byte barrier churn. The integration can then remove its generic reverse-prune compatibility layer without allowing raw recursive-drop authority to escape. |
+
+| PMU-006 | Mutation correctness; **reproduced against PathMap 0.2.2, unresolved** | EPathMap Set/Map and guarded topology mutation use public `create_path`; a valid dangling-branch extension panics before ACT serialization. No replacement helper has been adopted. | Support arbitrary dangling-path creation and extension, including related value insertion, without mutable descent through an immutable empty sentinel. Preserve existing values, siblings, zipper semantics and CoW snapshots independently of insertion order. | J-057 gives the four-operation reproducer and saved property seed. Full RSpace library release: 600 passed, one failed, one ignored. Require the complete generated topology/value domain, compressed/dense promotion, root/repeated operations, CoW and stack-safe ownership controls. A public leaf-boundary graft needs separate qualification, including `graft_root_vals` value preservation. | An approved released PathMap fix passes the same deterministic/generated topology, value, CoW and stack-safety gates; any corresponding local compatibility helper can then be removed. Neither a fork nor weakening the property generator is authorized. |
 
 The reachable pgmcp tracking item is `pathmap-upstream-integration-request-register` under
 `rpb3-single-parse-act-traversal-plan`, itself a descendant of epic 4131. New entries must include

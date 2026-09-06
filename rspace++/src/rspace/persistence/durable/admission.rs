@@ -42,8 +42,11 @@ use crate::rspace::persistence::semantic::{
 use crate::rspace::persistence::store::{
     ImmutableObjectStore, StagingObjectStore, StagingStoreError,
 };
+#[cfg(test)]
+use crate::rspace::persistence::transaction::SealedObject;
 use crate::rspace::persistence::transaction::{
-    DagTransactionError, DagTransactionLimits, OpenDagTransaction,
+    DagTransactionError, DagTransactionLimits, OpenDagTransaction, SealedDagTransaction,
+    SealedTransitionV1,
 };
 use crate::rspace::persistence::wal::{
     CommittedObjectComparison, CommittedObjectLookup, LogPackObjectPlanError, LogPackObjectPlanV1,
@@ -1138,15 +1141,25 @@ pub(crate) struct SemanticallyAdmittedDurableWriterV1<P: SemanticProfile> {
 }
 
 #[derive(Debug)]
-pub(crate) enum SuccessorRetainedUnionError {
+pub(crate) enum SuccessorInventoryError {
     Staging(StagingStoreError<DurableObjectReadErrorV1>),
     Closure(ClosureError<StagingStoreError<DurableObjectReadErrorV1>>),
+    CurrentOutsideRetainedUnion {
+        current: StructuralClosureReport,
+        retained_union: RetainedUnionClosureReportV1,
+    },
 }
 
 #[derive(Debug)]
 pub(crate) enum DurableTransactionPreparationError {
     ObjectPlan(LogPackObjectPlanError<DurableObjectReadErrorV1>),
     Format(crate::rspace::persistence::LogPackFormatError),
+    Transaction(Box<DagTransactionError<DurableObjectReadErrorV1>>),
+    Canonical(CanonicalFormatError),
+    Inventory(Box<SuccessorInventoryError>),
+    AdmissionPreflight(DurableAdmissionPreflightErrorV1),
+    AuthorityMismatch,
+    AdmissionPolicyMismatch,
 }
 
 impl std::fmt::Display for DurableTransactionPreparationError {
@@ -1154,11 +1167,103 @@ impl std::fmt::Display for DurableTransactionPreparationError {
         match self {
             Self::ObjectPlan(error) => write!(formatter, "WAL object planning failed: {error}"),
             Self::Format(error) => write!(formatter, "WAL transaction preflight failed: {error}"),
+            Self::Transaction(error) => write!(formatter, "transaction sealing failed: {error}"),
+            Self::Canonical(error) => Display::fmt(error, formatter),
+            Self::Inventory(error) => write!(formatter, "successor inventory failed: {error:?}"),
+            Self::AdmissionPreflight(error) => Display::fmt(error, formatter),
+            Self::AuthorityMismatch => {
+                formatter.write_str("durable transaction authority mismatch")
+            }
+            Self::AdmissionPolicyMismatch => {
+                formatter.write_str("durable transaction admission policy mismatch")
+            }
         }
     }
 }
 
 impl std::error::Error for DurableTransactionPreparationError {}
+
+impl From<CanonicalFormatError> for DurableTransactionPreparationError {
+    fn from(error: CanonicalFormatError) -> Self { Self::Canonical(error) }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DurableSuccessorInventoryV1 {
+    pub(super) current: StructuralClosureReport,
+    pub(super) retained_union: RetainedUnionClosureReportV1,
+}
+
+pub(crate) struct SealedDurableTransactionV1<'mutation, P: SemanticProfile> {
+    sealed: SealedDagTransaction<'mutation, P>,
+    predecessor: CatalogAuthorityTokenV1,
+    registry: GenerationLeaseRegistryV1,
+    inventory: DurableSuccessorInventoryV1,
+    admission_limits: DurableAdmissionLimitsV1,
+}
+
+impl<P: SemanticProfile> SealedDurableTransactionV1<'_, P> {
+    pub(crate) fn receipt(&self) -> SealedTransitionV1 { self.sealed.receipt() }
+
+    #[cfg(test)]
+    pub(crate) fn objects(&self) -> &[SealedObject] { self.sealed.objects() }
+
+    #[cfg(test)]
+    pub(crate) fn retention_manifest(&self) -> Option<ObjectRefV1> {
+        self.sealed.retention_manifest()
+    }
+}
+
+pub(crate) struct PreparedDurableLogPackTransactionV1<'transaction, 'mutation, P: SemanticProfile> {
+    prepared: PreparedLogPackTransactionV1<'transaction, 'mutation, P>,
+    sealed: &'transaction SealedDurableTransactionV1<'mutation, P>,
+}
+
+impl<'transaction, 'mutation, P: SemanticProfile>
+    PreparedDurableLogPackTransactionV1<'transaction, 'mutation, P>
+{
+    pub(super) fn preflight(
+        &self,
+        authority: &CatalogAuthorityTokenV1,
+        registry: &GenerationLeaseRegistryV1,
+        limits: DurableAdmissionLimitsV1,
+    ) -> Result<(), DurableTransactionPreparationError> {
+        if self.sealed.predecessor != *authority || !self.sealed.registry.shares_registry(registry)
+        {
+            return Err(DurableTransactionPreparationError::AuthorityMismatch);
+        }
+        if self.sealed.admission_limits != limits {
+            return Err(DurableTransactionPreparationError::AdmissionPolicyMismatch);
+        }
+        Ok(())
+    }
+
+    pub(super) fn prepared(&self) -> &PreparedLogPackTransactionV1<'transaction, 'mutation, P> {
+        &self.prepared
+    }
+
+    pub(super) fn inventory(&self) -> DurableSuccessorInventoryV1 { self.sealed.inventory }
+}
+
+struct SuccessorInventoryStoreV1<'store> {
+    staging: StagingObjectStore<'store, DurableIndexedObjectStoreV1>,
+    budget: AdmissionReadBudgetV1,
+}
+
+impl ImmutableObjectStore for SuccessorInventoryStoreV1<'_> {
+    type Error = StagingStoreError<DurableObjectReadErrorV1>;
+    type Object = crate::rspace::persistence::LayeredObject<Box<[u8]>>;
+
+    fn get_bounded(
+        &self,
+        digest: &ObjectDigest,
+        max_encoded_len: u64,
+    ) -> Result<Option<Self::Object>, Self::Error> {
+        self.budget
+            .charge(max_encoded_len)
+            .map_err(StagingStoreError::Base)?;
+        self.staging.get_bounded(digest, max_encoded_len)
+    }
+}
 
 impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     pub(crate) fn directory_path(&self) -> std::path::PathBuf {
@@ -1219,40 +1324,54 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         &self,
         mutation: MutationBatchViewV1<'mutation>,
         limits: DagTransactionLimits,
-    ) -> Result<
-        crate::rspace::persistence::SealedDagTransaction<'mutation, P>,
-        DagTransactionError<DurableObjectReadErrorV1>,
-    > {
-        let sealed = self.open_transaction(mutation, limits)?.seal()?;
-        self.attach_target_retention_manifest(sealed)
-            .map_err(Into::into)
+        admission_limits: DurableAdmissionLimitsV1,
+    ) -> Result<SealedDurableTransactionV1<'mutation, P>, DurableTransactionPreparationError> {
+        let sealed = self
+            .open_transaction(mutation, limits)
+            .and_then(OpenDagTransaction::seal)
+            .map_err(|error| DurableTransactionPreparationError::Transaction(Box::new(error)))?;
+        self.bind_durable_transaction(sealed, admission_limits)
     }
 
     /// Attach the target retention manifest to a sealed transaction. The
     /// previous current state becomes historical; no durable bytes are
     /// published until this manifest is included in the prepared object set.
-    pub(crate) fn attach_target_retention_manifest<'mutation>(
+    pub(crate) fn bind_durable_transaction<'mutation>(
         &self,
-        sealed: crate::rspace::persistence::SealedDagTransaction<'mutation, P>,
-    ) -> Result<crate::rspace::persistence::SealedDagTransaction<'mutation, P>, CanonicalFormatError>
-    {
+        sealed: SealedDagTransaction<'mutation, P>,
+        limits: DurableAdmissionLimitsV1,
+    ) -> Result<SealedDurableTransactionV1<'mutation, P>, DurableTransactionPreparationError> {
+        if sealed.receipt().base() != self.authority().slot().state() ||
+            sealed.receipt().profile_id() != P::ID
+        {
+            return Err(DurableTransactionPreparationError::AuthorityMismatch);
+        }
         let current = RetentionManifestView::parse(self.source.retention_manifest_bytes())?;
+        let retained_states = checked_len(current.historical().len(), "historical states")?
+            .checked_add(2)
+            .ok_or(CanonicalFormatError::CounterOverflow("successor retained states"))?;
+        DurableAdmissionRequirementsV1::require(
+            DurableAdmissionLimitKindV1::RetainedStates,
+            limits.max_retained_states,
+            retained_states,
+        )
+        .map_err(DurableTransactionPreparationError::AdmissionPreflight)?;
+        let inventory = self
+            .successor_inventory(&sealed, limits)
+            .map_err(|error| DurableTransactionPreparationError::Inventory(Box::new(error)))?;
         let mut historical = current.historical().collect::<Result<Vec<_>, _>>()?;
         historical.push(current.current());
         let target = sealed.receipt().target();
-        let target_bytes = self
-            .source
-            .report()
-            .current_structural
-            .canonical_bytes
-            .checked_add(sealed.diagnostics().closure.canonical_bytes)
-            .and_then(|bytes| bytes.checked_sub(target.manifest().encoded_len()))
-            .ok_or(CanonicalFormatError::LengthOverflow {
-                field: "target state canonical bytes",
-            })?;
-        let target_state = RetainedStateV1::new(target, target_bytes)?;
+        let target_state = RetainedStateV1::new(target, inventory.current.canonical_bytes)?;
         let manifest = RetentionManifestV1::new(target_state, historical.into_boxed_slice())?;
-        sealed.with_retention_manifest(manifest)
+        let sealed = sealed.with_retention_manifest(manifest)?;
+        Ok(SealedDurableTransactionV1 {
+            sealed,
+            predecessor: self.authority().clone(),
+            registry: self.generation_leases(),
+            inventory,
+            admission_limits: limits,
+        })
     }
 
     pub(crate) fn get_object_bounded(
@@ -1279,43 +1398,66 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     /// the admitted index, then bound to its authenticated receipt and limits.
     pub(crate) fn prepare_transaction<'transaction, 'mutation>(
         &self,
-        transaction: &'transaction crate::rspace::persistence::SealedDagTransaction<'mutation, P>,
+        transaction: &'transaction SealedDurableTransactionV1<'mutation, P>,
         sequence: LogPackSequence,
         limits: crate::rspace::persistence::LogPackDecodeLimits,
     ) -> Result<
-        PreparedLogPackTransactionV1<'transaction, 'mutation, P>,
+        PreparedDurableLogPackTransactionV1<'transaction, 'mutation, P>,
         DurableTransactionPreparationError,
     > {
+        if transaction.predecessor != *self.authority() ||
+            !transaction
+                .registry
+                .shares_registry(&self.generation_leases()) ||
+            sequence !=
+                self.catalog()
+                    .commit_sequence()
+                    .successor()
+                    .map_err(DurableTransactionPreparationError::Format)?
+        {
+            return Err(DurableTransactionPreparationError::AuthorityMismatch);
+        }
         let plan = self
-            .classify_transaction_objects(transaction)
+            .classify_transaction_objects(&transaction.sealed)
             .map_err(DurableTransactionPreparationError::ObjectPlan)?;
-        PreparedLogPackTransactionV1::new(
-            transaction,
+        let prepared = PreparedLogPackTransactionV1::new(
+            &transaction.sealed,
             plan,
             self.authority().slot().store_id(),
             sequence,
             limits,
         )
-        .map_err(DurableTransactionPreparationError::Format)
+        .map_err(DurableTransactionPreparationError::Format)?;
+        Ok(PreparedDurableLogPackTransactionV1 {
+            prepared,
+            sealed: transaction,
+        })
     }
 
-    /// Recompute the exact retained-object union for an incremental successor
-    /// over the immutable source ledger plus the prepared canonical objects.
-    pub(crate) fn successor_retained_union(
+    /// Derive exact current and retained-union reports from one staged
+    /// traversal.
+    fn successor_inventory(
         &self,
-        prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
+        sealed: &SealedDagTransaction<'_, P>,
         limits: DurableAdmissionLimitsV1,
-    ) -> Result<RetainedUnionClosureReportV1, SuccessorRetainedUnionError> {
+    ) -> Result<DurableSuccessorInventoryV1, SuccessorInventoryError> {
         let staging = StagingObjectStore::new(&self.source.store);
-        for object in prepared.objects() {
+        for object in sealed.objects() {
             staging
                 .stage(object.canonical_bytes_arc())
-                .map_err(SuccessorRetainedUnionError::Staging)?;
+                .map_err(SuccessorInventoryError::Staging)?;
         }
+        let store = SuccessorInventoryStoreV1 {
+            staging,
+            budget: AdmissionReadBudgetV1::new(
+                limits.max_object_reads,
+                limits.max_object_read_bytes,
+            ),
+        };
         let mut ledger = self.source.retained_closure.clone();
-        verify_structural_closure_in_ledger_with_limits(
-            &staging,
-            prepared.receipt().target().manifest(),
+        let current = verify_structural_closure_in_ledger_with_limits(
+            &store,
+            sealed.receipt().target().manifest(),
             limits.per_state_structural,
             &mut ledger,
             RetainedUnionClosureLimitsV1 {
@@ -1323,8 +1465,21 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
                 max_canonical_bytes: limits.max_union_canonical_bytes,
             },
         )
-        .map_err(SuccessorRetainedUnionError::Closure)?;
-        Ok(ledger.retained_union_report())
+        .map_err(SuccessorInventoryError::Closure)?;
+        let current = current.report();
+        let retained_union = ledger.retained_union_report();
+        if current.distinct_objects > retained_union.distinct_objects ||
+            current.canonical_bytes > retained_union.canonical_bytes
+        {
+            return Err(SuccessorInventoryError::CurrentOutsideRetainedUnion {
+                current,
+                retained_union,
+            });
+        }
+        Ok(DurableSuccessorInventoryV1 {
+            current,
+            retained_union,
+        })
     }
 
     pub(crate) fn into_checkpoint_publication(self) -> CheckpointPublicationAuthorityV1<P> {

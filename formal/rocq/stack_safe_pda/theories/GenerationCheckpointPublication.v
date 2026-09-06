@@ -1541,6 +1541,80 @@ Qed.
 
 End HotStoreJournalAcknowledgement.
 
+Module ExactSuccessorInventory.
+
+Section Partition.
+Context {Object : Type}.
+Variable weight : Object -> nat.
+Let bytes := @canonical_byte_sum Object weight.
+
+Lemma byte_sum_app : forall left right,
+  bytes (left ++ right) = bytes left + bytes right.
+Proof.
+  intros left right. unfold bytes. induction left; simpl; lia.
+Qed.
+
+Theorem replacement_conserves_inventory : forall old target removed added shared,
+  Permutation old (removed ++ shared) ->
+  Permutation target (added ++ shared) ->
+  bytes old + bytes added = bytes target + bytes removed.
+Proof.
+  intros old target removed added shared Hold Htarget.
+  assert (Ho : bytes old = bytes (removed ++ shared)).
+  { apply canonical_byte_sum_permutation; exact Hold. }
+  assert (Ht : bytes target = bytes (added ++ shared)).
+  { apply canonical_byte_sum_permutation; exact Htarget. }
+  rewrite byte_sum_app in Ho, Ht. lia.
+Qed.
+
+Theorem removed_inventory_is_bounded : forall old removed shared,
+  Permutation old (removed ++ shared) -> bytes removed <= bytes old.
+Proof.
+  intros old removed shared Hold.
+  assert (Ho : bytes old = bytes (removed ++ shared)).
+  { apply canonical_byte_sum_permutation; exact Hold. }
+  rewrite byte_sum_app in Ho. lia.
+Qed.
+
+Theorem exact_replacement_inventory : forall old target removed added shared,
+  Permutation old (removed ++ shared) ->
+  Permutation target (added ++ shared) ->
+  bytes old - bytes removed + bytes added = bytes target.
+Proof.
+  intros old target removed added shared Hold Htarget.
+  assert (Hconserve : bytes old + bytes added = bytes target + bytes removed).
+  { eapply replacement_conserves_inventory; eassumption. }
+  assert (Hbounded : bytes removed <= bytes old).
+  { eapply removed_inventory_is_bounded; eassumption. }
+  lia.
+Qed.
+
+End Partition.
+
+Inductive example_object := OldManifest | OldRoot | Shared | TargetManifest | TargetRoot.
+
+Definition example_weight (object : example_object) :=
+  match object with
+  | OldManifest | TargetManifest => 20
+  | OldRoot => 10
+  | Shared => 30
+  | TargetRoot => 11
+  end.
+
+Theorem staged_only_inventory_counterexample :
+  canonical_byte_sum example_weight [OldManifest; OldRoot; Shared] +
+  canonical_byte_sum example_weight [TargetManifest; TargetRoot] -
+  example_weight TargetManifest <>
+  canonical_byte_sum example_weight [TargetManifest; TargetRoot; Shared].
+Proof. discriminate. Qed.
+
+End ExactSuccessorInventory.
+
+Print Assumptions ExactSuccessorInventory.replacement_conserves_inventory.
+Print Assumptions ExactSuccessorInventory.removed_inventory_is_bounded.
+Print Assumptions ExactSuccessorInventory.exact_replacement_inventory.
+Print Assumptions ExactSuccessorInventory.staged_only_inventory_counterexample.
+
 Print Assumptions HotStoreJournalAcknowledgement.acknowledgement_preserves_live_state.
 Print Assumptions HotStoreJournalAcknowledgement.exact_acknowledgement_clears_all_five_journals.
 Print Assumptions HotStoreJournalAcknowledgement.stale_acknowledgement_changes_nothing.

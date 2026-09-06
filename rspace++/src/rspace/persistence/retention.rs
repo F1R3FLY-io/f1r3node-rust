@@ -533,6 +533,10 @@ pub struct GenerationLeaseRegistryV1 {
 }
 
 impl GenerationLeaseRegistryV1 {
+    pub(crate) fn shares_registry(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+
     pub fn acquire(
         &self,
         key: GenerationLeaseKeyV1,

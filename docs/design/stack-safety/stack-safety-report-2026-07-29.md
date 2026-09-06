@@ -12919,3 +12919,26 @@ a separate 1,100-case lifetime test pass without raising the limit. These checks
 correctness/resource-lifetime evidence, not a new stack-depth, RSS-slope, allocation or timing
 measurement. The [JO-03 refinement](../pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#borrowed-recovery-and-admission-refinement-2026-09-06)
 distinguishes executed primitive properties from the unfinished checkpoint-owner integration.
+
+Exact-inventory refinement, 2026-09-06: the existing explicit-worklist overlay traversal
+now supplies one current/retained inventory for both retention sealing and publication.
+The reproduced 1,021-versus-789-byte successor overcount is corrected without changing its
+oracle. The full persistence module passes 312/312 in debug and release, including 256
+generated histories from both empty and populated three-namespace states, resource refusal,
+foreign/stale authority, sequence and policy controls. Four inventory lemmas bring the
+existing Rocq theory to 31 closed capstones; the corrected exhaustive matrix binds 89 IDs.
+Rust checks used an 8 GiB systemd cap and four workers, Rocq 2 GiB, both with swap disabled
+and test scratch on disk. These are correctness and budget-enforcement results, not measured
+RSS, allocation slopes, stack-depth experiments or persistence benchmarks. The duplicate
+publication-time inventory walk is removed, but the remaining full successor admission and
+flat historical-retention encoding are still task 7755 obligations. No delta-scaling or
+LMDB comparison claim is made. See [J-056](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-056--2026-09-06-one-exact-inventory-through-sealing-and-publication).
+
+Broad-gate qualification, 2026-09-06: the subsequent complete RSpace library release
+run reports 600 passed, one failed and one ignored. A valid four-operation dangling-path
+construction panics inside PathMap 0.2.2 before ACT encoding/admission. The minimized
+case and proptest seed are preserved; production EPathMap/guarded topology calls are
+affected. This is an open correctness gate, not a measured stack/RSS slope or a reported
+memory-cap failure. The 312-test persistence gate remains a narrower passing result.
+The upstream request, source explanation and unadopted public-API candidate are recorded
+in [J-057 and PMU-006](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-057--2026-09-06-preserve-the-broad-gate-and-reconcile-recovery-plans).

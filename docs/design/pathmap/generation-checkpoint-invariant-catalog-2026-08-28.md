@@ -142,6 +142,42 @@ asynchronous cancellation or all JO-01..JO-11 properties. In particular, retaini
 an outer test scope through panic is not proof that the unfinished owner remains recoverable
 after every panic. Publication outcome classification and journal acknowledgement remain open.
 
+## Exact incremental-successor inventory refinement — 2026-09-06
+
+`GenerationCheckpointPublication.v::ExactSuccessorInventory` proves byte conservation,
+the removed-byte subtraction bound, exact replacement accounting, and a concrete
+counterexample to predecessor-plus-staged-minus-manifest arithmetic. Its four capstones
+are closed under the global context; the theory now prints 31 closed capstones. These
+are finite partition laws, not a proof that Rust constructs the correct partitions or
+that the complete publication owner refines the model. Canonical closure membership is
+distinct by digest and remains subject to the existing full-byte collision checks.
+
+Extracted implementation obligations, before production correction:
+
+| ID | Formal/accounting obligation | Executable correspondence |
+|---|---|---|
+| SI-01 | Exact replacement removes predecessor-only objects and counts shared objects once. | `incremental_inventory_tracks_replacement_removal_sharing_and_reuse` compares every sealed target and cold successor to full traversal. |
+| SI-02 | Repeated transitions preserve the exact distinct-object partition, including empty states and reused digests. | `incremental_inventory_matches_cold_admission_at_every_history_step` generates count updates and removals with a fresh union ledger and physical reopen at every step. |
+| SI-03 | Current semantic closure and retained semantic union are separate from retention metadata. | Both history checks compare manifest/current/retained fields independently; the existing DATA-inventory laws continue to account for the separate retention-manifest object. |
+| SI-04 | One predecessor/target-bound inventory supplies all publication fields. | A private durable-only sealed/prepared capability must reject foreign/stale catalog bindings before writes; generic staged diagnostics cannot serve as current-state inventory. |
+| SI-05 | Resource refusal leaves durable predecessor bytes unchanged. | Structural/union/read/history limits must be enforced during inventory construction; policy mismatch and failed preparation must not publish or release the borrowed writer. |
+
+The complete persistence gates now pass 312/312 in both debug and release. SI-01/SI-02
+run 256 generated histories from both empty and populated three-namespace states. SI-04
+is exercised by `incremental_inventory_is_bound_to_its_opened_authority_and_exact_sequence`;
+SI-05 by `incremental_inventory_limits_refuse_before_any_durable_mutation` and
+`incremental_inventory_policy_cannot_change_after_preparation`. Closure-read budgets count
+requests against staged and inherited objects, not only physical I/O. These concrete checks
+are not established by the arithmetic lemmas. The existing full overlay traversal is
+the immediate exact source. Task 7755 separately owns its proven incremental replacement
+and the historical-retention encoding cost; no delta-scaling claim follows from this repair.
+
+The first broad release run passed 311/312 because the exhaustive central derivation matrix
+omitted these new capstones and ten earlier journal capstones. The matrix and executable
+bindings now include all 89 stable IDs and all 31 printed capstones; no completeness check
+was removed. The publication-owner JO obligations are a separate model/integration boundary,
+not silently included in this 89-ID claim. See J-056 in the engineering journal.
+
 ## Vocabulary and notation
 
 - **Canonical object reference**: a pair `$(h, n)$`, where `$h$` is the canonical-object digest and `$n$` is its declared canonical byte length.
@@ -328,6 +364,21 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 
 | ID | TLA+ symbols | Rocq theorem or lemma symbols | Class | Qualification |
 |---|---|---|---|---|
+| HJ-01 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.acknowledgement_preserves_live_state` | P | Abstract live/journal separation; concrete resident records and installs are checked in Rust. |
+| HJ-02 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.exact_acknowledgement_clears_all_five_journals` | P | All five populated Rust journals must clear in debug and release. |
+| HJ-03 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.stale_acknowledgement_changes_nothing` | P | Concrete all-domain conflict preflight remains an executable obligation. |
+| HJ-04 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.successful_acknowledgement_requires_exact_journal` | P | Exact abstract equality; Rust receipt identity is separately required by the owner model. |
+| HJ-05 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.post_state_addition_recovers_base` | P | Natural arithmetic; checked Rust count inversion is executable. |
+| HJ-06 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.post_state_removal_recovers_base` | P | Natural subtraction premise; zero and nonzero removals are generated. |
+| HJ-07 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.one_occurrence_removal_requires_unit_delta` | P | Single-removal producer semantics require the concrete multiplicity property. |
+| HJ-08 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.missing_count_is_distinct_from_captured_zero` | P | Rust must preserve missing evidence separately from an observed zero. |
+| HJ-09 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.journal_lookup_uses_exact_native_record_key` | P | Native byte-key framing and repeated channel positions are executable. |
+| HJ-10 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.reframed_join_key_misses_native_record` | P | The concrete native-key test detects the extra-framing producer error. |
+| SI-01 | `EXEC_ONLY` | `ExactSuccessorInventory.replacement_conserves_inventory`, `ExactSuccessorInventory.exact_replacement_inventory` | P | Finite partition accounting; Rust must derive exact current membership from the sealed target. |
+| SI-02 | `EXEC_ONLY` | `ExactSuccessorInventory.removed_inventory_is_bounded` | P | Histories exercise removed/shared membership and checked Rust inventory arithmetic. |
+| SI-03 | `EXEC_ONLY` | `ExactSuccessorInventory.staged_only_inventory_counterexample` | P | Concrete old arithmetic is a negative control; semantic/physical metadata classification is executable. |
+| SI-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Exact catalog/registry/sequence binding is tested; the partition lemmas do not prove Rust capability ownership. |
+| SI-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Inventory-budget refusal and changed-policy nonmutation are concrete preflight properties. |
 | INV-01 | `OrderedInventoryIsExact` | `successful_merge_is_exact_permutation` | D | Exact ordered disjoint merge. |
 | INV-02 | `DescriptorInventoriesAreExact` | `successful_merge_adds_exactly_one_member`, `refined_descriptor_carries_exact_six_inventories` | D | Exact cardinality. |
 | INV-03 | `DescriptorInventoriesAreExact` | `successful_merge_adds_exactly_declared_bytes`, `refined_descriptor_carries_exact_six_inventories` | D | Exact canonical bytes. |
