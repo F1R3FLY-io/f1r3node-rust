@@ -178,6 +178,50 @@ bindings now include all 89 stable IDs and all 31 printed capstones; no complete
 was removed. The publication-owner JO obligations are a separate model/integration boundary,
 not silently included in this 89-ID claim. See J-056 in the engineering journal.
 
+## Incremental publication ownership and retry refinement — 2026-09-06
+
+Before changing incremental append, `CatalogAppointedPrefix` proves preservation of
+the appointed byte prefix when an unselected suffix is discarded and a replacement
+is appended. These list laws do not grant filesystem mutation authority: Rust must
+hold the same writer lease, authenticate the exact catalog, preserve all bytes below
+its selected frontier and reject a short authoritative file. Existing catalog-selection
+and JO ownership models supply the separate publication/recovery contract.
+
+Extracted tests must cover pre-catalog failure, every torn slot prefix, post-publication
+failure and panic while an outer owner retains the writer and old-generation pin.
+The observer must still see lock contention and the same generation registry; releasing
+the owner is its positive control. Old recovery preserves the selected pack prefix and
+retries the original transition once; new recovery never reapplies that transition.
+This is a borrowed publication refinement, not completed hot-store acknowledgement,
+incarnation binding, operation-gate ownership or cancellation integration.
+
+The executable refinement now checks complete catalog equality against an uninterrupted
+control: state, epoch, sequence, transaction digest, retention reference and pack/index
+frontiers. Pre-slot injected failures recover the exact predecessor; completed slot writes
+observed by same-process recovery select the exact successor. Torn prefixes may select
+only one of those two complete authorities. This is fault-injected filesystem observation,
+not an assertion that an unsynchronized write survives power loss.
+
+For predecessor recovery, an unchanged whole catalog image permits reuse of the original
+prepared capability. If a torn inactive slot changes that image, the original capability
+must be refused without writes; the same mutation is resealed under the recovered image
+and must produce the identical receipt and successor. Recovered successors are never
+republished. Full pack/index byte comparisons and a final independent reopen constrain
+the result, rather than checking only its semantic root.
+
+| Executable test in `durable_publication.rs` | Required refinement |
+|---|---|
+| `borrowed_incremental_publication_recovers_and_retries_every_phase` | Exact outcome classification and authority across all 16 incremental publication phases, same lease/registry/pin, selected-prefix preservation and retry. |
+| `borrowed_incremental_publication_retains_authority_for_every_torn_slot_prefix` | Every proper slot prefix; image-sensitive capability reuse/refusal, exact resealing and retry. |
+| `borrowed_incremental_publication_unwind_keeps_the_outer_owners_capabilities` | Four injected unwinds retain the outer test owner's lease and pin; this is not yet runtime owner cancellation coverage. |
+| `borrowed_incremental_publication_never_extends_a_short_appointed_pack` | Four lengths below the selected frontier fail without extension or any catalog/pack/index mutation. |
+| `borrowed_incremental_publication_trims_only_under_exact_store_authority` | Stale catalog and foreign registry refuse before truncation; an exact authority discards only the unappointed suffix. |
+
+The persistence module passes 317/317 in debug and release. The existing theory checks
+with 33 closed assumption reports, and the exhaustive central matrix now includes
+91 IDs with the two IP prefix-law bindings. JO owner-state obligations remain separate.
+See [J-058](pathmap-engineering-journal-2026-08-23.md#j-058--2026-09-06-exact-incremental-publication-recovery-and-retry).
+
 ## Vocabulary and notation
 
 - **Canonical object reference**: a pair `$(h, n)$`, where `$h$` is the canonical-object digest and `$n$` is its declared canonical byte length.
@@ -379,6 +423,8 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | SI-03 | `EXEC_ONLY` | `ExactSuccessorInventory.staged_only_inventory_counterexample` | P | Concrete old arithmetic is a negative control; semantic/physical metadata classification is executable. |
 | SI-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Exact catalog/registry/sequence binding is tested; the partition lemmas do not prove Rust capability ownership. |
 | SI-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Inventory-budget refusal and changed-policy nonmutation are concrete preflight properties. |
+| IP-01 | `EXEC_ONLY` | `CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes` | P | Existing catalog authority must authenticate the exact retained prefix before discarding only an unselected tail. |
+| IP-02 | `EXEC_ONLY` | `CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes` | P | Incremental failure/retry must retain the original writer and all selected bytes. |
 | INV-01 | `OrderedInventoryIsExact` | `successful_merge_is_exact_permutation` | D | Exact ordered disjoint merge. |
 | INV-02 | `DescriptorInventoriesAreExact` | `successful_merge_adds_exactly_one_member`, `refined_descriptor_carries_exact_six_inventories` | D | Exact cardinality. |
 | INV-03 | `DescriptorInventoriesAreExact` | `successful_merge_adds_exactly_declared_bytes`, `refined_descriptor_carries_exact_six_inventories` | D | Exact canonical bytes. |

@@ -35,7 +35,9 @@ pub(crate) use admission::{
     SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
 };
 #[cfg(test)]
-pub(crate) use admission::{admit_physical_source, copy_verified_canonical_with_scratch};
+pub(crate) use admission::{
+    admit_physical_source, admit_physical_writer, copy_verified_canonical_with_scratch,
+};
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
     CatalogSelectionV1, CatalogSlotV1,
@@ -69,6 +71,7 @@ pub(crate) use publication::require_incremental_retention_manifest;
 pub(crate) use publication::{
     GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationOutcomeV1,
     IncrementalAppendErrorV1, IncrementalPublicationErrorV1, append_incremental_prepare_and_index,
+    publish_incremental_from_lease_v1,
 };
 #[cfg(test)]
 pub(crate) use publication::{

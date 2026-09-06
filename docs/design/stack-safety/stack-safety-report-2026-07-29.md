@@ -12942,3 +12942,17 @@ affected. This is an open correctness gate, not a measured stack/RSS slope or a 
 memory-cap failure. The 312-test persistence gate remains a narrower passing result.
 The upstream request, source explanation and unadopted public-API candidate are recorded
 in [J-057 and PMU-006](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-057--2026-09-06-preserve-the-broad-gate-and-reconcile-recovery-plans).
+
+Incremental publication refinement, 2026-09-06: the full persistence module passes
+317/317 in debug (6.97 s) and release (3.24 s). The borrowed publisher preserves the
+outer owner's writer lease/registry/pin across 16 phase failures, every proper torn
+catalog prefix and four injected unwinds. Short-pack and stale/foreign-authority tests
+require zero unauthorized file mutation; successful retry matches the uninterrupted
+control's complete catalog, pack and index bytes. Two checked prefix-preservation
+lemmas bring the existing theory to 33 closed assumption reports and the central
+matrix to 91 IDs. These are correctness and ownership-lifetime results, not new
+stack-depth, allocation, RSS-slope or persistence performance measurements. Rust used
+an 8 GiB systemd cap and four workers; Rocq used 2 GiB, both with swap disabled and
+test scratch on disk. Runtime owner cancellation and exact acknowledgement remain
+unimplemented boundaries of task 6626; the broader PathMap failure is not waived.
+See [J-058](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-058--2026-09-06-exact-incremental-publication-recovery-and-retry).

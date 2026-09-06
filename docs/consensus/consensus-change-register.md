@@ -6221,3 +6221,17 @@ transition and admission policy before writes. The complete persistence module p
 storage tariffs and consensus identity are not activated or changed. Owner acknowledgement,
 single-authority migration and consensus cutover remain open. See
 [J-056](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-056--2026-09-06-one-exact-inventory-through-sealing-and-publication).
+
+Incremental publication refinement, 2026-09-06: a borrowed publisher now retains
+caller-owned writer authority through publication and recovery errors. Catalog-slot
+write/sync failures are classified as indeterminate rather than ordinary pre-publication
+I/O failures. Retry may discard only bytes beyond the exact selected pack frontier,
+after capability and current catalog checks; shortened authoritative packs fail without
+extension. This preserves catalog-appointed recovery rather than treating unselected
+COMMIT bytes as new authority. The corrected path is dormant for production callers:
+canonical formats, legacy roots, matching, charges and default backend selection do not
+change. The full persistence module passes 317/317 in debug and release, including exact
+catalog/pack/index comparisons, every torn prefix, same-lease recovery and retry.
+Runtime owner/gate/acknowledgement composition remains open. Classification remains
+`NO_PRODUCTION_CHANGE_DERIVED`, not an activation or complete recovery guarantee. See
+[J-058](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-058--2026-09-06-exact-incremental-publication-recovery-and-retry).

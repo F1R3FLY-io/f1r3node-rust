@@ -1280,6 +1280,25 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     /// generation as still authoritative.
     pub(crate) const fn catalog(&self) -> CatalogSlotV1 { self.source.authority().slot() }
 
+    pub(crate) fn publish_incremental_transaction_v1(
+        self,
+        prepared: &PreparedDurableLogPackTransactionV1<'_, '_, P>,
+        recovery_limits: DurableLimits,
+        wal_limits: crate::rspace::persistence::LogPackDecodeLimits,
+        admission_limits: DurableAdmissionLimitsV1,
+    ) -> Result<Self, super::publication::IncrementalPublicationErrorV1> {
+        let Self { mut lease, source } = self;
+        let source = super::publication::publish_incremental_from_lease_v1(
+            &mut lease,
+            &source,
+            prepared,
+            recovery_limits,
+            wal_limits,
+            admission_limits,
+        )?;
+        Ok(Self { lease, source })
+    }
+
     pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
         self.lease.generation_leases()
     }
@@ -1502,7 +1521,7 @@ impl DurableDirectoryV1 {
     }
 }
 
-pub(super) fn admit_physical_writer<P: SemanticProfile>(
+pub(crate) fn admit_physical_writer<P: SemanticProfile>(
     physical: PhysicallyRecoveredDurableWriterV1,
     limits: DurableAdmissionLimitsV1,
 ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, DurableAdmissionErrorV1> {

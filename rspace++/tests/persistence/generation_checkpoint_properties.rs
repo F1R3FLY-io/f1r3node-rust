@@ -414,7 +414,18 @@ fn model_property_manifest_is_unique_and_exhaustive() {
             };
             matches!(
                 family,
-                "INV" | "DES" | "WIR" | "WAL" | "CAT" | "PUB" | "SEM" | "RES" | "NV" | "HJ" | "SI"
+                "INV" |
+                    "DES" |
+                    "WIR" |
+                    "WAL" |
+                    "CAT" |
+                    "PUB" |
+                    "SEM" |
+                    "RES" |
+                    "NV" |
+                    "HJ" |
+                    "SI" |
+                    "IP"
             ) && index.len() == 2 &&
                 index.bytes().all(|byte| byte.is_ascii_digit())
         })
@@ -440,7 +451,18 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         };
         if !matches!(
             family,
-            "INV" | "DES" | "WIR" | "WAL" | "CAT" | "PUB" | "SEM" | "RES" | "NV" | "HJ" | "SI"
+            "INV" |
+                "DES" |
+                "WIR" |
+                "WAL" |
+                "CAT" |
+                "PUB" |
+                "SEM" |
+                "RES" |
+                "NV" |
+                "HJ" |
+                "SI" |
+                "IP"
         ) || index.len() != 2 ||
             !index.bytes().all(|byte| byte.is_ascii_digit())
         {
@@ -590,7 +612,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     }
 
     for required_family in
-        ["INV-", "DES-", "WIR-", "WAL-", "CAT-", "PUB-", "SEM-", "RES-", "NV-", "HJ-", "SI-"]
+        ["INV-", "DES-", "WIR-", "WAL-", "CAT-", "PUB-", "SEM-", "RES-", "NV-", "HJ-", "SI-", "IP-"]
     {
         assert!(
             PROPERTY_BINDINGS

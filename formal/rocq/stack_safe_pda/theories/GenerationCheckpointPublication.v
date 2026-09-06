@@ -1610,6 +1610,29 @@ Proof. discriminate. Qed.
 
 End ExactSuccessorInventory.
 
+Module CatalogAppointedPrefix.
+
+Theorem discarding_unselected_suffix_preserves_appointed_bytes :
+  forall (prefix suffix : list nat),
+    firstn (length prefix) (prefix ++ suffix) = prefix.
+Proof.
+  intros prefix; induction prefix; intros suffix; simpl; auto.
+  now rewrite IHprefix.
+Qed.
+
+Theorem retry_after_suffix_discard_preserves_appointed_bytes :
+  forall (prefix orphan replacement : list nat),
+    firstn (length prefix)
+      (firstn (length prefix) (prefix ++ orphan) ++ replacement) = prefix.
+Proof.
+  intros; repeat rewrite discarding_unselected_suffix_preserves_appointed_bytes.
+  reflexivity.
+Qed.
+
+End CatalogAppointedPrefix.
+
+Print Assumptions CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes.
+Print Assumptions CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes.
 Print Assumptions ExactSuccessorInventory.replacement_conserves_inventory.
 Print Assumptions ExactSuccessorInventory.removed_inventory_is_bounded.
 Print Assumptions ExactSuccessorInventory.exact_replacement_inventory.

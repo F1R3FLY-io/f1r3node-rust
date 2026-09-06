@@ -4011,6 +4011,73 @@ These are reviewed acceptance refinements, not newly executed proofs, implementa
 or measurements. The depth-first owner, successor, authority and migration sequence
 remains unchanged. Full review evidence is in pgmcp progress notes 9050 and 9051.
 
+### J-058 — 2026-09-06: exact incremental publication recovery and retry
+
+**DERIVED PROBLEM.** The consuming incremental publisher could drop writer authority
+on error, and ordinary I/O errors did not distinguish uncertainty after catalog-slot
+publication began. Recovery correctly ignored a complete but unselected log tail,
+yet the next append required the selected tail to equal the file length and could
+not retry. Changing recovery to adopt the unselected commit would violate the V1
+catalog-appointed contract recorded in J-057.
+
+**DECISION AND IMPLEMENTATION.** The existing publisher now has a borrowed kernel:
+the caller retains its writer lease, generation registry, source and old-generation
+pin while publication, physical recovery and semantic admission execute. Slot write
+or synchronization failure is indeterminate; pre-slot refusal is definitely
+unpublished; errors after successful catalog synchronization are published. The
+consuming compatibility wrapper delegates to the same implementation; the unfinished
+runtime owner must use the borrowed kernel to retain authority on failure.
+
+Before retry, preparation checks the exact predecessor image, registry and policy,
+and the publisher compares the catalog bytes actually present. A pack shorter than
+the selected frontier fails without extension. A longer pack loses only its
+unselected suffix, and that length correction is synchronized before append. Index
+repair still belongs to authenticated recovery. The selected prefix, canonical
+object bytes, PREPARE/COMMIT layouts and publication ordering remain unchanged.
+
+**FORMAL-FIRST BOUNDARY.** Two `CatalogAppointedPrefix` lemmas establish list-prefix
+preservation under suffix removal and replacement. They were checked before the
+runtime change and rechecked for this checkpoint. The module has 33 closed
+assumption reports, and the central exhaustive proof/property matrix includes 91
+stable IDs. These list laws do not prove filesystem authority or all Rust control
+flow; the catalog-selection/JO models and explicit source-level tests supply
+separate obligations. No new proof parser or dependency was introduced.
+
+**MEASURED CORRECTNESS.** Astra's independent read-only review found no new defect
+in the audited borrowed publication path and requested stronger acceptance tests.
+The revised tests compare complete catalogs and pack/index bytes, not just target
+roots. They cover all 16 incremental publication phases, every proper torn-slot
+prefix, four panic points, four short-pack lengths, stale catalogs, foreign
+registries and exact-authority suffix removal. Unchanged catalog images may reuse
+the original capability; changed images reject it without writes and reseal the
+same mutation before retry. Exact successor recovery never republishes it.
+
+| Check | Result | Test duration | Log SHA-256 |
+|---|---|---|---|
+| Full persistence module, debug | 317 passed; zero failed/ignored | 6.97 s | `a888548779798977bdd0da69f993e54764aada0d3bfb3432f50cd0ec8443ee02` |
+| Full persistence module, release | 317 passed; zero failed/ignored | 3.24 s | `58c2b3e80aec5d0f56209a491fc0efa6432d353a537327f83a86431155c0e3ca` |
+| `GenerationCheckpointPublication.v`, Rocq | 33 closed assumption reports | Not benchmarked | `bfb6a5a82edd5fc60d88f1bac39cfec2d4bd5b882eca653cc50c302d3d65a0e1` |
+
+The test commands select `rspace::persistence::tests::` in the `rspace_plus_plus`
+library, use `PROPTEST_CASES=256` and four test workers. Their logs are
+`/tmp/rspace-borrowed-publication-persistence-debug-r2-20260906.log` and
+`/tmp/rspace-borrowed-publication-persistence-release-20260906.log`; the proof log is
+`/tmp/rspace-borrowed-publication-rocq-20260906.log`. The first new test build caught
+a slice-versus-Arc equality error; correcting its comparison to the underlying slice
+required no production change or weakened assertion. Final compilation took 55.50 s
+in debug and 45.89 s in release. Rust used an 8 GiB systemd cap, four build workers,
+zero permitted swap and disk-backed scratch; Rocq used 2 GiB. These caps are not
+measured RSS and these durations are not benchmark or LMDB comparison results.
+
+**REMAINING BOUNDARY.** Task 6626 still requires the runtime owner to retain its
+exclusive operation permit, exact observation and both generations' protection
+through recovery and acknowledgement. Astra's next-owner review identifies
+in-process unwind/cancellation, capture abort, exact successor identity, and
+idempotent acknowledgement after journal clearing as model refinements needed
+before implementation. Existing content-only acknowledgement does not establish
+hot-incarnation/ABA identity. J-057's full-library PathMap defect remains open.
+No backend activation, performance acceptance or campaign completion is inferred.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

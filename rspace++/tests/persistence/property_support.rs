@@ -181,6 +181,8 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("SI-03", "incremental_inventory_tracks_replacement_removal_sharing_and_reuse"),
     ("SI-04", "incremental_inventory_is_bound_to_its_opened_authority_and_exact_sequence"),
     ("SI-05", "incremental_inventory_limits_refuse_before_any_durable_mutation"),
+    ("IP-01", "borrowed_incremental_publication_recovers_and_retries_every_phase"),
+    ("IP-02", "borrowed_incremental_publication_recovers_and_retries_every_phase"),
     ("INV-01", "checkpoint_union_is_exact_disjoint_ordered_merge"),
     ("INV-02", "checkpoint_union_is_exact_disjoint_ordered_merge"),
     ("INV-03", "checkpoint_union_is_exact_disjoint_ordered_merge"),
