@@ -169,8 +169,8 @@ generation_checkpoint_closed_capstones="$({
   printf '%s\n' "$generation_checkpoint_rocq_output" | \
     grep -c '^Closed under the global context$'
 } || true)"
-if [[ "$generation_checkpoint_closed_capstones" != "33" ]]; then
-  echo "stack-safe-pda: expected all thirty-three publication/journal/inventory/prefix Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
+if [[ "$generation_checkpoint_closed_capstones" != "36" ]]; then
+  echo "stack-safe-pda: expected all thirty-six publication/journal/inventory/prefix/version Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
   exit 1
 fi
 incremental_prepare_streaming_rocq_output="$(

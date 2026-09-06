@@ -1541,6 +1541,65 @@ Qed.
 
 End HotStoreJournalAcknowledgement.
 
+Module JournalVersionFreshness.
+
+Definition version := (nat * nat)%type.
+
+Definition advance (ceiling : nat) (current : version) : version :=
+  if snd current <? ceiling
+  then (fst current, S (snd current))
+  else (S (fst current), 0).
+
+Definition precedes (left right : version) : Prop :=
+  fst left < fst right \/ (fst left = fst right /\ snd left < snd right).
+
+Theorem advancing_never_reuses_current_version : forall ceiling current,
+  precedes current (advance ceiling current).
+Proof.
+  intros ceiling [identity revision]; unfold advance, precedes; simpl.
+  destruct (revision <? ceiling); simpl; lia.
+Qed.
+
+Lemma precedes_transitive : forall first second third,
+  precedes first second -> precedes second third -> precedes first third.
+Proof.
+  intros [a b] [c d] [e f]; unfold precedes; simpl; lia.
+Qed.
+
+Fixpoint after (steps ceiling : nat) (current : version) : version :=
+  match steps with
+  | 0 => current
+  | S remaining => advance ceiling (after remaining ceiling current)
+  end.
+
+Lemma positive_history_advances : forall steps ceiling current,
+  precedes current (after (S steps) ceiling current).
+Proof.
+  induction steps; intros ceiling current; simpl.
+  - apply advancing_never_reuses_current_version.
+  - eapply precedes_transitive.
+    + apply IHsteps.
+    + apply advancing_never_reuses_current_version.
+Qed.
+
+Theorem arbitrary_nonempty_history_cannot_return_to_old_version :
+  forall steps ceiling current,
+  0 < steps -> after steps ceiling current <> current.
+Proof.
+  intros [|steps] ceiling current positive same; [lia|].
+  pose proof (positive_history_advances steps ceiling current) as later.
+  rewrite same in later. destruct current as [identity revision].
+  unfold precedes in later; simpl in later; lia.
+Qed.
+
+Theorem rollover_uses_a_fresh_identity : forall ceiling identity,
+  advance ceiling (identity, ceiling) = (S identity, 0).
+Proof.
+  intros; unfold advance; simpl; rewrite Nat.ltb_irrefl; reflexivity.
+Qed.
+
+End JournalVersionFreshness.
+
 Module ExactSuccessorInventory.
 
 Section Partition.
@@ -1632,6 +1691,9 @@ Qed.
 End CatalogAppointedPrefix.
 
 Print Assumptions CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes.
+Print Assumptions JournalVersionFreshness.advancing_never_reuses_current_version.
+Print Assumptions JournalVersionFreshness.arbitrary_nonempty_history_cannot_return_to_old_version.
+Print Assumptions JournalVersionFreshness.rollover_uses_a_fresh_identity.
 Print Assumptions CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes.
 Print Assumptions ExactSuccessorInventory.replacement_conserves_inventory.
 Print Assumptions ExactSuccessorInventory.removed_inventory_is_bounded.

@@ -48,9 +48,10 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::persistence::{
-    CanonicalFormatError, ContentTransition, DagTransactionError, DurableAuthorityViewV1,
-    DurableObjectReadErrorV1, ImmutableObjectStore, MutationError, OpenDagTransaction,
-    RSpaceMutationBatchV1, RSpaceSemanticProfile, SemanticNamespace, SemanticProfile, StateVersionV1,
+    CanonicalFormatError, CatalogSlotV1, ContentTransition, DagTransactionError,
+    DurableAuthorityViewV1, DurableObjectReadErrorV1, ImmutableObjectStore, MutationError,
+    OpenDagTransaction, RSpaceMutationBatchV1, RSpaceSemanticProfile, SemanticNamespace,
+    SemanticProfile, StateVersionV1,
 };
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
@@ -90,6 +91,88 @@ pub(crate) struct PendingMutationObservation {
     pub pending: PendingDeltas,
     pub data_counts: PathMap<u64>,
     pub join_counts: PathMap<u64>,
+}
+
+struct JournalIdentityV1;
+
+#[derive(Clone)]
+struct JournalVersionV1 {
+    identity: Arc<JournalIdentityV1>,
+    revision: u64,
+}
+
+impl JournalVersionV1 {
+    fn new() -> Self {
+        Self {
+            identity: Arc::new(JournalIdentityV1),
+            revision: 0,
+        }
+    }
+
+    fn advance(&mut self) {
+        if let Some(next) = self.revision.checked_add(1) {
+            self.revision = next;
+        } else {
+            self.identity = Arc::new(JournalIdentityV1);
+            self.revision = 0;
+        }
+    }
+
+    fn next(&self) -> Self {
+        let mut next = self.clone();
+        next.advance();
+        next
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        self.revision == other.revision && Arc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
+struct JournalCaptureIdentityV1;
+
+pub struct CapturedHotJournalV1 {
+    identity: Arc<JournalCaptureIdentityV1>,
+    version: JournalVersionV1,
+    base: CatalogSlotV1,
+    observation: PendingMutationObservation,
+}
+
+impl CapturedHotJournalV1 {
+    pub(crate) fn observation(&self) -> &PendingMutationObservation { &self.observation }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotJournalAcknowledgementV1 {
+    Committed,
+    AlreadyCommitted,
+}
+
+struct HotJournalAckMarkerV1 {
+    identity: Arc<JournalCaptureIdentityV1>,
+    version: JournalVersionV1,
+    terminal: CatalogSlotV1,
+}
+
+struct DurableJournalStateV1 {
+    base: Option<CatalogSlotV1>,
+    version: JournalVersionV1,
+    acknowledged: Option<HotJournalAckMarkerV1>,
+}
+
+impl DurableJournalStateV1 {
+    fn new(base: CatalogSlotV1) -> Self {
+        Self {
+            base: Some(base),
+            version: JournalVersionV1::new(),
+            acknowledged: None,
+        }
+    }
+
+    fn advance(&mut self) {
+        self.version.advance();
+        self.acknowledged = None;
+    }
 }
 
 /// Build one exact three-namespace mutation batch from a coherent hot-store
@@ -268,6 +351,18 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     /// lookups are not a coherent checkpoint observation.
     fn pending_mutation_observation(&self) -> Result<PendingMutationObservation, RSpaceError>;
 
+    fn capture_pending_journal(
+        &self,
+        base: CatalogSlotV1,
+    ) -> Result<CapturedHotJournalV1, RSpaceError>;
+
+    fn acknowledge_pending_journal(
+        &self,
+        captured: &CapturedHotJournalV1,
+        expected: CatalogSlotV1,
+        admitted: CatalogSlotV1,
+    ) -> Result<HotJournalAcknowledgementV1, RSpaceError>;
+
     /// Commit one exact revision-local journal snapshot after its durable
     /// publication succeeds. Implementations must compare all namespaces
     /// while holding their state boundary and must not clear a newer journal.
@@ -437,6 +532,7 @@ where
     joins: RSpaceJoinStore<C>,
     continuation_base_epoch: Arc<ContinuationEpoch>,
     continuation_epochs: PathMap<Arc<ContinuationEpoch>>,
+    durable_journal: Option<Box<DurableJournalStateV1>>,
 }
 
 impl<C, P, A, K> InMemHotStoreState<C, P, A, K>
@@ -473,7 +569,97 @@ where
             joins,
             continuation_base_epoch: Arc::new(ContinuationEpoch),
             continuation_epochs: PathMap::new(),
+            durable_journal: None,
         })
+    }
+
+    fn pending_journal(&self) -> PendingDeltas {
+        PendingDeltas {
+            data: Some(self.data.pending_delta().clone()),
+            continuations: Some(self.continuations.pending_delta().clone()),
+            continuation_content: Some(self.continuations.pending_content().clone()),
+            continuation_source_bytes: Some(self.continuations.pending_source_bytes().clone()),
+            joins: Some(self.joins.pending_delta().clone()),
+        }
+    }
+
+    fn pending_observation(&self) -> PendingMutationObservation {
+        let pending = self.pending_journal();
+        let mut data_counts = PathMap::new();
+        for (path, _) in self
+            .data
+            .pending_delta()
+            .additions()
+            .iter()
+            .chain(self.data.pending_delta().removals().iter())
+        {
+            data_counts.insert(&path, self.data.count_path(&path));
+        }
+        let mut join_counts = PathMap::new();
+        for (path, _) in self
+            .joins
+            .pending_delta()
+            .additions()
+            .iter()
+            .chain(self.joins.pending_delta().removals().iter())
+        {
+            join_counts.insert(&path, self.joins.count_path(&path));
+        }
+        PendingMutationObservation {
+            pending,
+            data_counts,
+            join_counts,
+        }
+    }
+
+    fn matches_pending_journal(&self, expected: &PendingDeltas) -> bool {
+        expected
+            .data
+            .as_ref()
+            .is_some_and(|data| self.data.pending_delta() == data) &&
+            expected
+                .continuations
+                .as_ref()
+                .is_some_and(|delta| self.continuations.pending_delta() == delta) &&
+            expected
+                .continuation_content
+                .as_ref()
+                .is_some_and(|content| {
+                    self.continuations
+                        .pending_content()
+                        .iter()
+                        .eq(content.iter())
+                }) &&
+            expected
+                .continuation_source_bytes
+                .as_ref()
+                .is_some_and(|sources| {
+                    self.continuations
+                        .pending_source_bytes()
+                        .iter()
+                        .eq(sources.iter())
+                }) &&
+            expected
+                .joins
+                .as_ref()
+                .is_some_and(|joins| self.joins.pending_delta() == joins)
+    }
+
+    fn pending_journal_is_empty(&self) -> bool {
+        self.data.pending_delta().is_empty() &&
+            self.continuations.pending_delta().is_empty() &&
+            self.continuations.pending_content().is_empty() &&
+            self.continuations.pending_source_bytes().is_empty() &&
+            self.joins.pending_delta().is_empty()
+    }
+
+    fn clear_pending_journal(&mut self) {
+        self.data.restore_pending_delta(BagDelta::new());
+        self.continuations.restore_pending_delta(BagDelta::new());
+        self.continuations.restore_pending_content(PathMap::new());
+        self.continuations
+            .restore_pending_source_bytes(PathMap::new());
+        self.joins.restore_pending_delta(BagDelta::new());
     }
 
     fn snapshot(&self) -> Result<HotStoreState<C, P, A, K>, DataIndexError> {
@@ -511,6 +697,7 @@ where
             joins: RSpaceJoinStore::default(),
             continuation_base_epoch: Arc::new(ContinuationEpoch),
             continuation_epochs: PathMap::new(),
+            durable_journal: None,
         }
     }
 }
@@ -534,6 +721,7 @@ where
 
     fn bump_continuation_revision(&mut self, channels: &[C])
     where C: RhoPathEncode {
+        self.advance_journal_version();
         self.continuation_epochs
             .insert(RhoPathV1::continuation_prefix(channels), Arc::new(ContinuationEpoch));
     }
@@ -541,6 +729,19 @@ where
     fn bump_continuation_generation(&mut self) {
         self.continuation_base_epoch = Arc::new(ContinuationEpoch);
         self.continuation_epochs = PathMap::new();
+    }
+
+    fn advance_journal_version(&mut self) {
+        if let Some(journal) = &mut self.durable_journal {
+            journal.advance();
+        }
+    }
+
+    fn invalidate_journal_base(&mut self) {
+        if let Some(journal) = &mut self.durable_journal {
+            journal.advance();
+            journal.base = None;
+        }
     }
 }
 
@@ -929,6 +1130,7 @@ where
                 .record_pending_datum_addition(&inserted_path)
                 .expect("a cold-channel datum insertion is representable");
         }
+        state.advance_journal_version();
         metrics::counter!(HOT_STORE_PUT_DATUM_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__start.elapsed().as_nanos() as u64);
     }
@@ -953,7 +1155,10 @@ where
                 .set_channel(channel.clone(), from_history_store.unwrap_or_default())?;
         }
         match state.data.remove_index(channel, index) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                state.advance_journal_version();
+                Ok(())
+            }
             Err(DataIndexError::IndexOutOfBounds { cardinality, .. }) => {
                 Err(RSpaceError::BugFoundError(format!(
                     "Index {index} out of bounds when removing datum (len={cardinality})"
@@ -964,13 +1169,9 @@ where
     }
 
     fn remove_datum_path(&self, path: &[u8]) -> Result<(), RSpaceError> {
-        if self
-            .state
-            .write()
-            .expect("hot store state write lock")
-            .data
-            .remove_path(path)
-        {
+        let mut state = hot_state_write(&self.state);
+        if state.data.remove_path(path) {
+            state.advance_journal_version();
             Ok(())
         } else {
             Err(RSpaceError::BugFoundError(
@@ -980,10 +1181,12 @@ where
     }
 
     fn apply_datum_delta(&self, delta: &BagDelta) -> Result<(), RSpaceError> {
-        hot_state_write(&self.state)
-            .data
-            .apply_delta(delta)
-            .map_err(Into::into)
+        let mut state = hot_state_write(&self.state);
+        state.data.apply_delta(delta)?;
+        if !delta.is_empty() {
+            state.advance_journal_version();
+        }
+        Ok(())
     }
 
     fn pending_data_delta(&self) -> Result<Option<BagDelta>, RSpaceError> {
@@ -1062,113 +1265,113 @@ where
     }
 
     fn pending_deltas(&self) -> Result<PendingDeltas, RSpaceError> {
-        let state = self.state.read().expect("hot store state read lock");
-        let pending = PendingDeltas {
-            data: Some(state.data.pending_delta().clone()),
-            continuations: Some(state.continuations.pending_delta().clone()),
-            continuation_content: Some(state.continuations.pending_content().clone()),
-            continuation_source_bytes: Some(state.continuations.pending_source_bytes().clone()),
-            joins: Some(state.joins.pending_delta().clone()),
-        };
-        Ok(pending)
+        Ok(self
+            .state
+            .read()
+            .expect("hot store state read lock")
+            .pending_journal())
     }
 
     fn pending_mutation_observation(&self) -> Result<PendingMutationObservation, RSpaceError> {
+        Ok(self
+            .state
+            .read()
+            .expect("hot store state read lock")
+            .pending_observation())
+    }
+
+    fn capture_pending_journal(
+        &self,
+        base: CatalogSlotV1,
+    ) -> Result<CapturedHotJournalV1, RSpaceError> {
         let state = self.state.read().expect("hot store state read lock");
-        let pending = PendingDeltas {
-            data: Some(state.data.pending_delta().clone()),
-            continuations: Some(state.continuations.pending_delta().clone()),
-            continuation_content: Some(state.continuations.pending_content().clone()),
-            continuation_source_bytes: Some(state.continuations.pending_source_bytes().clone()),
-            joins: Some(state.joins.pending_delta().clone()),
-        };
-        let mut data_counts = PathMap::new();
-        if let Some(data) = pending.data.as_ref() {
-            for (path, _) in data.additions().iter().chain(data.removals().iter()) {
-                data_counts.insert(&path, state.data.count_path(&path));
-            }
+        let binding = state.durable_journal.as_ref().ok_or_else(|| {
+            RSpaceError::JournalConflict("hot store has no durable journal authority".to_owned())
+        })?;
+        if binding.base != Some(base) {
+            return Err(RSpaceError::JournalConflict(
+                "durable journal base changed before capture".to_owned(),
+            ));
         }
-        let mut join_counts = PathMap::new();
-        if let Some(joins) = pending.joins.as_ref() {
-            for (path, _) in joins.additions().iter().chain(joins.removals().iter()) {
-                join_counts.insert(&path, state.joins.count_path(&path));
-            }
-        }
-        Ok(PendingMutationObservation {
-            pending,
-            data_counts,
-            join_counts,
+        Ok(CapturedHotJournalV1 {
+            identity: Arc::new(JournalCaptureIdentityV1),
+            version: binding.version.clone(),
+            base,
+            observation: state.pending_observation(),
         })
+    }
+
+    fn acknowledge_pending_journal(
+        &self,
+        captured: &CapturedHotJournalV1,
+        expected: CatalogSlotV1,
+        admitted: CatalogSlotV1,
+    ) -> Result<HotJournalAcknowledgementV1, RSpaceError> {
+        let mut state = hot_state_write(&self.state);
+        if expected != admitted {
+            return Err(RSpaceError::JournalConflict(
+                "recovered terminal does not match the captured publication".to_owned(),
+            ));
+        }
+        let binding = state.durable_journal.as_ref().ok_or_else(|| {
+            RSpaceError::JournalConflict("hot store has no durable journal authority".to_owned())
+        })?;
+        if let Some(marker) = &binding.acknowledged {
+            if Arc::ptr_eq(&marker.identity, &captured.identity) &&
+                marker.terminal == expected &&
+                binding.base == Some(expected) &&
+                marker.version.matches(&binding.version) &&
+                state.pending_journal_is_empty()
+            {
+                return Ok(HotJournalAcknowledgementV1::AlreadyCommitted);
+            }
+        }
+        if binding.base != Some(captured.base) ||
+            !binding.version.matches(&captured.version) ||
+            expected.store_id() != captured.base.store_id() ||
+            expected.profile_id() != captured.base.profile_id() ||
+            Some(expected.epoch()) != captured.base.epoch().checked_add(1) ||
+            Some(expected.state().generation()) !=
+                captured.base.state().generation().checked_add(1) ||
+            Some(expected.commit_sequence()) != captured.base.commit_sequence().successor().ok() ||
+            !state.matches_pending_journal(&captured.observation.pending) ||
+            state.pending_journal_is_empty()
+        {
+            return Err(RSpaceError::JournalConflict(
+                "durable acknowledgement is not bound to this exact journal and successor"
+                    .to_owned(),
+            ));
+        }
+        let next = binding.version.next();
+        let marker = HotJournalAckMarkerV1 {
+            identity: Arc::clone(&captured.identity),
+            version: next.clone(),
+            terminal: expected,
+        };
+        state.clear_pending_journal();
+        let binding = state
+            .durable_journal
+            .as_mut()
+            .expect("journal clearing preserves its authority");
+        binding.base = Some(expected);
+        binding.version = next;
+        binding.acknowledged = Some(marker);
+        Ok(HotJournalAcknowledgementV1::Committed)
     }
 
     fn commit_pending_deltas(&self, expected: &PendingDeltas) -> Result<(), RSpaceError> {
         let mut state = hot_state_write(&self.state);
-        let Some(data) = expected.data.as_ref() else {
+        if state.durable_journal.is_some() {
             return Err(RSpaceError::JournalConflict(
-                "durable commit omitted the data journal".to_owned(),
+                "durable journals require identity-bound acknowledgement".to_owned(),
             ));
-        };
-        let Some(continuations) = expected.continuations.as_ref() else {
-            return Err(RSpaceError::JournalConflict(
-                "durable commit omitted the continuation journal".to_owned(),
-            ));
-        };
-        let Some(content) = expected.continuation_content.as_ref() else {
-            return Err(RSpaceError::JournalConflict(
-                "durable commit omitted the continuation content journal".to_owned(),
-            ));
-        };
-        let Some(source_bytes) = expected.continuation_source_bytes.as_ref() else {
-            return Err(RSpaceError::JournalConflict(
-                "durable commit omitted the continuation source journal".to_owned(),
-            ));
-        };
-        let Some(joins) = expected.joins.as_ref() else {
-            return Err(RSpaceError::JournalConflict(
-                "durable commit omitted the join journal".to_owned(),
-            ));
-        };
-        // Preflight every namespace before mutating any journal so a stale
-        // snapshot cannot clear only a prefix of the committed revision.
-        if state.data.pending_delta() != data
-            || state.continuations.pending_delta() != continuations
-            || !state
-                .continuations
-                .pending_content()
-                .iter()
-                .eq(content.iter())
-            || !state
-                .continuations
-                .pending_source_bytes()
-                .iter()
-                .eq(source_bytes.iter())
-            || state.joins.pending_delta() != joins
-        {
+        }
+        if !state.matches_pending_journal(expected) {
             return Err(RSpaceError::JournalConflict(
                 "hot-store journal changed before durable commit acknowledgement".to_owned(),
             ));
         }
-        // These calls perform the actual acknowledgement.  They must not be
-        // hidden inside `debug_assert!`: release builds still need to clear
-        // exactly the journal that was durably published.
-        if !state.data.commit_pending_delta(data) {
-            return Err(RSpaceError::JournalConflict(
-                "data journal changed during durable commit acknowledgement".to_owned(),
-            ));
-        }
-        if !state
-            .continuations
-            .commit_pending(continuations, content, source_bytes)
-        {
-            return Err(RSpaceError::JournalConflict(
-                "continuation journal changed during durable commit acknowledgement".to_owned(),
-            ));
-        }
-        if !state.joins.commit_pending_delta(joins) {
-            return Err(RSpaceError::JournalConflict(
-                "join journal changed during durable commit acknowledgement".to_owned(),
-            ));
-        }
+        state.clear_pending_journal();
         Ok(())
     }
 
@@ -1190,6 +1393,7 @@ where
             .continuations
             .restore_pending_source_bytes(continuation_source_bytes);
         state.joins.restore_pending_delta(joins);
+        state.advance_journal_version();
         Ok(())
     }
 
@@ -1281,6 +1485,9 @@ where
                 return Ok(AcceptedMatchOutcome::Stale);
             }
             Err(error) => return Err(error.into()),
+        }
+        if !transition.datum_delta.is_empty() {
+            state.advance_journal_version();
         }
 
         if let Some(path) = ordinary_removal_path {
@@ -1375,7 +1582,9 @@ where
                 .joins
                 .set_channel(channel.clone(), from_history_store.unwrap_or_default());
         }
-        let _ = state.joins.put(channel, join);
+        if state.joins.put(channel, join) {
+            state.advance_journal_version();
+        }
         metrics::counter!(HOT_STORE_PUT_JOIN_TIME_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__start.elapsed().as_nanos() as u64);
         Some(())
@@ -1383,7 +1592,9 @@ where
 
     fn install_join(&self, channel: &C, join: &[C]) -> Option<()> {
         let mut state = self.state.write().expect("hot store state write lock");
-        let _ = state.joins.install(channel, join);
+        if state.joins.install(channel, join) {
+            state.advance_journal_version();
+        }
         Some(())
     }
 
@@ -1424,6 +1635,8 @@ where
             }
             if state.joins.remove(channel, join).is_none() {
                 warn!("Join not found when removing join");
+            } else {
+                state.advance_journal_version();
             }
             Some(())
         }
@@ -1661,6 +1874,7 @@ where
 
     fn clear(&self) {
         let mut state = self.state.write().expect("hot store state write lock");
+        state.invalidate_journal_base();
         state.bump_continuation_generation();
         state.continuations.clear();
         state.data.clear();
@@ -1713,8 +1927,10 @@ where
             .state
             .write()
             .expect("hot store state write lock for set_state");
-        let replacement = InMemHotStoreState::from_snapshot(new_state)
+        let mut replacement = InMemHotStoreState::from_snapshot(new_state)
             .expect("snapshot data must fit the PathMap multiplicity model");
+        replacement.durable_journal = state.durable_journal.take();
+        replacement.invalidate_journal_base();
         *state = replacement;
     }
 }
@@ -2036,6 +2252,7 @@ impl HotStoreInstances {
             .map_err(DurableHotStoreBootstrapError::AuthenticatedRead)?;
 
         let mut state = InMemHotStoreState::default();
+        state.durable_journal = Some(Box::new(DurableJournalStateV1::new(authority.catalog())));
         let mut data_groups: HashMap<C, Vec<(Datum<A>, super::bag::Multiplicity)>> = HashMap::new();
         for (channel, datum, multiplicity) in data_entries {
             let multiplicity = super::bag::Multiplicity::new(multiplicity.get())

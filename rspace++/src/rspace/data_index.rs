@@ -1962,16 +1962,6 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     /// Callers must hold the enclosing hot-store transition boundary.
     pub fn take_pending_delta(&mut self) -> BagDelta { std::mem::take(&mut self.pending_delta) }
 
-    /// Clear the revision journal after its exact snapshot has been durably
-    /// committed. The live PathMap index is intentionally left untouched.
-    pub(crate) fn commit_pending_delta(&mut self, expected: &BagDelta) -> bool {
-        if &self.pending_delta != expected {
-            return false;
-        }
-        self.pending_delta = BagDelta::new();
-        true
-    }
-
     pub fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
 
     pub(crate) fn count_path(&self, path: &[u8]) -> u64 { self.index.count_path(path) }

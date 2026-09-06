@@ -4165,6 +4165,75 @@ acknowledgement. The one-publication model does not discharge repeated-history A
 tests. No backend activation, LMDB comparison, stack-depth/RSS result or campaign
 completion is inferred. Existing broader-library PathMap failure remains open.
 
+### J-061 — 2026-09-06: bind journal acknowledgement to identity, not equal bytes
+
+**DERIVED REQUIREMENT.** Equal journal contents do not identify the same publication
+intent. A restore can reproduce earlier bytes, two stores can have identical catalogs,
+and an interrupted owner can retry after the journals have already been cleared. Clearing
+must distinguish these cases without retaining old journal tries indefinitely or allocating
+a fresh revision token for every ordinary mutation.
+
+**FORMAL-FIRST DESIGN.** Three new capstones in the existing publication theory prove
+one-step version advancement, non-recurrence through arbitrary nonempty abstract histories,
+and fresh identity on local-counter rollover. Compilation preceded the Rust implementation;
+all 36 capstone assumption reports are closed and the Rocq kernel check passes. The concrete
+identity argument depends on fresh `Arc` tokens while old receipts retain their allocations;
+the abstract proof is not a Rust allocator or complete publication-owner proof. JV-01..03
+extend the exhaustive derivation matrix from 91 to 94 IDs.
+
+**IMPLEMENTATION.** A durable HotStore owns an optional boxed binding containing its
+catalog predecessor, identity/local revision and last acknowledgement marker. Legacy stores
+do not allocate this binding. Capture retains the five existing copy-on-write journal roots
+and looks up counts only for native data/join keys touched by the journals. It does not decode
+records, construct `Vec<Par>`, sort elements or project the complete RSpace. Each capture
+has a distinct private identity. Normal mutations advance the `u64` revision in place;
+rollover allocates a new identity instead of imposing a lifetime limit. Read hydration,
+duplicates and refused mutations leave the version unchanged. State clear/replacement
+invalidates the durable base; even an identical journal restore invalidates old receipts.
+
+Acknowledgement checks full expected/admitted terminal equality, predecessor, version,
+successor relation and all five journals before any clear. Under that same write boundary,
+it clears all journals, rebases and installs one marker. Exact replay returns the previous
+outcome without clearing or advancing again. The marker holds small identity/terminal
+metadata, not a retained journal snapshot. The three obsolete per-index compare/clear methods
+are removed; both legacy and durable paths use one HotStore-wide preflight/clear boundary.
+Legacy content-only acknowledgement refuses a durable-bound store.
+
+**FAILURES RETAINED AS EVIDENCE.** The first journal build rejected a private-module
+test import; the corrected 17-test run then passed 16 and failed during fixture construction.
+That fixture advanced an index frontier by 64 bytes although the encoded index record is
+72 bytes. It now uses `INDEX_RECORD_LEN_V1`, so the negative test reaches acknowledgement
+with a format-valid but wrong terminal. The expanded focused debug gate passes 20/20
+(8.57 s). Initial combined HotStore/persistence gates passed 386 and failed one in each
+profile: duplicated property-family lists disagreed about the new JV rows. One shared
+predicate now governs both extraction paths; no coverage assertion was removed.
+
+**MEASURED CORRECTNESS.** The corrected combined HotStore/persistence gate passes
+387/387 in debug (8.19 s) and release (3.48 s), with zero failures or ignored tests
+and 233 other library tests outside this selection. The commands select both
+`rspace::hot_store::` and `rspace::persistence::`, set 256 property cases and four
+workers, and use `systemd-run` with a 6 GiB high watermark, 8 GiB maximum, zero swap
+and disk-backed scratch. Rocq compilation and kernel checking use a 2 GiB maximum
+and zero swap. These are resource ceilings and correctness-test durations, not
+measured peak memory, throughput, allocation slopes or an LMDB comparison. Formatting,
+shell syntax and whitespace checks pass; pre-existing library warnings remain visible.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/rspace-journal-version-rocq-20260906.log` | `e95039d09a2105983a31a799c069978ce24edb33c927e8cea87b5a598fd06f88` |
+| `/tmp/rspace-journal-version-coqchk-20260906.log` | `5d625ccd1c2c77aaae6d92d99dffe4f14758e8842c889a90d1c799285445f299` |
+| `/tmp/rspace-identity-bound-journal-broad-debug-r2-20260906.log` | `037d3fdea3e8c69b6ba35570806158fc250ded998a090dd8924806f1347434c8` |
+| `/tmp/rspace-identity-bound-journal-broad-release-r2-20260906.log` | `cd6dae6b6774b283c053d0ee6106b38cbd00243c83f57d8742e0854b6a1a3db9` |
+
+**VALIDITY BOUNDARY.** Component tests cover twelve mutator routes, all five populated
+journals, foreign and competing receipts, no-op/refusal behavior, unchanged live/installed
+state, exact replay, repeated checkpoint/restore histories and counter rollover. Synthetic
+catalogs isolate HotStore behavior; the owner remains responsible for supplying an actually
+authenticated terminal. Owner-held operation permits, continuous authority, interrupted
+publication recovery and successor-pin handoff still require production composition. No
+default backend activation, LMDB comparison, measured RSS/stack slope or throughput claim
+is implied. Existing broad-library PathMap construction failure remains open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

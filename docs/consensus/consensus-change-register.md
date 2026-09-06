@@ -6246,3 +6246,17 @@ behavior, charges and default backend selection are unchanged. Final persistence
 gates pass 319/319 in debug and release; runtime owner/acknowledgement and cutover
 remain open. Classification stays `NO_PRODUCTION_CHANGE_DERIVED`. See
 [J-060](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-060--2026-09-06-borrowed-preparation-and-a-single-pass-successor-witness).
+
+Identity-bound journal acknowledgement, 2026-09-06: durable HotStore captures now
+bind the exact predecessor, store/version identity and all five journals. Clearing,
+rebasing and installation of an exact retry marker occur under one write boundary;
+foreign, stale, restored or wrong-terminal requests leave pending state unchanged.
+Legacy content-only acknowledgement refuses a durable-bound store. This strengthens
+volatile ownership metadata without changing canonical RhoPath/protobuf/bincode/WAL
+or catalog layouts, live record multiplicities, legacy roots, matching, charges or
+default backend selection. Combined HotStore/persistence debug and release gates pass
+387/387; the isolated HotStore tests supply synthetic format-valid terminals, not
+independent disk authentication. Owner permit/recovery/generation-pin composition and
+cutover remain required. Classification remains `NO_PRODUCTION_CHANGE_DERIVED`, not
+production activation or a complete recovery guarantee. See
+[J-061](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-061--2026-09-06-bind-journal-acknowledgement-to-identity-not-equal-bytes).

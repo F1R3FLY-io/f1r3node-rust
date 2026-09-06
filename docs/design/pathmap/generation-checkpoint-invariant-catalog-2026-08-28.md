@@ -208,6 +208,47 @@ its target root. Once captured, retain the complete slot through every later fai
 this callback do not establish owner permit ownership, atomic HotStore acknowledgement or
 repeated-epoch ABA safety; those JO obligations still require owner implementation and tests.
 
+## Identity-bound HotStore acknowledgement refinement — 2026-09-06
+
+`CapturedHotJournalV1` is an immutable, non-cloneable receipt created under one HotStore
+read boundary. It binds the exact catalog predecessor, the store's current journal version,
+an independent capture identity, five copy-on-write journal roots and native data/join counts.
+Two stores with equal catalogs and equal journal bytes cannot exchange receipts. Restoring
+the same journal bytes advances the version; clearing or replacing the live state invalidates
+its durable base. Read-side hydration, duplicate inserts and rejected mutations do not
+advance the version. Installed-state mutation conservatively invalidates outstanding receipts.
+
+Acknowledgement compares the expected and admitted full catalog slots, receipt/version/base,
+successor sequence and all five journal domains under one HotStore write boundary. It prepares
+the new marker before clearing, then clears and rebases together without changing live records
+or installed state. A retry accepts only the same capture identity, terminal and current
+post-acknowledgement version with all journals empty. Emptiness alone cannot authorize a retry
+or fabricate a successor. The marker retains identity tokens and a catalog slot, not the
+cleared PathMap journals. The owner must supply the genuinely admitted terminal: this component
+does not independently read or authenticate disk state.
+
+| Obligations | Executable component evidence |
+|---|---|
+| HJ-01..04, JO-05/07/13/14/15 | `durable_acknowledgement_is_exact_atomic_and_idempotent`, foreign/all-domain and wrong-terminal tests check atomic clearing, nonmutation, exact identity and replay. |
+| JV-01..03, JO-04 | Retained-version and checkpoint/restore property histories cover stale identical journals and explicit `u64::MAX` rollover. |
+| JO-04 | `every_durable_mutator_invalidates_retained_journal_versions` checks twelve production mutation routes, including accepted-match data, continuation and join removal. |
+| JO-04/13 | `durable_reads_noops_and_refused_mutations_preserve_the_capture` and `an_empty_durable_journal_cannot_fabricate_a_successor` check the complementary boundaries. |
+
+The three `JournalVersionFreshness` capstones were compiled before the Rust version
+implementation. They bring the existing theory to 36 closed assumption reports. The model
+uses an increasing abstract identity; the Rust refinement relies on fresh `Arc` allocations
+while retained receipts keep their old tokens alive. This is an explicit identity-freshness
+argument, not a machine-checked Rust allocator proof. Normal mutations increment a local
+`u64` without allocating; rollover creates a new token rather than imposing a lifetime limit.
+The central derivation matrix now has 94 IDs. Its single property-family predicate is shared
+by catalog token recognition and derivation-row recognition, with required-family coverage
+checked independently of test success.
+
+These tests use synthetic, format-valid catalog slots for HotStore isolation. They do not
+establish continuous writer ownership, authenticated recovery, successor-pin handoff or
+asynchronous cancellation of the production owner. Those remain required task 6626 integration
+tests; legacy-authority separation and production activation remain separately gated.
+
 ## Exact incremental-successor inventory refinement — 2026-09-06
 
 `GenerationCheckpointPublication.v::ExactSuccessorInventory` proves byte conservation,
@@ -484,6 +525,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | HJ-08 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.missing_count_is_distinct_from_captured_zero` | P | Rust must preserve missing evidence separately from an observed zero. |
 | HJ-09 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.journal_lookup_uses_exact_native_record_key` | P | Native byte-key framing and repeated channel positions are executable. |
 | HJ-10 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.reframed_join_key_misses_native_record` | P | The concrete native-key test detects the extra-framing producer error. |
+| JV-01 | `EXEC_ONLY` | `JournalVersionFreshness.advancing_never_reuses_current_version` | P | Rust advances the revision in place; rollover must allocate a fresh identity while prior receipts retain their identity tokens. |
+| JV-02 | `EXEC_ONLY` | `JournalVersionFreshness.arbitrary_nonempty_history_cannot_return_to_old_version` | P | The unbounded abstract history law assumes fresh identities; generated Rust histories retain and compare every prior version. |
+| JV-03 | `EXEC_ONLY` | `JournalVersionFreshness.rollover_uses_a_fresh_identity` | P | Explicit `u64::MAX` refinement changes the identity and resets the local counter without an artificial lifetime limit. |
 | SI-01 | `EXEC_ONLY` | `ExactSuccessorInventory.replacement_conserves_inventory`, `ExactSuccessorInventory.exact_replacement_inventory` | P | Finite partition accounting; Rust must derive exact current membership from the sealed target. |
 | SI-02 | `EXEC_ONLY` | `ExactSuccessorInventory.removed_inventory_is_bounded` | P | Histories exercise removed/shared membership and checked Rust inventory arithmetic. |
 | SI-03 | `EXEC_ONLY` | `ExactSuccessorInventory.staged_only_inventory_counterexample` | P | Concrete old arithmetic is a negative control; semantic/physical metadata classification is executable. |

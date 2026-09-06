@@ -397,6 +397,16 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 
 #[test]
 fn model_property_manifest_is_unique_and_exhaustive() {
+    const FAMILIES: &[&str] =
+        &["INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "SI", "IP"];
+    let is_property_id = |token: &str| {
+        let Some((family, index)) = token.split_once('-') else {
+            return false;
+        };
+        FAMILIES.contains(&family) &&
+            index.len() == 2 &&
+            index.bytes().all(|byte| byte.is_ascii_digit())
+    };
     let bindings = binding_map();
     assert_eq!(bindings.len(), PROPERTY_BINDINGS.len(), "duplicate property ID");
     let catalog = include_str!(
@@ -408,27 +418,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         .collect::<BTreeSet<_>>();
     let catalog_ids = catalog
         .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
-        .filter(|token| {
-            let Some((family, index)) = token.split_once('-') else {
-                return false;
-            };
-            matches!(
-                family,
-                "INV" |
-                    "DES" |
-                    "WIR" |
-                    "WAL" |
-                    "CAT" |
-                    "PUB" |
-                    "SEM" |
-                    "RES" |
-                    "NV" |
-                    "HJ" |
-                    "SI" |
-                    "IP"
-            ) && index.len() == 2 &&
-                index.bytes().all(|byte| byte.is_ascii_digit())
-        })
+        .filter(|token| is_property_id(token))
         .collect::<BTreeSet<_>>();
     assert_eq!(formal_ids, catalog_ids, "catalog and executable property IDs diverged");
 
@@ -446,26 +436,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
             continue;
         }
         let id = cells[1];
-        let Some((family, index)) = id.split_once('-') else {
-            continue;
-        };
-        if !matches!(
-            family,
-            "INV" |
-                "DES" |
-                "WIR" |
-                "WAL" |
-                "CAT" |
-                "PUB" |
-                "SEM" |
-                "RES" |
-                "NV" |
-                "HJ" |
-                "SI" |
-                "IP"
-        ) || index.len() != 2 ||
-            !index.bytes().all(|byte| byte.is_ascii_digit())
-        {
+        if !is_property_id(id) {
             continue;
         }
         let parse_symbols = |cell: &'static str| {
@@ -611,13 +582,11 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         );
     }
 
-    for required_family in
-        ["INV-", "DES-", "WIR-", "WAL-", "CAT-", "PUB-", "SEM-", "RES-", "NV-", "HJ-", "SI-", "IP-"]
-    {
+    for required_family in FAMILIES {
         assert!(
-            PROPERTY_BINDINGS
-                .iter()
-                .any(|(id, _)| id.starts_with(required_family)),
+            PROPERTY_BINDINGS.iter().any(|(id, _)| id
+                .split_once('-')
+                .is_some_and(|(family, _)| family == *required_family)),
             "formal property family {required_family} is unrepresented"
         );
     }

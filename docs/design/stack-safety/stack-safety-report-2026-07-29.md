@@ -12967,3 +12967,17 @@ RSS slopes. Runs used an 8 GiB systemd maximum, four build/test workers, zero sw
 and disk-backed scratch. The fifteen-invariant owner model and runtime component
 tests still do not close owner acknowledgement, repeated-history ABA or the broader
 PathMap correctness gate. See [J-059 and J-060](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-060--2026-09-06-borrowed-preparation-and-a-single-pass-successor-witness).
+
+Identity-bound journal acknowledgement, 2026-09-06: the combined HotStore/persistence
+gate passes 387/387 in debug (8.19 s) and release (3.48 s), with 233 other library tests
+outside the selection. Captures retain copy-on-write journal roots and native touched-key
+counts; acknowledgement clears/rebases all five domains under one write boundary. Normal
+mutations increment a local `u64` without a new allocation, and rollover creates a fresh
+identity instead of limiting lifetime. The idempotence marker does not retain cleared
+journal tries. Three version-history capstones bring the existing theory to 36 closed
+reports; separate Rocq kernel checking passes and the exhaustive matrix binds 94 IDs.
+Runs use 8 GiB Rust/2 GiB Rocq systemd maxima, zero swap and disk-backed scratch. These
+are correctness and ownership-lifetime results, not measurements of stack depth, RSS
+slopes, allocations or throughput. Synthetic catalog fixtures do not prove the unfinished
+publication-owner composition; the broader PathMap correctness gate remains open. See
+[J-061](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-061--2026-09-06-bind-journal-acknowledgement-to-identity-not-equal-bytes).
