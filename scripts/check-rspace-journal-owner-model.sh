@@ -25,10 +25,21 @@ for control in \
   "DoublePublishMutant:AtMostOnePublication" \
   "GateReleaseMutant:GateHeldUntilResolution" \
   "WrongRecoveryMutant:RecoveryAcceptsOnlyExactTerminal" \
+  "LostAckMarkerMutant:ClearedPendingJournalHasExactMarker" \
+  "AckMarkerCorruptionMutant:AcknowledgementRequiresExactReceipt" \
+  "WrongAckInputMutant:AcknowledgementAcceptsOnlyExactInput" \
+  "DoubleAckMutant:AtMostOneAcknowledgement" \
+  "WrongPreparedWitnessMutant:PreparedWitnessBound" \
+  "UnwindGateReleaseMutant:GateHeldUntilResolution" \
+  "CancelGateReleaseMutant:GateHeldUntilResolution" \
   "NeverAcknowledged:NeverAcknowledged" \
   "NeverRecoveredOld:NeverRecoveredOld" \
   "NeverRecoveredNew:NeverRecoveredNew" \
-  "NeverRejectedBinding:NeverRejectedBinding"
+  "NeverRejectedBinding:NeverRejectedBinding" \
+  "NeverAbortedCapture:NeverAbortedCapture" \
+  "NeverUnwound:NeverUnwound" \
+  "NeverCancelled:NeverCancelled" \
+  "NeverRetriedAcknowledgementAfterUnwind:NeverRetriedAcknowledgementAfterUnwind"
 do
   config="${control%%:*}"
   invariant="${control#*:}"
@@ -43,4 +54,4 @@ do
     exit 1
   fi
 done
-echo "journal-owner: control, eight causal mutants and four reachability witnesses passed"
+echo "journal-owner: control, fifteen causal mutants and eight reachability witnesses passed"

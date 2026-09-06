@@ -85,8 +85,12 @@ durable state; it does not resume arbitrary unfinished interpreter execution.
 | JO-09 | `RecoveryAcceptsOnlyExactTerminal` | Compare authenticated store/profile/base/target/transaction bindings; equal target identity alone is insufficient. |
 | JO-10 | `AtMostOnePublication` | Retry after an ambiguous successful commit acknowledges the original intent and never applies it twice. |
 | JO-11 | `ReopenDiscardsVolatileJournal` | Restart reconstructs a fresh hot-store incarnation with empty pending journals relative to the recovered checkpoint. |
+| JO-12 | `PreparedWitnessBound` | Derive the expected complete terminal from the checked publication layout; retain its exact sequence, transaction, pack and index frontiers through reconciliation. |
+| JO-13 | `AtMostOneAcknowledgement` | Retrying an acknowledgement after unwind does not clear journals or rotate the epoch twice. |
+| JO-14 | `ClearedPendingJournalHasExactMarker` | An interrupted owner recognizes a cleared journal only through its exact committed receipt and successor marker, never emptiness alone. |
+| JO-15 | `AcknowledgementAcceptsOnlyExactInput` | Reject incoming acknowledgement requests with a different receipt or terminal, including retries after the original journals were cleared. |
 
-The final control explores 544 distinct states with all eleven invariants satisfied. Eight
+The original control explored 544 distinct states with all eleven original invariants satisfied. Eight
 single-defect configurations fail their designated invariants: foreign receipt, early clear,
 partial clear, generation-lease gap, premature ready/rebase, duplicate publication, gate release,
 and wrong recovery terminal. Four reachability witnesses establish successful acknowledgement,
@@ -102,6 +106,39 @@ the existing publication models and executable failure-injection suites. The mod
 establish fairness, eventual repair of permanent I/O faults, or unbounded multi-transaction
 progress. Empty mutations use the separate no-op obligations. The JO properties above are
 required implementation tests, not yet executed owner tests.
+
+### Capture abort, cancellation and interrupted acknowledgement refinement
+
+The revised control explores 13,784 distinct states (334,852 generated) with all fifteen
+invariants satisfied. Fifteen causal mutants and eight reachability witnesses pass their
+designated checks. The additional mutants separately exercise acknowledgement-marker loss,
+stored-marker corruption, wrong incoming acknowledgement identity, duplicate acknowledgement,
+prepared-witness corruption, gate release on unwind and gate release on cancellation. Additional
+witnesses reach capture abort, cancellation, unwind and exact acknowledgement retry after
+unwind. Invalid acknowledgement inputs vary base, target, transaction and journal as well as
+store, profile, incarnation and epoch; these inputs do not broaden legitimate preparation.
+
+Acknowledgement and owner completion are separate actions. The first clears all journals,
+rebases and records an exact marker under one hot-state boundary. If completion is interrupted,
+recovery of the same successor can recognize that marker and finish without a second clear or
+publication. Capture abort has no disk effect and retains the journal. Cancellation preserves
+the owned permit and authority.
+
+This refinement still models one successful publication, not repeated checkpoint/reset/restore
+cycles. Repeated-epoch ABA protection therefore requires separate generated implementation
+histories. The model's expected sequence and frontiers are synthetic functions of its receipt:
+JO-12 checks preservation of that witness, not correctness of Rust layout construction. Rust
+must derive the witness from the same checked PREPARE/COMMIT/index plan as publication and test
+same-root but wrong sequence, transaction digest and frontiers independently. Cancellation assumes
+synchronous publication/recovery with no detached worker still writing after return; adding such
+a worker would require extending this model before implementation. No unbounded liveness or
+complete Rust refinement claim follows from this finite exploration.
+
+The completed command was `bash scripts/check-rspace-journal-owner-model.sh`; raw evidence is
+`/tmp/rspace-journal-owner-unwind-ack-matrix-r2-20260906.log`, SHA-256
+`b78b4d623a01642671ad90140f1d0a1632f90d231a23c2cef619efccc64705fe`.
+The existing runner enforces the resource bounds stated above and validates each named
+counterexample rather than treating an arbitrary failed invocation as evidence.
 
 The concrete implementation must preserve `DurableWriterLeaseV1` through physical recovery and
 semantic-admission errors. `DurableDirectoryV1::try_clone_reader` shares the opened directory

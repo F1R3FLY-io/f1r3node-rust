@@ -4078,6 +4078,37 @@ before implementation. Existing content-only acknowledgement does not establish
 hot-incarnation/ABA identity. J-057's full-library PathMap defect remains open.
 No backend activation, performance acceptance or campaign completion is inferred.
 
+### J-059 — 2026-09-06: interrupted owner acknowledgement, formal-first refinement
+
+**DERIVED REQUIREMENT.** A publication owner can unwind after the hot journal has
+been cleared but before owner completion. Empty journals alone cannot distinguish
+successful acknowledgement from an unrelated or stale request. The existing model
+therefore separates atomic hot acknowledgement from owner completion and retains an
+exact receipt/terminal marker across that interval. Capture abort, cancellation and
+unwind retain the appropriate journal, operation permit and writer authority.
+
+**MEASURED PROTOCOL CHECK.** The revised control checks fifteen invariants across
+13,784 distinct states (334,852 generated). Fifteen single-defect configurations
+produce their designated counterexamples, and eight reachability witnesses establish
+that the positive paths are reachable. Incoming wrong receipts are tested separately
+from corruption of a stored acknowledgement marker. Cancellation and unwind each
+have their own permit-release defect control. All 24 invocations completed through
+the existing bounded runner with a 2 GiB memory ceiling, zero swap, two workers and
+disk-backed state storage. These are configured limits, not measured peak RSS or
+performance results. The log is
+`/tmp/rspace-journal-owner-unwind-ack-matrix-r2-20260906.log`, SHA-256
+`b78b4d623a01642671ad90140f1d0a1632f90d231a23c2cef619efccc64705fe`.
+
+**DECISION AND LIMITS.** JO-12 through JO-15 in the generation-checkpoint invariant
+catalog extend the required Rust properties before owner activation. One modeled
+publication does not prove repeated checkpoint/reset/restore ABA safety. Synthetic
+terminal frontiers do not prove Rust computes a correct publication layout. Those
+remain explicit generated-history and exact-layout refinement obligations. The
+cancellation model assumes synchronous I/O and no detached writer. Astra's earlier
+review motivated these corrections; its follow-up was unavailable due to a usage
+limit, so no second independent approval is claimed. This checkpoint changes the
+model, controls and traceability only: the runtime owner and task 6626 remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
