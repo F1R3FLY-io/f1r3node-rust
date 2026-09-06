@@ -4603,6 +4603,121 @@ separate current/retained/metadata domains, retained-format compatibility and
 production successor construction remain open. No source runtime behavior,
 consensus encoding, persistence bytes, metering or backend selection changes here.
 
+### J-066 — 2026-09-06: retain exact cold-demand semantics in incremental admission
+
+**QUESTION AND EVIDENCE LEVEL.** Can task 7755 preserve the exact cold-verifier
+resource contract without enumerating unchanged current state or retained history
+on an ordinary commit? A bounded source review identifies candidate exact
+decompositions for the counters. It does not establish their formal soundness,
+implementation, or locality. No source evidence establishes impossibility, and
+no conservative-refusal policy, omitted check or full-scan hot-path fallback is
+selected. The next work remains exact refinement, not relaxing the contract.
+
+**EXISTING CONTRACT.**
+[`DurableAdmissionRequirementsV1`](../../../rspace++/src/rspace/persistence/durable/admission.rs)
+is explicitly an exact cold replay-demand certificate. Fresh-generation
+publication checks it before artifact cleanup. The admitted source also supplies
+the current distinct-object inventory to the checkpoint descriptor and owns a
+report-bearing semantic token. A trusted successor therefore cannot copy the
+predecessor's report, put zeros in uncomputed fields, or label delta counters as
+cold totals. Stable semantic validity, final inventory, transition diagnostics
+and the origin of cold observations need distinct evidence while preserving the
+existing exact checkpoint preflight contract.
+
+**CANDIDATE DECOMPOSITIONS.**
+
+| Quantity | Source-derived approach and proof obligation |
+|---|---|
+| Unique objects, object kinds and canonical bytes | Checked reachability membership transitions; count each digest once, including sharing. |
+| Structural references and structural reads | Track reachable digest/expectation pairs. Cold closure memoizes each namespace/root expectation separately; digest support alone undercounts repeated role expansion. |
+| Retained counts and replay aggregates | Preserve each retained state-entry contribution, even when entries share a manifest. Maintain exact per-state summary aggregates; eviction must remove a maximum-setting contribution rather than retain a stale maximum. |
+| Semantic nodes, endpoints, payload bytes and path length | Occurrence-weighted subtree folds. Semantic traversal visits shared nodes at each logical path, unlike distinct-object inventory. |
+| Semantic maximum worklist | Ordered subtree peak fold; this traversal has no visited-object memoization. Prove against its actual child order and worklist observations. |
+| Join lookups and read demand | Query multiplicity composed with the logical JoinBag topology, as detailed below. |
+| Structural maximum worklist | Context-dependent first-discovery accounting; a scalar subtree maximum is insufficient. |
+
+For successful V1 cold admission, let $`S`$ be the retained state entries including
+current, $`P_s`$ the reachable digest/expectation pairs for state $`s`$, $`N`$ the
+current semantic logical-node visits, $`C`$ the continuation endpoint occurrences,
+and $`J`$ the counted join-lookup steps. The candidate exact read decomposition is
+
+```math
+\mathrm{reads} = 1 + \sum_{s\in S}|P_s| + N + C + J.
+```
+
+The one is V1's retention-manifest load. Read bytes use the corresponding exact
+encoded lengths, not unique-object bytes. This follows the cold-admission sequence
+and bounded-store charge boundary in `durable/admission.rs`; unsuccessful reads,
+refusal prefixes and future metadata formats need their own refinement. V2
+metadata cannot inherit the single-read constant for its complete metadata DAG.
+
+**WEIGHTED JOIN-PREFIX INDEX.** Let $`Q(k)`$ count continuation endpoints that
+require exact join key $`k`$. Deduplicate channels within a continuation, while
+preserving multiplicity across continuations. Let $`M(p)`$ be the sum of query
+multiplicities whose keys begin with prefix $`p`$. For logical JoinBag node
+occurrence $`n`$, let $`e_n`$ be its entry prefix before its own compressed node
+prefix, and $`b_n`$ its encoded byte length. The candidate equations are
+
+```math
+J = \sum_n M(e_n), \qquad
+\mathrm{joinReadBytes} = \sum_n M(e_n)b_n.
+```
+
+The entry-prefix distinction is essential:
+[`lookup_endpoint_counted`](../../../rspace++/src/rspace/persistence/semantic.rs)
+charges and loads a node before checking its compressed prefix. A mismatch still
+incurs that read. The equation consequently includes missing queries in staged
+intermediate states, not only successful final lookups.
+
+Changed continuation records can update exact query weights; replaced/new JoinBag
+node occurrences can update the weighted sum through prefix-mass queries, stopping
+at inherited exact-path boundaries. Simultaneous query and shape changes require
+a proved composition order. Existing transient `required_joins: PathMap<()>`
+discards multiplicity, and `Bag::prefix_metrics` enumerates a prefix, so neither
+already supplies the required local-cost operation. A persistent, annotated
+PathMap-derived prefix-mass index is a candidate using existing machinery, not
+permission to introduce another storage framework or modify upstream PathMap.
+Its consistency, CoW update cost and exact inherited-boundary rule require proof.
+
+**CONTEXTUAL STRUCTURAL PEAK.**
+[`verify_structural_closure_in_ledger_with_limits`](../../../rspace++/src/rspace/persistence/closure.rs)
+suppresses a pair's expansion after its expectation is verified and measures
+pending `Enter` and `Exit` frames. Removing a direct reference to a shared subtree
+can move its first expansion beneath a later, deeper path while leaving that
+subtree reachable. Its context-free scalar peak cannot capture that change.
+
+One exact-first candidate is to characterize first occurrences in the fully
+unfolded deterministic depth-first order, then prove that memoization preserves
+them. For a first, successfully validated `Enter` at stack height $`L`$ with
+$`d`$ outgoing references, popping the enter and pushing its exit and children
+has peak $`L+d`$. Child $`i`$ in visitation order enters at $`L+d-i+1`$.
+Manifest expansion, content/child ordering, zero-child blobs, repeated verified
+expectations and exits must all be included in the model; the latter cases do not
+perform a new child expansion. These are proposed equations, not checked theorems.
+
+The current ledger does not maintain first-occurrence provenance. An edit may
+relocate the first occurrences of many unchanged descendants. A compressed
+summary with a proved locality bound remains an algorithmic obligation; the
+review neither proves it impossible nor authorizes replacing exact demand with
+an upper bound merely because that would be easier to implement.
+
+**FORMAL-FIRST NEXT STEPS.** Prove checked incoming-counter and weighted-inventory
+refinement, overflow/underflow refusal, pending-contribution conservation and
+failure-atomic private CoW trials. Separate temporary scratch budgets from final
+current/retained requirements; a valid final state exactly at its limit must not
+be refused merely because the permitted intermediate union is larger. Then prove
+the read/occurrence folds, query-prefix index and contextual structural peak before
+implementing their certificates. Reuse existing `DagTransactionLimits` mechanisms
+and add only genuinely missing transition accounting.
+
+Derived controls must cover role overlap, shared logical occurrences, duplicate
+channels versus duplicate continuation queries, compressed-prefix mismatch,
+JoinBag split/merge, first-discovery relocation, eviction of a maximum-setting
+state, exact/one-below budgets and failed-trial retry. Every refusal must preserve
+predecessor authority, inventories, pins and publication state. No benchmark or
+production change resulted from this review; J-065 remains the latest verified
+cursor-model implementation boundary.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
