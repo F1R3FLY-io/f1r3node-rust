@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-28 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-06 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -6147,7 +6147,7 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-074 and CBR-L24 bring the living appendix to 75. The re-scope also removed
+to B.1; subsequent classified findings through CBR-076 and CBR-L24 bring the living appendix to 77. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*
 
@@ -6163,3 +6163,22 @@ Evidence: commit `c8aeb790e`; bounded `cargo check -p rspace_plus_plus` passed w
 `concurrent_rspace_architecture_repro_tests` passed 4/4 under a 3 GiB memory cap, zero swap, and 128 tasks.
 The lossless semantic before/after write-set and durable publication protocol remain open obligations and
 must not be inferred from this coordination change.
+
+### CBR-076 — exact post-publication journal acknowledgement (2026-09-06)
+
+The hot-store boundary now accepts an exact, all-namespace journal snapshot after a durable publication
+has succeeded. `HotStore::commit_pending_deltas` compares the data, continuation multiplicity, canonical
+continuation-content, continuation-source-byte, and join PathMap journals while holding the state write
+boundary. It clears only those revision journals; resident PathMap values, installed records, and
+candidate state remain in place. Incomplete or stale snapshots return the typed `JournalConflict` error,
+and the implementation preflights every namespace before clearing any one of them, so a conflict cannot
+leave a partially acknowledged revision. The focused tests cover both successful metadata-only commit
+and stale-snapshot preservation.
+
+Evidence: commit `337c4b7b9`; bounded `cargo check -p rspace_plus_plus --lib` passed, and the bounded
+`journal_commit_tests` gate passed 2/2 with zero swap. This is an internal persistence/atomicity
+boundary refinement: it does not alter PathMap contents, canonical RhoPath/RPB3 bytes, protobuf/bincode
+bytes, legacy history roots, state hashes, matching, COMM order, accepted programs, or compute/storage
+charges. The durable DAG remains dormant for production callers; the owning durable authority and its
+legacy compatibility adapter are still required before activation. Accordingly this is
+`NO_PRODUCTION_CHANGE_DERIVED`, not permission to activate the new persistence identity.
