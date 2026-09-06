@@ -84,6 +84,7 @@ and reused by every verified area:
 | Replay cache | proptest invariants in `replay_cache.rs` | Entry/byte caps, accounting-equals-live-sum, admission contract, LRU order |
 | Recovery leader | [`formal/tlaplus/recovery_leader/`](../formal/tlaplus/recovery_leader) | Cross-view leader agreement for one bonded validator set |
 | Replay liveness | [`formal/tlaplus/replay_liveness/`](../formal/tlaplus/replay_liveness) | Linear work for the persistent-contract empty-store replay path |
+| Carrier index | [`formal/tlaplus/carrier_index/`](../formal/tlaplus/carrier_index) | Index-first publication, absence soundness, read-failure refusal, and pruning safety |
 | Promotion convergence | [`formal/tlaplus/fork_choice/PromotionConvergence.tla`](../formal/tlaplus/fork_choice/PromotionConvergence.tla) | Novel-signature gating and eventual GHOST restoration |
 
 ## Worked example: byte-bounded block admission

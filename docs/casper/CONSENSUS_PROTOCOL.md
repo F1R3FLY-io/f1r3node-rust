@@ -290,6 +290,24 @@ The merge scope is bounded by the finalized floor of the block. The floor is a p
 - **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On propose the round parks and retries after finality advances. On validate an over-Δ block is deterministically invalid. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug).
 - The visible-scope size (`MAX_PARENT_MERGE_SCOPE_BLOCKS` = 512) is an advisory metric only. Branch width is not node-deterministic, so scope size never gates admission.
 
+### Validation progress evidence
+
+Validation work can delay finality because a remote validator cannot support a block before replay and validation finish.
+
+Each optimization must state an operation bound and compare its output with the unchanged reference path.
+
+Carrier-index telemetry must distinguish gate engagement, absence, hit, read failure, fallback, and ancestor reads.
+
+Merge telemetry must separate scope, relation, conflict, rejection, and state-application work.
+
+Replay telemetry must separate runtime creation, user deploys, system deploys, checkpoint, and reset work.
+
+These measurements are node-local evidence. They never control a consensus decision.
+
+Issue #24 acceptance uses identical generated fixtures with the carrier path forced on and forced off. Both modes must return identical verdicts.
+
+The soak gate uses the repository workload and finalization limit. A runner failure is separate from each earlier product-test failure.
+
 ### System Deploys
 
 System deploys (`SlashDeploy`, `CloseBlockDeploy`) are deterministic and non-conflicting. They are not subject to conflict resolution.
