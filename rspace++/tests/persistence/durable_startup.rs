@@ -4,23 +4,25 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use proptest::prelude::*;
 use shared::rust::test_scratch;
 
 use super::durable_recovery::{
     catalog_image, limits, malformed_checkpoint_image, valid_checkpoint_image, valid_two_pack_image,
 };
-use super::support::TestSemanticProfile;
+use super::support::{TestSemanticProfile, trial_scratch};
 use crate::rspace::persistence::durable::{
     DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError,
-    DurableIoFailpointV1, DurableStartupErrorV1, DurableStartupHookPointV1,
-    IndexBindingDispositionV1, arm_durable_io_failpoint, arm_durable_startup_hook,
-    committed_index_constructions, index_file_name, pack_file_name, recover_physical_with_lease_v1,
-    recover_read_authority, reset_committed_index_constructions,
+    DurableIoFailpointV1, DurableStartupErrorV1, DurableStartupHookPointV1, DurableWriterLeaseV1,
+    IndexBindingDispositionV1, admit_physical_source, arm_durable_io_failpoint,
+    arm_durable_startup_hook, committed_index_constructions, index_file_name, pack_file_name,
+    recover_physical_from_lease_v1, recover_physical_with_lease_v1, recover_read_authority,
+    reset_committed_index_constructions,
 };
 use crate::rspace::persistence::{
-    CATALOG_IMAGE_LEN, CatalogAuthorityTokenV1, DurableLimitConfig, DurableLimitKind,
-    DurableLimits, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexGenerationV1,
-    LogPackDecodeLimits, ObjectIndexHeaderV1, PackId,
+    CATALOG_IMAGE_LEN, CanonicalFormatError, CatalogAuthorityTokenV1, DurableLimitConfig,
+    DurableLimitKind, DurableLimits, GenerationLeaseKeyV1, INDEX_HEADER_LEN_V1,
+    INDEX_RECORD_LEN_V1, IndexGenerationV1, LogPackDecodeLimits, ObjectIndexHeaderV1, PackId,
 };
 
 fn write_owner_only(path: &Path, bytes: &[u8]) {
@@ -137,6 +139,166 @@ fn restart_grade_recovery_consumes_an_existing_writer_lease_without_reacquiring_
 
     let reopened = recover(scratch.path(), limits());
     assert_eq!(reopened.recovered().state(), image.catalog.state());
+}
+
+#[track_caller]
+fn assert_writer_and_generation_are_held(
+    lease: &DurableWriterLeaseV1,
+    generation: GenerationLeaseKeyV1,
+) {
+    let reader = lease.directory().try_clone_reader().unwrap();
+    assert!(reader.generation_leases().has_active(generation).unwrap());
+    assert!(matches!(reader.try_acquire_writer(), Err(DurableIoError::WriterLockContended { .. })));
+}
+
+#[test]
+fn borrowed_recovery_retains_writer_and_pin_across_every_rebuild_failure() {
+    for failpoint in [
+        DurableIoFailpointV1::CandidateWrite,
+        DurableIoFailpointV1::CandidateSetLength,
+        DurableIoFailpointV1::CandidateSync,
+        DurableIoFailpointV1::BeforeReplace,
+        DurableIoFailpointV1::AfterReplaceBeforeDirectorySync,
+        DurableIoFailpointV1::DirectorySync,
+    ] {
+        let scratch = test_scratch::acquire("rspace-borrowed-recovery-failure-");
+        let image = install_checkpoint_store(scratch.path());
+        let mut lease = DurableDirectoryV1::open(scratch.path())
+            .unwrap()
+            .try_acquire_writer()
+            .unwrap();
+        let generation = GenerationLeaseKeyV1::from_catalog(image.catalog);
+        let registry = lease.generation_leases();
+        let pin = registry.acquire(generation).unwrap();
+
+        arm_durable_io_failpoint(failpoint);
+        let result =
+            recover_physical_from_lease_v1(&mut lease, limits(), LogPackDecodeLimits::UNBOUNDED);
+        assert!(matches!(result, Err(DurableStartupErrorV1::Io(DurableIoError::Io { .. }))));
+        assert_writer_and_generation_are_held(&lease, generation);
+
+        let recovered =
+            recover_physical_from_lease_v1(&mut lease, limits(), LogPackDecodeLimits::UNBOUNDED)
+                .unwrap();
+        assert_eq!(recovered.state(), image.catalog.state());
+        assert_eq!(recovered.terminal_address(), image.commit_address);
+        assert_writer_and_generation_are_held(&lease, generation);
+        let reader = lease.directory().try_clone_reader().unwrap();
+        drop(pin);
+        assert!(!reader.generation_leases().has_active(generation).unwrap());
+        drop(recovered);
+        drop(lease);
+        drop(
+            reader
+                .try_acquire_writer()
+                .expect("the observer must detect owner release"),
+        );
+    }
+}
+
+#[test]
+fn borrowed_recovery_unwind_keeps_the_owners_writer_and_generation_pin() {
+    let scratch = test_scratch::acquire("rspace-borrowed-recovery-unwind-");
+    let image = install_checkpoint_store(scratch.path());
+    let mut lease = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .try_acquire_writer()
+        .unwrap();
+    let generation = GenerationLeaseKeyV1::from_catalog(image.catalog);
+    let _pin = lease.generation_leases().acquire(generation).unwrap();
+    arm_durable_startup_hook(DurableStartupHookPointV1::BeforeFirstCatalogVerification, || {
+        panic!("injected borrowed recovery unwind")
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        recover_physical_from_lease_v1(&mut lease, limits(), LogPackDecodeLimits::UNBOUNDED)
+    }));
+    assert!(result.is_err());
+    assert_writer_and_generation_are_held(&lease, generation);
+    let recovered =
+        recover_physical_from_lease_v1(&mut lease, limits(), LogPackDecodeLimits::UNBOUNDED)
+            .unwrap();
+    assert_eq!(recovered.state(), image.catalog.state());
+}
+
+#[test]
+fn borrowed_admission_does_not_release_authority_on_a_semantic_error() {
+    let scratch = test_scratch::acquire("rspace-borrowed-admission-invalid-");
+    let image = malformed_checkpoint_image();
+    write_owner_only(&scratch.path().join("catalog.v1"), &catalog_image(image.catalog));
+    write_owner_only(&scratch.path().join(pack_file_name(PackId::GENESIS)), &image.pack);
+    let mut lease = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .try_acquire_writer()
+        .unwrap();
+    let generation = GenerationLeaseKeyV1::from_catalog(image.catalog);
+    let _pin = lease.generation_leases().acquire(generation).unwrap();
+
+    for _ in 0..2 {
+        let recovered =
+            recover_physical_from_lease_v1(&mut lease, limits(), LogPackDecodeLimits::UNBOUNDED)
+                .unwrap();
+        let result = admit_physical_source::<TestSemanticProfile>(
+            &lease,
+            recovered,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        );
+        assert!(matches!(result, Err(DurableAdmissionErrorV1::Closure(_))));
+        assert_writer_and_generation_are_held(&lease, generation);
+    }
+}
+
+proptest! {
+    #[test]
+    fn borrowed_recovery_and_admission_retry_histories_keep_exact_authority(
+        physical_failures in proptest::collection::vec(any::<bool>(), 1..9),
+    ) {
+        let scratch = trial_scratch("borrowed-admission-history-");
+        let image = install_checkpoint_store(scratch.path());
+        write_owner_only(
+            &scratch.path().join(index_file_name(IndexGenerationV1::FIRST)),
+            &image.canonical_index,
+        );
+        let mut lease = DurableDirectoryV1::open(scratch.path())
+            .unwrap().try_acquire_writer().unwrap();
+        let generation = GenerationLeaseKeyV1::from_catalog(image.catalog);
+        let _pin = lease.generation_leases().acquire(generation).unwrap();
+        for physical_failure in physical_failures {
+            if physical_failure {
+                let result = recover_physical_from_lease_v1(
+                    &mut lease, limits(), LogPackDecodeLimits {
+                        max_record_bytes: 0,
+                        ..LogPackDecodeLimits::UNBOUNDED
+                    },
+                );
+                prop_assert!(result.is_err());
+            } else {
+                let recovered = recover_physical_from_lease_v1(
+                    &mut lease, limits(), LogPackDecodeLimits::UNBOUNDED,
+                ).unwrap();
+                let result = admit_physical_source::<TestSemanticProfile>(
+                    &lease, recovered, DurableAdmissionLimitsV1 {
+                        max_retained_states: 0,
+                        ..DurableAdmissionLimitsV1::UNBOUNDED
+                    },
+                );
+                assert!(matches!(result, Err(DurableAdmissionErrorV1::Canonical(
+                    CanonicalFormatError::ResourceLimit { resource: "retained states", .. }
+                ))));
+            }
+            assert_writer_and_generation_are_held(&lease, generation);
+        }
+        let recovered = recover_physical_from_lease_v1(
+            &mut lease, limits(), LogPackDecodeLimits::UNBOUNDED,
+        ).unwrap();
+        let source = admit_physical_source::<TestSemanticProfile>(
+            &lease, recovered, DurableAdmissionLimitsV1::UNBOUNDED,
+        ).unwrap();
+        prop_assert_eq!(source.authority().slot(), image.catalog);
+        prop_assert_eq!(source.report().retained_states, 1);
+        assert_writer_and_generation_are_held(&lease, generation);
+        prop_assert_eq!(fs::read(scratch.path().join("catalog.v1")).unwrap(), catalog_image(image.catalog));
+        prop_assert_eq!(fs::read(scratch.path().join(pack_file_name(PackId::GENESIS))).unwrap(), image.pack.as_ref());
+    }
 }
 
 #[test]

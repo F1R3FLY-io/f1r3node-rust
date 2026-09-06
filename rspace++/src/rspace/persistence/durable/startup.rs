@@ -274,6 +274,15 @@ pub(crate) fn recover_physical_with_lease_v1(
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
 ) -> Result<PhysicallyRecoveredDurableWriterV1, DurableStartupErrorV1> {
+    let recovered = recover_physical_from_lease_v1(&mut lease, limits, wal_limits)?;
+    Ok(PhysicallyRecoveredDurableWriterV1 { lease, recovered })
+}
+
+pub(crate) fn recover_physical_from_lease_v1(
+    lease: &mut DurableWriterLeaseV1,
+    limits: DurableLimits,
+    wal_limits: LogPackDecodeLimits,
+) -> Result<IndexBoundPhysicalRecoveryV1, DurableStartupErrorV1> {
     if let Some(candidate) = lease.read_reclamation_candidate()? {
         let authority = read_catalog_token(lease.directory())?;
         if candidate.successor() != GenerationLeaseKeyV1::from_catalog(authority.slot()) {
@@ -284,8 +293,7 @@ pub(crate) fn recover_physical_with_lease_v1(
         }
     }
     let reader = lease.directory().try_clone_reader()?;
-    let recovered = recover_index_bound_v1(&reader, &mut lease, limits, wal_limits)?;
-    Ok(PhysicallyRecoveredDurableWriterV1 { lease, recovered })
+    recover_index_bound_v1(&reader, lease, limits, wal_limits)
 }
 
 struct DirectoryPackProviderV1<'directory>(&'directory DurableDirectoryV1);

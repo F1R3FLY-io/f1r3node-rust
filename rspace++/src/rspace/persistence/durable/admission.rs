@@ -17,7 +17,7 @@ use super::CommittedObjectIndexV1;
 use super::io::{DurableDirectoryV1, DurableFileV1, DurableIoError, DurableWriterLeaseV1};
 use super::startup::{
     DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
-    PhysicallyRecoveredDurableWriterV1, read_catalog_token,
+    IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1, read_catalog_token,
 };
 use crate::rspace::persistence::canonical::{
     CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1, checked_len,
@@ -1352,6 +1352,15 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
     limits: DurableAdmissionLimitsV1,
 ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, DurableAdmissionErrorV1> {
     let (lease, recovered) = physical.into_admission_parts();
+    let source = admit_physical_source::<P>(&lease, recovered, limits)?;
+    Ok(SemanticallyAdmittedDurableWriterV1 { lease, source })
+}
+
+pub(crate) fn admit_physical_source<P: SemanticProfile>(
+    lease: &DurableWriterLeaseV1,
+    recovered: IndexBoundPhysicalRecoveryV1,
+    limits: DurableAdmissionLimitsV1,
+) -> Result<AdmittedCheckpointSourceV1<P>, DurableAdmissionErrorV1> {
     let (authority, index, terminal_commit, startup_disposition, startup_work) =
         recovered.into_admission_parts();
     let catalog = authority.slot();
@@ -1512,19 +1521,16 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
         object_read_bytes: report.object_read_bytes,
     };
     drop(bounded);
-    Ok(SemanticallyAdmittedDurableWriterV1 {
-        lease,
-        source: AdmittedCheckpointSourceV1 {
-            store,
-            authority,
-            version: catalog.state(),
-            retention_manifest_bytes,
-            semantic,
-            retained_closure: ledger,
-            report,
-            admission_requirements,
-            profile: PhantomData,
-        },
+    Ok(AdmittedCheckpointSourceV1 {
+        store,
+        authority,
+        version: catalog.state(),
+        retention_manifest_bytes,
+        semantic,
+        retained_closure: ledger,
+        report,
+        admission_requirements,
+        profile: PhantomData,
     })
 }
 

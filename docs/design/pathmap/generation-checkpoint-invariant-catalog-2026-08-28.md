@@ -110,6 +110,38 @@ source admission, or return failures carrying the original lease. Retain the adm
 when its new generation lease is unavailable. The owner must construct mutations from its
 private observation and retain the sealed intent through reconciliation and acknowledgement.
 
+### Borrowed recovery and admission refinement (2026-09-06)
+
+The first executable JO-03 refinement factors the existing validation bodies into
+`recover_physical_from_lease_v1(&mut DurableWriterLeaseV1, ...)` and
+`admit_physical_source(&DurableWriterLeaseV1, ...)`. The caller retains the writer capability
+on both success and failure; neither kernel reopens a pathname or constructs a generation
+registry. Existing consuming startup wrappers delegate to these bodies and retain their old
+startup API. The checkpoint owner must use the borrowed kernels, not those consuming wrappers.
+
+The following tests in `tests/persistence/durable_startup.rs` were written before the refactor:
+
+| Test | JO-03 refinement exercised |
+|---|---|
+| `borrowed_recovery_retains_writer_and_pin_across_every_rebuild_failure` | Six existing rebuild failpoints; lock contention and the original generation pin remain observable after each failure and retry. Explicit owner release is the observer's positive control. |
+| `borrowed_recovery_unwind_keeps_the_owners_writer_and_generation_pin` | An injected recovery panic unwinds only the borrowed operation; the test retains the owning scope, verifies exclusion, and retries successfully. |
+| `borrowed_admission_does_not_release_authority_on_a_semantic_error` | A physically valid but semantically invalid fixture is repeatedly rejected without dropping the owner. |
+| `borrowed_recovery_and_admission_retry_histories_keep_exact_authority` | Generated physical-limit/admission-limit failure sequences followed by successful admission, preserving the exact catalog and pack bytes. |
+
+The focused debug suite passes 17/17. The broader release durable-persistence suite passes
+70/70 with 256 property cases configured. Its first run passed 68/70: two existing high-volume
+publication tests exhausted the inherited 1,024-descriptor limit because every trial used a
+process-lifetime scratch lock. Only those test fixtures and the new generated retry fixture now
+use scoped child directories under one protected process root. The shared helper, descriptor
+limit and test coverage are unchanged. A separate 1,100-case lifetime regression passes.
+All heavy checks used an 8 GiB systemd memory cap with swap disabled; the corrected release
+run used on-disk scratch. No new dependency was introduced.
+
+These tests do not yet establish complete JO-03 owner integration, successor-pin handoff,
+asynchronous cancellation or all JO-01..JO-11 properties. In particular, retaining a lease in
+an outer test scope through panic is not proof that the unfinished owner remains recoverable
+after every panic. Publication outcome classification and journal acknowledgement remain open.
+
 ## Vocabulary and notation
 
 - **Canonical object reference**: a pair `$(h, n)$`, where `$h$` is the canonical-object digest and `$n$` is its declared canonical byte length.

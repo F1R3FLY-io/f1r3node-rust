@@ -12908,3 +12908,14 @@ with a 2 GiB cap for Rocq and an 8 GiB cap for Rust, and zero allowed swap. Thes
 ceilings, not measured peak RSS. This adds correctness evidence, without a speedup or memory-slope
 claim. The [invariant catalog](../pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#hot-store-journal-refinement-2026-09-06)
 records the proof boundary and remaining owner/publication composition obligations.
+
+Borrowed-authority refinement, 2026-09-06: the existing physical recovery and semantic
+admission bodies now accept a retained writer lease by reference. Focused debug tests pass
+17/17 and the broader release durable suite passes 70/70. The initial broader run passed
+68/70 and hit the 1,024-descriptor soft limit in case-local fixtures using process-lifetime
+scratch locks. Scoped test directories remove that accumulation; the unchanged coverage and
+a separate 1,100-case lifetime test pass without raising the limit. These checks used an
+8 GiB systemd memory cap and no swap, with corrected release scratch on disk. They are
+correctness/resource-lifetime evidence, not a new stack-depth, RSS-slope, allocation or timing
+measurement. The [JO-03 refinement](../pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#borrowed-recovery-and-admission-refinement-2026-09-06)
+distinguishes executed primitive properties from the unfinished checkpoint-owner integration.

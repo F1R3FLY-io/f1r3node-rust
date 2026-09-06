@@ -16,7 +16,7 @@ use super::durable_recovery::{
     CheckpointPackImage, catalog_image, checkpoint_image_from_source, limits,
     valid_checkpoint_image,
 };
-use super::support::TestSemanticProfile;
+use super::support::{TestSemanticProfile, trial_scratch};
 use super::transaction_sealing::data_batch;
 use crate::rspace::persistence::checkpoint::{
     CheckpointObjectInventoryV1, GenerationCheckpointDescriptorV1, OrderedObjectInventoryBuilderV1,
@@ -1682,7 +1682,7 @@ fn publication_outcomes_are_total_and_mutually_exclusive() {
 #[test]
 fn every_injected_torn_catalog_prefix_recovers_only_old_or_exact_new_authority() {
     for prefix_len in 0..crate::rspace::persistence::CATALOG_SLOT_LEN {
-        let scratch = test_scratch::acquire("rspace-durable-publication-catalog-prefix-");
+        let scratch = trial_scratch("catalog-prefix-");
         install_checkpoint_store(scratch.path());
         let writer = admit(scratch.path());
         let old_authority = writer.authority().slot();
@@ -1721,8 +1721,8 @@ proptest! {
         pack_orphan_len in 1_usize..4096,
         index_orphan_len in 1_usize..4096,
     ) {
-        let left = test_scratch::acquire("rspace-durable-publication-physical-left-");
-        let right = test_scratch::acquire("rspace-durable-publication-physical-right-");
+        let left = trial_scratch("physical-left-");
+        let right = trial_scratch("physical-right-");
         install_checkpoint_store(left.path());
         install_checkpoint_store(right.path());
         let left_writer = admit(left.path());

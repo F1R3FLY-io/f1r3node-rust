@@ -6195,3 +6195,14 @@ nor canonical key encoding, legacy checkpoint roots, matching, charges, or backe
 Owner/recovery/gate composition remains required. See
 [J-053](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-053--2026-09-06-exact-journals-must-address-the-resident-trie-and-record-actual-changes)
 for the failing baseline and refinement limits.
+
+Ownership prerequisite, 2026-09-06: physical recovery and semantic admission now expose
+lease-borrowing kernels that retain the caller's existing writer and generation registry on
+error. Existing startup wrappers execute the same validation bodies; no canonical object,
+WAL, catalog, RhoPath, protobuf/bincode, state-root, matching or charging rule changes. Focused
+debug tests pass 17/17 and the wider release durable suite passes 70/70. A test-only scratch
+lifetime repair enabled the unchanged broad coverage to run within the original descriptor
+limit; it does not alter production storage. The durable owner still requires publication and
+acknowledgement integration before activation. This remains `NO_PRODUCTION_CHANGE_DERIVED`
+with respect to consensus behavior; it is not evidence of completed owner/cutover semantics.
+See [J-054](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-054--2026-09-06-recovery-must-borrow-the-retained-writer-capability).

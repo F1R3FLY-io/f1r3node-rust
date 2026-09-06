@@ -27,8 +27,6 @@ mod recovery;
 mod rspace_authority;
 mod startup;
 
-#[cfg(test)]
-pub(crate) use admission::copy_verified_canonical_with_scratch;
 pub(crate) use admission::{
     AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
     DurableAdmissionLimitKindV1, DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1,
@@ -36,10 +34,8 @@ pub(crate) use admission::{
     DurableObjectReadErrorV1, DurableTransactionPreparationError, InventoryMismatchKindV1,
     SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
 };
-pub(crate) use rspace_authority::{
-    DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1,
-    DurableRSpaceTransactionError,
-};
+#[cfg(test)]
+pub(crate) use admission::{admit_physical_source, copy_verified_canonical_with_scratch};
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
     CatalogSelectionV1, CatalogSlotV1,
@@ -84,11 +80,14 @@ pub(crate) use recovery::{
     replay_catalog_authorized_pack_chain, scan_catalog_authorized_pack_chain,
     stage_catalog_verified_data_in_source_order,
 };
+pub(crate) use rspace_authority::{
+    DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError,
+};
 #[cfg(test)]
 pub(crate) use startup::{
     DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
     IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1,
-    recover_physical_with_lease_v1,
+    recover_physical_from_lease_v1, recover_physical_with_lease_v1,
 };
 #[cfg(test)]
 pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};

@@ -3783,6 +3783,40 @@ records the model boundary and executable mapping.
 continuous leases, and the RSpace operation-gate composition remain required. The journal task
 has returned from `claimed_done` to `in_progress`; these passes do not authorize production cutover.
 
+### J-054 — 2026-09-06: recovery must borrow the retained writer capability
+
+**QUESTION.** Can recovery and semantic admission fail without destroying the checkpoint
+owner's only writer lease or detaching it from its generation registry?
+
+**DESIGN AND METHOD.** Reuse the verified owner composition's continuous-authority invariant
+(JO-03). Write executable properties first, then factor the existing validation bodies into
+lease-borrowing recovery and source-admission functions. This preserves one validation path:
+startup still has consuming convenience wrappers, while the checkpoint owner can retain its
+capabilities through failure, retry and unwinding. No new registry, error framework, file
+format, upstream PathMap change or production dependency is required.
+
+**RESULT.** The focused debug startup suite passes 17/17. Tests cover all six existing rebuild
+failure points, semantic rejection, an injected panic and generated physical/admission-limit
+retry histories. Lock observers verify both exclusion while the owner is alive and successful
+acquisition after it is explicitly released; the same generation registry observes pin release.
+The broader release durable suite passes 70/70 with 256 property cases configured.
+
+**EXPERIMENTAL CORRECTION.** The initial broader release run passed 68/70 and exhausted the
+1,024-descriptor soft limit in two existing publication properties. `test_scratch::acquire`
+intentionally retains one lock descriptor until process exit; case-local tests had used it once
+per trial. Scoped child directories now share one protected process root. The complete failing
+coverage was rerun without raising the limit or reducing cases. A separate 1,100-case cleanup
+regression passes. This is a test-fixture lifetime correction, not a change to production
+durability or the shared scratch helper.
+
+**BOUNDARIES.** Checks ran under an 8 GiB systemd memory cap with swap disabled; corrected
+release fixtures used on-disk scratch. These are resource ceilings, not RSS measurements or
+performance comparisons. The new kernels are prerequisites: the owner still must use them
+through publication uncertainty, exact receipt reconciliation and journal acknowledgement.
+No end-to-end cutover, consensus, stack-slope or persistence-speedup claim follows. The
+[invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#borrowed-recovery-and-admission-refinement-2026-09-06)
+maps the executed primitive checks separately from outstanding owner obligations.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -14,6 +14,45 @@ pub(super) const TEST_SEMANTIC_PROFILE_ID: SemanticProfileId =
 
 pub(super) struct TestSemanticProfile;
 
+pub(super) struct PersistenceTrialDir(std::path::PathBuf);
+
+impl PersistenceTrialDir {
+    pub(super) fn path(&self) -> &std::path::Path { &self.0 }
+}
+
+impl Drop for PersistenceTrialDir {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            if !std::thread::panicking() {
+                panic!("cannot remove persistence trial {}: {error}", self.0.display());
+            }
+        }
+    }
+}
+
+pub(super) fn trial_scratch(prefix: &str) -> PersistenceTrialDir {
+    static ROOT: std::sync::OnceLock<shared::rust::test_scratch::ProcessScratchDir> =
+        std::sync::OnceLock::new();
+    let root =
+        ROOT.get_or_init(|| shared::rust::test_scratch::acquire("rspace-persistence-trials-"));
+    let path = root
+        .path()
+        .join(format!("{prefix}{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&path).expect("create isolated persistence trial");
+    PersistenceTrialDir(path)
+}
+
+#[test]
+fn trial_scratch_does_not_accumulate_case_directories_or_process_locks() {
+    for _ in 0..1100 {
+        let trial = trial_scratch("lifecycle-");
+        let path = trial.path().to_path_buf();
+        std::fs::write(path.join("case"), b"trial-local").unwrap();
+        drop(trial);
+        assert!(!path.exists());
+    }
+}
+
 impl semantic_profile_seal::Sealed for TestSemanticProfile {}
 
 impl SemanticProfile for TestSemanticProfile {
