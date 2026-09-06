@@ -107,6 +107,57 @@ pub(crate) fn mutation_batch_from_pending(
     Ok(batch)
 }
 
+/// Build a mutation batch from exact resident endpoint-count lookups. This is
+/// the production adapter for the PathMap-backed hot store: it reads only the
+/// endpoints named by the journal and never reconstructs a global Bag.
+pub(crate) fn mutation_batch_from_pending_with_counts(
+    base: StateVersionV1,
+    pending: &PendingDeltas,
+    mut data_count: impl FnMut(&[u8]) -> u64,
+    mut join_count: impl FnMut(&[u8]) -> u64,
+) -> Result<RSpaceMutationBatchV1, MutationError> {
+    let data = pending.data.as_ref().ok_or(MutationError::EmptyBatch)?;
+    let continuations = pending
+        .continuation_content
+        .as_ref()
+        .ok_or(MutationError::EmptyBatch)?;
+    let joins = pending.joins.as_ref().ok_or(MutationError::EmptyBatch)?;
+    let mut batch = RSpaceMutationBatchV1::new(base)?;
+    for (path, amount) in data.additions().iter() {
+        let after = data_count(&path);
+        let before = after
+            .checked_sub(amount.get())
+            .ok_or(MutationError::DeltaCountUnderflow)?;
+        batch.record_data(&path, before, after)?;
+    }
+    for (path, amount) in data.removals().iter() {
+        let after = data_count(&path);
+        let before = after
+            .checked_add(amount.get())
+            .ok_or(MutationError::DeltaCountOverflow)?;
+        batch.record_data(&path, before, after)?;
+    }
+    batch.record_continuation_transitions(continuations)?;
+    for (path, amount) in joins.additions().iter() {
+        let after = join_count(&path);
+        let before = after
+            .checked_sub(amount.get())
+            .ok_or(MutationError::DeltaCountUnderflow)?;
+        batch.record_join(&path, before, after)?;
+    }
+    for (path, amount) in joins.removals().iter() {
+        let after = join_count(&path);
+        let before = after
+            .checked_add(amount.get())
+            .ok_or(MutationError::DeltaCountOverflow)?;
+        batch.record_join(&path, before, after)?;
+    }
+    if batch.is_empty() {
+        return Err(MutationError::EmptyBatch);
+    }
+    Ok(batch)
+}
+
 /// Stage the exact continuation sources retained by one coherent journal
 /// snapshot. Missing journal capabilities are rejected rather than treated as
 /// empty, and source bytes flow directly to transaction admission.
@@ -154,9 +205,15 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     /// hot-store revision was created. `None` means this implementation does
     /// not expose a journal; it must never be interpreted as an empty journal.
     fn pending_data_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
+    /// Return the exact resident DATA multiplicity for one canonical path.
+    /// The lookup is against the authoritative PathMap and does not decode or
+    /// materialize a channel projection.
+    fn data_count_at_path(&self, path: &[u8]) -> Result<u64, RSpaceError>;
     /// Return normalized resting-join path changes, or `None` when the
     /// implementation has no join-journal capability.
     fn pending_join_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
+    /// Return the exact resident JOIN multiplicity for one canonical path.
+    fn join_count_at_path(&self, path: &[u8]) -> Result<u64, RSpaceError>;
     /// Return normalized continuation-record path changes, or `None` when the
     /// implementation has no continuation journal capability.
     fn pending_continuation_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
@@ -899,6 +956,15 @@ where
         ))
     }
 
+    fn data_count_at_path(&self, path: &[u8]) -> Result<u64, RSpaceError> {
+        Ok(self
+            .state
+            .read()
+            .expect("hot store state read lock")
+            .data
+            .count_path(path))
+    }
+
     fn pending_join_delta(&self) -> Result<Option<BagDelta>, RSpaceError> {
         Ok(Some(
             self.state
@@ -908,6 +974,15 @@ where
                 .pending_delta()
                 .clone(),
         ))
+    }
+
+    fn join_count_at_path(&self, path: &[u8]) -> Result<u64, RSpaceError> {
+        Ok(self
+            .state
+            .read()
+            .expect("hot store state read lock")
+            .joins
+            .count_path(path))
     }
 
     fn pending_continuation_delta(&self) -> Result<Option<BagDelta>, RSpaceError> {

@@ -1974,6 +1974,8 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
 
     pub fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
 
+    pub(crate) fn count_path(&self, path: &[u8]) -> u64 { self.index.count_path(path) }
+
     pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
 
     pub fn is_loaded(&self, channel: &C) -> bool

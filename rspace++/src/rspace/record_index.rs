@@ -829,6 +829,8 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         (record.prefix_len == prefix.len() && path.starts_with(prefix)).then(|| Arc::clone(record))
     }
 
+    fn contains_path(&self, path: &[u8]) -> bool { self.records.contains(path) }
+
     fn get_identity_path(&self, prefix: &[u8], path: &[u8]) -> Option<Arc<StoredRecord<R>>> {
         let record = self.identities.get(path)?;
         (record.prefix_len == prefix.len() && path.starts_with(prefix)).then(|| Arc::clone(record))
@@ -1480,6 +1482,13 @@ where C: Clone + RhoPathEncode + Send + Sync
 
     pub(crate) fn is_loaded(&self, channel: &C) -> bool {
         self.resting.is_loaded(&RhoPathV1::join_prefix(channel))
+    }
+
+    /// Native endpoint lookup for the semantic JoinBag path. Join endpoints
+    /// are unit occurrences in the resident index; multiplicity deltas record
+    /// each successful endpoint insertion/removal separately.
+    pub(crate) fn count_path(&self, path: &[u8]) -> u64 {
+        u64::from(self.resting.contains_path(path))
     }
 
     pub(crate) fn set_channel(&mut self, channel: C, joins: Vec<Vec<C>>) {
