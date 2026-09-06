@@ -93,6 +93,10 @@ pub(super) fn fixture() -> SyntheticCheckpointSource {
     fixture_with_root(encoded(&CanonicalDagNode::empty()))
 }
 
+pub(super) fn fixture_for_profile(profile: SemanticProfileId) -> SyntheticCheckpointSource {
+    fixture_with_root_and_profile(encoded(&CanonicalDagNode::empty()), profile)
+}
+
 /// A checkpoint whose current state exercises every positive semantic-
 /// admission resource axis used by generation-publication preflight.
 pub(super) fn semantic_fixture() -> SyntheticCheckpointSource {
@@ -454,12 +458,19 @@ pub(super) fn fixture_with_retained_union_cardinality(
 }
 
 fn fixture_with_root(root: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource {
+    fixture_with_root_and_profile(root, PROFILE)
+}
+
+fn fixture_with_root_and_profile(
+    root: (ObjectRefV1, Vec<u8>),
+    profile: SemanticProfileId,
+) -> SyntheticCheckpointSource {
     let roots = SemanticRoots {
         data_bag: root.0,
         continuation_map: root.0,
         join_bag: root.0,
     };
-    let state_manifest = encoded(&SemanticStateManifestV1::new(1, PROFILE, roots, None).unwrap());
+    let state_manifest = encoded(&SemanticStateManifestV1::new(1, profile, roots, None).unwrap());
     let state = StateVersionV1::new(7, state_manifest.0);
     let current_bytes = root.0.encoded_len() + state_manifest.0.encoded_len();
     let retention_manifest = encoded(
@@ -494,7 +505,7 @@ fn fixture_with_root(root: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource 
     )
     .unwrap();
     let descriptor = GenerationCheckpointDescriptorV1::from_test_inventory(
-        PROFILE,
+        profile,
         state,
         retention_reference,
         2,

@@ -49,9 +49,9 @@ use crate::rspace::metrics_constants::{
 };
 use crate::rspace::persistence::{
     CanonicalFormatError, CatalogSlotV1, ContentTransition, DagTransactionError,
-    DurableAuthorityViewV1, DurableObjectReadErrorV1, ImmutableObjectStore, MutationError,
-    OpenDagTransaction, RSpaceMutationBatchV1, RSpaceSemanticProfile, SemanticNamespace,
-    SemanticProfile, StateVersionV1,
+    DurableAuthorityViewV1, DurableObjectReadErrorV1, GenerationLeaseRegistryV1,
+    ImmutableObjectStore, MutationError, OpenDagTransaction, RSpaceMutationBatchV1,
+    RSpaceSemanticProfile, SemanticNamespace, SemanticProfile, StateVersionV1,
 };
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
@@ -156,14 +156,16 @@ struct HotJournalAckMarkerV1 {
 
 struct DurableJournalStateV1 {
     base: Option<CatalogSlotV1>,
+    registry: GenerationLeaseRegistryV1,
     version: JournalVersionV1,
     acknowledged: Option<HotJournalAckMarkerV1>,
 }
 
 impl DurableJournalStateV1 {
-    fn new(base: CatalogSlotV1) -> Self {
+    fn new(base: CatalogSlotV1, registry: GenerationLeaseRegistryV1) -> Self {
         Self {
             base: Some(base),
+            registry,
             version: JournalVersionV1::new(),
             acknowledged: None,
         }
@@ -355,6 +357,21 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         &self,
         base: CatalogSlotV1,
     ) -> Result<CapturedHotJournalV1, RSpaceError>;
+
+    fn validate_pending_journal(&self, captured: &CapturedHotJournalV1) -> Result<(), RSpaceError>;
+
+    fn validate_journal_authority(
+        &self,
+        base: CatalogSlotV1,
+        registry: &GenerationLeaseRegistryV1,
+    ) -> Result<(), RSpaceError>;
+
+    fn validate_journal_acknowledgement(
+        &self,
+        captured: &CapturedHotJournalV1,
+        terminal: CatalogSlotV1,
+        registry: &GenerationLeaseRegistryV1,
+    ) -> Result<(), RSpaceError>;
 
     fn acknowledge_pending_journal(
         &self,
@@ -643,6 +660,27 @@ where
                 .joins
                 .as_ref()
                 .is_some_and(|joins| self.joins.pending_delta() == joins)
+    }
+
+    fn matches_captured_journal(&self, captured: &CapturedHotJournalV1) -> bool {
+        self.durable_journal.as_ref().is_some_and(|binding| {
+            binding.base == Some(captured.base) && binding.version.matches(&captured.version)
+        }) && self.matches_pending_journal(&captured.observation.pending)
+    }
+
+    fn matches_acknowledged_journal(
+        &self,
+        captured: &CapturedHotJournalV1,
+        terminal: CatalogSlotV1,
+    ) -> bool {
+        self.durable_journal.as_ref().is_some_and(|binding| {
+            binding.base == Some(terminal) &&
+                binding.acknowledged.as_ref().is_some_and(|marker| {
+                    Arc::ptr_eq(&marker.identity, &captured.identity) &&
+                        marker.terminal == terminal &&
+                        marker.version.matches(&binding.version)
+                })
+        }) && self.pending_journal_is_empty()
     }
 
     fn pending_journal_is_empty(&self) -> bool {
@@ -1301,6 +1339,32 @@ where
         })
     }
 
+    fn validate_pending_journal(&self, captured: &CapturedHotJournalV1) -> Result<(), RSpaceError> {
+        let state = self.state.read().expect("hot store state read lock");
+        if !state.matches_captured_journal(captured) {
+            return Err(RSpaceError::JournalConflict(
+                "captured durable journal is no longer current".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_journal_authority(
+        &self,
+        base: CatalogSlotV1,
+        registry: &GenerationLeaseRegistryV1,
+    ) -> Result<(), RSpaceError> {
+        let state = self.state.read().expect("hot store state read lock");
+        if !state.durable_journal.as_ref().is_some_and(|binding| {
+            binding.base == Some(base) && binding.registry.shares_registry(registry)
+        }) {
+            return Err(RSpaceError::JournalConflict(
+                "hot store is not bound to this durable base and directory authority".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn acknowledge_pending_journal(
         &self,
         captured: &CapturedHotJournalV1,
@@ -1316,25 +1380,16 @@ where
         let binding = state.durable_journal.as_ref().ok_or_else(|| {
             RSpaceError::JournalConflict("hot store has no durable journal authority".to_owned())
         })?;
-        if let Some(marker) = &binding.acknowledged {
-            if Arc::ptr_eq(&marker.identity, &captured.identity) &&
-                marker.terminal == expected &&
-                binding.base == Some(expected) &&
-                marker.version.matches(&binding.version) &&
-                state.pending_journal_is_empty()
-            {
-                return Ok(HotJournalAcknowledgementV1::AlreadyCommitted);
-            }
+        if state.matches_acknowledged_journal(captured, expected) {
+            return Ok(HotJournalAcknowledgementV1::AlreadyCommitted);
         }
-        if binding.base != Some(captured.base) ||
-            !binding.version.matches(&captured.version) ||
+        if !state.matches_captured_journal(captured) ||
             expected.store_id() != captured.base.store_id() ||
             expected.profile_id() != captured.base.profile_id() ||
             Some(expected.epoch()) != captured.base.epoch().checked_add(1) ||
             Some(expected.state().generation()) !=
                 captured.base.state().generation().checked_add(1) ||
             Some(expected.commit_sequence()) != captured.base.commit_sequence().successor().ok() ||
-            !state.matches_pending_journal(&captured.observation.pending) ||
             state.pending_journal_is_empty()
         {
             return Err(RSpaceError::JournalConflict(
@@ -1357,6 +1412,26 @@ where
         binding.version = next;
         binding.acknowledged = Some(marker);
         Ok(HotJournalAcknowledgementV1::Committed)
+    }
+
+    fn validate_journal_acknowledgement(
+        &self,
+        captured: &CapturedHotJournalV1,
+        terminal: CatalogSlotV1,
+        registry: &GenerationLeaseRegistryV1,
+    ) -> Result<(), RSpaceError> {
+        let state = self.state.read().expect("hot store state read lock");
+        if !state.matches_acknowledged_journal(captured, terminal) ||
+            !state
+                .durable_journal
+                .as_ref()
+                .is_some_and(|binding| binding.registry.shares_registry(registry))
+        {
+            return Err(RSpaceError::JournalConflict(
+                "exact durable acknowledgement marker is no longer current".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     fn commit_pending_deltas(&self, expected: &PendingDeltas) -> Result<(), RSpaceError> {
@@ -2252,7 +2327,10 @@ impl HotStoreInstances {
             .map_err(DurableHotStoreBootstrapError::AuthenticatedRead)?;
 
         let mut state = InMemHotStoreState::default();
-        state.durable_journal = Some(Box::new(DurableJournalStateV1::new(authority.catalog())));
+        state.durable_journal = Some(Box::new(DurableJournalStateV1::new(
+            authority.catalog(),
+            authority.generation_leases(),
+        )));
         let mut data_groups: HashMap<C, Vec<(Datum<A>, super::bag::Multiplicity)>> = HashMap::new();
         for (channel, datum, multiplicity) in data_entries {
             let multiplicity = super::bag::Multiplicity::new(multiplicity.get())

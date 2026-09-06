@@ -166,6 +166,9 @@ pub(super) fn apply_inventory_mutation(
 }
 
 pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
+    ("JR-01", "constructor_refuses_foreign_or_invalidated_hot_authority_without_losing_its_view"),
+    ("JR-02", "invalidated_base_cannot_release_old_recovery_or_report_ready"),
+    ("JR-03", "a_stale_capture_is_rejected_before_publication_even_when_its_journal_bytes_match"),
     ("HJ-01", "acknowledgement_clears_five_populated_journals_and_preserves_live_records"),
     ("HJ-02", "acknowledgement_clears_five_populated_journals_and_preserves_live_records"),
     ("HJ-03", "mismatch_or_missing_capability_in_any_journal_rejects_without_partial_clear"),

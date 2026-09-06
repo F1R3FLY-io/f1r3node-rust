@@ -82,7 +82,7 @@ fn install_checkpoint_store(root: &Path) {
     install_checkpoint_image(root, &valid_checkpoint_image());
 }
 
-fn install_checkpoint_image(root: &Path, image: &CheckpointPackImage) {
+pub(super) fn install_checkpoint_image(root: &Path, image: &CheckpointPackImage) {
     write_owner_only(root.join("catalog.v1").as_path(), &catalog_image(image.catalog));
     write_owner_only(root.join(pack_file_name(PackId::GENESIS)).as_path(), &image.pack);
     write_owner_only(

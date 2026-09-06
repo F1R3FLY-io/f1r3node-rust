@@ -6260,3 +6260,19 @@ independent disk authentication. Owner permit/recovery/generation-pin compositio
 cutover remain required. Classification remains `NO_PRODUCTION_CHANGE_DERIVED`, not
 production activation or a complete recovery guarantee. See
 [J-061](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-061--2026-09-06-bind-journal-acknowledgement-to-identity-not-equal-bytes).
+
+Publication-owner composition, 2026-09-06: the dormant owner now retains its
+operation permit, original writer/registry, private journal capture and exact
+terminal through publication, recovery, pin acquisition and acknowledgement.
+Constructor and Ready checks reject mismatched provenance or invalidated bases;
+completion requires the original exact acknowledgement marker, not just equal
+state bytes. Real-file owner tests and the combined HotStore/persistence gate pass
+403/403 in both debug and release. These changes affect volatile ownership and
+refusal behavior on the dormant persistence path, not canonical RhoPath,
+protobuf/bincode/WAL/catalog layouts, semantic state roots, live multiplicities,
+legacy checkpoint identities, matching, COMM order, accepted Rholang programs or
+compute/storage charges. Default RSpace construction/checkpoint behavior is not
+switched. Classification remains `NO_PRODUCTION_CHANGE_DERIVED`; no new consensus
+decision is added to the register. The actual RSpace gate/teardown wiring and
+single-authority migration gates remain required before activation. See
+[J-062](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-062--2026-09-06-retain-the-journal-owner-through-exact-durable-resolution).

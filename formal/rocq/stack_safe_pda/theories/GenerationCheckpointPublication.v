@@ -1600,6 +1600,47 @@ Qed.
 
 End JournalVersionFreshness.
 
+Module JournalOwnerReadiness.
+
+Definition binding := (nat * nat)%type.
+
+Definition valid_binding (expected : binding) (current : option binding) : bool :=
+  match current with
+  | Some actual => Nat.eqb (fst expected) (fst actual) &&
+                   Nat.eqb (snd expected) (snd actual)
+  | None => false
+  end.
+
+Definition release_pending {Receipt : Type}
+  (expected : binding) (current : option binding) (pending : Receipt) : option Receipt :=
+  if valid_binding expected current then None else Some pending.
+
+Theorem readiness_requires_exact_registry_and_catalog : forall expected current,
+  valid_binding expected current = true -> current = Some expected.
+Proof.
+  intros [registry catalog] [[other_registry other_catalog]|] checked;
+    simpl in checked; try discriminate.
+  apply andb_true_iff in checked as [same_registry same_catalog].
+  apply Nat.eqb_eq in same_registry. apply Nat.eqb_eq in same_catalog.
+  subst; reflexivity.
+Qed.
+
+Theorem invalid_binding_retains_the_original_pending_receipt :
+  forall (Receipt : Type) expected current (pending : Receipt),
+  valid_binding expected current = false ->
+  release_pending expected current pending = Some pending.
+Proof. intros; unfold release_pending; now rewrite H. Qed.
+
+Theorem valid_base_allows_abort_independently_of_receipt_revision :
+  forall (Receipt : Type) expected (pending : Receipt),
+  release_pending expected (Some expected) pending = None.
+Proof.
+  intros Receipt [registry catalog] pending.
+  unfold release_pending, valid_binding; simpl; repeat rewrite Nat.eqb_refl; reflexivity.
+Qed.
+
+End JournalOwnerReadiness.
+
 Module ExactSuccessorInventory.
 
 Section Partition.
@@ -1694,6 +1735,9 @@ Print Assumptions CatalogAppointedPrefix.discarding_unselected_suffix_preserves_
 Print Assumptions JournalVersionFreshness.advancing_never_reuses_current_version.
 Print Assumptions JournalVersionFreshness.arbitrary_nonempty_history_cannot_return_to_old_version.
 Print Assumptions JournalVersionFreshness.rollover_uses_a_fresh_identity.
+Print Assumptions JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog.
+Print Assumptions JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt.
+Print Assumptions JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision.
 Print Assumptions CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes.
 Print Assumptions ExactSuccessorInventory.replacement_conserves_inventory.
 Print Assumptions ExactSuccessorInventory.removed_inventory_is_bounded.

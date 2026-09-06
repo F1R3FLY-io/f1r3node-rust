@@ -149,6 +149,24 @@ private observation and retain the sealed intent through reconciliation and ackn
 
 ### Borrowed recovery and admission refinement (2026-09-06)
 
+The `JournalOwnerReadiness` module in `GenerationCheckpointPublication.v` refines
+JO-03, JO-04 and JO-08 at the construction and abort boundaries. Its binding is an
+opaque registry identity paired with the complete catalog identity; `None` models
+a hot-store base invalidated by clear or snapshot replacement. It does not model
+those operations as legitimate mutations through an already-held operation gate.
+
+| Formal lemma | Extracted executable obligation |
+|---|---|
+| `readiness_requires_exact_registry_and_catalog` | Refuse a foreign HotStore even with identical catalog bytes, preserve the rejected constructor's original view, and refuse a Ready observation after base invalidation. |
+| `invalid_binding_retains_the_original_pending_receipt` | `invalidated_base_cannot_release_a_refused_capture_as_ready` and `invalidated_base_cannot_release_old_recovery_or_report_ready` retain the receipt, permit, writer and predecessor pin after clear or snapshot replacement. |
+| `valid_base_allows_abort_independently_of_receipt_revision` | `a_stale_capture_is_rejected_before_publication_even_when_its_journal_bytes_match` permits a fresh capture after a same-base journal restore without accepting the stale receipt. |
+
+This boundary theory distinguishes authority validity from receipt freshness; the
+implementation must not enumerate journal endpoints merely to check a base.
+The two invalidation regressions fail on the pre-guard owner, respectively at
+capture refusal and exact-predecessor recovery. They are concrete refinement
+tests, not a claim that the bounded publication model explores out-of-band resets.
+
 The first executable JO-03 refinement factors the existing validation bodies into
 `recover_physical_from_lease_v1(&mut DurableWriterLeaseV1, ...)` and
 `admit_physical_source(&DurableWriterLeaseV1, ...)`. The caller retains the writer capability
@@ -248,6 +266,41 @@ These tests use synthetic, format-valid catalog slots for HotStore isolation. Th
 establish continuous writer ownership, authenticated recovery, successor-pin handoff or
 asynchronous cancellation of the production owner. Those remain required task 6626 integration
 tests; legacy-authority separation and production activation remain separately gated.
+
+## Executable publication-owner composition — 2026-09-06
+
+The component-only limitations above describe their historical verification stage.
+The production owner now retains one private capture, exclusive operation permit,
+original writer/registry and predecessor pin through publication and reconciliation.
+Its sixteen tests execute real catalog/pack/index operations with the generic RSpace
+semantic profile. The following table binds the separate JO model to those tests;
+the central 97-ID matrix additionally checks every printed Rocq capstone and its
+executable target. JO names remain a separate model boundary, not extra central IDs.
+
+| JO obligations | Executable owner evidence in `tests/persistence/durable_rspace_authority.rs` |
+|---|---|
+| JO-01, JO-02, JO-03 | `owner_uncertain_old_and_new_publications_retain_the_gate_and_original_writer` and the capture/preparation/acknowledgement unwind matrix verify typed unresolved states, continuous writer exclusion and pin overlap. |
+| JO-04, JO-05, JO-07 | Stale-capture and acknowledgement-conflict tests retain all five journals; the constructor regression rejects identical-catalog foreign registry provenance without losing the original view. All-domain and incoming-receipt variations also remain covered by the HotStore tests. |
+| JO-06 | `successor_pin_failure_retains_the_admitted_successor_old_pin_and_permit_for_retry` forces the real lease-counter refusal and verifies retry without changed physical files. |
+| JO-08 | Both invalidated-base regressions retain unresolved ownership after clear or replacement; non-pending invalidated owners refuse a usable Ready state. JR-01..03 supply the additional formal readiness boundary. |
+| JO-09, JO-12 | `owner_recovery_rejects_foreign_third_and_same_state_different_terminals` rejects a different full terminal even with the same semantic target. The selected-file damage/repair test preserves the original expected terminal and authority. |
+| JO-10 | Exact-successor retries and generated multiplicity/cold-reopen histories publish each changed step once; no-op steps do not advance generation. |
+| JO-11 | `cold_restart_before_acknowledgement_selects_old_or_new_without_delta_replay` destroys the unresolved owner and old hot incarnation before recovery, checks all five fresh journals, and then publishes another mutation. |
+| JO-13, JO-14, JO-15 | The unwind matrix and acknowledgement-conflict test distinguish exact retry from changed marker/version, including non-panicking and panicking post-acknowledgement restores. A shared read-only exact-marker predicate guards owner completion. |
+| JO-02 cancellation | `cancelling_a_checkpoint_waiting_for_the_exact_gate_does_not_capture_or_publish` drops a pending caller before gate acquisition. There is no await or detached worker after capture. |
+
+Combined HotStore/persistence debug and release gates pass 403/403 with 233 other
+library tests excluded. The owner property has an explicit 64-history configuration,
+not 256 histories despite the command-level environment setting. The readiness
+theory's three new capstones bring the existing theory to 39 closed reports and
+pass independent kernel checking. Raw evidence and red controls are recorded in
+[J-062](pathmap-engineering-journal-2026-08-23.md#j-062--2026-09-06-retain-the-journal-owner-through-exact-durable-resolution).
+
+This does not activate the durable backend, prove power-loss behavior on every
+filesystem, or prove full Rust refinement. Actual RSpace gate wiring and whole-owner
+teardown containment remain task 7756's single-authority activation obligations.
+The TLA+ model still assumes ordinary mutations honor that gate; out-of-band base
+invalidation is covered by the separate readiness theory and concrete regressions.
 
 ## Exact incremental-successor inventory refinement — 2026-09-06
 
@@ -515,6 +568,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 
 | ID | TLA+ symbols | Rocq theorem or lemma symbols | Class | Qualification |
 |---|---|---|---|---|
+| JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
+| JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
+| JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
 | HJ-01 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.acknowledgement_preserves_live_state` | P | Abstract live/journal separation; concrete resident records and installs are checked in Rust. |
 | HJ-02 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.exact_acknowledgement_clears_all_five_journals` | P | All five populated Rust journals must clear in debug and release. |
 | HJ-03 | `EXEC_ONLY` | `HotStoreJournalAcknowledgement.stale_acknowledgement_changes_nothing` | P | Concrete all-domain conflict preflight remains an executable obligation. |

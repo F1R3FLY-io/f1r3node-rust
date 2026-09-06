@@ -533,6 +533,11 @@ pub struct GenerationLeaseRegistryV1 {
 }
 
 impl GenerationLeaseRegistryV1 {
+    #[cfg(test)]
+    pub(crate) fn replace_lease_counter_for_test(&self, counter: u64) -> u64 {
+        std::mem::replace(&mut self.state.lock().unwrap().next_lease_id, counter)
+    }
+
     pub(crate) fn shares_registry(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
     }

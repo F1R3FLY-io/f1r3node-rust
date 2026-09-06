@@ -9,6 +9,7 @@ mod durable_object_stream;
 mod durable_index_recovery;
 mod durable_publication;
 mod durable_recovery;
+mod durable_rspace_authority;
 mod durable_startup;
 mod index_codec;
 mod incremental_prepare_streaming_properties;

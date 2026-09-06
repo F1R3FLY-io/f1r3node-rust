@@ -125,7 +125,8 @@ fn next_catalog(base: CatalogSlotV1) -> CatalogSlotV1 {
 fn durable_populated_store() -> (InMemHotStore<String, String, String, String>, CatalogSlotV1) {
     let base = durable_catalog();
     let mut state = InMemHotStoreState::default();
-    state.durable_journal = Some(Box::new(DurableJournalStateV1::new(base)));
+    state.durable_journal =
+        Some(Box::new(DurableJournalStateV1::new(base, GenerationLeaseRegistryV1::default())));
     let store = InMemHotStore {
         state: std::sync::RwLock::new(state),
         history_cache: std::sync::RwLock::new(HistoryStoreCache::default()),

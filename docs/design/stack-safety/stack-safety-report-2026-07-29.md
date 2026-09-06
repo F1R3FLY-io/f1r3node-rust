@@ -12981,3 +12981,18 @@ are correctness and ownership-lifetime results, not measurements of stack depth,
 slopes, allocations or throughput. Synthetic catalog fixtures do not prove the unfinished
 publication-owner composition; the broader PathMap correctness gate remains open. See
 [J-061](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-061--2026-09-06-bind-journal-acknowledgement-to-identity-not-equal-bytes).
+
+Publication-owner composition, 2026-09-06: the combined HotStore/persistence gate
+passes 403/403 in debug (9.92 s) and release (4.63 s), with 233 other library tests
+excluded. Sixteen real-file owner tests cover exact recovery, all-five-journal
+acknowledgement, constructor provenance, invalidated-base refusal, pin handoff,
+unwind/cancellation, no-op/retry and pre-acknowledgement cold restart. The owner
+property explicitly generates 64 histories of up to eight steps. Three readiness
+capstones bring the existing theory to 39 closed reports; kernel checking and the
+97-ID central derivation matrix pass. The owner retains CoW journal roots and one
+expected terminal; constant-time base/registry and acknowledgement-marker checks
+do not enumerate RSpace or serialize the WAL again. These are mechanism and
+correctness results, not allocation, RSS-slope, native-stack or throughput
+measurements. Rust/Rocq systemd maxima remain 8/2 GiB with zero swap. Default
+backend activation, complete lifecycle gates and the LMDB comparison remain open.
+See [J-062](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-062--2026-09-06-retain-the-journal-owner-through-exact-durable-resolution).

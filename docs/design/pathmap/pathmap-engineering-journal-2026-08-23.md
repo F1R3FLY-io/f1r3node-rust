@@ -4234,6 +4234,98 @@ publication recovery and successor-pin handoff still require production composit
 default backend activation, LMDB comparison, measured RSS/stack slope or throughput claim
 is implied. Existing broad-library PathMap construction failure remains open.
 
+### J-062 — 2026-09-06: retain the journal owner through exact durable resolution
+
+**QUESTION.** Can the existing journal, sealing, streamed publication and recovery
+components compose without releasing writer authority, clearing a newer journal,
+replaying a committed delta, or exposing a ready store with an invalid base?
+
+**FORMAL-FIRST DESIGN.** The existing fifteen-invariant publication-owner model
+precedes this implementation. Three additional `JournalOwnerReadiness` capstones
+prove exact registry/catalog binding, preservation of a refused pending receipt,
+and safe abort with a valid base independently of receipt revision. Compilation
+and kernel checking preceded the base/provenance fixes: all 39 assumption reports
+are closed. JR-01..03 bring the central derivation matrix to 97 IDs. These abstract
+laws are refined by concrete owner tests; neither they nor the bounded TLA+ model
+prove the entire Rust runtime or unbounded crash/restart histories.
+
+**IMPLEMENTATION.** `DurableRSpaceAuthorityV1` privately captures the five CoW
+journals under an owned exclusive permit from its supplied operation gate. It
+constructs the mutation itself, retains the original directory capability, writer,
+registry and predecessor pin, and stores the complete expected terminal before
+COMMIT can be emitted. Preparation and publication use the borrowed source kernels
+and the existing one-pass streamed PREPARE identity. Recovery accepts only the
+exact predecessor or exact expected successor, never target-root equality alone.
+The successor pin is acquired before the old pin is released. A failed acquisition
+retains the admitted successor for retry without republishing or reopening a path.
+
+Acknowledgement clears/rebases all five journals once under the HotStore write
+boundary. Owner completion uses a read-only exact-marker check shared with the
+idempotent acknowledgement predicate. It checks capture identity, terminal,
+post-acknowledgement version, empty journals and registry provenance. Invalidated
+bases retain pending authority and the permit; rejection precedes recovery I/O.
+Same-base stale journals can abort and be captured again. A refused constructor
+returns its original admitted view rather than dropping its writer and pin.
+
+The added readiness/provenance checks are constant-time metadata comparisons under
+the existing HotStore lock. They do not enumerate keys or build another trie.
+Capture still uses native touched-key counts and retained CoW roots; no `Vec<Par>`,
+whole-RSpace projection, entry sorting, second WAL serialization, new registry,
+background worker, dependency or upstream PathMap change was introduced.
+
+**NEGATIVE RESULTS.** The initial focused owner gates passed 5, then 7, then 11
+tests, and the first combined debug gate passed 398. Acceptance review nevertheless
+found missing pre-publication freshness validation, invalid-base readiness,
+cross-directory HotStore pairing, and exact post-acknowledgement completion checks.
+The stale-capture regression, two invalid-base regressions, and non-panicking
+post-acknowledgement restore each failed before the relevant guard. A subsequent
+401/403 run exposed recovery-index modification before invalid-base refusal and
+missing readiness capstones in the central matrix; the 402/403 run exposed the
+new owner test file missing from that matrix's source inventory. The guard now
+precedes recovery, and the exhaustive checker includes the new family, capstones
+and test source. No assertion or test domain was removed. One intermediate build
+also required the missing registry-type import.
+
+**MEASURED CORRECTNESS.** The corrected combined HotStore/persistence gate passes
+403/403 in debug (9.92 s) and release (4.63 s), with no failures or ignored tests;
+233 other library tests are outside this selection. Sixteen owner tests cover
+all-five-journal success, no-op and refusal, exact old/new uncertainty, wrong and
+same-state/different-physical terminals, selected-file damage and repair, pin failure,
+capture/preparation/acknowledgement unwind, cancellation while waiting for the gate,
+crossed constructors, stale identities, and cold restart before acknowledgement.
+The generated owner property explicitly runs 64 histories of one to eight steps,
+varying multiplicity zero through four, uncertainty and cold reopen; the command's
+`PROPTEST_CASES=256` does not override that explicit per-property configuration.
+
+Both Rust runs used four build/test workers, a 6 GiB high watermark, an 8 GiB
+systemd maximum, zero swap, and disk-backed scratch. Rocq used a 2 GiB maximum and
+zero swap. These are configured ceilings and correctness-test durations, not
+measured RSS, stack growth, allocation counts, throughput or an LMDB comparison.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/rspace-journal-owner-readiness-rocq-20260906.log` | `585a8d496fa2555dd039f540a2baf549753773268867b8032147d672cd73141b` |
+| `/tmp/rspace-journal-owner-readiness-coqchk-20260906.log` | `0b71ba1058a8d0a0082665374552a0ec9a2be3974e6346c1f83a674eadca14b2` |
+| `/tmp/rspace-owned-journal-stale-preflight-red-20260906.log` | `d77b8ed6c219bbb557ecc267889211b73b13d1ca867046ec62fda24a0439b5aa` |
+| `/tmp/rspace-journal-owner-invalid-base-red-20260906.log` | `126f61b3978b1ef3e20c83cb7a4467a8dce3f75ad2619b3e27dd6a54166e811f` |
+| `/tmp/rspace-journal-owner-completion-marker-red-20260906.log` | `204f5814c5be72b8a31dfcfae8ce8429fbcacf10da64f073854f531ab70f4751` |
+| `/tmp/rspace-journal-owner-broad-debug-r5-20260906.log` | `fd26a709861da04550dbebe53526f5f0d94dd82dd6cfd16c3711815bd231daa0` |
+| `/tmp/rspace-journal-owner-broad-release-20260906.log` | `8c8b8c02c373d9bbdaf174a7fac9bd8c6dc24b46253b2ba683af9463a1fdef81` |
+
+**VALIDITY BOUNDARY.** Tests execute the production owner and real filesystem
+publication with `RSpaceSemanticProfile<String, String, String, String>`. Same-process
+fault injection and dropping/reconstructing the owner are not power-loss experiments
+or resumption of a suspended interpreter continuation. No detached writer exists:
+the only await acquires the gate, and work after acquisition is synchronous.
+Whole-owner disposal is teardown, not cancellation of a borrowed call.
+
+Default `RSpace::create_checkpoint` remains on the legacy path. Task 7756 must wire
+this owner to the actual RSpace mutation gate and prevent surviving handles from
+using an obsolete HotStore after owner teardown; its migration/cutover gates remain
+required before activation. Incremental admission performance (7755), broader
+lifecycle/consensus gates, the separate PathMap construction failure and the LMDB
+comparison remain open. This entry establishes the owner slice, not campaign completion.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

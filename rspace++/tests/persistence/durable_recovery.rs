@@ -225,9 +225,15 @@ pub(super) fn malformed_checkpoint_image() -> CheckpointPackImage {
 pub(super) fn checkpoint_image_from_source(
     source: SyntheticCheckpointSource,
 ) -> CheckpointPackImage {
+    checkpoint_image_for_profile::<TestSemanticProfile>(source)
+}
+
+pub(super) fn checkpoint_image_for_profile<P: crate::rspace::persistence::SemanticProfile>(
+    source: SyntheticCheckpointSource,
+) -> CheckpointPackImage {
     let store_id = StoreId::from_array([0x91; 16]);
     let sequence = LogPackSequence::FIRST;
-    let prepared = PreparedGenerationCheckpointV1::<TestSemanticProfile, _>::new(
+    let prepared = PreparedGenerationCheckpointV1::<P, _>::new(
         &source,
         store_id,
         sequence,

@@ -7,8 +7,9 @@
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::{
-    ClosureError, EndpointValue, GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseV1,
-    LogPackDecodeLimits, SemanticRoots, VerifiedDagState,
+    ClosureError, EndpointValue, GenerationLeaseError, GenerationLeaseKeyV1,
+    GenerationLeaseRegistryV1, GenerationLeaseV1, LogPackDecodeLimits, SemanticRoots,
+    VerifiedDagState,
 };
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
@@ -85,8 +86,11 @@ pub(crate) use recovery::{
     replay_catalog_authorized_pack_chain, scan_catalog_authorized_pack_chain,
     stage_catalog_verified_data_in_source_order,
 };
+#[cfg(test)]
+pub(crate) use rspace_authority::hooks as journal_owner_hooks;
 pub(crate) use rspace_authority::{
     DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError,
+    JournalPublicationPhaseV1,
 };
 #[cfg(test)]
 pub(crate) use startup::{
@@ -110,8 +114,24 @@ pub(crate) struct DurableAuthorityViewV1<P: SemanticProfile> {
 }
 
 impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
-    pub(crate) fn into_rspace_authority(self) -> DurableRSpaceAuthorityV1<P> {
-        DurableRSpaceAuthorityV1::from_view(self)
+    pub(crate) fn into_rspace_authority(
+        self,
+        hot: std::sync::Arc<
+            Box<
+                dyn crate::rspace::hot_store::HotStore<
+                        P::Channel,
+                        P::Pattern,
+                        P::Datum,
+                        P::Continuation,
+                    >,
+            >,
+        >,
+        operation_gate: std::sync::Arc<tokio::sync::RwLock<()>>,
+    ) -> Result<DurableRSpaceAuthorityV1<P>, Box<(Self, crate::rspace::errors::RSpaceError)>>
+    where
+        P::Channel: Clone + std::hash::Hash + Eq,
+    {
+        DurableRSpaceAuthorityV1::from_view(self, hot, operation_gate)
     }
     /// Return the exact catalog image selected during restart recovery.
     ///
@@ -120,6 +140,10 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// that identity when deciding whether an obsolete generation is eligible
     /// for reclamation; a freshly re-read pathname is not a sufficient lease.
     pub(crate) const fn catalog(&self) -> CatalogSlotV1 { self.writer.catalog() }
+
+    pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
+        self.writer.generation_leases()
+    }
 
     /// Acquire a lease for this exact recovered physical generation. The
     /// caller must retain the returned token for as long as any pack/index
