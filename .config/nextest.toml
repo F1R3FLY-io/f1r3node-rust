@@ -39,7 +39,9 @@ threads-required = "num-cpus"
 # same job minutes earlier (run 33998820395) and passed the push-event run of
 # the same commit. Schedule the assert-bearing sentinels with the machine to
 # themselves; `event_log_isolated_cost_at_rholang_par_scale` prints a readout
-# only and needs no island.
+# only and needs no island. The island cannot stop noise from outside the
+# process on a shared runner, so the two contention sentinels also carry a
+# 50% threshold with the measured margins recorded beside each constant.
 [[profile.default.overrides]]
 filter = 'test(/rspace::rspace::tests::(event_log_mutex_does_not_contend_under_concurrent_produces|par_branch_event_log_does_not_contend_at_rholang_par_scale|event_log_and_produce_counter_isolated_cost_at_rholang_par_scale|get_store_read_lock_isolated_cost_at_rholang_par_scale)$/)'
 threads-required = "num-cpus"
