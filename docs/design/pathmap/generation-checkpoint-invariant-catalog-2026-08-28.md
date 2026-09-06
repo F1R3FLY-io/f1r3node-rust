@@ -562,12 +562,81 @@ The executable suite must contain at least one real trace for each outcome class
 | NV-13 | Repairable derived-index damage reconstructs the index and recovers the exact successor. |
 | NV-14 | Authoritative or unsafe-index damage rejects the selected successor without old fallback. |
 
+## Incremental reachability cursor model (2026-09-06)
+
+Task 7755 extends `GenerationCheckpointPublication.v` with `IncrementalReachability`.
+This is a formal-first, single-domain graph model and a test-only executable specification.
+It is not the production successor constructor, a proof of Rust memory safety, or a
+replacement for cold object/semantic admission. The same model will require separately
+bound current-state, retained-semantic and metadata instances.
+
+Let $`R(v)`$ be explicit root multiplicity, $`C(v)`$ the derived incoming count,
+$`A(v)`$ the active bit, and $`I(A,v)`$ the sum of outgoing edge occurrences
+from active parents. Each distinct parent is enumerated once; duplicate edges are
+preserved. Coherence means $`A(v) = (C(v)>0)`$. At quiescence,
+$`C(v)=R(v)+I(A,v)`$. A finite graph with strictly decreasing edge ranks makes
+that quiescent solution unique, with positive support exactly equal to rooted reachability.
+The proof's finite rank induction is not a runtime traversal-depth limit.
+
+Pending work $`P(v)`$ includes explicit events and every suspended cursor suffix.
+Activation preserves $`C(v)+P(v)=R_+(v)+I(A,v)`$, where $`R_+`$ includes
+added roots. Deactivation preserves $`C(v)=R_f(v)+I(A,v)+P(v)`$, where
+$`R_f`$ subtracts authorized removals. Count/sign change and complete-cursor
+installation are one abstract transition. Transfer emits exactly one reference;
+discard requires an empty suffix. A completed two-phase execution agrees with any
+independently computed coherent, quiescent ledger for the final roots.
+
+The executable cases live in `tests/persistence/incremental_reachability_properties.rs`.
+They use a small test-only vector graph and a separate cold reachability traversal;
+this is not a conversion of a production PathMap into a vector. Generated DAGs preserve
+duplicate references and sharing, and assertions cover every intermediate microstep.
+
+| ID | Required property and negative-control boundary |
+|---|---|
+| IR-01 | Each reachable parent contributes once; repeated outgoing references each contribute. Distinct-parent enumeration is required. |
+| IR-02 | Transfer exactly one cursor occurrence and preserve every vertex's pending count. |
+| IR-03 | Only an exhausted cursor may disappear without transferring its residual contributions. |
+| IR-04 | Activation uses the pre-update count and installs outgoing work only at zero-to-one. |
+| IR-05 | Balance funds every legal decrement; coherence alone does not reject natural-number saturation at zero. |
+| IR-06 | Deactivation installs outgoing work only at one-to-zero; repeated references are not collapsed. |
+| IR-07 | Initialize against old roots plus every added occurrence, with added vertices in the graph domain. |
+| IR-08 | Authorize removals against root multiplicity, not incoming count; preserve domain support. |
+| IR-09 | Complete activation before deactivation; completed replacement agrees pointwise with the independently computed quiescent cold ledger. |
+| IR-10 | Suffix validity does not prove processed history or authenticate real object bytes/provenance. A skipped prefix is a limitation witness. |
+| IR-11 | Positive support equals root reachability at quiescence on the finite ranked graph, not during draining. |
+| IR-12 | Any two coherent quiescent ledgers for the same acyclic graph and roots have identical counts and membership. |
+| IR-13 | Every permitted microstep preserves balance, coherence, domain support and cursor suffixes; a completed run has exact support. |
+| IR-14 | A rootless self-cycle admits a positive quiescent ledger; omitting acyclicity makes the intended reachability claim false. |
+
+**Coverage boundary.** Natural-number proofs and bounded test arithmetic do not yet
+establish checked production `u64` overflow/refusal, failed CoW-trial nonmutation,
+termination of every legal schedule, changed-edge complexity, unique-byte/kind
+inventories, or cold-resource certificates. The tests' work-bound observations are
+not substituted for those outstanding proofs. `authenticated_cursor` means only
+an exact suffix of an abstract parent's children; digest/length/kind, source identity
+and namespace/exact-path authorization require their own concrete refinement.
+Acyclicity and complete drainage are essential assumptions, not optional checks.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
 
 | ID | TLA+ symbols | Rocq theorem or lemma symbols | Class | Qualification |
 |---|---|---|---|---|
+| IR-01 | `EXEC_ONLY` | `IncrementalReachability.incoming_replace_absent`, `IncrementalReachability.incoming_replace_present`, `IncrementalReachability.occurrences_positive`, `IncrementalReachability.incoming_positive` | P | Test-only model extraction; production refinement remains open. Each reachable parent contributes once; repeated outgoing references each contribute. Distinct-parent enumeration is required. |
+| IR-02 | `EXEC_ONLY` | `IncrementalReachability.transferring_one_cursor_occurrence_preserves_pending` | P | Test-only model extraction; production refinement remains open. Transfer exactly one cursor occurrence and preserve every vertex's pending count. |
+| IR-03 | `EXEC_ONLY` | `IncrementalReachability.discarding_an_exhausted_cursor_preserves_pending` | P | Test-only model extraction; production refinement remains open. Only an exhausted cursor may disappear without transferring its residual contributions. |
+| IR-04 | `EXEC_ONLY` | `IncrementalReachability.increment_preserves_coherence`, `IncrementalReachability.increment_preserves_activation_balance` | P | Test-only model extraction; production refinement remains open. Activation uses the pre-update count and installs outgoing work only at zero-to-one. |
+| IR-05 | `EXEC_ONLY` | `IncrementalReachability.pending_decrement_cannot_underflow`, `IncrementalReachability.decrement_preserves_coherence` | P | Test-only model extraction; production refinement remains open. Balance funds every legal decrement; coherence alone does not reject natural-number saturation at zero. |
+| IR-06 | `EXEC_ONLY` | `IncrementalReachability.decrement_preserves_deactivation_balance` | P | Test-only model extraction; production refinement remains open. Deactivation installs outgoing work only at one-to-zero; repeated references are not collapsed. |
+| IR-07 | `EXEC_ONLY` | `IncrementalReachability.activation_starts_with_added_root_occurrences`, `IncrementalReachability.activation_initial_configuration_is_valid` | P | Test-only model extraction; production refinement remains open. Initialize against old roots plus every added occurrence, with added vertices in the graph domain. |
+| IR-08 | `EXEC_ONLY` | `IncrementalReachability.deactivation_starts_with_authorized_root_occurrences`, `IncrementalReachability.deactivation_initial_configuration_is_valid` | P | Test-only model extraction; production refinement remains open. Authorize removals against root multiplicity, not incoming count; preserve domain support. |
+| IR-09 | `EXEC_ONLY` | `IncrementalReachability.drained_activation_is_quiescent`, `IncrementalReachability.drained_deactivation_is_quiescent`, `IncrementalReachability.add_before_remove_agrees_with_cold_ledger` | P | Test-only model extraction; production refinement remains open. Complete activation before deactivation; completed replacement agrees pointwise with the independently computed quiescent cold ledger. |
+| IR-10 | `EXEC_ONLY` | `IncrementalReachability.complete_child_cursor_is_authenticated`, `IncrementalReachability.advancing_a_cursor_preserves_its_authenticated_suffix`, `IncrementalReachability.increment_preserves_cursor_authentication`, `IncrementalReachability.decrement_preserves_cursor_authentication`, `IncrementalReachability.authenticated_cursor_head_is_an_edge`, `IncrementalReachability.cursor_suffix_does_not_establish_processed_history` | P | Test-only model extraction; production refinement remains open. Suffix validity does not prove processed history or authenticate real object bytes/provenance. A skipped prefix is a limitation witness. |
+| IR-11 | `EXEC_ONLY` | `IncrementalReachability.root_reachability_implies_positive_count`, `IncrementalReachability.member_rank_is_bounded`, `IncrementalReachability.positive_count_implies_root_reachability`, `IncrementalReachability.quiescent_support_is_exact_root_reachability` | P | Test-only model extraction; production refinement remains open. Positive support equals root reachability at quiescence on the finite ranked graph, not during draining. |
+| IR-12 | `EXEC_ONLY` | `IncrementalReachability.incoming_extensional`, `IncrementalReachability.quiescent_ledger_is_unique` | P | Test-only model extraction; production refinement remains open. Any two coherent quiescent ledgers for the same acyclic graph and roots have identical counts and membership. |
+| IR-13 | `EXEC_ONLY` | `IncrementalReachability.cursor_step_preserves_configuration`, `IncrementalReachability.cursor_execution_preserves_configuration`, `IncrementalReachability.drained_execution_has_exact_root_reachability` | P | Test-only model extraction; production refinement remains open. Every permitted microstep preserves balance, coherence, domain support and cursor suffixes; a completed run has exact support. |
+| IR-14 | `EXEC_ONLY` | `IncrementalReachability.no_roots_no_reachability`, `IncrementalReachability.rootless_cycle_has_a_spurious_quiescent_ledger` | P | Test-only model extraction; production refinement remains open. A rootless self-cycle admits a positive quiescent ledger; omitting acyclicity makes the intended reachability claim false. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |

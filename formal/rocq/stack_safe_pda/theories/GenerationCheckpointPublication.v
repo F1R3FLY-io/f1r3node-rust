@@ -1710,6 +1710,674 @@ Proof. discriminate. Qed.
 
 End ExactSuccessorInventory.
 
+Module IncrementalReachability.
+
+Definition counter := nat -> nat.
+Definition membership := nat -> bool.
+
+Definition replace {Value : Type} (old : nat -> Value)
+  (key : nat) (value : Value) (query : nat) : Value :=
+  if Nat.eqb query key then value else old query.
+
+Fixpoint occurrences (references : list nat) (query : nat) : nat :=
+  match references with
+  | [] => 0
+  | reference :: rest =>
+      (if Nat.eqb query reference then 1 else 0) + occurrences rest query
+  end.
+
+Section Graph.
+Variable children : nat -> list nat.
+
+Fixpoint incoming (vertices : list nat) (active : membership) (query : nat) : nat :=
+  match vertices with
+  | [] => 0
+  | parent :: rest =>
+      (if active parent then occurrences (children parent) query else 0) +
+      incoming rest active query
+  end.
+
+Lemma incoming_replace_absent : forall vertices active vertex enabled query,
+  ~ In vertex vertices ->
+  incoming vertices (replace active vertex enabled) query =
+  incoming vertices active query.
+Proof.
+  induction vertices as [|head tail IH]; intros active vertex enabled query absent;
+    [reflexivity|].
+  assert (different : Nat.eqb head vertex = false).
+  { apply Nat.eqb_neq. intros same. subst head. apply absent; now left. }
+  cbn [incoming]. unfold replace at 1. rewrite different.
+  rewrite IH; [reflexivity|]. intros member. apply absent; now right.
+Qed.
+
+Lemma incoming_replace_present : forall vertices active vertex enabled query,
+  NoDup vertices -> In vertex vertices ->
+  incoming vertices (replace active vertex enabled) query +
+    (if active vertex then occurrences (children vertex) query else 0) =
+  incoming vertices active query +
+    (if enabled then occurrences (children vertex) query else 0).
+Proof.
+  induction vertices as [|head tail IH]; intros active vertex enabled query unique member;
+    [contradiction|].
+  inversion unique as [|? ? absent tail_unique]; subst.
+  destruct member as [same|member].
+  - subst head. cbn [incoming]. unfold replace at 1. rewrite Nat.eqb_refl.
+    rewrite incoming_replace_absent by exact absent. lia.
+  - assert (different : Nat.eqb head vertex = false).
+    { apply Nat.eqb_neq. intros same. subst head. contradiction. }
+    cbn [incoming]. unfold replace at 1. rewrite different.
+    pose proof (IH active vertex enabled query tail_unique member) as conserved.
+    lia.
+Qed.
+
+Record ledger := {
+  counts : counter;
+  active : membership
+}.
+
+Definition coherent (state : ledger) : Prop :=
+  forall vertex, active state vertex = (0 <? counts state vertex).
+
+Definition child_cursor := (nat * list nat)%type.
+
+Fixpoint cursor_pending (cursors : list child_cursor) (query : nat) : nat :=
+  match cursors with
+  | [] => 0
+  | (_, remaining) :: rest => occurrences remaining query + cursor_pending rest query
+  end.
+
+Definition pending (explicit : list nat) (cursors : list child_cursor) (query : nat) :=
+  occurrences explicit query + cursor_pending cursors query.
+
+Definition activation_balance (vertices : list nat) (roots : counter)
+  (state : ledger) (explicit : list nat) (cursors : list child_cursor) : Prop :=
+  forall vertex,
+    counts state vertex + pending explicit cursors vertex =
+    roots vertex + incoming vertices (active state) vertex.
+
+Definition deactivation_balance (vertices : list nat) (roots : counter)
+  (state : ledger) (explicit : list nat) (cursors : list child_cursor) : Prop :=
+  forall vertex,
+    counts state vertex = roots vertex + incoming vertices (active state) vertex +
+      pending explicit cursors vertex.
+
+Theorem transferring_one_cursor_occurrence_preserves_pending :
+  forall explicit parent child remaining cursors query,
+  pending explicit ((parent, child :: remaining) :: cursors) query =
+  pending (child :: explicit) ((parent, remaining) :: cursors) query.
+Proof. intros; unfold pending; cbn [cursor_pending occurrences]; lia. Qed.
+
+Theorem discarding_an_exhausted_cursor_preserves_pending :
+  forall explicit parent cursors query,
+  pending explicit ((parent, []) :: cursors) query = pending explicit cursors query.
+Proof. reflexivity. Qed.
+
+Definition increment (state : ledger) (vertex : nat) : ledger :=
+  {| counts := replace (counts state) vertex (S (counts state vertex));
+     active := replace (active state) vertex true |}.
+
+Definition increment_cursors (state : ledger) (vertex : nat)
+  (cursors : list child_cursor) : list child_cursor :=
+  if Nat.eqb (counts state vertex) 0
+  then (vertex, children vertex) :: cursors else cursors.
+
+Theorem increment_preserves_coherence : forall state vertex,
+  coherent state -> coherent (increment state vertex).
+Proof.
+  intros state vertex agreement query.
+  cbn [increment counts active]. unfold replace.
+  destruct (Nat.eqb query vertex); [reflexivity|apply agreement].
+Qed.
+
+Theorem increment_preserves_activation_balance :
+  forall vertices roots state vertex explicit cursors,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  activation_balance vertices roots state (vertex :: explicit) cursors ->
+  activation_balance vertices roots (increment state vertex) explicit
+    (increment_cursors state vertex cursors).
+Proof.
+  intros vertices roots state vertex explicit cursors unique member agreement balance query.
+  pose proof (balance query) as before.
+  pose proof (@incoming_replace_present vertices (active state) vertex true query
+    unique member) as incoming_change.
+  rewrite (agreement vertex) in incoming_change.
+  unfold pending in before. cbn [occurrences] in before.
+  unfold increment_cursors. destruct (counts state vertex) as [|count] eqn:old_count.
+  - cbn [increment counts active pending cursor_pending] in *.
+    unfold replace in *. destruct (Nat.eqb query vertex) eqn:same in *.
+    + apply Nat.eqb_eq in same. subst query. try rewrite old_count in *.
+      unfold pending in *. simpl in *. lia.
+    + try rewrite old_count in *. unfold pending in *. simpl in *. lia.
+  - cbn [increment counts active pending cursor_pending] in *.
+    unfold replace in *. destruct (Nat.eqb query vertex) eqn:same in *.
+    + apply Nat.eqb_eq in same. subst query. try rewrite old_count in *.
+      unfold pending in *. simpl in *. lia.
+    + try rewrite old_count in *. unfold pending in *. simpl in *. lia.
+Qed.
+
+Definition decrement (state : ledger) (vertex : nat) : ledger :=
+  {| counts := replace (counts state) vertex (Nat.pred (counts state vertex));
+     active := replace (active state) vertex (1 <? counts state vertex) |}.
+
+Definition decrement_cursors (state : ledger) (vertex : nat)
+  (cursors : list child_cursor) : list child_cursor :=
+  if Nat.eqb (counts state vertex) 1
+  then (vertex, children vertex) :: cursors else cursors.
+
+Theorem pending_decrement_cannot_underflow :
+  forall vertices roots state vertex explicit cursors,
+  deactivation_balance vertices roots state (vertex :: explicit) cursors ->
+  0 < counts state vertex.
+Proof.
+  intros vertices roots state vertex explicit cursors balance.
+  pose proof (balance vertex) as available.
+  unfold pending in available; cbn [occurrences] in available.
+  rewrite Nat.eqb_refl in available. lia.
+Qed.
+
+Theorem decrement_preserves_coherence : forall state vertex,
+  coherent state -> coherent (decrement state vertex).
+Proof.
+  intros state vertex agreement query.
+  cbn [decrement counts active]. unfold replace.
+  destruct (Nat.eqb query vertex); [|apply agreement].
+  destruct (counts state vertex) as [|[|count]]; reflexivity.
+Qed.
+
+Theorem decrement_preserves_deactivation_balance :
+  forall vertices roots state vertex explicit cursors,
+  NoDup vertices -> In vertex vertices -> coherent state ->
+  deactivation_balance vertices roots state (vertex :: explicit) cursors ->
+  deactivation_balance vertices roots (decrement state vertex) explicit
+    (decrement_cursors state vertex cursors).
+Proof.
+  intros vertices roots state vertex explicit cursors unique member agreement balance query.
+  pose proof (@pending_decrement_cannot_underflow vertices roots state vertex explicit
+    cursors balance) as available.
+  pose proof (balance query) as before.
+  pose proof (@incoming_replace_present vertices (active state) vertex
+    (1 <? counts state vertex) query unique member) as incoming_change.
+  rewrite (agreement vertex) in incoming_change.
+  unfold pending in before. cbn [occurrences] in before.
+  unfold decrement_cursors. destruct (counts state vertex) as [|[|count]] eqn:old_count;
+    [lia| |].
+  - cbn [decrement counts active pending cursor_pending] in *.
+    unfold replace in *. destruct (Nat.eqb query vertex) eqn:same in *.
+    + apply Nat.eqb_eq in same. subst query. try rewrite old_count in *.
+      unfold pending in *. simpl in *. lia.
+    + try rewrite old_count in *. unfold pending in *. simpl in *. lia.
+  - cbn [decrement counts active pending cursor_pending] in *.
+    unfold replace in *. destruct (Nat.eqb query vertex) eqn:same in *.
+    + apply Nat.eqb_eq in same. subst query. try rewrite old_count in *.
+      unfold pending in *. simpl in *. lia.
+    + try rewrite old_count in *. unfold pending in *. simpl in *. lia.
+Qed.
+
+Definition quiescent (vertices : list nat) (roots : counter) (state : ledger) : Prop :=
+  forall vertex, counts state vertex =
+    roots vertex + incoming vertices (active state) vertex.
+
+Definition add_roots (roots : counter) (added : list nat) : counter :=
+  fun vertex => roots vertex + occurrences added vertex.
+
+Definition remove_roots (roots : counter) (removed : list nat) : counter :=
+  fun vertex => roots vertex - occurrences removed vertex.
+
+Theorem activation_starts_with_added_root_occurrences : forall vertices roots state added,
+  quiescent vertices roots state ->
+  activation_balance vertices (add_roots roots added) state added [].
+Proof.
+  intros vertices roots state added balance query.
+  unfold pending, add_roots; cbn [cursor_pending]. rewrite (balance query). lia.
+Qed.
+
+Theorem deactivation_starts_with_authorized_root_occurrences :
+  forall vertices roots state removed,
+  quiescent vertices roots state ->
+  (forall vertex, occurrences removed vertex <= roots vertex) ->
+  deactivation_balance vertices (remove_roots roots removed) state removed [].
+Proof.
+  intros vertices roots state removed balance authorized query.
+  unfold pending, remove_roots; cbn [cursor_pending]. rewrite (balance query).
+  specialize (authorized query). lia.
+Qed.
+
+Theorem drained_activation_is_quiescent : forall vertices roots state,
+  activation_balance vertices roots state [] [] -> quiescent vertices roots state.
+Proof.
+  intros vertices roots state balance query.
+  specialize (balance query). unfold pending in balance.
+  cbn [occurrences cursor_pending] in balance. lia.
+Qed.
+
+Theorem drained_deactivation_is_quiescent : forall vertices roots state,
+  deactivation_balance vertices roots state [] [] -> quiescent vertices roots state.
+Proof.
+  intros vertices roots state balance query.
+  specialize (balance query). unfold pending in balance.
+  cbn [occurrences cursor_pending] in balance. lia.
+Qed.
+
+Definition authenticated_cursor (cursor : child_cursor) : Prop :=
+  exists consumed, children (fst cursor) = consumed ++ snd cursor.
+
+Definition authenticated_cursors (cursors : list child_cursor) : Prop :=
+  Forall authenticated_cursor cursors.
+
+Theorem complete_child_cursor_is_authenticated : forall vertex,
+  authenticated_cursor (vertex, children vertex).
+Proof. intros vertex. exists []; reflexivity. Qed.
+
+Theorem advancing_a_cursor_preserves_its_authenticated_suffix :
+  forall parent child remaining,
+  authenticated_cursor (parent, child :: remaining) ->
+  authenticated_cursor (parent, remaining).
+Proof.
+  intros parent child remaining [consumed exact_suffix].
+  exists (consumed ++ [child]). cbn in *. rewrite <- app_assoc. exact exact_suffix.
+Qed.
+
+Theorem increment_preserves_cursor_authentication : forall state vertex cursors,
+  authenticated_cursors cursors ->
+  authenticated_cursors (increment_cursors state vertex cursors).
+Proof.
+  intros state vertex cursors authenticated.
+  unfold increment_cursors. destruct (Nat.eqb (counts state vertex) 0); auto.
+  constructor; [apply complete_child_cursor_is_authenticated|exact authenticated].
+Qed.
+
+Theorem decrement_preserves_cursor_authentication : forall state vertex cursors,
+  authenticated_cursors cursors ->
+  authenticated_cursors (decrement_cursors state vertex cursors).
+Proof.
+  intros state vertex cursors authenticated.
+  unfold decrement_cursors. destruct (Nat.eqb (counts state vertex) 1); auto.
+  constructor; [apply complete_child_cursor_is_authenticated|exact authenticated].
+Qed.
+
+Lemma occurrences_positive : forall references query,
+  0 < occurrences references query <-> In query references.
+Proof.
+  induction references as [|head tail IH]; intros query; cbn [occurrences In].
+  - lia.
+  - destruct (Nat.eqb query head) eqn:same.
+    + apply Nat.eqb_eq in same. subst head. split; [auto|lia].
+    + apply Nat.eqb_neq in same. rewrite <- IH. intuition lia.
+Qed.
+
+Lemma incoming_positive : forall vertices enabled query,
+  0 < incoming vertices enabled query <->
+  exists parent, In parent vertices /\ enabled parent = true /\
+    In query (children parent).
+Proof.
+  induction vertices as [|head tail IH]; intros enabled query; cbn [incoming].
+  - split; [lia|intros [parent [absent _]]; contradiction].
+  - destruct (enabled head) eqn:head_enabled.
+    + split.
+      * intros positive. assert (choice : 0 < occurrences (children head) query \/
+          0 < incoming tail enabled query) by lia.
+        destruct choice as [edge|rest].
+        -- exists head. split; [now left|]. split; [exact head_enabled|].
+           now apply occurrences_positive.
+        -- apply IH in rest. destruct rest as [parent [member rest]].
+           exists parent. split; [now right|exact rest].
+      * intros [parent [[same|member] [parent_enabled edge]]].
+        -- subst parent. apply occurrences_positive in edge. lia.
+        -- assert (positive : 0 < incoming tail enabled query).
+           { apply IH. exists parent; auto. } lia.
+    + split.
+      * intros positive. apply IH in positive.
+        destruct positive as [parent [member rest]].
+        exists parent. split; [now right|exact rest].
+      * intros [parent [[same|member] [parent_enabled edge]]].
+        -- subst parent. congruence.
+        -- apply IH. exists parent; auto.
+Qed.
+
+Inductive reachable (vertices : list nat) (roots : counter) : nat -> Prop :=
+| reachable_root : forall vertex,
+    0 < roots vertex -> reachable vertices roots vertex
+| reachable_child : forall parent child,
+    reachable vertices roots parent -> In parent vertices ->
+    In child (children parent) -> reachable vertices roots child.
+
+Theorem root_reachability_implies_positive_count : forall vertices roots state,
+  coherent state -> quiescent vertices roots state ->
+  forall vertex, reachable vertices roots vertex -> 0 < counts state vertex.
+Proof.
+  intros vertices roots state agreement balance vertex path.
+  induction path as [vertex root|parent child path positive member edge].
+  - rewrite (balance vertex). lia.
+  - assert (enabled : active state parent = true).
+    { rewrite (agreement parent). now apply Nat.ltb_lt. }
+    assert (contribution : 0 < incoming vertices (active state) child).
+    { apply incoming_positive. exists parent; auto. }
+    rewrite (balance child). lia.
+Qed.
+
+Definition rank_ceiling (vertices : list nat) (rank : nat -> nat) : nat :=
+  fold_right Nat.max 0 (map rank vertices).
+
+Lemma member_rank_is_bounded : forall vertices rank vertex,
+  In vertex vertices -> rank vertex <= rank_ceiling vertices rank.
+Proof.
+  induction vertices as [|head tail IH]; intros rank vertex member;
+    [contradiction|].
+  cbn [rank_ceiling map fold_right]. destruct member as [same|member].
+  - subst vertex. apply Nat.le_max_l.
+  - eapply Nat.le_trans; [apply IH; exact member|apply Nat.le_max_r].
+Qed.
+
+Theorem positive_count_implies_root_reachability : forall vertices roots state rank,
+  coherent state -> quiescent vertices roots state ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    rank child < rank parent) ->
+  forall vertex, 0 < counts state vertex -> reachable vertices roots vertex.
+Proof.
+  intros vertices roots state rank agreement balance descending.
+  assert (by_level : forall level vertex,
+    rank_ceiling vertices rank - rank vertex < level ->
+    0 < counts state vertex -> reachable vertices roots vertex).
+  { induction level as [|level IH]; intros vertex below positive; [lia|].
+    destruct (Nat.eq_dec (roots vertex) 0) as [no_root|root].
+    - assert (contribution : 0 < incoming vertices (active state) vertex).
+      { rewrite (balance vertex), no_root in positive. exact positive. }
+      apply incoming_positive in contribution.
+      destruct contribution as [parent [member [enabled edge]]].
+      assert (parent_positive : 0 < counts state parent).
+      { rewrite (agreement parent) in enabled. now apply Nat.ltb_lt. }
+      pose proof (@member_rank_is_bounded vertices rank parent member) as bounded.
+      pose proof (descending parent vertex member edge) as lower.
+      apply reachable_child with (parent := parent);
+        [apply IH; [lia|exact parent_positive]|exact member|exact edge].
+    - apply reachable_root. lia. }
+  intros vertex positive. eapply by_level; [apply Nat.lt_succ_diag_r|exact positive].
+Qed.
+
+Theorem quiescent_support_is_exact_root_reachability : forall vertices roots state rank,
+  coherent state -> quiescent vertices roots state ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    rank child < rank parent) ->
+  forall vertex, active state vertex = true <-> reachable vertices roots vertex.
+Proof.
+  intros vertices roots state rank agreement balance descending vertex.
+  rewrite (agreement vertex), Nat.ltb_lt. split.
+  - eapply positive_count_implies_root_reachability; eauto.
+  - eapply root_reachability_implies_positive_count; eauto.
+Qed.
+
+Lemma incoming_extensional : forall vertices left right query,
+  (forall vertex, left vertex = right vertex) ->
+  incoming vertices left query = incoming vertices right query.
+Proof.
+  induction vertices as [|head tail IH]; intros left right query agreement;
+    [reflexivity|].
+  cbn [incoming]. rewrite (agreement head), (IH left right query agreement). reflexivity.
+Qed.
+
+Theorem quiescent_ledger_is_unique : forall vertices roots left right rank,
+  coherent left -> quiescent vertices roots left ->
+  coherent right -> quiescent vertices roots right ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    rank child < rank parent) ->
+  forall vertex, counts left vertex = counts right vertex /\
+    active left vertex = active right vertex.
+Proof.
+  intros vertices roots left right rank left_coherent left_balance
+    right_coherent right_balance descending.
+  assert (same_support : forall vertex, active left vertex = active right vertex).
+  { intros vertex.
+    pose proof (@quiescent_support_is_exact_root_reachability vertices roots left rank
+      left_coherent left_balance descending vertex) as left_support.
+    pose proof (@quiescent_support_is_exact_root_reachability vertices roots right rank
+      right_coherent right_balance descending vertex) as right_support.
+    destruct (active left vertex), (active right vertex); intuition congruence. }
+  intros vertex. split; [|apply same_support].
+  rewrite (left_balance vertex), (right_balance vertex).
+  f_equal. apply incoming_extensional. exact same_support.
+Qed.
+
+Inductive phase := Activation | Deactivation.
+
+Record configuration := Configuration {
+  resident : ledger;
+  events : list nat;
+  frames : list child_cursor
+}.
+
+Definition phase_balance (mode : phase) (vertices : list nat) (roots : counter)
+  (machine : configuration) : Prop :=
+  match mode with
+  | Activation => activation_balance vertices roots (resident machine)
+      (events machine) (frames machine)
+  | Deactivation => deactivation_balance vertices roots (resident machine)
+      (events machine) (frames machine)
+  end.
+
+Definition valid_configuration (mode : phase) (vertices : list nat) (roots : counter)
+  (machine : configuration) : Prop :=
+  coherent (resident machine) /\ phase_balance mode vertices roots machine /\
+  Forall (fun vertex => In vertex vertices) (events machine) /\
+  Forall (fun cursor => In (fst cursor) vertices /\ authenticated_cursor cursor)
+    (frames machine).
+
+Inductive cursor_step : phase -> configuration -> configuration -> Prop :=
+| activate_event : forall state vertex explicit cursors,
+    cursor_step Activation (Configuration state (vertex :: explicit) cursors)
+      (Configuration (increment state vertex) explicit
+        (increment_cursors state vertex cursors))
+| deactivate_event : forall state vertex explicit cursors,
+    cursor_step Deactivation (Configuration state (vertex :: explicit) cursors)
+      (Configuration (decrement state vertex) explicit
+        (decrement_cursors state vertex cursors))
+| transfer_cursor : forall mode state explicit parent child remaining cursors,
+    cursor_step mode
+      (Configuration state explicit ((parent, child :: remaining) :: cursors))
+      (Configuration state (child :: explicit) ((parent, remaining) :: cursors))
+| discard_cursor : forall mode state explicit parent cursors,
+    cursor_step mode (Configuration state explicit ((parent, []) :: cursors))
+      (Configuration state explicit cursors).
+
+Lemma authenticated_cursor_head_is_an_edge : forall parent child remaining,
+  authenticated_cursor (parent, child :: remaining) -> In child (children parent).
+Proof.
+  intros parent child remaining [consumed suffix]. cbn in suffix.
+  rewrite suffix. apply in_or_app. right. now left.
+Qed.
+
+Theorem cursor_step_preserves_configuration : forall vertices roots mode before after,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  cursor_step mode before after -> valid_configuration mode vertices roots before ->
+  valid_configuration mode vertices roots after.
+Proof.
+  intros vertices roots mode before after unique closed transition valid.
+  destruct transition as [state vertex explicit cursors|state vertex explicit cursors|
+    mode state explicit parent child remaining cursors|mode state explicit parent cursors];
+    destruct valid as [agreement [balance [event_domain cursor_domain]]];
+    cbn [resident events frames] in *.
+  - inversion event_domain as [|? ? member remaining_domain]; subst.
+    split; [now apply increment_preserves_coherence|]. split.
+    + eapply increment_preserves_activation_balance; eauto.
+    + split; [exact remaining_domain|].
+      cbn [frames]. unfold increment_cursors.
+      destruct (Nat.eqb (counts state vertex) 0); [|exact cursor_domain].
+      constructor; [split; [exact member|apply complete_child_cursor_is_authenticated]|
+        exact cursor_domain].
+  - inversion event_domain as [|? ? member remaining_domain]; subst.
+    split; [now apply decrement_preserves_coherence|]. split.
+    + eapply decrement_preserves_deactivation_balance; eauto.
+    + split; [exact remaining_domain|].
+      cbn [frames]. unfold decrement_cursors.
+      destruct (Nat.eqb (counts state vertex) 1); [|exact cursor_domain].
+      constructor; [split; [exact member|apply complete_child_cursor_is_authenticated]|
+        exact cursor_domain].
+  - inversion cursor_domain as [|? ? [parent_member authenticated] remaining_domain]; subst.
+    split; [exact agreement|]. split.
+    + destruct mode; intros query; specialize (balance query);
+        cbn [phase_balance resident events frames] in *;
+        rewrite <- transferring_one_cursor_occurrence_preserves_pending; exact balance.
+    + split.
+      * constructor; [|exact event_domain].
+        eapply closed; [exact parent_member|].
+        eapply authenticated_cursor_head_is_an_edge; exact authenticated.
+      * constructor; [|exact remaining_domain]. split; [exact parent_member|].
+        now apply advancing_a_cursor_preserves_its_authenticated_suffix with (child := child).
+  - inversion cursor_domain as [|? ? head remaining_domain]; subst.
+    split; [exact agreement|]. split.
+    + destruct mode; intros query; exact (balance query).
+    + split; [exact event_domain|exact remaining_domain].
+Qed.
+
+Inductive cursor_execution (mode : phase) (initial : configuration) :
+  configuration -> Prop :=
+| execution_start : cursor_execution mode initial initial
+| execution_step : forall before after,
+    cursor_execution mode initial before -> cursor_step mode before after ->
+    cursor_execution mode initial after.
+
+Theorem cursor_execution_preserves_configuration :
+  forall vertices roots mode initial final,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  valid_configuration mode vertices roots initial ->
+  cursor_execution mode initial final -> valid_configuration mode vertices roots final.
+Proof.
+  intros vertices roots mode initial final unique closed valid execution.
+  induction execution; [exact valid|].
+  eapply cursor_step_preserves_configuration; eauto.
+Qed.
+
+Theorem drained_execution_has_exact_root_reachability :
+  forall vertices roots mode initial final rank,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    rank child < rank parent) ->
+  valid_configuration mode vertices roots initial ->
+  cursor_execution mode initial (Configuration final [] []) ->
+  coherent final /\ quiescent vertices roots final /\
+    (forall vertex, active final vertex = true <-> reachable vertices roots vertex).
+Proof.
+  intros vertices roots mode initial final rank unique closed descending valid execution.
+  pose proof (@cursor_execution_preserves_configuration vertices roots mode initial
+    (Configuration final [] []) unique closed valid execution) as preserved.
+  destruct preserved as [agreement [balance _]].
+  assert (terminal : quiescent vertices roots final).
+  { destruct mode.
+    - now apply drained_activation_is_quiescent.
+    - now apply drained_deactivation_is_quiescent. }
+  split; [exact agreement|]. split; [exact terminal|].
+  eapply quiescent_support_is_exact_root_reachability; eauto.
+Qed.
+
+Theorem activation_initial_configuration_is_valid : forall vertices roots state added,
+  coherent state -> quiescent vertices roots state ->
+  Forall (fun vertex => In vertex vertices) added ->
+  valid_configuration Activation vertices (add_roots roots added)
+    (Configuration state added []).
+Proof.
+  intros vertices roots state added agreement balance domain.
+  split; [exact agreement|]. split.
+  - now apply activation_starts_with_added_root_occurrences.
+  - split; [exact domain|constructor].
+Qed.
+
+Theorem deactivation_initial_configuration_is_valid : forall vertices roots state removed,
+  coherent state -> quiescent vertices roots state ->
+  Forall (fun vertex => In vertex vertices) removed ->
+  (forall vertex, occurrences removed vertex <= roots vertex) ->
+  valid_configuration Deactivation vertices (remove_roots roots removed)
+    (Configuration state removed []).
+Proof.
+  intros vertices roots state removed agreement balance domain authorized.
+  split; [exact agreement|]. split.
+  - now apply deactivation_starts_with_authorized_root_occurrences.
+  - split; [exact domain|constructor].
+Qed.
+
+Theorem add_before_remove_agrees_with_cold_ledger :
+  forall vertices roots initial added removed middle final cold rank,
+  NoDup vertices ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    In child vertices) ->
+  (forall parent child, In parent vertices -> In child (children parent) ->
+    rank child < rank parent) ->
+  coherent initial -> quiescent vertices roots initial ->
+  Forall (fun vertex => In vertex vertices) added ->
+  Forall (fun vertex => In vertex vertices) removed ->
+  (forall vertex, occurrences removed vertex <= add_roots roots added vertex) ->
+  cursor_execution Activation (Configuration initial added [])
+    (Configuration middle [] []) ->
+  cursor_execution Deactivation (Configuration middle removed [])
+    (Configuration final [] []) ->
+  coherent cold -> quiescent vertices (remove_roots (add_roots roots added) removed) cold ->
+  forall vertex, counts final vertex = counts cold vertex /\
+    active final vertex = active cold vertex.
+Proof.
+  intros vertices roots initial added removed middle final cold rank unique closed
+    descending initial_coherent initial_balance added_domain removed_domain authorized
+    activated deactivated cold_coherent cold_balance.
+  pose proof (@activation_initial_configuration_is_valid vertices roots initial added
+    initial_coherent initial_balance added_domain) as activation_valid.
+  pose proof (@drained_execution_has_exact_root_reachability vertices
+    (add_roots roots added) Activation (Configuration initial added []) middle rank
+    unique closed descending activation_valid activated) as middle_valid.
+  destruct middle_valid as [middle_coherent [middle_balance _]].
+  pose proof (@deactivation_initial_configuration_is_valid vertices
+    (add_roots roots added) middle removed middle_coherent middle_balance
+    removed_domain authorized) as deactivation_valid.
+  pose proof (@drained_execution_has_exact_root_reachability vertices
+    (remove_roots (add_roots roots added) removed) Deactivation
+    (Configuration middle removed []) final rank unique closed descending
+    deactivation_valid deactivated) as final_valid.
+  destruct final_valid as [final_coherent [final_balance _]].
+  eapply quiescent_ledger_is_unique; eauto.
+Qed.
+
+Lemma no_roots_no_reachability : forall vertices roots,
+  (forall vertex, roots vertex = 0) ->
+  forall vertex, ~ reachable vertices roots vertex.
+Proof.
+  intros vertices roots empty vertex path. induction path.
+  - rewrite empty in H. lia.
+  - exact IHpath.
+Qed.
+
+Theorem cursor_suffix_does_not_establish_processed_history : forall parent child remaining,
+  children parent = child :: remaining ->
+  authenticated_cursor (parent, remaining) /\
+    pending [] [(parent, child :: remaining)] child =
+      S (pending [] [(parent, remaining)] child).
+Proof.
+  intros parent child remaining full. split.
+  - exists [child]. exact full.
+  - unfold pending. cbn [occurrences cursor_pending]. rewrite Nat.eqb_refl. lia.
+Qed.
+
+End Graph.
+
+Theorem rootless_cycle_has_a_spurious_quiescent_ledger :
+  let edges := fun _ : nat => [0] in
+  let roots := fun _ : nat => 0 in
+  let state := {| counts := fun vertex => if Nat.eqb vertex 0 then 1 else 0;
+                  active := fun vertex => Nat.eqb vertex 0 |} in
+  coherent state /\ quiescent edges [0] roots state /\
+    active state 0 = true /\ ~ reachable edges [0] roots 0.
+Proof.
+  cbn zeta. split.
+  - intros vertex. cbn [active counts]. destruct (Nat.eqb vertex 0); reflexivity.
+  - split.
+    + intros vertex. cbn [counts active incoming occurrences].
+      destruct (Nat.eqb vertex 0); reflexivity.
+    + split; [reflexivity|]. apply no_roots_no_reachability. reflexivity.
+Qed.
+
+End IncrementalReachability.
+
 Module CatalogAppointedPrefix.
 
 Theorem discarding_unselected_suffix_preserves_appointed_bytes :
@@ -1730,6 +2398,42 @@ Proof.
 Qed.
 
 End CatalogAppointedPrefix.
+
+Print Assumptions IncrementalReachability.incoming_replace_absent.
+Print Assumptions IncrementalReachability.incoming_replace_present.
+Print Assumptions IncrementalReachability.transferring_one_cursor_occurrence_preserves_pending.
+Print Assumptions IncrementalReachability.discarding_an_exhausted_cursor_preserves_pending.
+Print Assumptions IncrementalReachability.increment_preserves_coherence.
+Print Assumptions IncrementalReachability.increment_preserves_activation_balance.
+Print Assumptions IncrementalReachability.pending_decrement_cannot_underflow.
+Print Assumptions IncrementalReachability.decrement_preserves_coherence.
+Print Assumptions IncrementalReachability.decrement_preserves_deactivation_balance.
+Print Assumptions IncrementalReachability.activation_starts_with_added_root_occurrences.
+Print Assumptions IncrementalReachability.deactivation_starts_with_authorized_root_occurrences.
+Print Assumptions IncrementalReachability.drained_activation_is_quiescent.
+Print Assumptions IncrementalReachability.drained_deactivation_is_quiescent.
+Print Assumptions IncrementalReachability.complete_child_cursor_is_authenticated.
+Print Assumptions IncrementalReachability.advancing_a_cursor_preserves_its_authenticated_suffix.
+Print Assumptions IncrementalReachability.increment_preserves_cursor_authentication.
+Print Assumptions IncrementalReachability.decrement_preserves_cursor_authentication.
+Print Assumptions IncrementalReachability.occurrences_positive.
+Print Assumptions IncrementalReachability.incoming_positive.
+Print Assumptions IncrementalReachability.root_reachability_implies_positive_count.
+Print Assumptions IncrementalReachability.member_rank_is_bounded.
+Print Assumptions IncrementalReachability.positive_count_implies_root_reachability.
+Print Assumptions IncrementalReachability.quiescent_support_is_exact_root_reachability.
+Print Assumptions IncrementalReachability.incoming_extensional.
+Print Assumptions IncrementalReachability.quiescent_ledger_is_unique.
+Print Assumptions IncrementalReachability.authenticated_cursor_head_is_an_edge.
+Print Assumptions IncrementalReachability.cursor_step_preserves_configuration.
+Print Assumptions IncrementalReachability.cursor_execution_preserves_configuration.
+Print Assumptions IncrementalReachability.drained_execution_has_exact_root_reachability.
+Print Assumptions IncrementalReachability.activation_initial_configuration_is_valid.
+Print Assumptions IncrementalReachability.deactivation_initial_configuration_is_valid.
+Print Assumptions IncrementalReachability.add_before_remove_agrees_with_cold_ledger.
+Print Assumptions IncrementalReachability.no_roots_no_reachability.
+Print Assumptions IncrementalReachability.cursor_suffix_does_not_establish_processed_history.
+Print Assumptions IncrementalReachability.rootless_cycle_has_a_spurious_quiescent_ledger.
 
 Print Assumptions CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes.
 Print Assumptions JournalVersionFreshness.advancing_never_reuses_current_version.

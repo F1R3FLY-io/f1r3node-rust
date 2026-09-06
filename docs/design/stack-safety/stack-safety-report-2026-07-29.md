@@ -12996,3 +12996,24 @@ correctness results, not allocation, RSS-slope, native-stack or throughput
 measurements. Rust/Rocq systemd maxima remain 8/2 GiB with zero swap. Default
 backend activation, complete lifecycle gates and the LMDB comparison remain open.
 See [J-062](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-062--2026-09-06-retain-the-journal-owner-through-exact-durable-resolution).
+
+Incremental reachability foundation, 2026-09-06: 35 new Rocq lemmas establish
+pending-edge conservation, cursor execution preservation, exact acyclic terminal
+reachability, quiescent-count uniqueness and completed add-before-remove agreement.
+All 74 old/new assumption reports are closed and independent kernel checking passes.
+Nine test-only model checks and the exhaustive 111-ID manifest pass 10/10 in debug
+(0.07 s) and release (0.01 s), with 635 other library tests excluded. The generated
+property uses 256 small DAG histories and checks every microstep against the phase
+equations, with an independent cold graph traversal at drainage. These are not
+production cold-admission differentials. The first test command selected zero tests;
+only the corrected, explicitly ten-test gates count as evidence.
+
+The model uses explicit events and suspended child cursors; it introduces no runtime
+fuel or user-term depth limit. Completed-run correctness does not yet establish
+termination of all schedules, a changed-edge complexity theorem, production checked
+counters or any reduction in RSS, allocations, native-stack growth or latency.
+Those obligations, resource-certificate separation and the production successor
+constructor remain part of task 7755. Rust/Rocq maxima were 8/2 GiB with zero swap,
+not measured peaks; no benchmark was run. No production backend, persisted format,
+consensus encoding or metering behavior changed. See
+[J-064](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-064--2026-09-06-prove-cursor-ledger-reachability-before-successor-construction).

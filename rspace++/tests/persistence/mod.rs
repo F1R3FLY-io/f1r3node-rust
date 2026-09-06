@@ -13,6 +13,7 @@ mod durable_rspace_authority;
 mod durable_startup;
 mod index_codec;
 mod incremental_prepare_streaming_properties;
+mod incremental_reachability_properties;
 mod kind1_recovery_protocol_properties;
 mod kind1_wire_protocol_properties;
 mod manifest_codec;

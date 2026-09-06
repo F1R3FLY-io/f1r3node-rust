@@ -4430,6 +4430,93 @@ edge occurrences and evictions independently. Preserve owner/gate/pin semantics
 and the three semantic roots throughout. No production source or on-disk bytes
 changed in this review.
 
+### J-064 — 2026-09-06: prove cursor-ledger reachability before successor construction
+
+**QUESTION AND STATUS.** Can a sharing-aware incoming-reference ledger be updated
+with suspended child cursors while deriving the exact final rooted closure?
+Task 7755 now has a checked single-domain cursor model in the existing
+`GenerationCheckpointPublication.v`. This is formal and executable-specification
+work, not a production successor constructor, storage-format change or measured
+performance improvement.
+
+**DERIVED CONTRACT.** Each distinct active parent contributes every outgoing edge
+occurrence once. Multiple incoming references to that parent do not multiply its
+outgoing contribution. For example, two root references to parent `p`, whose
+children are `[c,c]`, produce counts `p=2,c=2`, not `c=4`. Collapsing repeated child
+references to a set would instead undercount `c`.
+
+The model preserves the activation and deactivation balances in J-063 after each
+explicit event, cursor transfer and exhausted-cursor discard. A zero crossing and
+installation of its complete outgoing cursor are one transition. Every permitted
+finite execution preserves coherence, graph-domain support for pending work, and
+exact suffixes. On a finite acyclic graph, the quiescent incoming equation has a
+unique solution: an object's count is positive exactly when it is reachable from
+an explicit root. Completing additions before authorized removals therefore agrees
+pointwise with an independently obtained quiescent ledger for the final roots.
+The rank induction used in this proof is mathematical, not a runtime fuel parameter
+or a user-term depth limit.
+
+Two checked limitation witnesses prevent overclaiming:
+
+- A rootless self-cycle admits a coherent positive quiescent ledger. Acyclic graph
+  admission is necessary; nonnegative counters alone cannot establish reachability.
+- Skipping a child leaves a valid suffix but loses a pending contribution. Suffix
+  authentication alone does not establish processed history. It also does not bind
+  a real parent digest, declared length, source identity or exact-path provenance.
+
+**EXTRACTED TEST DESIGN.** The existing invariant catalog and executable manifest
+gain `IR-01` through `IR-14`, mapping all 35 new lemmas. A separate test-only model
+in `tests/persistence/incremental_reachability_properties.rs` uses small vector
+graphs and a cold reachability traversal. It does not flatten or replace production
+PathMap storage. Stack `push`/`pop` represents the formal cons-list head in reverse
+storage order; root additions and removals remain multisets.
+
+The generated property uses 256 cases, one to eight vertices, zero to four outgoing
+occurrences per vertex, and two to six root-history steps. Each history runs both a
+generated event/cursor schedule and its complement. It checks every microstep and
+both drained phase boundaries, then removes all remaining roots. Focused controls
+cover skipped/repeated edges, deduplicated references, expansion at every count
+change, post-update zero-crossing decisions, unauthorized root removal, zero-count
+decrement, incomplete handoff and the two formal limitation boundaries. An identical-
+adjacency parent substitution deliberately remains valid in the abstract model:
+real object/provenance authentication must reject it independently.
+
+**VERIFICATION.** All 35 new assumption reports are closed under the global
+context; the existing gate now requires 74 reports including its previous 39.
+Independent kernel checking passes. The final theory SHA-256 is
+`9d3da6d0f05ee7fa7b954cbaa6141bf251d74d72a7f016eac512a7769989129a`.
+Proof elaboration initially required explicit parent/function arguments; these
+corrections did not weaken statements. The first Rust build exposed a diagnostic
+format-string expansion in a `prop_assert!` containing a closure block; adding an
+explicit diagnostic corrected that compilation error without changing its property.
+The initial debug/release filter omitted the test module component and selected
+zero tests; those runs are not pass evidence. Listing the compiled test names
+identified the exact paths. The corrected commands explicitly require ten passes
+and finish with **10/10** in debug (0.07 s) and release (0.01 s): nine model tests
+plus the exhaustive **111-ID** derivation-manifest check. The other 635 library
+tests are outside this selection; this is not a full-library or workspace pass.
+All existing 80 library-test warnings remain visible rather than suppressed.
+
+Rocq compilation and kernel checking each used `MemoryHigh=1G`, `MemoryMax=2G`,
+`MemorySwapMax=0`, and `CPUQuota=200%`. Rust used a 6 GiB high threshold, 8 GiB
+maximum, zero swap, four build/test workers and disk-backed scratch, with
+`RUST_MIN_STACK` unset. These are configured ceilings, not measured peak RSS or
+performance results. The final evidence files are
+`rspace-incremental-formal-final-20260906.log`,
+`rspace-incremental-kernel-final-20260906.log`, and
+`rspace-incremental-model-{debug,release}-r3-20260906.log`; pgmcp retains the exact
+paths and hashes. No timed benchmark or hardware profile was run for this slice.
+
+**REMAINING PROOF AND IMPLEMENTATION BOUNDARIES.** Completed-run equivalence does
+not prove that every legal schedule terminates. Termination, changed-edge work
+bounds, checked production `u64` arithmetic, scratch/final resource separation,
+failure-atomic CoW trials and unique-byte/kind inventory composition remain open.
+So do independent current/retained/metadata domain binding, cold-resource
+certificates, retained-format compatibility, trusted-successor integration and
+the full cold differential. Bounded `usize` model arithmetic and test work counters
+are not promoted to those proofs. No production admission check, pin, authority
+binding, consensus byte, runtime budget or backend choice changed in this slice.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

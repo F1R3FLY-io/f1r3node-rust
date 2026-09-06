@@ -166,6 +166,20 @@ pub(super) fn apply_inventory_mutation(
 }
 
 pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
+    ("IR-01", "cursor_edge_and_zero_crossing_mutants_violate_conservation"),
+    ("IR-02", "cursor_execution_preserves_phase_invariants_and_matches_cold_dag"),
+    ("IR-03", "phase_handoff_requires_both_events_and_cursors_drained"),
+    ("IR-04", "cursor_execution_preserves_phase_invariants_and_matches_cold_dag"),
+    ("IR-05", "zero_count_decrement_is_not_justified_by_coherence"),
+    ("IR-06", "cursor_execution_preserves_phase_invariants_and_matches_cold_dag"),
+    ("IR-07", "repeated_root_events_cannot_be_deduplicated"),
+    ("IR-08", "root_removal_requires_root_authority_not_incoming_counts"),
+    ("IR-09", "add_before_remove_preserves_shared_roots_and_releases_last_references"),
+    ("IR-10", "authenticated_suffix_does_not_prove_processed_history"),
+    ("IR-11", "cursor_execution_preserves_phase_invariants_and_matches_cold_dag"),
+    ("IR-12", "cursor_execution_preserves_phase_invariants_and_matches_cold_dag"),
+    ("IR-13", "cursor_execution_preserves_phase_invariants_and_matches_cold_dag"),
+    ("IR-14", "rootless_cycle_witness_requires_acyclicity"),
     ("JR-01", "constructor_refuses_foreign_or_invalidated_hot_authority_without_losing_its_view"),
     ("JR-02", "invalidated_base_cannot_release_old_recovery_or_report_ready"),
     ("JR-03", "a_stale_capture_is_rejected_before_publication_even_when_its_journal_bytes_match"),
