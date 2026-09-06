@@ -3817,6 +3817,85 @@ No end-to-end cutover, consensus, stack-slope or persistence-speedup claim follo
 [invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#borrowed-recovery-and-admission-refinement-2026-09-06)
 maps the executed primitive checks separately from outstanding owner obligations.
 
+### J-055 — 2026-09-06: exact successor inventory and sharing-aware updates
+
+**QUESTION.** Can a durable successor's byte inventory be derived by adding a staged
+transaction's diagnostic byte count to the predecessor inventory?
+
+**METHOD AND SOURCE FINDING.** Astra, an independent plan reviewer and the main agent
+audited revision `e14e50c97`. In `durable/admission.rs`,
+`attach_target_retention_manifest` combines predecessor-current bytes with incremental
+closure bytes and subtracts the target semantic manifest's length. Incremental closure
+validation deliberately stops at inherited objects. This arithmetic therefore does not
+identify predecessor objects replaced or removed by the transaction.
+`durable/publication.rs` independently repeats the calculation. The existing
+`successor_retained_union` overlay traversal already obtains the exact target report but
+discards it. This is a source-level correctness finding, not a newly executed regression.
+
+**COUNTEREXAMPLE.** Consider synthetic distinct objects: an old manifest of 20 bytes,
+an old root of 10 bytes and a shared descendant of 30 bytes. Replace the manifest/root
+with a 20-byte manifest and an 11-byte root, preserving the descendant. The old closure
+is 60 bytes, the staged new objects are 31 bytes, and the exact target is 61 bytes.
+The implemented arithmetic produces 71 bytes. These numbers illustrate a set-accounting
+counterexample; they are not measurements of an encoded RSpace fixture.
+
+**ACCOUNTING BOUNDARIES.** A closure is the set of distinct canonical objects reachable
+from its roots. Admission at the audited revision distinguishes three domains:
+
+| Domain | Included objects | Required authority |
+|---|---|---|
+| Current semantic closure | Target semantic manifest and its DataBag, ContinuationMap and JoinBag descendants | Exact target-bound structural report |
+| Retained semantic union | Distinct objects reachable from current and historical semantic manifests | Exact retained-root union report |
+| Physical storage | Retention-manifest metadata, WAL framing, packs, indexes, catalogs and protected generations, as well as semantic objects | Physical publication, retention and reclamation protocol |
+
+The target semantic manifest must not be subtracted from current bytes. The separate
+`RetentionManifestV1` metadata object belongs to neither semantic inventory; its own
+admission and durable publication remain mandatory. An initial reviewer classification
+placing this metadata in the semantic retained union was rejected against the code.
+
+**CORRECTNESS DECISION.** Reopen existing pgmcp task 6647 and complete its correction
+within active task 6626. Retain the exact current and retained-union reports together
+from the existing overlay traversal, bound privately to the admitted predecessor and
+sealed target. Use that same evidence for retention attachment and WAL/catalog publication.
+Keep staged-validation diagnostics explicitly separate. Derive formal accounting properties
+before production edits, then exercise multi-checkpoint replacement, deletion, shared-DAG,
+repeated-reference, same-digest reuse and empty-state histories against cold admission.
+The one-empty-insert test is not sufficient evidence for these cases.
+
+**OPTIMIZATION DESIGN, NOT YET IMPLEMENTED.** Task 7755 will preserve this inventory
+authority while changing its derivation. A digest-keyed PathMap ledger tracks separate
+incoming-reference counts for current and retained reachability. Each reachable parent
+contributes its outgoing edge occurrences once. Repeated edges contribute repeatedly,
+but an object's bytes contribute only once. CoW-fork the ledger, activate the target
+before deactivating the predecessor, and traverse outgoing edges only when an object
+enters or leaves reachability. Use explicit worklists and checked arithmetic. Failed
+updates preserve the predecessor. Semantic path/provenance validation remains separate.
+
+Scalar subtree totals cannot account for arbitrary overlapping DAG descendants.
+Per-subtree transitive membership sets can introduce quadratic metadata; whole-state
+PathMap set difference remains a comparison option when those sets already exist.
+The reference ledger is derived metadata, not a new semantic authority or hash input.
+A reachability decrement never independently permits disk reclamation: generation,
+reader, export/import and rollback pins remain binding.
+
+**COMPLEXITY AND NEXT EVIDENCE.** Measure changed paths, entering/leaving objects,
+outgoing edges inspected, unchanged-boundary stops, ledger writes, CoW copying,
+loaded bytes, allocations, RSS and latency. Removing one last reference can expose a
+large unique closure, so mutation-key count alone is not a valid work bound.
+The current flat historical-retention list is another independent cost: collecting and
+re-encoding it scales with retained-root count. Task 7755 must resolve that cost under
+an explicitly reviewed/versioned retention representation before claiming no unchanged
+history enumeration. Task 5693 includes independent current-size, history-size, sharing,
+delta-size and retention-eviction axes. No speedup, proof of Rust refinement, format
+activation or cutover completion is claimed by this review.
+
+**PLAN CONTROL.** Existing tasks were amended rather than duplicated; 6626 requires
+verified 6647 evidence. The campaign dependency graph remained acyclic. The required
+sequence remains owner publication/acknowledgement, incremental successor, single root
+authority, then migration and cutover gates. Task 6424's proposed Nix/Node bootstrap is
+not an authorized dependency or prerequisite: preserve honest proof provenance using
+existing tooling, and require separate approval for any new provisioning system.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
