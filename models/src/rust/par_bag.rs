@@ -4261,7 +4261,7 @@ pub struct FamilyPartitions {
 }
 
 impl FamilyPartitions {
-    fn new(entries: Vec<(Arc<[u8]>, Multiplicity)>, minimum: u64, maximum: u64) -> Self {
+    fn new(entries: Vec<(Arc<[u8]>, Multiplicity)>, minimum: u128, maximum: u128) -> Self {
         let entries: Arc<[(Arc<[u8]>, Multiplicity)]> = entries.into();
         Self {
             // Mixed-radix multiplicity counters, not locally-free bit-vector
@@ -4270,8 +4270,8 @@ impl FamilyPartitions {
             selected: vec![0u64; entries.len()].into_boxed_slice(),
             entries,
             selected_total: 0,
-            minimum: u128::from(minimum),
-            maximum: u128::from(maximum),
+            minimum,
+            maximum,
             started: false,
             exhausted: minimum > maximum,
         }
@@ -4906,6 +4906,10 @@ impl ParBag {
         project_cardinality(self.aux.metrics.exact_cardinalities[T::TAG.index()])
     }
 
+    pub fn family_cardinality_exact<T: ParBagComponent>(&self) -> u128 {
+        self.aux.metrics.exact_cardinalities[T::TAG.index()]
+    }
+
     pub fn family_cardinality_is_saturated<T: ParBagComponent>(&self) -> bool {
         self.aux.metrics.exact_cardinalities[T::TAG.index()] > u64::MAX as u128
     }
@@ -4921,6 +4925,14 @@ impl ParBag {
         &self,
         min_size: u64,
         max_size: u64,
+    ) -> FamilyPartitions {
+        self.family_partitions_exact::<T>(u128::from(min_size), u128::from(max_size))
+    }
+
+    pub fn family_partitions_exact<T: ParBagComponent>(
+        &self,
+        min_size: u128,
+        max_size: u128,
     ) -> FamilyPartitions {
         let mut entries = Vec::with_capacity(self.family_distinct_len::<T>());
         self.components

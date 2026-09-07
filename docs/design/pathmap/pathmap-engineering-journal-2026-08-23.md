@@ -5652,8 +5652,9 @@ Formally distinguish finite aggregate bounds from unboundedness; derive exact
 selection and complement ranges before generating any candidate. Keep per-endpoint
 counters `u64`, and use an independent lawful positional oracle for complete small
 candidate sequences. Task 5855's required children 8339–8341 preserve formal-first
-ordering, runtime and qualification ownership. The repair is pending, not measured
-or claimed complete. See
+ordering, runtime and qualification ownership. The initial checkpoint selected the
+repair without claiming implementation; the runtime checkpoint below supersedes
+that implementation status, but not the open qualification. See
 [§5.29.9](../stack-safety/stack-safety-report-2026-07-29.md#5299-count-domain-acceptance-reopened--2026-09-07)
 for the counterexamples, source pins, command, log digest and proof boundaries.
 
@@ -5661,6 +5662,19 @@ for the counterexamples, source pins, command, log digest and proof boundaries.
 whole-module kernel check and the complete invariant-to-test catalogue; artifact
 508 binds the exact source and executed proof-runner guards. This completes the
 mathematical contract, not the pending Rust repair or concrete cursor qualification.
+
+**RUNTIME CHECKPOINT.** Child 8340 now reuses the exact cache through a wide
+partition-range entry and explicit finite/top matcher bounds. Three pre-fix witnesses
+failed for the intended complementary-count and concrete-minimum errors; the repaired
+16+4+8 integration run passes all 28 tests without omissions. All eight families
+include two distinct endpoints totaling maximum-plus-one, with independent endpoint
+sums and unchanged retained CoW roots. The compatibility `u64` partition maximum
+remains finite; neither endpoint storage nor serialized bytes change. Boundary
+arithmetic also agrees with an arbitrary-precision reference over 256 generated cases.
+The linked report supplies exact commands and log digests. This corrects use of a
+lossy aggregate accessor, not PathMap itself. The cursor algorithm is retained;
+child 8341 still must independently qualify its complete ordered output and resource
+behavior. No benchmark improvement is inferred from passing tests.
 
 ## Upstream PathMap integration request register
 

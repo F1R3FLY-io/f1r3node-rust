@@ -7,7 +7,7 @@ use models::rust::par_construction::ParConstruction;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{new_freevar_par, new_gbool_par, new_gint_par, union};
 use rholang::rust::interpreter::matcher::match_pars::match_pars;
-use rholang::rust::interpreter::matcher::par_count::ParCount;
+use rholang::rust::interpreter::matcher::par_count::{CountBound, ParCount};
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
 
@@ -190,7 +190,7 @@ fn trie_native_sub_pars_partitions_the_if_family_without_dropping_it() {
     ]);
     let zero = ParCount::new(&Par::default());
     let mut one_if = zero.clone();
-    one_if.conditionals = 1;
+    one_if.conditionals = CountBound::Finite(1);
 
     let candidates =
         sub_pars(&target, &one_if, &one_if, &zero, &ParCount::unbounded()).collect::<Vec<_>>();

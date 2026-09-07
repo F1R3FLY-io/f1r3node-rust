@@ -53,7 +53,7 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
-use rholang::rust::interpreter::matcher::par_count::ParCount;
+use rholang::rust::interpreter::matcher::par_count::{CountBound, ParCount};
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
 use rholang::rust::interpreter::metering::MeteredMachine;
@@ -930,10 +930,13 @@ fn run_probe(what: &str, depth: usize) {
             );
             let zero = ParCount::new(&Par::default());
             let mut exact = zero.clone();
-            exact.exprs = u64::try_from(depth).expect("probe depth fits the multiplicity domain");
+            exact.exprs = CountBound::Finite(depth as u128);
             let subsets = sub_pars(&par, &exact, &exact, &zero, &zero).collect::<Vec<_>>();
             assert_eq!(subsets.len(), 1, "the exact-width subset is unique");
-            assert_eq!(subsets[0].0.family_cardinality::<Expr>(), exact.exprs);
+            assert_eq!(
+                CountBound::Finite(subsets[0].0.family_cardinality_exact::<Expr>()),
+                exact.exprs
+            );
             std::mem::forget(subsets);
             std::mem::forget(par);
         }

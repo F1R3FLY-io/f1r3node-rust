@@ -86,7 +86,7 @@ use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{
     new_free_map, new_freevar_par, new_gint_par, new_gstring_par, new_send, new_wildcard_par,
 };
-use rholang::rust::interpreter::matcher::par_count::ParCount;
+use rholang::rust::interpreter::matcher::par_count::{CountBound, ParCount};
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
 use rholang::rust::interpreter::util::prepend_connective;
@@ -173,7 +173,7 @@ fn par_of_sends(sends: Vec<Send>) -> Par { vector_par(Vec::new(), false).with_se
 fn trie_native_sub_pars_preserves_candidate_order_and_compresses_duplicate_positions() {
     let zero = ParCount::new(&Par::default());
     let mut exactly_one = zero.clone();
-    exactly_one.sends = 1;
+    exactly_one.sends = CountBound::Finite(1);
     let unconstrained_prune = ParCount::unbounded();
 
     let distinct = par_of_sends(vec![
@@ -235,7 +235,7 @@ fn trie_native_sub_pars_preserves_candidate_order_and_compresses_duplicate_posit
         )
         .expect("one compressed Send endpoint stores 1,001 occurrences");
     let mut exactly_all = zero.clone();
-    exactly_all.sends = 1_001;
+    exactly_all.sends = CountBound::Finite(1_001);
     let above_ceiling_candidates = sub_pars(
         &above_legacy_ceiling,
         &exactly_all,
@@ -257,58 +257,259 @@ fn trie_native_sub_pars_preserves_candidate_order_and_compresses_duplicate_posit
 
 #[test]
 fn every_partitioned_par_family_admits_compressed_multiplicity_above_the_legacy_ceiling() {
-    const CARDINALITY: u64 = 1_001;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{GPrivate, MatchCase, ReceiveBind};
+
     let zero = ParCount::zero();
-    let multiplicity = Multiplicity::new(CARDINALITY).expect("positive test multiplicity");
 
     macro_rules! assert_family {
-        ($label:literal, $component:expr, $family:ty, $field:ident) => {{
-            let component: $family = $component;
-            let mut target = Par::default();
-            target
-                .insert_component_many(&component, multiplicity, Vec::new(), false)
-                .unwrap_or_else(|error| {
-                    panic!("cannot build compressed {} target: {error}", $label)
+        ($label:literal, $make:expr, $family:ty, $field:ident) => {{
+            let make = $make;
+            let component: $family = make(7i64);
+            let other: $family = make(8i64);
+            assert_ne!(component, other);
+            for (cardinality, other_count) in [(1_001, 0), (u64::MAX, 0), (u64::MAX, 1)] {
+                let multiplicity = Multiplicity::new(cardinality).unwrap();
+                let mut target = Par::default();
+                target
+                    .insert_component_many(&component, multiplicity, Vec::new(), false)
+                    .unwrap_or_else(|error| {
+                        panic!("cannot build compressed {} target: {error}", $label)
+                    });
+                if other_count != 0 {
+                    target
+                        .insert_component_many(&other, Multiplicity::ONE, Vec::new(), false)
+                        .unwrap();
+                }
+                let retained = target.clone();
+                let expected_total = u128::from(cardinality) + u128::from(other_count);
+                let mut endpoint_total = 0u128;
+                target
+                    .try_visit_components::<$family, std::convert::Infallible>(|_, count| {
+                        endpoint_total += u128::from(count.get());
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(endpoint_total, expected_total);
+                assert_eq!(target.family_cardinality_exact::<$family>(), endpoint_total);
+                assert_eq!(
+                    target.family_distinct_len::<$family>(),
+                    1 + usize::from(other_count != 0)
+                );
+                assert_eq!(
+                    target.family_cardinality_is_saturated::<$family>(),
+                    other_count != 0
+                );
+                assert_eq!(
+                    ParCount::new(&target).$field,
+                    CountBound::Finite(endpoint_total)
+                );
+                let mut candidates = sub_pars(&target, &zero, &ParCount::unbounded(), &zero, &zero);
+                let (selected, complement) = candidates.next().unwrap_or_else(|| {
+                    panic!(
+                        "logical top omitted the complete {} target of {cardinality}",
+                        $label
+                    )
                 });
-            let mut exact = zero.clone();
-            exact.$field = CARDINALITY;
-
-            let candidates = sub_pars(&target, &exact, &exact, &zero, &ParCount::unbounded())
-                .collect::<Vec<_>>();
-            assert_eq!(
-                candidates.len(),
-                1,
-                "compressed {} target must have one exact-all partition",
-                $label
-            );
-            assert_eq!(
-                candidates[0].0.family_cardinality::<$family>(),
-                CARDINALITY,
-                "selected {} multiplicity was truncated",
-                $label
-            );
-            assert_eq!(
-                candidates[0].1.family_cardinality::<$family>(),
-                0,
-                "exact-all {} partition left a complement",
-                $label
-            );
+                assert!(candidates.next().is_none());
+                assert_eq!(
+                    selected.family_cardinality_exact::<$family>(),
+                    endpoint_total,
+                    "selected {} multiplicity was truncated",
+                    $label
+                );
+                assert_eq!(
+                    complement.family_cardinality_exact::<$family>(),
+                    0,
+                    "exact-all {} partition left a complement",
+                    $label
+                );
+                assert!(complement.is_empty());
+                assert!(target
+                    .components()
+                    .shares_storage_with(retained.components()));
+                for (value, expected_count) in [(&component, cardinality), (&other, other_count)] {
+                    assert_eq!(target.count(value), expected_count);
+                    assert_eq!(retained.count(value), expected_count);
+                    assert_eq!(selected.count(value), expected_count);
+                    assert_eq!(complement.count(value), 0);
+                    assert_eq!(
+                        u128::from(selected.count(value)) + u128::from(complement.count(value)),
+                        u128::from(target.count(value))
+                    );
+                }
+            }
         }};
     }
 
-    assert_family!("Send", Send::default(), Send, sends);
-    assert_family!("Receive", Receive::default(), Receive, receives);
-    assert_family!("New", New::default(), New, news);
-    assert_family!("Expr", Expr::default(), Expr, exprs);
-    assert_family!("Match", Match::default(), Match, matches);
+    assert_family!(
+        "Send",
+        |value| send(new_gint_par(value, Vec::new(), false), Vec::new(), false),
+        Send,
+        sends
+    );
+    assert_family!(
+        "Receive",
+        |value| Receive {
+            binds: vec![ReceiveBind {
+                patterns: vec![nil()],
+                source: Some(seven()),
+                ..Default::default()
+            }],
+            body: Some(new_gint_par(value, Vec::new(), false)),
+            ..Default::default()
+        },
+        Receive,
+        receives
+    );
+    assert_family!(
+        "New",
+        |value| New {
+            bind_count: 1,
+            p: Some(new_gint_par(value, Vec::new(), false)),
+            ..Default::default()
+        },
+        New,
+        news
+    );
+    assert_family!(
+        "Expr",
+        |value| Expr {
+            expr_instance: Some(ExprInstance::GInt(value)),
+        },
+        Expr,
+        exprs
+    );
+    assert_family!(
+        "Match",
+        |value| Match {
+            target: Some(new_gint_par(value, Vec::new(), false)),
+            cases: vec![MatchCase {
+                pattern: Some(new_gint_par(value, Vec::new(), false)),
+                source: Some(nil()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        Match,
+        matches
+    );
     assert_family!(
         "GUnforgeable",
-        GUnforgeable::default(),
+        |value: i64| GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                id: value.to_be_bytes().to_vec(),
+            })),
+        },
         GUnforgeable,
         unforgeables
     );
-    assert_family!("Bundle", Bundle::default(), Bundle, bundles);
-    assert_family!("If", If::default(), If, conditionals);
+    assert_family!(
+        "Bundle",
+        |value| Bundle {
+            body: Some(new_gint_par(value, Vec::new(), false)),
+            read_flag: true,
+            write_flag: true,
+        },
+        Bundle,
+        bundles
+    );
+    assert_family!(
+        "If",
+        |value| If {
+            condition: Some(models::rust::utils::new_gbool_par(true, Vec::new(), false)),
+            if_true: Some(new_gint_par(value, Vec::new(), false)),
+            if_false: Some(nil()),
+            ..Default::default()
+        },
+        If,
+        conditionals
+    );
+}
+
+fn maximum_plus_one_expression_target() -> (Par, Expr, Expr) {
+    let first = seven().take_occurrences::<Expr>().pop().unwrap();
+    let second = eight().take_occurrences::<Expr>().pop().unwrap();
+    let mut target = Par::default();
+    target
+        .insert_component_many(
+            &first,
+            Multiplicity::new(u64::MAX).unwrap(),
+            Vec::new(),
+            false,
+        )
+        .unwrap();
+    target
+        .insert_component_many(&second, Multiplicity::ONE, Vec::new(), false)
+        .unwrap();
+    assert_eq!(target.family_distinct_len::<Expr>(), 2);
+    assert!(target.family_cardinality_is_saturated::<Expr>());
+    (target, first, second)
+}
+
+#[test]
+fn parcount_saturated_target_respects_zero_complement() {
+    let (target, first, second) = maximum_plus_one_expression_target();
+    let retained = target.clone();
+    let zero = ParCount::zero();
+    let mut candidates = sub_pars(&target, &zero, &ParCount::unbounded(), &zero, &zero);
+    let (selected, complement) = candidates.next().expect("the complete target is feasible");
+    assert!(
+        complement.is_empty(),
+        "an exact-zero complement must be empty"
+    );
+    assert_eq!(selected.count(&first), u64::MAX);
+    assert_eq!(selected.count(&second), 1);
+    assert!(candidates.next().is_none());
+    assert_eq!(target.count(&first), retained.count(&first));
+    assert_eq!(target.count(&second), retained.count(&second));
+}
+
+#[test]
+fn parcount_saturated_target_respects_exact_one_complement() {
+    let (target, first, second) = maximum_plus_one_expression_target();
+    let zero = ParCount::zero();
+    let mut one = zero.clone();
+    one.exprs = CountBound::Finite(1);
+    let mut candidates = sub_pars(&target, &zero, &ParCount::unbounded(), &one, &one);
+    let (selected, complement) = candidates
+        .next()
+        .expect("an exact-one complement is feasible");
+    assert_eq!(complement.family_cardinality::<Expr>(), 1);
+    assert_eq!(
+        u128::from(selected.count(&first)) + u128::from(selected.count(&second)),
+        u128::from(u64::MAX)
+    );
+    for expr in [&first, &second] {
+        assert_eq!(
+            u128::from(selected.count(expr)) + u128::from(complement.count(expr)),
+            u128::from(target.count(expr))
+        );
+    }
+}
+
+#[test]
+fn parcount_saturated_free_mass_preserves_concrete_expression_minimum() {
+    let concrete = seven().take_occurrences::<Expr>().pop().unwrap();
+    for mut free in [free_var(0), new_wildcard_par(Vec::new(), true)] {
+        let free = free.take_occurrences::<Expr>().pop().unwrap();
+        let mut pattern = Par::default();
+        pattern
+            .insert_component_many(
+                &free,
+                Multiplicity::new(u64::MAX).unwrap(),
+                Vec::new(),
+                true,
+            )
+            .unwrap();
+        pattern
+            .insert_component_many(&concrete, Multiplicity::ONE, Vec::new(), false)
+            .unwrap();
+        let (minimum, maximum) = ParCount::zero().min_max_par_ref(&pattern);
+        assert_eq!(minimum.exprs, CountBound::Finite(1));
+        assert_eq!(maximum.exprs, CountBound::Unbounded);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────

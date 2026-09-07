@@ -3,43 +3,82 @@ use models::rust::par_bag::ParComponentItem;
 
 use super::exports::*;
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CountBound {
+    Finite(u128),
+    Unbounded,
+}
+
+impl CountBound {
+    pub fn add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Finite(left), Self::Finite(right)) => left
+                .checked_add(right)
+                .map(Self::Finite)
+                .unwrap_or(Self::Unbounded),
+            _ => Self::Unbounded,
+        }
+    }
+
+    pub fn scale(self, factor: u64) -> Self {
+        if factor == 0 {
+            return Self::Finite(0);
+        }
+        match self {
+            Self::Finite(value) => value
+                .checked_mul(u128::from(factor))
+                .map(Self::Finite)
+                .unwrap_or(Self::Unbounded),
+            Self::Unbounded => Self::Unbounded,
+        }
+    }
+}
+
+impl From<u64> for CountBound {
+    fn from(value: u64) -> Self { Self::Finite(u128::from(value)) }
+}
+
+impl From<u128> for CountBound {
+    fn from(value: u128) -> Self { Self::Finite(value) }
+}
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParCount.scala
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParCount {
-    pub sends: u64,
-    pub receives: u64,
-    pub news: u64,
-    pub exprs: u64,
-    pub matches: u64,
-    pub unforgeables: u64,
-    pub bundles: u64,
-    pub conditionals: u64,
+    pub sends: CountBound,
+    pub receives: CountBound,
+    pub news: CountBound,
+    pub exprs: CountBound,
+    pub matches: CountBound,
+    pub unforgeables: CountBound,
+    pub bundles: CountBound,
+    pub conditionals: CountBound,
 }
 
 impl ParCount {
     pub fn new(par: &Par) -> Self {
         ParCount {
-            sends: par.family_cardinality::<Send>(),
-            receives: par.family_cardinality::<Receive>(),
-            news: par.family_cardinality::<New>(),
-            exprs: par.family_cardinality::<Expr>(),
-            matches: par.family_cardinality::<Match>(),
-            unforgeables: par.family_cardinality::<GUnforgeable>(),
-            bundles: par.family_cardinality::<Bundle>(),
-            conditionals: par.family_cardinality::<If>(),
+            sends: CountBound::Finite(par.family_cardinality_exact::<Send>()),
+            receives: CountBound::Finite(par.family_cardinality_exact::<Receive>()),
+            news: CountBound::Finite(par.family_cardinality_exact::<New>()),
+            exprs: CountBound::Finite(par.family_cardinality_exact::<Expr>()),
+            matches: CountBound::Finite(par.family_cardinality_exact::<Match>()),
+            unforgeables: CountBound::Finite(par.family_cardinality_exact::<GUnforgeable>()),
+            bundles: CountBound::Finite(par.family_cardinality_exact::<Bundle>()),
+            conditionals: CountBound::Finite(par.family_cardinality_exact::<If>()),
         }
     }
 
     pub const fn zero() -> Self {
         ParCount {
-            sends: 0,
-            receives: 0,
-            news: 0,
-            exprs: 0,
-            matches: 0,
-            unforgeables: 0,
-            bundles: 0,
-            conditionals: 0,
+            sends: CountBound::Finite(0),
+            receives: CountBound::Finite(0),
+            news: CountBound::Finite(0),
+            exprs: CountBound::Finite(0),
+            matches: CountBound::Finite(0),
+            unforgeables: CountBound::Finite(0),
+            bundles: CountBound::Finite(0),
+            conditionals: CountBound::Finite(0),
         }
     }
 
@@ -64,14 +103,14 @@ impl ParCount {
     /// finite target family before producing positional candidates.
     pub const fn unbounded() -> ParCount {
         Self {
-            sends: u64::MAX,
-            receives: u64::MAX,
-            news: u64::MAX,
-            matches: u64::MAX,
-            exprs: u64::MAX,
-            unforgeables: u64::MAX,
-            bundles: u64::MAX,
-            conditionals: u64::MAX,
+            sends: CountBound::Unbounded,
+            receives: CountBound::Unbounded,
+            news: CountBound::Unbounded,
+            matches: CountBound::Unbounded,
+            exprs: CountBound::Unbounded,
+            unforgeables: CountBound::Unbounded,
+            bundles: CountBound::Unbounded,
+            conditionals: CountBound::Unbounded,
         }
     }
 
@@ -90,27 +129,27 @@ impl ParCount {
 
     pub fn add(&self, other: &Self) -> Self {
         Self {
-            sends: self.sends.saturating_add(other.sends),
-            receives: self.receives.saturating_add(other.receives),
-            news: self.news.saturating_add(other.news),
-            exprs: self.exprs.saturating_add(other.exprs),
-            matches: self.matches.saturating_add(other.matches),
-            unforgeables: self.unforgeables.saturating_add(other.unforgeables),
-            bundles: self.bundles.saturating_add(other.bundles),
-            conditionals: self.conditionals.saturating_add(other.conditionals),
+            sends: self.sends.add(other.sends),
+            receives: self.receives.add(other.receives),
+            news: self.news.add(other.news),
+            exprs: self.exprs.add(other.exprs),
+            matches: self.matches.add(other.matches),
+            unforgeables: self.unforgeables.add(other.unforgeables),
+            bundles: self.bundles.add(other.bundles),
+            conditionals: self.conditionals.add(other.conditionals),
         }
     }
 
     fn scale(&self, amount: u64) -> Self {
         Self {
-            sends: self.sends.saturating_mul(amount),
-            receives: self.receives.saturating_mul(amount),
-            news: self.news.saturating_mul(amount),
-            exprs: self.exprs.saturating_mul(amount),
-            matches: self.matches.saturating_mul(amount),
-            unforgeables: self.unforgeables.saturating_mul(amount),
-            bundles: self.bundles.saturating_mul(amount),
-            conditionals: self.conditionals.saturating_mul(amount),
+            sends: self.sends.scale(amount),
+            receives: self.receives.scale(amount),
+            news: self.news.scale(amount),
+            exprs: self.exprs.scale(amount),
+            matches: self.matches.scale(amount),
+            unforgeables: self.unforgeables.scale(amount),
+            bundles: self.bundles.scale(amount),
+            conditionals: self.conditionals.scale(amount),
         }
     }
 
@@ -133,7 +172,8 @@ impl ParCount {
     }
 
     fn par_frame(&self, par: &Par) -> (usize, (ParCount, ParCount)) {
-        let mut free_exprs = 0u64;
+        let mut wildcard = false;
+        let mut concrete_exprs = 0u128;
         par.try_visit_components::<Expr, std::convert::Infallible>(|expr, multiplicity| {
             if matches!(
                 expr.as_ref().expr_instance.as_ref(),
@@ -143,22 +183,24 @@ impl ParCount {
                     }),
                 }))
             ) {
-                free_exprs = free_exprs.saturating_add(multiplicity.get());
+                wildcard = true;
+            } else {
+                concrete_exprs = concrete_exprs
+                    .checked_add(u128::from(multiplicity.get()))
+                    .expect("nonfree expression mass fits the exact family total");
             }
             Ok(())
         })
         .expect("Par invariant: expression endpoints are canonical");
-        let wildcard = free_exprs != 0;
-        let exprs = par.family_cardinality::<Expr>();
         let pc = ParCount {
-            sends: par.family_cardinality::<Send>(),
-            receives: par.family_cardinality::<Receive>(),
-            news: par.family_cardinality::<New>(),
-            exprs: exprs.saturating_sub(free_exprs),
-            matches: par.family_cardinality::<Match>(),
-            unforgeables: par.family_cardinality::<GUnforgeable>(),
-            bundles: par.family_cardinality::<Bundle>(),
-            conditionals: par.family_cardinality::<If>(),
+            sends: CountBound::Finite(par.family_cardinality_exact::<Send>()),
+            receives: CountBound::Finite(par.family_cardinality_exact::<Receive>()),
+            news: CountBound::Finite(par.family_cardinality_exact::<New>()),
+            exprs: CountBound::Finite(concrete_exprs),
+            matches: CountBound::Finite(par.family_cardinality_exact::<Match>()),
+            unforgeables: CountBound::Finite(par.family_cardinality_exact::<GUnforgeable>()),
+            bundles: CountBound::Finite(par.family_cardinality_exact::<Bundle>()),
+            conditionals: CountBound::Finite(par.family_cardinality_exact::<If>()),
         };
         let base = (pc.clone(), if wildcard { Self::unbounded() } else { pc });
         (par.family_distinct_len::<Connective>(), base)
@@ -231,7 +273,7 @@ impl ParCount {
                             | ConnByteArray(_),
                         ) => {
                             let mut one = Self::zero();
-                            one.exprs = 1;
+                            one.exprs = CountBound::Finite(1);
                             values.push((one.clone(), one));
                         }
                     }
@@ -259,7 +301,7 @@ impl ParCount {
                             | ConnByteArray(_),
                         ) => {
                             let mut one = Self::zero();
-                            one.exprs = 1;
+                            one.exprs = CountBound::Finite(1);
                             values.push((one.clone(), one));
                         }
                     }

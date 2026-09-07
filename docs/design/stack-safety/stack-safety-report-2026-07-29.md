@@ -8670,7 +8670,7 @@ cardinality projection returns $`M`$. The existing
 `endpoint_overflow_is_atomic_while_bag_lattice_remains_closed` test explicitly
 admits this representation. Individual endpoint counts still fit `Multiplicity(u64)`.
 
-`sub_pars` currently treats that projection as exact availability. With an unbounded
+At the audited predecessor, `sub_pars` treats that projection as exact availability. With an unbounded
 selection and a required empty complement, the counted iterator can select $`M`$
 and leave one. A required complement of exactly one instead permits a complement of
 two. These are source-derived counterexamples, not yet executed runtime regressions
@@ -8693,7 +8693,7 @@ Command: `cargo test --release -j4 -p rholang --test matcher_connective_isolatio
 These are passing existing controls, not a performance experiment or repaired
 saturation evidence.
 
-**SELECTED REPAIR, NOT YET IMPLEMENTED.** Keep the existing checked `u128`
+**SELECTED REPAIR (FORMAL-FIRST).** Keep the existing checked `u128`
 aggregate cache and counted iterator. Use an explicit ordered
 `Finite(u128) | Unbounded` matcher bound: an unbounded lower bound cannot be met
 by a finite target, while an unbounded upper bound is intersected with that target.
@@ -8723,6 +8723,45 @@ are proved. Concrete cached metrics and the partition cursor remain implementati
 refinements to exercise in children 8340–8341; the ordered-filter theorem assumes
 a supplied reference, and the scratch theorem counts digits, not physical key bytes.
 No Rust test or production change preceded this formal gate.
+
+**RUNTIME REPAIR CHECKPOINT.** Child 8340 first ran three new regressions against
+the unchanged implementation: required-zero complement was nonempty, required-one
+complement had cardinality two, and the concrete Expr minimum was zero instead of
+one. All three failed for those intended reasons, with no ignored tests. Log
+`/tmp/rspace-8340-prefixed-regressions-20260907.log` has SHA-256
+`aaf4088c187ef129a4e2da395b5c70b9ef86294dec6c502feb92fc2edf79ed37`.
+
+The repair exposes the existing exact cached total through
+`family_cardinality_exact` and adds `family_partitions_exact`; the finite `u64`
+partition entry widens without becoming logical top. `CountBound` separates
+`Finite(u128)` from `Unbounded`, and checked addition/scaling use the proved cap
+quotient. `sub_pars` intersects against exact availability, while `par_frame`
+sums nonfree expression endpoints directly. Per-endpoint `Multiplicity(u64)`,
+canonical keys, codecs, PathMap storage and the lazy mixed-radix cursor are unchanged.
+A separate read-only refinement review found no mismatch with the formal equations.
+
+The final runtime run executes 16 connective-isolation, four count-interval and
+eight conditional-family tests, all passing with zero ignored or filtered tests.
+The expanded family witness selects the entire target through top and zero
+complement at 1,001, a single maximum, and maximum-plus-one for all eight families;
+it checks independent endpoint sums, cached totals, per-key conservation and retained
+copy-on-write roots. Both free-variable and wildcard maximum mass preserve a concrete
+sibling's minimum. Count-bound tests distinguish finite maximum from top, reject
+impossible and overflowed minima, preserve the finite partition API, and compare
+256 generated arithmetic cases to independent arbitrary-precision integer arithmetic.
+The enclosing conditional tests retain the depth-4,096/128-KiB-stack and allocation
+growth checks.
+
+Command: `cargo test --release -j4 -p rholang --test matcher_count_intervals
+--test matcher_connective_isolation --test matcher_if_family -- --test-threads=4`,
+using the same seed and 6-GiB zero-swap envelope above. Log
+`/tmp/rspace-8340-runtime-final-20260907.log` has SHA-256
+`463e46f26ad35f1d029b11776813546160376277b4dbabb73f3d821fcd78154f`.
+The preceding 16+8 run and standalone four-test run also passed; this final run
+includes the expanded eight-family two-endpoint fixtures. These are correctness
+and resource-gate observations, not timing benchmarks. Wider matcher-bound values
+do not widen serialized endpoint multiplicities. Concrete ordered-reference and
+allocation qualification remain child 8341's required work; parent 5855 stays open.
 
 ---
 

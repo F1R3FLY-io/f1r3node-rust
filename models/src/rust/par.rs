@@ -252,6 +252,10 @@ impl Par {
         self.components.family_cardinality::<T>()
     }
 
+    pub fn family_cardinality_exact<T: ParBagComponent>(&self) -> u128 {
+        self.components.family_cardinality_exact::<T>()
+    }
+
     pub fn family_cardinality_is_saturated<T: ParBagComponent>(&self) -> bool {
         self.components.family_cardinality_is_saturated::<T>()
     }
