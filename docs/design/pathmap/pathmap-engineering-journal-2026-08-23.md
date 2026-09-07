@@ -5455,10 +5455,23 @@ it preserves v1 under an immutable digest. Independent review found no blocking 
 flaw and the release build passed. Capture plus full restoration self-check passed
 in 582.09 seconds; seven format/integrity cases passed in 6.24 seconds. The 1,954,666-byte
 archive records fourteen genesis deploys plus seven workloads; exact digests and roots
-are in the integration report. Fresh-process runtime qualification is still running.
+are in the integration report. The fresh-process suite returned eight passes, three
+failures and one ignored capture. The full seven-program positive replay passed;
+three concurrent controls were blocked by a physical database-scope collision.
 A written archive alone is capture evidence, not proof that restoration passed.
 Successful replay would not settle independent genesis-construction determinism (#5304),
 historical experiment provenance (#5636), or persistent-backend performance (#5693).
+
+**FALSIFICATION AND REQUIRED REPAIR.** The review initially treated distinct UUID
+scope labels as distinct stores. Actual execution falsified that assumption:
+`LmdbDirStoreManager::state_authority` bypasses the configured `Db.name_override`
+and opens the same literal authority database names for every scope. The existing
+stale-root refusal correctly detects the interference. This adapter was introduced
+by campaign commit `f108c45c0f`, owned by 6094; required child 8283 now owns the bounded
+mapping/migration isolation correction and blocks 5636. Tests remain concurrent and
+use the scoped-store contract; physically separating them would not repair it.
+Artifact 491 preserves the failed run. Checkpoint `61f83d73b` preserves the exact
+capture source, so subsequent harness changes cannot erase its provenance.
 
 ## Upstream PathMap integration request register
 

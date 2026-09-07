@@ -1022,7 +1022,13 @@ fn replay_archive_event_edits_cannot_reuse_original_seal() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig {
+        cases: 32,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::WithSource("proptest-regressions")
+        )),
+        ..ProptestConfig::default()
+    })]
     #[test]
     fn replay_archive_byte_mutations_are_rejected(index in any::<usize>(), bit in 0u8..8) {
         let bytes = std::fs::read(fixture_path()).unwrap();

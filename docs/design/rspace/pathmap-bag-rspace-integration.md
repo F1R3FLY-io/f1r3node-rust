@@ -295,13 +295,36 @@ ignored. The capture log's SHA-256 is
 `7cbb67d0365467156124ed5f423c111bb76ed8c494b8856334c1f96f361fea00`.
 These are qualification timings, not a backend speed or allocation comparison.
 
-Fresh-process runtime qualification remains in progress. Capture uses exclusive creation
+Fresh-process qualification with four test threads returned **eight passes, three
+failures and one explicit capture ignored** in 322.16 seconds. The complete seven-program
+positive replay passed, establishing actual reconstruction and workload replay in a
+different process. The three runtime mutation/control cases instead failed while
+restoring genesis: another scoped runtime advanced their shared physical authority
+root. Their causal cost/status/COMM checks are not yet qualified.
+
+Source review identified a campaign-introduced adapter regression at `f108c45c0f`:
+`LmdbDirStoreManager::state_authority` ignores `Db.name_override` and opens literal
+`rspace-history`, `rspace-cold` and `rspace-roots` for every scoped manager. Distinct
+UUID scope labels therefore do not establish distinct state domains. The stale-root
+refusal is correct. Required child 8283 (`rspace-authority-resolved-database-scope-isolation`)
+under the original implementation owner 6094 now blocks 5636. Its repair must honor
+the actual mapped database identities and retain concurrent tests; private directories
+or test serialization must not conceal this scope-isolation regression. Artifact 491
+records these results; the failed suite log has SHA-256
+`9c9dc2a2a900eda42e0e64b24c775cf403cdf94ed7127a27436cb0b3eaebc898`.
+
+Capture uses exclusive creation
 and publishes the trace before attempting complete restoration, so a failed
 restoration still leaves its exact input available for diagnosis. File existence is
 not acceptance: both capture self-check and fresh-process verification must pass.
-The captured harness was not committed at capture HEAD `b60f97259`; its exact
+Checkpoint `61f83d73b` preserves the complete capture and exact harness. The harness
+was not committed at capture HEAD `b60f97259`; its exact
 BLAKE2b-256 is `4ea0d35e739f9a2861cfe2ceb9ac2e16d876d3f8036d4ed0f08f4407e6bfbbad`,
 and the fixture also records configuration, tracked-diff and local-parser provenance.
+The property test now explicitly uses its existing source-adjacent regression-seed
+location: this integration-test tree has no `lib.rs` or `main.rs` ancestor. The
+thirty-two-case test passed after a 75-second incremental build, without the previous
+path-discovery warning; failure persistence remains enabled.
 The current scope is 6 GiB memory-max, zero swap, four build jobs and 400% CPU quota,
 with database scratch under `target/campaign-5636-scratch`. No blessed contract,
 production runtime, old golden or original archive is changed. Task 5304's separate
@@ -344,10 +367,10 @@ scope peaks including compilation are not per-operation allocation measurements.
 | Original requirement | Evidence established by this audit | Remaining obligation / owner |
 |---|---|---|
 | Frozen authorities and observable contract | Source `dcc4600d4`, freeze `6a1c4341d`, corrected fourteen-row matrix, exact current test targets | Preserve ordered compatibility state and first-source retention through later implementations; concrete bridge 7942. |
-| Captured and synthetic corpus | Named codec/matcher/lifecycle fixtures, epoch-labelled partial goldens and the full current-epoch archive | Cross-process archive replay refuses a different constructed pre-root; genesis attribution remains 5304 and archive qualification remains 5636. Generated all-pattern lifecycle acceptance is separately 7964. |
+| Captured and synthetic corpus | Named codec/matcher/lifecycle fixtures, preserved v1 failure and full genesis-backed v2 capture; separate-process seven-program replay passes | Concurrent scope isolation blocks causal runtime controls (8283); genesis construction attribution remains 5304 and baseline qualification remains 5636. Generated all-pattern lifecycle acceptance is separately 7964. |
 | Reproducible capped measurements and preregistration | Committed source/harness coordinates, commands, resource envelope, run identifiers and summary files | Original preregistration, raw samples/artifacts and observed tool versions must be recovered and linked; 5636 remains open. No retroactive preregistration claim. |
 | Failure classification | Finite inventory below, with existing reachable repair/acceptance owners | It is not an assertion that every workspace target currently passes. Whole-workspace qualification remains 5647. |
-| Golden byte/order/root outputs | Independent literal serializer/genesis/history fixtures and a new sealed full replay capture, scoped to their epochs | The new archive cannot replace missing historical inputs, and its actual cross-process replay is not yet qualified. |
+| Golden byte/order/root outputs | Independent literal serializer/genesis/history fixtures and a sealed full v2 replay capture, scoped to their epochs; actual cross-process positive replay passes | The new archive cannot replace missing historical inputs; the concurrent full control suite is not yet qualified. |
 | Read and preserve the two living reports' semantics | Stack-safety report remains the dated measurement ledger with stable section identifiers; consensus register retains its may-change-consensus-only inclusion rule | This source/evidence correction changes no consensus surface or measured performance result. Activation, full resource measurements and independent verification remain open. |
 
 #### Classified failure and non-acceptance inventory
@@ -365,6 +388,7 @@ the final workspace gate or silently change another task's disposition.
 | Whole-tree allocation costs during final guarded teardown | Dated scaling/ownership evidence is separate from the remaining allocation contract; normalization tests do not discharge it. | 6441, `guarded-pathmap-final-root-allocation-teardown`, and PMU-005. |
 | Attempted normalizer-omission panic controls do not fail as hypothesized | Two expected-panic assertions were rejected during 6446. J-074 records the negative causal result; they are not passing regression evidence. | 6446's preserved verification history; no production fix inferred from either trial. |
 | Captured pre-root differs from a fresh process's constructed genesis; separate old-pin test passes | Source/capture/verification evidence at `498f401a6`; the five pure archive checks pass but three runtime cases reject their shared regenerated pre-root. No root is silently refreshed and no causal attribution is claimed yet. | Existing 5304, `rederive-and-repair-blessed-normalized-term-pin-drift-2026-08-11`, through 4121 to root 4131; archive qualification stays 5636. |
+| Independent database scopes share one physical RSpace authority | V2 positive replay passes, but three concurrent controls fail the correct stale-root check. Adapter `f108c45c0f` bypasses `Db.name_override`; exact capture/source at `61f83d73b` and artifact 491. | Required child 8283 under 6094; 5636 depends on the root-cause adapter repair, not isolated test directories or serialized execution. |
 | Missing historical archive and currently unresolved experiment provenance | Historical acceptance-evidence gaps, not evidence that stored history was deleted. The new current-epoch capture is explicitly separate. | 5636, `rspace-pathmap-contract-baseline`. |
 
 Remaining A/B/C layout qualification belongs to 5642, transactional matching to 5646,
