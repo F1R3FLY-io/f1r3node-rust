@@ -198,3 +198,161 @@ impl LastFinalizedStorage for LastFinalizedKeyValueStorage {
 struct BlockInfo {
     parents: Vec<BlockHash>,
 }
+
+#[cfg(test)]
+mod tests {
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::{
+        ApprovedBlock, ApprovedBlockCandidate, BlockMessage,
+    };
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::*;
+
+    fn block_with_parents(number: i64, parents: Vec<BlockHash>) -> BlockMessage {
+        get_random_block(
+            Some(number),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(parents),
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+        )
+    }
+
+    async fn metadata_db(
+        kvm: &mut InMemoryStoreManager,
+    ) -> KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> {
+        KeyValueTypedStoreImpl::new(kvm.store("block-metadata".to_string()).await.unwrap())
+    }
+
+    fn put_metadata(
+        db: &KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+        block: &BlockMessage,
+    ) {
+        db.put_one(
+            BlockHashSerde(block.block_hash.clone()),
+            BlockMetadata::from_block(block, false, None, None),
+        )
+        .unwrap();
+    }
+
+    fn to_approved_block(block: BlockMessage) -> ApprovedBlock {
+        ApprovedBlock {
+            candidate: ApprovedBlockCandidate {
+                block,
+                required_sigs: 0,
+            },
+            sigs: vec![],
+            floor_seed: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn put_get_round_trip_drives_the_migration_flag() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = LastFinalizedKeyValueStorage::create_from_kvm(&mut kvm)
+            .await
+            .unwrap();
+        assert_eq!(storage.get().unwrap(), None);
+        assert!(!storage.require_migration().unwrap());
+
+        let hash = BlockHash::from(vec![7u8; 32]);
+        storage.put(hash.clone()).unwrap();
+        assert_eq!(storage.get().unwrap(), Some(hash));
+        assert!(storage.require_migration().unwrap());
+    }
+
+    #[tokio::test]
+    async fn migrate_lfb_marks_held_ancestry_and_completes() {
+        let mut kvm = InMemoryStoreManager::new();
+        let genesis = block_with_parents(0, vec![]);
+        let b1 = block_with_parents(1, vec![genesis.block_hash.clone()]);
+        let trimmed_parent = BlockHash::from(vec![0x5b; 32]);
+        let b2 = block_with_parents(2, vec![b1.block_hash.clone(), trimmed_parent]);
+
+        let db = metadata_db(&mut kvm).await;
+        for block in [&genesis, &b1, &b2] {
+            put_metadata(&db, block);
+        }
+
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let storage = LastFinalizedKeyValueStorage::create_from_kvm(&mut kvm)
+            .await
+            .unwrap();
+        storage.put(b2.block_hash.clone()).unwrap();
+
+        storage.migrate_lfb(&mut kvm, &block_store).await.unwrap();
+
+        for block in [&genesis, &b1, &b2] {
+            let meta = db
+                .get_one(&BlockHashSerde(block.block_hash.clone()))
+                .unwrap()
+                .unwrap();
+            assert!(meta.finalized);
+            assert!(meta.directly_finalized);
+        }
+        assert!(!storage.require_migration().unwrap());
+        assert!(storage.get().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn migrate_lfb_falls_back_to_the_approved_block() {
+        let mut kvm = InMemoryStoreManager::new();
+        let genesis = block_with_parents(0, vec![]);
+
+        let db = metadata_db(&mut kvm).await;
+        put_metadata(&db, &genesis);
+
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        block_store
+            .put_approved_block(&to_approved_block(genesis.clone()))
+            .unwrap();
+
+        let storage = LastFinalizedKeyValueStorage::create_from_kvm(&mut kvm)
+            .await
+            .unwrap();
+        storage.migrate_lfb(&mut kvm, &block_store).await.unwrap();
+
+        let meta = db
+            .get_one(&BlockHashSerde(genesis.block_hash.clone()))
+            .unwrap()
+            .unwrap();
+        assert!(meta.finalized);
+        assert!(meta.directly_finalized);
+        assert!(!storage.require_migration().unwrap());
+    }
+
+    #[tokio::test]
+    async fn migrate_lfb_errors_when_no_lfb_and_no_approved_block() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let storage = LastFinalizedKeyValueStorage::create_from_kvm(&mut kvm)
+            .await
+            .unwrap();
+
+        let result = storage.migrate_lfb(&mut kvm, &block_store).await;
+        assert!(matches!(result, Err(KvStoreError::KeyNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn migrate_lfb_errors_when_lfb_metadata_is_missing() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let storage = LastFinalizedKeyValueStorage::create_from_kvm(&mut kvm)
+            .await
+            .unwrap();
+        storage.put(BlockHash::from(vec![9u8; 32])).unwrap();
+
+        let result = storage.migrate_lfb(&mut kvm, &block_store).await;
+        assert!(matches!(result, Err(KvStoreError::KeyNotFound(_))));
+    }
+}

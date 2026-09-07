@@ -132,6 +132,150 @@ mod tests {
         );
     }
 
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    fn aged_state(waiting: &PeerNode) -> RequestState {
+        RequestState {
+            timestamp: timed_out_ms(),
+            initial_timestamp: timed_out_ms(),
+            peers: HashSet::new(),
+            received: false,
+            in_casper_buffer: false,
+            waiting_list: vec![waiting.clone()],
+            peer_requery_cursor: 0,
+            requested_as_dependency: false,
+        }
+    }
+
+    const BUDGET: u32 = casper::rust::engine::block_retriever::MAX_RETRIES_PER_HASH;
+
+    /// The eviction on budget exhaustion marks the quarantine and must not
+    /// then erase it: without persistence a permanently-unfetchable hash is
+    /// re-admitted immediately with the backoff ladder reset, re-requesting
+    /// forever at full aggression.
+    #[tokio::test]
+    async fn budget_exhaustion_quarantine_survives_recovery_eviction() {
+        let f = fixture();
+        let waiting = setup::peer_node("waiting", 40402);
+        let hash = BlockHash::from(b"unfetchable-dependency".to_vec());
+        f.retriever
+            .set_request_state_for_test(hash.clone(), aged_state(&waiting))
+            .await
+            .expect("seed request state");
+        f.retriever
+            .set_retry_attempts_for_test(&hash, BUDGET)
+            .expect("seed spent budget");
+
+        f.retriever
+            .recover_dependency(hash.clone())
+            .await
+            .expect("recovery eviction");
+
+        assert!(
+            !f.requested_blocks.lock().unwrap().contains_key(&hash),
+            "the exhausted entry must be evicted"
+        );
+        assert!(
+            f.retriever
+                .retry_budget_quarantined_for_test(&hash, now_ms())
+                .expect("quarantine read"),
+            "the quarantine marked at eviction must survive the eviction cleanup"
+        );
+        assert!(
+            f.retriever
+                .retry_attempts_for_test(&hash)
+                .expect("attempts read")
+                >= BUDGET,
+            "the spent budget must survive eviction; zeroing it resets the \
+             backoff ladder for a hash that just proved unfetchable"
+        );
+    }
+
+    /// Same persistence through the maintenance sweep's eviction path, whose
+    /// end-of-pass retains previously kept only hashes still requested —
+    /// erasing the very quarantine the eviction just marked.
+    #[tokio::test]
+    async fn budget_exhaustion_quarantine_survives_the_sweep_eviction() {
+        let f = fixture();
+        let waiting = setup::peer_node("waiting", 40402);
+        let hash = BlockHash::from(b"unfetchable-in-sweep".to_vec());
+        f.retriever
+            .set_request_state_for_test(hash.clone(), aged_state(&waiting))
+            .await
+            .expect("seed request state");
+        f.retriever
+            .set_retry_attempts_for_test(&hash, BUDGET)
+            .expect("seed spent budget");
+
+        f.retriever
+            .request_all(Duration::from_secs(240))
+            .await
+            .expect("maintenance sweep");
+
+        assert!(
+            !f.requested_blocks.lock().unwrap().contains_key(&hash),
+            "the exhausted entry must be evicted"
+        );
+        assert!(
+            f.retriever
+                .retry_budget_quarantined_for_test(&hash, now_ms())
+                .expect("quarantine read"),
+            "the quarantine must survive the sweep's own retains"
+        );
+        assert!(
+            f.retriever
+                .retry_attempts_for_test(&hash)
+                .expect("attempts read")
+                >= BUDGET,
+            "the spent budget must survive the sweep"
+        );
+    }
+
+    /// The cool-off is what resets the ladder: when a quarantine entry
+    /// expires, the hash's attempt count goes with it, so a re-citation
+    /// starts a fresh budget only after actually waiting out the quarantine.
+    #[tokio::test]
+    async fn quarantine_expiry_resets_the_ladder() {
+        let f = fixture();
+        let waiting = setup::peer_node("waiting", 40402);
+        let hash = BlockHash::from(b"cooled-off-dependency".to_vec());
+        f.retriever
+            .set_request_state_for_test(hash.clone(), aged_state(&waiting))
+            .await
+            .expect("seed request state");
+        f.retriever
+            .set_retry_attempts_for_test(&hash, BUDGET)
+            .expect("seed spent budget");
+        f.retriever
+            .recover_dependency(hash.clone())
+            .await
+            .expect("recovery eviction");
+
+        let past_expiry = now_ms() + 60_000;
+        f.retriever
+            .sweep_expired_retry_budget_quarantine_for_test(past_expiry)
+            .expect("expiry sweep");
+
+        assert!(
+            !f.retriever
+                .retry_budget_quarantined_for_test(&hash, past_expiry)
+                .expect("quarantine read"),
+            "the quarantine must lapse at expiry"
+        );
+        assert_eq!(
+            f.retriever
+                .retry_attempts_for_test(&hash)
+                .expect("attempts read"),
+            0,
+            "expiry must clear the attempt count so the next citation gets a fresh budget"
+        );
+    }
+
     #[tokio::test]
     async fn a_dead_peer_does_not_abort_the_maintenance_sweep() {
         let f = fixture();

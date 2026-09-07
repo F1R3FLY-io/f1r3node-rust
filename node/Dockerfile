@@ -1,12 +1,12 @@
 # Multi-stage Dockerfile for Rust F1r3fly Node
 # Equivalent to build.sbt Docker configuration
 
-FROM --platform=$BUILDPLATFORM tonistiigi/xx AS xx
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.9.0@sha256:c64defb9ed5a91eacb37f96ccc3d4cd72521c4bd18d5442905b95e2226b0e707 AS xx
 
 # ============================================================================
 # Stage 1: Builder - Build node binary (Cargo handles all dependencies)
 # ============================================================================
-FROM --platform=$BUILDPLATFORM rust:bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS builder
 
 # Declare build arguments at the top to ensure consistent caching
 ARG TARGETARCH
@@ -61,6 +61,7 @@ COPY comm/ ./comm/
 COPY rho-pure-eval/ ./rho-pure-eval/
 COPY rholang/ ./rholang/
 COPY node/ ./node/
+COPY scripts/supply-chain/ ./scripts/supply-chain/
 
 # Configure pkg-config for cross-compilation to find target OpenSSL libraries
 # xx-apt installs target libs in the xx sysroot, we need to tell pkg-config where they are
@@ -73,27 +74,32 @@ COPY node/ ./node/
 # not wanted in the image everyone actually runs.
 ARG PROFILING_BUILD=0
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/build/build \
-    export TARGET_TRIPLE=$(xx-cargo --print-target-triple) && \
-    export PKG_CONFIG_SYSROOT_DIR=$(xx-info sysroot) && \
-    export PKG_CONFIG_PATH=$(xx-info sysroot)/usr/lib/$(xx-info triple)/pkgconfig:$(xx-info sysroot)/usr/share/pkgconfig && \
+RUN xx-cargo --setup-target-triple && \
+    cargo fetch --locked --target "$(xx-cargo --print-target-triple)"
+
+RUN --network=none \
+    TARGET_TRIPLE="$(xx-cargo --print-target-triple)" && \
+    export TARGET_TRIPLE && \
+    PKG_CONFIG_SYSROOT_DIR="$(xx-info sysroot)" && \
+    export PKG_CONFIG_SYSROOT_DIR && \
+    export PKG_CONFIG_PATH="${PKG_CONFIG_SYSROOT_DIR}/usr/lib/$(xx-info triple)/pkgconfig:${PKG_CONFIG_SYSROOT_DIR}/usr/share/pkgconfig" && \
     export PKG_CONFIG_ALLOW_CROSS=1 && \
     case "${TARGET_TRIPLE}" in \
         aarch64*) export RUSTFLAGS="-C target-feature=+aes" ;; \
         *) export RUSTFLAGS="-C target-feature=+aes,+sse2" ;; \
     esac && \
     if [ "${PROFILING_BUILD}" = "1" ]; then export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"; fi && \
-    xx-cargo build --release -p node --target-dir ./build && \
-    xx-verify ./build/${TARGET_TRIPLE}/release/node && \
-    cp ./build/${TARGET_TRIPLE}/release/node /build/node_binary && \
+    xx-cargo build --frozen --release -p node --target-dir ./build && \
+    xx-verify "./build/${TARGET_TRIPLE}/release/node" && \
+    cp "./build/${TARGET_TRIPLE}/release/node" /build/node_binary && \
     chmod +x /build/node_binary
 
 # ============================================================================
 # Stage 2: Runtime base - Install runtime dependencies (cached independently)
 # ============================================================================
-FROM debian:bookworm-slim AS runtime-base
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime-base
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Re-declared: ARGs don't cross FROM boundaries. Gates the `perf`/`procps`
 # install below the same way it gates frame pointers in the builder stage —
@@ -108,31 +114,24 @@ RUN apt-get update && apt-get install -y \
     libc6 \
     libjemalloc2 \
     curl \
+    jq \
     && if [ "${PROFILING_BUILD}" = "1" ]; then apt-get install -y linux-perf procps binutils; fi \
     && rm -rf /var/lib/apt/lists/*
 
-# Install grpcurl and jq for healthcheck (matching build.sbt)
-# Note: These are installed in the runtime stage, architecture will be detected at runtime
 RUN GRPCURL_VERSION="1.8.9" && \
     ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
-        amd64) GRPCURL_ARCH="x86_64" ;; \
-        arm64) GRPCURL_ARCH="arm64" ;; \
-        *) GRPCURL_ARCH="x86_64" ;; \
+        amd64) GRPCURL_ARCH="x86_64"; GRPCURL_SHA256="a422d1e8ad854a305c0dd53f2f2053da242211d3d1810e7addb40a041e309516" ;; \
+        arm64) GRPCURL_ARCH="arm64"; GRPCURL_SHA256="1303f4c1c6667f31b80efbe483875c749c94c8cb0d8b631bd64179f0b140714d" ;; \
+        *) exit 1 ;; \
     esac && \
-    curl -L "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz" -o /tmp/grpcurl.tar.gz && \
-    tar -xzf /tmp/grpcurl.tar.gz -C /tmp && \
-    find /tmp -name grpcurl -type f -executable -exec mv {} /usr/local/bin/ \; && \
+    curl --fail --location --proto '=https' --proto-redir '=https' \
+        "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz" \
+        -o /tmp/grpcurl.tar.gz && \
+    echo "${GRPCURL_SHA256}  /tmp/grpcurl.tar.gz" | sha256sum --check --strict && \
+    tar -xzf /tmp/grpcurl.tar.gz -C /usr/local/bin grpcurl && \
     chmod +x /usr/local/bin/grpcurl && \
-    rm -rf /tmp/grpcurl* || true && \
-    ARCH=$(dpkg --print-architecture) && \
-    case "$ARCH" in \
-        amd64) JQ_ARCH="linux64" ;; \
-        arm64) JQ_ARCH="linuxarm64" ;; \
-        *) JQ_ARCH="linux64" ;; \
-    esac && \
-    curl -L "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-${JQ_ARCH}" -o /usr/local/bin/jq && \
-    chmod +x /usr/local/bin/jq || true
+    rm /tmp/grpcurl.tar.gz
 
 # ============================================================================
 # Stage 3: Runtime - Final image, starts at WORKDIR with artifacts from builder

@@ -48,7 +48,21 @@ pub(crate) async fn acquire_locks(
 
     let mut held: Vec<HeldLock> = Vec::with_capacity(indices.len());
     for idx in indices {
-        let guard = stripes[idx].clone().lock_owned().await;
+        // Fast path: try_lock_owned() first. Measured under `rholang-par`
+        // (many concurrent par-branches, each mostly on its own private
+        // stripe) the stripe is free the overwhelming majority of the time —
+        // going through lock_owned().await unconditionally, even when
+        // uncontended, was adding real wall-clock cost around the .await
+        // point itself (not genuine mutex contention — confirmed by direct
+        // measurement) that dominated `phase_a wait` at high fork counts.
+        // Only the genuinely-contended case falls through to the slow
+        // .await path. See issues/02-intra-deploy-par-mutex-rspace.md
+        // items 16-19 (F1R3FLY-io/f1r3node-rust#50) for the measurements
+        // behind this change.
+        let guard = match stripes[idx].clone().try_lock_owned() {
+            Ok(guard) => guard,
+            Err(_) => stripes[idx].clone().lock_owned().await,
+        };
         held.push(HeldLock { _guard: guard });
     }
 

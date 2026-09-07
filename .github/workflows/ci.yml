@@ -148,10 +148,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ steps.target.outputs.target_sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Initialize Environment
         id: env
@@ -212,7 +213,7 @@ jobs:
 
       - name: Upload exact target evidence
         if: inputs.target_sha != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ci-target-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-target/ci-target.json
@@ -272,9 +273,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
 
       # Deliberately the first step and deliberately in this job. `Lint` is a
       # required status check on devProtect and masterProtect, so a violation
@@ -337,6 +339,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-workflows.sh
 
+      - name: Verify coverage summary aggregation
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-coverage-summary.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh
@@ -362,13 +368,18 @@ jobs:
         run: scripts/bench/test-restore-soak-dashboard-run.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
           components: rustfmt, clippy
 
+      - name: Verify supply-chain controls
+        run: cargo test --locked -p supply-chain
+
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
 
       - name: Install system dependencies
         run: bash .github/scripts/install-system-dependencies.sh
@@ -379,33 +390,41 @@ jobs:
       - name: Run clippy
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --locked --workspace --all-targets
 
   deny:
     name: cargo-deny
     needs: build_base
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
 
-      - name: cargo-deny check
-        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
-          command: check advisories bans licenses sources
+          toolchain: nightly-2026-02-09
 
-      # The soak-charts publisher crate is deliberately not a workspace member
-      # (see scripts/soak-charts/Cargo.toml), so the workspace check above
-      # never sees its tree — it gets its own pass against the same policy.
-      - name: cargo-deny check (soak-charts)
-        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Install verified cargo-deny
+        run: |
+          bash scripts/ci/check-supply-chain.sh install --install-dir "$RUNNER_TEMP/cargo-deny"
+          echo "$RUNNER_TEMP/cargo-deny" >> "$GITHUB_PATH"
+
+      - name: Check all dependency graphs
+        run: bash scripts/ci/check-supply-chain.sh check
+
+      - name: Upload supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          command: check advisories bans licenses sources
-          manifest-path: scripts/soak-charts/Cargo.toml
-          arguments: --all-features
+          name: supply-chain
+          path: target/supply-chain/
+          retention-days: 90
+          if-no-files-found: error
 
   markdown_link_check:
     name: Markdown Link Check
@@ -418,12 +437,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
 
       - name: Link Checker
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           # Scope: local file links plus repository-hosting URLs only.
           # The broad exclude drops every http(s) URL; the includes add
@@ -473,25 +493,27 @@ jobs:
           - graphz
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: test-${{ matrix.crate }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
 
       - name: Install system dependencies
         run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
         with:
           tool: nextest
 
@@ -507,12 +529,12 @@ jobs:
           # parallel pool (vs `cargo test`, which runs each test binary sequentially),
           # which is what keeps the ~930-test casper crate under the job timeout.
           # `--no-tests=pass` tolerates a crate whose only tests are doctests.
-          cargo nextest run --release -p ${{ matrix.crate }} --no-tests=pass 2>&1 \
+          cargo nextest run --locked --release -p ${{ matrix.crate }} --no-tests=pass 2>&1 \
             | tee /tmp/test-logs/${{ matrix.crate }}.txt
           nt=${PIPESTATUS[0]}
           # nextest does NOT run doctests; run them explicitly to preserve the
           # coverage that plain `cargo test` provided.
-          cargo test --release -p ${{ matrix.crate }} --doc 2>&1 \
+          cargo test --locked --release -p ${{ matrix.crate }} --doc 2>&1 \
             | tee /tmp/test-logs/${{ matrix.crate }}-doc.txt
           dt=${PIPESTATUS[0]}
           echo "nextest exit=$nt doctest exit=$dt"
@@ -520,7 +542,7 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-logs-${{ matrix.crate }}
           path: /tmp/test-logs/
@@ -545,25 +567,27 @@ jobs:
         partition: [1, 2]
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: test-casper
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
 
       - name: Install system dependencies
         run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
         with:
           tool: nextest
 
@@ -583,14 +607,14 @@ jobs:
           # slow convergence/recursion specs spread over both legs instead of
           # landing together. `--no-tests=pass` tolerates an empty shard.
           nt=0
-          cargo nextest run --release -p casper --no-tests=pass \
+          cargo nextest run --locked --release -p casper --no-tests=pass \
             --partition count:${{ matrix.partition }}/2 2>&1 \
             | tee /tmp/test-logs/casper-${{ matrix.partition }}.txt || nt=$?
           # nextest does NOT run doctests, and doctests cannot be partitioned;
           # shard 1 runs them once for the whole crate.
           dt=0
           if [ "${{ matrix.partition }}" = "1" ]; then
-            cargo test --release -p casper --doc 2>&1 \
+            cargo test --locked --release -p casper --doc 2>&1 \
               | tee /tmp/test-logs/casper-doc.txt || dt=$?
           fi
           echo "nextest exit=$nt doctest exit=$dt"
@@ -598,11 +622,155 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-logs-casper-${{ matrix.partition }}
           path: /tmp/test-logs/
           retention-days: 7
+
+  # Codecov upload stays off until a maintainer sets the ENABLE_CODECOV
+  # variable and the CODECOV_TOKEN secret.
+  coverage:
+    name: Coverage (${{ matrix.crate }})
+    needs: [build_base, lint]
+    if: >-
+      github.event_name == 'pull_request'
+      && needs.build_base.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.crate == 'casper' && 60 || 45 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - rspace_plus_plus
+          - rholang
+          - shared
+          - node
+          - models
+          - crypto
+          - block-storage
+          - comm
+          - graphz
+          - casper
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: nightly-2026-02-09
+          components: llvm-tools-preview
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: coverage-${{ matrix.crate }}
+          save-if: false
+
+      - name: Install system dependencies
+        run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Install llvm-cov and nextest
+        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
+        with:
+          tool: cargo-llvm-cov,nextest
+
+      - name: Measure coverage
+        env:
+          RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
+        shell: bash -euo pipefail {0}
+        run: |
+          ulimit -n 65536
+          mkdir -p target/coverage
+          cargo llvm-cov clean
+          cargo llvm-cov nextest --locked --release -p ${{ matrix.crate }} --no-tests=pass
+          # Src-shipped test scaffolding is compiled for cross-crate test
+          # consumers, so it can never be exercised by its own crate's run;
+          # keep it out of the denominator. Must stay identical to the regex
+          # in scripts/coverage.sh.
+          # node's process bootstrap/wiring joins the scaffolding exclusion:
+          # reachable only from a booted node (covered by the integration
+          # suites), never from the crate's own test run.
+          ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/(block_processor_instance|proposer_instance)\.rs)'
+          cargo llvm-cov report --release -p ${{ matrix.crate }} \
+            --ignore-filename-regex "$ignore_regex" \
+            --json --summary-only --output-path target/coverage/coverage-${{ matrix.crate }}.json
+          cargo llvm-cov report --release -p ${{ matrix.crate }} \
+            --ignore-filename-regex "$ignore_regex" \
+            --lcov --output-path target/coverage/coverage-${{ matrix.crate }}.lcov
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-${{ matrix.crate }}
+          path: |
+            target/coverage/coverage-${{ matrix.crate }}.json
+            target/coverage/coverage-${{ matrix.crate }}.lcov
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload to Codecov
+        if: >-
+          vars.ENABLE_CODECOV == 'true'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/coverage/coverage-${{ matrix.crate }}.lcov
+          flags: ${{ matrix.crate }}
+          fail_ci_if_error: false
+
+  coverage_summary:
+    name: Coverage Summary
+    needs: [build_base, coverage]
+    if: >-
+      always()
+      && github.event_name == 'pull_request'
+      && needs.coverage.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Prepare coverage directory
+        shell: bash -euo pipefail {0}
+        run: mkdir -p /tmp/coverage
+
+      - name: Download coverage data
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: coverage-*
+          path: /tmp/coverage
+          merge-multiple: true
+
+      - name: Aggregate and enforce coverage
+        shell: bash -euo pipefail {0}
+        run: |
+          status=0
+          .github/scripts/coverage-summary.sh /tmp/coverage > target-coverage-summary.md || status=$?
+          cat target-coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-summary
+          path: target-coverage-summary.md
+          retention-days: 30
 
   # Ruleset gate. The branch ruleset requires a status check named exactly
   # `Test (casper)` (formerly the matrix leg's name). This collapses the two
@@ -611,7 +779,7 @@ jobs:
   # to success only when every shard succeeds.
   test_casper_gate:
     name: Test (casper)
-    needs: test_casper
+    needs: [test_casper, coverage_summary]
     # Skip (rather than fail) when the shards never ran — e.g. lint failed —
     # matching how the former single `Test (casper)` leg reported.
     if: always() && needs.test_casper.result != 'skipped'
@@ -626,7 +794,12 @@ jobs:
             echo "casper shard matrix concluded: $result"
             exit 1
           fi
-          echo "Both casper shards succeeded"
+          if [ "${{ github.event_name }}" = "pull_request" ] \
+            && [ "${{ needs.coverage_summary.result }}" != "success" ]; then
+            echo "unit-test coverage concluded: ${{ needs.coverage_summary.result }}"
+            exit 1
+          fi
+          echo "Casper shards and required pull-request coverage succeeded"
 
   # Heavy pipeline (native Docker build -> ephemeral OCI runner launch ->
   # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.
@@ -802,13 +975,14 @@ jobs:
 
       - name: Checkout (for version)
         if: steps.publish_gate.outputs.publish == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Load AMD64 Docker Image
         if: steps.publish_gate.outputs.publish == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-amd64
           path: /tmp/amd64
@@ -820,7 +994,7 @@ jobs:
 
       - name: Load ARM64 Docker Image
         if: steps.publish_gate.outputs.publish == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-arm64
           path: /tmp/arm64
@@ -832,7 +1006,7 @@ jobs:
 
       - name: Log in to Docker Hub
         if: steps.publish_gate.outputs.publish == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -905,7 +1079,7 @@ jobs:
 
       - name: Log in to OCIR
         if: steps.publish_gate.outputs.publish == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ secrets.OCIR_REGISTRY }}
           username: ${{ secrets.OCIR_USERNAME }}
@@ -1009,16 +1183,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout (for CHANGELOG.md)
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Load Docker artifact (amd64)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-amd64
           path: /tmp/amd64
 
       - name: Load Docker artifact (arm64)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-arm64
           path: /tmp/arm64
@@ -1071,7 +1247,7 @@ jobs:
           awk '/^## \[/{if(found) exit; found=1} found' CHANGELOG.md > RELEASE_NOTES.md
 
       - name: Update release and release artifacts
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
           artifacts: /tmp/artifacts/f1r3node-linux-amd64,/tmp/artifacts/f1r3node-linux-arm64
           prerelease: ${{ steps.release_type.outputs.prerelease }}

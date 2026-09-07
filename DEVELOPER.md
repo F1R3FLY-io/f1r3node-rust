@@ -4,6 +4,8 @@ Native development setup for the Rust workspace.
 
 This repository is built with Cargo, Docker, and system packages only.
 
+The formal-verification gates need more tools. See [Formal Verification Tooling](README.md#formal-verification-tooling) in the repository README for the Java runtime, the pinned TLC jar, opam, and the Rocq prover.
+
 ## Required Tooling
 
 ### macOS
@@ -171,6 +173,12 @@ cargo test --release
 cargo test -p casper
 cargo test -p rholang
 ./scripts/run_rust_tests.sh
+
+# Unit-test line coverage (requires cargo-llvm-cov, nextest, llvm-tools-preview)
+# Src-shipped test scaffolding (test_utils dirs, block-storage/src/rust/test)
+# is excluded from the measured denominator; see scripts/coverage.sh.
+just coverage            # enforce 80% for every crate and the workspace
+just coverage casper     # enforce 80% for one crate
 ```
 
 ### Run A Standalone Node (without Docker)

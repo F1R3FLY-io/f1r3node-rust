@@ -45,7 +45,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 8b4da0f9395fc951b68af1be8ae023fb1aeb9d09
+  SYSTEM_INTEGRATION_REF: 0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -100,7 +100,7 @@ jobs:
           rm -rf ../artifacts /tmp/rust-node-docker.tar.gz
 
       - name: Clone Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -122,7 +122,7 @@ jobs:
           allow-unsafe-pr-checkout: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Enable Containerd Image Store
         shell: bash -ex {0}
@@ -158,7 +158,7 @@ jobs:
               | gzip > /tmp/rust-node-docker.tar.gz
 
       - name: Save Docker Image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp/rust-node-docker.tar.gz
@@ -245,7 +245,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Clone system-integration
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -326,7 +326,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -352,7 +352,15 @@ jobs:
           # exhausted it under normal PR traffic.
           pids=()
           for _ in $(seq 1 4); do ./launch-runner.sh amd64 & pids+=($!); done
-          for _ in $(seq 1 2); do ./launch-runner.sh arm64 & pids+=($!); done
+          # arm64 runs its two legs SEQUENTIALLY (subprocess queues after
+          # docker), so the runner serving the second leg idles longer than
+          # the cloud-init idle watchdog's 2700s default — run 33208755550
+          # lost its second arm64 runner to that watchdog ten minutes before
+          # arm64-subprocess queued, and the job hung forever. 7200s covers
+          # the observed docker-leg duration with margin. The launcher knob
+          # exists from system-integration pin <pending 2026-08-28 repin>;
+          # older launchers ignore the variable, so this is safe either way.
+          for _ in $(seq 1 2); do RUNNER_IDLE_TIMEOUT_SECS=7200 ./launch-runner.sh arm64 & pids+=($!); done
           failed=0
           for pid in "${pids[@]}"; do
             if ! wait "$pid"; then
@@ -442,7 +450,7 @@ jobs:
             }
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -464,7 +472,7 @@ jobs:
           allow-unsafe-pr-checkout: true
 
       - name: Clone system-integration
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -472,7 +480,7 @@ jobs:
           persist-credentials: false
 
       - name: Load Docker Image (from build_docker_image artifact)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp
@@ -538,7 +546,7 @@ jobs:
 
       - name: Upload Integration Test Logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
@@ -589,7 +597,7 @@ jobs:
             }
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -599,7 +607,7 @@ jobs:
           allow-unsafe-pr-checkout: true
 
       - name: Clone system-integration
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ env.SYSTEM_INTEGRATION_REF }}
@@ -607,7 +615,7 @@ jobs:
           persist-credentials: false
 
       - name: Load Docker Image (from build_docker_image artifact)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-${{ matrix.arch }}
           path: /tmp
@@ -651,7 +659,7 @@ jobs:
 
       - name: Upload UCC Test Logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ucc-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
@@ -667,7 +675,7 @@ jobs:
       contents: read
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -689,7 +697,7 @@ jobs:
           allow-unsafe-pr-checkout: true
 
       - name: Load Docker Image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-amd64
           path: /tmp
@@ -753,7 +761,7 @@ jobs:
             docker logs "$c" > "/tmp/logs/${name}.log" 2>&1 || true
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: smoke-logs-docker-standalone
@@ -775,7 +783,7 @@ jobs:
       contents: read
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -797,7 +805,7 @@ jobs:
           allow-unsafe-pr-checkout: true
 
       - name: Load Docker Image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-amd64
           path: /tmp
@@ -857,7 +865,7 @@ jobs:
             docker logs "$c" > "/tmp/logs/${name}.log" 2>&1 || true
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: smoke-logs-docker-shard
@@ -879,7 +887,7 @@ jobs:
       contents: read
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
@@ -916,7 +924,7 @@ jobs:
           just --version
 
       - name: Load Docker Image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: artifacts-docker-amd64
           path: /tmp
@@ -1002,7 +1010,7 @@ jobs:
           mkdir -p /tmp/logs
           cp /tmp/node-stdout.log /tmp/logs/ 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: smoke-logs-local-standalone

@@ -587,3 +587,574 @@ impl HasLocallyFree<New> for New {
 
     fn locally_free(&self, n: New, _depth: i32) -> Vec<u8> { n.locally_free }
 }
+
+#[cfg(test)]
+mod tests {
+    use models::rhoapi::connective::ConnectiveInstance;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::EMethod;
+    use models::rust::utils::{new_freevar_par, new_gint_par};
+
+    use super::*;
+
+    fn ctx() -> SpatialMatcherContext { SpatialMatcherContext::new() }
+
+    fn free_par() -> Par {
+        let mut par = new_freevar_par(0, Vec::new());
+        par.connective_used = true;
+        par
+    }
+
+    fn marked_par(bit: usize) -> Par {
+        let mut par = new_gint_par(0, Vec::new(), false);
+        par.locally_free = create_bit_vector(&[bit]);
+        par
+    }
+
+    fn plain_par() -> Par { new_gint_par(0, Vec::new(), false) }
+
+    type BinOp = fn(Par, Par) -> ExprInstance;
+
+    fn binary_ops() -> Vec<BinOp> {
+        vec![
+            |p1, p2| {
+                EMultBody(EMult {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EDivBody(EDiv {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EModBody(EMod {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EPlusBody(EPlus {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EMinusBody(EMinus {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ELtBody(ELt {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ELteBody(ELte {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EGtBody(EGt {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EGteBody(EGte {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EEqBody(EEq {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ENeqBody(ENeq {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EAndBody(EAnd {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EOrBody(EOr {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EPercentPercentBody(EPercentPercent {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EPlusPlusBody(EPlusPlus {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                EMinusMinusBody(EMinusMinus {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+        ]
+    }
+
+    fn expr_of(instance: ExprInstance) -> Expr {
+        Expr {
+            expr_instance: Some(instance),
+        }
+    }
+
+    #[test]
+    fn binary_operator_exprs_or_their_operands() {
+        let context = ctx();
+        for op in binary_ops() {
+            let dirty = expr_of(op(free_par(), plain_par()));
+            assert!(
+                HasLocallyFree::<Expr>::connective_used(&context, dirty.clone()),
+                "context impl"
+            );
+            assert!(
+                dirty.clone().connective_used(dirty.clone()),
+                "inherent Expr impl"
+            );
+
+            let clean = expr_of(op(plain_par(), plain_par()));
+            assert!(!HasLocallyFree::<Expr>::connective_used(
+                &context,
+                clean.clone()
+            ));
+            assert!(!clean.clone().connective_used(clean));
+
+            let unioned = expr_of(op(marked_par(0), marked_par(1)));
+            let expected = union(create_bit_vector(&[0]), create_bit_vector(&[1]));
+            assert_eq!(
+                HasLocallyFree::<Expr>::locally_free(&context, unioned.clone(), 0),
+                expected
+            );
+            assert_eq!(unioned.clone().locally_free(unioned, 0), expected);
+        }
+    }
+
+    #[test]
+    fn ground_exprs_are_concrete_with_no_free_variables() {
+        let context = ctx();
+        let grounds = vec![
+            GBool(true),
+            GInt(1),
+            GString("s".to_string()),
+            GUri("u".to_string()),
+            GByteArray(vec![1]),
+            GDouble(1.5f64.to_bits()),
+        ];
+        for ground in grounds {
+            let e = expr_of(ground);
+            assert!(!HasLocallyFree::<Expr>::connective_used(
+                &context,
+                e.clone()
+            ));
+            assert!(HasLocallyFree::<Expr>::locally_free(&context, e.clone(), 0).is_empty());
+            assert!(!e.clone().connective_used(e.clone()));
+            assert!(e.clone().locally_free(e, 0).is_empty());
+        }
+    }
+
+    #[test]
+    fn unary_method_and_matches_exprs_delegate_to_their_bodies() {
+        let context = ctx();
+
+        let not_expr = expr_of(ENotBody(ENot {
+            p: Some(free_par()),
+        }));
+        assert!(HasLocallyFree::<Expr>::connective_used(
+            &context,
+            not_expr.clone()
+        ));
+        let neg_expr = expr_of(ENegBody(ENeg {
+            p: Some(marked_par(2)),
+        }));
+        assert!(!HasLocallyFree::<Expr>::connective_used(
+            &context,
+            neg_expr.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Expr>::locally_free(&context, neg_expr.clone(), 0),
+            create_bit_vector(&[2])
+        );
+        assert_eq!(
+            HasLocallyFree::<Expr>::locally_free(&context, not_expr, 0),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            neg_expr.clone().locally_free(neg_expr, 0),
+            create_bit_vector(&[2])
+        );
+
+        let matches_expr = expr_of(EMatchesBody(EMatches {
+            target: Some(marked_par(1)),
+            pattern: Some(free_par()),
+        }));
+        assert!(!HasLocallyFree::<Expr>::connective_used(
+            &context,
+            matches_expr.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Expr>::locally_free(&context, matches_expr.clone(), 0),
+            create_bit_vector(&[1])
+        );
+        assert!(!matches_expr.clone().connective_used(matches_expr));
+
+        let method_expr = expr_of(EMethodBody(EMethod {
+            method_name: "nth".to_string(),
+            target: Some(plain_par()),
+            arguments: vec![],
+            locally_free: create_bit_vector(&[3]),
+            connective_used: true,
+        }));
+        assert!(HasLocallyFree::<Expr>::connective_used(
+            &context,
+            method_expr.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Expr>::locally_free(&context, method_expr.clone(), 0),
+            create_bit_vector(&[3])
+        );
+        assert!(method_expr.clone().connective_used(method_expr));
+    }
+
+    #[test]
+    fn collection_exprs_read_their_cached_fields() {
+        let context = ctx();
+        let list = expr_of(EListBody(EList {
+            ps: vec![],
+            locally_free: create_bit_vector(&[1]),
+            connective_used: true,
+            remainder: None,
+        }));
+        assert!(HasLocallyFree::<Expr>::connective_used(
+            &context,
+            list.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Expr>::locally_free(&context, list.clone(), 0),
+            create_bit_vector(&[1])
+        );
+        assert!(list.clone().connective_used(list.clone()));
+        assert_eq!(list.clone().locally_free(list, 0), create_bit_vector(&[1]));
+
+        let tuple = expr_of(ETupleBody(ETuple {
+            ps: vec![],
+            locally_free: create_bit_vector(&[2]),
+            connective_used: false,
+        }));
+        assert!(!HasLocallyFree::<Expr>::connective_used(
+            &context,
+            tuple.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Expr>::locally_free(&context, tuple.clone(), 0),
+            create_bit_vector(&[2])
+        );
+        assert_eq!(
+            tuple.clone().locally_free(tuple, 0),
+            create_bit_vector(&[2])
+        );
+    }
+
+    #[test]
+    fn var_instances_classify_and_report_bound_indices() {
+        let context = ctx();
+
+        assert!(!HasLocallyFree::<VarInstance>::connective_used(
+            &context,
+            BoundVar(1)
+        ));
+        assert!(HasLocallyFree::<VarInstance>::connective_used(
+            &context,
+            FreeVar(1)
+        ));
+        assert!(HasLocallyFree::<VarInstance>::connective_used(
+            &context,
+            Wildcard(Default::default())
+        ));
+
+        assert_eq!(
+            HasLocallyFree::<VarInstance>::locally_free(&context, BoundVar(2), 0),
+            create_bit_vector(&[2])
+        );
+        assert!(HasLocallyFree::<VarInstance>::locally_free(&context, BoundVar(2), 1).is_empty());
+        assert!(HasLocallyFree::<VarInstance>::locally_free(&context, FreeVar(2), 0).is_empty());
+        assert!(HasLocallyFree::<VarInstance>::locally_free(
+            &context,
+            Wildcard(Default::default()),
+            0
+        )
+        .is_empty());
+
+        let bound_var = Var {
+            var_instance: Some(BoundVar(3)),
+        };
+        assert!(!HasLocallyFree::<Var>::connective_used(
+            &context,
+            bound_var.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Var>::locally_free(&context, bound_var.clone(), 0),
+            create_bit_vector(&[3])
+        );
+        assert!(!bound_var.clone().connective_used(bound_var.clone()));
+        assert_eq!(
+            bound_var.clone().locally_free(bound_var, 0),
+            create_bit_vector(&[3])
+        );
+
+        assert!(BoundVar(1).locally_free(BoundVar(1), 1).is_empty());
+        assert!(FreeVar(1).connective_used(FreeVar(1)));
+
+        let evar = expr_of(EVarBody(EVar {
+            v: Some(Var {
+                var_instance: Some(BoundVar(1)),
+            }),
+        }));
+        assert!(!HasLocallyFree::<Expr>::connective_used(
+            &context,
+            evar.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Expr>::locally_free(&context, evar.clone(), 0),
+            create_bit_vector(&[1])
+        );
+        assert_eq!(evar.clone().locally_free(evar, 0), create_bit_vector(&[1]));
+    }
+
+    #[test]
+    fn structural_terms_read_their_cached_fields() {
+        let context = ctx();
+
+        let par = Par {
+            connective_used: true,
+            locally_free: create_bit_vector(&[1]),
+            ..Default::default()
+        };
+        assert!(HasLocallyFree::<Par>::connective_used(
+            &context,
+            par.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Par>::locally_free(&context, par.clone(), 0),
+            create_bit_vector(&[1])
+        );
+        assert!(par.clone().connective_used(par.clone()));
+        assert_eq!(
+            par.clone().locally_free(par.clone(), 0),
+            create_bit_vector(&[1])
+        );
+
+        assert!(HasLocallyFree::<(Par, Par)>::connective_used(
+            &context,
+            (par.clone(), plain_par())
+        ));
+        assert_eq!(
+            HasLocallyFree::<(Par, Par)>::locally_free(&context, (par, marked_par(2)), 0),
+            union(create_bit_vector(&[1]), create_bit_vector(&[2]))
+        );
+
+        let bundle = Bundle {
+            body: Some(marked_par(2)),
+            write_flag: false,
+            read_flag: false,
+        };
+        assert!(!HasLocallyFree::<Bundle>::connective_used(
+            &context,
+            bundle.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Bundle>::locally_free(&context, bundle, 0),
+            create_bit_vector(&[2])
+        );
+
+        let send = Send {
+            chan: None,
+            data: vec![],
+            persistent: false,
+            locally_free: create_bit_vector(&[3]),
+            connective_used: true,
+        };
+        assert!(HasLocallyFree::<Send>::connective_used(
+            &context,
+            send.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Send>::locally_free(&context, send, 0),
+            create_bit_vector(&[3])
+        );
+
+        let unforgeable = GUnforgeable { unf_instance: None };
+        assert!(!HasLocallyFree::<GUnforgeable>::connective_used(
+            &context,
+            unforgeable.clone()
+        ));
+        assert!(HasLocallyFree::<GUnforgeable>::locally_free(&context, unforgeable, 0).is_empty());
+
+        let new_term = New {
+            bind_count: 1,
+            p: Some(free_par()),
+            locally_free: create_bit_vector(&[4]),
+            ..Default::default()
+        };
+        assert!(HasLocallyFree::<New>::connective_used(
+            &context,
+            new_term.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<New>::locally_free(&context, new_term.clone(), 0),
+            create_bit_vector(&[4])
+        );
+        assert!(new_term.clone().connective_used(new_term.clone()));
+        assert_eq!(
+            new_term.clone().locally_free(new_term, 0),
+            create_bit_vector(&[4])
+        );
+
+        let receive = Receive {
+            binds: vec![],
+            body: None,
+            persistent: false,
+            peek: false,
+            bind_count: 0,
+            locally_free: create_bit_vector(&[5]),
+            connective_used: true,
+            condition: None,
+        };
+        assert!(HasLocallyFree::<Receive>::connective_used(
+            &context,
+            receive.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Receive>::locally_free(&context, receive, 0),
+            create_bit_vector(&[5])
+        );
+
+        let match_term = Match {
+            target: Some(plain_par()),
+            cases: vec![],
+            locally_free: create_bit_vector(&[6]),
+            connective_used: true,
+        };
+        assert!(HasLocallyFree::<Match>::connective_used(
+            &context,
+            match_term.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<Match>::locally_free(&context, match_term, 0),
+            create_bit_vector(&[6])
+        );
+    }
+
+    #[test]
+    fn receive_binds_and_match_cases_union_sources_and_patterns() {
+        let context = ctx();
+
+        let bind = ReceiveBind {
+            patterns: vec![marked_par(1)],
+            source: Some(marked_par(2)),
+            remainder: None,
+            free_count: 0,
+        };
+        assert!(!HasLocallyFree::<ReceiveBind>::connective_used(
+            &context,
+            bind.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<ReceiveBind>::locally_free(&context, bind, 0),
+            union(create_bit_vector(&[1]), create_bit_vector(&[2]))
+        );
+
+        let dirty_bind = ReceiveBind {
+            patterns: vec![],
+            source: Some(free_par()),
+            remainder: None,
+            free_count: 1,
+        };
+        assert!(HasLocallyFree::<ReceiveBind>::connective_used(
+            &context, dirty_bind
+        ));
+
+        let case = MatchCase {
+            pattern: Some(marked_par(1)),
+            source: Some(marked_par(2)),
+            free_count: 0,
+            guard: None,
+        };
+        assert!(!HasLocallyFree::<MatchCase>::connective_used(
+            &context,
+            case.clone()
+        ));
+        assert_eq!(
+            HasLocallyFree::<MatchCase>::locally_free(&context, case, 0),
+            union(create_bit_vector(&[2]), create_bit_vector(&[1]))
+        );
+    }
+
+    #[test]
+    fn connectives_classify_and_var_refs_report_depth_matched_indices() {
+        let context = ctx();
+        let conn = |instance: ConnectiveInstance| Connective {
+            connective_instance: Some(instance),
+        };
+
+        for used in [
+            conn(ConnAndBody(ConnectiveBody { ps: vec![] })),
+            conn(ConnOrBody(ConnectiveBody { ps: vec![] })),
+            conn(ConnNotBody(Par::default())),
+            conn(ConnBool(true)),
+            conn(ConnInt(true)),
+            conn(ConnString(true)),
+            conn(ConnUri(true)),
+            conn(ConnByteArray(true)),
+        ] {
+            assert!(HasLocallyFree::<Connective>::connective_used(
+                &context,
+                used.clone()
+            ));
+            assert!(used.clone().connective_used(used.clone()));
+            assert!(HasLocallyFree::<Connective>::locally_free(&context, used, 1).is_empty());
+        }
+
+        let var_ref = conn(VarRefBody(VarRef { index: 2, depth: 1 }));
+        assert!(!HasLocallyFree::<Connective>::connective_used(
+            &context,
+            var_ref.clone()
+        ));
+        assert!(!var_ref.clone().connective_used(var_ref.clone()));
+        assert_eq!(
+            HasLocallyFree::<Connective>::locally_free(&context, var_ref.clone(), 1),
+            create_bit_vector(&[2])
+        );
+        assert!(
+            HasLocallyFree::<Connective>::locally_free(&context, var_ref.clone(), 0).is_empty()
+        );
+        assert_eq!(
+            var_ref.clone().locally_free(var_ref.clone(), 1),
+            create_bit_vector(&[2])
+        );
+        assert!(var_ref.clone().locally_free(var_ref, 0).is_empty());
+    }
+}

@@ -207,8 +207,10 @@ pub mod builder {
                     "casper.deploy-play-budget ({:?}) exceeds a third of the citability \
                     window (max-parent-depth {} x heartbeat.check-interval {:?} = {:?}): \
                     a carrier built for that long risks being born below the parent-depth \
-                    horizon, where its deploys can only expire. Lower the budget or raise \
-                    max-parent-depth.",
+                    horizon, where its deploys can only expire — and every validator must \
+                    REPLAY the block inside the same window, so the binding bound is the \
+                    slowest validator's replay, not this proposer's build speed. Lower the \
+                    budget or raise max-parent-depth.",
                     play_budget,
                     max_parent_depth,
                     node_conf.casper.heartbeat_conf.check_interval,
@@ -217,31 +219,31 @@ pub mod builder {
             }
         }
 
-        // A dropped delivery freezes the receiver's view until the retriever's
-        // anchor fires; the citability window must leave recovery a wide
-        // margin. The anchor is swept by the casper maintenance loop, so the
-        // EFFECTIVE re-request clock is the slower of the two.
-        let recovery_anchor = std::time::Duration::from_millis(
-            casper::rust::engine::block_retriever::UNRESOLVED_REREQUEST_ANCHOR_MS,
-        )
-        .max(node_conf.casper.casper_loop_interval);
+        // A dropped delivery freezes the receiver's view until the retriever
+        // recovers it, and the recovery that must fit inside the citability
+        // window is the FULL re-request ladder (every backoff interval until
+        // the retry budget exhausts), not just the first anchor interval.
+        let recovery_span = std::time::Duration::from_millis(
+            casper::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+        );
         if max_parent_depth != i32::MAX && max_parent_depth > 0 {
             let citability_window = node_conf
                 .casper
                 .heartbeat_conf
                 .check_interval
                 .saturating_mul(max_parent_depth as u32);
-            if citability_window < recovery_anchor.saturating_mul(10) {
+            if citability_window < recovery_span {
                 warnings.push(format!(
                     "the citability window (max-parent-depth {} x heartbeat.check-interval \
-                    {:?} = {:?}) is under 10x the dependency re-request anchor's effective \
-                    clock ({:?}): one lost block delivery can outlive the window before \
-                    recovery retries, converting a dropped packet into a finality stall. \
-                    Raise max-parent-depth or slow the cadence.",
+                    {:?} = {:?}) is smaller than the full dependency-recovery re-request \
+                    span ({:?} across the whole retry budget): a lost block delivery \
+                    cannot finish recovering before its blocks fall below the parent-depth \
+                    horizon, converting a dropped packet into a finality stall. Raise \
+                    max-parent-depth or slow the cadence.",
                     max_parent_depth,
                     node_conf.casper.heartbeat_conf.check_interval,
                     citability_window,
-                    recovery_anchor,
+                    recovery_span,
                 ));
             }
         }
@@ -654,10 +656,12 @@ mod embedded_defaults_tests {
         );
     }
 
-    /// A citability window near the recovery anchor warns; shipped geometry
-    /// and a disabled depth check stay silent.
+    /// A citability window smaller than the FULL re-request recovery span
+    /// warns; shipped geometry and a disabled depth check stay silent. The
+    /// span, not the first anchor interval, is what has to fit: recovery is
+    /// the whole backoff ladder up to the retry budget.
     #[test]
-    fn a_citability_window_near_the_recovery_anchor_warns_at_startup() {
+    fn a_citability_window_under_the_recovery_span_warns_at_startup() {
         let mut cfg: NodeConf = hocon::HoconLoader::new()
             .load_str(EMBEDDED_DEFAULTS)
             .expect("load defaults.conf")
@@ -666,30 +670,25 @@ mod embedded_defaults_tests {
 
         let warnings = builder::validate_config(&cfg).expect("validate");
         assert!(
-            !warnings.iter().any(|w| w.contains("re-request anchor")),
+            !warnings.iter().any(|w| w.contains("re-request span")),
             "shipped geometry must not warn, got {warnings:?}"
         );
 
-        // 4 x 1s = 4s window against a 500ms anchor: under the 10x margin.
-        // The width cap follows mpd down to keep the I3 check satisfied.
-        cfg.casper.max_parent_depth = 4;
-        cfg.casper
-            .heartbeat_conf
-            .advanced
-            .empty_frontier_max_unfinalized_blocks = 4;
+        // 15 x 1s = 15s window against a ~58s full recovery span.
+        cfg.casper.max_parent_depth = 15;
         cfg.casper.heartbeat_conf.check_interval = Duration::from_secs(1);
         let warnings = builder::validate_config(&cfg).expect("validate");
         assert!(
             warnings
                 .iter()
-                .any(|w| w.contains("re-request anchor") && w.contains("max-parent-depth")),
-            "a citability window under 10x the anchor must warn, got {warnings:?}"
+                .any(|w| w.contains("re-request span") && w.contains("max-parent-depth")),
+            "a citability window under the recovery span must warn, got {warnings:?}"
         );
 
         cfg.casper.max_parent_depth = i32::MAX;
         let warnings = builder::validate_config(&cfg).expect("validate");
         assert!(
-            !warnings.iter().any(|w| w.contains("re-request anchor")),
+            !warnings.iter().any(|w| w.contains("re-request span")),
             "a disabled parent-depth check must not warn, got {warnings:?}"
         );
     }

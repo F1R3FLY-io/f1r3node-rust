@@ -38,8 +38,8 @@ pub struct CasperConf {
     pub deploy_lifespan: i64,
     /// Wall-clock ceiling on user-deploy execution per proposed block.
     /// Zero means derived: `max-parent-depth * heartbeat.check-interval / 5`,
-    /// resolved at launch — see `deploy_play_budget_millis` on
-    /// `CasperShardConf` for the semantics.
+    /// resolved at launch — see `deploy_play_budget` on `CasperShardConf`
+    /// for the semantics.
     #[serde(
         rename = "deploy-play-budget",
         deserialize_with = "de_duration",

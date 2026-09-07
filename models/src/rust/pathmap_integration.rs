@@ -144,3 +144,96 @@ pub fn create_pathmap_from_elements(
         locally_free,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rust::path_map_encoder::SExpr;
+    use crate::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
+
+    fn gint(value: i64) -> Par { new_gint_par(value, Vec::new(), false) }
+
+    fn gstring(value: &str) -> Par { new_gstring_par(value.to_string(), Vec::new(), false) }
+
+    #[test]
+    fn par_to_path_encodes_non_list_par_as_single_segment() {
+        let segments = par_to_path(&gint(42));
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0], SExpr::Symbol("42".to_string()).encode());
+    }
+
+    #[test]
+    fn par_to_path_expands_list_elements_into_segments() {
+        let list = new_elist_par(
+            vec![gstring("a"), gstring("b"), gint(3)],
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let segments = par_to_path(&list);
+        assert_eq!(segments.len(), 3);
+        assert_ne!(segments[0], segments[1]);
+        assert_eq!(segments[2], par_to_path(&gint(3))[0]);
+    }
+
+    #[test]
+    fn par_to_path_treats_multi_expr_par_as_single_segment() {
+        let two_exprs =
+            gint(1).with_exprs(vec![gint(1).exprs[0].clone(), gint(2).exprs[0].clone()]);
+        assert_eq!(par_to_path(&two_exprs).len(), 1);
+    }
+
+    #[test]
+    fn nested_list_pars_produce_structured_segments() {
+        let inner = new_elist_par(
+            vec![gstring("x"), gstring("y")],
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            false,
+        );
+        let segments = par_to_path(&new_elist_par(
+            vec![inner.clone(), gstring("z")],
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            false,
+        ));
+        assert_eq!(segments.len(), 2);
+        assert!(!segments[0].is_empty());
+    }
+
+    #[test]
+    fn create_pathmap_stores_each_element_under_its_path() {
+        let elements = vec![gint(1), gint(2)];
+        let result = create_pathmap_from_elements(&elements, None);
+        assert_eq!(result.map.val_count(), 2);
+        assert!(!result.connective_used);
+    }
+
+    #[test]
+    fn create_pathmap_propagates_connective_used_from_elements() {
+        let mut element = gint(1);
+        element.connective_used = true;
+        let result = create_pathmap_from_elements(&[element], None);
+        assert!(result.connective_used);
+    }
+
+    #[test]
+    fn create_pathmap_with_remainder_marks_connective_used() {
+        let result = create_pathmap_from_elements(&[gint(1)], Some(Var::default()));
+        assert!(result.connective_used);
+    }
+
+    #[test]
+    fn create_pathmap_unions_locally_free_bits() {
+        let a = gint(1).with_locally_free(vec![0b01]);
+        let b = gint(2).with_locally_free(vec![0b10]);
+        let result = create_pathmap_from_elements(&[a, b], None);
+        assert_eq!(result.locally_free, vec![0b11]);
+    }
+}
