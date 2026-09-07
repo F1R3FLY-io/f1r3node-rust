@@ -160,6 +160,12 @@ env:
   #   #129 shard-port reservation. Verified: SI PR #127 CI green;
   #   f1r3node-rust run 32615164762 attempt 1 reproduced the timeout on the
   #   old pin.
+  # 2026-09-07: 3e5b5eb -> 5909b17 (system-integration PR #136 branch, NOT
+  #   yet main): test_observer_overload pins its own exploratory cap
+  #   (--api-exploratory-deploy-max-concurrent=1) instead of relying on the
+  #   shipped default, which node PR #384 makes core-derived. Verified by a
+  #   local docker-provider run of the test against the #384 image (1 passed,
+  #   63s). Re-pin to the merged main SHA once #136 lands.
   # 2026-08-24: 147da81 -> 5943837 (PR #126 branch, NOT yet main; supersedes
   # dev's 3e5b5eb on this branch until #126 folds main in):
   # per-shard docker isolation (the CI run 32588262605 pollution root),
@@ -228,7 +234,7 @@ env:
   # commit; the branch pin's content, now immutable on main). Verified:
   # descends from af0ab83 (merge-base --is-ancestor), and this PR's CI ran
   # full green on the af0ab83 content.
-  SYSTEM_INTEGRATION_REF: 0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6
+  SYSTEM_INTEGRATION_REF: 5909b174fa9298bc7f4a597c0124e4c5ab1e75d0
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
