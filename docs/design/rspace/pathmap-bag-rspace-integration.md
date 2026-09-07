@@ -201,9 +201,9 @@ build environment. The new harness was uncommitted at capture: its recorded cont
 digest, not HEAD alone, identifies that source. A tracked-diff digest by itself cannot
 reconstruct a dirty checkout; the fixture is not a clean-HEAD benchmark observation.
 
-Ordinary verification reads the fixture and seal, rejects missing/changed bytes and
-incomplete context, checks typed protobuf decode/re-encode fixed points, rebuilds the
-exact pre-root and replays the archived input without first playing its source. Both
+V1 verification reads the fixture and seal, rejects missing/changed bytes and
+incomplete context, checks typed protobuf decode/re-encode fixed points, attempts to
+rebuild the exact pre-root and replays archived input without first playing its source. Both
 `RuntimeManager` replay caches are disabled and independently checked. Full archive
 order is separate from the runtime's intentionally order-insensitive rigging. The
 formal contract and RA01–RA11 implementation obligations are in the
@@ -254,6 +254,58 @@ pgmcp artifact 489 preserves the capture, verification and diagnostic observatio
 Neither the archive nor the old pin is rewritten, and the archive is not accepted
 as a portable replay baseline yet. The original golden's SHA-256 remains
 `d6772d138ee1d3a2cdab79de9c76dac0da40516e686d8cbfd02608f6669878c1`.
+
+#### V2: establish the starting state through archived genesis replay
+
+The reviewed refinement keeps v1 unchanged and adds a distinct
+`async_driver_replay_v2.json` archive format. Its mandatory `genesis_replay` section
+contains the exact bootstrap and genesis-final roots, complete invocation context,
+and every genesis block `ProcessedDeploy` protobuf payload. Admission compares the
+entire signed deploy envelope, including cosigners and threshold, in the order
+produced by `Genesis::default_blessed_terms`; matching names or a nonempty count is
+insufficient. Genesis event logs are the existing canonicalized block payloads,
+whereas workload logs retain the order captured during workload execution.
+
+Verification opens an isolated store through existing test helpers and materializes
+the registry bootstrap through `RuntimeOps::empty_state_hash`. It checks that actual
+root against the existing bootstrap pin and the archive, replays the captured genesis
+with both caches disabled, and requires its resulting root to equal every workload
+pre-root. It then replays the seven workloads from that root. Verification does not
+call the cached genesis constructor or play any workload source first. Both stages
+share the same runtime/state domain and default services/tags, but their distinct
+genesis/workload flags, timestamps and senders are checked rather than conflated.
+
+Formal-first checkpoint `b60f97259` proves the composition under explicit realization
+premises and records the complete BR01–BR14 executable obligations. The two existing
+Rocq modules passed thirty-four and twenty-one printed closed checks and combined
+kernel checking under a 2 GiB/zero-swap cap. This is not a proof of deterministic
+genesis construction or the concrete runtime. Independent source review found no
+blocking implementation flaw. The release test build passed in 74 seconds.
+
+Capture and complete restoration self-check **passed** in 582.09 seconds. The
+1,954,666-byte archive binds fourteen genesis deploys and seven workloads with
+BLAKE2b-256 `ffbafc7169cc2aa1b8c3ed39a4a0e3955138427b914dffbb787976ea44dafa3c`
+and SHA-256 `269a9be9052a7deb299ac566a3ef6c18ea6a43011fef9ce4b38374079fe10598`.
+The actual pinned bootstrap is
+`382d0f2821eab27ac0163841f3838bc00a201bed6f8135e0a5746788420dbd51`;
+archived genesis replay reproduces
+`7599876cba4827ac9ce7eae1b534f6501ad06f4deca3403d73b7a229f2d811e8`.
+Seven pure format/integrity tests also passed in 6.24 seconds, with explicit capture
+ignored. The capture log's SHA-256 is
+`7cbb67d0365467156124ed5f423c111bb76ed8c494b8856334c1f96f361fea00`.
+These are qualification timings, not a backend speed or allocation comparison.
+
+Fresh-process runtime qualification remains in progress. Capture uses exclusive creation
+and publishes the trace before attempting complete restoration, so a failed
+restoration still leaves its exact input available for diagnosis. File existence is
+not acceptance: both capture self-check and fresh-process verification must pass.
+The captured harness was not committed at capture HEAD `b60f97259`; its exact
+BLAKE2b-256 is `4ea0d35e739f9a2861cfe2ceb9ac2e16d876d3f8036d4ed0f08f4407e6bfbbad`,
+and the fixture also records configuration, tracked-diff and local-parser provenance.
+The current scope is 6 GiB memory-max, zero swap, four build jobs and 400% CPU quota,
+with database scratch under `target/campaign-5636-scratch`. No blessed contract,
+production runtime, old golden or original archive is changed. Task 5304's separate
+construction discrepancy remains required even if archived replay succeeds.
 
 ### Reproducible baseline evidence
 

@@ -5430,6 +5430,36 @@ dynamic STDIO discovery exposes the timeline tool but does not bypass its same
 current-record lookup. No historical data deletion, backend improvement or complete
 campaign acceptance is inferred. There are no production changes in this slice.
 
+### J-077 — 2026-09-07: compose exact genesis replay with workload replay
+
+**QUESTION.** How can the full RSpace baseline reconstruct its precise starting
+state without assuming that equal genesis configuration selects an equal execution?
+
+**DESIGN.** Preserve the failed v1 capture. A separate v2 archive records the complete
+genesis block's processed-deploy bytes and execution context. Existing registry
+bootstrap and uncached genesis replay establish the workload pre-state; every
+intermediate and final root remains an independent assertion. The verifier never
+substitutes a freshly played workload or cached genesis result. This reuses existing
+runtime APIs and changes only test sources and evidence, not production behavior.
+
+**FORMAL EVIDENCE.** Commit `b60f97259` extends the existing archive model with fourteen
+composition capstones and six new omission controls. Both models pass kernel checks;
+BR01–BR14 names the executable obligations before implementation. Bootstrap realization,
+codec correctness and actual runtime execution remain explicit premises. Removing the
+configuration-only workload-genesis premise does not remove the exact-state obligation:
+it is replaced by successful genesis replay and a checked output-to-input root equality.
+
+**IMPLEMENTATION AND QUALIFICATION.** The test harness checks full signed genesis
+envelopes, mandatory contexts, payload fixed points, cache exclusion and root stitching;
+it preserves v1 under an immutable digest. Independent review found no blocking source
+flaw and the release build passed. Capture plus full restoration self-check passed
+in 582.09 seconds; seven format/integrity cases passed in 6.24 seconds. The 1,954,666-byte
+archive records fourteen genesis deploys plus seven workloads; exact digests and roots
+are in the integration report. Fresh-process runtime qualification is still running.
+A written archive alone is capture evidence, not proof that restoration passed.
+Successful replay would not settle independent genesis-construction determinism (#5304),
+historical experiment provenance (#5636), or persistent-backend performance (#5693).
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
