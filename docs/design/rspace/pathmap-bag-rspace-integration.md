@@ -330,6 +330,34 @@ with database scratch under `target/campaign-5636-scratch`. No blessed contract,
 production runtime, old golden or original archive is changed. Task 5304's separate
 construction discrepancy remains required even if archived replay succeeds.
 
+#### Scoped-store repair and causal-control qualification
+
+Formal-first checkpoint `64395f681` and implementation `52551503f` repair the
+scope collision through exact independent physical database mappings and scoped
+migration metadata. The twenty-invariant catalog, two failing pre-repair witnesses,
+and **55/55** passing release state/migration tests are detailed in
+[J-078](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-078--2026-09-07-repair-physical-database-scope-isolation).
+The unchanged concurrent archive suite then reaches **10 passed, 1 failed and
+1 explicit capture ignored**: all seven workloads replay successfully, while a
+COMM mutation is correctly refused under an unanticipated legacy error wrapper.
+This is not yet a passing full gate. Artifact 498 and its log digest preserve the
+result separately from the earlier scope collision.
+
+Checkpoint `9308e7685` refines only the negative test's recognition of the complete
+unused-COMM diagnostic with a canonical positive count. Unrelated internal errors
+and malformed wrappers still fail the control; the two helper tests pass, including
+32 generated cases. The successful control, actual `expect_err`, cost/status
+checks and final-root checks remain. No runtime error semantics, archive bytes,
+consensus pins, or fixture isolation change. The complete fresh-process concurrent
+rerun at `9308e7685` passes **13 tests, 0 failures and 1 explicit capture ignored**
+in 541.57 seconds; artifact 500 preserves log SHA-256
+`0ad27f20209821fed1d71b26e3695b658b45800c2833d68b63b1f3569c64ecd5`.
+This supplies the missing local runtime-control qualification for 8283 and the
+v2 archive, but not independent CI verification or historical experiment provenance.
+RA09 distinguishes the abstract refusal proof from this
+concrete diagnostic evidence; no proof of the legacy failed-evaluation suppression
+branch is inferred.
+
 ### Reproducible baseline evidence
 
 The original source coordinate is pinned even though the measurement harness
@@ -370,7 +398,7 @@ scope peaks including compilation are not per-operation allocation measurements.
 | Captured and synthetic corpus | Named codec/matcher/lifecycle fixtures, preserved v1 failure and full genesis-backed v2 capture; separate-process seven-program replay passes | Concurrent scope isolation blocks causal runtime controls (8283); genesis construction attribution remains 5304 and baseline qualification remains 5636. Generated all-pattern lifecycle acceptance is separately 7964. |
 | Reproducible capped measurements and preregistration | Committed source/harness coordinates, commands, resource envelope, run identifiers and summary files | Original preregistration, raw samples/artifacts and observed tool versions must be recovered and linked; 5636 remains open. No retroactive preregistration claim. |
 | Failure classification | Finite inventory below, with existing reachable repair/acceptance owners | It is not an assertion that every workspace target currently passes. Whole-workspace qualification remains 5647. |
-| Golden byte/order/root outputs | Independent literal serializer/genesis/history fixtures and a sealed full v2 replay capture, scoped to their epochs; actual cross-process positive replay passes | The new archive cannot replace missing historical inputs; the concurrent full control suite is not yet qualified. |
+| Golden byte/order/root outputs | Independent literal serializer/genesis/history fixtures and a sealed full v2 replay capture, scoped to their epochs; the fresh-process concurrent suite passes 13 tests plus one capture-only ignore at `9308e7685` | The new archive cannot replace missing historical inputs. Actual v2 replay and causal controls are locally qualified; independent CI and separate genesis-construction attribution are not inferred. |
 | Read and preserve the two living reports' semantics | Stack-safety report remains the dated measurement ledger with stable section identifiers; consensus register retains its may-change-consensus-only inclusion rule | This source/evidence correction changes no consensus surface or measured performance result. Activation, full resource measurements and independent verification remain open. |
 
 #### Classified failure and non-acceptance inventory
@@ -383,12 +411,12 @@ the final workspace gate or silently change another task's disposition.
 |---|---|---|
 | First resting-data singleton is slower | Historical performance defect, retained in the pre-repair TSV; exact singleton scan selected at `0b601ce67`, with the post-repair TSV retained. | 5642, `rspace-pathmap-index-layout`, retains final layout/resource acceptance. |
 | Retained-query traversal trials and small-cardinality selector losses | Rejected intermediate treatments and explicitly scoped selector-only fixed costs; no inference that full COMM is slower or faster from these cells alone. | 5642; historical product experiments and final COMM comparisons remain distinct. |
-| Valid dangling-path creation panics before ACT emission | The full-library release run recorded in J-057 passed 600, failed one, ignored one. Minimal sequence `[1]`, `[2]`, `[3]`, `[1,0]` reaches an empty sentinel. It is not an ACT admission refusal or a memory-cap failure. | Existing 6023, `rpb3-single-parse-act-traversal-plan`, and 6038, `pathmap-upstream-integration-request-register` / PMU-006. No duplicate implementation task or upstream fork. |
+| Valid dangling-path creation panics before ACT emission | J-057's release run passed 600, failed one, ignored one; the 2026-09-07 rerun at `9308e7685` passed 666, failed the same test, ignored one (artifact 499). Minimal sequence `[1]`, `[2]`, `[3]`, `[1,0]` reaches an empty sentinel; the regression seed is unchanged. It is not an ACT admission refusal or a memory-cap failure. | Existing 6023, `rpb3-single-parse-act-traversal-plan`, and 6038, `pathmap-upstream-integration-request-register` / PMU-006. No duplicate implementation task or upstream fork. |
 | Structural removal loses a sibling in the superseded in-place proposal | Existing ownership-disjoint publication at `68534b6fc`, real-key witnesses `f4441c1d05`, and normalization qualification `329240271`. Task 6446 is `claimed_done`, not independently verified. | 6446, `guarded-pathmap-live-empty-root-write-safety`. |
 | Whole-tree allocation costs during final guarded teardown | Dated scaling/ownership evidence is separate from the remaining allocation contract; normalization tests do not discharge it. | 6441, `guarded-pathmap-final-root-allocation-teardown`, and PMU-005. |
 | Attempted normalizer-omission panic controls do not fail as hypothesized | Two expected-panic assertions were rejected during 6446. J-074 records the negative causal result; they are not passing regression evidence. | 6446's preserved verification history; no production fix inferred from either trial. |
 | Captured pre-root differs from a fresh process's constructed genesis; separate old-pin test passes | Source/capture/verification evidence at `498f401a6`; the five pure archive checks pass but three runtime cases reject their shared regenerated pre-root. No root is silently refreshed and no causal attribution is claimed yet. | Existing 5304, `rederive-and-repair-blessed-normalized-term-pin-drift-2026-08-11`, through 4121 to root 4131; archive qualification stays 5636. |
-| Independent database scopes share one physical RSpace authority | V2 positive replay passes, but three concurrent controls fail the correct stale-root check. Adapter `f108c45c0f` bypasses `Db.name_override`; exact capture/source at `61f83d73b` and artifact 491. | Required child 8283 under 6094; 5636 depends on the root-cause adapter repair, not isolated test directories or serialized execution. |
+| Independent database scopes share one physical RSpace authority | Original adapter `f108c45c0f` bypassed `Db.name_override` (artifact 491). Exact mapping/migration repair `52551503f` passes 55 state tests; strict test-only causal refinement `9308e7685` passes all 13 concurrent replay tests with one capture ignored (artifact 500). | Required child 8283 under 6094 is locally qualified, with independent verification separate. No isolated test directories or serialized-execution workaround. |
 | Missing historical archive and currently unresolved experiment provenance | Historical acceptance-evidence gaps, not evidence that stored history was deleted. The new current-epoch capture is explicitly separate. | 5636, `rspace-pathmap-contract-baseline`. |
 
 Remaining A/B/C layout qualification belongs to 5642, transactional matching to 5646,

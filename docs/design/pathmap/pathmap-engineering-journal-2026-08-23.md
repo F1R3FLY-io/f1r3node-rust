@@ -5516,7 +5516,7 @@ seven-workload replay and the other runtime controls passed. The remaining COMM
 identity control observed the required runtime refusal but rejected its diagnostic
 wrapper. Its log SHA-256 is
 `230ea46d6ee8b9449207eead80ebb66160dbf7c09823007264889a7de3199141`.
-This is not yet a passing full gate or closure of 8283/baseline 5636.
+This first run did not qualify the full gate or close 8283/baseline 5636.
 
 **CAUSAL-CONTROL REFINEMENT.** Read-only review traced the actual refusal to the
 pre-existing capitalized RSpace `Unused COMM event` diagnostic and lowercase
@@ -5533,8 +5533,27 @@ correct by this observation.
 The focused diagnostic controls pass **2/2**, including 32 generated count cases.
 An initial test build rejected a `bytes::Bytes` path because Casper uses the existing
 `prost::bytes` re-export; correcting that path adds no dependency. Independent
-review found no weakened acceptance. The full concurrent replay rerun remains
-required; helper success alone is not runtime-mutation evidence.
+review found no weakened acceptance. Helper success alone is not runtime-mutation
+evidence. The complete fresh-process concurrent rerun at `9308e7685` subsequently
+passes **13 tests, with 0 failures and 1 explicit capture ignored**, in 541.57
+seconds. All fourteen archived genesis deploys are replayed to establish the
+starting state; all seven workloads and every causal cost/status/COMM control pass.
+Both runtime caches remain disabled, all original archive bytes and pins are
+unchanged, and test concurrency remains four. Artifact 500 records this local
+acceptance result. Its log SHA-256 is
+`0ad27f20209821fed1d71b26e3695b658b45800c2833d68b63b1f3569c64ecd5`.
+The required adapter repair is locally qualified; independent pgmcp verification
+is not inferred from an agent-recorded result. Baseline 5636 still retains the
+separate historical experiment-provenance requirement.
+
+**BROADER GATE.** At `9308e7685`, the complete RSpace release library run reports
+**666 passed, 1 failed and 1 ignored** in 3.92 seconds. The sole failure is the
+unchanged J-057/PMU-006 dangling-path construction sequence, before ACT emission.
+The tracked regression seed is unchanged. Artifact 499 preserves the run, with
+log SHA-256 `8be55d36a242d448b9cef04658462e40c32b6f05c3c991045b66be23a77edc4c`.
+Existing owners 6023/6038 retain this required issue; no duplicate task, upstream
+fork, case filtering or claim of a green full library is introduced. The separate
+scope repair does not resolve this independent PathMap mutation obligation.
 
 | Evidence | Result or SHA-256 |
 |---|---|

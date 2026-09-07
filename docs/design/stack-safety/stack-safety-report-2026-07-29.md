@@ -13042,3 +13042,34 @@ Checked production counters, scratch/final resource separation, object/provenanc
 validation, concrete PathMap/CoW costs and successor integration remain task 7755
 obligations. See
 [J-065](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-065--2026-09-06-prove-exact-cursor-work-and-termination-without-runtime-fuel).
+
+Scoped-authority qualification, 2026-09-07: formal-first checkpoint `64395f681`
+extracts twenty database-layout/isolation invariants; 36 caller and 43 control
+checks are closed and kernel checking passes. Repair `52551503f` honors exact
+history/root/cold mappings instead of collapsing UUID scopes onto the default
+databases. Two new tests fail on the old adapter; the repaired release state and
+migration gate passes **55/55**, including ten scope tests and two 32-case
+property families. No PathMap projection, recursive traversal or depth workaround
+is added. This is a storage-contract regression repair, not a measured speedup.
+
+The concurrent archived-genesis/workload gate then passes 10 tests and fails one
+negative control because actual COMM rejection uses a pre-existing diagnostic
+wrapper. Checkpoint `9308e7685` adds strictly anchored test-only recognition and
+two passing helper tests. The complete fresh-process concurrent rerun then passes
+**13 tests, 0 failures and 1 explicit capture ignored** in 541.57 seconds,
+including all seven workloads and the causal runtime controls (artifact 500).
+This is local replay qualification, not independent CI or whole-campaign closure. All Rust
+runs use a 6 GiB hard cap, 4 GiB high threshold, zero swap, four jobs and four-core
+quota. One live scope observation reports 3,260,026,880 bytes peak at that instant,
+not a final peak or per-operation memory measurement. Proof runs use a 2 GiB hard
+cap and zero swap. pgmcp artifact 498 preserves the failed gate; the complete
+source/proof/test correspondence and limitations are in
+[J-078](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-078--2026-09-07-repair-physical-database-scope-isolation)
+and the [scope invariant catalog](../pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#resolved-lmdb-scope-isolation-2026-09-07).
+
+The separate full-library release gate at `9308e7685` reports **666 passed,
+1 failed and 1 ignored** in 3.92 seconds. Its only failure reproduces the existing
+PMU-006 dangling-path `create_path` panic before ACT emission; it does not measure
+a stack overflow or memory-cap failure. Existing tasks 6023/6038 remain open and
+artifact 499 preserves the result. The adapter repair does not make the entire
+library green or discharge that independent PathMap obligation.

@@ -1353,8 +1353,12 @@ scope or deleted automatically.
 
 The following non-ignored tests are implemented in `atomic_state_authority.rs`.
 All ten `scope_layout_` tests pass in the broader **55/55** release state gate;
-the two generated properties each execute 32 cases. The separate concurrent
-Casper archive gate remains required before task 8283 can close.
+the two generated properties each execute 32 cases. The separate fresh-process
+concurrent Casper archive gate at `9308e7685` passes **13 tests, 0 failures and
+1 explicit capture ignored** in 541.57 seconds (artifact 500). Its test-only causal
+diagnostic recognizer is qualified by the RA09 controls in the existing proof
+report; no production replay expectation, fixture byte or root pin changes.
+These are local acceptance results, not independent CI verification.
 
 | Invariants | Executable binding |
 |---|---|
