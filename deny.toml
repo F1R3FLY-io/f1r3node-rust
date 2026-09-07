@@ -1,103 +1,39 @@
-# cargo-deny configuration for the F1R3node Rust workspace.
-# See https://embarkstudios.github.io/cargo-deny/ for documentation.
-
-# all-features = true to match CI: the cargo-deny-action runs with --all-features,
-# which pulls in feature-gated transitive deps (rholang's rust-bert / chroma).
-# Keeping this in sync means `cargo deny check` locally reproduces CI exactly.
 [graph]
 all-features = true
 no-default-features = false
 
-# ---------------------------------------------------------------------------
-# Security advisories — RustSec database.
-# ---------------------------------------------------------------------------
 [advisories]
 db-path = "$CARGO_HOME/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
-# Fail on yanked crates — a yank is often a pulled-for-security release.
 yanked = "deny"
-
-# Specific advisories knowingly accepted. Each entry MUST justify why.
+unmaintained = "all"
+unsound = "all"
+maximum-db-staleness = "P7D"
 ignore = [
-  # rustls-webpki 0.101.7 (transitive via rustls 0.21 -> hyper-rustls 0.24
-  # -> reqwest 0.11 -> hocon / opentelemetry-zipkin). All three issues are
-  # reachable only after signature verification and require certificate
-  # misissuance to exploit. Cannot be patched without bumping hocon /
-  # opentelemetry — out of scope for this sync.
-  "RUSTSEC-2026-0049", # CRL distributionPoint matching (multi-dp certs ignore all but first)
-  "RUSTSEC-2026-0098", # URI name constraints
-  "RUSTSEC-2026-0099", # wildcard-name constraints
-  "RUSTSEC-2026-0104", # CRL parsing panic
-
-  # h2 0.3.27 (transitive via hyper 0.14 -> the same reqwest 0.11 chain as
-  # above). Low severity: unbounded queueing of empty DATA frames when
-  # streams are not drained. The fix landed only in h2 0.4.16; the 0.3 line
-  # has no patched release. The workspace h2 0.4.x copy is bumped to 0.4.16,
-  # so this ignore covers only the legacy 0.3 line. Remove when the
-  # reqwest 0.11 chain (hocon / opentelemetry-zipkin / rust-bert) is bumped.
-  "RUSTSEC-2026-0258", # h2 unbounded empty DATA frames (0.3 line unpatched)
-
-    # Unmaintained advisories accepted for now (transitive deps from upstream
-    # crates we don't own). Track upstream remediation; revisit on next sync.
-    "RUSTSEC-2025-0134", # rustls-pemfile (transitive via reqwest/tonic)
-    "RUSTSEC-2024-0387", # opentelemetry_api merged into opentelemetry
-    "RUSTSEC-2025-0141", # bincode 1.x (workspace dep; bincode 2.0 is breaking)
-    "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
-    "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
-    "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
-    "RUSTSEC-2026-0247", # bitmaps (transitive via imbl, the rspace++ hot-store
-                         # persistent map; repo archived 2026-05-03, advisory
-                         # published 2026-08. No safe upgrade; imbl itself is
-                         # maintained — revisit if imbl replaces the dep)
-    "RUSTSEC-2024-0384", # instant unmaintained. Only reachable in the
-                         # standalone scripts/soak-charts crate (fastrand 1.x
-                         # via kernel-density-estimation -> charton), and only
-                         # as a wasm-target dependency — never compiled on the
-                         # publisher's linux targets. Unmatched (warning only)
-                         # in the workspace check, which shares this config.
-
-    # Feature-gated transitive deps, present only under --all-features (as CI runs
-    # cargo-deny). All reach the graph through rholang's optional rust-bert (ML)
-    # and chroma (vector store) features; none have a safe upgrade we own.
-    "RUSTSEC-2024-0437", # protobuf 2.x recursion crash (rust_tokenizers -> rust-bert -> rholang)
-    "RUSTSEC-2025-0119", # number_prefix unmaintained (indicatif -> cached-path -> rust-bert -> rholang)
-    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (validator_derive -> validator -> chroma -> rholang)
+  { id = "RUSTSEC-2026-0258", reason = "Legacy reqwest uses h2 0.3.27. Undrained streams can queue empty DATA frames. Replace the legacy HTTP dependencies." },
+  { id = "RUSTSEC-2025-0134", reason = "comm directly uses rustls-pemfile 2.2.0. Legacy reqwest also uses 1.0.4. Migrate to rustls-pki-types." },
+  { id = "RUSTSEC-2025-0141", reason = "The workspace uses bincode 1.3.3. Replacement requires storage and serialization compatibility tests." },
+  { id = "RUSTSEC-2021-0141", reason = "rholang directly uses dotenv 0.15.0. Migrate the OpenAI configuration loader to a maintained implementation." },
+  { id = "RUSTSEC-2021-0153", reason = "hocon uses encoding through java-properties. Replace HOCON under TASK-012-5." },
+  { id = "RUSTSEC-2024-0436", reason = "comm discovery tests use the paste procedural macro. Replace the test macro." },
+  { id = "RUSTSEC-2026-0247", reason = "imbl uses unmaintained bitmaps. This exception does not accept the separate memory-safety advisory RUSTSEC-2025-0167." },
+  { id = "RUSTSEC-2024-0384", reason = "soak-charts uses instant through charton. This dependency is specific to WebAssembly targets." },
+  { id = "RUSTSEC-2024-0437", reason = "The optional rust-bert feature uses protobuf 2.28.0 through rust_tokenizers. Untrusted model parsing requires review." },
+  { id = "RUSTSEC-2025-0119", reason = "The optional rust-bert feature uses unmaintained number_prefix through cached-path." },
+  { id = "RUSTSEC-2026-0173", reason = "The optional chroma feature uses unmaintained proc-macro-error2 through validator_derive." },
 ]
 
-# ---------------------------------------------------------------------------
-# Licenses — permissive-only baseline. Workspace members (private, unpublished)
-# are skipped via `private.ignore`.
-# ---------------------------------------------------------------------------
 [licenses]
 confidence-threshold = 0.8
 allow = [
-  "MIT",
-  "MIT-0",
-  "Apache-2.0",
-  "Apache-2.0 WITH LLVM-exception",
-  "BSD-2-Clause",
-  "BSD-3-Clause",
-  "ISC",
-  "Unicode-DFS-2016",
-  "Unicode-3.0",
-  "CC0-1.0",
-  "CDLA-Permissive-2.0",
-  "Zlib",
-  "MPL-2.0",
-  "BSL-1.0",
-  "OpenSSL",
-  "Unlicense",
+  "MIT", "MIT-0", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-DFS-2016", "Unicode-3.0",
+  "CC0-1.0", "CDLA-Permissive-2.0", "Zlib", "MPL-2.0", "BSL-1.0", "OpenSSL", "Unlicense",
 ]
-
-# Per-crate exceptions for licenses outside the global allow list.
 exceptions = [
-  # zbase32 is a small permissively-spirited base32 encoder published under
-  # LGPL-3.0+. It is consumed as a dynamic dependency and contains no
-  # modifications, satisfying the LGPL linking exception.
-  { allow = ["LGPL-3.0-or-later"], crate = "zbase32" },
+  { allow = ["LGPL-3.0-or-later"], crate = "zbase32@0.1.2" },
+  { allow = ["NCSA"], crate = "libfuzzer-sys@0.4.13" },
 ]
-
-# Skip license checks for unpublished workspace members.
 private = { ignore = true }
 
 [[licenses.clarify]]
@@ -105,38 +41,81 @@ name = "ring"
 expression = "MIT AND ISC AND OpenSSL"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
-# F1R3FLY-io rholang-rs crates: published from a private Git repo that
-# omits the `license` field in their Cargo.toml. The repo itself is
-# Apache-2.0 (see https://github.com/F1R3FLY-io/rholang-rs).
 [[licenses.clarify]]
 name = "rholang-parser"
 expression = "Apache-2.0"
-license-files = []
+license-files = [{ path = "../README.md", hash = 0xcd11a2a7 }]
 
 [[licenses.clarify]]
 name = "rholang-tree-sitter"
 expression = "Apache-2.0"
-license-files = []
+license-files = [{ path = "../README.md", hash = 0xcd11a2a7 }]
 
-# ---------------------------------------------------------------------------
-# Bans — disallow specific crates / version patterns.
-# ---------------------------------------------------------------------------
 [bans]
 multiple-versions = "warn"
-# Workspace-internal path deps without explicit versions are reported as
-# wildcards. Treat as warning so workspace structure isn't penalised.
-wildcards = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
-allow = []
-deny = []
-skip = []
-skip-tree = []
+deny = [
+  { crate = "bitmaps:>=3.2.0", reason = "RUSTSEC-2025-0167 affects byte conversions introduced in 3.2.0. Use 3.1.0 until a reviewed replacement is available." },
+  { crate = "rustls-webpki:<0.103.13", reason = "The legacy certificate verifier has been removed. Require the patched version." },
+  { crate = "h2:<0.3.27", reason = "Only h2 0.3.27 has a legacy HTTP exception." },
+  { crate = "h2:>0.3.27,<0.4.16", reason = "The maintained HTTP stack must include the empty DATA frame fix." },
+]
 
-# ---------------------------------------------------------------------------
-# Sources — only crates.io and the F1R3FLY-io rholang-rs git repo.
-# ---------------------------------------------------------------------------
+[bans.build]
+allow-build-scripts = [
+  "comm", "models", "node",
+  "ahash@0.7.8", "ahash@0.8.12", "anyhow@1.0.104",
+  "aws-lc-rs@1.17.3", "aws-lc-rs@1.18.0", "aws-lc-sys@0.43.0", "aws-lc-sys@0.44.0",
+  "blake3@1.8.5", "blake3@1.8.7", "borsh@1.8.0", "bytecheck@0.6.12",
+  "bzip2-sys@0.1.13+1.0.8", "chroma-types@0.10.0", "crc32fast@1.5.0",
+  "crossbeam-deque@0.8.7", "crossbeam-epoch@0.9.20", "crossbeam-utils@0.8.22",
+  "crunchy@0.2.4", "curve25519-dalek@4.1.3", "defmt-macros@1.1.1", "defmt@1.1.1",
+  "eyre@0.6.12", "eyre@0.6.14", "generator@0.7.5", "generator@0.8.9",
+  "generic-array@0.14.9", "getrandom@0.3.4", "getrandom@0.4.3", "gxhash@3.5.0",
+  "heed@0.22.1", "httparse@1.10.1", "iana-time-zone-haiku@0.1.2",
+  "icu_normalizer_data@2.2.0", "icu_normalizer_data@2.3.0",
+  "icu_properties_data@2.2.0", "icu_properties_data@2.3.0", "indexmap@1.9.3",
+  "libc@0.2.189", "libfuzzer-sys@0.4.13", "libm@0.2.16", "libz-ng-sys@1.1.29",
+  "lmdb-master-sys@0.2.6", "matrixmultiply@0.3.11", "mime_guess@2.0.5",
+  "native-tls@0.2.18", "nom@4.2.3", "ntapi@0.4.3", "num-complex@0.2.4",
+  "num-traits@0.2.19", "object@0.39.1", "oid-registry@0.7.1",
+  "openssl-sys@0.9.117", "openssl@0.10.81", "parking_lot_core@0.9.12", "paste@1.0.15",
+  "portable-atomic-util@0.2.7", "portable-atomic@1.14.0", "portable-atomic@1.15.0",
+  "prettyplease@0.2.37", "proc-macro2@1.0.107", "protobuf@2.28.0",
+  "psm@0.1.31", "psm@0.1.32", "pulldown-cmark@0.13.4", "quinn-udp@0.5.15",
+  "quinn@0.11.11", "quote@1.0.47", "radium@0.7.0", "rayon-core@1.13.0",
+  "ref-cast@1.0.26", "rend@0.4.2", "rholang-tree-sitter@0.1.2", "ring@0.17.14",
+  "rkyv@0.7.46", "rstest_macros@0.19.0", "rust-bert@0.23.0", "rust_decimal@1.42.1",
+  "rust_tokenizers@8.1.1", "rustix@1.1.4", "rustls@0.21.12", "rustls@0.23.43",
+  "rustversion@1.0.23", "serde@1.0.229", "serde_core@1.0.229", "serde_json@1.0.151",
+  "stacker@0.1.24", "stacker@0.1.25", "syn@1.0.109",
+  "system-configuration-sys@0.5.0", "system-configuration-sys@0.6.0", "tch@0.17.0",
+  "thiserror@1.0.69", "thiserror@2.0.19", "thiserror@2.0.20", "tiny-keccak@2.0.2",
+  "torch-sys@0.17.0", "tree-sitter-language@0.1.7", "tree-sitter-rust@0.24.2",
+  "tree-sitter@0.25.10", "uncased@0.9.10", "utoipa-swagger-ui@9.0.2", "valuable@0.1.1",
+  "wasm-bindgen-shared@0.2.126", "wasm-bindgen-shared@0.2.127",
+  "wasm-bindgen@0.2.126", "wasm-bindgen@0.2.127",
+  "winapi-i686-pc-windows-gnu@0.4.0", "winapi-x86_64-pc-windows-gnu@0.4.0", "winapi@0.3.9",
+  "windows_aarch64_gnullvm@0.48.5", "windows_aarch64_gnullvm@0.52.6",
+  "windows_aarch64_msvc@0.48.5", "windows_aarch64_msvc@0.52.6",
+  "windows_i686_gnu@0.48.5", "windows_i686_gnu@0.52.6", "windows_i686_gnullvm@0.52.6",
+  "windows_i686_msvc@0.48.5", "windows_i686_msvc@0.52.6",
+  "windows_x86_64_gnu@0.48.5", "windows_x86_64_gnu@0.52.6",
+  "windows_x86_64_gnullvm@0.48.5", "windows_x86_64_gnullvm@0.52.6",
+  "windows_x86_64_msvc@0.48.5", "windows_x86_64_msvc@0.52.6",
+  "wit-bindgen@0.57.1", "zerocopy@0.8.55", "zerocopy@0.8.56", "zmij@1.0.23",
+  "zstd-safe@5.0.2+zstd.1.5.2", "zstd-sys@2.0.16+zstd.1.5.7",
+]
+executables = "deny"
+interpreted = "warn"
+include-dependencies = true
+include-archives = false
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = ["https://github.com/F1R3FLY-io/rholang-rs"]

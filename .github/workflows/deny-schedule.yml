@@ -29,29 +29,47 @@ jobs:
         branch: [dev, master]
     steps:
       - name: Checkout ${{ matrix.branch }}
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ matrix.branch }}
-
-      - name: cargo-deny check
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans licenses sources
+          persist-credentials: false
 
       # Guarded on existence because this workflow checks out dev and master
-      # by ref while running the default branch's workflow file — a branch
-      # that does not carry the crate yet must not fail its scheduled check.
-      - name: Detect soak-charts crate
-        id: soak_charts
+      # by ref while running the default branch's workflow file. A branch that
+      # does not carry the supply-chain tooling yet must not fail its scheduled
+      # check. The skip is reported as a notice so the gap stays visible.
+      - name: Detect supply-chain tooling
+        id: tooling
         shell: bash
-        run: echo "present=$([ -f scripts/soak-charts/Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -f scripts/ci/check-supply-chain.sh ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.branch }} does not carry scripts/ci/check-supply-chain.sh; scheduled check skipped"
+          fi
 
-      # Standalone crate (not a workspace member), so the workspace check
-      # above never sees its tree — same policy, own pass.
-      - name: cargo-deny check (soak-charts)
-        if: steps.soak_charts.outputs.present == 'true'
-        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Install Rust
+        if: steps.tooling.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
-          command: check advisories bans licenses sources
-          manifest-path: scripts/soak-charts/Cargo.toml
-          arguments: --all-features
+          toolchain: nightly-2026-02-09
+
+      - name: Install verified cargo-deny
+        if: steps.tooling.outputs.present == 'true'
+        run: |
+          bash scripts/ci/check-supply-chain.sh install --install-dir "$RUNNER_TEMP/cargo-deny"
+          echo "$RUNNER_TEMP/cargo-deny" >> "$GITHUB_PATH"
+
+      - name: Check all dependency graphs
+        if: steps.tooling.outputs.present == 'true'
+        run: bash scripts/ci/check-supply-chain.sh check
+
+      - name: Upload supply-chain evidence
+        if: always() && steps.tooling.outputs.present == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: supply-chain-${{ matrix.branch }}
+          path: target/supply-chain/
+          retention-days: 90
+          if-no-files-found: error

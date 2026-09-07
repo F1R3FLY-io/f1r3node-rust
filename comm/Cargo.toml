@@ -16,7 +16,6 @@ hex = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 models = { path = "../models" }
-paste = "1.0"
 rand = { workspace = true }
 shared = { path = "../shared" }
 tokio = { workspace = true }
@@ -42,6 +41,9 @@ eyre = { workspace = true }
 local-ip-address = "0.6.5"
 reqwest = { workspace = true }
 metrics = { workspace = true }
+
+[dev-dependencies]
+paste = "1.0"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

@@ -102,12 +102,13 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
           token: ${{ secrets.TESTBED_PAT }}
           path: testbed
+          persist-credentials: false
 
       - name: Build testbed
         working-directory: testbed
@@ -172,7 +173,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testbed-smoke-${{ github.run_id }}
           path: ${{ env.LOG_HOST_PATH }}
@@ -202,12 +203,13 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
           token: ${{ secrets.TESTBED_PAT }}
           path: testbed
+          persist-credentials: false
 
       - name: Build testbed
         working-directory: testbed
@@ -262,7 +264,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testbed-ft-upfront-p1-${{ github.run_id }}
           path: ${{ env.LOG_HOST_PATH }}
@@ -293,12 +295,13 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
           token: ${{ secrets.TESTBED_PAT }}
           path: testbed
+          persist-credentials: false
 
       - name: Build testbed
         working-directory: testbed
@@ -353,7 +356,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testbed-ft-upfront-p2-${{ github.run_id }}
           path: ${{ env.LOG_HOST_PATH }}
@@ -381,12 +384,13 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
           token: ${{ secrets.TESTBED_PAT }}
           path: testbed
+          persist-credentials: false
 
       - name: Build testbed
         working-directory: testbed
@@ -441,7 +445,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testbed-sync-constraint-${{ github.run_id }}
           path: ${{ env.LOG_HOST_PATH }}
@@ -470,12 +474,13 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
           token: ${{ secrets.TESTBED_PAT }}
           path: testbed
+          persist-credentials: false
 
       - name: Build testbed
         working-directory: testbed
@@ -530,7 +535,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testbed-mntd-${{ github.run_id }}
           path: ${{ env.LOG_HOST_PATH }}
@@ -560,12 +565,13 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
           token: ${{ secrets.TESTBED_PAT }}
           path: testbed
+          persist-credentials: false
 
       - name: Build testbed
         working-directory: testbed
@@ -621,7 +627,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testbed-tps-${{ github.run_id }}
           path: ${{ env.LOG_HOST_PATH }}
@@ -649,12 +655,13 @@ jobs:
           | **Testbed** | \`${{ inputs.testbed_repo }}@${{ inputs.testbed_ref }}\` |
           EOF
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: ${{ inputs.testbed_repo }}
           ref: ${{ inputs.testbed_ref }}
           token: ${{ secrets.TESTBED_PAT }}
           path: testbed
+          persist-credentials: false
 
       - name: Build testbed
         working-directory: testbed
@@ -710,7 +717,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testbed-heartbeat-${{ github.run_id }}
           path: ${{ env.LOG_HOST_PATH }}
