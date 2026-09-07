@@ -1,7 +1,7 @@
 #![allow(clippy::new_ret_no_self)]
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 use super::key_value_store_manager::KeyValueStoreManager;
 use super::lmdb_store_manager::LmdbStoreManager;
-use crate::rspace::state::rspace_state_authority::RSpaceStateAuthority;
+use crate::rspace::state::rspace_state_authority::{LmdbAuthorityLayout, RSpaceStateAuthority};
 
 /**
  * Specification for LMDB database: unique identifier and database name
@@ -73,8 +73,62 @@ struct StoreState {
     // is created once per env config and reused for every database that shares
     // that env. heed 0.22 rejects duplicate env opens of the same directory
     // with EnvAlreadyOpened, so the cache must survive across store() calls.
-    envs: HashMap<String, Arc<Mutex<Box<dyn KeyValueStoreManager>>>>,
+    envs: HashMap<PathBuf, Arc<Mutex<LmdbStoreManager>>>,
     authorities: HashMap<String, Arc<RSpaceStateAuthority>>,
+    authority_prefixes: BTreeSet<String>,
+    ordinary_opened: BTreeSet<PhysicalSlot>,
+}
+
+type PhysicalSlot = (PathBuf, String);
+
+struct ResolvedDatabase {
+    name: String,
+    environment: PathBuf,
+    config: LmdbEnvConfig,
+}
+
+struct ResolvedAuthority {
+    layout: LmdbAuthorityLayout,
+    environment: PathBuf,
+    cold_source: PathBuf,
+    legacy_v2: Option<PathBuf>,
+    config: LmdbEnvConfig,
+    writes: BTreeSet<PhysicalSlot>,
+    reads: BTreeSet<PhysicalSlot>,
+}
+
+fn mapping_error(message: impl Into<String>) -> heed::Error {
+    heed::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into()))
+}
+
+pub(crate) fn resolve_lmdb_environment(path: &Path) -> Result<PathBuf, heed::Error> {
+    let absolute = std::path::absolute(path)?;
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                resolved.push(name);
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => {
+                        resolved = std::fs::canonicalize(&resolved)?;
+                        if !std::fs::metadata(&resolved)?.is_dir() {
+                            return Err(mapping_error(
+                                "LMDB environment component is not a directory",
+                            ));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 #[derive(Clone)]
@@ -147,7 +201,19 @@ pub(super) fn authority_store_parts(name: &str) -> Option<(&str, &str)> {
 #[async_trait]
 impl KeyValueStoreManager for LmdbDirStoreManager {
     async fn store(&mut self, db_name: String) -> Result<Arc<dyn KeyValueStore>, heed::Error> {
-        if let Some((prefix, domain)) = authority_store_parts(&db_name) {
+        let authority_role = if let Some((prefix, domain)) = db_name.rsplit_once('-') {
+            (matches!(domain, "history" | "roots" | "cold") &&
+                (matches!(prefix, "rspace" | "eval") ||
+                    self.managers_state
+                        .lock()
+                        .await
+                        .authority_prefixes
+                        .contains(prefix)))
+            .then_some((prefix, domain))
+        } else {
+            None
+        };
+        if let Some((prefix, domain)) = authority_role {
             let authority = self.state_authority(prefix).await?;
             let inner = match domain {
                 "history" => authority.history_store(),
@@ -157,45 +223,39 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
             };
             return Ok(Arc::new(ReadOnlyStore::new(inner)));
         }
-        let (database_name, man_cfg) = {
-            let db_instance_mapping: HashMap<&String, (&Db, &LmdbEnvConfig)> = self
-                .db_mapping
-                .iter()
-                .map(|(db, cfg)| (&db.id, (db, cfg)))
-                .collect();
-
-            let (db, cfg) = db_instance_mapping.get(&db_name).ok_or_else(|| {
-                heed::Error::Io(std::io::Error::other(format!(
-                    "LMDB_Dir_Store_Manager: Key {} was not found",
-                    db_name
-                )))
-            })?;
-
-            (db.name_override.clone().unwrap_or(db.id.clone()), (*cfg).clone())
-        };
-
-        let manager_arc = {
+        let (manager_arc, database_name) = {
             let mut state = self.managers_state.lock().await;
-            state
+            let (mut databases, _) = self.resolve_mappings(
+                state.authority_prefixes.iter().cloned(),
+                &state.ordinary_opened,
+            )?;
+            let database = databases
+                .remove(&db_name)
+                .ok_or_else(|| mapping_error(format!("missing database mapping for {db_name}")))?;
+            let manager = state
                 .envs
-                .entry(man_cfg.name.clone())
+                .entry(database.environment.clone())
                 .or_insert_with(|| {
                     let manager = LmdbStoreManager::new(
-                        self.dir_path.join(&man_cfg.name),
-                        man_cfg.max_env_size,
-                        man_cfg.max_dbs,
+                        database.environment.clone(),
+                        database.config.max_env_size,
+                        database.config.max_dbs,
                     );
                     Arc::new(Mutex::new(manager))
                 })
-                .clone()
+                .clone();
+            state
+                .ordinary_opened
+                .insert((database.environment, database.name.clone()));
+            (manager, database.name)
         };
 
         let mut manager = manager_arc.lock().await;
-        manager.store(database_name).await
+        manager.store_literal(&database_name).await
     }
 
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
-        let managers: Vec<Arc<Mutex<Box<dyn KeyValueStoreManager>>>> = {
+        let managers: Vec<Arc<Mutex<LmdbStoreManager>>> = {
             let mut state = self.managers_state.lock().await;
             state.authorities.clear();
             state.envs.drain().map(|(_, m)| m).collect()
@@ -217,41 +277,165 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
         if let Some(authority) = state.authorities.get(db_prefix) {
             return Ok(Arc::clone(authority));
         }
-        let history_name = format!("{db_prefix}-history");
-        let cold_name = format!("{db_prefix}-cold");
-        let history_cfg = self
-            .db_mapping
+        let prefixes = state
+            .authority_prefixes
             .iter()
-            .find(|(db, _)| db.id() == history_name)
-            .map(|(_, cfg)| cfg.clone())
-            .ok_or_else(|| {
-                heed::Error::Io(std::io::Error::other(format!(
-                    "missing authority history mapping for {db_prefix}"
-                )))
-            })?;
-        let legacy_cold = self
-            .db_mapping
-            .iter()
-            .find(|(db, _)| db.id() == cold_name)
-            .map(|(_, cfg)| self.dir_path.join(&cfg.name));
-        let authority = RSpaceStateAuthority::open_lmdb(
-            &self.dir_path.join(&history_cfg.name),
-            db_prefix,
-            legacy_cold.as_deref(),
-            (db_prefix == "rspace")
-                .then(|| self.dir_path.join("rspace/casper/v2"))
-                .as_deref(),
-            history_cfg.max_env_size,
-            history_cfg.max_dbs,
+            .cloned()
+            .chain(std::iter::once(db_prefix.to_owned()));
+        let (_, mut layouts) = self.resolve_mappings(prefixes, &state.ordinary_opened)?;
+        let resolved = layouts
+            .remove(db_prefix)
+            .ok_or_else(|| mapping_error("authority layout was not resolved"))?;
+        let authority = RSpaceStateAuthority::open_resolved_lmdb(
+            &resolved.environment,
+            &resolved.layout,
+            Some(&resolved.cold_source),
+            resolved.legacy_v2.as_deref(),
+            resolved.config.max_env_size,
+            resolved.config.max_dbs,
         )?;
         state
             .authorities
             .insert(db_prefix.to_string(), Arc::clone(&authority));
+        state.authority_prefixes.insert(db_prefix.to_owned());
         Ok(authority)
     }
 }
 
 impl LmdbDirStoreManager {
+    fn resolve_mappings(
+        &self,
+        requested_prefixes: impl Iterator<Item = String>,
+        ordinary_opened: &BTreeSet<PhysicalSlot>,
+    ) -> Result<
+        (BTreeMap<String, ResolvedDatabase>, BTreeMap<String, ResolvedAuthority>),
+        heed::Error,
+    > {
+        let mut prefixes: BTreeSet<_> = requested_prefixes.collect();
+        let mut databases = BTreeMap::new();
+        let mut environments = BTreeMap::new();
+        for (db, config) in &self.db_mapping {
+            if let Some((prefix, _)) = authority_store_parts(db.id()) {
+                prefixes.insert(prefix.to_owned());
+            }
+            let name = db.name_override.as_ref().unwrap_or(&db.id).clone();
+            if name.contains('\0') {
+                return Err(mapping_error("database name cannot contain NUL"));
+            }
+            let environment = resolve_lmdb_environment(&self.dir_path.join(&config.name))?;
+            let limits = (config.max_env_size, config.max_dbs);
+            if environments
+                .insert(environment.clone(), limits)
+                .is_some_and(|previous| previous != limits)
+            {
+                return Err(mapping_error(
+                    "incompatible configurations resolve to the same LMDB environment",
+                ));
+            }
+            if databases
+                .insert(db.id.clone(), ResolvedDatabase {
+                    name,
+                    environment,
+                    config: config.clone(),
+                })
+                .is_some()
+            {
+                return Err(mapping_error(format!(
+                    "duplicate logical database mapping for {}",
+                    db.id
+                )));
+            }
+        }
+
+        let mut layouts = BTreeMap::new();
+        let mut authority_ids = BTreeSet::new();
+        for prefix in prefixes {
+            let ids =
+                [format!("{prefix}-history"), format!("{prefix}-roots"), format!("{prefix}-cold")];
+            let mut selected = Vec::with_capacity(3);
+            for id in &ids {
+                selected.push(databases.get(id).ok_or_else(|| {
+                    mapping_error(format!("missing authority database mapping for {id}"))
+                })?);
+            }
+            let [history, roots, cold] = selected.as_slice() else {
+                unreachable!()
+            };
+            if history.environment != roots.environment {
+                return Err(mapping_error(
+                    "authority history and roots must share one LMDB environment",
+                ));
+            }
+            let layout = LmdbAuthorityLayout::new(&prefix, [
+                history.name.clone(),
+                roots.name.clone(),
+                cold.name.clone(),
+            ])?;
+            let writes: BTreeSet<_> = layout
+                .names()
+                .iter()
+                .map(|name| (history.environment.clone(), name.clone()))
+                .collect();
+            let mut reads = BTreeSet::from([(cold.environment.clone(), cold.name.clone())]);
+            if layout.legacy_compatible() {
+                reads.insert((cold.environment.clone(), "db".to_owned()));
+            }
+            let legacy_v2 = if layout.legacy_compatible() && prefix == "rspace" {
+                let directory = resolve_lmdb_environment(&self.dir_path.join("rspace/casper/v2"))?;
+                for domain in ["history", "roots", "cold"] {
+                    reads.insert((
+                        resolve_lmdb_environment(&directory.join(domain))?,
+                        "db".to_owned(),
+                    ));
+                }
+                Some(directory)
+            } else {
+                None
+            };
+            authority_ids.extend(ids);
+            layouts.insert(prefix, ResolvedAuthority {
+                layout,
+                environment: history.environment.clone(),
+                cold_source: cold.environment.clone(),
+                legacy_v2,
+                config: history.config.clone(),
+                writes,
+                reads,
+            });
+        }
+        for (prefix, layout) in &layouts {
+            for (other_prefix, other) in &layouts {
+                if prefix != other_prefix &&
+                    (!layout.writes.is_disjoint(&other.writes) ||
+                        !layout.writes.is_disjoint(&other.reads))
+                {
+                    return Err(mapping_error(
+                        "authority layouts overlap another authority's physical databases",
+                    ));
+                }
+            }
+            if !ordinary_opened.is_disjoint(&layout.writes) ||
+                !ordinary_opened.is_disjoint(&layout.reads)
+            {
+                return Err(mapping_error(
+                    "authority layout aliases an already exposed writable database",
+                ));
+            }
+            for (id, database) in &databases {
+                if !authority_ids.contains(id) {
+                    let slot = (database.environment.clone(), database.name.clone());
+                    if layout.writes.contains(&slot) || layout.reads.contains(&slot) {
+                        return Err(mapping_error(format!(
+                            "writable mapping {id} aliases an authority database or migration \
+                             source"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok((databases, layouts))
+    }
+
     pub fn new(
         dir_path: PathBuf,
         db_instance_mapping: HashMap<Db, LmdbEnvConfig>,
@@ -262,6 +446,8 @@ impl LmdbDirStoreManager {
             managers_state: Arc::new(Mutex::new(StoreState {
                 envs: HashMap::new(),
                 authorities: HashMap::new(),
+                authority_prefixes: BTreeSet::new(),
+                ordinary_opened: BTreeSet::new(),
             })),
         }
     }

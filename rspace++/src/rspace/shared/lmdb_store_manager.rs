@@ -1,5 +1,3 @@
-#![allow(clippy::new_ret_no_self)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,19 +31,23 @@ struct DbEnv {
 }
 
 impl LmdbStoreManager {
-    pub fn new(
-        dir_path: PathBuf,
-        max_env_size: usize,
-        max_dbs: u32,
-    ) -> Box<dyn KeyValueStoreManager> {
-        Box::new(LmdbStoreManager {
+    pub(super) fn new(dir_path: PathBuf, max_env_size: usize, max_dbs: u32) -> Self {
+        LmdbStoreManager {
             dir_path,
             max_env_size,
             max_dbs,
             env: Arc::new(Mutex::new(None)),
             dbs: Arc::new(Mutex::new(HashMap::new())),
             authorities: Arc::new(Mutex::new(HashMap::new())),
-        })
+        }
+    }
+
+    pub(super) async fn store_literal(
+        &mut self,
+        name: &str,
+    ) -> Result<Arc<dyn KeyValueStore>, heed::Error> {
+        let db_env = self.get_current_env(name).await?;
+        Ok(Arc::new(LmdbKeyValueStore::new(db_env.env, db_env.db)))
     }
 
     async fn get_current_env(&mut self, db_name: &str) -> Result<DbEnv, heed::Error> {
@@ -99,8 +101,7 @@ impl KeyValueStoreManager for LmdbStoreManager {
             };
             return Ok(Arc::new(ReadOnlyStore::new(inner)));
         }
-        let db_env = self.get_current_env(&name).await?;
-        Ok(Arc::new(LmdbKeyValueStore::new(db_env.env, db_env.db)))
+        self.store_literal(&name).await
     }
 
     async fn shutdown(&mut self) -> Result<(), heed::Error> {

@@ -1348,3 +1348,30 @@ The mathematical finite lists are not a replacement for resident PathMap tries.
 The existing stale-root check, replay expectations and archived pins must remain
 unchanged. Previously collapsed unscoped state cannot be assigned to an arbitrary
 scope or deleted automatically.
+
+### Executable scope bindings and current evidence
+
+The following non-ignored tests are implemented in `atomic_state_authority.rs`.
+All ten `scope_layout_` tests pass in the broader **55/55** release state gate;
+the two generated properties each execute 32 cases. The separate concurrent
+Casper archive gate remains required before task 8283 can close.
+
+| Invariants | Executable binding |
+|---|---|
+| SA01, SA02, SA15 | `scope_layout_independent_names_and_reopen`, `scope_layout_disjoint_checkpoints_and_reopen`: exact independent names, cached authority identity, read-only facets, and retained root/generation on reopening. |
+| SA03–SA09 | `scope_layout_preflight_refuses_before_open`: sixteen invalid-layout cases, each exercised authority-first and ordinary-first; no target directory appears. SA06 additionally uses the explicit checked conversions in the encoder; oversized natural lengths in the formal control cannot be represented by a Rust `usize` on supported 32/64-bit targets, so no artificial giant allocation is attempted. |
+| SA10–SA13 | `scope_layout_namespace_matches_framed_reference`: independent framed decoding of generated UTF-8 names, per-field distinctions, and exact default RSpace/Eval bytes. |
+| SA14 | `scope_layout_generated_mutations_preserve_other_scopes`: generated checkpoint sequences preserve every other-scope history, cold and catalog byte. The deterministic two-prepared-checkpoint case was red on the former adapter. |
+| SA16, SA18, SA19 | `scope_layout_named_migration_and_marker_binding`: exact named split source, unchanged source bytes, default `db` compatibility, exact namespace bytes, marker transplantation refusal, and reopen stability. |
+| SA17 | `scope_layout_scoped_migration_ignores_ambient_sources`: unrelated malformed v2 state is not imported; explicitly supplying v2 to a scoped private opener refuses before creating its destination. The named-source test separately proves that an unrelated populated `db` is ignored. |
+| SA20 | `scope_layout_ordinary_literal_and_alias_routing`: an ordinary reserved-looking name in another environment remains writable and does not become an authority. |
+| Physical-identity realization | `scope_layout_resolves_environment_aliases`: existing symlinks, missing/parent traversal, writable alias refusal before opening, same physical history/root environment, and dangling-symlink refusal. |
+| Reusable-manager ownership | `scope_layout_custom_ownership_survives_shutdown`: all custom authority roles remain read-only after shutdown, with and without a retained old authority; already exposed ordinary handles prevent later authority acquisition. |
+
+Model uniqueness quantifies over one exact mapping list; it is not a separate
+permutation theorem. Model reopening means equal lookup over the same abstract
+contents; the executable reopening tests and pre-existing process-exit legacy
+fixture supply additional implementation evidence. Migration-source alias
+protection is a separate concrete check, not silently attributed to the
+live-destination alias theorem. The existing stale-root guard, archive fixtures,
+and consensus pins are unchanged.

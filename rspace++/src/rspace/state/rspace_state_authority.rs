@@ -40,6 +40,82 @@ const CURRENT_ROOT_VALUE_PREFIX: &[u8] = b"rspace-current-root\0\x01";
 const LEGACY_CURRENT_ROOT_KEY: &[u8] = b"current-root";
 const ROOT_HASH_LENGTH: usize = 32;
 
+pub(crate) struct LmdbAuthorityLayout {
+    names: [String; 3],
+    namespace: Arc<[u8]>,
+    legacy_compatible: bool,
+}
+
+impl LmdbAuthorityLayout {
+    pub(crate) fn for_prefix(prefix: &str) -> Result<Self, heed::Error> {
+        Self::new(prefix, [
+            format!("{prefix}-history"),
+            format!("{prefix}-roots"),
+            format!("{prefix}-cold"),
+        ])
+    }
+
+    pub(crate) fn new(prefix: &str, names: [String; 3]) -> Result<Self, heed::Error> {
+        let invalid = |message| {
+            heed::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, message))
+        };
+        if names.iter().any(|name| name.contains('\0')) {
+            return Err(invalid("authority database names cannot contain NUL"));
+        }
+        if names[0] == names[1] || names[0] == names[2] || names[1] == names[2] {
+            return Err(invalid("authority database roles must have distinct physical names"));
+        }
+        let legacy_compatible = ["history", "roots", "cold"]
+            .into_iter()
+            .zip(&names)
+            .all(|(role, name)| *name == format!("{prefix}-{role}"));
+        let namespace = if legacy_compatible {
+            u32::try_from(prefix.len())
+                .map_err(|_| invalid("migration namespace exceeds its manifest length field"))?;
+            prefix.as_bytes().to_vec()
+        } else {
+            const TAG: &[u8] = b"\0rspace-authority-layout\0\x01";
+            let fields = [prefix, names[0].as_str(), names[1].as_str(), names[2].as_str()];
+            let mut encoded_len = TAG.len();
+            for field in fields {
+                u64::try_from(field.len())
+                    .map_err(|_| invalid("authority namespace field exceeds u64"))?;
+                encoded_len = encoded_len
+                    .checked_add(8)
+                    .and_then(|length| length.checked_add(field.len()))
+                    .ok_or_else(|| invalid("authority namespace length overflow"))?;
+            }
+            u32::try_from(encoded_len)
+                .map_err(|_| invalid("migration namespace exceeds its manifest length field"))?;
+            let mut encoded = Vec::new();
+            encoded
+                .try_reserve_exact(encoded_len)
+                .map_err(|_| invalid("cannot allocate authority namespace"))?;
+            encoded.extend_from_slice(TAG);
+            for field in fields {
+                let length = u64::try_from(field.len())
+                    .map_err(|_| invalid("authority namespace field exceeds u64"))?;
+                encoded.extend_from_slice(&length.to_be_bytes());
+                encoded.extend_from_slice(field.as_bytes());
+            }
+            encoded
+        };
+        Ok(Self {
+            names,
+            namespace: namespace.into(),
+            legacy_compatible,
+        })
+    }
+
+    pub(crate) fn names(&self) -> &[String; 3] { &self.names }
+
+    pub(crate) fn namespace(&self) -> &[u8] { &self.namespace }
+
+    pub(crate) fn legacy_compatible(&self) -> bool { self.legacy_compatible }
+
+    pub(crate) fn cold_source_names(&self) -> [&str; 2] { [&self.names[2], "db"] }
+}
+
 struct AuthorityIdentity;
 
 #[derive(Clone, Copy)]
@@ -56,7 +132,7 @@ struct MemoryState {
 }
 
 struct LmdbState {
-    namespace: Arc<str>,
+    namespace: Arc<[u8]>,
     env: Arc<Env>,
     history: BytesDb,
     cold: BytesDb,
@@ -134,15 +210,43 @@ impl RSpaceStateAuthority {
         map_size: usize,
         max_dbs: u32,
     ) -> Result<Arc<Self>, heed::Error> {
-        let env = env_cache::get_or_open_env(authority_dir, map_size, max_dbs)?;
+        Self::open_resolved_lmdb(
+            authority_dir,
+            &LmdbAuthorityLayout::for_prefix(db_prefix)?,
+            split_cold_dir,
+            legacy_v2_dir,
+            map_size,
+            max_dbs,
+        )
+    }
+
+    pub(crate) fn open_resolved_lmdb(
+        authority_dir: &Path,
+        layout: &LmdbAuthorityLayout,
+        split_cold_dir: Option<&Path>,
+        legacy_v2_dir: Option<&Path>,
+        map_size: usize,
+        max_dbs: u32,
+    ) -> Result<Arc<Self>, heed::Error> {
+        if legacy_v2_dir.is_some() &&
+            (!layout.legacy_compatible() || layout.namespace() != b"rspace")
+        {
+            return Err(heed::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "legacy v2 migration requires the unscoped RSpace layout",
+            )));
+        }
+        let resolved =
+            crate::rspace::shared::lmdb_dir_store_manager::resolve_lmdb_environment(authority_dir)?;
+        let env = env_cache::get_or_open_env(&resolved, map_size, max_dbs)?;
         let mut txn = env.write_txn()?;
-        let history = env.create_database(&mut txn, Some(&format!("{db_prefix}-history")))?;
-        let cold = env.create_database(&mut txn, Some(&format!("{db_prefix}-cold")))?;
-        let roots = env.create_database(&mut txn, Some(&format!("{db_prefix}-roots")))?;
+        let history = env.create_database(&mut txn, Some(&layout.names[0]))?;
+        let cold = env.create_database(&mut txn, Some(&layout.names[2]))?;
+        let roots = env.create_database(&mut txn, Some(&layout.names[1]))?;
         txn.commit()?;
 
         let state = LmdbState {
-            namespace: Arc::from(db_prefix),
+            namespace: Arc::clone(&layout.namespace),
             env,
             history,
             cold,
@@ -153,7 +257,7 @@ impl RSpaceStateAuthority {
             state.history,
             state.cold,
             state.roots,
-            db_prefix,
+            layout,
             split_cold_dir,
             legacy_v2_dir,
             map_size,

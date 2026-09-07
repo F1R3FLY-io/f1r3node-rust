@@ -16,6 +16,7 @@ use crate::rspace::history::radix_tree::{Item, decode, empty_node};
 use crate::rspace::shared::env_cache;
 use crate::rspace::state::closure_verifier::{RecordValidator, verify_state_closure_with_getters};
 use crate::rspace::state::import_session::StateImportError;
+use crate::rspace::state::rspace_state_authority::LmdbAuthorityLayout;
 
 type BytesDb = Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>;
 
@@ -81,7 +82,7 @@ pub(crate) fn migrate_legacy_state(
     destination_history: BytesDb,
     destination_cold: BytesDb,
     destination_roots: BytesDb,
-    db_prefix: &str,
+    layout: &LmdbAuthorityLayout,
     split_cold_dir: Option<&Path>,
     legacy_v2_dir: Option<&Path>,
     map_size: usize,
@@ -99,7 +100,7 @@ pub(crate) fn migrate_legacy_state(
         env: Arc::clone(&destination_env),
         db: destination_cold,
     };
-    let namespace = db_prefix.as_bytes();
+    let namespace = layout.namespace();
     let existing_marker = read_marker(&destination_roots_source, namespace)?;
     let existing_pending = read_pending(&destination_roots_source, namespace)?;
     if existing_marker.is_some() && existing_pending.is_some() {
@@ -109,7 +110,8 @@ pub(crate) fn migrate_legacy_state(
 
     let split_catalog = read_legacy_catalog(&destination_roots_source)?;
     if !split_catalog.roots.is_empty() {
-        let cold_name = format!("{db_prefix}-cold");
+        let cold_names = layout.cold_source_names();
+        let candidate_count = if layout.legacy_compatible() { 2 } else { 1 };
         layouts.push(LegacyLayout {
             domain: b"split-v1",
             history: destination_history_source.clone(),
@@ -118,7 +120,7 @@ pub(crate) fn migrate_legacy_state(
             current: split_catalog.current,
             cold: open_existing_db(
                 split_cold_dir,
-                &[cold_name.as_str(), LEGACY_DB],
+                &cold_names[..candidate_count],
                 map_size,
                 max_dbs,
             )?,
@@ -238,14 +240,13 @@ pub(crate) fn complete_legacy_state(
     destination_history: BytesDb,
     destination_cold: BytesDb,
     destination_roots: BytesDb,
-    db_prefix: &str,
+    namespace: &[u8],
     validator: &RecordValidator,
 ) -> Result<bool, heed::Error> {
     let roots_source = ReadDb {
         env: Arc::clone(destination_env),
         db: destination_roots,
     };
-    let namespace = db_prefix.as_bytes();
     let Some(pending) = read_pending(&roots_source, namespace)? else {
         return Ok(false);
     };
@@ -562,7 +563,8 @@ fn open_existing_db(
     let Some(dir) = dir.filter(|dir| dir.join("data.mdb").is_file()) else {
         return Ok(None);
     };
-    let env = env_cache::get_or_open_env(dir, map_size, max_dbs)?;
+    let resolved = crate::rspace::shared::lmdb_dir_store_manager::resolve_lmdb_environment(dir)?;
+    let env = env_cache::get_or_open_env(&resolved, map_size, max_dbs)?;
     let txn = env.read_txn()?;
     let mut existing = Vec::new();
     let mut populated = Vec::new();
@@ -1085,7 +1087,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "rspace",
+            &LmdbAuthorityLayout::for_prefix("rspace").unwrap(),
             None,
             None,
             16 * 1024 * 1024,
@@ -1108,7 +1110,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "rspace",
+            &LmdbAuthorityLayout::for_prefix("rspace").unwrap(),
             None,
             None,
             16 * 1024 * 1024,
@@ -1131,7 +1133,7 @@ mod tests {
 
         let validator: RecordValidator = Arc::new(|_, _| Ok(()));
         assert!(
-            complete_legacy_state(&env, history, cold, roots_db, "rspace", &validator,)
+            complete_legacy_state(&env, history, cold, roots_db, b"rspace", &validator,)
                 .expect("complete split legacy state")
         );
         let txn = env.read_txn().expect("completed read");
@@ -1174,7 +1176,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "rspace",
+            &LmdbAuthorityLayout::for_prefix("rspace").unwrap(),
             None,
             None,
             16 * 1024 * 1024,
@@ -1199,7 +1201,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "rspace",
+            &LmdbAuthorityLayout::for_prefix("rspace").unwrap(),
             None,
             Some(&v2),
             16 * 1024 * 1024,
@@ -1208,7 +1210,7 @@ mod tests {
         .expect("stage v2 state");
         let validator: RecordValidator = Arc::new(|_, _| Ok(()));
         assert!(
-            complete_legacy_state(&env, history, cold, roots_db, "rspace", &validator,)
+            complete_legacy_state(&env, history, cold, roots_db, b"rspace", &validator,)
                 .expect("complete v2 state")
         );
         let txn = env.read_txn().expect("v2 completed read");
@@ -1236,7 +1238,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "rspace",
+            &LmdbAuthorityLayout::for_prefix("rspace").unwrap(),
             None,
             Some(&v2),
             16 * 1024 * 1024,
@@ -1264,7 +1266,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "eval",
+            &LmdbAuthorityLayout::for_prefix("eval").unwrap(),
             None,
             None,
             16 * 1024 * 1024,
@@ -1272,7 +1274,7 @@ mod tests {
         )
         .expect("stage eval state");
         let validator: RecordValidator = Arc::new(|_, _| Ok(()));
-        complete_legacy_state(&env, history, cold, roots_db, "eval", &validator)
+        complete_legacy_state(&env, history, cold, roots_db, b"eval", &validator)
             .expect("complete eval state");
         let txn = env.read_txn().expect("eval completed read");
         let marker = roots_db
@@ -1301,7 +1303,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "rspace",
+            &LmdbAuthorityLayout::for_prefix("rspace").unwrap(),
             None,
             Some(&v2),
             16 * 1024 * 1024,
@@ -1368,7 +1370,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "rspace",
+            &LmdbAuthorityLayout::for_prefix("rspace").unwrap(),
             None,
             None,
             16 * 1024 * 1024,
@@ -1436,7 +1438,7 @@ mod tests {
             history,
             cold,
             roots_db,
-            "rspace",
+            &LmdbAuthorityLayout::for_prefix("rspace").unwrap(),
             Some(&cold_path),
             None,
             16 * 1024 * 1024,
@@ -1444,7 +1446,7 @@ mod tests {
         )
         .expect("structural staging succeeds");
         let reject_records: RecordValidator = Arc::new(|_, _| Err("malformed datum".to_string()));
-        complete_legacy_state(&env, history, cold, roots_db, "rspace", &reject_records)
+        complete_legacy_state(&env, history, cold, roots_db, b"rspace", &reject_records)
             .expect_err("typed validation must reject publication");
 
         let txn = env.read_txn().expect("failed-completion read");

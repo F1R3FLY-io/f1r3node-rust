@@ -5473,6 +5473,63 @@ use the scoped-store contract; physically separating them would not repair it.
 Artifact 491 preserves the failed run. Checkpoint `61f83d73b` preserves the exact
 capture source, so subsequent harness changes cannot erase its provenance.
 
+### J-078 — 2026-09-07: repair physical database scope isolation
+
+**QUESTION.** Why did the complete replay archive pass its positive restoration
+while three concurrent controls observed another scope's current root?
+
+**MEASURED CONTROL.** The existing authority suite passed 16/16. Two new
+model-derived tests then failed against unchanged production: the requested
+`objects` database was absent, and a checkpoint in one scope changed another
+scope's root catalog. Distinct UUID labels were not evidence of physical
+isolation. The root cause is the task-6094 adapter's bypass of configured name
+overrides, not PathMap lookup, the archived roots, or the stale-root guard.
+
+**FORMAL-FIRST DESIGN.** Checkpoint `64395f681` preserves the reviewed model,
+twenty extracted invariants and their executable obligations before the repair
+is qualified. Caller/control compilation reports 36/43 closed checks; independent
+kernel checking succeeds. The combined checker used `-silent` and exited zero,
+so its empty log is expected rather than an explicit transcript success marker.
+The separately captured main-module check includes its success marker. Compilation
+logs preserve development failures followed by successful checks. The model's
+physical identities, actual database opening and Rust behavior remain refinement
+boundaries; namespace injectivity alone does not isolate overlapping databases.
+
+**IMPLEMENTATION.** Resolve the exact history/root/cold mappings independently;
+validate physical destination and migration-source aliases before any opening;
+use literal database names for ordinary stores. Preserve default migration
+namespace bytes and use checked framed fields for renamed layouts. Resolve paths
+read-only and use the resolved paths for opening. Scoped migration reads only its
+named source, while the default layout retains legacy compatibility. Reusable
+managers retain claimed custom-prefix ownership across shutdown so cleared handle
+caches cannot reopen a writable ordinary route. No PathMap fork, fixture isolation
+workaround, epoch refresh or stale-root weakening is involved.
+
+**EXECUTABLE RESULTS.** The first repair passed 18/18 authority tests, including
+both red regressions. Expanded scope properties passed 8/8; after adding migration
+controls the broader release state gate passed **55/55**, with **32 cases per
+generated property**. The sixteen invalid-configuration cases each run in both
+authority-first and ordinary-first order. The unchanged concurrent Casper archive
+suite is running; these focused results do not yet close 8283 or baseline 5636.
+
+| Evidence | Result or SHA-256 |
+|---|---|
+| Pre-change authority control | 16 passed; `ca52f7aae04419d1abce131065bada0d7ccd3813783a0eb76dda575f7a5195f7` |
+| Newly red scope regressions | 0 passed, 2 failed; `481eaa1989f3e7d95b5a9e9c82745fbdb688364a751c7a41fdb75e5469d949c3` |
+| Expanded scope property gate | 8 passed; `464ef2211d115121aa08d3749647706a5fa88416cee387f834807fa7a341dd9d` |
+| Broader state/migration gate | 55 passed; `b1e3ff72576141c0ace2defdedda8514570b39bf6b5687575e1750de25068bcf` |
+| Main-module kernel transcript | Success marker; `605771bd7d06ab3e6d8a04d1667a33e1576342ffa6bdfa4f0b75239575603798` |
+
+All Rust commands used a `systemd-run` 6 GiB hard memory cap, 4 GiB high threshold,
+zero swap, a four-core quota and four build jobs; test concurrency was two or four.
+The broader state tests took 0.11 seconds excluding compilation. Proof commands
+used a 2 GiB hard cap and zero swap. These are verification durations and configured
+resource ceilings, not measured per-operation memory or a performance comparison.
+Database scratch resides under disk-backed `target/`; small command logs carry the
+`rspace-8283` prefix. Scope-isolation repair is excluded from the consensus
+register's active entries by its bug-fix criterion. Local migration metadata changes
+are explicit above; no consensus preimage, charge model or public Rholang API changes.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

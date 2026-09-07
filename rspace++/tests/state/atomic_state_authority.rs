@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use proptest::prelude::*;
 use shared::rust::test_scratch;
 
 use super::{AuthorityBackend, CURRENT_ROOT_KEY, RSpaceStateAuthority, verified_root_key};
@@ -14,6 +15,8 @@ use crate::rspace::history::history_action::{HistoryAction, InsertAction};
 use crate::rspace::history::instances::radix_history::PreparedHistoryCheckpoint;
 use crate::rspace::history::roots_store::CurrentRoot;
 use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use crate::rspace::shared::lmdb_dir_store_manager::{Db, LmdbDirStoreManager, LmdbEnvConfig};
 use crate::rspace::state::closure_verifier::RecordValidator;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,6 +39,563 @@ fn memory_snapshot(authority: &RSpaceStateAuthority) -> MemorySnapshot {
 }
 
 fn validator() -> RecordValidator { Arc::new(|_, _| Ok(())) }
+
+fn scope_layout_configuration(
+    prefix: &str,
+    names: [&str; 3],
+    cold_environment: &str,
+) -> std::collections::HashMap<Db, LmdbEnvConfig> {
+    ["history", "roots", "cold"]
+        .into_iter()
+        .zip(names)
+        .map(|(role, name)| {
+            let environment = if role == "cold" {
+                cold_environment
+            } else {
+                "shared"
+            };
+            (
+                Db::new(format!("{prefix}-{role}"), Some(name.to_owned())),
+                LmdbEnvConfig::new(environment.to_owned(), 16 * 1024 * 1024).with_max_dbs(32),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn scope_layout_preflight_refuses_before_open() {
+    for case in 0..16 {
+        for ordinary_first in [false, true] {
+            let scratch = test_scratch::acquire("rspace-scope-refusal-");
+            let target = scratch.path().join("unopened");
+            let mut mapping =
+                scope_layout_configuration("rspace", ["objects", "catalog", "payloads"], "split");
+            let config = LmdbEnvConfig::new("shared".to_owned(), 16 * 1024 * 1024).with_max_dbs(32);
+            mapping.insert(
+                Db::new("application".to_owned(), None),
+                LmdbEnvConfig::new("application".to_owned(), 16 * 1024 * 1024).with_max_dbs(32),
+            );
+            let expected = match case {
+                0 => {
+                    mapping.retain(|db, _| db.id() != "rspace-cold");
+                    "missing authority"
+                }
+                1 => {
+                    mapping.insert(
+                        Db::new("rspace-history".to_owned(), Some("second-history".to_owned())),
+                        config.clone(),
+                    );
+                    "duplicate logical"
+                }
+                2 | 3 => {
+                    for (db, cfg) in &mut mapping {
+                        if db.id() == "rspace-roots" {
+                            if case == 2 {
+                                cfg.name = "elsewhere".to_owned();
+                            } else {
+                                cfg.max_dbs += 1;
+                            }
+                        }
+                    }
+                    if case == 2 {
+                        "must share"
+                    } else {
+                        "incompatible configurations"
+                    }
+                }
+                4..=6 => {
+                    let role = ["history", "roots", "cold"][case - 4];
+                    mapping.retain(|db, _| db.id() != format!("rspace-{role}"));
+                    mapping.insert(
+                        Db::new(format!("rspace-{role}"), Some("bad\0name".to_owned())),
+                        config.clone(),
+                    );
+                    "NUL"
+                }
+                7..=9 => {
+                    let (role, name) =
+                        [("roots", "objects"), ("cold", "objects"), ("cold", "catalog")][case - 7];
+                    mapping.retain(|db, _| db.id() != format!("rspace-{role}"));
+                    mapping.insert(
+                        Db::new(format!("rspace-{role}"), Some(name.to_owned())),
+                        config.clone(),
+                    );
+                    "distinct physical names"
+                }
+                10..=12 => {
+                    mapping.retain(|db, _| db.id() != "application");
+                    let name = if case == 10 { "objects" } else { "payloads" };
+                    let mut alias_config = config.clone();
+                    if case == 12 {
+                        alias_config.name = "split".to_owned();
+                    }
+                    mapping.insert(
+                        Db::new("application".to_owned(), Some(name.to_owned())),
+                        alias_config,
+                    );
+                    "aliases an authority"
+                }
+                13 | 14 => {
+                    mapping = scope_layout_configuration(
+                        "rspace",
+                        ["rspace-history", "rspace-roots", "rspace-cold"],
+                        "split",
+                    );
+                    let mut alias_config = config.clone();
+                    alias_config.name = if case == 13 {
+                        "split"
+                    } else {
+                        "rspace/casper/v2/roots"
+                    }
+                    .to_owned();
+                    mapping.insert(
+                        Db::new("application".to_owned(), Some("db".to_owned())),
+                        alias_config,
+                    );
+                    "aliases an authority"
+                }
+                15 => {
+                    mapping.extend(scope_layout_configuration(
+                        "eval",
+                        ["objects", "eval-catalog", "eval-payloads"],
+                        "split",
+                    ));
+                    "layouts overlap"
+                }
+                _ => unreachable!(),
+            };
+            let mut manager = LmdbDirStoreManager::new(target.clone(), mapping);
+            let error = if ordinary_first {
+                match manager.store("application".to_owned()).await {
+                    Ok(_) => panic!("case {case} exposed an ordinary store"),
+                    Err(error) => error,
+                }
+            } else {
+                match manager.state_authority("rspace").await {
+                    Ok(_) => panic!("case {case} opened an invalid authority"),
+                    Err(error) => error,
+                }
+            };
+            assert!(error.to_string().contains(expected), "case {case}: {error}");
+            assert!(!target.exists(), "case {case} created a directory before rejection");
+        }
+    }
+}
+
+#[tokio::test]
+async fn scope_layout_ordinary_literal_and_alias_routing() {
+    let scratch = test_scratch::acquire("rspace-scope-literal-route-");
+    let mut mapping =
+        scope_layout_configuration("rspace", ["objects", "catalog", "payloads"], "shared");
+    mapping.insert(
+        Db::new("application".to_owned(), Some("rspace-history".to_owned())),
+        LmdbEnvConfig::new("unrelated".to_owned(), 16 * 1024 * 1024).with_max_dbs(32),
+    );
+    let mut manager = LmdbDirStoreManager::new(scratch.path().to_path_buf(), mapping);
+    let store = manager.store("application".to_owned()).await.unwrap();
+    store.put(vec![(vec![1], vec![2])]).unwrap();
+    let authority = manager.state_authority("rspace").await.unwrap();
+    authority.initialize_for_records(&validator()).unwrap();
+    assert_eq!(store.get_one(&vec![1]).unwrap(), Some(vec![2]));
+    assert!(authority.history_store().to_map().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn scope_layout_custom_ownership_survives_shutdown() {
+    for retain_authority in [false, true] {
+        let scratch = test_scratch::acquire("rspace-scope-custom-owner-");
+        let mapping =
+            scope_layout_configuration("custom", ["objects", "catalog", "payloads"], "shared");
+        let mut manager = LmdbDirStoreManager::new(scratch.path().to_path_buf(), mapping);
+        let mut retained = Some(manager.state_authority("custom").await.unwrap());
+        retained
+            .as_ref()
+            .unwrap()
+            .initialize_for_records(&validator())
+            .unwrap();
+        manager.shutdown().await.unwrap();
+        if !retain_authority {
+            retained.take();
+        }
+        for role in ["history", "roots", "cold"] {
+            let store = manager.store(format!("custom-{role}")).await.unwrap();
+            assert!(store.put(vec![(vec![1], vec![2])]).is_err());
+            assert!(store.delete(vec![vec![1]]).is_err());
+            assert!(store.compare_and_swap_batch(&[], &[]).is_err());
+        }
+    }
+    let scratch = test_scratch::acquire("rspace-scope-custom-ordinary-first-");
+    let mapping =
+        scope_layout_configuration("custom", ["objects", "catalog", "payloads"], "shared");
+    let mut manager = LmdbDirStoreManager::new(scratch.path().to_path_buf(), mapping);
+    let exposed = manager.store("custom-history".to_owned()).await.unwrap();
+    assert!(manager.state_authority("custom").await.is_err());
+    exposed.put(vec![(vec![1], vec![2])]).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn scope_layout_resolves_environment_aliases() {
+    use crate::rspace::shared::lmdb_dir_store_manager::resolve_lmdb_environment;
+    let scratch = test_scratch::acquire("rspace-scope-path-alias-");
+    std::fs::create_dir(scratch.path().join("shared")).unwrap();
+    std::os::unix::fs::symlink("shared", scratch.path().join("alias")).unwrap();
+    let spelling = scratch.path().join("missing/../alias");
+    assert_eq!(
+        resolve_lmdb_environment(&spelling).unwrap(),
+        std::fs::canonicalize(scratch.path().join("shared")).unwrap()
+    );
+    assert!(!scratch.path().join("missing").exists());
+    let mut mapping =
+        scope_layout_configuration("rspace", ["objects", "catalog", "payloads"], "shared");
+    mapping.insert(
+        Db::new("application".to_owned(), Some("payloads".to_owned())),
+        LmdbEnvConfig::new("missing/../alias".to_owned(), 16 * 1024 * 1024).with_max_dbs(32),
+    );
+    let mut manager = LmdbDirStoreManager::new(scratch.path().to_path_buf(), mapping);
+    assert!(manager.store("application".to_owned()).await.is_err());
+    assert!(!scratch.path().join("shared/data.mdb").exists());
+    std::os::unix::fs::symlink("absent", scratch.path().join("dangling")).unwrap();
+    assert!(resolve_lmdb_environment(&scratch.path().join("dangling/child")).is_err());
+    let mut mapping =
+        scope_layout_configuration("rspace", ["objects", "catalog", "payloads"], "shared");
+    for (db, cfg) in &mut mapping {
+        if db.id() == "rspace-roots" {
+            cfg.name = "alias".to_owned();
+        }
+    }
+    let mut manager = LmdbDirStoreManager::new(scratch.path().to_path_buf(), mapping);
+    manager
+        .state_authority("rspace")
+        .await
+        .unwrap()
+        .initialize_for_records(&validator())
+        .unwrap();
+}
+
+fn scope_layout_database(
+    path: &std::path::Path,
+    name: &str,
+    entries: BTreeMap<Vec<u8>, Vec<u8>>,
+) -> (Arc<heed::Env>, super::BytesDb) {
+    let path =
+        crate::rspace::shared::lmdb_dir_store_manager::resolve_lmdb_environment(path).unwrap();
+    let env =
+        crate::rspace::shared::env_cache::get_or_open_env(&path, 16 * 1024 * 1024, 32).unwrap();
+    let mut txn = env.write_txn().unwrap();
+    let db = env.create_database(&mut txn, Some(name)).unwrap();
+    for (key, value) in entries {
+        db.put(&mut txn, &key, &value).unwrap();
+    }
+    txn.commit().unwrap();
+    (env, db)
+}
+
+#[tokio::test]
+async fn scope_layout_named_migration_and_marker_binding() {
+    for default in [false, true] {
+        let scratch = test_scratch::acquire("rspace-scope-migration-");
+        let names = if default {
+            ["rspace-history", "rspace-roots", "rspace-cold"]
+        } else {
+            ["objects", "catalog", "payloads"]
+        };
+        let source = RSpaceStateAuthority::in_memory();
+        let history = history_at_current(&source);
+        let (address, bytes) = data_leaf(b"scoped-legacy-source");
+        let (_, prepared) = prepare_insert(history.as_ref(), 81, &address);
+        let expected = source
+            .commit_local_checkpoint(
+                &prepared,
+                vec![(address.clone(), bytes.clone())],
+                &validator(),
+            )
+            .unwrap();
+        let legacy_roots = BTreeMap::from([
+            (expected.root().bytes(), b"tag".to_vec()),
+            (b"current-root".to_vec(), expected.root().bytes()),
+        ]);
+        let (_history_env, _) = scope_layout_database(
+            &scratch.path().join("shared"),
+            names[0],
+            source.history_store().to_map().unwrap(),
+        );
+        let (_roots_env, _) =
+            scope_layout_database(&scratch.path().join("shared"), names[1], legacy_roots);
+        let source_name = if default { "db" } else { names[2] };
+        let source_entries = source.cold_store().to_map().unwrap();
+        let (cold_env, cold_db) = scope_layout_database(
+            &scratch.path().join("split"),
+            source_name,
+            source_entries.clone(),
+        );
+        let ambient = if default {
+            None
+        } else {
+            Some(scope_layout_database(
+                &scratch.path().join("split"),
+                "db",
+                BTreeMap::from([(address.encode(), b"unrelated source".to_vec())]),
+            ))
+        };
+        let mapping = scope_layout_configuration("rspace", names, "split");
+        let mut manager = LmdbDirStoreManager::new(scratch.path().to_path_buf(), mapping);
+        let authority = manager.state_authority("rspace").await.unwrap();
+        authority.initialize_for_records(&validator()).unwrap();
+        assert_eq!(authority.current_root().unwrap(), *expected.root());
+        assert_eq!(authority.cold_store().get_one(&address.encode()).unwrap(), Some(bytes));
+        let txn = cold_env.read_txn().unwrap();
+        let after: BTreeMap<_, _> = cold_db
+            .iter(&txn)
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(after, source_entries);
+        drop(txn);
+        if let Some((env, db)) = &ambient {
+            let txn = env.read_txn().unwrap();
+            assert_eq!(
+                db.get(&txn, &address.encode()).unwrap(),
+                Some(b"unrelated source".to_vec())
+            );
+        }
+        let catalog = authority.roots_store_for_inspection().to_map().unwrap();
+        let marker_key = b"rspace-state-authority/migration/legacy-state/v2/completed".to_vec();
+        let marker = catalog.get(&marker_key).unwrap().clone();
+        let encoded = marker
+            .strip_prefix(b"rspace-legacy-state-migration\0\x02")
+            .unwrap();
+        let namespace_len = u32::from_be_bytes(encoded[..4].try_into().unwrap()) as usize;
+        let namespace = &encoded[4..4 + namespace_len];
+        let layout = super::LmdbAuthorityLayout::new("rspace", names.map(str::to_owned)).unwrap();
+        assert_eq!(namespace, layout.namespace());
+        if default {
+            assert_eq!(namespace, b"rspace");
+        }
+        let before = authority.current_verified_root().unwrap();
+        manager.shutdown().await.unwrap();
+        let reopened = manager.state_authority("rspace").await.unwrap();
+        reopened.initialize_for_records(&validator()).unwrap();
+        assert_eq!(reopened.current_verified_root().unwrap(), before);
+        let target_names = ["target-history", "target-roots", "target-cold"];
+        let (_target_env, _) = scope_layout_database(
+            &scratch.path().join("shared"),
+            target_names[1],
+            BTreeMap::from([(marker_key, marker)]),
+        );
+        let mut target = LmdbDirStoreManager::new(
+            scratch.path().to_path_buf(),
+            scope_layout_configuration("rspace", target_names, "split"),
+        );
+        let error = match target.state_authority("rspace").await {
+            Ok(_) => panic!("foreign namespace marker was admitted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("namespace"), "{error}");
+        assert_eq!(authority.current_verified_root().unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn scope_layout_scoped_migration_ignores_ambient_sources() {
+    let scratch = test_scratch::acquire("rspace-scope-ambient-v2-");
+    let (_env, _) = scope_layout_database(
+        &scratch.path().join("rspace/casper/v2/roots"),
+        "db",
+        BTreeMap::from([(b"current-root".to_vec(), b"not a root".to_vec())]),
+    );
+    let mut manager = scope_layout_manager(scratch.path(), ["objects", "catalog", "payloads"]);
+    let authority = manager.state_authority("rspace").await.unwrap();
+    authority.initialize_for_records(&validator()).unwrap();
+    assert_eq!(
+        authority.current_root().unwrap(),
+        crate::rspace::history::instances::radix_history::RadixHistory::empty_root_node_hash()
+    );
+    let layout =
+        super::LmdbAuthorityLayout::new("rspace", ["h".to_owned(), "r".to_owned(), "c".to_owned()])
+            .unwrap();
+    let target = scratch.path().join("unopened");
+    assert!(
+        RSpaceStateAuthority::open_resolved_lmdb(
+            &target,
+            &layout,
+            None,
+            Some(&scratch.path().join("rspace/casper/v2")),
+            16 * 1024 * 1024,
+            32
+        )
+        .is_err()
+    );
+    assert!(!target.exists());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 32, failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::WithSource("proptest-regressions"))), ..ProptestConfig::default() })]
+
+    #[test]
+    fn scope_layout_namespace_matches_framed_reference(prefix in "[a-zéλ_-]{0,24}", history in "[a-zéλ_-]{0,24}", roots in "[a-zéλ_-]{0,24}", cold in "[a-zéλ_-]{0,24}") {
+        let fields = [prefix, format!("h:{history}"), format!("r:{roots}"), format!("c:{cold}")];
+        let layout = super::LmdbAuthorityLayout::new(&fields[0], [fields[1].clone(), fields[2].clone(), fields[3].clone()]).unwrap();
+        let mut rest = layout.namespace().strip_prefix(b"\0rspace-authority-layout\0\x01").unwrap();
+        for field in &fields {
+            let (length, remaining) = rest.split_at(8);
+            let length = usize::try_from(u64::from_be_bytes(length.try_into().unwrap())).unwrap();
+            let (value, tail) = remaining.split_at(length);
+            prop_assert_eq!(value, field.as_bytes());
+            rest = tail;
+        }
+        prop_assert!(rest.is_empty());
+        for index in 0..4 {
+            let mut changed = fields.clone();
+            changed[index].push('!');
+            let other = super::LmdbAuthorityLayout::new(&changed[0], [changed[1].clone(), changed[2].clone(), changed[3].clone()]).unwrap();
+            prop_assert_ne!(layout.namespace(), other.namespace());
+        }
+        for prefix in ["rspace", "eval"] {
+            let legacy = super::LmdbAuthorityLayout::for_prefix(prefix).unwrap();
+            prop_assert_eq!(legacy.namespace(), prefix.as_bytes());
+            prop_assert_ne!(legacy.namespace(), layout.namespace());
+        }
+    }
+
+    #[test]
+    fn scope_layout_generated_mutations_preserve_other_scopes(steps in prop::collection::vec((any::<bool>(), 1u8..128), 1..16)) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let scratch = test_scratch::acquire("rspace-scope-operations-");
+            let mut first = scope_layout_manager(scratch.path(), ["a-history", "a-roots", "a-cold"]);
+            let mut second = scope_layout_manager(scratch.path(), ["b-history", "b-roots", "b-cold"]);
+            let first = first.state_authority("rspace").await.unwrap();
+            let second = second.state_authority("rspace").await.unwrap();
+            first.initialize_for_records(&validator()).unwrap();
+            second.initialize_for_records(&validator()).unwrap();
+            for (index, (choice, discriminator)) in steps.into_iter().enumerate() {
+                let (target, other) = if choice { (&first, &second) } else { (&second, &first) };
+                let before = (other.history_store().to_map().unwrap(), other.cold_store().to_map().unwrap(), other.roots_store_for_inspection().to_map().unwrap());
+                let history = history_at_current(target);
+                let (cold, bytes) = data_leaf(&[index as u8, discriminator]);
+                let (_, plan) = prepare_insert(history.as_ref(), discriminator, &cold);
+                target.commit_local_checkpoint(&plan, vec![(cold, bytes)], &validator()).unwrap();
+                assert_eq!((other.history_store().to_map().unwrap(), other.cold_store().to_map().unwrap(), other.roots_store_for_inspection().to_map().unwrap()), before);
+            }
+        });
+    }
+}
+
+fn scope_layout_manager(
+    path: &std::path::Path,
+    names: [&str; 3],
+) -> impl crate::rspace::shared::key_value_store_manager::KeyValueStoreManager {
+    use crate::rspace::shared::lmdb_dir_store_manager::{Db, LmdbDirStoreManager, LmdbEnvConfig};
+
+    let config = LmdbEnvConfig::new("shared".to_owned(), 16 * 1024 * 1024).with_max_dbs(32);
+    let mapping = ["history", "roots", "cold"]
+        .into_iter()
+        .zip(names)
+        .map(|(role, name)| {
+            (Db::new(format!("rspace-{role}"), Some(name.to_owned())), config.clone())
+        })
+        .collect();
+    LmdbDirStoreManager::new(path.to_path_buf(), mapping)
+}
+
+#[tokio::test]
+async fn scope_layout_disjoint_checkpoints_and_reopen() {
+    use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    let scratch = test_scratch::acquire("rspace-authority-scopes-");
+    let mut first_manager =
+        scope_layout_manager(scratch.path(), ["a-history", "a-roots", "a-cold"]);
+    let mut second_manager =
+        scope_layout_manager(scratch.path(), ["objects", "catalog", "payloads"]);
+    let first = first_manager.state_authority("rspace").await.unwrap();
+    let second = second_manager.state_authority("rspace").await.unwrap();
+    first.initialize_for_records(&validator()).unwrap();
+    second.initialize_for_records(&validator()).unwrap();
+    let first_history = history_at_current(&first);
+    let second_history = history_at_current(&second);
+    let (first_cold, first_bytes) = data_leaf(b"scope-first");
+    let (second_cold, second_bytes) = data_leaf(b"scope-second");
+    let (_, first_plan) = prepare_insert(first_history.as_ref(), 71, &first_cold);
+    let (_, second_plan) = prepare_insert(second_history.as_ref(), 72, &second_cold);
+    let second_before = second.roots_store_for_inspection().to_map().unwrap();
+    let first_root = first
+        .commit_local_checkpoint(&first_plan, vec![(first_cold.clone(), first_bytes)], &validator())
+        .unwrap();
+    assert_eq!(second.roots_store_for_inspection().to_map().unwrap(), second_before);
+    let first_before = first.roots_store_for_inspection().to_map().unwrap();
+    let second_root = second
+        .commit_local_checkpoint(
+            &second_plan,
+            vec![(second_cold.clone(), second_bytes)],
+            &validator(),
+        )
+        .unwrap();
+    assert_eq!(first.roots_store_for_inspection().to_map().unwrap(), first_before);
+    assert_ne!(first_root.root(), second_root.root());
+    assert!(
+        first
+            .cold_store()
+            .get_one(&second_cold.encode())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        second
+            .cold_store()
+            .get_one(&first_cold.encode())
+            .unwrap()
+            .is_none()
+    );
+    drop((first_plan, second_plan, first_history, second_history, first, second));
+    first_manager.shutdown().await.unwrap();
+    second_manager.shutdown().await.unwrap();
+    let first = first_manager.state_authority("rspace").await.unwrap();
+    let second = second_manager.state_authority("rspace").await.unwrap();
+    first.initialize_for_records(&validator()).unwrap();
+    second.initialize_for_records(&validator()).unwrap();
+    assert_eq!(first.current_verified_root().unwrap(), Some(first_root));
+    assert_eq!(second.current_verified_root().unwrap(), Some(second_root));
+}
+
+#[tokio::test]
+async fn scope_layout_independent_names_and_reopen() {
+    use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    let scratch = test_scratch::acquire("rspace-authority-literal-names-");
+    let names = ["objects", "catalog", "payloads"];
+    let mut manager = scope_layout_manager(scratch.path(), names);
+    let authority = manager.state_authority("rspace").await.unwrap();
+    authority.initialize_for_records(&validator()).unwrap();
+    assert!(Arc::ptr_eq(&authority, &manager.state_authority("rspace").await.unwrap()));
+    let AuthorityBackend::Lmdb(state) = &authority.backend else {
+        unreachable!()
+    };
+    let txn = state.env.read_txn().unwrap();
+    for name in names {
+        assert!(state.env.open_database::<heed::types::SerdeBincode<Vec<u8>>, heed::types::SerdeBincode<Vec<u8>>>(&txn, Some(name)).unwrap().is_some(), "missing literal database {name}");
+    }
+    for name in ["rspace-history", "rspace-roots", "rspace-cold"] {
+        assert!(state.env.open_database::<heed::types::SerdeBincode<Vec<u8>>, heed::types::SerdeBincode<Vec<u8>>>(&txn, Some(name)).unwrap().is_none(), "unexpected unscoped database {name}");
+    }
+    drop(txn);
+    for role in ["history", "roots", "cold"] {
+        let store = manager.store(format!("rspace-{role}")).await.unwrap();
+        assert!(
+            store
+                .put(vec![(b"not-authorized".to_vec(), vec![1])])
+                .is_err()
+        );
+        assert!(store.delete(vec![b"not-authorized".to_vec()]).is_err());
+        assert!(store.compare_and_swap_batch(&[], &[]).is_err());
+    }
+    let expected = authority.current_verified_root().unwrap();
+    drop(authority);
+    manager.shutdown().await.unwrap();
+    let reopened = manager.state_authority("rspace").await.unwrap();
+    reopened.initialize_for_records(&validator()).unwrap();
+    assert_eq!(reopened.current_verified_root().unwrap(), expected);
+}
 
 fn data_leaf(label: &[u8]) -> (ColdLeafAddress, Vec<u8>) {
     let record = bincode::serialize(&label.to_vec()).expect("record");
