@@ -37,6 +37,9 @@ use serde::{Deserialize, Serialize};
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources::with_runtime_manager;
 
+#[path = "async_driver_replay_archive.rs"]
+mod replay_archive;
+
 /// Fixed deploy timestamp (ms). Makes the deploy signature — and thus the deploy-local channel
 /// random seed and the self-contained deployLog — deterministic across processes.
 const FIXED_TS: i64 = 1_600_000_000_000;

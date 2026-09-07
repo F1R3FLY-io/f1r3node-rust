@@ -181,6 +181,54 @@ requirement to reproduce a total thread schedule. This original
 acceptance gap remains owned by 5636; dynamic play/replay equality and separate
 partial goldens do not discharge it.
 
+### Current-epoch replay archive (2026-09-07)
+
+The subsequent capture adds `casper/tests/util/rholang/async_driver_replay_v1.json`
+and its separate `.blake2b256` seal. It preserves all seven programs' complete signed
+`ProcessedDeploy` protobuf payloads, including every archived Produce/Consume/COMM
+position, cost, status and metadata, literal pre/final roots, complete replay context,
+ordered public genesis inputs and the full genesis configuration. It does **not**
+retroactively create a historical `dcc4600d4` archive or regenerate the earlier goldens.
+
+The capture passed with seven plays and seven uncached self-replays; the archive is
+156,228 bytes with BLAKE2b-256
+`75bb293f49cb2a9e2c6f989924403b2edf6d825351c952288936759ae08232fc`
+and SHA-256 `f61a0f6a99a0e17a1d2e805ec3b5625c55116a9872b678b12d950cf178b648cf`.
+The capture identifies source HEAD `c57ba7fa7479093a81624cd2877e653e50cf3041`, exact
+harness/schema/configuration file digests, the tracked-diff digest, the clean local
+parser dependency `02cef80d32214ecdac3ee7d3b91c3786a34174d5`, compiler version and
+build environment. The new harness was uncommitted at capture: its recorded content
+digest, not HEAD alone, identifies that source. A tracked-diff digest by itself cannot
+reconstruct a dirty checkout; the fixture is not a clean-HEAD benchmark observation.
+
+Ordinary verification reads the fixture and seal, rejects missing/changed bytes and
+incomplete context, checks typed protobuf decode/re-encode fixed points, rebuilds the
+exact pre-root and replays the archived input without first playing its source. Both
+`RuntimeManager` replay caches are disabled and independently checked. Full archive
+order is separate from the runtime's intentionally order-insensitive rigging. The
+formal contract and RA01–RA11 implementation obligations are in the
+[existing proof report](../../../formal/rocq/stack_safe_pda/README.md#captured-replay-archive-contract-2026-09-07),
+committed with the twenty contract checks and twelve example/control checks at
+`ce333d452ff9bd8e6f32afd0c154d3e93920abce`. These conditional abstract proofs do not
+verify the concrete runtime, codec, genesis construction or cryptography.
+
+The first capture completed its runtime work but failed to publish because Cargo's
+test working directory is `casper/`. The corrected capture resolves its explicit
+destination against the repository root, validates the parent before execution and
+uses exclusive creation; no old artifact was overwritten. The corrected test took
+294.99 seconds, excluding its 77-second incremental build. Both commands used
+systemd limits of 8 GiB memory-high, 12 GiB memory-max, zero swap, four build jobs
+and 400% CPU quota, with database scratch under `target/campaign-5636-scratch`.
+These are qualification run details, not a performance experiment or measured
+per-operation RSS improvement.
+
+Fresh-process read-only verification and runtime mutation qualification are in
+progress. The captured pre-root is
+`ffd6bbbf7e48e9e6a062eef22d82e3559d298cd72e316748a8cbdf24b82b36f8`,
+which differs from the existing default-genesis test's `87b8dede…846da87b` literal.
+The original pin is preserved and its exact test is being run separately; no
+compatibility verdict or replacement golden is inferred from the new capture.
+
 ### Reproducible baseline evidence
 
 The original source coordinate is pinned even though the measurement harness

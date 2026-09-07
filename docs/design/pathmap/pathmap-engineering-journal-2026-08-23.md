@@ -5375,6 +5375,50 @@ Lightweight source inspection resolved the cited commit coordinates, named test
 targets and four measurement-file digests; `git diff --check` passed. This is a
 documentation/source audit, not new execution of the cited runtime or formal gates.
 
+### J-076 — 2026-09-07: bind archived bytes separately from actual replay
+
+**QUESTION.** What evidence is needed before a full captured deployment can qualify
+PathMap/RSpace compatibility, rather than only testing an in-process projection?
+
+**DERIVED.** `RuntimeManager::replay_compute_state` has two optional shortcut paths:
+the state-hash cache and replay cache. A recorded root returned by either path is
+not evidence that the archived program was executed. The test-only archive verifier
+sets both options to `None` and rejects an enabled option at its execution boundary.
+`ReplayRSpace::rig` uses an IO set plus a COMM multimap, so successful replay does not
+establish the original total event-emission order or standalone IO multiplicities.
+Archive byte/order integrity and actual replay are separate obligations.
+
+**IMPLEMENTATION.** The existing seven-program corpus is reused without changing
+its historical golden JSON. A separate, current-epoch archive contains full signed
+protobuf deployments, exact roots and complete context. The typed codec must be an
+exact byte fixed point. Genesis/PoS fields are exhaustively destructured before
+projection so an added configuration field cannot silently evade the descriptor.
+Private keys are not serialized. Explicit capture requires a new destination;
+ordinary verification is read-only and cannot bless an absent fixture.
+
+**FORMAL EVIDENCE.** `ReplayArchive.v` and `ReplayArchiveMutants.v` passed twenty
+and twelve closed-context checks, respectively, plus kernel checking under a
+2 GiB hard cap and zero swap. Commit `ce333d452` registers both modules and the
+RA01–RA11 obligation catalog. The model's integrity, codec, genesis and runtime
+realization predicates are explicit proof boundaries; the contract is not an
+extracted Rust verifier or an unconditional proof of runtime equivalence.
+
+**CAPTURE RESULT.** Seven plays and seven uncached self-replays produced the
+156,228-byte archive whose BLAKE2b-256 is
+`75bb293f49cb2a9e2c6f989924403b2edf6d825351c952288936759ae08232fc`.
+The [integration report](../rspace/pathmap-bag-rspace-integration.md#current-epoch-replay-archive-2026-09-07)
+records all provenance, resource limits and the publication-path correction. The
+first run's missing-directory publication failure is retained; it was a harness
+path-resolution error, not a runtime replay failure or an OOM. No old golden changed.
+
+**OPEN QUALIFICATION.** Fresh-process replay and causal cost/status/COMM mutation
+controls are running. The observed current pre-root differs from the old default
+genesis pin, which is preserved pending direct qualification. The historical
+experiment records are still unavailable through current-version get/timeline;
+dynamic STDIO discovery exposes the timeline tool but does not bypass its same
+current-record lookup. No historical data deletion, backend improvement or complete
+campaign acceptance is inferred. There are no production changes in this slice.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
