@@ -8,8 +8,8 @@ use serde::Deserialize;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, RhoDataResponse,
-    WebApi,
+    DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, ReadyResponse,
+    RhoDataResponse, WebApi,
 };
 use crate::rust::web::shared_handlers::{
     self, offload, ApiErrorResponse, AppError, AppJson, AppPath, AppQuery, AppState,
@@ -81,8 +81,8 @@ impl WebApiRoutes {
     get,
     path = "/api/ready",
     responses(
-        (status = 200, description = "Casper is Running and the node can serve deploys"),
-        (status = 503, description = "Casper has not finished initializing (`service_unavailable`)"),
+        (status = 200, description = "Casper is Running and the node can serve deploys", body = ReadyResponse),
+        (status = 503, description = "Casper has not finished initializing (`service_unavailable`)", body = ReadyResponse),
     ),
     tag = "Status"
 )]

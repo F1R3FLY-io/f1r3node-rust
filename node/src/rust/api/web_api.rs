@@ -1371,6 +1371,11 @@ pub struct PrepareResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReadyResponse {
+    pub ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PeerInfoData {
     pub address: String,
     #[serde(rename = "nodeId")]

@@ -127,6 +127,8 @@ Readiness probe. Returns HTTP 200 with `{"ready": true}` once the Casper engine 
 
 Unlike `GET /api/status`, which answers 200 throughout startup, this endpoint fails until the node is deploy-ready, so it works directly as a container health check (`docker compose up --wait`, `depends_on: condition: service_healthy`) and as a Kubernetes `httpGet` readiness probe without needing `jq`.
 
+A node running the genesis ceremony (minutes to hours) reports `unhealthy` for the whole window, because it cannot serve deploys yet. Operators spanning a long genesis raise `--wait-timeout` (Docker Compose) or probe `failureThreshold` / `start_period` (Kubernetes, Docker `HEALTHCHECK`) accordingly.
+
 ---
 
 ### Block Endpoints

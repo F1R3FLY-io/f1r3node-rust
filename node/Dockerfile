@@ -100,8 +100,8 @@ FROM debian:bookworm-slim AS runtime-base
 # keeps profiling tooling out of the image everyone actually runs.
 ARG PROFILING_BUILD=0
 
-# Install runtime dependencies
-# Note: curl backs the container HEALTHCHECK (GET /api/ready).
+# Install runtime dependencies.
+# curl is the only tool the container HEALTHCHECK further below needs (GET /api/ready).
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \

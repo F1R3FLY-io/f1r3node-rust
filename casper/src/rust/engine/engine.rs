@@ -256,14 +256,12 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 
     engine_cell.set(Arc::new(running)).await;
 
-    event_log
-        .publish(F1r3flyEvent::entered_running_state(block_hash_string))
-        .map_err(|e| {
-            CasperError::Other(format!(
-                "Failed to publish EnteredRunningState event: {}",
-                e
-            ))
-        })?;
+    if let Err(e) = event_log.publish(F1r3flyEvent::entered_running_state(block_hash_string)) {
+        tracing::error!(
+            "Failed to publish EnteredRunningState event after committing Running state: {}",
+            e
+        );
+    }
 
     Ok(())
 }
