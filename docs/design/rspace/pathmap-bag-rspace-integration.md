@@ -4,9 +4,13 @@ Status: implementation in progress and living engineering report
 
 Campaign: `campaign-4131-rspace-pathmap-integration`
 
-Experiment: `rspace-pathmap-end-to-end-layout-2026-08-15`
-Last updated: 2026-09-02
+Historical experiment reference: `rspace-pathmap-end-to-end-layout-2026-08-15`
+Last updated: 2026-09-07
 Current implementation checkpoint: exact-channel two-level authority (introduced by this change set)
+
+The [baseline acceptance ledger](#baseline-acceptance-ledger-2026-09-07) distinguishes
+preserved historical results from currently retrievable evidence and remaining requirements.
+Historical experiment numbers and passing-test counts below are not current campaign verdicts.
 
 Chronological PathMap findings and negative results are maintained in the
 [PathMap engineering journal](../pathmap/pathmap-engineering-journal-2026-08-23.md).
@@ -52,12 +56,15 @@ Neither a `Vec<Par>` nor a hash table is an authoritative substitute for a trie 
 
 ## Frozen pre-migration RSpace contract
 
-The behavioral baseline is the target worktree at commit `dcc4600d4`. This is a
+The behavioral baseline is the target worktree at commit `dcc4600d4`, recorded by
+`6a1c4341d`. This is a
 source coordinate, not a second checkout: reproduce a historical observation
 with `git show dcc4600d4:<path>`. The campaign does not maintain a shadow legacy
 implementation. Instead, control arms disable the derived PathMap selector and
 run the same production `consume` or `produce` entry point, while differential
-tests compare the selected COMM, event log, and post-state.
+tests compare the selected COMM, event log, and post-state. Those later control
+arms isolate selector cost in their own production revision; they are not timings
+of `dcc4600d4`, the `dev` branch, or the entire former RSpace implementation.
 
 At the frozen coordinate, `RSpace<C, P, A, K>` owns the synchronization and
 consensus-visible side effects, while `HotStoreState<C, P, A, K>` stores five
@@ -80,27 +87,40 @@ channel-hash order.
 
 ### Observable contract matrix
 
-The matrix is the review index for the frozen contract. “Control” means the
+The matrix is the review index for the frozen contract, audited against source
+at `329240271` on 2026-09-07. Its current witnesses test specific contracts; a file
+reference is not a claim that its complete target was rerun during this audit.
+“Control” means the
 production matcher with derived RhoPath pruning disabled. “Treatment” means the
 same public operation with the derived index enabled; the spatial matcher still
 decides acceptance.
 
 | Observable invariant | Frozen source seam | Executable evidence retained in the current tree | Required equality |
 |---|---|---|---|
-| Datum-first COMM | `RSpace::locked_produce` and `SpaceMatcher::extract_first_match` | `candidate_path_pruning_spec::datum_first_retained_queries_filter_waiting_continuations_before_spatial_match`; `rspace_comm::waiting_receive_*` | continuation, bindings, selected datum, COMM bytes, log, and post-state |
-| Receive-first COMM | `RSpace::locked_consume` and `SpaceMatcher::find_matching_data_candidate` | `candidate_path_pruning_spec`; `rspace_comm::distinct_*` | same first admissible candidate in canonical order |
+| Produce-driven COMM: consumes are already waiting | `RSpace::locked_produce` and `SpaceMatcher::extract_first_match` | `candidate_path_pruning_spec::datum_first_retained_queries_filter_waiting_continuations_before_spatial_match`; `rspace_comm` benchmark filter `waiting_receive` | equal selected result, event log and post-state; the named test separately counts spatial calls |
+| Consume-driven COMM: data are already resting | `RSpace::locked_consume` and `SpaceMatcher::find_matching_data_candidate` | `candidate_path_pruning_spec::indexed_and_full_scans_have_identical_results_traces_and_post_states`; `rspace_comm` benchmark filter `distinct_` | equal selected result, event log and post-state, including absence of a match |
 | Multi-channel join | phase-A/phase-B acquisition and candidate recursion | `storage_actions_test::consuming_on_two_channels_then_producing_on_each_should_return_cont_with_both_data`; `enabled_rendezvous_spec::t8_a_join_enumerates_its_cross_product` | atomic all-or-nothing reservation and the same binding order |
-| Repeated channel | per-bind candidate selection and positional removal | `guarded_matching_tests::a_receive_taking_two_data_from_one_channel_removes_both`; `two_identical_occurrences_fill_two_binds_without_expansion` | enough multiplicity is required; indistinguishable occurrences do not create factorially distinct outcomes |
-| Peek | selected indices retained or restored according to the peek set | consume-first and produce-first peek cases in `replay_rspace_tests`; `reporting_rspace_should_capture_peeks_in_comm_event` | same retained data and same peek metadata in the COMM |
-| Persistent datum/continuation | `Datum::persist`, `WaitingContinuation::persist` | persistent cases in `storage_actions_test` and `replay_rspace_tests` | persistent records remain available for later matches without duplicated effects |
-| Guard timing and backtracking | `Match::check_commit` after a complete spatial assignment | `guarded_matching_tests` and `enabled_rendezvous_spec` | guard rejection restores reservations; the next canonical assignment is tried |
-| Candidate order | `order_candidates_with_index` and stable serialized candidate hashes | `the_canonical_candidate_order_is_a_pure_function_of_the_candidates`; `replay_comm_order` | insertion and hash-map iteration order do not change selection |
-| Source and random metadata | `Datum::source`, `WaitingContinuation::source`, `ListParWithRandom::random_state` | `serializer_byte_goldens`, `models::event_hash_*_differential`, and `epathmap_canonical_fixtures` | complete identity bytes include metadata that distinguishes RSpace records |
-| Event history and replay | `log_comm`, replay COMM multimap, `ReplayRSpace` | complete `replay_rspace_tests`; guarded play/replay tests; `deploy_log_canonicalization_and_replay` | same event multiplicities, selected assignment, final root, and no unused rigging |
-| Checkpoint and reset | `create_checkpoint`, `reset`, soft checkpoint/revert | checkpoint/reset/soft-checkpoint cases in `storage_actions_test` | stable root for identical logical state; reset reconstructs the same authority |
-| Export and import | history exporter/importer over cold-store leaves | all three `export_import_tests` round trips | imported root and post-import behavior equal the exported source |
-| Malformed input | public `consume`/`install` arity guard before mutation | all five `consume_arity_refusal` cases | deterministic refusal, no half-write, play/replay agreement |
-| Cold bytes and hashes | serializers and `StableHashSerialize` | `serializer_byte_goldens`, `serializer_par_byte_goldens`, and event-hash differentials | byte-identical encodings and therefore unchanged consensus hashes |
+| Repeated channel | per-bind candidate selection and positional removal | `guarded_matching_tests::a_receive_taking_two_data_from_one_channel_removes_both` and `guarded_matching_tests::two_identical_occurrences_fill_two_binds_without_expansion` | enough multiplicity is required; indistinguishable occurrences do not create factorially distinct outcomes |
+| Peek | selected indices retained or restored according to the peek set | `replay_rspace_tests::creating_a_comm_event_with_peek_consume_first_should_replay_correctly` and `replay_rspace_tests::creating_a_comm_event_with_peek_produce_first_should_replay_correctly` | same retained data and same peek metadata in the COMM |
+| Persistent datum/continuation | `Datum::persist`, `WaitingContinuation::persist` | `storage_actions_test::persistent_produce_should_be_available_for_multiple_matches`; `storage_actions_test::doing_persistent_consume_and_producing_multiple_times_should_work`; `replay_rspace_tests::picking_n_continuations_from_m_persistent_waiting_continuations_should_replay_correctly` | persistent records remain available for later matches without duplicated effects |
+| Guard timing and backtracking | `Match::check_commit` after a complete spatial assignment | `guarded_matching_tests::the_produce_path_backtracks_across_a_join` and `guarded_matching_tests::a_failed_guarded_search_restores_the_candidate_pools` | guard rejection restores reservations; the next canonical assignment is tried |
+| Candidate order | `order_candidates_with_index` and stable serialized candidate hashes | `guarded_matching_tests::the_canonical_candidate_order_is_a_pure_function_of_the_candidates`; `replay_comm_order::distinct_projection_is_canonical_across_all_insertion_orders` and `replay_comm_order::comm_order_is_total_and_consistent_with_identity` | preserve canonical candidate ordering and the specified total replay-COMM projection; this does not make concurrent event emission order globally deterministic |
+| Source and random metadata | `Datum::source`, `WaitingContinuation::source`, `ListParWithRandom::random_state` | `serializer_byte_goldens`; `serializer_par_byte_goldens`; `event_hash_encoder_differential::generated_encoder_matches_legacy_over_the_shared_corpora`; `record_index::continuation_join_lifecycle_equivalence::legacy_and_pathmap_continuation_join_lifecycles_are_identical` | preserve complete serialized records and random state; continuation deduplication uses source-free identity and retains its first source representative, rather than treating every serialized-byte difference as a new identity |
+| Event history and replay | `log_comm`, replay COMM multimap, `ReplayRSpace` | `guarded_matching_tests::play_and_replay_agree_on_a_guarded_selection`; `guarded_matching_tests::play_and_replay_agree_when_the_guard_permutes_a_repeated_channel`; `epathmap_replay_equivalence_spec::epathmap_heavy_record_then_replay_reproduces_the_log` | selected assignment, event multiplicities, replay consumption and final state follow the recorded execution; runtime comparison is not an archived ordered-log golden |
+| Checkpoint and reset | `create_checkpoint`, `reset`, soft checkpoint/revert | `storage_actions_test::create_checkpoint_on_an_empty_store_should_return_the_expected_hash`; `storage_actions_test::reset_should_change_the_state_of_the_store_and_reset_the_trie_updates_log`; `storage_actions_test::revert_to_soft_checkpoint_should_inject_the_event_log`; task 7941's coupled-identity fixtures | identical exact frozen ordered/compatibility state has the same legacy root; equal semantic DAG roots alone do not imply equal legacy roots |
+| Export and import | history exporter/importer over cold-store leaves | `export_import_tests::export_and_import_of_one_page_should_works_correctly`, `export_import_tests::multipage_export_should_work_correctly`, `export_import_tests::multipage_export_with_skip_should_work_correctly`, `export_import_tests::empty_checkpoint_import_is_one_zero_object_terminal_page`, `export_import_tests::invalid_pages_leave_no_root_authority_and_the_same_session_can_retry`, and `export_import_tests::imported_state_can_be_reexported_and_mixed_with_a_new_checkpoint` | imported root and post-import behavior equal the exported source; invalid pages do not publish root authority |
+| Malformed input | public `consume`/`install` arity guard before mutation | `consume_arity_refusal::play_consume_refuses_the_malformed_and_accepts_the_control`, `consume_arity_refusal::the_refusal_does_not_half_write`, `consume_arity_refusal::play_install_refuses_the_arity_mismatch_and_accepts_the_control`, `consume_arity_refusal::replay_consume_refuses_the_malformed_and_accepts_the_control`, and `consume_arity_refusal::play_and_replay_agree_on_every_malformed_shape` | literal refusal and no half-write for arity mismatch/empty-channel shapes, with a well-formed control; not an exhaustive arbitrary-byte decoder claim |
+| Cold bytes and hashes | serializers and `StableHashSerialize` | `serializer_byte_goldens`, `serializer_par_byte_goldens`; `epathmap_canonical_fixtures::event_hash_goldens_produce` and `epathmap_canonical_fixtures::event_hash_goldens_consume` | byte-identical encodings within the pinned fixture epoch and therefore unchanged corresponding hashes; later format epochs must not be substituted for the frozen one |
+
+The two arrival rows use the operation that completes a rendezvous, avoiding the
+ambiguous older “datum-first”/“receive-first” shorthand. Existing test identifiers
+are preserved. In particular, the test named `datum_first_retained_queries_...`
+first stores consumes and then calls `produce`.
+
+Task 7941's [coupled-identity result](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-071--2026-09-07-bind-legacy-identity-to-coupled-state-not-a-presumed-root-projection)
+supersedes the former unqualified phrase “stable root for identical logical state.”
+Its concrete string-typed counterexample does not prove the whole Rholang trace
+relation. The compatibility bridge implementation remains task 7942.
 
 ### Corpus and groundness audit
 
@@ -118,26 +138,112 @@ Stored data are **not proven ground at the generic RSpace boundary**.
 performs no closedness validation, and the type system does not refine
 `ListParWithRandom` to a ground-only form. Normal Rholang evaluation generally
 supplies closed data, but direct Rust callers, imported historical state, and
-malformed or future producers remain counterexamples to treating that as an
-RSpace invariant. Consequently, every PathMap query compiler is conservative:
-unsupported, open, nonlinear, malformed, or unresolved structures reach the
-unchanged spatial matcher exactly once.
+malformed or future producers prevent treating that as an RSpace invariant.
+This is a missing boundary guarantee, not a demonstrated accepted malformed
+Rholang deployment. A query compiler must conservatively retain candidates it
+cannot safely exclude. Spatial matching and guard backtracking remain authoritative;
+fallback does not imply exactly one matcher invocation for an entire search.
+
+| Corpus axis | Concrete retained witness | Evidence boundary |
+|---|---|---|
+| Ground/open terms and full schema | `models/tests/par_corpus/mod.rs`: `par_corpus`, `bind_pattern_corpus`, `tagged_continuation_corpus`; `serializer_par_byte_goldens` | Constructed oneof/root coverage and non-ground EPathMap fixtures; not proof that generic stored data are ground. |
+| Linear/nonlinear captures | `rholang/tests/matcher/retained_path_index_test.rs`; `rholang/tests/matcher_state_isolation.rs` | Query admission/fallback and binding-state laws; full generated COMM lifecycle coverage remains 7964. |
+| Deep/wide/shared structures | `par_corpus::deep_par`, `deep_mixed_par`, the `wide_sends` fixture; `matcher_recursive_family_cursor::recursive_family_cursors_match_at_depth_4096_on_a_fixed_native_stack`; the shared-prefix measurement files below | Shallow recursive-oracle comparison, separate deep-machine checks, and prefix-sharing workloads are different evidence classes; none proves all depth/width combinations. |
+| Ordered/unordered collections, binders and remainders | `par_corpus::all_par_fields`, `bind_pattern_corpus`; `matcher_recursive_family_cursor::encoded_unordered_collections_preserve_backtracking_and_remainders` | Codec fixtures and direct matcher assertions, including captured remainders; not an all-pattern RSpace schedule matrix. |
+| Multiplicity and churn | Repeated-channel rows above; `guarded_matching_tests::a_failed_guarded_search_restores_the_candidate_pools`; the continuation/join lifecycle witness | Exact reservations, rollback, first-source retention, checkpoint/reset/import and replay at the tested boundary. |
+| Genesis | `casper/tests/genesis/genesis_vaults_order_determinism.rs::default_genesis_post_state_hash_is_pinned_across_processes` | An absolute current-epoch root pin; it is not a deployment-log corpus or the original frozen root. |
+| Archived Rholang programs | `casper/tests/util/rholang/async_driver_differential.rs` and `async_driver_goldens.json` | Seven fixed-source programs and partial cross-process observations; the versioned limitations are recorded below. |
+
+### Golden fixture epochs
+
+An **epoch** here is the source/codec/contract coordinate at which an expected
+observation was fixed, not a new consensus protocol number. Existing expected
+values are not regenerated by this audit.
+
+| Retained artifact | Capture or revision coordinate | What is pinned, and what is not |
+|---|---|---|
+| `rspace++/tests/serializer_byte_goldens.rs` | Captured from the value-shaped encoder `4e422b6b`; test introduced by `60aaa02e3` | String-typed datum/continuation serialized lengths and digests. This does not instantiate Rholang payloads. |
+| `models/tests/serializer_par_byte_goldens.rs` | Introduced by `be6c90f37`; later ParBag revisions include `cd2a8bf6e` and `034f164a6` | Actual Rholang cold-record shapes, metadata and EPathMap encodings. Retrieve the file at `dcc4600d4` for that epoch; the current file is not automatically a pre-migration capture. |
+| `casper/tests/util/rholang/async_driver_goldens.json` | Introduced by `6cd0a27c3`, narrowed by `2f56fac88`; present at `dcc4600d4` | Seven programs' failure, cost, COMM count/fingerprint and balanced-state flag. At `dcc4600d4` the fingerprint hashes sorted COMM debug renderings; there are no archived raw events, event ordering or absolute post-state roots. |
+| Same async-driver golden | `3f0cd7339`, then `8701f470b` | The current fingerprint hashes sorted length-delimited canonical COMM protobuf. Sorting removes order and excludes standalone Produce/Consume events. These later fingerprints are not the original baseline. |
+| `casper/tests/fixtures/genesis_state_hash_golden.json` at `dcc4600d4` | Original `33dddee17` revision | Historical genesis-only pin `cb7480d13e774ef931c0d22379cbe4deb6fed0f096d7ff93d507a2b3276d7efe`. This is a retained baseline artifact, but not a captured deployment log or its ordered events. |
+| `casper/tests/genesis/genesis_vaults_order_determinism.rs` and the current genesis JSON revision | Test pin refreshed by `8701f470b`; JSON updated by `3f0cd7339` | Literal later-epoch genesis roots. The current JSON identifies a 2026-08-18 semantic epoch and must not be substituted for its historical `dcc4600d4` revision. |
+| `rspace++/tests/state/atomic_state_authority.rs` | Retained-root fixture `e4d969741` | Empty/rollback/latest roots, history/cold/catalog inventory, page ordering, abrupt child exit and fresh-reader rollback/recovery. This is a later string-typed persistence-action fixture, not captured Rholang COMM events. |
+
+No complete archived replay input with exact recorded events/order and pinned
+final-root expectations was located in the bounded source/history audit. The
+async-driver full-log projection was explicitly withdrawn by `2f56fac88` as an
+unstable cross-process quantity; restoring that assertion would be incorrect for
+parallel Rholang. A valid captured-log gate must consume the archived replay
+rigging and reproduce its required selected COMMs and post-state. Preserved
+capture order is evidence, not a new global emission-order invariant or a
+requirement to reproduce a total thread schedule. This original
+acceptance gap remains owned by 5636; dynamic play/replay equality and separate
+partial goldens do not discharge it.
 
 ### Reproducible baseline evidence
 
 The original source coordinate is pinned even though the measurement harness
 was added later. The end-to-end Criterion controls invoke production RSpace and
-disable only the derived selector; they do not substitute a standalone trie
-microbenchmark. Each accepted comparison records commit, CPU affinity,
-governor, sample count, confidence level, RSS cap, zero-swap policy, raw digest,
-and causal interpretation in pgmcp. Durable summaries are stored under
-`docs/design/stack-safety/measurements/`, including the retained-receive,
-resting-prefix, Bag mutation, and retained-Bag product experiments. The latest
-full `rspace_plus_plus` package gate executed 428 tests successfully under an
-8 GiB `MemoryMax` and `MemorySwapMax=0`; release-specific retained-product and
-strict affected-target lint gates also pass. Workspace-wide CI and the complete
-layout A/B/C resource matrix remain completion gates, so this section freezes
-the baseline without claiming the entire campaign complete.
+disable only the derived selector. The table separates them from selector-only
+or Bag-only microbenchmarks. “Recorded result” preserves a historical observation;
+it is not a fresh statistical decision from this audit.
+
+| Durable evidence | Production / harness coordinate | Recorded result and scope |
+|---|---|---|
+| [`rspace-retained-pathmap-prefilter-2026-08-15.tsv`](../stack-safety/measurements/rspace-retained-pathmap-prefilter-2026-08-15.tsv) | `ea8c39f92` / `7bc5c6994` | Six paired produce-driven COMM cells, 16/256/4,096 waiting consumes, shared/diverse prefixes; 51 samples and 99% confidence intervals; latency 18.828–30.835% lower. CPU 8 pinned, 5 GiB hard cap, zero swap. |
+| [`rspace-resting-pathmap-prefix-2026-08-15.tsv`](../stack-safety/measurements/rspace-resting-pathmap-prefix-2026-08-15.tsv) | `564dac0b4` / same | Eight paired consume-driven COMM cells, cardinality 1/16/256/4,096; the singleton treatment regressed. Preserve the falsification rather than reporting every cell as a win. |
+| [`rspace-resting-pathmap-singleton-repair-2026-08-15.tsv`](../stack-safety/measurements/rspace-resting-pathmap-singleton-repair-2026-08-15.tsv) | `0b601ce67` / same | Eight post-repair pairs under the same 51-sample, 99%-confidence, 5 GiB/zero-swap protocol. Singleton arms take the same direct scan: small point-estimate differences are not a new algorithmic speedup. |
+| [`rspace-retained-bag-product-2026-08-16.tsv`](../stack-safety/measurements/rspace-retained-bag-product-2026-08-16.tsv) | Final production `61accc170`; replication checkpoint `304dc13e9` | Selector-only experiments 224/225 rejected and 226/229 historically accepted; 82 samples, recorded digests, 8 GiB/zero-swap cap. Small-cardinality fixed-cost losses remain visible. Not full COMM throughput. |
+
+The files retain commands, host descriptions, resource settings, source coordinates,
+per-cell estimates and run identifiers; some also retain aggregate sample digests.
+They do not contain every raw timing, original tool-version observation or original
+preregistration record. On 2026-09-07 the STDIO experiment lookup returned
+`experiment not found` for this report's historical slug and experiments 208, 218,
+233 and 327. An unfiltered 500-row request returned 71 current-version records; a lookup of a
+listed control record succeeded. The reviewed pgmcp queries filter `valid_to IS NULL`,
+so this demonstrates unavailable current-record lookup, not deletion of historical
+data or a failed STDIO connection. No database repair, record recreation or new
+benchmark was attempted. Resolving the original provenance remains required under
+5636; summary estimates cannot reconstruct the absent raw observations.
+
+The recorded 428-test package pass belongs to the August retained-product checkpoint,
+not today's complete package. The later full-library failure and narrowly passing
+repairs are classified below. A configured memory ceiling is not measured RSS;
+scope peaks including compilation are not per-operation allocation measurements.
+
+### Baseline acceptance ledger (2026-09-07)
+
+| Original requirement | Evidence established by this audit | Remaining obligation / owner |
+|---|---|---|
+| Frozen authorities and observable contract | Source `dcc4600d4`, freeze `6a1c4341d`, corrected fourteen-row matrix, exact current test targets | Preserve ordered compatibility state and first-source retention through later implementations; concrete bridge 7942. |
+| Captured and synthetic corpus | Named codec/matcher/lifecycle fixtures and epoch-labelled partial goldens above | Complete archived replay input/event/order/final-root expectations are not established; 5636 remains open. Generated all-pattern lifecycle acceptance is separately 7964. |
+| Reproducible capped measurements and preregistration | Committed source/harness coordinates, commands, resource envelope, run identifiers and summary files | Original preregistration, raw samples/artifacts and observed tool versions must be recovered and linked; 5636 remains open. No retroactive preregistration claim. |
+| Failure classification | Finite inventory below, with existing reachable repair/acceptance owners | It is not an assertion that every workspace target currently passes. Whole-workspace qualification remains 5647. |
+| Golden byte/order/root outputs | Independent literal serializer/genesis/history fixtures, scoped to their epochs | These are not interchangeable and do not replace the missing complete captured replay fixture. |
+| Read and preserve the two living reports' semantics | Stack-safety report remains the dated measurement ledger with stable section identifiers; consensus register retains its may-change-consensus-only inclusion rule | This source/evidence correction changes no consensus surface or measured performance result. Activation, full resource measurements and independent verification remain open. |
+
+#### Classified failure and non-acceptance inventory
+
+This inventory covers the reviewed baseline measurements, the later known broad gate,
+and the immediately preceding acceptance work. It does not substitute for running
+the final workspace gate or silently change another task's disposition.
+
+| Observation | Classification and evidence | Existing reachable owner |
+|---|---|---|
+| First resting-data singleton is slower | Historical performance defect, retained in the pre-repair TSV; exact singleton scan selected at `0b601ce67`, with the post-repair TSV retained. | 5642, `rspace-pathmap-index-layout`, retains final layout/resource acceptance. |
+| Retained-query traversal trials and small-cardinality selector losses | Rejected intermediate treatments and explicitly scoped selector-only fixed costs; no inference that full COMM is slower or faster from these cells alone. | 5642; historical product experiments and final COMM comparisons remain distinct. |
+| Valid dangling-path creation panics before ACT emission | The full-library release run recorded in J-057 passed 600, failed one, ignored one. Minimal sequence `[1]`, `[2]`, `[3]`, `[1,0]` reaches an empty sentinel. It is not an ACT admission refusal or a memory-cap failure. | Existing 6023, `rpb3-single-parse-act-traversal-plan`, and 6038, `pathmap-upstream-integration-request-register` / PMU-006. No duplicate implementation task or upstream fork. |
+| Structural removal loses a sibling in the superseded in-place proposal | Existing ownership-disjoint publication at `68534b6fc`, real-key witnesses `f4441c1d05`, and normalization qualification `329240271`. Task 6446 is `claimed_done`, not independently verified. | 6446, `guarded-pathmap-live-empty-root-write-safety`. |
+| Whole-tree allocation costs during final guarded teardown | Dated scaling/ownership evidence is separate from the remaining allocation contract; normalization tests do not discharge it. | 6441, `guarded-pathmap-final-root-allocation-teardown`, and PMU-005. |
+| Attempted normalizer-omission panic controls do not fail as hypothesized | Two expected-panic assertions were rejected during 6446. J-074 records the negative causal result; they are not passing regression evidence. | 6446's preserved verification history; no production fix inferred from either trial. |
+| Missing archived replay and currently unresolved experiment provenance | Acceptance-evidence gaps, not demonstrated runtime defects, and not evidence that stored history was deleted. | 5636, `rspace-pathmap-contract-baseline`. |
+
+Remaining A/B/C layout qualification belongs to 5642, transactional matching to 5646,
+generated matching/replay acceptance to 7964, full workspace/portability/closure to
+5647, and equal-durability LMDB controls/measurement/decision to 7949/7950/7951 under
+5693. These are required campaign work, not deferrals or implied completion of 5636.
 
 ## Current implementation checkpoint
 
@@ -951,7 +1057,10 @@ excluded. The six valid arms, confidence intervals, hashes, resource bounds, and
 digests are recorded in
 [`rspace-query-product-trieref-2026-08-16.tsv`](../stack-safety/measurements/rspace-query-product-trieref-2026-08-16.tsv).
 
-The implementation evidence available at this checkpoint is:
+The following table accumulates historical implementation checkpoints. Counts
+belong to the named source/experiment, not to the current checkout. In particular,
+the old 428-test package pass does not override the later broad-gate failure in
+the baseline acceptance ledger.
 
 | Gate | Result | Interpretation |
 |---|---:|---|
@@ -978,14 +1087,14 @@ The implementation evidence available at this checkpoint is:
 | Bag algebra and accepted-match formal laws | complete bounded formal bundle | Rocq proves exact-key Bag laws and candidate projection; the equality-only epoch transaction proves deterministic acceptance/refusal, stale and missing-witness exclusion, exact accepted state, unrelated-group preservation, post-commit COMM publication, and play/replay agreement. Verus `--no-cheating` proves the executable `u64` delta boundary. TLC checks 710,528 distinct accepted-match states in addition to the PDA and matcher models. mCRL2 proves branching bisimulation with the atomic reference plus no partial publication, pre-commit logging, or stale-ticket commit |
 | standalone Bag microbenchmark | 15/15 comparative treatment pairs plus 6 logical-multiplicity points | construction wins at every tested cardinality; the full exact-lookup sweep wins or is operationally neutral; clone/update wins from 16 keys but regresses at one; one-key construction time is flat through `u64::MAX`; 39,912 KiB aggregate process RSS is recorded but is not a comparative memory claim |
 | live Bag single-root publication experiment | pgmcp experiment 218 accepted; 82 samples per arm and cardinality | removing the redundant outer root clone lowers singleton median latency 5.671%; all four secondary cardinalities also improve; the one `BagDelta`-owned private root preserves all-or-nothing publication |
-| BagDelta moving-cursor experiment | pgmcp experiment 219 statistically accepted; 51 samples per arm and cardinality | the 256-change primary mean improves 1.929% and median 1.197%; 16 and 4,096 changes improve 10.058% and 8.172% at the median, but one change regresses 8.289%; production therefore uses direct exact-key mutation for zero/one change and one moving zipper for multi-key deltas |
+| Historical BagDelta moving-cursor experiment | pgmcp experiment 219 recorded as statistically accepted; 51 samples per arm and cardinality | the 256-change primary mean improves 1.929% and median 1.197%; 16 and 4,096 changes improve 10.058% and 8.172% at the median, but one change regresses 8.289%. The then-selected adaptive in-place design was superseded for structural changes by ownership-disjoint publication at `68534b6fc`; see J-074 and task 6446. These timings do not measure that successor. |
 | AC remainder term-reservation experiment | pgmcp experiment 246 rejected; 82 samples per arm at 16, 256, and 4,096 targets; artifact 324 | the treatment maintained term occupancy as a normalized `BagDelta` only while unwinding a proven-successful augmenting root; 14/14 semantic preflights passed, but the primary 4,096-target mean improved only 0.369% (one-sided p-value 0.09776, Cohen's effect size $`-0.203`$, 95% CI crosses zero), while 16 regressed 2.140% and 256 improved 1.269%; `eb5d4c580` therefore retains the predecessor's allocation-free assignment writes and final consumed-Bag scan |
 | receive-first query-product `TrieRef` experiment | pgmcp experiment 220 rejected; 82 samples per arm and cardinality; 31/31 focused and 419/419 complete package tests; changed library/benchmark strict lint passes | exact sorted candidate vectors agree, but per-byte borrowed `TrieRef` focuses regress mean latency by 83.041% at 16 candidates, 61.953% at the primary 256, and 55.549% at 4,096; production retains paired mutable read zippers and the falsified treatment remains in the benchmark ledger |
 | datum-first retained-automaton/Bag experiments | pgmcp experiments 224 and 225 rejected; 226 and exact-final-source 229 accepted; replication artifact 320; 82 samples per arm/cell | bytewise and compressed-unary intermediate traversals remain in the scientific record; the selected bounded schedule performs zero/one exact prefix lookup only when zero/one terminal depth is eligible and otherwise uses the linear zipper product; the replication confirms shared/256 at 206.99 ns versus 926.39 ns (4.476×) and shared/4,096 at 1.179 µs versus 15.720 µs (13.338×); diverse/256 wins 1.059× and diverse/4,096 wins 7.803×; shared/16 and diverse/16 transparently record selector-only fixed-cost losses |
 | encoded structural-path validation | 6/6 byte-cursor gates plus 4/4 generated-schema gates | all 58 message programs use one-based constant-time type dispatch; child type IDs and every oneof arm/payload are descriptor-derived; malformed token/length/UTF-8/boolean/field/nesting/type/oneof/PathMap cases fail closed; exhaustive subtrees validate; all 66 corpus shapes decode and canonically re-encode byte for byte; validated values compare/hash by canonical bytes; a 20,000-level path validates, navigates, and re-emits on a 256 KiB stack |
 | waiting-receive COMM throughput | 6/6 treatment pairs pass | 51 samples per arm at 99% confidence; 23.2–44.6% more completed COMMs/s; intervals are disjoint |
 | resting-data COMM throughput | 8/8 treatment pairs do not regress after repair | at 16/256/4,096 distinct entries, throughput improves 48.7–25,589.8%; the one-entry base case is 2.2% faster on diverse input and statistically neutral at a +0.6% point estimate on shared input |
-| current `rspace_plus_plus` package | 428 passed / 0 failed | the complete package passes after the direct retained-automaton/Bag product under an 8 GiB no-swap cap |
+| August retained-product `rspace_plus_plus` package checkpoint | 428 passed / 0 failed | historical complete-package pass after the direct retained-automaton/Bag product under an 8 GiB no-swap cap; not current full-package acceptance |
 | modified production libraries and focused rspace/models targets strict lint | pass | strict `-D warnings` passes for the production library and the touched retained-automaton test and causal benchmark; aggregate all-target lint remains blocked by pre-existing warnings in unrelated legacy test targets, which this checkpoint does not edit |
 | formatter and all changed test/benchmark target compilation | pass | both libraries, their tests, and their benchmark targets compile after the retained-automaton integration |
 
@@ -1008,8 +1117,9 @@ the shared singleton; because both arms execute the same scan, no singleton spee
 At 16/256/4,096 entries, throughput is 48.7–53.4%, 12.22–13.01 times, and 238.8–256.9 times control.
 Those raw estimates are
 [`rspace-resting-pathmap-singleton-repair-2026-08-15.tsv`](../stack-safety/measurements/rspace-resting-pathmap-singleton-repair-2026-08-15.tsv).
-Experiment 208 remains open for the full workload matrix, resource profiles, and final layout verdict;
-neither scope-wide peak is an allocation-per-COMM measurement.
+Experiment 208 is the historical reference for the full workload matrix, resource profiles, and
+final layout verdict; task 5642 remains the current work-item owner.
+Neither scope-wide peak is an allocation-per-COMM measurement.
 
 ## Verification ladder
 
@@ -1112,8 +1222,13 @@ latency hypothesis and observes no secondary-cardinality regression. Checkpoints
 `9a746f2bf` then measure and encode an adaptive delta traversal: a direct exact-key update for a
 singleton, and one moving write zipper for multi-key deltas where adjacent sorted paths can reuse
 their longest common prefix. Experiment 219 accepts its locked statistical criterion but records
-the smaller 1.197% primary median gain and the 8.289% singleton loss explicitly; the production
-choice follows that causal crossover. The libdictenstein review contributes a separate, reachable
+the smaller 1.197% primary median gain and the 8.289% singleton loss explicitly; the then-selected
+choice followed that causal crossover. Later actual-key failures superseded structural in-place
+removal: `68534b6fc` preflights the complete delta and privately constructs the structural successor
+before publication, while value-only changes retain the guarded cursor route. `f4441c1d05` and
+`329240271` qualify actual sibling/alias and write-ready-root behavior. The historical moving-cursor
+figures must not be attributed to this later structural publication implementation.
+The libdictenstein review contributes a separate, reachable
 query-scoped `TrieRef`/fused-observation experiment rather than an unmeasured production claim.
 End-to-end comparative
 allocation/RSS and the concrete Rust-to-formal correspondence beyond

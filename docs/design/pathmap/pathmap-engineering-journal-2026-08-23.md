@@ -6,7 +6,7 @@ Campaign: `campaign-root-4131`
 
 Started: 2026-08-23
 
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 
 ## Purpose
 
@@ -5299,6 +5299,81 @@ earlier zero-test channel-prefix selection is excluded; the corrected library se
 eight. Rust scopes used an 8 GiB hard memory cap, formal checks 2 GiB, and both disabled swap.
 These limits are not peak-RSS measurements. The correspondence report records the exact scope;
 this is not a full-workspace acceptance run or a new persistence performance verdict.
+
+### J-075 — 2026-09-07: separate the frozen RSpace baseline from later acceptance evidence
+
+**QUESTION.** Does the existing baseline satisfy task 5636 without repeating
+measurements or attributing later semantic epochs to the original control?
+Read-only source review at `329240271` and an independent plan-agent audit recovered
+the frozen coordinate `dcc4600d4`, its documentation commit `6a1c4341d`, fourteen
+observable contract rows, committed measurement summaries and partial golden corpora.
+The [reconciled baseline ledger](../rspace/pathmap-bag-rspace-integration.md#baseline-acceptance-ledger-2026-09-07)
+names the evidence and remaining owner for each requirement.
+
+**DERIVED CONTRACT CORRECTIONS.** A produce-driven match finds waiting consumes;
+a consume-driven match finds resting data. Historical test names are retained,
+but the report no longer reverses arrival order through ambiguous labels. Complete
+serialized continuation records, source-free matching identity and retention of
+the first source representative are separate observations. J-071's counterexample
+also rules out deriving a unique legacy root from equal semantic DAG roots alone;
+the exact ordered compatibility state is required. These corrections change no
+production behavior, byte format, contract or consensus epoch.
+
+**DERIVED EVIDENCE BOUNDARIES.** The seven async-driver program goldens at
+`dcc4600d4` fingerprint sorted COMM debug renderings. Later `3f0cd7339` and
+`8701f470b` revisions fingerprint sorted, length-delimited COMM protobuf instead.
+Neither archives raw events, event ordering or absolute deployment post-state
+roots; standalone Produce/Consume events are excluded. The earlier full-log
+projection was withdrawn by `2f56fac88` because fresh parallel executions need
+not share that projection. A captured-log gate must consume archived replay rigging
+and reproduce its required selected COMMs and post-state; capture order is evidence,
+not a new global emission-order invariant or a total thread schedule. The genesis
+JSON at `dcc4600d4` does retain its original `33dddee17` genesis-only pin; its current
+`3f0cd7339` revision and the later deterministic-genesis test use later epochs.
+These and the retained-root pins are useful independently but do not collectively
+fill the missing historical replay capture.
+
+**MEASURED RETRIEVAL RESULT.** STDIO experiment lookups for the integration report's
+historical slug and experiments 208, 218, 233 and 327 returned `experiment not found`.
+An unfiltered request with limit 500 returned 71 current records, and fetching a
+listed control record succeeded. Read-only inspection of pgmcp's query code shows
+the `valid_to IS NULL` predicate. This establishes a current-record retrieval gap,
+not deletion of archived data or a broken connection. No pgmcp source change,
+database maintenance, replacement experiment or new timing run was performed.
+
+**PRESERVED ARTIFACTS.** The following SHA-256 digests identify the existing files,
+not reconstructed raw samples. Their full paths and source/harness/resource scopes
+are linked in the integration report.
+
+| Measurement file | SHA-256 |
+|---|---|
+| `rspace-retained-pathmap-prefilter-2026-08-15.tsv` | `72e4c97d21042988307e42233918a0358dc8767cc2c33f095ea020c500a30a3d` |
+| `rspace-resting-pathmap-prefix-2026-08-15.tsv` | `d4995f08603c05bd135479e460a5b7e6556679f058e7cfe96bbbf4f9ca9dc33c` |
+| `rspace-resting-pathmap-singleton-repair-2026-08-15.tsv` | `c4c671e37acca99364d62cca6cde82af7bba18383395c192f12e4297e4759a2c` |
+| `rspace-retained-bag-product-2026-08-16.tsv` | `54190c3359c6f9f909a729603c866a91bd2a34105a555b5b93ccff16d029446b` |
+
+The first three are production-COMM selector controls at their respective revisions;
+the fourth isolates candidate selection. None measures the entire `dev` engine
+against the current implementation. Historical singleton regressions and rejected
+traversal treatments remain visible. The report's old adaptive structural-removal
+description is explicitly superseded by `68534b6fc` and J-074, without assigning
+its predecessor's timings to the successor.
+
+**DECISION AND REMAINING WORK.** Keep 5636 open for exact captured-replay evidence
+and recovery of original preregistration/raw-artifact/tool-version provenance.
+Preserve the known broad-library dangling-path failure under existing 6023/6038;
+do not confuse it with the separately qualified 6446 removal repair. Full layout,
+generated matching lifecycle, workspace qualification and equal-durability LMDB
+comparison retain their existing required owners. The two living reports retain
+their current semantics: dated measurement evidence is not a current green gate,
+and documentation-only corrections do not create a consensus-change entry.
+No golden was regenerated and no new performance or full-workspace claim is made.
+
+**VERIFICATION.** Independent review checked source/epoch and claim boundaries,
+including the replay-rigging distinction and the historical genesis JSON revision.
+Lightweight source inspection resolved the cited commit coordinates, named test
+targets and four measurement-file digests; `git diff --check` passed. This is a
+documentation/source audit, not new execution of the cited runtime or formal gates.
 
 ## Upstream PathMap integration request register
 
