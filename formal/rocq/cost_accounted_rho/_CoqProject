@@ -71,6 +71,8 @@
 
 -Q theories CostAccountedRho
 
+theories/PreparedProgramAdmission.v
+
 # Level 0: Foundation (no dependencies)
 theories/RhoSyntax.v
 

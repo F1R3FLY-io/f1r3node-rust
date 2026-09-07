@@ -177,6 +177,10 @@ earlier evidence, not completion of that gate.
 
 ## Verification and proof obligations
 
+The [prepared-admission proof](../theory/f1r3lang-prepared-admission.md) specifies
+the operation-level extraction and its exact Rust correspondence obligations.
+It keeps accounting reconciliation and reducer behavior in the existing host.
+
 Before changing runtime behavior, prove the prepared-handoff transition model
 and check its refinement against the existing implementation. The model must
 cover rejection before funding, exactly one budget initialization and reducer

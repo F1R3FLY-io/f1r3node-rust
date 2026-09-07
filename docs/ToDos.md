@@ -65,6 +65,21 @@ next_steps:
 See the [admission contract](design/f1r3lang-frontend.md) and
 [verification handoff](work-logs/task-f1r3lang-admission-baseline.md).
 
+```yaml
+id: rholang14-node-prepared-admission-proof
+status: review
+claimed_by: codex-f1r3lang
+branch: feature/f1r3lang-mettail-only
+acceptance:
+  - All 31 admission-control theorems compile with closed global contexts
+  - Separate Rocq kernel checking succeeds under a 1 GiB memory cap
+  - Runtime correspondence obligations and model limits are documented
+next_steps:
+  - Extract and test the prepared-program handoff without changing public routing
+```
+
+See the [proof and correspondence](theory/f1r3lang-prepared-admission.md).
+
 <!-- Epochs ordered by priority. EPOCH-001/002 are system-integration alignment (US-001). EPOCH-003-008 are migration (US-002). -->
 
 ---
