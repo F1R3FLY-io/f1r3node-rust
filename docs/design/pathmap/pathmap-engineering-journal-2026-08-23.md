@@ -5601,6 +5601,32 @@ can be read. Do not modify pgmcp, recreate the historical records, rerun a bench
 and label it original data, or reopen the now-qualified scope repair. No production
 code, dependency, consensus behavior or performance verdict changed in this audit.
 
+### J-080 — 2026-09-07: scalar projection acceptance follows the compressed carrier
+
+**DERIVED.** Exact family purity is a distinct-endpoint property, not equality of
+saturating logical cardinalities. A pure endpoint with multiplicity greater than one
+must fail scalar arity before decoding; an expression at maximum multiplicity plus a
+foreign endpoint must instead retain the earlier parallel-value error. These repairs
+already landed at `8701f470b6` and `0e336cc9af`; this checkpoint strengthens their
+acceptance evidence without replacing the production implementation.
+
+**FORMAL AND EXECUTABLE EVIDENCE.** The post-admission contract at `b201b8946`
+has ten closed checks and an independent kernel check. Scalar observation tests keep
+maximum counts inside the resident trie, exercise all eight foreign families and
+generated masks, preserve exact errors and diagnostic traces, and use observable
+children plus live recognizer controls to exclude vacuous refusal tests. The expanded
+evaluator module passes 18/18 and the existing ParBag target passes 33/33 under a
+6 GiB hard cap with swap disabled. See the
+[complete scope and evidence](../stack-safety/stack-safety-report-2026-07-29.md#5298-scalar-acceptance-reconciliation--2026-09-07).
+
+**DECISION AND LIMITS.** Keep source fixes distinct from verification additions.
+The recursive oracle can fuse, so positive fused/unfused comparison must use the
+existing compile-time force-disable integration harness. The forced-disable extension
+is still pending at this checkpoint. Neither the proof's abstract decoder audit nor
+these test durations establish concrete decode counts, new performance ratios, a
+current full-workspace pass or completed persistent-backend qualification. No new
+upstream PathMap request, compatibility layer or consensus rule is introduced.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

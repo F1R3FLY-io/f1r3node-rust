@@ -9918,6 +9918,8 @@ fn describe_par_type(par: &Par) -> String {
 // ===========================================================================
 #[cfg(test)]
 mod differential_trampoline {
+    include!("../../../tests/support/scalar_projection_acceptance.rs");
+
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{
         BindPattern, Bundle, EAnd, EDiv, EEq, EList, EMatches, EMinus, EMod, EMult, ENeg, ENeq,
@@ -10491,12 +10493,6 @@ mod differential_trampoline {
             );
         }
 
-        // Do not derive family purity from the saturating aggregate
-        // cardinality. One compressed Expr endpoint at u64::MAX plus one
-        // foreign endpoint is still a parallel/non-expression Par. The driven
-        // path must reject it before any occurrence expansion; the recursive
-        // oracle is intentionally not invoked on this non-materializable
-        // multiplicity witness.
         use rspace_plus_plus::rspace::bag::Multiplicity;
         let mut saturated_mixed = Par::default();
         saturated_mixed

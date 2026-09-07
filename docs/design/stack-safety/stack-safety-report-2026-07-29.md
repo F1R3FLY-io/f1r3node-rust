@@ -8589,6 +8589,57 @@ The controls are shaped so the repaired mechanisms must execute:
 Retired CBR-056 through CBR-061 classify the corrected observable surfaces. The complete release
 workspace result is not implied by these focused measurements and is appended only after execution.
 
+#### 5.29.8 Scalar acceptance reconciliation — 2026-09-07
+
+**QUESTION AND SOURCE ATTRIBUTION.** Task 5853's implementation was already present:
+`8701f470b6` establishes total-family purity and `0e336cc9af` checks unit cardinality
+before decoding. The September reconciliation does not implement either repair again.
+It closes missing observations in the earlier acceptance tests: exact charge traces,
+refusal before child evaluation, and actual fusion recognition rather than only its
+scalar helper. The recursive evaluator can itself enter fusion; an agreeing positive
+recursive result alone is therefore not an unfused control.
+
+**FORMAL-FIRST CONTRACT.** `b201b8946` adds `ScalarProjection.v` before the new Rust
+tests. Eight capstones cover exact distinct-family membership, unit cardinality under
+saturation, positive singleton endpoints, the saturated-purity counterexample,
+foreign-before-arity refusal, effect-free arity refusal, exact child delegation and
+fusion fallback. Two additional checks establish accepted and omission witnesses.
+All ten reports are closed and independent `coqchk` succeeds. The complete
+[invariant-to-test catalog](../../../formal/rocq/stack_safe_pda/README.md#exact-scalar-projection-contract-2026-09-07)
+states the decoder, cached-counter and concrete-Rust proof boundaries. Abstract
+decoder/delegate audit lists are not measurements of Rust call counts.
+
+**EXECUTABLE REALIZATION.** The test-only support file
+`rholang/tests/support/scalar_projection_acceptance.rs` probes all three scalar
+requests with each of the eight foreign families and counts zero, one, two and
+`u64::MAX`, with both bound and unbound variable children. A pure singleton must
+actually evaluate its child and emit the diagnostic; rejected carriers must preserve
+the initial trace, aggregate cost, exact error precedence and retained ParBag root.
+Sixty-four generated cases vary family masks and full-width multiplicities. Encoded,
+resident and method-reentry recognizers have independently accepted positive shapes
+and corresponding rejected carriers. Maximum multiplicity stays compressed: those
+fixtures use direct borrowed gates, not whole-`Par` evaluation or expanded embedding
+inside a method's protobuf body.
+
+**MEASURED CHECKPOINT.** At the formal commit plus these test-only changes, the
+release evaluator module passes **18/18**, including the prior 400-case differential
+and fixed-stack tests; the unchanged ParBag target passes **33/33**. Initial focused
+scalar selection passes six tests, and the initial extended scalar selection passes
+four; these overlapping reruns are not added as independent coverage. Rust uses
+`MemoryHigh=4G`, `MemoryMax=6G`, `MemorySwapMax=0`, four build jobs and four test
+threads. Formal checks use a 2 GiB hard ceiling with swap disabled. These are
+verification runs, not controlled performance measurements. The ParBag target took
+291.61 seconds, dominated by its existing deep import test. Its live cgroup observation
+of 353,198,080 current bytes and 1,767,452,672 peak bytes is not a final process peak
+or a per-operation allocation estimate. Pgmcp artifact 505 preserves formal and
+pre-extension evidence; the final acceptance artifact follows the forced-disable gate.
+
+**REMAINING ACCEPTANCE BOUNDARY.** The finite forced-disabled fusion comparison is
+being extended separately. The historical 4,495-test workspace pass at `1afd4791e`
+remains historical; these focused results neither establish a clean current workspace
+nor close the campaign's required release gate. No production evaluator, PathMap
+operation, codec, cost model, dependency or consensus behavior changes in this slice.
+
 ---
 
 ### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]
