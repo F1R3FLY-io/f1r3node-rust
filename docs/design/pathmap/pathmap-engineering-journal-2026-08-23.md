@@ -6,7 +6,7 @@ Campaign: `campaign-root-4131`
 
 Started: 2026-08-23
 
-Last updated: 2026-08-31
+Last updated: 2026-09-06
 
 ## Purpose
 
@@ -4874,6 +4874,113 @@ later work. A proposal changing a supported/configured limit's meaning or defaul
 activation still requires explicit review; the absence of a current external
 consumer is not permission to weaken future guarantees. No new formal proof,
 performance win, runtime behavior or consensus change is claimed in this entry.
+
+### J-068 — 2026-09-06: preserve ordered receive positions in derived channel indexes
+
+**QUESTION AND EVIDENCE LEVEL.** What remains in task 5686 after the continuation,
+join and accepted-match migrations? The bounded source audit at `a9e8d33f1`, the
+task's September 3–5 history and an independent plan review agree that the missing
+work is concrete ordered-receive/index correspondence, not a replacement of the
+existing PathMap stores. This entry records the implementation boundary and
+acceptance obligations; no new proof, test run or performance measurement is
+claimed.
+
+**REUSE BOUNDARY.** Task 6079 already records continuation/join lifecycle and
+mutation-control evidence; task 6013 owns atomic accepted matches. The current
+`OrderedGroupStore` uses PathMaps for groups, complete records and the separate
+source-free continuation identity lookup. Its transient scalar order descriptors
+reconcile canonical byte order with historical selection order. The prior
+33,894-observation ordinal-index experiment rejected replacing those descriptors;
+their presence is not, by itself, a new performance defect.
+
+`RhoPathV1::continuation_prefix` already preserves ordered channel identities.
+`encode_continuation_identity_into` preserves pattern order, the continuation,
+persistence and peeks, while `encode_continuation_source_into` retains the first
+representative's source separately. The version-2 RhoPath framing exists, but
+current production record and semantic-admission callers still use version 1;
+task 6021 owns the activation/legacy-hash bridge. Retained automaton segments are
+already PathMaps and their cache uses continuation-version checks. None of these
+components should be recreated because a proposed type name is absent.
+
+Source references:
+[`record_index.rs`](../../../rspace++/src/rspace/record_index.rs),
+[`serializers.rs`](../../../rspace++/src/rspace/serializers/serializers.rs),
+[`rho_path.rs`](../../../rspace++/src/rspace/rho_path.rs),
+[`semantic.rs`](../../../rspace++/src/rspace/persistence/semantic.rs),
+[`rspace.rs`](../../../rspace++/src/rspace/rspace.rs) and
+[`retained_set_automaton.rs`](../../../rspace++/src/rspace/retained_set_automaton.rs).
+
+**SEMANTIC RELATION TO REFINE.** A receive is an ordered sequence of bind
+occurrences, not a channel set. Let $`r`$ denote an admitted receive with arity
+$`n`$, and let $`c_i`$, $`p_i`$, $`b_i`$ and $`e_i`$ denote its channel, pattern,
+bind count and peek flag at position $`i`$. The derived occurrence lookup for
+channel $`c`$ must return the ordered sequence
+
+```math
+\operatorname{positions}(c,r)
+= [\,i \mid 0 \le i < n \land c_i = c\,].
+```
+
+Each returned position resolves the same $`(c_i,p_i,b_i,e_i)`$ tuple as the
+semantic receive. For `[a,b,a]`, lookup of `a` returns `[0,2]`; for `[a,a,b]`, it
+returns `[0,1]`. The two `a` positions may have different patterns, bind counts
+and peek flags. A derived channel Bag can check necessary capacity constraints,
+but cannot replace positional authority or prove a guard/residual match.
+
+Prefer a verified borrowed view of existing canonical fields for the proposed
+`ReceiveImageV2` contract. A distinct Rust type or framing name is not a reason
+to duplicate full records or introduce a new persistence epoch. The concrete
+view/codec correspondence still requires proof; existing abstract path equality
+does not establish it. `ReceiveId` is a derived handle resolving an exact admitted
+record and revision, never a digest-only authority or a reusable ordinal.
+
+**AUTHORITY AND PUBLICATION.** The semantic manifest still has exactly DataBag,
+ContinuationMap and JoinBag roots. Channel/receive catalogs, occurrence lookups
+and automata are reconstructible derivatives. Installed runtime continuations
+and joins must be explicitly included in their revision binding without silently adding a
+fourth persistent semantic root. Missing, stale, incomplete or foreign-manifest
+accelerators must be rebuilt or rejected; they cannot silently omit an enabled
+receive. Coherent private CoW updates publish the catalog, occurrence relation
+and automaton for the same authoritative revision. Existing accepted-match and
+epoch/path validation remains responsible for final commitment.
+
+**ACCEPTANCE MATRIX.** The listed existing sources are reusable evidence, not a
+claim that the remaining concrete integration already passes.
+
+| Obligation | Existing evidence | Required remaining witness |
+|---|---|---|
+| Ordered fields and source identity | `TwoLevelRSpaceContinuationAuthority.v`, canonical continuation serializers | Concrete field/codec correspondence, source-free identity versus first retained source, and erased/reordered/shifted-field negative controls. |
+| Duplicate positions and capacity | `guarded_matching_tests.rs` covers repeated-channel backtracking, identical occurrences and both arrival directions | `[a,b,a]`, `[a,a,b]`, asymmetric bind/peek metadata and insufficient/exact capacity; compare bindings by position, not only COMM count or final Bag. |
+| Exact channel/receive association | Existing prefix isolation, exact path and collision tests | Complete occurrence lookup with no missing/extra positions, prefix aliasing, collapsed duplicates or hash-only identity. |
+| Atomic derived revision | Task 6013 and split-index/epoch models | Concrete catalog/occurrence/automaton coherence over insert, final/nonfinal removal, install/uninstall, reset, history load and stale/failed update. |
+| Accelerator identity neutrality | `manifest_codec.rs` uses synthetic accelerator references | Actual receive-index rebuild, replacement, disabled acceleration and construction-order changes preserve semantic bytes/root, bindings, historical order and replay. |
+| Rich metadata and lifecycle | Task 6079's string fixture and task 6013's exact source/persistence/peek laws | Typed Rholang nonlinear/binder patterns, asymmetric duplicate-channel metadata, random/source/cost metadata and installed/resting combinations. |
+| Matching and resources | Existing retained-query products, exhaustive matcher and 20,000-bind stack test | Indexed/exhaustive differential on the same positional corpus and measured candidate visits, allocations, latency and stack/RSS for the new traversal. |
+
+The split-index model's internal `groups/records/identities/counters` are not four
+semantic manifest roots. The existing string lifecycle fixture uses empty peeks;
+the synthetic manifest fixture does not execute actual index reconstruction.
+These coverage distinctions prevent old green tests from being presented as
+proof of unfinished receive integration.
+
+**FINITE REQUIRED CONTINUATION.** The audited remainder is decomposed below,
+under task 5686 and the existing required durable-integration milestone. These
+are parts of the already approved work, not six new features.
+
+| Task | Bounded deliverable |
+|---|---|
+| 8008 | Prove concrete ordered receive fields and occurrence correspondence; extract positional properties before codec changes. |
+| 8009 | Implement only the demonstrated byte-view gaps and run the extracted codec/property controls. |
+| 8010 | Prove generation-bound occurrence-index derivation, publication, reconstruction and identity neutrality. |
+| 8011 | Implement the verified PathMap-derived catalogs and occurrence indexes, reusing current authority and automata. |
+| 8012 | Integrate indexed selection through existing produce/consume/replay and accepted-match seams. |
+| 8013 | Qualify the shared lifecycle, positional, metadata, identity and resource corpus. |
+
+Each implementation waits on its verified refinement. Task 6021 retains legacy
+hash/channel activation ownership; task 7756 retains durable caller authority;
+the existing matching and release tasks retain their broader acceptance gates.
+No independent legacy bridge, new semantic namespace, alternative unification
+kernel or optional ordinal-index experiment is introduced here.
 
 ## Upstream PathMap integration request register
 
