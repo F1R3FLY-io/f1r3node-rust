@@ -1,0 +1,418 @@
+{
+  "schema_version": 1,
+  "stage": "admission-contract",
+  "public_activation": false,
+  "node_base": "6781d1d671cc0b98b9de946b3871bdbb8e7f1280",
+  "snapshots": [
+    {
+      "name": "node",
+      "revision": "6781d1d671cc0b98b9de946b3871bdbb8e7f1280",
+      "kind": "revision_sources",
+      "files": [
+        {
+          "path": "models/src/main/protobuf/RhoTypes.proto",
+          "sha256": "cb0cf44d93752f68f8fa9a2ca898b49082b94cbc758783d1e7a26d7bcf6cd0f1"
+        },
+        {
+          "path": "models/src/rust/epathmap_trie_codec.rs",
+          "sha256": "a33f0d85392314901948684c483f77697e7023f8ac6b22f1e72ee8efde9bb282"
+        },
+        {
+          "path": "models/Cargo.toml",
+          "sha256": "e69fbe4d2b56d710c1aed56e72330525e83b7a24fee6cdca1247e951aaf6a801"
+        },
+        {
+          "path": "rholang/src/rust/interpreter/accounting/resource_logic.rs",
+          "sha256": "5db95a7fe5905df71afccac443d3fc96641528c8c3d52c046320b0d419418db1"
+        },
+        {
+          "path": "rholang/src/rust/interpreter/accounting/mod.rs",
+          "sha256": "e9a666bd28f175604a68db951101c14cfcb7781a69141bdd09d25aa93d197055"
+        },
+        {
+          "path": "rholang/src/rust/interpreter/accounting/delta_sigma.rs",
+          "sha256": "86402df6e14c0c26d3592d6f92421220a811a1041a4db18a32462dd19f7f69d2"
+        },
+        {
+          "path": "rholang/src/rust/interpreter/compiler/compiler.rs",
+          "sha256": "ccd81fdf5c0b7138609ee852de226fc6503b3885dc9b7a706440f72344d641cc"
+        },
+        {
+          "path": "rholang/src/rust/interpreter/interpreter.rs",
+          "sha256": "75174041cf94666056e62188c05488d35cc2316b0f3e61e647aa05ac9ad79891"
+        },
+        {
+          "path": "rholang/src/rust/interpreter/rho_runtime.rs",
+          "sha256": "1fcc651f12461e4067ab2092ba4010c9a3a422daf8cc30c020a7aefac2208e16"
+        },
+        {
+          "path": "node/src/rust/api/repl_grpc_service.rs",
+          "sha256": "8aed0f43ae1b0956bdd7294e228a4cc01d6c8efc409ee824adcf831fd6cc508b"
+        }
+      ]
+    },
+    {
+      "name": "mettail",
+      "revision": "f2fa50a45a6ea74cdbba3053cb7f97348e1cda17",
+      "kind": "development_snapshot",
+      "files": [
+        {
+          "path": "grammar-core/src/core.rs",
+          "sha256": "0ac517adef3a9e8cee05f0fceac0cd24f1f1ef8c44f20063bbb61e154f1d1adf"
+        },
+        {
+          "path": "grammar-core/src/language_core.rs",
+          "sha256": "26231e8dc69fc821a6395af1e6cad9c29edb327abb4395eb08f95b52b5dee8fc"
+        },
+        {
+          "path": "grammar-core/src/image.rs",
+          "sha256": "d3ffb236524e014279308c50614621d0b3b56aed40d1b275a890b4eaa9891713"
+        },
+        {
+          "path": "grammar-core/src/theory_image.rs",
+          "sha256": "e0303dc6f4acf3dc62c5c370d44713e6ff1efb792902cda2b1da07c23b300e0d"
+        },
+        {
+          "path": "grammar-core/src/semantic_machine.rs",
+          "sha256": "f1e710391db4de26cf8d779ea29d92dfe4f38f5e2b1e6076c41155dad9ced319"
+        },
+        {
+          "path": "grammar-core/src/theorem.rs",
+          "sha256": "326dea38953bb163d5fb43b6ae55cc9ba6913d3e344e3901db04951aa7ecd1fe"
+        },
+        {
+          "path": "prattail/src/runtime_backend.rs",
+          "sha256": "48e58ec2c0564c24ca2bd63aa92dd61cbd68c79a3ad696bbd965ca58fd0e5814"
+        },
+        {
+          "path": "languages/src/rholang.rs",
+          "sha256": "7b7075890cd7c7c26376d5ff1023210842aca7865c4dca6d76443cf6b04ff325"
+        },
+        {
+          "path": "rholang-runtime/src/rholang_ast.rs",
+          "sha256": "7eea3a02fb3c2e610792bf9e51f75386f30d6fbbaff084bde07dcfd1382def49"
+        },
+        {
+          "path": "rholang-runtime/src/language_install.rs",
+          "sha256": "e2458d7d344a28066b8f149241e10856e73631e5f1faabab8f36c7fb8fe09571"
+        },
+        {
+          "path": "rholang-runtime/tests/fixtures/regex_extension.rho",
+          "sha256": "b3832186cb532d6c08424a5a70ee6b9a0385fb4d8e93621c07b0fc72e48e0c85"
+        }
+      ],
+      "tracked_diff_sha256": "88248e0519d3dd93e520ab478ab0c4ba9eeb60fb4735e0f58bfea0014913f149",
+      "modified_paths": [
+        "Cargo.toml",
+        "formal/rocq/prattail_wpda_runtime/_CoqProject",
+        "languages/tests/rholang_mettail_ddl.rs",
+        "macros/src/gen/runtime/wpda_codegen/binder.rs",
+        "macros/src/gen/runtime/wpda_codegen/facade.rs",
+        "macros/src/gen/runtime/wpda_codegen/semantic_actions.rs",
+        "prattail/src/runtime_types.rs",
+        "prattail/src/wpda_runtime.rs",
+        "prattail/src/wpda_runtime/action_arg_lifecycle.rs",
+        "prattail/src/wpda_walker.rs",
+        "prattail/tests/parse_error_lifecycle.rs",
+        "scripts/ci/checkout-f1r3node-sibling.sh"
+      ],
+      "untracked_files": [
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/CandidateContinuation.v",
+          "sha256": "41fd45b9e47a01d50dea06def31a9feeebcbfaee825f5c9b2a4da92a6f1e676c"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/CartesianCursor.v",
+          "sha256": "1d79c06f5644ed6384bbedc9332980f5d5981f63f231744fa60fd7ed31956edd"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/CartesianSuccessorReachability.v",
+          "sha256": "00a0c883239d4b1cbda8854ec3bd2eea52c3d2691595cc21143525b37fdd9f54"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/CollectionItemKBestLifting.v",
+          "sha256": "3a0d872254e61cc46d05b72a3454d2d3ade45b36fc9310d5b6315547251fad68"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/ConstructorElectionEvidence.v",
+          "sha256": "4ea0ef71529aa7ab4cf17ce564d82f2bd419ad65785a64ac92516b59cac4df31"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/LazyPackingCursor.v",
+          "sha256": "e40c325bf1d554eea1b693d260d66c89442b2749da7f160e91f56f830306c745"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/OccurrenceCollectionAssembly.v",
+          "sha256": "c336c7d87cc7cc007c295933e7ab0918cade57b87a8ae47f31151bb5c3899340"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/RealizationFailureBoundary.v",
+          "sha256": "df9d3dff4a02368bdaa9740a24ef87a6557c69f0006bd3b945d43b14a396915d"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/ReconstructionWorkBudget.v",
+          "sha256": "2c777150012b8cf72aba60dba1819a4d5a59739485f837322d1cefceb5e0edef"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/RetainedFamilyScheduler.v",
+          "sha256": "17ce52f28e4ce0da06250f0be513ebe221803db6abe678eb9097da0629716d4e"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/RetainedFamilySchedulerExamples.v",
+          "sha256": "f5ff88d23bb9f245d21dea13a461aa8977266b3f9fb914135415727ff404c7fd"
+        },
+        {
+          "path": "formal/rocq/prattail_wpda_runtime/theories/SelectedOccurrencePlan.v",
+          "sha256": "2f743113071b71b860f087b1602a60e7b22feac2d494f77d0bcd68f968b2f67b"
+        },
+        {
+          "path": "prattail/src/wpda_runtime/action_collection_frame.rs",
+          "sha256": "3303d0001a455b923e74a2e0e430cab712ed540d0dfb805e1ebd4f1d11a4b3bf"
+        },
+        {
+          "path": "prattail/src/wpda_runtime/cartesian_cursor.rs",
+          "sha256": "756c803d11f01acc51c88b85d9addf9fd086e0577a3607caa956726bebb1902b"
+        },
+        {
+          "path": "prattail/src/wpda_runtime/realization_error.rs",
+          "sha256": "4870c8d3f0104ff42e4190b96d5935a0a6be2269226c87a003520804aaf14a80"
+        }
+      ]
+    },
+    {
+      "name": "venus",
+      "revision": "3343fbea78af5543d2469d882dd5736e3ca983b2",
+      "kind": "revision_sources",
+      "files": [
+        {
+          "path": "GSLT/src/main/bnfc/metta_venus.cf",
+          "sha256": "9b34602f24d9495f85f8e59e55478f08b9afccfab136de25a50373e533a80dc0"
+        }
+      ]
+    },
+    {
+      "name": "legacy_parser",
+      "revision": "02cef80d32214ecdac3ee7d3b91c3786a34174d5",
+      "kind": "revision_sources",
+      "files": [
+        {
+          "path": "rholang-tree-sitter/grammar.js",
+          "sha256": "ebe38a38fa6c09f7b9aad6b90201d186d42b3aa313d8376e6793e68e6f8facbd"
+        }
+      ]
+    },
+    {
+      "name": "papers",
+      "revision": "140c3d42a7c8b617347c2d88a3db80aa216f64d3",
+      "kind": "revision_sources",
+      "files": [
+        {
+          "path": "cost-accounting/cost-accounted-rho.tex",
+          "sha256": "71c01eb67e2d3447c5f8e6f90e494e7120587991165466382b53b0565dc0051c"
+        },
+        {
+          "path": "cost-accounting-as-monad/continued-gslt-cost-v2.tex",
+          "sha256": "c91a5f2f75ff960e78c415249945084583d493c31bf7b1d7b1a5088a898cc9b6"
+        }
+      ]
+    }
+  ],
+  "source_roots": [
+    "casper/src",
+    "node/src",
+    "rholang/src"
+  ],
+  "legacy_reference_files": [
+    "casper/src/rust/rholang/runtime.rs",
+    "casper/src/rust/util/rholang/acceptance.rs",
+    "casper/src/rust/util/rholang/interpreter_util.rs",
+    "node/src/rust/api/lsp_grpc_service.rs",
+    "node/src/rust/api/repl_grpc_service.rs",
+    "rholang/src/lib.rs",
+    "rholang/src/rholang_cli.rs",
+    "rholang/src/rust/build/compile_rholang_source.rs",
+    "rholang/src/rust/interpreter/accounting/delta_sigma.rs",
+    "rholang/src/rust/interpreter/compiler/compiler.rs",
+    "rholang/src/rust/interpreter/compiler/normalize.rs",
+    "rholang/src/rust/interpreter/compiler/normalize_drive.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/collection_normalize_matcher.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/cost_accounting/tests.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/name_normalize_matcher.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_bundle_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_conjunction_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_contr_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_disjunction_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_eval_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_if_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_let_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_match_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_matches_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_method_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_negation_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_new_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_par_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_sync_normalizer.rs",
+    "rholang/src/rust/interpreter/compiler/normalizer/processes/p_var_ref_normalizer.rs",
+    "rholang/src/rust/interpreter/interpreter.rs",
+    "rholang/src/rust/interpreter/pretty_printer.rs",
+    "rholang/src/rust/interpreter/test_utils/par_builder_util.rs"
+  ],
+  "abis": [
+    {
+      "repository": "node",
+      "path": "models/Cargo.toml",
+      "name": "pathmap",
+      "value": "0.2.2",
+      "source_pattern": "pathmap = { version = \"{value}\""
+    },
+    {
+      "repository": "node",
+      "path": "models/src/rust/epathmap_trie_codec.rs",
+      "name": "epm_magic",
+      "value": "EPM1",
+      "source_pattern": "const EPM_MAGIC: &[u8; 4] = b\"{value}\";"
+    },
+    {
+      "repository": "node",
+      "path": "models/src/rust/epathmap_trie_codec.rs",
+      "name": "epm_version",
+      "value": "1",
+      "source_pattern": "const EPM_VERSION: u8 = {value};"
+    },
+    {
+      "repository": "mettail",
+      "path": "grammar-core/src/core.rs",
+      "name": "grammar_core",
+      "value": "2",
+      "source_pattern": "pub const GRAMMAR_CORE_ABI_CURRENT: u16 = GRAMMAR_CORE_ABI_V{value};"
+    },
+    {
+      "repository": "mettail",
+      "path": "grammar-core/src/language_core.rs",
+      "name": "language_core",
+      "value": "4",
+      "source_pattern": "pub const LANGUAGE_CORE_ABI_CURRENT: u16 = LANGUAGE_CORE_ABI_V{value};"
+    },
+    {
+      "repository": "mettail",
+      "path": "grammar-core/src/language_core.rs",
+      "name": "theory_core",
+      "value": "3",
+      "source_pattern": "pub const THEORY_CORE_ABI_CURRENT: u16 = THEORY_CORE_ABI_V{value};"
+    },
+    {
+      "repository": "mettail",
+      "path": "grammar-core/src/image.rs",
+      "name": "parser_image",
+      "value": "1",
+      "source_pattern": "pub const PARSER_IMAGE_ABI_V1: u16 = {value};"
+    },
+    {
+      "repository": "mettail",
+      "path": "prattail/src/runtime_backend.rs",
+      "name": "parser_compiler",
+      "value": "mettail-rtn/3",
+      "source_pattern": "pub const RUNTIME_COMPILER_ABI: &str = \"{value}\";"
+    },
+    {
+      "repository": "mettail",
+      "path": "prattail/src/runtime_backend.rs",
+      "name": "unicode",
+      "value": "unicode-regex-syntax-0.8",
+      "source_pattern": "pub const RUNTIME_UNICODE_ABI: &str = \"{value}\";"
+    },
+    {
+      "repository": "mettail",
+      "path": "grammar-core/src/theory_image.rs",
+      "name": "semantic_image",
+      "value": "5",
+      "source_pattern": "pub const THEORY_SEMANTIC_IMAGE_ABI_CURRENT: u16 = THEORY_SEMANTIC_IMAGE_ABI_V{value};"
+    },
+    {
+      "repository": "mettail",
+      "path": "grammar-core/src/theory_image.rs",
+      "name": "semantic_compiler",
+      "value": "5",
+      "source_pattern": "pub const THEORY_IMAGE_COMPILER_ABI_CURRENT: u16 = THEORY_IMAGE_COMPILER_ABI_V{value};"
+    },
+    {
+      "repository": "mettail",
+      "path": "grammar-core/src/semantic_machine.rs",
+      "name": "semantic_machine",
+      "value": "1",
+      "source_pattern": "pub const SEMANTIC_MACHINE_IMAGE_ABI_V1: u16 = {value};"
+    },
+    {
+      "repository": "mettail",
+      "path": "grammar-core/src/theorem.rs",
+      "name": "structural_checker",
+      "value": "mettail-structural-theorem-checker/1",
+      "source_pattern": "pub const STRUCTURAL_THEOREM_CHECKER_ABI_V1: &str = \"{value}\";"
+    },
+    {
+      "repository": "mettail",
+      "path": "rholang-runtime/src/language_install.rs",
+      "name": "language_capability",
+      "value": "2",
+      "source_pattern": "pub const LANGUAGE_CAPABILITY_ABI_CURRENT: &str = LANGUAGE_CAPABILITY_ABI_V{value};"
+    }
+  ],
+  "application_routes": [
+    {
+      "name": "node eval / gRPC",
+      "path": "node/src/rust/api/repl_grpc_service.rs",
+      "baseline_path": "Compiler for display, then RhoRuntimeImpl::evaluate -> InterpreterImpl::inj_attempt -> Compiler",
+      "target": "one prepared MeTTaIL artifact, or explicit unsupported-route rejection before legacy parsing"
+    },
+    {
+      "name": "node LSP validation",
+      "path": "node/src/rust/api/lsp_grpc_service.rs",
+      "baseline_path": "Compiler::source_to_adt_with_normalizer_env",
+      "target": "one prepared MeTTaIL artifact, or explicit unsupported-route rejection before legacy parsing"
+    },
+    {
+      "name": "Casper deploy admission",
+      "path": "casper/src/rust/util/rholang/acceptance.rs",
+      "baseline_path": "Compiler::source_to_adt",
+      "target": "one prepared MeTTaIL artifact, or explicit unsupported-route rejection before legacy parsing"
+    },
+    {
+      "name": "Casper interpreter utilities",
+      "path": "casper/src/rust/util/rholang/interpreter_util.rs",
+      "baseline_path": "Compiler::source_to_adt_with_normalizer_env",
+      "target": "one prepared MeTTaIL artifact, or explicit unsupported-route rejection before legacy parsing"
+    },
+    {
+      "name": "Casper runtime queries",
+      "path": "casper/src/rust/rholang/runtime.rs",
+      "baseline_path": "Compiler::source_to_adt",
+      "target": "one prepared MeTTaIL artifact, or explicit unsupported-route rejection before legacy parsing"
+    },
+    {
+      "name": "Rholang CLI",
+      "path": "rholang/src/rholang_cli.rs",
+      "baseline_path": "RholangParser::new",
+      "target": "one prepared MeTTaIL artifact, or explicit unsupported-route rejection before legacy parsing"
+    },
+    {
+      "name": "source artifact builder",
+      "path": "rholang/src/rust/build/compile_rholang_source.rs",
+      "baseline_path": "Compiler::source_to_adt_with_normalizer_env",
+      "target": "one prepared MeTTaIL artifact, or explicit unsupported-route rejection before legacy parsing"
+    }
+  ],
+  "required_feature_gates": {
+    "single_host_parse": "not_activated",
+    "neutral_rho_ir": "not_implemented",
+    "canonical_par_and_occurrence_maps": "not_verified_for_public_frontend",
+    "module_theory_ddl": "library_checkpoint_only",
+    "qualified_flt_construction_and_patterns": "library_checkpoint_only",
+    "runtime_gslt_reduce_and_observe": "pending_wiring",
+    "shared_registry_and_capability_runtime": "pending_node_integration",
+    "metered_host_admission": "existing_path_to_be_factored",
+    "legacy_parser_exclusion": "not_activated",
+    "regex_application_public_node_output": "not_verified"
+  }
+}

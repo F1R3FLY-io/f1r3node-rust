@@ -1,0 +1,41 @@
+@startuml f1r3lang-admission
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ActivityBorderColor #455A64
+title F1R3Lang target admission boundary — not yet activated
+start
+:Caller supplies source, environment,\nbudget and random state;<<#BBDEFB>>
+if (Caller uses rollback wrapper?) then (yes)
+  :Caller creates soft checkpoint;<<#BBDEFB>>
+else (no)
+endif
+if (Budget nonnegative?) then (yes)
+  :Prepare once using generated Rholang frontend;<<#BBDEFB>>
+  if (Frontend admission succeeds?) then (yes)
+    :Borrow artifact for display and diagnostics;\nmove its process to metered handoff;<<#D1C4E9>>
+    :Existing SignedProcess::metered;\nreset existing RuntimeBudget;<<#FFE0B2>>
+    :Move source process out;\nclear merge-channel tracking;<<#FFE0B2>>
+    :Existing reducer runs once\nwith unchanged caller random state;<<#C8E6C9>>
+    :Preserve evaluation result, costs\nand merge-channel semantics;<<#C8E6C9>>
+  else (no)
+    :Frontend error with zero token charge;\nno budget reset, merge clear or reducer call;<<#FFCDD2>>
+  endif
+else (no)
+  :Invalid-budget error;\nno frontend or reducer call;<<#FFCDD2>>
+endif
+if (Caller owns rollback wrapper\nand result is an error?) then (yes)
+  :Revert caller-owned soft checkpoint;<<#FFCDD2>>
+else (no)
+endif
+:Return through original caller;<<#BBDEFB>>
+stop
+legend bottom
+  |= Color |= Responsibility |
+  |<#BBDEFB>| Caller and source frontend |
+  |<#D1C4E9>| Prepared artifact ownership |
+  |<#FFE0B2>| Existing host funding |
+  |<#C8E6C9>| Existing execution |
+  |<#FFCDD2>| Failure handling |
+endlegend
+@enduml

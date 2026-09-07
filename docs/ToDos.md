@@ -45,6 +45,26 @@ mr_status:
 
 ## Active Epochs
 
+### F1R3Lang: frontend admission boundary
+
+```yaml
+id: rholang14-node-frozen-contract
+status: review
+claimed_by: codex-f1r3lang
+branch: feature/f1r3lang-mettail-only
+baseline: 6781d1d671cc0b98b9de946b3871bdbb8e7f1280
+acceptance:
+  - Exact source, ABI, engine and source-route baseline checks pass
+  - Prepared-program contract preserves existing funding and caller-owned rollback
+  - Public MeTTaIL frontend remains unactivated
+next_steps:
+  - Prove the prepared-program handoff before runtime changes
+  - Extract the existing metered admission path
+```
+
+See the [admission contract](design/f1r3lang-frontend.md) and
+[verification handoff](work-logs/task-f1r3lang-admission-baseline.md).
+
 <!-- Epochs ordered by priority. EPOCH-001/002 are system-integration alignment (US-001). EPOCH-003-008 are migration (US-002). -->
 
 ---
