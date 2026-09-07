@@ -297,7 +297,7 @@ The error chain propagates cleanly: `verify_token_metadata_matches_config → Er
 
 `bind_tcp_listener_with_retry()` in `servers_instances.rs` handles `AddrInUse` resilience for HTTP/Admin servers: 60 attempts with 500ms delay between retries.
 
-`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, min-phlo-price, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
+`APIServers::build()` in `api_servers.rs` constructs all gRPC services (Repl, Propose, Deploy, LSP) with shared dependencies (engine cell, block store, connections, epoch_length, is_ready). `WebApiImpl` in `web_api.rs` handles the HTTP REST layer and caches config-derived values (network-id, shard-id, native token metadata, epoch-length) for fast `/api/status` responses without per-request config reads; `min-phlo-price` is the exception, read from the running casper's chain-adopted shard conf per request so `/api/status` advertises the floor admission actually enforces. The `is_ready` flag is a shared `AtomicBool` set by the event listener in `setup.rs` when `EnteredRunningState` fires.
 
 ## Transfer Extraction
 

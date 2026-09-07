@@ -77,7 +77,7 @@ result = node.exploratory_deploy(rholang_code, lfb.blockHash)
 
 ## Backpressure
 
-The node accepts only `api-server.exploratory-deploy-max-concurrent` exploratory executions at once and rejects excess requests immediately. The authoritative execution bound is `api-server.exploratory-deploy-phlo-limit`; `api-server.exploratory-deploy-execution-timeout` is a best-effort wall-clock deadline because timeout observation requires the interpreter to yield. A timed-out task retains its capacity permit until it has terminated, and the rejection advertises that budget as `Retry-After`. The defaults are one concurrent execution, 5,000,000 phlogiston, and 15 seconds. All three must be positive; the node refuses to start otherwise rather than running with a value that answers nothing.
+The node accepts only `api-server.exploratory-deploy-max-concurrent` exploratory executions at once and rejects excess requests immediately. The authoritative execution bound is `api-server.exploratory-deploy-phlo-limit`; `api-server.exploratory-deploy-execution-timeout` is a best-effort wall-clock deadline because timeout observation requires the interpreter to yield. A timed-out task retains its capacity permit until it has terminated, and the rejection advertises that budget as `Retry-After`. The concurrency default is `0`, meaning derived at startup as `max(2, cores - 2)` — two cores stay reserved for block-following — and an explicit positive value overrides the derivation; the resolved value is logged at startup. The phlo limit (default 5,000,000) and timeout (default 15 seconds) must be positive; the node refuses to start otherwise rather than running with a value that answers nothing.
 
 ## Implementation
 
