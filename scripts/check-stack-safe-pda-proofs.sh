@@ -80,9 +80,9 @@ tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
 rocq_reject_placeholders theories/ReplayArchive.v theories/ReplayArchiveMutants.v
-rocq_compile_with_closed_count theories/ReplayArchive.v 20 \
+rocq_compile_with_closed_count theories/ReplayArchive.v 34 \
   "the captured replay archive acceptance contract"
-rocq_compile_with_closed_count theories/ReplayArchiveMutants.v 12 \
+rocq_compile_with_closed_count theories/ReplayArchiveMutants.v 21 \
   "the replay archive nonvacuity and omission controls"
 rocq_check_modules "captured replay archive" \
   StackSafePDA.ReplayArchive StackSafePDA.ReplayArchiveMutants

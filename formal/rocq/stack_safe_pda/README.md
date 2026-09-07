@@ -80,6 +80,48 @@ the resulting root. This checks a particular captured execution's replay obligat
 it does not prove that parallel re-execution emits the same total event order or count of
 standalone IO events. The historical experiment-provenance gap remains separately open.
 
+### Bootstrap replay composition (v2)
+
+The v1 execution disproved its configuration-only genesis-realization assumption:
+the same descriptor did not reproduce the captured starting root. Its sealed bytes
+and failed qualification remain evidence; they are not silently replaced. V2 must
+capture the complete genesis block's processed-deploy list and replay it from a
+fresh registry bootstrap before replaying the workloads. This is an archive-format
+revision, not a consensus-epoch approval or deterministic-genesis proof.
+
+`ReplayArchive.v` preserves v1 and adds fourteen composition capstones, for thirty-four
+printed closed checks. `ReplayArchiveMutants.v` now has twenty-one printed checks,
+including composed acceptance without the original workload-genesis premise and six
+new omission controls. Both modules and `coqchk` passed under a 2 GiB/zero-swap cap.
+The derived realization replaces only the workload starting-state premise; it still
+requires actual accepted genesis replay, exact root stitching and compatible runtime
+contexts. Concrete codec, integrity, runtime and bootstrap realization remain premises.
+
+The complete new obligation catalog precedes its Rust implementation:
+
+| ID | Composition obligation | Required executable witness |
+|---|---|---|
+| BR01 | Genesis start is established, not assumed from configuration. | A fresh scoped runtime materializes registry bootstrap with `RuntimeOps::empty_state_hash`; compare actual, archived and existing pinned bootstrap roots. |
+| BR02 | Bootstrap, genesis final, workload pre and workload final are separately checked. | `replay_archive_genesis_context_and_bridge_are_complete` and actual replay assert every link; mutate each root independently. |
+| BR03 | Both archives, contexts and ordered payloads remain exact. | Mandatory `genesis_replay`, full payload fixed points, exact default signed genesis deploy list/order, all context fields and whole-file seal checks. |
+| BR04 | Both stages execute successfully without either cache. | Fresh-process positive control and `replay_archive_genesis_rejects_cache_roots_and_failed_execution`. |
+| BR05 | Original starting-state realization is required only for bootstrap. | Verification constructs no genesis block and never plays workload sources; it uses the same runtime/history and fixed services/tags for both stages. |
+| BR06 | Unaccepted genesis cannot authorize workloads. | Restoration returns an error before workload dispatch; unchanged control must first succeed. |
+| BR07 | Missing genesis refuses. | Missing-section and empty/truncated/duplicated genesis-list controls in archive admission. |
+| BR08 | A wrong trusted bootstrap refuses. | Independently mutated archived pre-root and actual-root argument; no reset to an unchecked root. |
+| BR09 | A mismatched genesis/workload bridge refuses. | Mutate every workload's pre-root; validation rejects before execution. |
+| BR10 | Incompatible runtime contexts refuse. | Exact expected genesis and workload context checks, including flags, sender, timestamp, system deploys and allocations. |
+| BR11 | A genesis cache shortcut refuses. | Independently enable each runtime cache before genesis replay and require rejection. |
+| BR12 | Failed genesis replay refuses. | Change a captured genesis deploy's cost; require actual runtime replay failure, not a parse failure. |
+| BR13 | Enabled genesis caches refuse even if a root could agree. | The shared execution boundary checks both options before replay; the cache controls use otherwise valid input. |
+| BR14 | Complete composed evidence admits the nonempty fixture. | Explicit capture self-check and fresh-process genesis-plus-seven-program replay; preserve v1 independently. |
+
+Genesis event logs are already canonicalized by `Genesis::create_processed_deploy`.
+The new archive preserves those exact block payloads, not an invented raw emission
+order. Workload records preserve their captured order. Existing RA01–RA11 workload
+refusal obligations apply unchanged under the derived realization. Successful v2
+replay cannot discharge task 5304's independent genesis-construction discrepancy.
+
 ## Live PathMap write-gateway correspondence (2026-09-07)
 
 Task 6446 qualifies the existing ownership-disjoint structural repair, not the rejected

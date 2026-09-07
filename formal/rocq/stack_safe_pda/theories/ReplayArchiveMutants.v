@@ -237,4 +237,174 @@ Print Assumptions kill_cached_root_as_actual_execution.
 Print Assumptions kill_unrealized_success_report.
 Print Assumptions kill_missing_final_root_comparison.
 
+Definition bootstrap_context : context := Context 1 [4].
+Definition genesis_fixture : archive := Archive bootstrap_context 4 7 [2].
+Definition unstitched_workload : archive := Archive toy_context 8 9 [11; 11; 22].
+
+Definition v2_meaning : realization abstract_bytes :=
+  @Realization abstract_bytes (decode_payload toy_meaning) (encode_payload toy_meaning)
+    (fun stored => stored = genesis_fixture \/ stored = toy_archive \/ stored = unstitched_workload)
+    (fun supplied => supplied = bootstrap_context \/ supplied = toy_context)
+    (fun supplied root => supplied = bootstrap_context /\ root = 4)
+    (fun request post =>
+      (supplied_ordered_payload request = [2] /\ post = 7) \/
+      (supplied_ordered_payload request = [11; 11; 22] /\ post = 9)).
+
+Definition v2_compatible (genesis_context workload_context : context) : Prop :=
+  genesis_context = bootstrap_context /\ workload_context = toy_context.
+
+Definition v2_accept (trusted : abstract_root) (loaded : option archive)
+    (genesis_request : replay_request) (genesis_result : replay_outcome)
+    (workload : archive) : Prop :=
+  @bootstrap_replay_accepted abstract_bytes v2_meaning trusted genesis_fixture
+    loaded genesis_request genesis_result v2_compatible
+    workload (Some workload) (request_for workload) (ActualReplayCompleted 9).
+
+Theorem v2_genesis_fixture_is_accepted :
+  accepted v2_meaning genesis_fixture (Some genesis_fixture)
+    (request_for genesis_fixture) (ActualReplayCompleted 7).
+Proof.
+  unfold accepted, archive_admitted, codec_fixed_point, request_matches; cbn.
+  repeat split; try reflexivity; try (left; reflexivity); try (left; split; reflexivity).
+  exists [2]. split; reflexivity.
+Qed.
+
+Theorem v2_composed_fixture_is_accepted :
+  v2_accept 4 (Some genesis_fixture) (request_for genesis_fixture)
+    (ActualReplayCompleted 7) toy_archive.
+Proof.
+  unfold v2_accept. apply bootstrap_replay_accepts_complete_composed_evidence.
+  - reflexivity.
+  - exact v2_genesis_fixture_is_accepted.
+  - split; reflexivity.
+  - reflexivity.
+  - reflexivity.
+  - right. left. reflexivity.
+  - right. reflexivity.
+  - exists [11; 11; 22]. split; reflexivity.
+  - unfold request_matches; cbn. repeat split; reflexivity.
+  - reflexivity.
+  - right. split; reflexivity.
+Qed.
+
+Theorem v2_acceptance_does_not_require_original_workload_genesis_realization :
+  v2_accept 4 (Some genesis_fixture) (request_for genesis_fixture)
+    (ActualReplayCompleted 7) toy_archive /\
+  ~ genesis_realizes v2_meaning (archived_context toy_archive) (expected_pre_root toy_archive).
+Proof.
+  split; [exact v2_composed_fixture_is_accepted|]. cbn. intuition discriminate.
+Qed.
+
+Definition unchecked_genesis_start : realization abstract_bytes :=
+  realization_with_start v2_meaning (fun workload_context workload_pre =>
+    expected_pre_root genesis_fixture = 4 /\
+    v2_compatible (archived_context genesis_fixture) workload_context /\
+    workload_pre = expected_final_root genesis_fixture).
+
+Definition mutant_omit_genesis_stage (_loaded : option archive)
+    (_request : replay_request) (_outcome : replay_outcome) : Prop :=
+  accepted unchecked_genesis_start toy_archive (Some toy_archive)
+    (request_for toy_archive) (ActualReplayCompleted 9).
+
+Lemma unchecked_genesis_stage_accepts_workload : forall loaded request outcome,
+  mutant_omit_genesis_stage loaded request outcome.
+Proof.
+  intros. unfold mutant_omit_genesis_stage, accepted, archive_admitted,
+    codec_fixed_point, request_matches; cbn.
+  repeat split; try reflexivity; try (right; left; reflexivity);
+    try (right; reflexivity); try (right; split; reflexivity).
+  exists [11; 11; 22]. split; reflexivity.
+Qed.
+
+Theorem kill_missing_genesis_stage :
+  mutant_omit_genesis_stage None (request_for genesis_fixture) (ActualReplayCompleted 7) /\
+  ~ v2_accept 4 None (request_for genesis_fixture) (ActualReplayCompleted 7) toy_archive.
+Proof.
+  split; [apply unchecked_genesis_stage_accepts_workload|].
+  unfold v2_accept. apply bootstrap_replay_refuses_missing_genesis. reflexivity.
+Qed.
+
+Theorem kill_cached_genesis_stage :
+  mutant_omit_genesis_stage (Some genesis_fixture) (request_for genesis_fixture) (CacheShortcut 7) /\
+  ~ v2_accept 4 (Some genesis_fixture) (request_for genesis_fixture) (CacheShortcut 7) toy_archive.
+Proof.
+  split; [apply unchecked_genesis_stage_accepts_workload|].
+  unfold v2_accept. apply bootstrap_replay_refuses_genesis_cache_shortcut with (cached_root := 7).
+  reflexivity.
+Qed.
+
+Theorem kill_failed_genesis_stage :
+  mutant_omit_genesis_stage (Some genesis_fixture) (request_for genesis_fixture) RuntimeRefused /\
+  ~ v2_accept 4 (Some genesis_fixture) (request_for genesis_fixture) RuntimeRefused toy_archive.
+Proof.
+  split; [apply unchecked_genesis_stage_accepts_workload|].
+  unfold v2_accept. apply bootstrap_replay_refuses_failed_genesis. reflexivity.
+Qed.
+
+Definition cached_genesis_request : replay_request :=
+  ReplayRequest bootstrap_context 4 [2] true true.
+
+Theorem kill_cache_enabled_genesis_stage :
+  mutant_omit_genesis_stage (Some genesis_fixture) cached_genesis_request (ActualReplayCompleted 7) /\
+  ~ v2_accept 4 (Some genesis_fixture) cached_genesis_request (ActualReplayCompleted 7) toy_archive.
+Proof.
+  split; [apply unchecked_genesis_stage_accepts_workload|].
+  unfold v2_accept. apply bootstrap_replay_refuses_enabled_genesis_cache. left. reflexivity.
+Qed.
+
+Definition mutant_omit_bootstrap_comparison (_trusted : abstract_root) : Prop :=
+  v2_accept (expected_pre_root genesis_fixture) (Some genesis_fixture)
+    (request_for genesis_fixture) (ActualReplayCompleted 7) toy_archive.
+
+Theorem kill_missing_bootstrap_comparison :
+  mutant_omit_bootstrap_comparison 5 /\
+  ~ v2_accept 5 (Some genesis_fixture) (request_for genesis_fixture)
+    (ActualReplayCompleted 7) toy_archive.
+Proof.
+  split; [exact v2_composed_fixture_is_accepted|].
+  unfold v2_accept. apply bootstrap_replay_refuses_wrong_bootstrap. discriminate.
+Qed.
+
+Definition unchecked_bridge_start : realization abstract_bytes :=
+  realization_with_start v2_meaning (fun workload_context _workload_pre =>
+    expected_pre_root genesis_fixture = 4 /\
+    accepted v2_meaning genesis_fixture (Some genesis_fixture)
+      (request_for genesis_fixture) (ActualReplayCompleted 7) /\
+    v2_compatible (archived_context genesis_fixture) workload_context).
+
+Definition mutant_omit_bridge_comparison : Prop :=
+  accepted unchecked_bridge_start unstitched_workload (Some unstitched_workload)
+    (request_for unstitched_workload) (ActualReplayCompleted 9).
+
+Theorem kill_missing_bridge_comparison :
+  mutant_omit_bridge_comparison /\
+  ~ v2_accept 4 (Some genesis_fixture) (request_for genesis_fixture)
+    (ActualReplayCompleted 7) unstitched_workload.
+Proof.
+  split.
+  - unfold mutant_omit_bridge_comparison. split.
+    + unfold archive_admitted. split; [reflexivity|].
+      split; [right; right; reflexivity|]. split; [right; reflexivity|]. split.
+      * change (expected_pre_root genesis_fixture = 4 /\
+          accepted v2_meaning genesis_fixture (Some genesis_fixture)
+            (request_for genesis_fixture) (ActualReplayCompleted 7) /\
+          v2_compatible (archived_context genesis_fixture) (archived_context unstitched_workload)).
+        split; [reflexivity|]. split; [exact v2_genesis_fixture_is_accepted|].
+        split; reflexivity.
+      * exists [11; 11; 22]. split; reflexivity.
+    + split; [unfold request_matches; cbn; repeat split; reflexivity|].
+      split; [reflexivity|]. right. split; reflexivity.
+  - unfold v2_accept. apply bootstrap_replay_refuses_wrong_bridge. discriminate.
+Qed.
+
+Print Assumptions v2_genesis_fixture_is_accepted.
+Print Assumptions v2_composed_fixture_is_accepted.
+Print Assumptions v2_acceptance_does_not_require_original_workload_genesis_realization.
+Print Assumptions kill_missing_genesis_stage.
+Print Assumptions kill_cached_genesis_stage.
+Print Assumptions kill_failed_genesis_stage.
+Print Assumptions kill_cache_enabled_genesis_stage.
+Print Assumptions kill_missing_bootstrap_comparison.
+Print Assumptions kill_missing_bridge_comparison.
+
 End ReplayArchiveMutants.
