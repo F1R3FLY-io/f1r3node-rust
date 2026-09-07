@@ -1,8 +1,9 @@
 use super::support::{TEST_SEMANTIC_PROFILE_ID, empty_roots, encode, synthetic_ref};
+use proptest::prelude::*;
 use crate::rspace::persistence::{
     AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, AcceleratorManifestView,
     CanonicalEncode, CanonicalFormatError, LegacyHistoryRoot, SemanticStateManifestV1,
-    SemanticStateManifestView,
+    SemanticStateManifestView, SemanticProfileId, SemanticRoots, StateVersionV1,
 };
 
 #[test]
@@ -133,4 +134,82 @@ fn accelerator_artifacts_require_strict_canonical_kind_order() {
         AcceleratorManifestV1::new(synthetic_ref(8), 1, artifacts),
         Err(CanonicalFormatError::AcceleratorKindsNotStrict { .. })
     ));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(41317941),
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn semantic_identity_binds_exact_namespaces_profile_and_provenance(
+        seed in any::<u8>(),
+        provenance in any::<[u8; 32]>(),
+        generation in any::<u64>(),
+    ) {
+        let roots = SemanticRoots {
+            data_bag: synthetic_ref(seed),
+            continuation_map: synthetic_ref(seed.wrapping_add(1)),
+            join_bag: synthetic_ref(seed.wrapping_add(2)),
+        };
+        let legacy = LegacyHistoryRoot::from_array(provenance);
+        let manifest = SemanticStateManifestV1::new(
+            1, TEST_SEMANTIC_PROFILE_ID, roots, Some(legacy),
+        ).unwrap();
+        let bytes = encode(&manifest);
+        let parsed = SemanticStateManifestView::parse(&bytes).unwrap();
+        prop_assert_eq!(parsed.roots(), roots);
+        prop_assert_eq!(parsed.profile_id(), TEST_SEMANTIC_PROFILE_ID);
+        prop_assert_eq!(parsed.legacy_history_root(), Some(legacy));
+        prop_assert_eq!(parsed.object_ref(), manifest.object_ref());
+
+        let mut other_profile = *TEST_SEMANTIC_PROFILE_ID.as_bytes();
+        other_profile[0] ^= 1;
+        let mut other_provenance = provenance;
+        other_provenance[0] ^= 1;
+        let variants = [
+            SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID,
+                SemanticRoots { data_bag: roots.continuation_map,
+                    continuation_map: roots.data_bag, ..roots }, Some(legacy)).unwrap(),
+            SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID,
+                SemanticRoots { join_bag: roots.continuation_map,
+                    continuation_map: roots.join_bag, ..roots }, Some(legacy)).unwrap(),
+            SemanticStateManifestV1::new(1, SemanticProfileId::from_array(other_profile),
+                roots, Some(legacy)).unwrap(),
+            SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID, roots, None).unwrap(),
+            SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID, roots,
+                Some(LegacyHistoryRoot::from_array(other_provenance))).unwrap(),
+        ];
+        for variant in variants {
+            prop_assert_ne!(encode(&variant), bytes.clone());
+            prop_assert_ne!(variant.object_ref(), manifest.object_ref());
+        }
+        let without_provenance = SemanticStateManifestV1::new(
+            1, TEST_SEMANTIC_PROFILE_ID, roots, None,
+        ).unwrap();
+        prop_assert_eq!(without_provenance.roots(), manifest.roots());
+        prop_assert_ne!(without_provenance.object_ref(), manifest.object_ref());
+        prop_assert_eq!(StateVersionV1::new(generation, manifest.object_ref()).manifest(),
+            StateVersionV1::new(0, manifest.object_ref()).manifest());
+    }
+
+    #[test]
+    fn unsupported_schema_is_refused_by_both_constructor_and_decoder(epoch in any::<u64>()) {
+        prop_assume!(epoch != 1);
+        let roots = empty_roots(synthetic_ref(1));
+        prop_assert!(matches!(
+            SemanticStateManifestV1::new(epoch, TEST_SEMANTIC_PROFILE_ID, roots, None),
+            Err(CanonicalFormatError::UnsupportedVersion { version, .. }) if version == epoch
+        ), "constructor must reject the exact unsupported schema epoch");
+        let mut bytes = encode(&SemanticStateManifestV1::new(
+            1, TEST_SEMANTIC_PROFILE_ID, roots, None,
+        ).unwrap());
+        bytes[32..40].copy_from_slice(&epoch.to_le_bytes());
+        prop_assert!(matches!(
+            SemanticStateManifestView::parse(&bytes),
+            Err(CanonicalFormatError::UnsupportedVersion { version, .. }) if version == epoch
+        ), "decoder must reject the exact unsupported schema epoch");
+    }
 }

@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-06 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-07 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -6288,3 +6288,28 @@ transfer-version decisions remain subject to tasks 7755/7756 and migration/state
 review; no format or runtime change is activated by this documentation.
 See [J-063](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-063--2026-09-06-incremental-admission-and-retained-root-format-review)
 for the source evidence and outstanding executable compatibility controls.
+
+**CBR-053 living continuation (2026-09-07, legacy-root bridge contract).** The dormant
+PathMap-DAG cutover must not infer that a semantic manifest or its three namespace roots
+uniquely determine the legacy history root. A new actual-transaction fixture installs
+two reversed ordered continuation groups in both orders, with identical final join records.
+The admitted DAG manifests/roots agree, but successful legacy checkpoints produce different
+roots and last-writer cold reads. Same-batch duplicate-key refusal does not establish global
+uniqueness. This is a repository/DAG transition witness, not a complete Rholang execution or
+permission to change channel normalization, supported inputs, refusal behavior or hash bytes.
+
+Task 7941 selects preserved legacy identity with an exact authenticated coupled binding of
+semantic state and required recoverable compatibility information under one publication
+authority. Inherited provenance and equal semantic roots alone cannot certify a successor
+or replace an alias representative. The verified abstract contract requires post-publication
+and restarted bindings to be checked and usable, with fresh owner incarnations; concrete
+bridge construction, legacy transition/refusal/read equivalence, migration and activation
+remain required. Direct semantic-manifest consensus identity is not activated, and no
+independent current LMDB fallback is introduced.
+
+Classification for this proof/test/documentation checkpoint is `NO_PRODUCTION_CHANGE_DERIVED`.
+The possible cutover identity divergence remains part of CBR-053's existing activation gate,
+not a newly landed semantic change. No current canonical RhoPath/protobuf/bincode/WAL/catalog
+format, root preimage, Rholang behavior, blessed contract, compute/storage charge or consensus
+epoch changes. See [J-071](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-071--2026-09-07-bind-legacy-identity-to-coupled-state-not-a-presumed-root-projection)
+and its exhaustive invariant/implementation-boundary catalog.

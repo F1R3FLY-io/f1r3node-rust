@@ -245,6 +245,112 @@ fn continuation_fixture(
 }
 
 #[test]
+fn ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not() {
+    use crate::rspace::history::history_repository::HistoryRepositoryInstances;
+    use crate::rspace::hot_store_action::{
+        HotStoreAction, InsertAction, InsertContinuations, InsertJoins,
+    };
+    use crate::rspace::serializers::serializers::encode_joins;
+    use crate::rspace::state::rspace_state_authority::RSpaceStateAuthority;
+
+    let groups = [
+        vec!["bridge-channel-a".to_owned(), "bridge-channel-b".to_owned()],
+        vec!["bridge-channel-b".to_owned(), "bridge-channel-a".to_owned()],
+    ];
+    let patterns = vec!["first-pattern".to_owned(), "second-pattern".to_owned()];
+    let records = ["first-body", "second-body"].map(|body| body.to_owned());
+    let mut final_versions = Vec::new();
+    let mut final_roots = Vec::new();
+    let mut legacy_roots = Vec::new();
+    for order in [[0, 1], [1, 0]] {
+        let store = CanonicalObjectStore::new();
+        let mut version = base_state(&store, 0, None);
+        let mut legacy = HistoryRepositoryInstances::<String, String, String, String>::repository(
+            RSpaceStateAuthority::in_memory(),
+        ).unwrap();
+        let mut joined = Vec::new();
+        for index in order {
+            let group = &groups[index];
+            let waiting = WaitingContinuation::create(
+                group, &patterns, &records[index], false, BTreeSet::from([0]),
+            );
+            let mut payload = Vec::new();
+            encode_continuation_source_into(&waiting, &mut payload);
+            let source = CanonicalBlob::new(
+                CanonicalBlobKind::ContinuationSourceV1, payload,
+            ).unwrap();
+            let path = RhoPathV1::collection_record_path(
+                &RhoPathV1::continuation_prefix(group),
+                &encode_continuation_identity(&waiting),
+            );
+            let mut batch = RSpaceMutationBatchV1::new(version).unwrap();
+            batch.record_continuation(&path, None, Some(source.object_ref())).unwrap();
+            for channel in group {
+                let mut join_path = RhoPathV1::join_prefix(channel);
+                join_path.extend_from_slice(&encode_join_record(group));
+                batch.record_join(&join_path, 0, 1).unwrap();
+            }
+            let bytes = encode(&batch.plan().unwrap());
+            let verified = VerifiedDagState::<_, TestSemanticProfile>::admit(
+                &store, version, SemanticValidationLimits::unbounded(),
+            ).unwrap();
+            let mut transaction = OpenDagTransaction::new(
+                verified, MutationBatchViewV1::parse(&bytes).unwrap(),
+                DagTransactionLimits::UNBOUNDED,
+            ).unwrap();
+            transaction.stage_continuation_source(encode(&source).into()).unwrap();
+            let sealed = transaction.seal().unwrap();
+            assert_eq!(sealed.diagnostics().semantic.changed_continuations, 1);
+            assert_eq!(sealed.diagnostics().semantic.changed_joins, 2);
+            for object in sealed.objects() {
+                store.put_if_absent_or_equal(
+                    object.reference(), Arc::from(object.canonical_bytes()),
+                ).unwrap();
+            }
+            version = sealed.receipt().target();
+            VerifiedDagState::<_, TestSemanticProfile>::admit(
+                &store, version, SemanticValidationLimits::unbounded(),
+            ).unwrap();
+
+            joined.push(group.clone());
+            let mut actions = vec![HotStoreAction::Insert(InsertAction::InsertContinuations(
+                InsertContinuations { channels: group.clone(), continuations: vec![waiting.clone()] },
+            ))];
+            actions.extend(group.iter().map(|channel| {
+                HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+                    channel: channel.clone(), joins: joined.clone(),
+                }))
+            }));
+            legacy = legacy.checkpoint(actions).unwrap();
+            let reader = legacy.get_history_reader(&legacy.root()).unwrap();
+            for alias in &groups {
+                assert_eq!(reader.base().get_continuations(alias), vec![waiting.clone()]);
+            }
+        }
+        let reader = legacy.get_history_reader(&legacy.root()).unwrap();
+        for channel in &groups[0] {
+            assert_eq!(encode_joins(&reader.base().get_joins(channel)), encode_joins(&groups.to_vec()));
+        }
+        let bytes = store.get_bounded(
+            &version.manifest().digest(), version.manifest().encoded_len(),
+        ).unwrap().unwrap();
+        let CanonicalObjectView::SemanticManifest(manifest) =
+            CanonicalObjectView::parse(&bytes).unwrap()
+        else { unreachable!() };
+        final_versions.push(version);
+        final_roots.push(manifest.roots());
+        legacy_roots.push(legacy.root());
+    }
+    assert_eq!(final_versions[0], final_versions[1]);
+    assert_eq!(final_roots[0], final_roots[1]);
+    assert_ne!(legacy_roots[0], legacy_roots[1]);
+    assert_eq!(hex::encode(legacy_roots[0].bytes()),
+        "8e7af529977c2d5cb4e85c199482ccabcf5c9b83d77a90ff3dd76f9e0e8ef89b");
+    assert_eq!(hex::encode(legacy_roots[1].bytes()),
+        "384b28f6f87a7f079c4759dff7abaa1010218a4f01957d4160c934fd92fdd7f7");
+}
+
+#[test]
 fn referenced_continuation_source_is_sealed_and_semantically_verified() {
     let store = CanonicalObjectStore::new();
     let base = base_state(&store, 9, None);

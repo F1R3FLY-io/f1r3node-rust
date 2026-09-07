@@ -991,6 +991,152 @@ atomic-root and durable-owner substrate tests remain in their existing files.
 No alternate in-memory RSpace test implementation was introduced. The complete
 durable lifecycle gates and full-workspace CI remain required after implementation.
 
+## Preserved legacy consensus-identity contract (2026-09-07)
+
+**Status: policy selected and abstract contract verified; concrete bridge construction,
+caller refinement and activation remain required.** Task 7941 owns this contract.
+It selects preserved legacy history/post-state identity, not direct semantic-manifest
+identity or a new consensus epoch. Tasks 7942 and 7931 implement and qualify the bridge.
+
+### Evidence and the rejected projection hypothesis
+
+The legacy group hash sorts individual channel hashes, while RhoPath continuation
+prefixes preserve ordered channel identities. The relevant sources are
+[`stable_hash_provider.rs`](../../../rspace++/src/rspace/hashing/stable_hash_provider.rs),
+[`rho_path.rs`](../../../rspace++/src/rspace/rho_path.rs),
+[`record_index.rs`](../../../rspace++/src/rspace/record_index.rs), and the cold lookup in
+[`rspace_history_reader_impl.rs`](../../../rspace++/src/rspace/history/instances/rspace_history_reader_impl.rs).
+The input normalizer orders syntactic sources, whereas evaluation substitutes those
+sources without reordering binds. No reviewed check establishes that every supported
+resolved group or admitted DAG state excludes order aliases.
+
+Two deterministic legacy tests freeze the distinction between duplicate-key refusal
+inside one checkpoint and successful last-writer updates across checkpoints. A third
+test, `ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not`, uses
+actual `OpenDagTransaction` sealing and full semantic readmission under the fixture's
+`TestSemanticProfile` (string channels, patterns, data and continuations). Both orders insert
+the same two ordered continuation endpoints with identical final join records.
+Their exact DAG manifests, versions and three namespace roots agree; their legacy
+roots and aliased cold continuation reads do not. The fixture pins both legacy roots:
+
+| Checkpoint order | Frozen legacy root, hexadecimal |
+|---|---|
+| Forward group, then reversed group | `8e7af529977c2d5cb4e85c199482ccabcf5c9b83d77a90ff3dd76f9e0e8ef89b` |
+| Reversed group, then forward group | `384b28f6f87a7f079c4759dff7abaa1010218a4f01957d4160c934fd92fdd7f7` |
+
+This refutes an unconditional function from the three ordered namespace roots to the
+legacy root **for the tested insertion correspondence**. It is not an end-to-end
+Rholang execution, a proof of all supported trace reachability, or permission to
+normalize channel order, reject previously successful calls, or alter hash preimages.
+
+### Selected contract and realization premises
+
+A *coupled binding* authenticates the exact semantic manifest, compatibility facet,
+store/profile/schema domain, bridge version and certified legacy root. A *compatibility
+facet* is the recoverable information required to preserve the frozen legacy commitment
+and observable lookup behavior. It is mandatory authority data when it cannot be
+derived from the three semantic roots; it is not an accelerator, cache, inherited
+provenance field, second current pointer or independent backend acknowledgement.
+
+Let $`S`$ denote semantic state, $`F`$ compatibility information, $`C=(S,F)`$ the coupled
+state, and $`H`$ legacy history. The required relation $`\operatorname{Refines}(C,H)`$
+must establish matching supported cold/reset reads, successful transitions and refusal
+behavior. The bridge must preserve that relation on every supported transition and
+construct an admitted coupled successor whenever the frozen legacy operation succeeds.
+Neither semantic admission alone nor the abstract predicate proves that construction.
+
+The model's `frozen_history_bytes` is a mathematical sequence describing the frozen
+history interpretation, **not a prescribed flat runtime buffer or a second serialization
+of all RSpace**. Concrete design must use native PathMap sharing, incremental updates,
+existing byte-native canonical leaves and checked streaming where applicable. It must
+prove compatibility without restoring a separately current LMDB/RadixHistory backend.
+Canonical layout, incremental maintenance and space/time bounds are still implementation
+obligations; this section does not silently add a fourth namespace to existing files.
+
+[`RSpaceConsensusIdentity.v`](../../../formal/rocq/stack_safe_pda/theories/RSpaceConsensusIdentity.v)
+uses exact reference tokens and abstract history sequences. `binding_lookup` means
+authenticated exact lookup under the selected owner; its functional result prevents
+one reference from certifying two different bindings. `frozen_root`, `frozen_read`,
+`legacy_refinement` and `successful_refined_transition` are explicit realization
+parameters. The model proves neither BLAKE2b collision resistance nor codec extraction,
+disk authentication, total import, or full Rholang transition equivalence.
+
+Publication installs one complete current/retained/alias catalog in one abstract step.
+It requires authenticated **post-publication** lookup, retained target and a resolvable
+coupled-equivalent representative, and proves the successor is selected and usable.
+The existing WAL/publication protocol must realize atomic installation, cancellation,
+crash ordering and preservation of all still-required roots/aliases. Recovery rechecks
+the exact binding and representative and composes the caller model's full observable
+incarnation freshness rule; the registry's completeness remains an implementation premise.
+
+Aliases are not bijections. Several exact manifests/provenances may have equivalent
+coupled observations; a manifest can also require different compatibility information
+after different histories. One legacy lookup appoints exactly one retained representative.
+Changing that representative requires equal coupled observations, not merely equal
+semantic roots, and does not retarget existing reader/export pins. The replacement
+relation proves candidate equivalence and unchanged pin identity, not lease persistence,
+catalog mutation or garbage-collection correctness.
+
+### Exhaustive capstone-to-property extraction
+
+The following 28 rows exhaust the model's named capstones. **Future** entries are binding
+executable acceptance targets for the indicated existing task, not currently passing
+runtime evidence. This distinction prevents a checked abstract contract from being
+reported as a completed bridge implementation.
+
+| ID | Capstone | Concrete evidence or required executable property |
+|---|---|---|
+| CI-01 | `ordered_insertions_commute` | Actual sealed/readmitted DAG fixture compares both exact final manifests and all three roots. |
+| CI-02 | `legacy_alias_insertions_do_not_commute` | Actual legacy repository fixtures compare successful sequential roots and both ordered cold reads. |
+| CI-03 | `no_unconditional_ordered_state_projection` | Combined coherent-join DAG/legacy fixture; future 7942 adds full supported runtime trace correspondence. |
+| CI-04 | `checked_requires_exact_authentication_and_refinement` | Missing-authentication and missing-refinement formal controls; future 7942 independently corrupts each required certificate/closure component. |
+| CI-05 | `authenticated_reference_identifies_exact_binding` | Same-reference/different-facet formal control; future 7942 exercises digest/full-byte equality checks and exact lookup. |
+| CI-06 | `checked_preserves_domain_profile_schema_and_version` | New generated manifest-field property and unsupported-schema property; future 7942 adds bridge/store/session-domain mutations. |
+| CI-07 | `checked_root_comes_from_frozen_compatibility` | Frozen serializer/root goldens and manifest-as-root formal control; future 7942 derives roots from actual coupled compatibility state. |
+| CI-08 | `absent_exact_authentication_refuses` | Missing-facet control; future 7942 deletes/truncates each binding/facet dependency without fallback. |
+| CI-09 | `absent_refinement_refuses` | False-refinement control; future 7942 rejects invented certificates while proving all supported successful transitions construct valid ones. |
+| CI-10 | `direct_manifest_identity_is_not_activated` | Formal version separation; future 7942 rejects unapproved direct-manifest consensus identities. |
+| CI-11 | `unknown_binding_version_is_not_activated` | Formal unsupported tag; future 7942 varies every unsupported bridge version. |
+| CI-12 | `mixed_session_cannot_resolve` | Formal session mismatch; future 7942/7938–7940 qualify peer negotiation, resume and unknown identities. |
+| CI-13 | `alias_requires_appointed_retained_coupled_target` | Reuses caller alias contract; future 7931/7942 resolve only owner-appointed retained coupled targets. |
+| CI-14 | `unappointed_provenance_cannot_resolve` | Generated manifest test shows provenance changes exact manifest bytes; future 7942 forbids using that hint as an alias certificate. |
+| CI-15 | `alias_resolution_identifies_one_exact_binding` | Reuses exact singleton alias resolution and functional binding lookup; future 7942 injects ambiguous and conflicting aliases. |
+| CI-16 | `unretained_binding_cannot_resolve` | Formal retained-membership guard; future 7942/7943–7944 test removed aliases and retained closures. |
+| CI-17 | `equivalent_checked_bindings_preserve_root_and_reads` | Exact compatibility-byte equivalence theorem; future 7942 compares concrete canonical reads/roots across provenance variants. |
+| CI-18 | `replacement_preserves_coupled_observations_and_exact_pin` | Formal replacement relation; future 7943–7944 keep old leased targets readable through atomic representative replacement. |
+| CI-19 | `publication_selects_one_binding_and_exposes_legacy_root` | Positive publication witness and manifest-as-root control; future 7931/7942 exercise actual checkpoint acknowledgement/root APIs. |
+| CI-20 | `completed_publication_is_closed_under_selection` | Prepublication-only lookup control; future 7931 immediately authenticates and uses the acknowledged successor. |
+| CI-21 | `completed_publication_has_a_usable_equivalent_alias` | Positive publication witness; future 7942 resolves every acknowledged external root after commit and restart. |
+| CI-22 | `publication_requires_refined_transition_not_just_semantic_admission` | Explicit transition premise; future 7942 differentially generates successful/refused legacy and coupled operations, including ordered aliases. |
+| CI-23 | `publication_invalidates_old_permit` | Reuses caller generation rules; future 7931/7932 reject stale operations even when the legacy root returns to an old value. |
+| CI-24 | `recovery_preserves_exact_selected_binding_and_legacy_observations` | Positive recovery witness; future 7932/7942 terminate the OS process at each durable boundary and compare exact resumed state/root/reads. |
+| CI-25 | `missing_recovery_binding_cannot_fall_back` | Missing-facet and restart-reauthentication controls; future 7942 refuses missing selected authority rather than falling back to provenance or LMDB. |
+| CI-26 | `recovered_owner_rejects_every_observable_permit` | Raw-reopen incarnation control; future 7931/7932 retain old handles across multiple restarts and reject each obsolete incarnation. |
+| CI-27 | `recovered_owner_has_a_usable_equivalent_alias` | Positive recovery witness; future 7932/7942 immediately reset/read/export using recovered legacy roots. |
+| CI-28 | `same_semantic_manifest_does_not_imply_coupled_equivalence` | Distinct-facet formal witness plus the coherent DAG/legacy fixture; future 7942 never overwrites identity mappings solely by manifest equality. |
+
+The companion `RSpaceConsensusIdentityMutants.v` contains three positive witnesses
+(checked binding, completed publication, checked restart) and seven negative controls.
+The proof runner requires 28 and 10 closed-context reports, independent `coqchk` success,
+and placeholder rejection. The controls use a deliberately simple root/read abstraction;
+they are not an independent implementation of the frozen legacy hash algorithm.
+
+### Implementation ownership and completion boundary
+
+Task 7942 owns concrete coupled identity/facet construction, complete successful/refused
+transition refinement and consensus qualification; 7931 owns the actual operation gate;
+7932 owns caller lifecycles. Tasks 7934–7936 import all retained roots and shadow/cutover;
+7938–7940 transfer/version/resume the full coupled closure; 7943–7944 retain/reclaim facets,
+aliases and pins. They remain required and reachable under campaign 4131. Task 7942 must
+decompose independent implementation algorithms before broadening its execution, without
+introducing a dependency cycle with operation-gate task 7931.
+
+No physical format, current backend, Rholang match/normalization rule, legacy root preimage,
+blessed contract, compute/storage charge, or consensus/API epoch changes in this checkpoint.
+If exact preserved behavior cannot be realized, evidence and an explicit versioned decision
+are required; silently dropping valid states or adding new refusals is not an implementation
+of this contract.
+
 ## Refinement completion rule
 
 The runtime may be declared conformant only when:

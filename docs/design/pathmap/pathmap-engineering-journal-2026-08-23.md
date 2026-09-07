@@ -5100,6 +5100,71 @@ preserve all five journals and live snapshots, prevent stale HotStore mutation,
 and retain CLI/REPL/FFI behavior. Root identity and migration remain their existing
 tasks. This checkpoint is not a full-workspace CI or performance claim.
 
+### J-071 — 2026-09-07: bind legacy identity to coupled state, not a presumed root projection
+
+**QUESTION.** Can the planned durable RSpace bridge compute the unchanged legacy root
+from the three ordered PathMap namespace roots alone? Task 7941 freezes the contract
+before runtime cutover, using the existing required-track scheduler.
+
+**MEASURED COUNTEREXAMPLE.** Reversed two-channel groups share the legacy continuation
+hash, but have distinct ordered RhoPath prefixes. One legacy checkpoint refuses both
+projected keys in a single batch; separate checkpoints succeed and overwrite the shared
+bucket. Both ordered cold readers then return the last continuation, and deletion through
+either group removes the shared bucket. The new fixtures pin exact literal roots.
+
+A coherent-join comparison uses real DAG transaction sealing and full semantic readmission
+under `TestSemanticProfile` (string channels, patterns, data and continuations).
+Both insertion orders yield the same exact manifest, version and three namespace roots,
+while the successful legacy checkpoints yield different roots and aliased reads. Final join
+leaves agree. This refutes the unconditional projection for that transition correspondence,
+not the complete Rholang trace relation. Normalizer sorting of syntactic receive sources is
+not evidence that resolved groups are globally order-canonical.
+
+**DECISION.** Preserve legacy consensus identity through an authenticated *coupled binding*:
+semantic manifest plus sufficient recoverable compatibility information, exact domain/version
+and legacy-root certificate. Compatibility information that cannot be derived from semantic
+roots is required authority data, not a discardable accelerator. It has no independently
+current backend, writer, commit acknowledgement or election. Existing byte-native PathMap
+state and the one WAL/catalog publication authority remain the implementation foundation.
+The mathematical history sequence does not prescribe flattening PathMap, decoding `Par`,
+buffering all RSpace, or retaining a second current RadixHistory database.
+
+Equal semantic roots no longer justify alias representative replacement: require equivalent
+coupled observations and preserve existing exact pins. Inherited legacy provenance remains
+a hint, not a successor certificate. Direct-manifest consensus identity remains unactivated.
+
+**FORMAL RESULT.** The reviewed contract proves 28 capstones. Review exposed and corrected
+prepublication-only authentication and restart-incarnation reuse in the initial draft.
+Completed publication now installs a checked selected successor with a usable retained alias;
+recovery reauthenticates that coupled binding and uses all observable prior incarnations.
+The [complete invariant extraction](generation-checkpoint-invariant-catalog-2026-08-28.md#preserved-legacy-consensus-identity-contract-2026-09-07)
+names every theorem, concrete witness, future property and owning task. Hashing, complete
+compatibility construction, legacy trace refinement and physical catalog atomicity are explicit
+realization premises, not hidden completed proofs.
+
+**IMPLEMENTATION BOUNDARY.** Policy and abstract contract are selected; bridge realization
+and activation remain incomplete. Existing tasks 7942, 7931/7932, migration, state-sync and
+retention tasks own those requirements. No new production algorithm, dependency, upstream
+PathMap edit, serialized format, root/API epoch, blessed contract or charge rule changes here.
+This is correctness/compatibility evidence, not a benchmark or full-workspace CI claim.
+
+**MEASURED VERIFICATION.** All 28 capstones and ten controls are closed under the global
+context; the controls comprise three successful binding/publication/recovery witnesses and
+seven negative controls. Independent kernel checking passes. Release checks pass 35 tests:
+seven manifest-codec tests (including two 64-case properties, fixed seed `41317941`), one
+coherent DAG/legacy fixture, twelve history-repository tests, seven actual-Par serializer
+goldens, five RSpace serializer goldens and three replay-order tests. The three root fixtures
+pin literal digests captured from the unchanged legacy implementation, rather than merely
+comparing two new encoders. The root fixtures use string-typed repositories, not a full
+Rholang interpreter execution. Initial fixture type/visibility and property-macro compilation
+errors were corrected; failed builds contribute no passing-test count.
+
+Rocq and kernel checking used a 2 GiB hard memory cap; Rust used an 8 GiB cap, four build
+workers and two test threads, with swap disabled throughout. These are configured bounds,
+not measured peak RSS. Stable evidence digests are recorded in pgmcp. No stack-growth,
+allocation, latency or throughput result was collected, so this entry adds no performance
+claim to the stack-safety report. Existing source/format warnings remain outside this slice.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

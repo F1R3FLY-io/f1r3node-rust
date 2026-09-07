@@ -72,6 +72,13 @@ rocq_compile_with_closed_count theories/RSpaceCallerAuthorityMutants.v 20 \
   "the caller-authority negative controls"
 rocq_check_modules "RSpace caller-authority contract" \
   StackSafePDA.RSpaceCallerAuthority StackSafePDA.RSpaceCallerAuthorityMutants
+rocq_reject_placeholders theories/RSpaceConsensusIdentity.v theories/RSpaceConsensusIdentityMutants.v
+rocq_compile_with_closed_count theories/RSpaceConsensusIdentity.v 28 \
+  "the preserved legacy consensus-identity contract capstones"
+rocq_compile_with_closed_count theories/RSpaceConsensusIdentityMutants.v 10 \
+  "the consensus-identity nonvacuity witness and negative controls"
+rocq_check_modules "RSpace consensus-identity contract" \
+  StackSafePDA.RSpaceConsensusIdentity StackSafePDA.RSpaceConsensusIdentityMutants
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
   theories/PathMapCanonicalStreamPublicationBase.v
 rocq_compile_with_closed_count \

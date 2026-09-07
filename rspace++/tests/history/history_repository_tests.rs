@@ -125,6 +125,88 @@ async fn canonical_data_action_is_root_equivalent_to_typed_data_action() {
     assert_eq!(encode_datums(&fetched), encode_datums(&data));
 }
 
+fn frozen_group_action(
+    channels: &[String],
+    label: &str,
+) -> (HotStoreAction<String, String, String, String>, WaitingContinuation<String, String>) {
+    let patterns = vec!["first-pattern".to_string(), "second-pattern".to_string()];
+    let body = label.to_string();
+    let record = WaitingContinuation {
+        patterns: Arc::new(patterns.clone()),
+        continuation: Arc::new(body.clone()),
+        persist: false,
+        peeks: BTreeSet::from([0]),
+        source: Consume::create(&channels.to_vec(), &patterns, &body, false),
+    };
+    (
+        HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
+            channels: channels.to_vec(),
+            continuations: vec![record.clone()],
+        })),
+        record,
+    )
+}
+
+#[test]
+fn legacy_ordered_groups_share_a_projected_key_but_duplicate_batch_refuses() {
+    let forward = vec!["bridge-channel-a".to_string(), "bridge-channel-b".to_string()];
+    let reversed = vec![forward[1].clone(), forward[0].clone()];
+    assert_ne!(forward, reversed);
+    assert_eq!(hash_from_slice(&forward), hash_from_slice(&reversed));
+    let (first, _) = frozen_group_action(&forward, "first-body");
+    let (second, _) = frozen_group_action(&reversed, "second-body");
+    let initial = create_empty_repository();
+    let before = initial.current_authority_root().unwrap();
+    assert!(matches!(
+        initial.checkpoint(vec![first, second]),
+        Err(HistoryError::ActionError(message)) if message == "Cannot process duplicate actions on one key.",
+    ));
+    assert_eq!(initial.current_authority_root().unwrap(), before);
+}
+
+#[test]
+fn legacy_ordered_group_alias_updates_and_deletes_follow_successful_history() {
+    let forward = vec!["bridge-channel-a".to_string(), "bridge-channel-b".to_string()];
+    let reversed = vec![forward[1].clone(), forward[0].clone()];
+    let (first, first_record) = frozen_group_action(&forward, "first-body");
+    let (second, second_record) = frozen_group_action(&reversed, "second-body");
+    let first_repo = create_empty_repository()
+        .checkpoint(vec![first.clone()])
+        .unwrap();
+    let first_root = first_repo.root();
+    let first_then_second = first_repo.checkpoint(vec![second.clone()]).unwrap();
+    let second_repo = create_empty_repository().checkpoint(vec![second]).unwrap();
+    let second_root = second_repo.root();
+    let second_then_first = second_repo.checkpoint(vec![first]).unwrap();
+    assert_ne!(first_root, second_root);
+    assert_eq!(first_then_second.root(), second_root);
+    assert_eq!(second_then_first.root(), first_root);
+    let first_reader = first_then_second.get_history_reader(&second_root).unwrap();
+    let second_reader = second_then_first.get_history_reader(&first_root).unwrap();
+    for group in [&forward, &reversed] {
+        assert_eq!(first_reader.base().get_continuations(group), vec![second_record.clone()]);
+        assert_eq!(second_reader.base().get_continuations(group), vec![first_record.clone()]);
+    }
+    let deleted = first_then_second
+        .checkpoint(vec![HotStoreAction::Delete(DeleteAction::DeleteContinuations(
+            DeleteContinuations { channels: forward },
+        ))])
+        .unwrap();
+    assert_eq!(deleted.root(), RadixHistory::empty_root_node_hash());
+    assert_eq!(
+        hex::encode(first_root.bytes()),
+        "d3f3279a04e88938aa8e73e679c14c976eaced4c90174992bcf294d2a05e3910"
+    );
+    assert_eq!(
+        hex::encode(second_root.bytes()),
+        "9d2940172cca9db41ea654c80b53314be74480ef0f42ffc374214ede80b7cf3e"
+    );
+    assert_eq!(
+        hex::encode(deleted.root().bytes()),
+        "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
+    );
+}
+
 #[tokio::test]
 async fn canonical_continuation_action_is_root_and_delete_equivalent_to_typed_action() {
     let channels = vec![test_channel_continuations_prefix(), "second-channel".to_string()];
