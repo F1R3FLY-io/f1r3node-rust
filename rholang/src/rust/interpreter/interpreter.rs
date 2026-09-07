@@ -10,8 +10,8 @@ use tracing::{event, Level};
 
 use super::accounting::costs::Cost;
 use super::accounting::{RuntimeBudget, SignedProcess};
-use super::compiler::compiler::Compiler;
 use super::errors::InterpreterError;
+use super::frontend::{prepare_program, LegacyCompilerFrontend, PreparedProgram, ProgramFrontend};
 use super::metrics_constants::{
     INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC, INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
     INTERPRETER_METRICS_SOURCE,
@@ -55,122 +55,156 @@ impl Interpreter for InterpreterImpl {
         normalizer_env: HashMap<String, Par>,
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError> {
-        // Using tracing events for async context
-        // Scala spans: "set-initial-cost", "build-normalized-term", "reduce-term"
-        // Implemented as debug events since this is an async function
-        if initial_phlo.value < 0 {
-            return Ok(EvaluateResult {
-                cost: Cost::create(0, "invalid initial phlo"),
-                errors: vec![InterpreterError::IllegalArgumentError(format!(
-                    "Initial phlo must be non-negative, got {}",
-                    initial_phlo.value
-                ))],
-                mergeable: HashMap::new(),
-            });
+        self.inj_attempt_with_frontend(
+            reducer,
+            &LegacyCompilerFrontend,
+            term,
+            initial_phlo,
+            normalizer_env,
+            rand,
+        )
+        .await
+    }
+}
+
+impl InterpreterImpl {
+    fn invalid_initial_budget(initial_phlo: &Cost) -> Option<EvaluateResult> {
+        (initial_phlo.value < 0).then(|| EvaluateResult {
+            cost: Cost::create(0, "invalid initial phlo"),
+            errors: vec![InterpreterError::IllegalArgumentError(format!(
+                "Initial phlo must be non-negative, got {}",
+                initial_phlo.value
+            ))],
+            mergeable: HashMap::new(),
+        })
+    }
+
+    pub async fn inj_attempt_with_frontend(
+        &self,
+        reducer: &DebruijnInterpreter,
+        frontend: &dyn ProgramFrontend,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        if let Some(rejection) = Self::invalid_initial_budget(&initial_phlo) {
+            return Ok(rejection);
         }
 
-        let evaluation_result: Result<EvaluateResult, InterpreterError> = {
-            // Phase: build-normalized-term — parse the source string into an AST.
-            let parsed = {
-                let phase_start = Instant::now();
-                event!(
-                    Level::DEBUG,
-                    mark = "started-build-normalized-term",
-                    "inj_attempt"
-                );
-                let result = match Compiler::source_to_adt_with_normalizer_env(term, normalizer_env)
-                {
-                    Ok(p) => {
-                        event!(
-                            Level::DEBUG,
-                            mark = "finished-build-normalized-term",
-                            "inj_attempt"
-                        );
-                        Ok(p)
-                    }
-                    Err(e) => {
-                        event!(
-                            Level::DEBUG,
-                            mark = "failed-build-normalized-term",
-                            "inj_attempt"
-                        );
-                        Err(self.handle_error(InterpreterError::ParserError(e.to_string())))
-                    }
-                };
-                metrics::histogram!(
-                    INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC,
-                    "source" => INTERPRETER_METRICS_SOURCE
-                )
-                .record(phase_start.elapsed().as_secs_f64());
-                match result {
-                    Ok(p) => p,
-                    Err(err) => return err,
+        // Phase: build-normalized-term — parse the source string into an AST.
+        let parsed = {
+            let phase_start = Instant::now();
+            event!(
+                Level::DEBUG,
+                mark = "started-build-normalized-term",
+                "inj_attempt"
+            );
+            let result = match prepare_program(frontend, term, normalizer_env) {
+                Ok(p) => {
+                    event!(
+                        Level::DEBUG,
+                        mark = "finished-build-normalized-term",
+                        "inj_attempt"
+                    );
+                    Ok(p)
+                }
+                Err(e) => {
+                    event!(
+                        Level::DEBUG,
+                        mark = "failed-build-normalized-term",
+                        "inj_attempt"
+                    );
+                    Err(self.handle_error(InterpreterError::ParserError(e.to_string())))
                 }
             };
-            // Trace: set-initial-cost (matching Scala's Span[F].traceI("set-initial-cost"))
-            let parsed = {
-                event!(
-                    Level::DEBUG,
-                    mark = "started-set-initial-cost",
-                    "inj_attempt"
-                );
-                let signed_process = SignedProcess::metered(
-                    parsed,
-                    self.c.signature(),
-                    u64::try_from(initial_phlo.value).unwrap_or(0),
-                );
-                self.c.reset_from_signed_process(&signed_process);
-                event!(
-                    Level::DEBUG,
-                    mark = "finished-set-initial-cost",
-                    "inj_attempt"
-                );
-                // ★ BY MOVE, not by clone. This block used to `.source_process()`
-                // `.cloned()` the term it had handed to `SignedProcess::metered`
-                // eleven lines above, and then drop the original at the closing
-                // brace — TWO Θ(nesting-depth) native-stack traversals of an
-                // attacker-chosen term (`<Par as Clone>::clone`, 2,852 B/level
-                // release, plus the derived `drop_in_place::<Par>`, 464 B/level),
-                // where one move suffices. Neither bought anything: the metering
-                // handshake `reset_from_signed_process` reads only `.token()`, and
-                // `token()` is `None` on the `Signed` arm, so `process` is never
-                // observed by it. See `SignedProcess::into_source_process`.
-                signed_process
-                    .into_source_process()
-                    .expect("metered deploy must retain source process")
-            };
-            // Reset mergeable-channel tracking before reducing the new term.
-            {
-                let mut merge_chs_lock = self.merge_chs.write().await;
-                merge_chs_lock.clear();
-            }
-            // Phase: reduce-term — execute the parsed AST through RSpace.
-            let phase_start = Instant::now();
-            event!(Level::DEBUG, mark = "started-reduce-term", "inj_attempt");
-            let reduce_result = reducer.inj(parsed, rand).await;
             metrics::histogram!(
-                INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
+                INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC,
                 "source" => INTERPRETER_METRICS_SOURCE
             )
             .record(phase_start.elapsed().as_secs_f64());
-            match reduce_result {
-                Ok(()) => {
-                    event!(Level::DEBUG, mark = "finished-reduce-term", "inj_attempt");
-                    let mergeable_channels = { self.merge_chs.read().await.clone() };
-
-                    Ok(EvaluateResult {
-                        cost: self.c.total_cost(),
-                        errors: Vec::new(),
-                        mergeable: mergeable_channels,
-                    })
-                }
-                Err(e) => {
-                    event!(Level::DEBUG, mark = "failed-reduce-term", "inj_attempt");
-                    self.handle_error(e)
-                }
+            match result {
+                Ok(p) => p,
+                Err(err) => return err,
             }
         };
-        evaluation_result
+
+        self.inj_prepared(reducer, parsed, initial_phlo, rand).await
+    }
+
+    pub async fn inj_prepared(
+        &self,
+        reducer: &DebruijnInterpreter,
+        prepared: PreparedProgram,
+        initial_phlo: Cost,
+        rand: Blake2b512Random,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        if let Some(rejection) = Self::invalid_initial_budget(&initial_phlo) {
+            return Ok(rejection);
+        }
+
+        // Trace: set-initial-cost (matching Scala's Span[F].traceI("set-initial-cost"))
+        let parsed = {
+            event!(
+                Level::DEBUG,
+                mark = "started-set-initial-cost",
+                "inj_attempt"
+            );
+            let signed_process = SignedProcess::metered(
+                prepared.into_par(),
+                self.c.signature(),
+                u64::try_from(initial_phlo.value).expect("nonnegative i64 budget fits u64"),
+            );
+            self.c.reset_from_signed_process(&signed_process);
+            event!(
+                Level::DEBUG,
+                mark = "finished-set-initial-cost",
+                "inj_attempt"
+            );
+            // ★ BY MOVE, not by clone. This block used to `.source_process()`
+            // `.cloned()` the term it had handed to `SignedProcess::metered`
+            // eleven lines above, and then drop the original at the closing
+            // brace — TWO Θ(nesting-depth) native-stack traversals of an
+            // attacker-chosen term (`<Par as Clone>::clone`, 2,852 B/level
+            // release, plus the derived `drop_in_place::<Par>`, 464 B/level),
+            // where one move suffices. Neither bought anything: the metering
+            // handshake `reset_from_signed_process` reads only `.token()`, and
+            // `token()` is `None` on the `Signed` arm, so `process` is never
+            // observed by it. See `SignedProcess::into_source_process`.
+            signed_process
+                .into_source_process()
+                .expect("metered deploy must retain source process")
+        };
+        // Reset mergeable-channel tracking before reducing the new term.
+        {
+            let mut merge_chs_lock = self.merge_chs.write().await;
+            merge_chs_lock.clear();
+        }
+        // Phase: reduce-term — execute the parsed AST through RSpace.
+        let phase_start = Instant::now();
+        event!(Level::DEBUG, mark = "started-reduce-term", "inj_attempt");
+        let reduce_result = reducer.inj(parsed, rand).await;
+        metrics::histogram!(
+            INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
+            "source" => INTERPRETER_METRICS_SOURCE
+        )
+        .record(phase_start.elapsed().as_secs_f64());
+        match reduce_result {
+            Ok(()) => {
+                event!(Level::DEBUG, mark = "finished-reduce-term", "inj_attempt");
+                let mergeable_channels = { self.merge_chs.read().await.clone() };
+
+                Ok(EvaluateResult {
+                    cost: self.c.total_cost(),
+                    errors: Vec::new(),
+                    mergeable: mergeable_channels,
+                })
+            }
+            Err(e) => {
+                event!(Level::DEBUG, mark = "failed-reduce-term", "inj_attempt");
+                self.handle_error(e)
+            }
+        }
     }
 }
 

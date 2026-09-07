@@ -30,7 +30,7 @@ it must not be read as a proof of canonical protobuf bytes.
 
 | Model operation or value | Required Rust correspondence |
 |---|---|
-| `PrepareSource` | One call to the selected frontend with the exact source and environment |
+| `PrepareSource` | One `prepare_program` call with the exact source and environment; ABI rejection precedes the provider's `prepare` call |
 | `PreparationFailed` | A distinct preparation error mapped to zero-cost `ParserError`, never generic stale-budget accounting |
 | `ReadSignature` | `self.c.signature()` after successful preparation; not a frontend-supplied signature |
 | `metered` | `SignedProcess::Par(Signed(...), Token(...))` constructed by `SignedProcess::metered` |
@@ -49,6 +49,12 @@ These bindings refer to
 [rho_runtime.rs](../../rholang/src/rust/interpreter/rho_runtime.rs).
 The model is a refinement specification for their extraction, not an automatic
 proof that arbitrary Rust code implements the table.
+
+The ABI check is part of the abstract preparation operation.
+`source_prepares_exactly_once` counts that operation, not invocations of an
+incompatible provider: an unsupported version invokes only `abi_version`,
+not `prepare`. Both version and provider failures use the same preparation
+error branch. A negative budget invokes neither method.
 
 The existing [runtime-budget model](../../formal/rocq/cost_accounted_rho/theories/RuntimeBudgetRefinement.v)
 provides separate accounting results. This admission proof does not import its
@@ -133,6 +139,55 @@ These theorems cover post-result restoration. Checkpoint creation, convenience
 wrapper random-state generation and their order remain unchanged source
 operations. Raw admission gains no implicit checkpoint or blanket rollback
 guarantee.
+
+## Executable correspondence checks
+
+The [admission regression suite](../../rholang/tests/prepared_program_admission_spec.rs)
+checks the extracted boundary with the existing evaluator. A counting frontend
+checks exact source/environment inputs and exactly one preparation; negative
+budgets and incompatible ABIs reject before the relevant provider calls.
+Preparation failures follow a real charged deployment: the previous budget,
+signature, cost log, stored merge map and RSpace root remain unchanged.
+
+The source/prepared corpus compares costs, diagnostics, merge results and
+checkpoint roots with the same nonunit deployment signature and random state.
+Fixtures cover empty processes, sends, private names, communication, token
+exhaustion and reducer errors. A failed receive demonstrates that raw prepared
+admission leaves its consumed-message effect visible, while the existing
+source convenience wrapper restores RSpace. Both retain the existing
+accounting and merge-tracking behavior.
+
+The lifecycle test builds and disposes 50,000 nested process nodes on a 128 KiB
+native stack, both with and without consuming the artifact first. It reuses
+the generated `Par` destructor. A shallow allocation-address and exact
+protobuf-byte check verifies borrowing and moving without cloning. These are
+concrete regressions, not universal Rust memory proofs or substitutes for
+neutral-IR/canonical-byte conformance.
+
+The first test build rejected missing mutable bindings in checkpoint fixtures;
+correcting them changed no runtime logic. All ten focused tests subsequently
+passed, as did the seven frozen-contract and five existing interpreter tests.
+Logs are `target/verification/prepared-program-admission-tests-2.log` and
+`target/verification/prepared-admission-existing-regressions-1.log`.
+
+```sh
+mkdir -p target/test-tmp
+systemd-run --user --scope --quiet \
+  -p MemoryMax=8G -p MemoryHigh=7680M -p MemorySwapMax=0 \
+  env CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 TMPDIR="$PWD/target/test-tmp" \
+  cargo test --locked --offline -p rholang \
+  --test prepared_program_admission_spec --test interpreter_spec \
+  -- --test-threads=1
+```
+
+These are local results. Independent completion verification and public
+frontend activation remain separate gates.
+
+Strict Clippy passed for the changed library and admission/baseline tests with
+warnings denied; the log is `target/verification/prepared-admission-clippy-1.log`.
+Formatting and whitespace checks also passed. The independent read-only review
+found no blocking code/proof correspondence defect; that review does not replace
+execution evidence or the separate end-to-end release gate.
 
 ## Reproduction and bounded compilation
 

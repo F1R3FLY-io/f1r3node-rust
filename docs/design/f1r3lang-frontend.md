@@ -123,6 +123,52 @@ not change that setting. Checkpoint reversion restores RSpace, not the budget or
 stored merge tracking. A zero-cost error result therefore does not by itself
 establish absence of earlier reducer effects or a full state rollback.
 
+## Host prepared-program API
+
+The extracted boundary is implemented in
+[frontend.rs](../../rholang/src/rust/interpreter/frontend.rs).
+`ProgramFrontend` receives the exact source and an owned normalization
+environment. `prepare_program` checks its ABI version before invoking
+`prepare`; an unsupported version is a preparation failure. ABI version 1
+identifies this host contract, not a language-image or canonical-wire version.
+There is no global mutable frontend selection.
+
+`PreparedProgram::from_normalized` packages a trusted adapter's normalized
+`Par`. It does not validate untrusted input, establish frontend neutrality,
+verify a language certificate or grant installation authority. This is an
+in-process host transport, not the future neutral frontend artifact. A frontend
+implementation is trusted Rust code and must not capture and mutate the live
+budget or RSpace while preparing. The interface supplies neither of those
+objects, but cannot sandbox arbitrary Rust implementations.
+
+The artifact is not `Clone`. `as_par` borrows it for display or diagnostics;
+`into_par` consumes it. Its lifecycle reuses the generated iterative `Par`
+destructor and does not introduce another recursive teardown mechanism.
+This contract prevents accidental reuse of the same owner; it does not claim
+that trusted callers cannot explicitly copy a borrowed process.
+
+| Host operation | Preparation | Execution and rollback |
+|---|---|---|
+| `prepare_program(frontend, source, environment)` | Check ABI, then invoke the explicit frontend once | None |
+| `artifact.as_par()` | None; borrow the existing process | None |
+| `runtime.evaluate_with_frontend(frontend, source, budget, environment, random)` | Reject negative budget before checking ABI and preparing | Shared metered entry; no implicit checkpoint |
+| `runtime.evaluate_prepared(artifact, budget, random)` | None; consume the supplied artifact | Reject negative budget or use the same metered entry; no implicit checkpoint |
+
+For display followed by execution, prepare once, borrow with `as_par`, then
+move that artifact into `evaluate_prepared`. This explicit two-phase use
+prepares before admission checks the budget. Use `evaluate_with_frontend` when
+a negative budget must reject before any preparation. Neither operation
+supplies rollback or a language capability. Callers requiring transactional
+evaluation own the checkpoint policy.
+
+Admission must be serialized between deployments, as required by the existing
+budget reset. The proof and API do not authorize overlapping resets on a
+shared runtime. The new operations do not activate public MeTTaIL parsing.
+Existing source evaluation delegates to the crate-private legacy compiler
+adapter until the separately gated cutover. Moving that call from
+`interpreter.rs` to `frontend.rs` updates the baseline reference-file inventory
+without changing historical source digests or weakening its check.
+
 ## Neutral frontend and language services
 
 The existing MeTTaIL lowerer emits node-specific `Par` values using an explicit

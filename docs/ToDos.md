@@ -80,6 +80,21 @@ next_steps:
 
 See the [proof and correspondence](theory/f1r3lang-prepared-admission.md).
 
+```yaml
+id: rholang14-node-prepared-admission
+status: review
+claimed_by: codex-f1r3lang
+branch: feature/f1r3lang-mettail-only
+acceptance:
+  - Explicit versioned preparation shares the existing metered reducer path
+  - Negative and preparation failures preserve prior host state
+  - Source/prepared costs, errors, RNG and RSpace results agree
+  - Artifact ownership remains stack-safe and public routing is unchanged
+next_steps:
+  - Independent completion verification remains required
+  - Proceed to the separately planned neutral frontend extraction
+```
+
 <!-- Epochs ordered by priority. EPOCH-001/002 are system-integration alignment (US-001). EPOCH-003-008 are migration (US-002). -->
 
 ---

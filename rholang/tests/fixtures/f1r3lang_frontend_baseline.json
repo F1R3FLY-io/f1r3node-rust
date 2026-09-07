@@ -255,7 +255,7 @@
     "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_normalizer.rs",
     "rholang/src/rust/interpreter/compiler/normalizer/processes/p_send_sync_normalizer.rs",
     "rholang/src/rust/interpreter/compiler/normalizer/processes/p_var_ref_normalizer.rs",
-    "rholang/src/rust/interpreter/interpreter.rs",
+    "rholang/src/rust/interpreter/frontend.rs",
     "rholang/src/rust/interpreter/pretty_printer.rs",
     "rholang/src/rust/interpreter/test_utils/par_builder_util.rs"
   ],

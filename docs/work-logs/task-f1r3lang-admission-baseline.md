@@ -4,8 +4,8 @@ status: review
 handoff_status: ready
 branch: feature/f1r3lang-mettail-only
 next_steps:
-  - Prove the prepared-program transition contract before changing runtime behavior
-  - Extract the existing metered handoff and verify its error and checkpoint branches
+  - Complete independent verification of the locally passing admission boundary
+  - Decompose and connect the existing MeTTaIL neutral frontend and language provider
 ---
 
 # F1R3Lang admission baseline handoff
@@ -45,13 +45,39 @@ offline; no dependency manifest was changed. The resulting lockfile SHA-256 is
 Legacy parsing remains a baseline build dependency until the separately gated
 public cutover; this reconciliation does not activate or endorse a fallback.
 
-## Next implementation boundary
+## Prepared admission handoff
 
-The proof must model negative budgets, frontend failure, metered initialization,
-merge tracking, reducer invocation, existing error accounting and caller-owned
-rollback. Preserve the caller's random state and move the exact admitted
-process without cloning or reparsing it. Compile the small proof module alone,
-with a 1 GiB hard limit and no swap; do not build the entire Rocq package.
+The [formal model and executable correspondence](../theory/f1r3lang-prepared-admission.md)
+now cover negative budgets, frontend failure, metered initialization, merge
+tracking, reducer invocation, error accounting and caller-owned rollback.
+All 31 closed theorems compiled, followed by a separate successful kernel check,
+each under a 1 GiB memory cap. The runtime extraction was implemented afterward.
+
+The host API owns normalized `Par` values and reuses the existing funding,
+reducer and stack-safe process lifecycle. It neither activates a new public
+parser nor supplies the future neutral IR. Its ABI check and source preparation
+are explicit; no global frontend setting was introduced.
+
+| Admission check | Result | Log under `target/verification/` |
+|---|---|---|
+| New tests, initial build | Rejected missing mutable checkpoint fixture bindings | `prepared-program-admission-tests-1.log` |
+| Corrected admission suite | Passed, 10 tests including depth 50,000 on a 128 KiB stack | `prepared-program-admission-tests-2.log` |
+| Existing interpreter and frozen baseline | Passed, 5 and 7 tests respectively | `prepared-admission-existing-regressions-1.log` |
+| Strict library and changed-test Clippy | Passed with warnings denied | `prepared-admission-clippy-1.log` |
+
+The failed test build required only mutable fixture bindings; runtime behavior
+was not changed to accommodate it. A nonunit signature and equal random state
+are used for the source/prepared comparison. A deterministic failing receive
+distinguishes raw admission's visible consumed-message effect from the existing
+source wrapper's rollback. All test scratch files remain under `target/`.
+
+The compiler reference moved from `interpreter.rs` into `frontend.rs`; the
+baseline inventory records that reviewed move. Historical source witnesses and
+live model/accounting digests were not relaxed. Formatting, whitespace checks
+and the scoped read-only correspondence review passed. These remain local
+implementation results, not trusted release-completion evidence.
+
+## Next implementation boundary
 
 The existing MeTTaIL lowerer, neutral frontend extraction, shared language-service
 provider and actual public-route activation remain distinct follow-on work.

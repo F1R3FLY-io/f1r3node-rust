@@ -32,6 +32,7 @@ use super::accounting::{BillableTokenEvent, RuntimeBudget};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::frontend::{PreparedProgram, ProgramFrontend};
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::DebruijnInterpreter;
 use super::registry::registry_bootstrap::ast;
@@ -255,6 +256,47 @@ pub struct RhoRuntimeImpl {
 }
 
 impl RhoRuntimeImpl {
+    pub async fn evaluate_with_frontend(
+        &self,
+        frontend: &dyn ProgramFrontend,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let start = Instant::now();
+        let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
+        let result = interpreter
+            .inj_attempt_with_frontend(
+                &self.reducer,
+                frontend,
+                term,
+                initial_phlo,
+                normalizer_env,
+                rand,
+            )
+            .await;
+        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
+    pub async fn evaluate_prepared(
+        &self,
+        prepared: PreparedProgram,
+        initial_phlo: Cost,
+        rand: Blake2b512Random,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let start = Instant::now();
+        let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
+        let result = interpreter
+            .inj_prepared(&self.reducer, prepared, initial_phlo, rand)
+            .await;
+        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
     fn new(
         reducer: Arc<DebruijnInterpreter>,
         cost: RuntimeBudget,
