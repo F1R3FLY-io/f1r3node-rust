@@ -5165,6 +5165,46 @@ not measured peak RSS. Stable evidence digests are recorded in pgmcp. No stack-g
 allocation, latency or throughput result was collected, so this entry adds no performance
 claim to the stack-safety report. Existing source/format warnings remain outside this slice.
 
+### J-072 — 2026-09-07: freeze legacy retained state across process termination and rollback
+
+**QUESTION.** Which exact legacy observations must migration preserve? Scheduler-selected
+task 7933 reuses the atomic authority, affine import, canonical codec and replay corpus.
+The plan review found two coverage gaps: existing legacy reopen stayed in one process,
+and the in-memory pagination comparison deduplicated items rather than freezing the exact
+ordered page transcript. The legacy migration retry test also retains the same environment;
+it does not simulate an OS-process restart despite its informal source comment.
+
+**MEASURED BASELINE.** A new small, production-API fixture records empty, older rollback and
+latest retained roots over string-typed DATA/continuation/JOIN records. Exact current catalog,
+logical history/cold inventory and ordered pages at sizes one, two and five are frozen as
+literal fingerprints, together with the legacy roots. The child writer commits and exits
+with a dedicated status without dropping its handles; a different reader process opens LMDB
+and reproduces the complete snapshot. The test requires the dedicated exit status, preventing
+a zero-test child from appearing successful.
+
+Only the older rollback root is then imported into fresh LMDB. The later root and datum are
+absent until the recorded typed checkpoint-action suffix is replayed. Replay restores the
+exact latest root, historical reads and page transcripts while leaving the source unchanged.
+Independent review added an explicit destination-current-root, one-generation-advance and
+fresh-repository-selection check, so historical retention alone cannot satisfy replay acceptance.
+The [baseline catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#legacy-retained-root-migration-baseline-2026-09-07)
+records all literals, twelve observations, existing formal obligations and implementation owners.
+
+**VERIFICATION.** The final reviewed release source passed 45 state and six export/import
+tests; nextest separately passed the subprocess fixture. The unchanged atomic authority
+model exhausted 127 distinct states and all three negative controls violated their intended
+invariants. Rust ran under an 8 GiB hard memory cap, model checking under 2 GiB, both with
+swap disabled. The catalog records reproduction commands and the distinction between these
+configured limits and measured resource use. This is 51 distinct selected tests, not full CI.
+
+**BOUNDARIES.** This verifies committed process-termination recovery and frozen-root-plus-
+checkpoint-action replay, not power loss, arbitrary crash points, a full Rholang deploy replay,
+durable import-session resumption or the future PathMap cutover. The logical fixture maps and
+fingerprint serializer are test-only evidence, not a proposal to flatten production PathMap.
+No legacy source algorithm, default backend, format, consensus identity, charge rule,
+dependency or upstream PathMap implementation changes. The stack-safety report receives no
+new performance claim because this slice measures correctness, not resource scaling.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -1137,6 +1137,134 @@ If exact preserved behavior cannot be realized, evidence and an explicit version
 are required; silently dropping valid states or adding new refusals is not an implementation
 of this contract.
 
+## Legacy retained-root migration baseline (2026-09-07)
+
+Task 7933 freezes the supported legacy migration observations before the PathMap-DAG
+adapter and cutover. The baseline is the unchanged production implementation at
+`53d7c57be`, exercised by the added
+`legacy_lmdb_retained_fixture_survives_process_exit_and_frozen_root_replay` test in
+[`atomic_state_authority.rs`](../../../rspace++/tests/state/atomic_state_authority.rs).
+All fixtures are synthetic; no production database was scanned or rewritten.
+
+### Fixture and exact identities
+
+The fixture uses production `HistoryRepository<String, String, String, String>` with
+the concrete record validator, not the permissive validator of some low-level atomicity
+controls. It records two copies of a nonpersistent datum on the first channel, one
+persistent two-channel continuation with peek position zero, and a join record for each
+channel. The next checkpoint adds one persistent datum on the second channel. The
+non-latest first checkpoint is the fixed rollback point. The complete fixture catalog
+contains exactly three verified roots and one current-root record; the current generation
+is two. Historical reads compare canonical datum, continuation/source and join bytes.
+
+| Role | Frozen legacy root |
+|---|---|
+| Empty retained state | `0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8` |
+| Non-latest rollback checkpoint | `10842f8676716425a2fd9a60a4fd748b8225e4f6aa6c02578fc4fb79ded15c5d` |
+| Latest checkpoint after the recorded suffix | `d430aa653eceb0c0df6e821ee8941bcb3f5e235584048a7279ebc48b49fe06b6` |
+
+The test independently pins a fingerprint for each sorted logical key/value inventory
+and for the **ordered** export page transcript at page sizes one, two and five over all
+three roots. Each transcript retains start cursor, next cursor, derived terminal flag,
+ordered history items and ordered cold items; it does not deduplicate away repeated
+emissions. These fingerprints are `Blake2b256(bincode::serialize(fixture_value))` under the
+existing locked dependencies. They are test-evidence fingerprints, not new consensus
+hash domains, LMDB file hashes or prescribed production serialization algorithms.
+
+| Fixture component | Frozen fingerprint |
+|---|---|
+| Logical history key/value inventory | `96d2d98d20f9e5e7c77f0d826384360a6f7a8a02c03fed072106db7e9174eeb2` |
+| Typed cold key/value inventory | `4cc917977696dcbc3c729117d3c85f69891e9244f2e0430614389bfdc6173c5c` |
+| Verified/current catalog records | `18957323e133547de68f8828cc9e7bc3c18612e6ef4f3795531e8d3152184097` |
+| Complete ordered page transcript | `c5bdca40adc5acc4d86117fb25309c16568265bef18441755189a536ddeaec12` |
+| Combined current/catalog/history/cold/pages snapshot | `fafc11d0fb8accd3b1b3f3f2f26c07dc6aeb143aae9847dd502ef2f1a6f60afa` |
+
+The in-memory reference and actual LMDB reader must have identical snapshots as well as
+matching these literals. The literals were captured with production code unchanged, then
+pinned and rerun. Comparing two live implementations alone would not freeze a baseline.
+
+### Process termination, rollback and protocol boundaries
+
+A dedicated child process creates the LMDB fixture, verifies its reads, then calls
+`process::exit(73)` while repository/environment handles remain live. The parent requires
+that exact exit status, so a misspelled filter or zero-test child cannot pass. It then
+opens the directory for the first time in that reader process and compares all retained
+state, catalog bytes and page transcripts. This bypasses writer-side Rust destructors and
+the process-global environment cache; it is stronger than same-process drop/reopen.
+It is **not** a power-failure, torn-sector, arbitrary-instruction crash or fsync-fault test.
+
+The reader exports only the older rollback root and imports it, through the existing
+affine staging/sealing/publication API, into a fresh LMDB destination. The destination
+must not know the later root yet, and the later datum is absent. Replaying the recorded
+typed checkpoint-action suffix then produces the exact latest root and identical historical
+reads/page transcripts. The destination's current authority must select that root with exactly
+one generation advance; a freshly constructed repository must select it too. Merely retaining
+the root while leaving current authority at the rollback point cannot pass. This is
+frozen-root-plus-recorded-suffix replay, not a Rholang
+deploy/replay execution, a post-cutover rollback implementation or an instant switch to
+a newer current legacy backend. The original source snapshot remains unchanged.
+
+Stateless cursor continuation is distinct from durable import-session resumption. Existing
+invalid-page retry keeps the same process-local session; it does not recover its capability
+after termination. Tasks 7938–7940 still implement/qualify the new transfer/resume protocol.
+Actual retained-root DAG import, shadow ownership and cutover remain tasks 7934–7936.
+
+### Baseline assertions and reused formal obligations
+
+| ID | Required observation | Evidence and downstream binding |
+|---|---|---|
+| LM-01 | Exact current root/generation and complete verified-root inventory | New fixture checks all catalog members and literal snapshot; 7934 imports every retained root, not just current. |
+| LM-02 | Membership and historical reads do not change current authority | New snapshot checks current before/after inspection and source unchanged after rollback/replay; existing atomic tests cover activation separately. |
+| LM-03 | Multiplicity, persistence, peek/source metadata and joins remain canonical | New typed historical-read comparisons plus existing serializer goldens and continuation/join lifecycle corpus. |
+| LM-04 | Exact ordered page transcript, root-bound continuation and terminal cursor | New literal transcript at three page sizes; existing export/import tests additionally cover skip/cursor and rejected-page retry. |
+| LM-05 | Committed state remains available to a fresh process without writer destructors | New child exit-status witness and reader's exact LMDB snapshot; power-loss and new-DAG byte-progress faults remain separate gates. |
+| LM-06 | Rollback begins at the designated older root, not an invented current successor | Fresh destination imports only the pinned rollback root and rejects membership of the later root until suffix replay. |
+| LM-07 | Replaying the recorded checkpoint suffix restores exact latest observations | New returned/current/fresh-repository root equality, exact generation advance, historical-read and ordered transcript comparison; full runtime/genesis/COMM replay remains the existing integration track. |
+| LM-08 | Complete publication couples history, cold objects, membership and current root | Existing `RSpaceAtomicCheckpointAuthority.tla`: `CurrentRootIsVerified`, `VerifiedRootsHaveCompleteClosure`, `ContentKeysAreImmutable`, `NoUnpublishedCheckpointObjects`; concrete atomic-state suite and split/trust-target controls. |
+| LM-09 | Activation is generation-bound; stale/failing/no-op operations have exact effects | Same model's `TypeInvariant`, `GenerationAdvancesExactlyOnActivation`, `CommitUsesExactBase`, `FailedCommitLeavesAuthorityUnchanged`, `NoOpLeavesAuthorityUnchanged`; existing atomic-state suite and root-only control. |
+| LM-10 | Import stages privately, seals once and publishes through its exact capability | Existing `RSpaceAffineImportLifecycle.tla`, import-session/state tests and the new real-LMDB rollback destination; no claim of process-persistent staging. |
+| LM-11 | Legacy namespace adoption preserves exact validated source identity | Existing `legacy_state_migration.rs` tests cover split/v2/eval, namespace-bound markers, divergent sources and malformed records; their same-process retry is not subprocess evidence. |
+| LM-12 | Physical migration does not silently replace legacy consensus identity | CI-01..CI-28 and the #7941 ordered-alias fixtures remain binding for 7934–7936; metadata/provenance is not a legacy-root certificate. |
+
+The unchanged atomic model was rerun: 357 states generated, 127 distinct states,
+complete depth seven, no remaining queue or invariant failure. Its split-publication,
+root-only-base and trust-target controls each fail the intended invariant. This finite
+abstract model is reused, not presented as a proof of the LMDB engine, host filesystem
+or future PathMap persistence implementation.
+
+### Verification result and reproduction
+
+The reviewed source passed 45 state tests and six export/import tests in release mode,
+with no failures or ignored tests in those selections. Nextest separately reran the new
+subprocess fixture successfully; that is 51 distinct tests, not 52. The commands were:
+
+```sh
+cargo test --release --locked -j4 -p rspace_plus_plus --lib rspace::state:: -- --test-threads=2
+cargo test --release --locked -j4 -p rspace_plus_plus --test mod export_import_tests:: -- --test-threads=2
+CARGO_BUILD_JOBS=4 cargo nextest run --release --locked -p rspace_plus_plus --lib --test-threads 2 -E 'test(legacy_lmdb_retained_fixture)' --no-fail-fast
+```
+
+Execution used a systemd scope with 8 GiB hard/6 GiB high memory limits, swap disabled,
+four CPU-equivalents and two test threads. Model checking used a separate 2 GiB hard/
+1 GiB high scope with swap disabled, a 512 MiB Java heap and two workers. These are
+configured ceilings, not measured peak RSS or a performance comparison. Existing compiler
+warnings remain outside this baseline capture; these selections do not replace the full
+workspace release, new-backend fault or default-cutover gates.
+
+### Byte-identical versus versioned surfaces
+
+Preserve logical legacy history-node bytes, cold leaf hash preimages and roots, canonical
+records, multiplicities, historical observations, selected continuation/COMM behavior and
+consensus-visible post-state identity. The fixed old pagination transcripts define the
+legacy protocol baseline. The new backend may use a separately reviewed/versioned transfer
+protocol, but it may not reinterpret an old cursor or import session silently.
+
+Physical LMDB pages/inodes, local database mappings, typed cold addresses, catalog encodings,
+future compatibility-facet representation, ACT/index/pack encodings and new transfer/resume
+metadata are not thereby declared consensus preimages. Their format, migration and rollback
+compatibility must still be explicit. Storage metering integration remains separately tracked;
+this fixture does not select a charging representation or change compute/storage costs.
+
 ## Refinement completion rule
 
 The runtime may be declared conformant only when:
