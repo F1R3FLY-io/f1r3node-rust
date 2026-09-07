@@ -79,6 +79,13 @@ pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
+rocq_reject_placeholders theories/ReplayArchive.v theories/ReplayArchiveMutants.v
+rocq_compile_with_closed_count theories/ReplayArchive.v 20 \
+  "the captured replay archive acceptance contract"
+rocq_compile_with_closed_count theories/ReplayArchiveMutants.v 12 \
+  "the replay archive nonvacuity and omission controls"
+rocq_check_modules "captured replay archive" \
+  StackSafePDA.ReplayArchive StackSafePDA.ReplayArchiveMutants
 rocq_reject_placeholders theories/RSpaceCallerAuthority.v theories/RSpaceCallerAuthorityMutants.v
 rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 30 \
   "the exact caller-authority contract capstones"

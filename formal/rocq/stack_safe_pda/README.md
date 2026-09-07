@@ -35,6 +35,51 @@ The theorem kernel is schema-parametric. The generated Rust equivalence manifest
 
 The development contains no axioms, admitted goals, opaque assumptions, Verus `assume`, or external proof bodies.
 
+## Captured replay archive contract (2026-09-07)
+
+Task 5636 adds a **current-epoch test fixture**, not a reconstruction of the missing
+historical deployment archive. `ReplayArchive.v` defines acceptance as the conjunction
+of exact archive admission, complete context, a codec fixed point, matching request,
+disabled replay shortcuts, actual successful replay and the expected final root.
+Its twenty capstones prove the consequences and refusal conditions of that contract.
+They do not prove the Rust runtime, protobuf codec, genesis constructor or cryptographic
+hash implementation. Those are explicit realization premises, not inferred properties
+of an opaque success Boolean. `ReplayArchiveMutants.v` supplies a concrete accepted
+example and omission controls, including a permutation-insensitive toy runtime whose
+accepted archive must nevertheless preserve the captured byte order.
+
+The implementation belongs under `casper/tests/util/rholang/`, reusing the existing
+seven-program corpus. Capture is an explicitly selected ignored test, writes new files
+only, and is separate from ordinary read-only verification. A checked-in BLAKE2b-256
+checksum binds the whole archive; each protobuf payload also records its byte length
+and digest. Review of the fixture/checksum pair and collision resistance are trust
+premises. A checksum is not a mathematical proof of injectivity or authenticity.
+
+The complete model-derived obligation catalog, specified **before Rust implementation**,
+is as follows. The witness names are implementation requirements until their results
+are recorded in the integration report.
+
+| ID | Formal obligation | Required executable witness |
+|---|---|---|
+| RA01 | Admission loads exactly the expected archive; absence and alteration refuse. | `replay_archive_requires_present_unchanged_files`; `replay_archive_byte_mutations_are_rejected`. Missing paths are read-only failures; altered bytes are checked against the unchanged trusted checksum. |
+| RA02 | Integrity and completeness are independent premises. | Full-file digest, exact schema epoch, all seven unique corpus names, mandatory fields and unknown-field refusal in `replay_archive_context_and_corpus_are_complete`. |
+| RA03 | The complete archived context realizes the literal pre-root. | Exhaustive `Genesis`/`ProofOfStake` field projection, ordered public validator/vault keys, equality with the selected test genesis configuration and exact actual pre-root in `archived_deploys_replay_without_play_or_caches`. Private keys are never archived. |
+| RA04 | The decoded payload re-encodes to exactly the original bytes. | Per-record length/digest, `ProcessedDeploy::from_proto` and typed `to_proto` fixed point in `replay_archive_payloads_preserve_all_fields_and_order`; malformed/non-fixed-point controls. All signed deploy metadata and all event variants are included. |
+| RA05 | Every supplied byte position equals the corresponding archived position. | Drop, duplication and permutation controls against the original file seal. No sorting or COMM-only fingerprint substitutes for the full payload. |
+| RA06 | Requested context and actual pre-root equal the archived values. | Decode and pass all `BlockData`, system deploys, invalid-block context, flags and client allocations; reject a changed genesis descriptor or actual pre-root. |
+| RA07 | Both caches are disabled, and a cache shortcut is never successful actual replay. | Explicitly clear both runtime cache options before verification and reject either enabled option at the execution boundary; `replay_archive_rejects_cache_shortcuts_and_wrong_roots`. |
+| RA08 | Actual replay succeeds and returns the literal archived final root. | `archived_deploys_replay_without_play_or_caches` executes the archived deploys without first playing their source; capture and verification run in different operating-system processes. Wrong-final-root control. |
+| RA09 | Failed or absent runtime execution cannot establish acceptance. | `replay_archive_runtime_rejects_cost_status_and_comm_mutations` exercises actual uncached replay with changed cost/status and controlled COMM identity/multiplicity. A parse-only success cannot satisfy this row. |
+| RA10 | Complete evidence admits a nonempty valid fixture. | Explicit seven-program floor and successful untouched archive replay. The formal toy fixture is not a replacement for this runtime witness. |
+| RA11 | Captured order is not a total execution schedule. | Reuse `rig_is_order_insensitive` (5,040 permutations), `rig_distinguishes_a_different_multiset` and `a_produces_channel_hash_is_not_part_of_its_replay_identity`; do not require harmless permutations or ignored metadata to fail actual replay. |
+
+Verification first checks the immutable archive seal and context, then decodes the full
+ordered payload and checks its fixed point. It reconstructs the pinned genesis, disables
+both replay caches, invokes the existing runtime with the archived inputs, and compares
+the resulting root. This checks a particular captured execution's replay obligations;
+it does not prove that parallel re-execution emits the same total event order or count of
+standalone IO events. The historical experiment-provenance gap remains separately open.
+
 ## Live PathMap write-gateway correspondence (2026-09-07)
 
 Task 6446 qualifies the existing ownership-disjoint structural repair, not the rejected
