@@ -1127,6 +1127,230 @@ mod fused_differentials {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn scalar_projection_fused_unfused_carriers_preserve_observations() {
+        use models::rhoapi::connective::ConnectiveInstance;
+        use models::rhoapi::g_unforgeable::UnfInstance;
+        use models::rhoapi::{
+            BindPattern, Bundle, Connective, EMethod, EPathMap, GPrivate, GUnforgeable, If,
+            ListParWithRandom, Match, MatchCase, New, Receive, ReceiveBind, Send,
+            TaggedContinuation,
+        };
+        use models::rust::utils::{new_boundvar_par, new_gbool_par, new_gint_par};
+        use rholang::rust::interpreter::env::Env;
+        use rholang::rust::interpreter::errors::InterpreterError;
+        use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
+        use rspace_plus_plus::rspace::rspace::RSpace;
+
+        #[derive(Debug, PartialEq)]
+        struct Observation {
+            result: Result<(Vec<u8>, Vec<u8>), String>,
+            charges: Vec<(BillableKind, u64)>,
+            total: i64,
+        }
+
+        struct ToggleGuard;
+        impl Drop for ToggleGuard {
+            fn drop(&mut self) { fusion_test_support::set_force_disabled(false); }
+        }
+
+        async fn observe_carrier(par: &Par, env: &Env<Par>, disabled: bool) -> (Observation, u64) {
+            let (_, reducer) = create_test_space::<
+                RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+            >()
+            .await;
+            let snapshot = (
+                par.encode_to_vec(),
+                models::rust::rholang::bincode_encoder::encode(par),
+            );
+            let _toggle = ToggleGuard;
+            fusion_test_support::set_force_disabled(disabled);
+            let before_hits = fusion_test_support::total_fusion_hits();
+            let result = reducer
+                .eval_expr(par, env)
+                .map(|value| {
+                    (
+                        value.encode_to_vec(),
+                        models::rust::rholang::bincode_encoder::encode(&value),
+                    )
+                })
+                .map_err(|error| format!("{error:?}"));
+            let hits = fusion_test_support::total_fusion_hits() - before_hits;
+            let budget = reducer.metering.budget();
+            let observation = Observation {
+                result,
+                charges: budget
+                    .get_canonical_event_log()
+                    .into_iter()
+                    .map(|event| (event.kind, event.weight))
+                    .collect(),
+                total: budget.total_cost().value,
+            };
+            assert_eq!(
+                (
+                    par.encode_to_vec(),
+                    models::rust::rholang::bincode_encoder::encode(par)
+                ),
+                snapshot
+            );
+            (observation, hits)
+        }
+
+        let _serial = serialize_toggle_tests();
+        let map = Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                vec![new_gint_par(7, Vec::new(), false)],
+                Vec::new(),
+                false,
+                None,
+            ))),
+        };
+        let mut carriers = Vec::new();
+        for count in [0, 1, 2] {
+            let par = Par::default().with_exprs(vec![map.clone(); count]);
+            assert!(par.all_components_are::<Expr>());
+            assert_eq!(par.family_cardinality::<Expr>(), count as u64);
+            carriers.push((
+                format!("pure-{count}"),
+                par,
+                (count != 1).then_some("Error: Multiple expressions given."),
+            ));
+        }
+        for (family, mut component) in [
+            (
+                "Send",
+                Par::default().with_sends(vec![Send {
+                    chan: Some(new_gint_par(1, Vec::new(), false)),
+                    data: vec![Par::default()],
+                    ..Default::default()
+                }]),
+            ),
+            (
+                "Receive",
+                Par::default().with_receives(vec![Receive {
+                    binds: vec![ReceiveBind {
+                        source: Some(new_gint_par(1, Vec::new(), false)),
+                        patterns: vec![Par::default()],
+                        ..Default::default()
+                    }],
+                    body: Some(Par::default()),
+                    ..Default::default()
+                }]),
+            ),
+            (
+                "New",
+                Par::default().with_news(vec![New {
+                    bind_count: 1,
+                    p: Some(Par::default()),
+                    ..Default::default()
+                }]),
+            ),
+            (
+                "Match",
+                Par::default().with_matches(vec![Match {
+                    target: Some(new_gint_par(1, Vec::new(), false)),
+                    cases: vec![MatchCase {
+                        pattern: Some(new_gint_par(1, Vec::new(), false)),
+                        source: Some(Par::default()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }]),
+            ),
+            (
+                "GUnforgeable",
+                Par::default().with_unforgeables(vec![GUnforgeable {
+                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![7; 32] })),
+                }]),
+            ),
+            (
+                "Bundle",
+                Par::default().with_bundles(vec![Bundle {
+                    body: Some(Par::default()),
+                    read_flag: true,
+                    write_flag: true,
+                }]),
+            ),
+            (
+                "Connective",
+                Par::default().with_connectives(vec![Connective {
+                    connective_instance: Some(ConnectiveInstance::ConnBool(true)),
+                }]),
+            ),
+            (
+                "If",
+                Par::default().with_conditionals(vec![If {
+                    condition: Some(new_gbool_par(true, Vec::new(), false)),
+                    if_true: Some(Par::default()),
+                    if_false: Some(Par::default()),
+                    ..Default::default()
+                }]),
+            ),
+        ] {
+            if family == "Connective" {
+                component.replace_connective_used(true);
+            }
+            let par = Par::default()
+                .with_exprs(vec![map.clone()])
+                .append(component);
+            assert_eq!(par.distinct_len(), 2);
+            assert!(!par.all_components_are::<Expr>());
+            carriers.push((
+                family.to_owned(),
+                par,
+                Some("Error: parallel or non expression found where expression expected."),
+            ));
+        }
+        let value = new_gbool_par(true, Vec::new(), false);
+        let expected_value = (
+            value.encode_to_vec(),
+            models::rust::rholang::bincode_encoder::encode(&value),
+        );
+        for (label, carrier, expected_error) in carriers {
+            for bound in [false, true] {
+                let (target, env) = if bound {
+                    (
+                        new_boundvar_par(0, Vec::new(), false),
+                        Env::new().put(carrier.clone()),
+                    )
+                } else {
+                    (carrier.clone(), Env::new())
+                };
+                let method = Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                        method_name: "pathExists".to_owned(),
+                        target: Some(target),
+                        ..Default::default()
+                    })),
+                }]);
+                let (unfused, unfused_hits) = observe_carrier(&method, &env, true).await;
+                let (fused, fused_hits) = observe_carrier(&method, &env, false).await;
+                assert_eq!(fused, unfused, "{label}, bound={bound}");
+                assert_eq!(unfused_hits, 0, "{label}, bound={bound}");
+                assert!(!fused.charges.is_empty(), "{label}, bound={bound}");
+                assert_eq!(fused.total, 0, "{label}, bound={bound}");
+                if let Some(message) = expected_error {
+                    assert_eq!(
+                        fused.result,
+                        Err(format!(
+                            "{:?}",
+                            InterpreterError::ReduceError(message.to_owned())
+                        )),
+                        "{label}, bound={bound}"
+                    );
+                    assert_eq!(fused_hits, 0, "{label}, bound={bound}");
+                } else {
+                    assert_eq!(
+                        fused.result,
+                        Ok(expected_value.clone()),
+                        "{label}, bound={bound}"
+                    );
+                    assert!(fused_hits > 0, "{label}, bound={bound}");
+                }
+            }
+        }
+    }
+
     /// Control-neutrality falsifier: a method-heavy program with
     /// ZERO PathMap methods must produce byte-identical observations with a
     /// fusion-hit count of EXACTLY 0 in both modes — the name gate proven

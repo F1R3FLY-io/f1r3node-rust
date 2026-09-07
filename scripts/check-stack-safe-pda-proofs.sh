@@ -75,6 +75,21 @@ rpb3_run_tests() {
   fi
 }
 
+scalar_projection_run_tests() {
+  local expected="$1" output
+  shift
+  if ! output="$(TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+      tlc_bounded cargo test --release -j4 -p rholang "$@" -- --test-threads=4 2>&1)"; then
+    printf '%s\n' "$output"
+    return 1
+  fi
+  printf '%s\n' "$output"
+  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; 0 ignored;" <<<"$output"; then
+    echo "stack-safe-pda: expected $expected nonignored scalar-projection tests for $*" >&2
+    return 1
+  fi
+}
+
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
@@ -450,6 +465,10 @@ rpb3_run_tests 22 --lib protobuf_admission::tests
 rpb3_run_tests 1 --lib \
   production_component_admission_is_differentially_equivalent_for_all_nine_families
 rpb3_run_tests 3 --test par_bag admitted_
+scalar_projection_run_tests 4 --lib scalar_projection
+scalar_projection_run_tests 1 --features epathmap-fusion-differential \
+  --test epathmap_fusion_equivalence_spec \
+  fused_differentials::scalar_projection_fused_unfused_carriers_preserve_observations
 popd >/dev/null
 
 # Bind the RhoPath V2 lifecycle refinement to the end-to-end Rust differential

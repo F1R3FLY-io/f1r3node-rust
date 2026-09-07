@@ -8632,10 +8632,28 @@ verification runs, not controlled performance measurements. The ParBag target to
 291.61 seconds, dominated by its existing deep import test. Its live cgroup observation
 of 353,198,080 current bytes and 1,767,452,672 peak bytes is not a final process peak
 or a per-operation allocation estimate. Pgmcp artifact 505 preserves formal and
-pre-extension evidence; the final acceptance artifact follows the forced-disable gate.
+pre-extension evidence; artifact 506 records the final acceptance and guard controls.
 
-**REMAINING ACCEPTANCE BOUNDARY.** The finite forced-disabled fusion comparison is
-being extended separately. The historical 4,495-test workspace pass at `1afd4791e`
+**FORCED-DISABLE RESULT.** The complete feature-enabled
+`epathmap_fusion_equivalence_spec` passes **7/7** in 1.11 seconds. Its new case
+compares 22 finite operands: pure zero/one/two expressions and one expression with
+each foreign family, as literal targets and bound-variable bases. Enabled and
+force-disabled production evaluation preserve exact protobuf/bincode results or
+error payloads, ordered diagnostics, aggregate cost and input bytes. Disabled and
+malformed cases have zero fusion hits; each pure-singleton control has positive hits.
+The first run passed the six older tests but its new fixture omitted `Bundle.body`
+and stopped during metadata rebuilding. The corrected full-evaluation fixtures supply
+required children and oneofs; no production behavior or expected scalar error changed.
+Direct admission tests still exercise incomplete foreign components before traversal.
+
+The proof runner binds four scalar unit tests and one feature-enabled integration
+test, each with an exact nonignored passing-count guard. Both registered selections
+pass with `PROPTEST_RNG_SEED=41315853`. A real empty Cargo selection is rejected,
+as is a real four-test success presented with expected count five. These tests of the
+runner do not claim that the entire multi-model formal script was executed.
+
+**REMAINING ACCEPTANCE BOUNDARY.** Local scalar acceptance is complete; independent
+verification remains separate. The historical 4,495-test workspace pass at `1afd4791e`
 remains historical; these focused results neither establish a clean current workspace
 nor close the campaign's required release gate. No production evaluator, PathMap
 operation, codec, cost model, dependency or consensus behavior changes in this slice.

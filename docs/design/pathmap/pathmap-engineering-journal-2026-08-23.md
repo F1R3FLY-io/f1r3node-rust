@@ -5621,8 +5621,12 @@ evaluator module passes 18/18 and the existing ParBag target passes 33/33 under 
 
 **DECISION AND LIMITS.** Keep source fixes distinct from verification additions.
 The recursive oracle can fuse, so positive fused/unfused comparison must use the
-existing compile-time force-disable integration harness. The forced-disable extension
-is still pending at this checkpoint. Neither the proof's abstract decoder audit nor
+existing compile-time force-disable integration harness. Its full seven-test target
+now passes, including 22 finite literal/bound-variable cases with exact byte/error,
+diagnostic and fusion-hit observations. The initial incomplete `Bundle.body` fixture
+failure is retained; complete required children and oneofs repair that fixture without
+weakening any expected scalar refusal. Artifact 506 records the final result and real
+empty-selection/wrong-count guard controls. Neither the proof's abstract decoder audit nor
 these test durations establish concrete decode counts, new performance ratios, a
 current full-workspace pass or completed persistent-backend qualification. No new
 upstream PathMap request, compatibility layer or consensus rule is introduced.

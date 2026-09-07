@@ -84,6 +84,23 @@ and child audit lists describe the abstract dispatch contract, not a proof
 of Rust allocation, codec execution or call counts. The generic
 `StackSafePDA.v` fold theorem does not itself establish this admission boundary.
 
+The named Rust extensions are now executed: the complete evaluator module passes
+18 tests, ParBag passes 33, and the feature-enabled fusion integration target passes
+seven, including 22 literal/bound-variable carrier cases under actual enabled and
+force-disabled production evaluation. The first integration fixture omitted a required
+Bundle body; the retained failure preceded scalar evaluation, and the replacement
+uses complete inert components without changing expected errors. Scalar observations
+prove child-effect refusal for the selected witnesses, not zero concrete decoder calls.
+
+The proof runner separately binds four `scalar_projection` library tests and the one
+named feature-enabled integration test, with exact nonignored passing counts. Both
+selections pass at seed `41315853`. Its real zero-selection and incorrect-count
+controls fail for the intended guard reason. The runner uses a 6 GiB hard memory cap,
+zero swap and four jobs for these Rust checks, distinct from the 2 GiB proof scope.
+Artifact 506 and stack-safety report §5.29.8 preserve commands, failure attribution,
+results and exclusions. This is local acceptance, not full-workspace or independent
+CI verification.
+
 ## Resolved authority scope contract (2026-09-07)
 
 Task 8283 extends `RSpaceCallerAuthority.v` with exact independent database-name
