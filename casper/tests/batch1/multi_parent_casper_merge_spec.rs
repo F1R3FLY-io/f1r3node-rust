@@ -374,7 +374,10 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
         .await
         .unwrap();
 
-    nodes[1].handle_receive().await.unwrap();
+    nodes[1]
+        .pump_until_knows(&single_parent_block.block_hash)
+        .await
+        .unwrap();
 
     // Under multi-parent merging, a proposed block links the latest message of
     // every bonded validator as a parent. The genesis is bonded to three
