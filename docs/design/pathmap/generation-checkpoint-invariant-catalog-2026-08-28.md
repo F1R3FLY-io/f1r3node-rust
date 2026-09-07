@@ -1275,3 +1275,76 @@ The runtime may be declared conformant only when:
 - all 14 non-vacuity witnesses execute;
 - the integrated formal gate and the focused Rust property/integration suites pass under bounded resources;
 - the stack-safety report, consensus change register, and PathMap engineering journal record the final wire, durability, compatibility, and measurement evidence.
+
+## Resolved LMDB scope isolation (2026-09-07)
+
+**Status: governing model compiled and independently kernel-checked before Rust
+implementation; all 23 new fixture/control statements are also checked;
+executable refinement remains in progress.**
+Required task 8283 repairs the database-name override bypass introduced by the
+authority adapter in task 6094. Baseline task 5636 depends on this repair: its
+fresh-process positive genesis/workload replay passes, but three concurrent
+negative-control tests encounter another scope's published root during setup.
+The pre-change authority suite passes 16 tests and does not cover that mapping.
+
+A *physical slot* is the pair of a resolved environment identity and an exact
+database name. Each authority owns three live slots in its history environment;
+the configured cold environment may instead designate a read-only migration
+source. Different name triples alone do not establish isolation: their slots
+must be disjoint. An unrelated environment may legitimately contain a database
+named `rspace-history` without that name acquiring authority semantics.
+
+`RSpaceCallerAuthority.v` defines `scope_invariant_id`, its exact twenty-entry
+catalog, and a theorem binding every entry to its proposition. The following is
+the complete extraction of that catalog, not a claim that the Rust properties
+already pass. Property families are planned in the existing
+`rspace++/tests/state/atomic_state_authority.rs` test source.
+
+| ID | Model invariant | Required executable evidence |
+|---|---|---|
+| SA01 | `IndependentNameResolution` | Arbitrary independent history, roots and cold overrides; absent overrides use logical IDs. |
+| SA02 | `UniqueRoleResolution` | Repeated acquisition and reopened mappings select the same exact layout; mapping order cannot change selection. |
+| SA03 | `ExactlyOneLogicalRole` | Missing and duplicate logical-role mappings refuse. |
+| SA04 | `HistoryRootsConfiguration` | Different history/root environments or incompatible environment settings refuse. |
+| SA05 | `PhysicalNamesRejectNul` | Each physical-name NUL mutation refuses before opening. |
+| SA06 | `CheckedFieldLengths` | Every namespace field uses checked `u64` length conversion; aggregate manifest length and allocation arithmetic are checked. No giant allocation is needed to exercise a modeled arithmetic boundary. |
+| SA07 | `DistinctPhysicalRoles` | Every pairwise collision among the three live role names refuses. |
+| SA08 | `OrdinaryAliasExclusion` | Ordinary-first and authority-first aliases of live slots refuse, including the live cold destination. |
+| SA09 | `ValidationBeforeDatabaseOpen` | Invalid configurations leave the target directory/database inventory unchanged. |
+| SA10 | `ExactU64FrameCancellation` | An independent framing decoder consumes exactly one eight-byte length and its declared payload. |
+| SA11 | `ExactFourFieldEncoding` | Property-generated name quadruples round-trip without delimiter ambiguity. |
+| SA12 | `LegacyNamespaceCompatibility` | Default RSpace/Eval namespace and migration-marker bytes remain unchanged. |
+| SA13 | `FullNamespaceInjectivity` | Default/composite and composite/composite encodings distinguish unequal admitted quadruples. |
+| SA14 | `DisjointPhysicalIsolation` | Independently prepared checkpoints and generated operation sequences preserve the other scope's exact history/cold/root maps. |
+| SA15 | `SameLayoutReopen` | Reopening exact arbitrary names preserves contents, current root and generation. |
+| SA16 | `LiteralMigrationColdSource` | Split-cold migration reads the mapped environment and literal cold database name. |
+| SA17 | `NoScopedAmbientMigration` | Scoped layouts ignore unrelated generic `db` and unscoped v2 sources. |
+| SA18 | `LegacyColdCompatibility` | Default layouts retain their existing named-cold then `db` fallback and applicable v2 discovery. |
+| SA19 | `MigrationMarkerBinding` | Transplanted markers from another resolved namespace refuse. |
+| SA20 | `UnrelatedEnvironmentLiteralNames` | Reserved-looking physical names in unrelated environments remain ordinary literal stores. |
+
+**DERIVED algorithm.** Resolve all logical-role mappings exactly once, then resolve
+their physical environments without creating directories. Validate configurations,
+live footprints and migration-source footprints before any opening. Ordinary stores
+use a literal-name route after validation; authority roles use the same resolved
+names and paths. Repeated manager-local acquisition reuses its authority.
+
+For default names, the migration namespace is the unchanged logical prefix.
+Otherwise it is `b"\0rspace-authority-layout\0\x01"` followed by four UTF-8 fields
+(logical prefix, history name, roots name, cold name), each preceded by its checked
+eight-byte big-endian length. The proof reuses `ChannelImage.v`'s existing exact
+`u64` round trip. NUL-free physical default names separate the legacy namespace
+from the composite tag; framing establishes injectivity without a hash-collision
+assumption. These bytes remain local migration metadata, not consensus preimages.
+
+**Refinement boundaries.** Physical environment IDs in the model stand for paths
+resolved by Rust. Existing symlink resolution, missing-tail handling, identical
+checked/opened paths, actual LMDB transactions, read-only diagnostic routing,
+allocation failure and migration-source immutability require executable evidence.
+Managed paths must remain stable during opening; this repair is not a new
+filesystem-confinement protocol. Protect eligible migration sources against
+writable aliases while allowing the intended same-authority in-place cold case.
+The mathematical finite lists are not a replacement for resident PathMap tries.
+The existing stale-root check, replay expectations and archived pins must remain
+unchanged. Previously collapsed unscoped state cannot be assigned to an arbitrary
+scope or deleted automatically.

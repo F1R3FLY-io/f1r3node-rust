@@ -156,4 +156,223 @@ Print Assumptions same_domain_forged_alias_catalog_is_not_appointed.
 Print Assumptions foreign_history_is_not_a_receiving_view_history.
 Print Assumptions dropping_one_of_five_journals_refuses_restore.
 
+Set Implicit Arguments.
+
+Definition scope_config := LmdbConfiguration 1 64 8.
+Definition scope_mapping prefix role name config :=
+  DatabaseMapping (prefix ++ role_suffix role) (Some name) config.
+Definition scope_selection prefix history roots cold cold_config :=
+  AuthoritySelection prefix
+    (scope_mapping prefix HistoryRole history scope_config)
+    (scope_mapping prefix RootsRole roots scope_config)
+    (scope_mapping prefix ColdRole cold cold_config).
+Definition scope_a := scope_selection [7] [11] [12] [13] scope_config.
+Definition scope_b := scope_selection [7] [21] [22] [23] scope_config.
+Definition scope_overlap := scope_selection [7] [11] [22] [23] scope_config.
+Definition scope_nul := scope_selection [7] [0; 11] [12] [13] scope_config.
+Definition scope_collision := scope_selection [7] [11] [11] [13] scope_config.
+Definition scope_mappings selection :=
+  [selected_history selection; selected_roots selection; selected_cold selection].
+Definition scope_default := AuthoritySelection [7]
+  (DatabaseMapping ([7] ++ role_suffix HistoryRole) None scope_config)
+  (DatabaseMapping ([7] ++ role_suffix RootsRole) None scope_config)
+  (DatabaseMapping ([7] ++ role_suffix ColdRole) None scope_config).
+
+Example resolved_scope_has_an_accepted_fixture :
+  scope_admitted (scope_mappings scope_a) [] scope_a.
+Proof.
+  unfold scope_admitted, exact_role_selection, physical_names_have_no_nul,
+    names_fit, field_fits, physical_roles_distinct, footprints_disjoint.
+  vm_compute. repeat split; try (repeat constructor; simpl; intuition discriminate).
+Qed.
+
+Example ignoring_overrides_collapses_distinct_authority_names :
+  (forall role, logical_database_id (selected_mapping scope_a role) =
+     logical_database_id (selected_mapping scope_b role)) /\
+  (forall role, resolve_database_name (selected_mapping scope_a role) <>
+     resolve_database_name (selected_mapping scope_b role)).
+Proof. split; intro role; destruct role; vm_compute; congruence. Qed.
+
+Example missing_cold_role_is_rejected :
+  ~ scope_admitted [selected_history scope_a; selected_roots scope_a] [] scope_a.
+Proof.
+  apply (missing_or_duplicate_logical_role_refuses ColdRole).
+  vm_compute; discriminate.
+Qed.
+
+Example duplicated_history_role_is_rejected :
+  ~ scope_admitted (selected_history scope_a :: scope_mappings scope_a) [] scope_a.
+Proof.
+  apply (missing_or_duplicate_logical_role_refuses HistoryRole).
+  vm_compute; discriminate.
+Qed.
+
+Example history_roots_configuration_mismatch_is_rejected :
+  let incompatible := AuthoritySelection [7] (selected_history scope_a)
+    (scope_mapping [7] RootsRole [12] (LmdbConfiguration 1 65 8))
+    (selected_cold scope_a) in
+  ~ scope_admitted (scope_mappings incompatible) [] incompatible.
+Proof.
+  intro incompatible; apply incompatible_history_roots_configuration_refuses.
+  discriminate.
+Qed.
+
+Example embedded_nul_is_rejected :
+  ~ scope_admitted (scope_mappings scope_nul) [] scope_nul.
+Proof.
+  apply nul_physical_name_refuses. unfold physical_names_have_no_nul.
+  simpl; intuition.
+Qed.
+
+Example dropping_the_u64_length_gate_admits_an_unencodable_field :
+  ~ (forall length, ScopeBytes.fits_fixed_be 8 length = true).
+Proof.
+  intro unchecked. pose proof (unchecked (256 ^ 8)) as fits.
+  apply ScopeBytes.fits_fixed_be_true_iff in fits.
+  exact (Nat.lt_irrefl _ fits).
+Qed.
+
+Example colliding_role_names_are_rejected :
+  ~ scope_admitted (scope_mappings scope_collision) [] scope_collision.
+Proof.
+  apply colliding_physical_roles_refuse. intro unique.
+  inversion unique; subst. apply H1; simpl; auto.
+Qed.
+
+Example ordinary_writable_alias_is_rejected :
+  ~ scope_admitted (scope_mappings scope_a) [live_slot scope_a HistoryRole] scope_a.
+Proof.
+  eapply writable_ordinary_alias_refuses with (slot := live_slot scope_a HistoryRole);
+    unfold authority_footprint; simpl; auto.
+Qed.
+
+Example opening_before_nul_validation_is_not_an_admitted_attempt :
+  ~ scope_open_attempt (scope_mappings scope_nul) [] scope_nul
+      (authority_footprint scope_nul).
+Proof.
+  intro opened.
+  pose proof (rejected_scope_performs_no_database_open embedded_nul_is_rejected opened) as empty.
+  discriminate.
+Qed.
+
+Example unrelated_environment_accepts_reserved_looking_literal_names :
+  footprints_disjoint (authority_footprint scope_a)
+    [(2, rspace_prefix ++ role_suffix HistoryRole)].
+Proof. apply unrelated_environment_does_not_reserve_literal_names; discriminate. Qed.
+
+Definition unframed_scope_names names :=
+  logical_prefix names ++ history_name names ++ roots_name names ++ cold_name names.
+
+Example omitting_length_frames_collides_while_exact_encoding_separates :
+  let left := ResolvedNames [1] [2; 3] [4] [5] in
+  let right := ResolvedNames [1; 2] [3] [4] [5] in
+  unframed_scope_names left = unframed_scope_names right /\
+  migration_namespace left <> migration_namespace right.
+Proof. vm_compute; split; congruence. Qed.
+
+Example omitting_roots_field_collides_while_exact_encoding_separates :
+  let left := selection_names scope_a in
+  let right := selection_names (scope_selection [7] [11] [22] [13] scope_config) in
+  (logical_prefix left, history_name left, cold_name left) =
+    (logical_prefix right, history_name right, cold_name right) /\
+  migration_namespace left <> migration_namespace right.
+Proof. vm_compute; split; congruence. Qed.
+
+Example omitting_logical_prefix_collides_while_exact_encoding_separates :
+  let left := selection_names scope_a in
+  let right := selection_names (scope_selection [8] [11] [12] [13] scope_config) in
+  (history_name left, roots_name left, cold_name left) =
+    (history_name right, roots_name right, cold_name right) /\
+  migration_namespace left <> migration_namespace right.
+Proof. vm_compute; split; congruence. Qed.
+
+Example always_framing_changes_legacy_namespace_bytes :
+  migration_namespace (selection_names scope_default) = [7] /\
+  scope_namespace_tag ++ framed_names (selection_names scope_default) <> [7].
+Proof. vm_compute; split; congruence. Qed.
+
+Example unequal_triples_can_share_a_physical_write :
+  selection_names scope_a <> selection_names scope_overlap /\
+  ~ footprints_disjoint (authority_footprint scope_a) (authority_footprint scope_overlap) /\
+  update_physical_cell (fun _ _ => None) (live_slot scope_a HistoryRole) 4 99
+    (live_slot scope_overlap HistoryRole) 4 = Some 99.
+Proof.
+  split; [discriminate|]. split.
+  - intro disjoint. apply (disjoint (live_slot scope_a HistoryRole)); simpl; auto.
+  - vm_compute; reflexivity.
+Qed.
+
+Example namespace_bytes_are_not_the_literal_migration_cold_database :
+  snd (migration_cold_source scope_a) = [13] /\
+  snd (migration_cold_source scope_a) <> migration_namespace (selection_names scope_a).
+Proof. vm_compute; split; congruence. Qed.
+
+Example split_cold_source_is_not_the_live_destination_environment :
+  let split_source := scope_selection [7] [11] [12] [13] (LmdbConfiguration 9 64 8) in
+  scope_admitted (scope_mappings split_source) [] split_source /\
+  migration_cold_source split_source = (9, [13]) /\
+  live_slot split_source ColdRole = (1, [13]).
+Proof.
+  intro split_source; split.
+  - unfold scope_admitted, exact_role_selection, physical_names_have_no_nul,
+      names_fit, field_fits, physical_roles_distinct, footprints_disjoint.
+    vm_compute. repeat split; try (repeat constructor; simpl; intuition discriminate).
+  - split; reflexivity.
+Qed.
+
+Example scoped_cold_does_not_search_the_ambient_database :
+  migration_cold_candidates scope_a = [[13]] /\
+  ~ In legacy_db_name (migration_cold_candidates scope_a).
+Proof. vm_compute; split; [reflexivity|intuition discriminate]. Qed.
+
+Example logical_rspace_prefix_alone_does_not_authorize_legacy_v2 :
+  let scoped := scope_selection rspace_prefix [11] [12] [13] scope_config in
+  selected_prefix scoped = rspace_prefix /\ ~ legacy_v2_allowed scoped.
+Proof. vm_compute; split; [reflexivity|intuition discriminate]. Qed.
+
+Example exact_unscoped_defaults_keep_legacy_migration_behavior :
+  let unscoped := AuthoritySelection rspace_prefix
+    (DatabaseMapping (rspace_prefix ++ role_suffix HistoryRole) None scope_config)
+    (DatabaseMapping (rspace_prefix ++ role_suffix RootsRole) None scope_config)
+    (DatabaseMapping (rspace_prefix ++ role_suffix ColdRole) None scope_config) in
+  legacy_v2_allowed unscoped /\
+  migration_cold_candidates unscoped =
+    [rspace_prefix ++ role_suffix ColdRole; legacy_db_name].
+Proof. vm_compute; repeat split. Qed.
+
+Example foreign_scope_migration_marker_is_rejected :
+  ~ migration_marker_accepts (selection_names scope_b)
+      (migration_namespace (selection_names scope_a)).
+Proof. vm_compute; congruence. Qed.
+
+Example reopening_the_exact_resolved_layout_preserves_content :
+  forall (before : physical_contents) role key,
+  before (live_slot scope_a role) key =
+    before (live_slot (scope_selection [7] [11] [12] [13] scope_config) role) key.
+Proof. reflexivity. Qed.
+
+Print Assumptions resolved_scope_has_an_accepted_fixture.
+Print Assumptions ignoring_overrides_collapses_distinct_authority_names.
+Print Assumptions missing_cold_role_is_rejected.
+Print Assumptions duplicated_history_role_is_rejected.
+Print Assumptions history_roots_configuration_mismatch_is_rejected.
+Print Assumptions embedded_nul_is_rejected.
+Print Assumptions dropping_the_u64_length_gate_admits_an_unencodable_field.
+Print Assumptions colliding_role_names_are_rejected.
+Print Assumptions ordinary_writable_alias_is_rejected.
+Print Assumptions opening_before_nul_validation_is_not_an_admitted_attempt.
+Print Assumptions unrelated_environment_accepts_reserved_looking_literal_names.
+Print Assumptions omitting_length_frames_collides_while_exact_encoding_separates.
+Print Assumptions omitting_roots_field_collides_while_exact_encoding_separates.
+Print Assumptions omitting_logical_prefix_collides_while_exact_encoding_separates.
+Print Assumptions always_framing_changes_legacy_namespace_bytes.
+Print Assumptions unequal_triples_can_share_a_physical_write.
+Print Assumptions namespace_bytes_are_not_the_literal_migration_cold_database.
+Print Assumptions split_cold_source_is_not_the_live_destination_environment.
+Print Assumptions scoped_cold_does_not_search_the_ambient_database.
+Print Assumptions logical_rspace_prefix_alone_does_not_authorize_legacy_v2.
+Print Assumptions exact_unscoped_defaults_keep_legacy_migration_behavior.
+Print Assumptions foreign_scope_migration_marker_is_rejected.
+Print Assumptions reopening_the_exact_resolved_layout_preserves_content.
+
 End RSpaceCallerAuthorityMutants.

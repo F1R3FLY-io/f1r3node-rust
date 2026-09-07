@@ -1,4 +1,5 @@
 From Stdlib Require Import Bool Arith PeanoNat Lia Lists.List.
+From StackSafePDA Require Import ChannelImage.
 Import ListNotations.
 
 Module RSpaceCallerAuthority.
@@ -424,5 +425,495 @@ Print Assumptions uncaptured_values_use_receiving_history.
 Print Assumptions payload_transfer_never_transfers_mutation_authority.
 Print Assumptions rebased_journal_reconstructs_exact_restored_count.
 Print Assumptions rebased_journal_has_no_underflow_or_intermediate_overflow.
+
+Module ScopeBytes := ChannelImage.
+Set Implicit Arguments.
+
+Definition database_name := list nat.
+Definition name_eq_dec := list_eq_dec Nat.eq_dec.
+
+Record resolved_names := ResolvedNames {
+  logical_prefix : database_name;
+  history_name : database_name;
+  roots_name : database_name;
+  cold_name : database_name
+}.
+
+Definition history_suffix : database_name := [45; 104; 105; 115; 116; 111; 114; 121].
+Definition roots_suffix : database_name := [45; 114; 111; 111; 116; 115].
+Definition cold_suffix : database_name := [45; 99; 111; 108; 100].
+Definition scope_namespace_tag : database_name :=
+  [0; 114; 115; 112; 97; 99; 101; 45; 97; 117; 116; 104; 111; 114; 105; 116; 121;
+   45; 108; 97; 121; 111; 117; 116; 0; 1].
+
+Definition field_fits (field : database_name) :=
+  ScopeBytes.fits_fixed_be 8 (length field) = true.
+
+Definition names_fit (names : resolved_names) :=
+  field_fits (logical_prefix names) /\ field_fits (history_name names) /\
+  field_fits (roots_name names) /\ field_fits (cold_name names).
+
+Definition physical_names_have_no_nul (names : resolved_names) :=
+  ~ In 0 (history_name names) /\ ~ In 0 (roots_name names) /\ ~ In 0 (cold_name names).
+
+Definition name_frame (field : database_name) : database_name :=
+  ScopeBytes.encode_u64_be (length field) ++ field.
+
+Definition framed_names (names : resolved_names) : database_name :=
+  name_frame (logical_prefix names) ++ name_frame (history_name names) ++
+  name_frame (roots_name names) ++ name_frame (cold_name names).
+
+Definition default_names (names : resolved_names) : bool :=
+  if name_eq_dec (history_name names) (logical_prefix names ++ history_suffix) then
+    if name_eq_dec (roots_name names) (logical_prefix names ++ roots_suffix) then
+      if name_eq_dec (cold_name names) (logical_prefix names ++ cold_suffix) then true else false
+    else false
+  else false.
+
+Definition migration_namespace (names : resolved_names) : database_name :=
+  if default_names names then logical_prefix names
+  else scope_namespace_tag ++ framed_names names.
+
+Lemma scope_equal_length_append_cancels : forall (left right tail suffix : database_name),
+  length left = length right -> left ++ tail = right ++ suffix -> left = right /\ tail = suffix.
+Proof.
+  induction left as [|head rest IH]; intros [|other remaining] tail suffix same_length same;
+    simpl in *; try discriminate.
+  - auto.
+  - inversion same; subst. injection same_length as lengths.
+    destruct (IH remaining tail suffix lengths H1) as [prefix suffixes]. subst. auto.
+Qed.
+
+Theorem checked_u64_name_frames_cancel_exactly : forall left right tail suffix,
+  field_fits left -> field_fits right ->
+  name_frame left ++ tail = name_frame right ++ suffix -> left = right /\ tail = suffix.
+Proof.
+  intros left right tail suffix left_fits right_fits encoded.
+  unfold name_frame in encoded. repeat rewrite <- app_assoc in encoded.
+  apply (f_equal ScopeBytes.decode_u64_be) in encoded.
+  unfold field_fits in left_fits, right_fits.
+  apply ScopeBytes.fits_fixed_be_true_iff in left_fits, right_fits.
+  rewrite !ScopeBytes.u64_big_endian_round_trip in encoded by assumption.
+  injection encoded as lengths bodies.
+  now apply scope_equal_length_append_cancels.
+Qed.
+
+Theorem four_checked_name_fields_encode_injectively : forall left right,
+  names_fit left -> names_fit right -> framed_names left = framed_names right -> left = right.
+Proof.
+  intros [lp lh lr lc] [rp rh rr rc] [lp_fit [lh_fit [lr_fit lc_fit]]]
+    [rp_fit [rh_fit [rr_fit rc_fit]]] same.
+  unfold framed_names in same; cbn in *.
+  apply checked_u64_name_frames_cancel_exactly in same as [prefix same]; [|assumption..].
+  apply checked_u64_name_frames_cancel_exactly in same as [history same]; [|assumption..].
+  apply checked_u64_name_frames_cancel_exactly in same as [roots same]; [|assumption..].
+  assert (cold : lc = rc).
+  { apply (proj1 (checked_u64_name_frames_cancel_exactly lc_fit rc_fit
+      (tail := []) (suffix := []) ltac:(now rewrite !app_nil_r))). }
+  subst. reflexivity.
+Qed.
+
+Theorem default_layout_has_exact_legacy_names : forall names,
+  default_names names = true <->
+  history_name names = logical_prefix names ++ history_suffix /\
+  roots_name names = logical_prefix names ++ roots_suffix /\
+  cold_name names = logical_prefix names ++ cold_suffix.
+Proof.
+  intro names. unfold default_names.
+  repeat destruct name_eq_dec; intuition congruence.
+Qed.
+
+Lemma default_prefix_has_no_nul : forall names,
+  default_names names = true -> physical_names_have_no_nul names ->
+  ~ In 0 (logical_prefix names).
+Proof.
+  intros names legacy [history_clean _] present.
+  apply default_layout_has_exact_legacy_names in legacy as [history _].
+  apply history_clean. rewrite history. apply in_or_app. left. exact present.
+Qed.
+
+Theorem default_namespace_bytes_are_unchanged : forall names,
+  default_names names = true -> migration_namespace names = logical_prefix names.
+Proof. intros names legacy; unfold migration_namespace; now rewrite legacy. Qed.
+
+Theorem resolved_namespace_encoding_is_injective : forall left right,
+  names_fit left -> names_fit right ->
+  physical_names_have_no_nul left -> physical_names_have_no_nul right ->
+  migration_namespace left = migration_namespace right -> left = right.
+Proof.
+  intros left right left_fit right_fit left_clean right_clean same.
+  unfold migration_namespace in same.
+  destruct (default_names left) eqn:left_default;
+    destruct (default_names right) eqn:right_default.
+  - apply default_layout_has_exact_legacy_names in left_default, right_default.
+    destruct left, right; cbn in *. intuition congruence.
+  - exfalso. apply (default_prefix_has_no_nul left_default left_clean).
+    rewrite same. cbn. auto.
+  - exfalso. apply (default_prefix_has_no_nul right_default right_clean).
+    rewrite <- same. cbn. auto.
+  - apply app_inv_head in same. now apply four_checked_name_fields_encode_injectively.
+Qed.
+
+Inductive database_role := HistoryRole | RootsRole | ColdRole.
+
+Definition role_suffix (role : database_role) : database_name :=
+  match role with HistoryRole => history_suffix | RootsRole => roots_suffix | ColdRole => cold_suffix end.
+
+Record lmdb_configuration := LmdbConfiguration {
+  physical_environment : nat;
+  configured_map_size : nat;
+  configured_max_databases : nat
+}.
+
+Record database_mapping := DatabaseMapping {
+  logical_database_id : database_name;
+  database_name_override : option database_name;
+  database_configuration : lmdb_configuration
+}.
+
+Definition resolve_database_name (mapping : database_mapping) : database_name :=
+  match database_name_override mapping with
+  | Some literal => literal
+  | None => logical_database_id mapping
+  end.
+
+Definition role_mappings (prefix : database_name) (role : database_role)
+    (mappings : list database_mapping) : list database_mapping :=
+  filter (fun mapping =>
+    if name_eq_dec (logical_database_id mapping) (prefix ++ role_suffix role) then true else false)
+    mappings.
+
+Record authority_selection := AuthoritySelection {
+  selected_prefix : database_name;
+  selected_history : database_mapping;
+  selected_roots : database_mapping;
+  selected_cold : database_mapping
+}.
+
+Definition selection_names (selection : authority_selection) : resolved_names :=
+  ResolvedNames (selected_prefix selection)
+    (resolve_database_name (selected_history selection))
+    (resolve_database_name (selected_roots selection))
+    (resolve_database_name (selected_cold selection)).
+
+Definition exact_role_selection (mappings : list database_mapping) (selection : authority_selection) :=
+  role_mappings (selected_prefix selection) HistoryRole mappings = [selected_history selection] /\
+  role_mappings (selected_prefix selection) RootsRole mappings = [selected_roots selection] /\
+  role_mappings (selected_prefix selection) ColdRole mappings = [selected_cold selection].
+
+Definition selected_mapping (selection : authority_selection) (role : database_role) :=
+  match role with
+  | HistoryRole => selected_history selection
+  | RootsRole => selected_roots selection
+  | ColdRole => selected_cold selection
+  end.
+
+Definition physical_slot := (nat * database_name)%type.
+
+Definition physical_slot_eq_dec : forall left right : physical_slot,
+  {left = right} + {left <> right}.
+Proof. decide equality; [apply name_eq_dec|apply Nat.eq_dec]. Defined.
+
+Definition live_environment (selection : authority_selection) : nat :=
+  physical_environment (database_configuration (selected_history selection)).
+
+Definition live_slot (selection : authority_selection) (role : database_role) : physical_slot :=
+  (live_environment selection, resolve_database_name (selected_mapping selection role)).
+
+Definition authority_footprint (selection : authority_selection) : list physical_slot :=
+  [live_slot selection HistoryRole; live_slot selection RootsRole; live_slot selection ColdRole].
+
+Definition footprints_disjoint (left right : list physical_slot) : Prop :=
+  forall slot, In slot left -> ~ In slot right.
+
+Definition physical_roles_distinct (selection : authority_selection) : Prop :=
+  NoDup [history_name (selection_names selection); roots_name (selection_names selection);
+    cold_name (selection_names selection)].
+
+Definition scope_admitted (mappings : list database_mapping) (ordinary_writable : list physical_slot)
+    (selection : authority_selection) : Prop :=
+  exact_role_selection mappings selection /\
+  database_configuration (selected_history selection) =
+    database_configuration (selected_roots selection) /\
+  physical_names_have_no_nul (selection_names selection) /\
+  names_fit (selection_names selection) /\ physical_roles_distinct selection /\
+  footprints_disjoint (authority_footprint selection) ordinary_writable.
+
+Theorem each_name_override_is_resolved_independently : forall identifier override config,
+  resolve_database_name (DatabaseMapping identifier (Some override) config) = override /\
+  resolve_database_name (DatabaseMapping identifier None config) = identifier.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem exact_role_resolution_is_unique : forall mappings left right,
+  selected_prefix left = selected_prefix right ->
+  exact_role_selection mappings left -> exact_role_selection mappings right -> left = right.
+Proof.
+  intros mappings [lp lh lr lc] [rp rh rr rc] prefix left right.
+  unfold exact_role_selection in *; cbn in *. intuition congruence.
+Qed.
+
+Theorem admitted_roles_are_present_exactly_once : forall mappings ordinary selection role,
+  scope_admitted mappings ordinary selection ->
+  role_mappings (selected_prefix selection) role mappings = [selected_mapping selection role].
+Proof.
+  intros mappings ordinary selection role [[history [roots cold]] _].
+  destruct role; assumption.
+Qed.
+
+Theorem missing_or_duplicate_logical_role_refuses : forall mappings ordinary selection role,
+  length (role_mappings (selected_prefix selection) role mappings) <> 1 ->
+  ~ scope_admitted mappings ordinary selection.
+Proof.
+  intros mappings ordinary selection role count admitted.
+  apply count. rewrite (admitted_roles_are_present_exactly_once role admitted). reflexivity.
+Qed.
+
+Theorem incompatible_history_roots_configuration_refuses : forall mappings ordinary selection,
+  database_configuration (selected_history selection) <>
+    database_configuration (selected_roots selection) ->
+  ~ scope_admitted mappings ordinary selection.
+Proof. unfold scope_admitted; intuition. Qed.
+
+Theorem nul_physical_name_refuses : forall mappings ordinary selection,
+  ~ physical_names_have_no_nul (selection_names selection) ->
+  ~ scope_admitted mappings ordinary selection.
+Proof. unfold scope_admitted; intuition. Qed.
+
+Theorem unchecked_field_length_refuses : forall mappings ordinary selection,
+  ~ names_fit (selection_names selection) -> ~ scope_admitted mappings ordinary selection.
+Proof. unfold scope_admitted; intuition. Qed.
+
+Theorem colliding_physical_roles_refuse : forall mappings ordinary selection,
+  ~ physical_roles_distinct selection -> ~ scope_admitted mappings ordinary selection.
+Proof. unfold scope_admitted; intuition. Qed.
+
+Theorem writable_ordinary_alias_refuses : forall mappings ordinary selection slot,
+  In slot (authority_footprint selection) -> In slot ordinary ->
+  ~ scope_admitted mappings ordinary selection.
+Proof. unfold scope_admitted, footprints_disjoint; intuition eauto. Qed.
+
+Inductive scope_open_attempt (mappings : list database_mapping)
+    (ordinary : list physical_slot) (selection : authority_selection) : list physical_slot -> Prop :=
+| ScopeOpenRefused : ~ scope_admitted mappings ordinary selection ->
+    scope_open_attempt mappings ordinary selection []
+| ScopeOpenAllowed : scope_admitted mappings ordinary selection ->
+    scope_open_attempt mappings ordinary selection (authority_footprint selection).
+
+Theorem rejected_scope_performs_no_database_open : forall mappings ordinary selection opened,
+  ~ scope_admitted mappings ordinary selection ->
+  scope_open_attempt mappings ordinary selection opened -> opened = [].
+Proof. intros mappings ordinary selection opened refused step; inversion step; subst; tauto. Qed.
+
+Definition physical_contents := physical_slot -> nat -> option nat.
+
+Definition update_physical_cell (before : physical_contents) (slot : physical_slot)
+    (key value : nat) : physical_contents :=
+  fun observed_slot observed_key =>
+    if physical_slot_eq_dec observed_slot slot then
+      if Nat.eq_dec observed_key key then Some value else before observed_slot observed_key
+    else before observed_slot observed_key.
+
+Theorem disjoint_physical_footprints_preserve_other_content : forall before left right
+    written observed key value observed_key,
+  footprints_disjoint left right -> In written left -> In observed right ->
+  update_physical_cell before written key value observed observed_key = before observed observed_key.
+Proof.
+  intros before left right written observed key value observed_key disjoint in_left in_right.
+  unfold update_physical_cell. destruct physical_slot_eq_dec as [same|different]; [|reflexivity].
+  subst. exfalso. exact (disjoint written in_left in_right).
+Qed.
+
+Theorem same_physical_layout_reopens_same_content : forall (before : physical_contents) left right,
+  authority_footprint left = authority_footprint right ->
+  forall role key, before (live_slot left role) key = before (live_slot right role) key.
+Proof.
+  intros before left right same role key.
+  destruct role.
+  - pose proof (f_equal (fun slots => nth 0 slots (0, [])) same) as history.
+    change (live_slot left HistoryRole = live_slot right HistoryRole) in history.
+    now rewrite history.
+  - pose proof (f_equal (fun slots => nth 1 slots (0, [])) same) as roots.
+    change (live_slot left RootsRole = live_slot right RootsRole) in roots.
+    now rewrite roots.
+  - pose proof (f_equal (fun slots => nth 2 slots (0, [])) same) as cold.
+    change (live_slot left ColdRole = live_slot right ColdRole) in cold.
+    now rewrite cold.
+Qed.
+
+Definition migration_cold_source (selection : authority_selection) : physical_slot :=
+  (physical_environment (database_configuration (selected_cold selection)),
+    resolve_database_name (selected_cold selection)).
+
+Definition legacy_db_name : database_name := [100; 98].
+Definition rspace_prefix : database_name := [114; 115; 112; 97; 99; 101].
+
+Definition migration_cold_candidates (selection : authority_selection) : list database_name :=
+  if default_names (selection_names selection) then
+    [resolve_database_name (selected_cold selection); legacy_db_name]
+  else [resolve_database_name (selected_cold selection)].
+
+Definition legacy_v2_allowed (selection : authority_selection) : Prop :=
+  default_names (selection_names selection) = true /\ selected_prefix selection = rspace_prefix.
+
+Theorem migration_primary_source_uses_literal_cold_name : forall selection,
+  snd (migration_cold_source selection) = cold_name (selection_names selection) /\
+  fst (migration_cold_source selection) =
+    physical_environment (database_configuration (selected_cold selection)).
+Proof. repeat split; reflexivity. Qed.
+
+Theorem nondefault_layout_has_no_ambient_migration_sources : forall selection,
+  default_names (selection_names selection) = false ->
+  migration_cold_candidates selection = [cold_name (selection_names selection)] /\
+  ~ legacy_v2_allowed selection.
+Proof.
+  intros selection scoped. unfold migration_cold_candidates, legacy_v2_allowed.
+  rewrite scoped. split; [reflexivity|intuition discriminate].
+Qed.
+
+Theorem default_layout_preserves_legacy_cold_candidates : forall selection,
+  default_names (selection_names selection) = true ->
+  migration_cold_candidates selection = [cold_name (selection_names selection); legacy_db_name].
+Proof. intros selection legacy; unfold migration_cold_candidates; now rewrite legacy. Qed.
+
+Definition migration_marker_accepts (names : resolved_names) (marker_namespace : database_name) :=
+  marker_namespace = migration_namespace names.
+
+Theorem foreign_resolved_namespace_marker_refuses : forall source target,
+  names_fit source -> names_fit target ->
+  physical_names_have_no_nul source -> physical_names_have_no_nul target -> source <> target ->
+  ~ migration_marker_accepts target (migration_namespace source).
+Proof.
+  unfold migration_marker_accepts. intros source target sf tf sc tc different same.
+  apply different. now apply resolved_namespace_encoding_is_injective.
+Qed.
+
+Theorem unrelated_environment_does_not_reserve_literal_names : forall selection environment name,
+  environment <> live_environment selection ->
+  footprints_disjoint (authority_footprint selection) [(environment, name)].
+Proof.
+  intros selection environment name different slot in_authority in_ordinary.
+  unfold authority_footprint, live_slot in in_authority.
+  simpl in in_authority, in_ordinary. intuition congruence.
+Qed.
+
+Inductive scope_invariant_id :=
+| IndependentNameResolution | UniqueRoleResolution | ExactlyOneLogicalRole
+| HistoryRootsConfiguration | PhysicalNamesRejectNul | CheckedFieldLengths
+| DistinctPhysicalRoles | OrdinaryAliasExclusion | ValidationBeforeDatabaseOpen
+| ExactU64FrameCancellation | ExactFourFieldEncoding | LegacyNamespaceCompatibility
+| FullNamespaceInjectivity | DisjointPhysicalIsolation | SameLayoutReopen
+| LiteralMigrationColdSource | NoScopedAmbientMigration | LegacyColdCompatibility
+| MigrationMarkerBinding | UnrelatedEnvironmentLiteralNames.
+
+Definition scope_invariant_catalog : list scope_invariant_id :=
+  [IndependentNameResolution; UniqueRoleResolution; ExactlyOneLogicalRole;
+   HistoryRootsConfiguration; PhysicalNamesRejectNul; CheckedFieldLengths;
+   DistinctPhysicalRoles; OrdinaryAliasExclusion; ValidationBeforeDatabaseOpen;
+   ExactU64FrameCancellation; ExactFourFieldEncoding; LegacyNamespaceCompatibility;
+   FullNamespaceInjectivity; DisjointPhysicalIsolation; SameLayoutReopen;
+   LiteralMigrationColdSource; NoScopedAmbientMigration; LegacyColdCompatibility;
+   MigrationMarkerBinding; UnrelatedEnvironmentLiteralNames].
+
+Definition scope_invariant_binding (invariant : scope_invariant_id) : Prop :=
+  match invariant with
+  | IndependentNameResolution => forall identifier override config,
+      resolve_database_name (DatabaseMapping identifier (Some override) config) = override /\
+      resolve_database_name (DatabaseMapping identifier None config) = identifier
+  | UniqueRoleResolution => forall mappings left right,
+      selected_prefix left = selected_prefix right -> exact_role_selection mappings left ->
+      exact_role_selection mappings right -> left = right
+  | ExactlyOneLogicalRole => forall mappings ordinary selection role,
+      scope_admitted mappings ordinary selection ->
+      role_mappings (selected_prefix selection) role mappings = [selected_mapping selection role]
+  | HistoryRootsConfiguration => forall mappings ordinary selection,
+      database_configuration (selected_history selection) <>
+        database_configuration (selected_roots selection) -> ~ scope_admitted mappings ordinary selection
+  | PhysicalNamesRejectNul => forall mappings ordinary selection,
+      ~ physical_names_have_no_nul (selection_names selection) -> ~ scope_admitted mappings ordinary selection
+  | CheckedFieldLengths => forall mappings ordinary selection,
+      ~ names_fit (selection_names selection) -> ~ scope_admitted mappings ordinary selection
+  | DistinctPhysicalRoles => forall mappings ordinary selection,
+      ~ physical_roles_distinct selection -> ~ scope_admitted mappings ordinary selection
+  | OrdinaryAliasExclusion => forall mappings ordinary selection slot,
+      In slot (authority_footprint selection) -> In slot ordinary -> ~ scope_admitted mappings ordinary selection
+  | ValidationBeforeDatabaseOpen => forall mappings ordinary selection opened,
+      ~ scope_admitted mappings ordinary selection -> scope_open_attempt mappings ordinary selection opened ->
+      opened = []
+  | ExactU64FrameCancellation => forall left right tail suffix,
+      field_fits left -> field_fits right ->
+      name_frame left ++ tail = name_frame right ++ suffix -> left = right /\ tail = suffix
+  | ExactFourFieldEncoding => forall left right,
+      names_fit left -> names_fit right -> framed_names left = framed_names right -> left = right
+  | LegacyNamespaceCompatibility => forall names,
+      default_names names = true -> migration_namespace names = logical_prefix names
+  | FullNamespaceInjectivity => forall left right,
+      names_fit left -> names_fit right -> physical_names_have_no_nul left ->
+      physical_names_have_no_nul right -> migration_namespace left = migration_namespace right -> left = right
+  | DisjointPhysicalIsolation => forall before left right written observed key value observed_key,
+      footprints_disjoint left right -> In written left -> In observed right ->
+      update_physical_cell before written key value observed observed_key = before observed observed_key
+  | SameLayoutReopen => forall (before : physical_contents) left right,
+      authority_footprint left = authority_footprint right ->
+      forall role key, before (live_slot left role) key = before (live_slot right role) key
+  | LiteralMigrationColdSource => forall selection,
+      snd (migration_cold_source selection) = cold_name (selection_names selection) /\
+      fst (migration_cold_source selection) =
+        physical_environment (database_configuration (selected_cold selection))
+  | NoScopedAmbientMigration => forall selection,
+      default_names (selection_names selection) = false ->
+      migration_cold_candidates selection = [cold_name (selection_names selection)] /\ ~ legacy_v2_allowed selection
+  | LegacyColdCompatibility => forall selection,
+      default_names (selection_names selection) = true ->
+      migration_cold_candidates selection = [cold_name (selection_names selection); legacy_db_name]
+  | MigrationMarkerBinding => forall source target,
+      names_fit source -> names_fit target -> physical_names_have_no_nul source ->
+      physical_names_have_no_nul target -> source <> target ->
+      ~ migration_marker_accepts target (migration_namespace source)
+  | UnrelatedEnvironmentLiteralNames => forall selection environment name,
+      environment <> live_environment selection ->
+      footprints_disjoint (authority_footprint selection) [(environment, name)]
+  end.
+
+Theorem every_scope_invariant_is_bound : forall invariant, scope_invariant_binding invariant.
+Proof.
+  intro invariant; destruct invariant; cbn.
+  - apply each_name_override_is_resolved_independently.
+  - apply exact_role_resolution_is_unique.
+  - apply admitted_roles_are_present_exactly_once.
+  - apply incompatible_history_roots_configuration_refuses.
+  - apply nul_physical_name_refuses.
+  - apply unchecked_field_length_refuses.
+  - apply colliding_physical_roles_refuse.
+  - apply writable_ordinary_alias_refuses.
+  - apply rejected_scope_performs_no_database_open.
+  - apply checked_u64_name_frames_cancel_exactly.
+  - apply four_checked_name_fields_encode_injectively.
+  - apply default_namespace_bytes_are_unchanged.
+  - apply resolved_namespace_encoding_is_injective.
+  - apply disjoint_physical_footprints_preserve_other_content.
+  - apply same_physical_layout_reopens_same_content.
+  - apply migration_primary_source_uses_literal_cold_name.
+  - apply nondefault_layout_has_no_ambient_migration_sources.
+  - apply default_layout_preserves_legacy_cold_candidates.
+  - apply foreign_resolved_namespace_marker_refuses.
+  - apply unrelated_environment_does_not_reserve_literal_names.
+Qed.
+
+Theorem scope_invariant_catalog_is_unique_complete_and_exact :
+  NoDup scope_invariant_catalog /\ Forall scope_invariant_binding scope_invariant_catalog /\
+  (forall invariant, In invariant scope_invariant_catalog) /\ length scope_invariant_catalog = 20.
+Proof.
+  repeat split.
+  - repeat constructor; simpl; intuition discriminate.
+  - apply Forall_forall. intros invariant _. apply every_scope_invariant_is_bound.
+  - intro invariant; destruct invariant; simpl; tauto.
+Qed.
+
+Print Assumptions resolved_namespace_encoding_is_injective.
+Print Assumptions rejected_scope_performs_no_database_open.
+Print Assumptions disjoint_physical_footprints_preserve_other_content.
+Print Assumptions migration_primary_source_uses_literal_cold_name.
+Print Assumptions every_scope_invariant_is_bound.
+Print Assumptions scope_invariant_catalog_is_unique_complete_and_exact.
 
 End RSpaceCallerAuthority.

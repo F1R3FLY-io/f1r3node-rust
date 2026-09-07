@@ -35,6 +35,27 @@ The theorem kernel is schema-parametric. The generated Rust equivalence manifest
 
 The development contains no axioms, admitted goals, opaque assumptions, Verus `assume`, or external proof bodies.
 
+## Resolved authority scope contract (2026-09-07)
+
+Task 8283 extends `RSpaceCallerAuthority.v` with exact independent database-name
+resolution, checked namespace framing, physical-slot isolation, rejection before
+opening, and scoped migration-source selection. Its twenty-entry invariant type
+is exhaustively bound to checked propositions. The
+[extracted executable catalog](../../../docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#resolved-lmdb-scope-isolation-2026-09-07)
+records the remaining Rust obligations. The caller and mutant files compile with
+36 and 43 closed assumption reports, respectively, and pass independent kernel
+checking. The 23 new controls include positive admission, dropped overrides,
+missing/duplicate mappings, malformed names, physical aliases, omitted frames or
+fields, ambient migration sources and foreign namespace markers. Existing caller
+proofs and controls remain unchanged.
+
+The namespace proof imports the existing `ChannelImage.v` fixed-width codec;
+the proof runner compiles that dependency first. Physical environment IDs stand
+for resolved paths, not string inequality. The model does not prove filesystem
+identity, actual LMDB behavior, process-restart durability, or the Rust adapter.
+Those boundaries need the model-derived executable properties; unique namespace
+bytes alone cannot isolate overlapping physical databases.
+
 ## Captured replay archive contract (2026-09-07)
 
 Task 5636 adds a **current-epoch test fixture**, not a reconstruction of the missing

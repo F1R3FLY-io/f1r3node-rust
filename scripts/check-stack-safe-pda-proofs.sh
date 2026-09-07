@@ -86,10 +86,12 @@ rocq_compile_with_closed_count theories/ReplayArchiveMutants.v 21 \
   "the replay archive nonvacuity and omission controls"
 rocq_check_modules "captured replay archive" \
   StackSafePDA.ReplayArchive StackSafePDA.ReplayArchiveMutants
+rocq_compile_with_closed_count theories/ChannelImage.v 11 \
+  "the channel-image codec capstones"
 rocq_reject_placeholders theories/RSpaceCallerAuthority.v theories/RSpaceCallerAuthorityMutants.v
-rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 30 \
+rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 36 \
   "the exact caller-authority contract capstones"
-rocq_compile_with_closed_count theories/RSpaceCallerAuthorityMutants.v 20 \
+rocq_compile_with_closed_count theories/RSpaceCallerAuthorityMutants.v 43 \
   "the caller-authority negative controls"
 rocq_check_modules "RSpace caller-authority contract" \
   StackSafePDA.RSpaceCallerAuthority StackSafePDA.RSpaceCallerAuthorityMutants
@@ -382,17 +384,6 @@ accounting_demand_closed_capstones="$({
 } || true)"
 if [[ "$accounting_demand_closed_capstones" != "4" ]]; then
   echo "stack-safe-pda: expected all four accounting-demand Rocq capstones to be closed; got $accounting_demand_closed_capstones" >&2
-  exit 1
-fi
-channel_image_rocq_output="$(
-  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/ChannelImage.v 2>&1
-)"
-printf '%s\n' "$channel_image_rocq_output"
-channel_image_closed_capstones="$({
-  printf '%s\n' "$channel_image_rocq_output" | grep -c '^Closed under the global context$'
-} || true)"
-if [[ "$channel_image_closed_capstones" != "11" ]]; then
-  echo "stack-safe-pda: expected all eleven ChannelImage Rocq capstones to be closed; got $channel_image_closed_capstones" >&2
   exit 1
 fi
 popd >/dev/null
