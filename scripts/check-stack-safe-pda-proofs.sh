@@ -65,6 +65,13 @@ pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
+rocq_reject_placeholders theories/RSpaceCallerAuthority.v theories/RSpaceCallerAuthorityMutants.v
+rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 30 \
+  "the exact caller-authority contract capstones"
+rocq_compile_with_closed_count theories/RSpaceCallerAuthorityMutants.v 20 \
+  "the caller-authority negative controls"
+rocq_check_modules "RSpace caller-authority contract" \
+  StackSafePDA.RSpaceCallerAuthority StackSafePDA.RSpaceCallerAuthorityMutants
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
   theories/PathMapCanonicalStreamPublicationBase.v
 rocq_compile_with_closed_count \

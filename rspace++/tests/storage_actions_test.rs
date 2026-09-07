@@ -2214,6 +2214,177 @@ async fn revert_to_soft_checkpoint_should_inject_the_event_log() {
     assert_eq!(s3.log, s1.log);
 }
 
+async fn assert_soft_restore_uses_captured_cache_and_receiving_history(
+    captured_count: u8,
+    later_count: u8,
+    transfer_to_other_owner: bool,
+) {
+    let source = create_rspace().await;
+    let cached = "caller-contract-cached".to_string();
+    let cached_empty = "caller-contract-cached-empty".to_string();
+    let uncached = "caller-contract-uncached".to_string();
+    for _ in 0..captured_count {
+        assert!(
+            source
+                .produce(cached.clone(), "before".to_string(), false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(source.get_store().get_data(&cached).len(), captured_count as usize);
+    assert!(source.get_store().get_data(&cached_empty).is_empty());
+    let saved = source.create_soft_checkpoint().await;
+    let expected_log = saved.log.clone();
+    let expected_counter = saved.produce_counter.clone();
+    let receiver = if transfer_to_other_owner {
+        create_rspace().await
+    } else {
+        source
+    };
+
+    for _ in 0..later_count {
+        assert!(
+            receiver
+                .produce(cached.clone(), "later".to_string(), false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            receiver
+                .produce(uncached.clone(), "receiving-history".to_string(), false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(
+        receiver
+            .produce(cached_empty.clone(), "must-be-hidden".to_string(), false)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let hard = receiver.create_checkpoint().await.unwrap();
+    let exact_before_restore = receiver
+        .get_history_repository()
+        .current_authority_root()
+        .unwrap();
+
+    receiver
+        .revert_to_soft_checkpoint(saved.clone())
+        .await
+        .unwrap();
+    assert_eq!(receiver.get_history_repository().root(), hard.root);
+    assert_eq!(
+        receiver
+            .get_history_repository()
+            .current_authority_root()
+            .unwrap(),
+        exact_before_restore
+    );
+    assert_eq!(receiver.get_store().get_data(&cached), vec![
+        Datum::create(
+            &cached,
+            "before".to_string(),
+            false
+        );
+        captured_count as usize
+    ],);
+    assert!(receiver.get_store().get_data(&cached_empty).is_empty());
+    assert_eq!(receiver.get_store().get_data(&uncached), vec![
+        Datum::create(
+            &uncached,
+            "receiving-history".to_string(),
+            false
+        );
+        later_count as usize
+    ],);
+    let restored = receiver.create_soft_checkpoint().await;
+    assert_eq!(restored.log, expected_log);
+    assert_eq!(restored.produce_counter, expected_counter);
+    receiver.revert_to_soft_checkpoint(saved).await.unwrap();
+    assert_eq!(
+        receiver
+            .get_history_repository()
+            .current_authority_root()
+            .unwrap(),
+        exact_before_restore
+    );
+}
+
+#[tokio::test]
+async fn soft_restore_cross_hard_checkpoint_preserves_empty_and_missing_cache_distinction() {
+    assert_soft_restore_uses_captured_cache_and_receiving_history(2, 3, false).await;
+    assert_soft_restore_uses_captured_cache_and_receiving_history(0, 1, false).await;
+}
+
+#[tokio::test]
+async fn transferred_soft_payload_preserves_receiving_authority_and_history() {
+    assert_soft_restore_uses_captured_cache_and_receiving_history(2, 3, true).await;
+    assert_soft_restore_uses_captured_cache_and_receiving_history(0, 1, true).await;
+}
+
+#[tokio::test]
+async fn spawn_reactivates_the_source_view_root_on_the_shared_authority() {
+    let source = create_rspace().await;
+    let channel = "caller-contract-spawn".to_string();
+    source
+        .produce(channel.clone(), "stored".to_string(), false)
+        .await
+        .unwrap();
+    let checkpoint = source.create_checkpoint().await.unwrap();
+    let before = source
+        .get_history_repository()
+        .current_authority_root()
+        .unwrap();
+    let spawned = source.spawn().unwrap();
+    let after = spawned
+        .get_history_repository()
+        .current_authority_root()
+        .unwrap();
+    assert_eq!(after.root(), &checkpoint.root);
+    assert_eq!(after.generation(), before.generation().checked_add(1).unwrap());
+    assert_eq!(
+        source
+            .get_history_repository()
+            .current_authority_root()
+            .unwrap(),
+        after
+    );
+    assert_eq!(spawned.get_history_repository().root(), checkpoint.root);
+    assert_eq!(spawned.get_store().get_data(&channel), vec![Datum::create(
+        &channel,
+        "stored".to_string(),
+        false
+    )]);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn soft_restore_caller_overlay_matches_legacy_observations(
+        captured_count in 0u8..7,
+        later_count in 1u8..7,
+        transfer in any::<bool>(),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(assert_soft_restore_uses_captured_cache_and_receiving_history(
+            captured_count, later_count, transfer,
+        ));
+    }
+
+    #[test]
+    fn caller_contract_count_rebase_is_exact_over_full_u64_domain(base in any::<u64>(), target in any::<u64>()) {
+        let (addition, removal) = if target >= base { (target - base, 0) } else { (0, base - target) };
+        let restored = base.checked_sub(removal).and_then(|value| value.checked_add(addition));
+        prop_assert_eq!(restored, Some(target));
+        prop_assert!(removal <= base);
+    }
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // The cold-store DECODE boundary for this file's test doubles.
 //

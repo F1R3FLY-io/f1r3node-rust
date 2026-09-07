@@ -5044,6 +5044,62 @@ PathMap/ACT integration. Task 8009 owns the demonstrated byte-view gaps; 8010–
 own index proof, implementation, integration and qualification. Existing 6021 owns
 legacy hash/channel activation. No optional persistence design was started.
 
+### J-070 — 2026-09-06: preserve actual caller authority during durable integration
+
+**QUESTION.** Which current RSpace caller contracts must the selected PathMap/DAG
+authority preserve? Task 7930 follows the persisted required-track scheduler and
+reuses existing atomic-root, journal-owner, affine-import and replay proofs.
+
+**DERIVED AND REVIEWED.** The source review distinguishes backend current state
+from view-local history, publication generation from physical generation, and
+retained structure from admitted semantics. Durable historical retention currently
+checks structure/inventory; semantic admission of the current state does not
+certify every retained target for reset. Alias bindings must be appointed by the
+authenticated owner; inherited legacy provenance is not a successor identity.
+
+The plan-agent review strengthened the draft in four places: all observable
+incarnations participate in freshness, same-domain forged catalogs cannot resolve,
+soft restoration requires authenticated receiving history and complete five-journal
+refinement, and full spawn composes historical activation with view attachment.
+The existing spawn path increments shared publication generation; attachment
+alone does not acquire another writer.
+
+**COMPATIBILITY RESULT.** New actual-RSpace regressions confirm that a soft payload
+may outlive a hard checkpoint and may be restored by another owner. Captured empty
+channels hide receiving-history values; uncaptured channels use receiving history.
+The exact durable root/generation, restored log and produce counter are checked.
+A same-capture-generation restriction would change supported behavior and is not
+introduced. Complete cross-base journal reconstruction and later checkpoint
+publication remain implementation obligations, not inferred from immediate reads.
+
+**FORMAL RESULT AND BOUNDARY.** `RSpaceCallerAuthority.v` proves the narrow caller
+contract; its companion retains negative controls for the reviewed failure cases.
+The [caller capstone extraction](generation-checkpoint-invariant-catalog-2026-08-28.md#caller-authority-contract-2026-09-06)
+lists all capstones, the concrete caller inventory, existing executable evidence,
+and explicit realization premises. No new production algorithm, byte format,
+dependency, PathMap change or root/API epoch is activated.
+
+**MEASURED VERIFICATION.** The final proof gate produces 30 closed-context
+capstones and 20 closed controls, passes placeholder rejection, and passes
+independent kernel checking. Release tests pass for the complete storage-actions
+target (46 tests), existing atomic-root authority (15), durable journal owner (16),
+and existing publication-catalog registry (1). The storage target's two new
+properties each use 32 generated cases with seed `41317930`; deterministic fixtures
+add empty-cache, transferred-owner and spawn witnesses. Nextest successfully lists
+all 46 storage-action tests. An initial catalog filter matched zero tests; the exact
+`model_property_manifest_is_unique_and_exhaustive` invocation was rerun and its
+one executed test passed. The zero-test invocation is not counted as evidence.
+
+Rocq used a 2 GiB hard memory cap and no swap. Rust used an 8 GiB cap, no swap,
+and four build/test workers. These are configured limits, not measured peak RSS.
+No benchmark or full-workspace release conclusion is drawn from these checks.
+
+**NEXT REQUIRED WORK.** Tasks 7931/7932 own runtime wiring and actual caller
+qualification. They must use the existing publication/acknowledgement owner,
+preserve all five journals and live snapshots, prevent stale HotStore mutation,
+and retain CLI/REPL/FFI behavior. Root identity and migration remain their existing
+tasks. This checkpoint is not a full-workspace CI or performance claim.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

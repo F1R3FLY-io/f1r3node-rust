@@ -837,6 +837,160 @@ selected. These results do not update the earlier full-package counts or establi
 production successor refinement. See engineering journal J-065 for caps, evidence
 hashes and remaining checked-resource/implementation obligations.
 
+## Caller-authority contract (2026-09-06)
+
+**Status: verified abstract contract; legacy caller observations exercised; durable
+caller refinement remains required in tasks 7931 and 7932.** Task 7930 owns this
+section and `RSpaceCallerAuthority.v`, not a second publication implementation.
+The existing publication, journal-owner, affine-import and record/replay models
+remain authoritative for their respective transition protocols.
+
+### Source-backed caller inventory
+
+An *authority* selects one backend and owns its current publication and authenticated
+metadata. A *view* carries a particular readable history plus mutable hot state.
+A historical state identity, publication generation, physical storage generation,
+and owner incarnation are different coordinates; equality of one cannot substitute
+for another.
+
+| Caller boundary | Current source and observation | Required durable refinement |
+|---|---|---|
+| Current and known roots | `history/history_repository.rs` and `state/rspace_state_authority.rs`: exact `CurrentRoot`; private known-root capability bound to the authority. `HistoryRepository::root()` is view-local. | One backend-discriminated authority; preserve explicit view-local versus backend-current distinction. Never consult an independently current legacy repository. |
+| Hard checkpoint and reset | `rspace.rs::create_checkpoint/reset`, `replay_rspace.rs`, `history_repository_impl.rs::checkpoint_at/reset`. Reset activates a known root at a fresh publication generation; no-op checkpoint preserves generation. | Consume the existing exact-base journal-owner protocol. Historical reset semantically admits the selected target before publishing a fresh generation. Reuse the existing no-op and ABA proofs/tests. |
+| Clear | `RSpace::clear` and replay clear reset to the legacy empty-root identity. | Resolve the agreed empty-state bridge under the selected authority; never manufacture an empty legacy history as a durable fallback. Root/epoch policy is task 7941's contract, not silently selected here. |
+| Spawn and runtime pools | `rspace.rs::spawn`, `replay_rspace.rs::spawn`, and `casper/src/rust/util/rholang/runtime_manager.rs::spawn_runtime/spawn_replay_runtime`. Spawn calls reset on the source view's root and therefore advances shared publication generation. Its new hot view currently has a separate gate. | Model full spawn as historical activation then view attachment. Reuse the one writer/commit owner; do not acquire an independent writer lease. Attachment preserves owner identity and source history, but full spawn does not preserve the previous publication generation. |
+| Soft capture and restoration | `checkpoint.rs::SoftCheckpoint`, both space implementations, `reporting_rspace.rs`, and `rho_runtime.rs`. Cache, log, produce counter and five journal domains are captured. Restore uses the receiving view's current history, not the capture-time durable root. | Transferable retained payload is data, not mutation authority. Fresh receiving-owner permission, an authenticated receiving-view reader and complete journal refinement are required. No public same-base or same-generation precondition is added. |
+| Replay and reporting | Casper `rholang/runtime.rs`, `replay_runtime.rs`, and `ReportingRSpace` delegate reset/checkpoint/soft operations. `RuntimeOps::with_soft_transaction` rolls back the explicit false result, but its `?` error return does not itself promise rollback. | Preserve actual error, replay-log, COMM and post-state behavior. Historical target equality alone does not authorize replay against a stale base. |
+| Readers, exports and imports | `HistoryRepository::get_history_reader`, its legacy-concrete `get_history_reader_struct`, `exporter/importer`, and the state-manager APIs. | Replace the required concrete legacy seam; reader/export snapshots pin their exact objects. Imports use the existing affine seal/admission/publication protocol; an export is not current-state activation. |
+| Installs and teardown | Space constructors, `install`, checkpoint/reset install restoration, and escapable `get_store()` handles. | Preserve installs in the new hot view. Close revokes mutable authority across retained aliases; immutable readers with their own leases remain readable. A retained hot handle must not mutate after whole-owner teardown. |
+| Node startup and CLI/REPL | `node/src/rust/runtime/setup.rs` creates eval, play/replay, reporting and state-manager paths. `api/repl_grpc_service.rs::evaluate` uses the storage printer; `rho_runtime.rs` exposes `to_map`. | All constructors select the same appropriate backend per store. Existing commands and RSpace printing remain supported; no unreviewed root/API format change. |
+| FFI | Active functions in `rholang/src/lib.rs` serialize/restore soft payloads and expose hard checkpoint/reset/map observations. `rspace++/libs/rspace_rhotypes/src/lib.rs` exposes reset/spawn/history/export/import and replay checkpoint paths. | Audit active ABI paths, not commented-out functions. Snapshot bytes contain no owner-incarnation authority token. Keep owned return-buffer lifetimes and existing supported behavior; versioning requires the separate identity decision. |
+
+RSpace-relative paths in the table are under `rspace++/src/rspace/`.
+This inventory is bounded to the persistence campaign; it is not authorization
+for unrelated Casper or contract rewrites.
+
+### Exact contract and realization premises
+
+**DERIVED.** Durable admission currently verifies structural closure and inventory
+for retained historical states, but calls semantic admission only for the selected
+current state. Retention membership therefore cannot mint a historical reset
+capability by itself. `admit_historical_root` consults the selected owner's retained catalog and
+requires an independent semantic witness. Activation preserves backend identity
+and advances publication generation, rather than restoring a historical generation.
+
+**DECISION.** The model's owner is an already authenticated capability. Its retained
+roots and alias bindings are authoritative metadata, not caller-provided evidence.
+Alias resolution requires exact owner-appointed bindings, domain equality and
+one unambiguous result. An unchanged authenticated alias catalog need not be
+reissued merely because publication generation advances. An inherited manifest
+legacy root is provenance; it does not rename every successor. Alias creation,
+cryptographic verification, transactionally publishing mappings, and any epoch/API
+selection remain the root-identity and migration tasks.
+
+**DERIVED.** A cached empty channel and a channel not in the captured cache differ.
+For a captured cache, restoring the former hides receiving-history values; restoring
+the latter reads the receiving history. The model retains arbitrary value/log/counter
+types, and its five-journal record keeps data, continuations, content transitions,
+source bytes and joins distinct.
+
+The count-rebase subproof uses base count $`b`$, target count $`t`$, addition
+$`a`$ and removal $`r`$:
+
+```math
+a = \max(t-b, 0), \qquad r = \max(b-t, 0), \qquad (b-r)+a=t.
+```
+
+This is a **pointwise arithmetic lemma**, not a production full-store scan or
+proof of complete cross-base journal reconstruction. Reusing an addition of one
+captured over base one against a new base three yields four, not the intended two.
+The runtime refinement must preserve the complete captured-cache/current-reader
+overlay and all source/continuation metadata using the existing native trie and
+journal machinery. It must not publish old-base deltas merely because their bytes
+were captured legitimately.
+
+The following are explicit realization premises, not proved implementation facts:
+
+- The observable-incarnation set contains every still-observable old mutation
+  capability. The allocator must guarantee freshness against that entire set,
+  including repeated close/reopen histories; inequality with only the previous
+  incarnation is insufficient. Naturals are ghost identities here, not a new
+  wrapping integer allocator.
+- The owner appointment and receiving-view history are authenticated. The receiving
+  view may retain a historical reader; it is not forced to equal the backend's
+  most recent publication. Checkpointing such a view still needs its own exact-base
+  validation/reconciliation.
+- `complete_journal_refinement` relates all five journals to that receiving history.
+  The conditional restoration theorem does not prove this relation is inhabited
+  for every concrete payload. Task 7931 must establish it before runtime cutover,
+  including a justified same-base fast path and supported cross-base cases.
+- The immutable reader owns its exact physical-generation lease. The proof keeps
+  the lease set unchanged during owner close; actual Rust retention and release
+  across teardown are task 7932's executable obligation.
+- The model assumes the already verified publication/acknowledgement transition is
+  atomic at this boundary. It does not replace WAL write/sync/recovery proofs,
+  prove Rust extraction, solve generation overflow, or authorize a second writer.
+
+The model uses lists for finite mathematical catalogs, not a prescription to turn
+PathMap state into vectors. No format, storage layout, consensus root, production
+algorithm or dependency is changed by this proof/test checkpoint.
+
+### Exhaustive caller capstone extraction
+
+All 30 exported `Print Assumptions` capstones are listed below. **Contract** means
+the abstract lemma and controls pass; **legacy witness** means an actual pre-cutover
+caller test passes. Neither means the planned durable caller implementation is
+already verified. New caller IDs are separate from the existing publication
+registry and do not relabel its 118 verified bindings.
+
+| ID | Formal capstone in `RSpaceCallerAuthority` | Executable binding or remaining required obligation |
+|---|---|---|
+| CA-01 | `permit_requires_exact_authority` | Existing `prepared_checkpoint_cannot_cross_an_authority_boundary`; 7931/7932 additionally vary backend, profile, epoch and incarnation in actual caller routes. |
+| CA-02 | `not_ready_refuses_mutation` | Existing durable-owner nonready/refusal/cancellation tests; 7932 must reach the same gate from every mutable caller. |
+| CA-03 | `closed_owner_revokes_every_mutation_permit` | Contract; 7932 closes the whole owner with each old HotStore/intent/receipt alias retained and requires nonmutation. |
+| CA-04 | `reopened_owner_rejects_old_incarnation` | Contract; 7932 repeats stale-permit attempts after reopening the same root/generation. |
+| CA-05 | `fresh_permit_requires_live_ready_owner` | Existing owner constructor/readiness tests are substrate evidence; 7931/7932 bind actual permit issuance. |
+| CA-06 | `reopen_rejects_every_observable_incarnation` | Repeated-incarnation ABA control; 7932 varies retained aliases over multiple close/reopen cycles. |
+| CA-07 | `spawn_attachment_reuses_owner_and_preserves_view_history` | Legacy witness `spawn_reactivates_the_source_view_root_on_the_shared_authority`; 7931/7932 must not mint a second writer. |
+| CA-08 | `publication_invalidates_all_old_view_permits` | Existing `same_generation_plans_conflict_without_partial_visibility`; 7932 exercises spawned/shared caller views. |
+| CA-09 | `root_aba_does_not_revive_a_permit` | Existing `aba_root_reactivation_does_not_revive_an_old_plan`; 7932 repeats through durable caller APIs. |
+| CA-10 | `retained_membership_does_not_skip_semantic_admission` | Retained-but-refused control; 7931/7932 require a structurally retained, semantically invalid historical target to refuse before activation. |
+| CA-11 | `unknown_target_cannot_be_admitted` | Existing missing-root rejection; 7932 verifies no empty/current/legacy fallback through each caller. |
+| CA-12 | `activation_requires_exact_semantically_admitted_target` | Existing known-root authority isolation; 7931/7932 bind exact historical semantic evidence, domain and still-retained membership. |
+| CA-13 | `historical_activation_has_fresh_publication_generation` | Existing `target_equal_replay_requires_reactivation_and_reuses_exact_object_closure` and LMDB reopen/known-root tests. |
+| CA-14 | `activation_is_deterministic` | Contract; 7932 compares actual reset result/current catalog for identical authenticated requests. |
+| CA-15 | `full_spawn_activates_history_before_attaching` | Legacy witness `spawn_reactivates_the_source_view_root_on_the_shared_authority`; 7932 extends to play/replay/reporting and retained source histories. |
+| CA-16 | `alias_resolution_is_exact_and_unambiguous` | Contract; identity/migration tasks supply canonical single-valued mapping; 7932 varies exact and duplicate mappings. |
+| CA-17 | `missing_or_ambiguous_alias_refuses` | Missing/duplicate controls; 7932 rejects before mutation without provenance fallback. |
+| CA-18 | `foreign_catalog_cannot_resolve` | Foreign-domain control; 7932 varies store/profile/epoch at an actual alias caller. |
+| CA-19 | `unappointed_alias_catalog_cannot_resolve` | Same-domain forged-catalog control; 7932 rejects a stale or unauthenticated mapping despite an apparently valid target. |
+| CA-20 | `provenance_is_not_an_alias_certificate` | Inherited/absent-alias controls; identity task must keep successor identity separate from migration provenance. |
+| CA-21 | `pinned_generation_cannot_be_reclaimed` | Existing generation-lease substrate; 7932 retains old reader/export handles through replacement and reclamation. |
+| CA-22 | `owner_teardown_preserves_retained_readers` | Contract; 7932 closes owner, rejects writes, and reads the exact old leased generation until last-reader release. |
+| CA-23 | `every_legacy_overlay_with_refined_journals_has_a_permitted_restore` | New `soft_restore_caller_overlay_matches_legacy_observations` covers legacy observations; 7931 must prove complete-journal existence, not simply add a new refusal. |
+| CA-24 | `soft_restore_preserves_durable_authority_log_and_counter` | New cross-hard and transferred-payload tests compare exact current authority, restored log and counter. |
+| CA-25 | `soft_restore_requires_receiving_history_and_complete_journals` | Foreign-history/missing-journal controls; 7931 binds all five domains and 7932 tests subsequent checkpoint/reopen, not just immediate reads. |
+| CA-26 | `captured_values_override_current_history` | Cross-hard and transferred-payload fixtures plus generated multiplicities, including captured empty. |
+| CA-27 | `uncaptured_values_use_receiving_history` | The same fixtures require uncaptured channels to read the receiving current history rather than captured history. |
+| CA-28 | `payload_transfer_never_transfers_mutation_authority` | Old-permit restore control; 7932 validates fresh receiver permits and rejects stale writer/receipt resurrection. |
+| CA-29 | `rebased_journal_reconstructs_exact_restored_count` | `caller_contract_count_rebase_is_exact_over_full_u64_domain` checks the scalar refinement; complete trie/journal reconstruction remains 7931. |
+| CA-30 | `rebased_journal_has_no_underflow_or_intermediate_overflow` | The same arbitrary-u64 property uses checked subtraction/addition; production checked arithmetic and all-domain reconstruction remain mandatory. |
+
+The twenty controls are in `RSpaceCallerAuthorityMutants.v`; the normal proof
+runner requires exactly 30 closed reports for the model and 20 for the controls,
+then independent `coqchk` success and placeholder rejection. The controls include
+root ABA, owner reopen ABA, wrong backend/store/profile/epoch, nonready/closed
+owners, retained-but-invalid/unknown targets, missing/ambiguous/forged aliases,
+provenance confusion, pinned reclamation, empty/missing cache, cross-base payload
+transfer, stale write permits, foreign history, dropped journals and wrong-base
+count deltas. The fixture journal relation is exact equality in a synthetic
+five-field record, not a proof that copying captured journals works across bases.
+
+The concrete legacy tests are in `rspace++/tests/storage_actions_test.rs`; the
+atomic-root and durable-owner substrate tests remain in their existing files.
+No alternate in-memory RSpace test implementation was introduced. The complete
+durable lifecycle gates and full-workspace CI remain required after implementation.
+
 ## Refinement completion rule
 
 The runtime may be declared conformant only when:

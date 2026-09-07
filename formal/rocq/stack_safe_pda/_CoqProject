@@ -3,6 +3,8 @@ theories/StackSafePDA.v
 theories/EPathMap.v
 theories/Bag.v
 theories/RSpaceCommit.v
+theories/RSpaceCallerAuthority.v
+theories/RSpaceCallerAuthorityMutants.v
 theories/GenerationCheckpointPublication.v
 theories/EPM1.v
 theories/IncrementalPrepareStreaming.v
