@@ -5573,6 +5573,34 @@ Database scratch resides under disk-backed `target/`; small command logs carry t
 register's active entries by its bug-fix criterion. Local migration metadata changes
 are explicit above; no consensus preimage, charge model or public Rholang API changes.
 
+### J-079 — 2026-09-07: preserve original baseline provenance recovery keys
+
+**QUESTION.** After the complete v2 replay gate passes, what original measurement
+evidence still prevents baseline 5636 from being completed?
+
+**OBSERVATION.** Current STDIO queries still return `experiment not found` for
+208, 218, 233, 327 and the original layout-experiment slug. Listing returns 71
+current records, so this is not a broken transport. The reviewed lookup requires
+`valid_to IS NULL`, and timeline lookup uses that same prerequisite. The bounded
+source/catalog/file checks do not establish deletion of the historical records.
+
+**RECOVERED INDEX, NOT RAW DATA.** The committed prefilter, resting-prefix and
+singleton-repair TSVs preserve 44 run UUIDs. Experiment 218 retains two sealed
+sample digests; experiment 233's evidence commit identifies artifact 321. Later
+retained-product replication is experiment 229/artifact 320, not experiment 327.
+Task 5636's dated September 5 progress event instead associates 327 with artifacts
+409/410. Original benchmark source declares Criterion 0.5.1 and a selected nightly,
+not the observed runtime tool versions or absence of environment overrides.
+The [integration report recovery map](../rspace/pathmap-bag-rspace-integration.md#reproducible-baseline-evidence)
+and artifact 501 preserve exact keys and limits.
+
+**DECISION AND BOUNDARY.** Retained summaries, source pins, digests and historical
+agent claims are not the missing raw samples or original locked preregistration.
+Keep the baseline open until original experiment/run/artifact records or an export
+can be read. Do not modify pgmcp, recreate the historical records, rerun a benchmark
+and label it original data, or reopen the now-qualified scope repair. No production
+code, dependency, consensus behavior or performance verdict changed in this audit.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

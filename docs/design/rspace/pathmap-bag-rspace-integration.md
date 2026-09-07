@@ -385,6 +385,29 @@ data or a failed STDIO connection. No database repair, record recreation or new
 benchmark was attempted. Resolving the original provenance remains required under
 5636; summary estimates cannot reconstruct the absent raw observations.
 
+The follow-up recovery map (artifact 501) preserves precise lookup keys without
+presenting them as recovered samples:
+
+| Original record | Retained retrieval keys and limits |
+|---|---|
+| Retained prefilter TSV | First evidence commit `609cfcab1`; 12 per-arm run UUIDs, beginning `8980971c-a0ba-41e4-8a6c-506f393f44b5`. |
+| Resting-prefix TSV | First evidence commit `ebcb899f2`; 16 run UUIDs, beginning `dd32894e-5dd8-4992-9a26-b91aff58952e`. |
+| Resting singleton-repair TSV | First evidence commit `a38d4ca8d`; 16 run UUIDs, beginning `adf842b0-7e4e-4e2e-8eac-1f8dfa9dae76`. |
+| Single-root Bag publication, experiment 218 | `rspace-bag-single-root-commit-2026-08-16.tsv`, first evidence `2acd2b603`, retains both full sealed digests and reports 410 observations per arm across five cardinalities. It does not contain raw vectors or run UUIDs. |
+| EPathMap byte-native algebra, experiment 233 | `epathmap-ac-byte-native-2026-08-16.tsv`; evidence commit `d65037977` explicitly identifies artifact 321. Preserve the invalid combined-metric disclosure after Criterion rotated its `base`; do not reconstruct original controls from that directory. |
+| Later retained-product replication | `0ed2274d8` identifies experiment **229**, artifact **320**, with the retained log digest in its TSV. This is not experiment 327 or a substitute for the original run. |
+| ACT/LMDB comparison, experiment 327 | Task 5636's progress event at `2026-09-05T01:06:33.884671Z` identifies artifacts **409/410** and the comparison/codec checks. This is an agent-recorded reference, not retrieved artifact contents. |
+
+All 44 original UUIDs remain in the first three linked TSVs. Historical source
+declares Criterion 0.5.1 and selects `nightly-2026-02-09`; those declarations do not
+establish the actual original compiler/Cargo versions or absence of overrides.
+The bounded retained-file search found no original raw sample vectors and no
+`target/criterion` directory. Current get/list calls still fail to retrieve the
+four experiments; the timeline path requires the same current experiment lookup.
+No original data is declared deleted. Completion of this provenance obligation
+requires readable original experiment/run/artifact records or an original export;
+newly measured or synthesized data cannot recreate historical preregistration.
+
 The recorded 428-test package pass belongs to the August retained-product checkpoint,
 not today's complete package. The later full-library failure and narrowly passing
 repairs are classified below. A configured memory ceiling is not measured RSS;
@@ -395,7 +418,7 @@ scope peaks including compilation are not per-operation allocation measurements.
 | Original requirement | Evidence established by this audit | Remaining obligation / owner |
 |---|---|---|
 | Frozen authorities and observable contract | Source `dcc4600d4`, freeze `6a1c4341d`, corrected fourteen-row matrix, exact current test targets | Preserve ordered compatibility state and first-source retention through later implementations; concrete bridge 7942. |
-| Captured and synthetic corpus | Named codec/matcher/lifecycle fixtures, preserved v1 failure and full genesis-backed v2 capture; separate-process seven-program replay passes | Concurrent scope isolation blocks causal runtime controls (8283); genesis construction attribution remains 5304 and baseline qualification remains 5636. Generated all-pattern lifecycle acceptance is separately 7964. |
+| Captured and synthetic corpus | Named codec/matcher/lifecycle fixtures, preserved v1 failure and full genesis-backed v2 capture; the concurrent fresh-process suite passes all 13 ordinary checks, including causal runtime controls | Scope isolation is locally qualified under 8283; separate genesis-construction attribution remains 5304 and original baseline provenance remains 5636. Generated all-pattern lifecycle acceptance is separately 7964. |
 | Reproducible capped measurements and preregistration | Committed source/harness coordinates, commands, resource envelope, run identifiers and summary files | Original preregistration, raw samples/artifacts and observed tool versions must be recovered and linked; 5636 remains open. No retroactive preregistration claim. |
 | Failure classification | Finite inventory below, with existing reachable repair/acceptance owners | It is not an assertion that every workspace target currently passes. Whole-workspace qualification remains 5647. |
 | Golden byte/order/root outputs | Independent literal serializer/genesis/history fixtures and a sealed full v2 replay capture, scoped to their epochs; the fresh-process concurrent suite passes 13 tests plus one capture-only ignore at `9308e7685` | The new archive cannot replace missing historical inputs. Actual v2 replay and causal controls are locally qualified; independent CI and separate genesis-construction attribution are not inferred. |
