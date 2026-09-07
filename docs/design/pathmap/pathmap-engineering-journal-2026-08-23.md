@@ -5657,6 +5657,11 @@ or claimed complete. See
 [§5.29.9](../stack-safety/stack-safety-report-2026-07-29.md#5299-count-domain-acceptance-reopened--2026-09-07)
 for the counterexamples, source pins, command, log digest and proof boundaries.
 
+**FORMAL CHECKPOINT.** Child 8339 now has ten closed capstones, a successful
+whole-module kernel check and the complete invariant-to-test catalogue; artifact
+508 binds the exact source and executed proof-runner guards. This completes the
+mathematical contract, not the pending Rust repair or concrete cursor qualification.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

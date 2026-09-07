@@ -35,6 +35,63 @@ The theorem kernel is schema-parametric. The generated Rust equivalence manifest
 
 The development contains no axioms, admitted goals, opaque assumptions, Verus `assume`, or external proof bodies.
 
+## Exact matcher count intervals (2026-09-07)
+
+Task 5855's required formal child 8339 adds `ParCountIntervals` to
+`SpatialMatcher.v`. Existing matcher theorems remain unchanged. The count model
+uses natural-number mathematics and an explicit finite/unbounded domain; the
+implementation refinement selects the cap $`2^{128}-1`$ for exact aggregate
+counts while retaining `Multiplicity(u64)` at each PathMap endpoint. A finite
+value equal to the cap is not top. Values above the cap and top have identical
+lower/upper comparisons against every representable finite target; the checked
+arithmetic quotient preserves addition, minimum, maximum, scaling and the existing
+interval folds. In particular, top as a lower bound refuses finite targets, and
+zero times top is finite zero.
+
+For exact available mass $`N`$, selection lower/upper bounds $`L_s,U_s`$ and
+remainder bounds $`L_r,U_r`$, let $`c_N(U)=\min(N,U)`$ for finite $`U`$ and
+$`c_N(\infty)=N`$. Reject unbounded lower bounds or $`L_r>N`$, then compute:
+
+```math
+\ell=\max(L_s,N-c_N(U_r)),\qquad
+u=\min(c_N(U_s),N-L_r).
+```
+
+The range is empty if $`\ell>u`$. Otherwise membership is equivalent to satisfying
+both selection and complement constraints, not just the selected cardinality.
+The complete ten-capstone invariant catalogue below precedes Rust changes in child
+8340. Child 8341 owns final execution and independent qualification; these rows are
+test obligations, not claims that the new tests have already passed.
+
+| Capstone | Implementation invariant | Required executable binding |
+|---|---|---|
+| `exact_family_total_is_endpoint_mass` | Family totals are exact endpoint sums and additive over disjoint list segments. | Exact cached-total accessor versus independent endpoint sums, all eight partitioned families, single-maximum and two-endpoint maximum-plus-one carriers. |
+| `finite_cap_quotient_preserves_target_constraints` | Overflow normalization preserves comparisons to finite targets; zero scaling produces zero. | Finite `u128::MAX` distinct from top, checked overflow in both lower/upper positions, and zero-times-top controls. |
+| `bounded_interval_fold_preserves_existing_equations` | Bounded min/max/add/scale and parallel/AND/OR folds refine the mathematical equations. | Independent small arithmetic/fold oracle and overflow-boundary cases through production `ParCount`. |
+| `concrete_expression_minimum_is_exact_nonfree_mass` | Free-expression mass cannot erase a concrete sibling's minimum. | Maximum free/wildcard multiplicity plus one concrete Expr retains minimum one; no projected-total subtraction. |
+| `exact_feasible_range_preserves_both_constraints` | Every selected count satisfies both its own and its complementary interval. | Complete small count-vector/interval oracle, including contradictory ranges and exact-one complement above `u64::MAX`. |
+| `impossible_lower_bounds_refuse_finite_targets` | Top lower bounds, excessive remainder minima and overflowed minima cannot invent a candidate. | Direct impossible-lower witnesses and a control that incorrectly clamps top lower to availability. |
+| `zero_complement_requires_the_entire_exact_target` | A zero complement requires selecting the exact complete target. | Top-derived selection at 1,001 for every family; maximum-plus-one whole-target split; old-1,000 and projected-availability controls. |
+| `endpointwise_partitions_conserve_exact_mass` | Valid counted selections preserve each endpoint and the exact sum. | Per-key selected-plus-complement equality, nonoverlap of occurrence ownership and retained CoW-root observations. |
+| `feasible_filter_preserves_reference_order_and_uniqueness` | Filtering a supplied duplicate-free ordered reference retains order, uniqueness and exactly the feasible members. | Compare complete small candidate sequences against independent lawful positional enumeration with first-occurrence deduplication, never a sorted-set comparison. |
+| `partition_scratch_size_depends_only_on_distinct_endpoints` | The abstract counter vector has one slot per endpoint independently of multiplicity. | Narrow prefix-consumption checks at maximum counts, distinct-endpoint-controlled allocation observations and existing tiny-stack/rollback gates. |
+
+Five additional proved examples discriminate the discarded finite-top sentinel,
+projected-availability complement error, projected-free-subtraction error,
+finite-maximum/top conflation, and lower-top clamping. The proof runner requires
+exactly ten closed-context reports and a whole-module kernel check, and rejects
+proof placeholders within the new module. The existing historical prose is not
+treated as a proof directive.
+
+**Refinement boundary.** The model does not prove the Rust cached metrics, byte
+codec, PathMap internals, physical allocations, or the existing `FamilyPartitions`
+skip/advance cursor. Its filtering theorem assumes an ordered reference; its scratch
+theorem counts abstract counter slots, not retained key bytes. Production parity
+against the recursive matcher cannot close these gaps because that oracle imports
+the same `ParCount` and `sub_pars`. The independent properties above bind the
+implementation to the model. Formal-check status and immutable evidence are recorded
+in the task and stack-safety report §5.29.9; no current full-workspace pass follows.
+
 ## Exact scalar projection contract (2026-09-07)
 
 Task 5853 adds the standalone `ScalarProjection.v` admission contract, not a

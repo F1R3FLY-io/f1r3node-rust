@@ -8712,6 +8712,18 @@ is not the criterion: that predecessor also emitted overlapping partitions.
 Historical §5.29 results and retired CBR-059 remain history; the current saturation
 acceptance is open. See journal J-081 for the PathMap-specific interpretation.
 
+**FORMAL GATE COMPLETED.** Required child 8339's `ParCountIntervals` module now
+passes all ten closed-context checks and an independent whole-module kernel check.
+The registered proof-runner functions were executed with a 2-GiB hard cap and zero
+swap; artifact 508 preserves the commands, source digest and final-run log digests.
+The complete ten-row invariant/test catalogue is in
+[`formal/rocq/stack_safe_pda/README.md`](../../../formal/rocq/stack_safe_pda/README.md#exact-matcher-count-intervals-2026-09-07).
+The symbolic cap, exact endpoint mass, feasible intervals and arithmetic quotient
+are proved. Concrete cached metrics and the partition cursor remain implementation
+refinements to exercise in children 8340–8341; the ordered-filter theorem assumes
+a supplied reference, and the scratch theorem counts digits, not physical key bytes.
+No Rust test or production change preceded this formal gate.
+
 ---
 
 ### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]

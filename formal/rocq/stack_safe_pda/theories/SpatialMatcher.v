@@ -1,4 +1,4 @@
-From Stdlib Require Import List Arith Bool FunctionalExtensionality.
+From Stdlib Require Import List Arith Bool FunctionalExtensionality Lia.
 From StackSafePDA Require Import StackSafePDA.
 
 Import ListNotations.
@@ -1181,3 +1181,377 @@ Proof.
 Qed.
 
 End CanonicalExactScalarRouting.
+
+Module ParCountIntervals.
+
+Definition count_mass (counts : list nat) := fold_right Nat.add 0 counts.
+
+Section FamilyMass.
+
+Context {Key : Type}.
+
+Definition endpoint_mass (entries : list (Key * nat)) := count_mass (map snd entries).
+Definition family_mass (belongs : Key -> bool) (entries : list (Key * nat)) :=
+  endpoint_mass (filter (fun entry => belongs (fst entry)) entries).
+
+Lemma endpoint_mass_append : forall left right,
+  endpoint_mass (left ++ right) = endpoint_mass left + endpoint_mass right.
+Proof.
+  induction left as [|[key count] rest IH]; intro right;
+    unfold endpoint_mass, count_mass in *; simpl in *; [reflexivity|].
+  rewrite IH; lia.
+Qed.
+
+Lemma family_mass_partition : forall belongs entries,
+  endpoint_mass entries = family_mass belongs entries + family_mass (fun key => negb (belongs key)) entries.
+Proof.
+  intros belongs entries. induction entries as [|[key count] rest IH]; [reflexivity|].
+  unfold family_mass, endpoint_mass, count_mass in *. simpl in *.
+  destruct (belongs key); simpl in *; lia.
+Qed.
+
+Theorem exact_family_total_is_endpoint_mass : forall belongs left right,
+  family_mass belongs (left ++ right) = family_mass belongs left + family_mass belongs right /\
+  family_mass belongs left <= endpoint_mass left.
+Proof.
+  intros belongs left right. split.
+  - unfold family_mass. rewrite filter_app. apply endpoint_mass_append.
+  - pose proof (family_mass_partition belongs left). lia.
+Qed.
+
+Theorem concrete_expression_minimum_is_exact_nonfree_mass : forall is_free entries,
+  endpoint_mass entries = family_mass is_free entries + family_mass (fun key => negb (is_free key)) entries /\
+  endpoint_mass entries - family_mass is_free entries = family_mass (fun key => negb (is_free key)) entries.
+Proof. intros. pose proof (family_mass_partition is_free entries). split; lia. Qed.
+
+End FamilyMass.
+
+Inductive count_bound := Finite (amount : nat) | Unbounded.
+
+Definition bound_le left right : Prop :=
+  match left, right with
+  | Finite x, Finite y => x <= y
+  | _, Unbounded => True
+  | Unbounded, Finite _ => False
+  end.
+
+Definition normalize_bound cap bound :=
+  match bound with
+  | Finite value => if value <=? cap then Finite value else Unbounded
+  | Unbounded => Unbounded
+  end.
+
+Definition bound_min left right :=
+  match left, right with
+  | Finite x, Finite y => Finite (Nat.min x y)
+  | Unbounded, other | other, Unbounded => other
+  end.
+
+Definition bound_max left right :=
+  match left, right with
+  | Finite x, Finite y => Finite (Nat.max x y)
+  | _, _ => Unbounded
+  end.
+
+Definition bound_add left right :=
+  match left, right with
+  | Finite x, Finite y => Finite (x + y)
+  | _, _ => Unbounded
+  end.
+
+Definition bound_scale factor bound :=
+  match factor, bound with
+  | 0, _ => Finite 0
+  | S _, Finite value => Finite (factor * value)
+  | S _, Unbounded => Unbounded
+  end.
+
+Theorem finite_cap_quotient_preserves_target_constraints : forall cap bound available,
+  available <= cap ->
+  (bound_le (normalize_bound cap bound) (Finite available) <-> bound_le bound (Finite available)) /\
+  (bound_le (Finite available) (normalize_bound cap bound) <-> bound_le (Finite available) bound) /\
+  bound_scale 0 (normalize_bound cap bound) = Finite 0.
+Proof.
+  intros cap [value|] available valid; cbn [normalize_bound bound_le bound_scale]; [|tauto].
+  destruct (value <=? cap) eqn:within; cbn [bound_le];
+    [apply Nat.leb_le in within|apply Nat.leb_gt in within]; intuition lia.
+Qed.
+
+Lemma normalize_bound_idempotent : forall cap bound,
+  normalize_bound cap (normalize_bound cap bound) = normalize_bound cap bound.
+Proof. intros cap [value|]; simpl; [|reflexivity]. destruct (value <=? cap) eqn:within; simpl; now rewrite ?within. Qed.
+
+Lemma normalized_min_commutes : forall cap left right,
+  normalize_bound cap (bound_min (normalize_bound cap left) (normalize_bound cap right)) =
+  normalize_bound cap (bound_min left right).
+Proof.
+  intros cap [left|] [right|]; cbn [normalize_bound bound_min];
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    cbn [normalize_bound bound_min];
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    repeat match goal with
+    | H : (_ <=? _) = true |- _ => apply Nat.leb_le in H
+    | H : (_ <=? _) = false |- _ => apply Nat.leb_gt in H
+    end; try reflexivity; try (f_equal; lia); lia.
+Qed.
+
+Lemma normalized_max_commutes : forall cap left right,
+  normalize_bound cap (bound_max (normalize_bound cap left) (normalize_bound cap right)) =
+  normalize_bound cap (bound_max left right).
+Proof.
+  intros cap [left|] [right|]; cbn [normalize_bound bound_max];
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    cbn [normalize_bound bound_max];
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    repeat match goal with
+    | H : (_ <=? _) = true |- _ => apply Nat.leb_le in H
+    | H : (_ <=? _) = false |- _ => apply Nat.leb_gt in H
+    end; try reflexivity; try (f_equal; lia); lia.
+Qed.
+
+Lemma normalized_add_commutes : forall cap left right,
+  normalize_bound cap (bound_add (normalize_bound cap left) (normalize_bound cap right)) =
+  normalize_bound cap (bound_add left right).
+Proof.
+  intros cap [left|] [right|]; cbn [normalize_bound bound_add];
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    cbn [normalize_bound bound_add];
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    repeat match goal with
+    | H : (_ <=? _) = true |- _ => apply Nat.leb_le in H
+    | H : (_ <=? _) = false |- _ => apply Nat.leb_gt in H
+    end; try reflexivity; try (f_equal; lia); lia.
+Qed.
+
+Lemma normalized_scale_commutes : forall cap factor bound,
+  normalize_bound cap (bound_scale factor (normalize_bound cap bound)) =
+  normalize_bound cap (bound_scale factor bound).
+Proof.
+  intros cap [|factor] [value|]; cbn [bound_scale normalize_bound]; try reflexivity;
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    cbn [bound_scale normalize_bound];
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    repeat match goal with
+    | H : (_ <=? _) = true |- _ => apply Nat.leb_le in H
+    | H : (_ <=? _) = false |- _ => apply Nat.leb_gt in H
+    end; try reflexivity; try (f_equal; nia); nia.
+Qed.
+
+Record count_interval := CountInterval { lower_bound : count_bound; upper_bound : count_bound }.
+Inductive interval_operator := ParallelSum | Conjunction | Disjunction.
+
+Definition interval_combine operator left right :=
+  match operator with
+  | ParallelSum => CountInterval (bound_add (lower_bound left) (lower_bound right))
+      (bound_add (upper_bound left) (upper_bound right))
+  | Conjunction => CountInterval (bound_max (lower_bound left) (lower_bound right))
+      (bound_min (upper_bound left) (upper_bound right))
+  | Disjunction => CountInterval (bound_min (lower_bound left) (lower_bound right))
+      (bound_max (upper_bound left) (upper_bound right))
+  end.
+
+Definition normalize_interval cap interval := CountInterval
+  (normalize_bound cap (lower_bound interval)) (normalize_bound cap (upper_bound interval)).
+
+Lemma normalized_interval_combine_commutes : forall cap operator left right,
+  normalize_interval cap (interval_combine operator (normalize_interval cap left) (normalize_interval cap right)) =
+  normalize_interval cap (interval_combine operator left right).
+Proof.
+  intros cap operator [ll lu] [rl ru]; destruct operator;
+    unfold normalize_interval, interval_combine; simpl;
+    now rewrite ?normalized_add_commutes, ?normalized_min_commutes, ?normalized_max_commutes.
+Qed.
+
+Definition mathematical_interval_fold operator seed children := fold_right (interval_combine operator) seed children.
+Definition bounded_interval_fold cap operator seed children :=
+  fold_right (fun child acc => normalize_interval cap (interval_combine operator (normalize_interval cap child) acc))
+    (normalize_interval cap seed) children.
+
+Theorem bounded_interval_fold_preserves_existing_equations :
+  (forall cap operator seed children,
+    bounded_interval_fold cap operator seed children =
+      normalize_interval cap (mathematical_interval_fold operator seed children)) /\
+  (forall cap factor bound,
+    normalize_bound cap (bound_scale factor (normalize_bound cap bound)) =
+      normalize_bound cap (bound_scale factor bound)).
+Proof.
+  split; [|apply normalized_scale_commutes].
+  intros cap operator seed children. induction children as [|child rest IH]; [reflexivity|].
+  unfold bounded_interval_fold, mathematical_interval_fold in *. simpl. rewrite IH.
+  apply normalized_interval_combine_commutes.
+Qed.
+
+Definition clip_upper available bound :=
+  match bound with Finite value => Nat.min available value | Unbounded => available end.
+
+Definition feasible_range available selection remainder : option (nat * nat) :=
+  match lower_bound selection, lower_bound remainder with
+  | Finite minimum, Finite minimum_prune =>
+      if minimum_prune <=? available then
+        let lower := Nat.max minimum (available - clip_upper available (upper_bound remainder)) in
+        let upper := Nat.min (clip_upper available (upper_bound selection)) (available - minimum_prune) in
+        if lower <=? upper then Some (lower, upper) else None
+      else None
+  | _, _ => None
+  end.
+
+Definition range_contains range selected :=
+  match range with Some (lower, upper) => lower <= selected /\ selected <= upper | None => False end.
+
+Definition selection_and_complement_constraints available selected selection remainder :=
+  selected <= available /\
+  bound_le (lower_bound selection) (Finite selected) /\
+  bound_le (Finite selected) (upper_bound selection) /\
+  bound_le (lower_bound remainder) (Finite (available - selected)) /\
+  bound_le (Finite (available - selected)) (upper_bound remainder).
+
+Theorem exact_feasible_range_preserves_both_constraints : forall available selected selection remainder,
+  range_contains (feasible_range available selection remainder) selected <->
+  selection_and_complement_constraints available selected selection remainder.
+Proof.
+  intros available selected [[minimum|] [maximum|]] [[minimum_prune|] [maximum_prune|]];
+    unfold selection_and_complement_constraints;
+    cbn [feasible_range lower_bound upper_bound clip_upper range_contains
+      selection_and_complement_constraints bound_le];
+    repeat match goal with |- context [if ?condition then _ else _] => destruct condition eqn:? end;
+    cbn [range_contains];
+    repeat match goal with
+    | H : (_ <=? _) = true |- _ => apply Nat.leb_le in H
+    | H : (_ <=? _) = false |- _ => apply Nat.leb_gt in H
+    end; intuition lia.
+Qed.
+
+Theorem impossible_lower_bounds_refuse_finite_targets : forall available upper selection remainder,
+  feasible_range available (CountInterval Unbounded upper) remainder = None /\
+  feasible_range available selection (CountInterval Unbounded upper) = None /\
+  (forall minimum, available < minimum ->
+    feasible_range available selection (CountInterval (Finite minimum) upper) = None) /\
+  (forall cap amount, cap < amount -> available <= cap ->
+    feasible_range available (CountInterval (normalize_bound cap (Finite amount)) upper) remainder = None).
+Proof.
+  intros available upper [sl su] [rl ru]. repeat split; try reflexivity.
+  - destruct sl; reflexivity.
+  - intros minimum too_large. destruct sl; [|reflexivity].
+    unfold feasible_range; simpl. assert ((minimum <=? available) = false) by (apply Nat.leb_gt; lia).
+    now rewrite H.
+  - intros cap amount overflow bounded. unfold normalize_bound.
+    assert ((amount <=? cap) = false) by (apply Nat.leb_gt; lia).
+    rewrite H. reflexivity.
+Qed.
+
+Theorem zero_complement_requires_the_entire_exact_target :
+  (forall available, feasible_range available (CountInterval (Finite 0) Unbounded)
+      (CountInterval (Finite 0) (Finite 0)) = Some (available, available)) /\
+  (forall available selected selection,
+    range_contains (feasible_range available selection (CountInterval (Finite 0) (Finite 0))) selected <->
+    selected = available /\ bound_le (lower_bound selection) (Finite available) /\
+      bound_le (Finite available) (upper_bound selection)).
+Proof.
+  split.
+  - intro available. unfold feasible_range; simpl.
+    rewrite Nat.min_0_r, Nat.sub_0_r, Nat.min_id, Nat.leb_refl. reflexivity.
+  - intros available selected [[minimum|] [maximum|]];
+      rewrite exact_feasible_range_preserves_both_constraints;
+      unfold selection_and_complement_constraints; simpl; intuition lia.
+Qed.
+
+Fixpoint complement_counts available selected :=
+  match available, selected with
+  | count :: rest, chosen :: tail => count - chosen :: complement_counts rest tail
+  | _, _ => []
+  end.
+
+Definition valid_selection available selected := Forall2 (fun count chosen => chosen <= count) available selected.
+
+Theorem endpointwise_partitions_conserve_exact_mass : forall available selected,
+  valid_selection available selected ->
+  length selected = length available /\
+  Forall2 (fun count chosen => chosen + (count - chosen) = count) available selected /\
+  count_mass selected + count_mass (complement_counts available selected) = count_mass available.
+Proof.
+  intros available selected valid.
+  induction valid as [|count chosen rest tail bounded valid IH]; simpl; [repeat split; constructor|].
+  destruct IH as [lengths [cells total]]. repeat split; try lia.
+  - constructor; [lia|assumption].
+Qed.
+
+Inductive subsequence {A : Type} : list A -> list A -> Prop :=
+| SubsequenceEmpty : forall source, subsequence [] source
+| SubsequenceKeep : forall head left right, subsequence left right -> subsequence (head :: left) (head :: right)
+| SubsequenceSkip : forall head left right, subsequence left right -> subsequence left (head :: right).
+
+Lemma filter_preserves_subsequence : forall A (predicate : A -> bool) source,
+  subsequence (filter predicate source) source.
+Proof.
+  intros A predicate source. induction source; simpl; [constructor|].
+  destruct (predicate a); constructor; assumption.
+Qed.
+
+Definition range_accepts range selected :=
+  match range with Some (lower, upper) => (lower <=? selected) && (selected <=? upper) | None => false end.
+
+Lemma range_accepts_exactly : forall range selected,
+  range_accepts range selected = true <-> range_contains range selected.
+Proof. intros [[lower upper]|] selected; simpl; [rewrite andb_true_iff, !Nat.leb_le; tauto|intuition discriminate]. Qed.
+
+Definition filter_partitions available selection remainder reference :=
+  filter (fun counts => range_accepts (feasible_range available selection remainder) (count_mass counts)) reference.
+
+Theorem feasible_filter_preserves_reference_order_and_uniqueness : forall available selection remainder reference,
+  subsequence (filter_partitions available selection remainder reference) reference /\
+  (NoDup reference -> NoDup (filter_partitions available selection remainder reference)) /\
+  (forall counts, In counts (filter_partitions available selection remainder reference) <->
+    In counts reference /\ selection_and_complement_constraints available (count_mass counts) selection remainder).
+Proof.
+  intros. unfold filter_partitions. split; [apply filter_preserves_subsequence|].
+  split; [apply NoDup_filter|]. intro counts.
+  rewrite filter_In, range_accepts_exactly, exact_feasible_range_preserves_both_constraints.
+  reflexivity.
+Qed.
+
+Definition initial_partition_scratch (available : list nat) := map (fun _ => 0) available.
+
+Theorem partition_scratch_size_depends_only_on_distinct_endpoints : forall left right,
+  length (initial_partition_scratch left) = length left /\
+  (length left = length right -> length (initial_partition_scratch left) = length (initial_partition_scratch right)) /\
+  (forall first second, length (initial_partition_scratch [first; second]) = 2).
+Proof. intros. unfold initial_partition_scratch. rewrite !length_map. repeat split; auto. Qed.
+
+Example finite_maximum_is_not_top : forall cap, normalize_bound cap (Finite cap) = Finite cap /\ Finite cap <> Unbounded.
+Proof. intro cap. unfold normalize_bound. rewrite Nat.leb_refl. split; [reflexivity|discriminate]. Qed.
+
+Example saturated_free_subtraction_loses_the_literal_minimum : forall cap,
+  0 < cap ->
+  Nat.min cap (cap + 1) - Nat.min cap cap = 0 /\
+  family_mass (fun free => negb free) [(true, cap); (false, 1)] = 1.
+Proof. intros cap positive. rewrite Nat.min_l by lia. rewrite Nat.min_id. split; [lia|reflexivity]. Qed.
+
+Example projected_available_admits_a_nonzero_complement : forall cap,
+  feasible_range cap (CountInterval (Finite 0) Unbounded) (CountInterval (Finite 0) (Finite 0)) = Some (cap, cap) /\
+  (cap + 1) - cap = 1.
+Proof. intro cap. split; [apply (proj1 zero_complement_requires_the_entire_exact_target)|lia]. Qed.
+
+Example finite_old_top_omits_the_complete_larger_target : forall cap,
+  ~ range_contains (feasible_range (cap + 1) (CountInterval (Finite 0) (Finite cap))
+    (CountInterval (Finite 0) Unbounded)) (cap + 1).
+Proof. intros cap accepted. apply exact_feasible_range_preserves_both_constraints in accepted.
+  unfold selection_and_complement_constraints in accepted. simpl in accepted. lia.
+Qed.
+
+Example clamping_a_top_lower_to_available_invents_a_candidate :
+  feasible_range 3 (CountInterval Unbounded Unbounded) (CountInterval (Finite 0) (Finite 0)) = None /\
+  feasible_range 3 (CountInterval (Finite 3) Unbounded) (CountInterval (Finite 0) (Finite 0)) = Some (3, 3).
+Proof. split; reflexivity. Qed.
+
+Print Assumptions exact_family_total_is_endpoint_mass.
+Print Assumptions finite_cap_quotient_preserves_target_constraints.
+Print Assumptions bounded_interval_fold_preserves_existing_equations.
+Print Assumptions concrete_expression_minimum_is_exact_nonfree_mass.
+Print Assumptions exact_feasible_range_preserves_both_constraints.
+Print Assumptions impossible_lower_bounds_refuse_finite_targets.
+Print Assumptions zero_complement_requires_the_entire_exact_target.
+Print Assumptions endpointwise_partitions_conserve_exact_mass.
+Print Assumptions feasible_filter_preserves_reference_order_and_uniqueness.
+Print Assumptions partition_scratch_size_depends_only_on_distinct_endpoints.
+
+End ParCountIntervals.

@@ -270,7 +270,12 @@ if [[ "$rmp2_closed_capstones" != "7" ]]; then
   echo "stack-safe-pda: expected all seven RMP2 Rocq capstones to be closed; got $rmp2_closed_capstones" >&2
   exit 1
 fi
-tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/SpatialMatcher.v
+rocq_reject_placeholders <(
+  sed -n '/^Module ParCountIntervals\.$/,/^End ParCountIntervals\.$/p' theories/SpatialMatcher.v
+)
+rocq_compile_with_closed_count theories/SpatialMatcher.v 10 \
+  "exact ParCount interval and partition contracts"
+rocq_check_modules "spatial matcher and exact ParCount intervals" StackSafePDA.SpatialMatcher
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceAuthority.v 5 \
   "the exact two-level RSpace logical authority"
