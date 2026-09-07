@@ -4605,6 +4605,13 @@ consensus encoding, persistence bytes, metering or backend selection changes her
 
 ### J-066 — 2026-09-06: retain exact cold-demand semantics in incremental admission
 
+**SCHEDULING AND CONTRACT REFINEMENT.** J-067 completes the caller/limit audit
+requested by task 7920. Its explicit trusted/cold capability separation supersedes
+the requirement below to maintain all cold-demand summaries on every ordinary
+commit. The candidate equations and counterexamples remain research evidence,
+not production obligations or established impossibility results. Exact cold
+admission and fresh-checkpoint preflight remain required.
+
 **QUESTION AND EVIDENCE LEVEL.** Can task 7755 preserve the exact cold-verifier
 resource contract without enumerating unchanged current state or retained history
 on an ordinary commit? A bounded source review identifies candidate exact
@@ -4717,6 +4724,156 @@ state, exact/one-below budgets and failed-trial retry. Every refusal must preser
 predecessor authority, inventories, pins and publication state. No benchmark or
 production change resulted from this review; J-065 remains the latest verified
 cursor-model implementation boundary.
+
+### J-067 — 2026-09-06: separate trusted state authority from cold-execution evidence
+
+**DECISION AND SCOPE.** Task 7920 selects an explicit internal capability split
+for task 7755. Ordinary trusted successor construction must prove semantic
+validity and exact inventory without rerunning cold recovery or enumerating
+unchanged history. A distinct cold-checked capability records the exact work of
+an actual cold admission. This is a source-backed design ruling, independently
+reviewed by a plan agent, not an implemented change or a newly checked formal
+theorem. Existing formal models and runtime gates remain authoritative until
+their corresponding refinement tasks are verified.
+
+The reviewed source boundary is commit `61da35d9b`. The previously verified
+cursor laws at `46d7201c4` and `6cb20cb80` are reused; the uncommitted
+`CheckedReachability` arithmetic draft is still unverified and belongs to task
+7913. No benchmark, compiler, proof engine, or runtime mutation was run for this
+contract audit. Planning changes use pgmcp records; they do not change pgmcp code.
+
+**WHY THIS IS REQUIRED, AND WHAT IS NOT.** An incoming-reference ledger can prove
+exact unique-object inventory, but cannot honestly manufacture cold traversal
+counts or context-sensitive worklist peaks. Conversely, a validity-preserving
+local transition need not execute a cold traversal merely because one existing
+struct stores both kinds of evidence. Conflating them made J-066's first-discovery
+and weighted join-prefix indexes appear mandatory. They are now preserved as
+later checkpoint-preflight acceleration in task 7955, not prerequisites of hot
+successor construction. This does not waive any cold check or permit stale,
+zero-filled, delta-filled, or unlabelled upper-bound reports.
+
+**OBSERVED CALLER CONTRACT.**
+
+| Boundary | Current source evidence | Consequence |
+|---|---|---|
+| Fresh nonempty owner checkpoint | `DurableRSpaceAuthorityV1::publish_captured` binds the transaction and calls `publish_incremental_with_terminal_v1`; the latter performs physical recovery and `admit_physical_source` after durable catalog publication. | Success on this branch includes cold admission under the supplied policy. A late admission refusal can be `PublishedAdmission`; it is not prepublication rollback. |
+| Empty owner checkpoint | `publish_captured` handles `MutationError::EmptyBatch` by validating the existing base, clearing the pending capture and returning. | No new cold check is performed. A newly supplied smaller cold budget is not a universal admission promise on every successful call. |
+| Already-admitted successor awaiting acknowledgement | `reconcile` handles `AwaitingAck` by calling `acknowledge_successor` before consulting the newly supplied limits. | Retrying acknowledgement does not revalidate cold feasibility under a different policy or publish the journal again. |
+| Sealing and publication | `SealedDurableTransactionV1` retains `admission_limits`; prepared preflight checks exact policy equality as well as predecessor and registry identity. | Policy cannot silently change after preparation. The split must preserve an explicit, exact policy binding. |
+| Fresh-generation checkpoint and compaction | `prepare_and_write_successor_generation` calls `preflight_checkpoint_admission` before `prepare_unpublished_successor_artifacts`. | Exact cold-demand preflight remains before cleanup and publication side effects. |
+| Cold startup/read authority and uncertain-outcome recovery | `recover_and_admit_v1`, `recover_read_authority` and the recovery-required owner branch use physical recovery followed by full semantic/retained-closure admission. | These existing trust boundaries retain full validation and their selected operation budgets. |
+
+Source references are
+[`rspace_authority.rs`](../../../rspace++/src/rspace/persistence/durable/rspace_authority.rs),
+[`admission.rs`](../../../rspace++/src/rspace/persistence/durable/admission.rs),
+[`publication.rs`](../../../rspace++/src/rspace/persistence/durable/publication.rs)
+and [`durable/mod.rs`](../../../rspace++/src/rspace/persistence/durable/mod.rs).
+The owner and its publication-limit type are `pub(crate)`. A repository-wide
+Rust-source search found limit construction in the owner test fixture with
+unbounded admission; no supported node, CLI or FFI configuration contract for
+this dormant owner was found. That observation is not a guarantee about future
+callers: task 7756 must recheck it before activation.
+
+Versioned DAG import/state synchronization is a future required boundary under
+task 5690, not an observed implemented caller in this audit. It must obtain its
+own exact cold admission before publishing imported authority; the existing
+startup functions and tests do not establish completed import support.
+
+**PER-FIELD POLICY MAPPING.** All eighteen existing cold admission axes retain
+their present meaning and exact checks on a cold-checked operation. The proposed
+hot policy separates final-state ceilings from work actually performed by the
+transition; it does not reinterpret the old `admission` argument in place.
+
+| Existing cold fields | Classification for the explicit hot policy |
+|---|---|
+| `per_state_structural.max_distinct_objects`, `max_canonical_bytes` | Preserve exact final per-state inventory ceilings, including the admitted retained-state obligations. Do not apply final current-state limits to a permitted temporary add-before-remove union. |
+| `max_retained_states`, `max_union_objects`, `max_union_canonical_bytes` | Preserve exact retained-entry and distinct retained-union ceilings. Metadata closure and reader/reclamation pins remain separate domains. |
+| `current_semantics.max_logical_nodes`, `max_endpoints`, `max_logical_path_bytes`, `max_payload_bytes` | Preserve explicit state-shape/content ceilings rather than assuming they are disposable diagnostics. Exact local summary preservation requires the relevant proof; shared logical occurrences are not unique-object counts. |
+| `per_state_structural.max_references`, `max_worklist` | Cold verifier reference visits and live-frame work. Keep exact cold enforcement; bound actual incremental reference events and scratch independently. |
+| `max_aggregate_root_visits`, `max_aggregate_references` | Aggregate cold retained-root traversal work, not retained-root identity or inventory. Keep exact cold enforcement. |
+| `max_object_reads`, `max_object_read_bytes` | Actual cold admission reads and bytes. Incremental reads use their own checked transaction/ledger budgets; neither report substitutes for the other. |
+| `current_semantics.max_join_lookups`, `max_join_lookup_steps`, `max_worklist` | Cold semantic execution work. Incremental cross-root probes and frame/scratch work remain checked in their own domains. Continuation-to-join coherence is always required. |
+
+The nested `current_semantics.structural` limits are already inapplicable to the
+post-structural semantic pass; the existing exact-boundary fixture deliberately
+sets them to zero. The split must not accidentally introduce a second structural
+pass. Existing `DagTransactionLimits`, `IncrementalSemanticLimits` and
+`IncrementalClosureLimits` provide the local-work vocabulary. Their coverage of
+new ledger/metadata work must be proved, not assumed. All counters remain checked
+`u64`; logical metered storage, canonical object inventory, physical packed bytes
+and verifier I/O are distinct measurements.
+
+**CAPABILITY CONTRACT TO REFINE.** Let $`A_s`$ denote authenticated validity and
+exact inventory for state $`s`$, $`D_{s,t}`$ a validated transition from $`s`$ to
+$`t`$, and $`R_{s,t}`$ the exact durable receipt with its catalog, index, retention,
+profile, registry and lease bindings. The required successor rule is
+
+```math
+A_s \land D_{s,t} \land R_{s,t} \Longrightarrow A_t.
+```
+
+This is a proof obligation, not an assumption that any staged delta is valid.
+It includes canonicality, collision-byte comparison, acyclicity, exact path and
+namespace provenance, retained-root identity, continuation-to-join coherence,
+checked inventory, policy binding and failure outcomes.
+
+Let $`C_{s,L}`$ denote successful full cold admission of that exact state under
+cold policy $`L`$, including its measured demand. The design must not provide the
+unjustified coercion
+
+```math
+A_t \Longrightarrow C_{t,L}.
+```
+
+One authority core carries state/profile/catalog/frontiers, the admitted object
+ledger, exact current/retained/metadata inventories and semantic validity. A
+cold-checked wrapper additionally owns cold observations and requirement
+certificates. Mutation invalidates those observations for the successor. Existing
+public cold-report APIs, including `VerifiedDagState::admission_report`, must
+remain cold-checked or acquire an explicit reviewed API distinction; they cannot
+silently return optional or fabricated observations. Reuse the existing read,
+transaction, writer and receipt machinery rather than create competing authorities.
+
+Fresh checkpoint/compaction acquires an exact-state-bound cold-checked source and
+performs its current preflight before cleanup. Cold startup/import/recovery
+remains bounded and independent. An explicitly requested cold-checked publication
+mode may retain the old stronger fresh-publication result. Ordinary trusted
+publication uses explicit local-work/final-state policy, not a silent change in
+the meaning of `DurableAdmissionLimitsV1`. No production constructor, new epoch,
+default backend or user-facing configuration is activated by this ruling.
+
+**FINITE VERIFICATION OBLIGATIONS.** These are requirements for subsequent tasks,
+not additions to the currently verified theorem/property manifest.
+
+| Obligation | Required independent witness or negative control | Owning tasks |
+|---|---|---|
+| Validity and exact inventory preservation | Generated additions, replacement, deletion, shared objects, duplicate edges and retained aliases compared with cold admission at each history step. | 7913, 7921, 7922, 7924, 7928 |
+| Exact receipt and authority binding | Foreign store/profile/registry, stale base, wrong target/terminal/index frontier, retention anchor or lease; no journal replay or second writer. | Existing 6626; 7927, 7928 |
+| Non-fabricable cold evidence | A mutation cannot reuse predecessor demand; no zero/delta report can satisfy a cold-source consumer; exact state/profile/policy mismatch refuses. | 7927, 7928 |
+| Explicit policy domains | Each mapped field at exact and one-below limits; changed prepared policy refuses; permitted scratch exceeding final-state size is distinguished from insufficient scratch. | 7913, 7921, 7922, 7927 |
+| Unchanged cold boundaries | Preserve all existing fresh-checkpoint resource preflight cases and cold restart refusals before their existing side-effect boundary. Separately qualify future DAG-import refusal and publication behavior; existing restart coverage is not import coverage. | 7925, 7927, 7928; import 7938–7940 |
+| Branch-specific success guarantees | Empty journal and awaiting-ack retry with tightened incoming cold limits; fresh nonempty cold-checked success versus explicitly trusted success. | 7927, 7928 |
+| Failure-atomic owner composition | Prepublication refusal retains base/journal; published or indeterminate results retain authenticated recovery state, permit and overlapping pins; acknowledgement occurs once. | Existing 6626; 7928 |
+| Locality without hidden history work | Fixed delta with geometric unchanged current/history size, plus genuine last-reference deletion/eviction costs; count visits, copied entries, reads and allocation bytes. | 7926, 7929 |
+
+Existing evidence includes
+`incremental_inventory_limits_refuse_before_any_durable_mutation` (nine axes),
+`incremental_inventory_policy_cannot_change_after_preparation`,
+`every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly`
+(thirty-five resource boundaries, including eighteen admission axes), and the
+owner no-op/acknowledgement/failure suites. Those sources were inspected here;
+their old successful runs were not rerun or promoted to new results. In
+particular, the tightened-policy no-op/awaiting-ack controls above are required
+new executable witnesses, not claims about existing test coverage.
+
+**PRIORITY AND COMPLETION.** The required-first campaign schedule is revision
+440; persistence execution revision 441 selected and claimed task 7920. Complete
+the bounded contract ruling, then its checked proof/property, metadata and runtime
+children. Cold-summary indexes, caches, interning and alternative layouts remain
+later work. A proposal changing a supported/configured limit's meaning or default
+activation still requires explicit review; the absence of a current external
+consumer is not permission to weaken future guarantees. No new formal proof,
+performance win, runtime behavior or consensus change is claimed in this entry.
 
 ## Upstream PathMap integration request register
 

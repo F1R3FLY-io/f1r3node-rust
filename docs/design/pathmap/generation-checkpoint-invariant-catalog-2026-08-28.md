@@ -19,6 +19,15 @@ The required refinement order is:
 
 No Rust implementation claim is justified by the abstract model alone. Filesystem durability, checksums, bounded parsing, partial writes, and semantic admission are executable proof obligations.
 
+The task 7920 caller/limit ruling is recorded in
+[engineering journal J-067](pathmap-engineering-journal-2026-08-23.md#j-067--2026-09-06-separate-trusted-state-authority-from-cold-execution-evidence).
+It separates the planned trusted-successor validity/inventory capability from
+exact cold-execution evidence. Existing fresh-generation preflight, cold admission
+and publication-owner obligations below remain binding. J-067's finite future
+refinement list is not a new verified theorem/property manifest: its corresponding
+proofs and executable witnesses must be added through the refinement order above
+before runtime implementation. No verified binding is removed or relabeled.
+
 ## Hot-store journal refinement (2026-09-06)
 
 The `HotStoreJournalAcknowledgement` section of `GenerationCheckpointPublication.v` adds
