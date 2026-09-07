@@ -35,6 +35,55 @@ The theorem kernel is schema-parametric. The generated Rust equivalence manifest
 
 The development contains no axioms, admitted goals, opaque assumptions, Verus `assume`, or external proof bodies.
 
+## Exact scalar projection contract (2026-09-07)
+
+Task 5853 adds the standalone `ScalarProjection.v` admission contract, not a
+new evaluator algorithm. The model computes distinct-family purity from a
+finite endpoint list and its family filter; it does not infer purity from
+saturating logical cardinalities. For any cap greater than one, projected
+cardinality one is exact. Positive endpoint multiplicities then establish
+that a pure unit-mass carrier contains exactly one matching endpoint with
+multiplicity one. The family predicate is generic, so the theorem does not
+enumerate and accidentally omit a foreign constructor family.
+
+The eight contract capstones bind the following executable obligations.
+The named acceptance extensions are realization targets, not tests proved or
+executed by Rocq.
+
+| Capstone | Executable obligation |
+| --- | --- |
+| `exact_distinct_family_purity` | Existing `models/tests/par_bag.rs::all_components_are_is_exact_across_families_and_saturated_cardinality`; all eight foreign families and masks in `scalar_projection_acceptance_properties`. |
+| `saturated_singleton_count_is_exact` | Counts zero, one, two, maximum and arbitrary positive `u64` values in `scalar_projection_acceptance_properties`. |
+| `pure_unit_mass_is_exactly_one_selected_endpoint` | Pure singleton acceptance and compressed-repeat refusal in `scalar_projection_acceptance_matrix_preserves_refusal_trace`. |
+| `saturated_cardinality_equality_does_not_prove_purity` | Saturated Expr plus a foreign endpoint remains a foreign-family refusal, even when projected total and family counts agree. |
+| `foreign_refusal_precedes_arity_without_effects` | The matrix and properties preserve the exact foreign error, initial diagnostic trace and snapshot while a child that would otherwise evaluate is present. |
+| `arity_refusal_has_no_decode_or_child_effects` | Pure empty and nonunit carriers preserve the same observations and the request-specific arity error. |
+| `singleton_delegation_preserves_the_complete_observation` | The matrix preserves a bound-variable child's success and an unbound-variable child's full error, state and ordered diagnostic trace. |
+| `fusion_decline_preserves_fallback_and_accepted_execution` | `scalar_projection_recognizers_decline_without_effects` exercises resident, encoded-chain and encoded-reentry gates; `fused_differentials::scalar_projection_fused_unfused_carriers_preserve_observations` compares the complete fallback observation and nonvacuous positive case. |
+
+Structural refusal records zero decoder/delegate calls, an empty added trace
+and unchanged abstract state. Successful admission delegates exactly once and
+preserves the delegate's complete result, final state and trace, including a
+delegate failure. Recognizer `None` leaves fallback intact; it is distinct
+from an error after accepted fused execution, which must not be retried as
+fallback. Trace equality is dynamic diagnostic preservation, not a new
+consensus-cost golden. The three expression requests retain their supplied
+foreign and arity errors; the theorem does not merge those error payloads.
+
+The file also checks a successful fixture and causal controls for swapped
+error precedence, empty carriers, repeated endpoints, premature child work,
+delegate failure and swallowed fallback errors. It has ten closed assumption
+reports and passes independent kernel checking. The proof runner requires
+that exact count, rejects placeholders and kernel-checks the module.
+
+The endpoint list must refine the actual distinct resident index; the family
+predicate must refine constructor tags, and stored multiplicities must be
+positive. Concrete cached metrics, canonical payload decoding, Rust evaluation
+and observable-state correspondence remain executable obligations. Decoder
+and child audit lists describe the abstract dispatch contract, not a proof
+of Rust allocation, codec execution or call counts. The generic
+`StackSafePDA.v` fold theorem does not itself establish this admission boundary.
+
 ## Resolved authority scope contract (2026-09-07)
 
 Task 8283 extends `RSpaceCallerAuthority.v` with exact independent database-name

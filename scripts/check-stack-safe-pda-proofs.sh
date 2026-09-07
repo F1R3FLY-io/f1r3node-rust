@@ -79,6 +79,10 @@ pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
+rocq_reject_placeholders theories/ScalarProjection.v
+rocq_compile_with_closed_count theories/ScalarProjection.v 10 \
+  "the exact scalar-projection admission and fallback contract"
+rocq_check_modules "scalar-projection admission" StackSafePDA.ScalarProjection
 rocq_reject_placeholders theories/ReplayArchive.v theories/ReplayArchiveMutants.v
 rocq_compile_with_closed_count theories/ReplayArchive.v 34 \
   "the captured replay archive acceptance contract"

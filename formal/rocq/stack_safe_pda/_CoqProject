@@ -2,6 +2,7 @@
 theories/StackSafePDA.v
 theories/EPathMap.v
 theories/Bag.v
+theories/ScalarProjection.v
 theories/RSpaceCommit.v
 theories/ReplayArchive.v
 theories/ReplayArchiveMutants.v
