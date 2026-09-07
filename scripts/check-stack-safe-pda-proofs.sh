@@ -258,10 +258,10 @@ rocq_compile_with_closed_count \
   theories/RhoPathV1Datum.v 21 \
   "the exact RhoPath V1 datum-key schema and partition"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceContinuationAuthority.v 11 \
+  theories/TwoLevelRSpaceContinuationAuthority.v 33 \
   "the exact two-level RSpace continuation and join authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 16 \
+  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 33 \
   "the continuation and join authority causal controls"
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceMatchPreparation.v 24 \

@@ -4913,7 +4913,9 @@ Source references:
 **SEMANTIC RELATION TO REFINE.** A receive is an ordered sequence of bind
 occurrences, not a channel set. Let $`r`$ denote an admitted receive with arity
 $`n`$, and let $`c_i`$, $`p_i`$, $`b_i`$ and $`e_i`$ denote its channel, pattern,
-bind count and peek flag at position $`i`$. The derived occurrence lookup for
+signed `BindPattern.free_count` and effective peek flag at position $`i`$. This
+per-position count is not the aggregate `Receive.bind_count`; J-069 records the
+raw signed-peek distinction. The derived occurrence lookup for
 channel $`c`$ must return the ordered sequence
 
 ```math
@@ -4981,6 +4983,66 @@ hash/channel activation ownership; task 7756 retains durable caller authority;
 the existing matching and release tasks retain their broader acceptance gates.
 No independent legacy bridge, new semantic namespace, alternative unification
 kernel or optional ordinal-index experiment is introduced here.
+
+### J-069 — 2026-09-06: verify ordered receive compatibility before byte-view changes
+
+**QUESTION AND DECISION.** Which observations must survive an optimized receive
+view? Task 8008 now supplies a positional refinement in the existing continuation
+authority model and concrete tests of the existing codecs and hot store. No
+production source, semantic root, consensus-visible byte format or PathMap
+dependency is changed by this checkpoint.
+
+**FINDINGS (DERIVED).** A bind position retains signed `BindPattern.free_count`,
+not aggregate `Receive.bind_count`. Raw peek positions can be negative or outside
+the receive arity. They remain identity metadata and can set the coarse
+`ContResult.peek` flag even when every effective per-position peek flag is false.
+Consequently, filtering raw peeks down to valid positions would change behavior.
+An installed continuation and a resting continuation remain distinct occurrences
+even when their complete serialized records are equal.
+
+**VERIFICATION DESIGN.** Extend the existing authority module; reuse its installed
+and ordinary targets, exact-group boundary and verified escaped-frame parser.
+Represent positions as natural numbers in the structural model and prove checked,
+injective conversion to the full unsigned-u64 range. This numeric representability
+condition is separate from the signed-i32 peek range and is not an arbitrary
+arity/depth limit. First-source retention is proved for appending aliases within
+one exact ordered group, independently of selection order and installed identity.
+
+The existing typed codec differential had an observation gap: both decoders read
+the same emitted bytes without complete original-field comparison. The repaired
+test compares original fields, frozen tuple bytes, decoded fields and exact body
+metadata. It includes asymmetric repeated-channel fixtures, signed extrema,
+negative/out-of-arity raw peeks, source-only aliases and field-erasure controls.
+A separate hot-store witness proves byte-identical installed/resting records do
+not collapse. The existing first-source, arity and lifecycle tests are reused,
+not replaced with another test-double store.
+
+**RESULTS AND TRACEABILITY.** The 22 new capstones and 17 new formal controls
+compile without additional assumptions. Including retained checks, the existing
+runner requires 33 closed-context reports from each module; independent
+`coqchk` succeeds. The exhaustive capstone/property mapping and remaining
+implementation seams are recorded in
+[TLRS-PROP-11](two-level-rspace-authority-invariant-catalog-2026-09-02.md#tlrs-prop-11--ordered-receive-fields-and-occurrence-identity-2026-09-06).
+
+Release checks pass for the typed cold-record target (9 tests), hot-store family
+(55), consume/install arity target (5), record-index unit family (19) and the
+continuation/join lifecycle differential (1). RhoPath framing passes 21 tests,
+including the added wide-position witness. The four new typed receive tests also
+pass with 256 generated cases and seed `41318008`. The full depth-4096 cold-record test was run,
+not skipped. These are correctness runs, not benchmarks or a full-workspace CI
+result. Compiler warnings remain visible in the captured logs; no unrelated
+warning cleanup was attempted.
+
+Proofs used `systemd-run` with a 2 GiB hard memory cap and no swap; Rust checks
+used an 8 GiB cap, no swap and four build/test workers. The caps are execution
+constraints, not measured peak-memory or performance claims.
+
+**RESIDUAL BOUNDARY.** This proves the structural contract and adds concrete codec
+witnesses. It does not activate RhoPathV2/RCI2, implement the borrowed receive view
+or occurrence index, prove the entire generated Rust codec, or complete persistent
+PathMap/ACT integration. Task 8009 owns the demonstrated byte-view gaps; 8010–8013
+own index proof, implementation, integration and qualification. Existing 6021 owns
+legacy hash/channel activation. No optional persistence design was started.
 
 ## Upstream PathMap integration request register
 

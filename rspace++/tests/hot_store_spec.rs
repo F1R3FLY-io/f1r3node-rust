@@ -37,6 +37,39 @@ type Joins = Vec<Join>;
 
 const SIZE_RANGE: usize = 10; // 10
 
+#[test]
+fn byte_equal_installed_and_resting_continuations_remain_distinct() {
+    let (_, hot_store) = fixture();
+    let channels = vec!["a".to_string(), "b".to_string(), "a".to_string()];
+    let patterns = vec![
+        Pattern::StringMatch("first-a".to_string()),
+        Pattern::StringMatch("b".to_string()),
+        Pattern::StringMatch("second-a".to_string()),
+    ];
+    let record = WaitingContinuation::create(
+        &channels,
+        &patterns,
+        &StringsCaptor::new(),
+        true,
+        BTreeSet::from([-1, 2, 7]),
+    );
+    assert_eq!(hot_store.put_continuation(&channels, record.clone()), Some(true));
+    assert_eq!(hot_store.install_continuation(&channels, record.clone()), Some(()));
+    assert_eq!(hot_store.get_continuations(&channels), vec![record.clone(), record.clone()]);
+    assert_eq!(hot_store.remove_continuation(&channels, 0), None);
+    assert_eq!(hot_store.get_continuations(&channels).len(), 2);
+    assert_eq!(hot_store.remove_continuation(&channels, 1), Some(()));
+    assert_eq!(hot_store.get_continuations(&channels), vec![record.clone()]);
+    let snapshot = hot_store.snapshot();
+    assert_eq!(snapshot.installed_continuations.get(&channels), Some(&record));
+    assert!(
+        snapshot
+            .continuations
+            .get(&channels)
+            .is_none_or(Vec::is_empty)
+    );
+}
+
 proptest! {
   #![proptest_config(ProptestConfig {
     cases: 20, // 20

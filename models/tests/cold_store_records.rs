@@ -44,6 +44,7 @@ use models::rhoapi::{
     BindPattern, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation, Var,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::serializers::serializers::{
     decode_continuations, decode_datum, decode_datums, encode_continuations, encode_datum,
@@ -202,34 +203,265 @@ fn par_typed_datum_decode_matches_the_derived_oracle() {
 #[test]
 fn par_typed_continuation_decode_matches_the_derived_oracle() {
     for (label, cont) in continuation_fixtures() {
-        // Encode through the public leaf path, then split the leaf back out, so
-        // the bytes under test are exactly the ones the cold store holds.
-        let leaf = encode_continuations(&vec![cont.clone()]);
-        let encoded: Vec<Vec<u8>> = bincode::deserialize(&leaf).expect("leaf");
-        let bytes = &encoded[0];
+        assert_continuation_round_trip(label, &cont);
+    }
+}
 
-        let oracle: WaitingContinuationOracle<BindPattern, TaggedContinuation> =
-            bincode::deserialize(bytes).expect("oracle must decode");
-        let machine =
-            decode_continuations::<BindPattern, TaggedContinuation>(&leaf).expect("machine");
-        assert_eq!(machine.len(), 1);
-        let machine = &machine[0];
-
-        assert!(
-            *machine.patterns == oracle.patterns,
-            "{label}: disagreement on `patterns`"
-        );
-        assert!(
-            *machine.continuation == oracle.continuation,
-            "{label}: disagreement on `continuation`"
-        );
+fn assert_continuation_round_trip(
+    label: &str,
+    cont: &WaitingContinuation<BindPattern, TaggedContinuation>,
+) -> WaitingContinuation<BindPattern, TaggedContinuation> {
+    let leaf = encode_continuations(&vec![cont.clone()]);
+    let encoded: Vec<Vec<u8>> = bincode::deserialize(&leaf).expect("leaf");
+    let bytes = &encoded[0];
+    let frozen = bincode::serialize(&(
+        cont.patterns.as_ref(),
+        cont.continuation.as_ref(),
+        cont.persist,
+        &cont.peeks,
+        &cont.source,
+    ))
+    .unwrap();
+    assert_eq!(*bytes, frozen, "{label}: frozen field sequence");
+    for pattern in cont.patterns.iter() {
         assert_eq!(
-            machine.persist, oracle.persist,
-            "{label}: `persist` — TWO machine-decoded prefixes precede it, so an \
-             extent error in either lands here"
+            pattern.stable_hash_bytes(),
+            bincode::serialize(pattern).unwrap(),
+            "{label}: generated pattern encoder versus frozen field codec",
         );
-        assert_eq!(machine.peeks, oracle.peeks, "{label}: `peeks`");
-        assert_eq!(machine.source, oracle.source, "{label}: `source`");
+    }
+    assert_eq!(
+        cont.continuation.stable_hash_bytes(),
+        bincode::serialize(cont.continuation.as_ref()).unwrap(),
+        "{label}: generated continuation encoder versus frozen field codec",
+    );
+
+    let oracle: WaitingContinuationOracle<BindPattern, TaggedContinuation> =
+        bincode::deserialize(bytes).expect("oracle must decode");
+    let mut decoded =
+        decode_continuations::<BindPattern, TaggedContinuation>(&leaf).expect("machine");
+    assert_eq!(decoded.len(), 1);
+    let machine = decoded.pop().unwrap();
+
+    assert_eq!(
+        *machine.patterns, oracle.patterns,
+        "{label}: oracle patterns"
+    );
+    assert_eq!(
+        *machine.continuation, oracle.continuation,
+        "{label}: oracle body"
+    );
+    assert_eq!(
+        machine.persist, oracle.persist,
+        "{label}: oracle persistence"
+    );
+    assert_eq!(machine.peeks, oracle.peeks, "{label}: oracle raw peeks");
+    assert_eq!(machine.source, oracle.source, "{label}: oracle source");
+    assert_eq!(
+        *machine.patterns, *cont.patterns,
+        "{label}: original patterns"
+    );
+    assert_eq!(
+        *machine.continuation, *cont.continuation,
+        "{label}: original body"
+    );
+    assert_eq!(
+        machine.persist, cont.persist,
+        "{label}: original persistence"
+    );
+    assert_eq!(machine.peeks, cont.peeks, "{label}: original raw peeks");
+    assert_eq!(machine.source, cont.source, "{label}: original source");
+    assert_eq!(
+        bincode::serialize(machine.patterns.as_ref()).unwrap(),
+        bincode::serialize(cont.patterns.as_ref()).unwrap(),
+        "{label}: exact pattern fields beyond semantic equality",
+    );
+    assert_eq!(
+        bincode::serialize(machine.continuation.as_ref()).unwrap(),
+        bincode::serialize(cont.continuation.as_ref()).unwrap(),
+        "{label}: exact body, guard and random-state fields",
+    );
+    machine
+}
+
+fn frozen_identity(cont: &WaitingContinuation<BindPattern, TaggedContinuation>) -> Vec<u8> {
+    bincode::serialize(&(
+        cont.patterns.as_ref(),
+        cont.continuation.as_ref(),
+        cont.persist,
+        &cont.peeks,
+    ))
+    .unwrap()
+}
+
+fn framed_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    for &byte in bytes {
+        result.push(byte);
+        if byte == 0 {
+            result.push(255);
+        }
+    }
+    result.extend_from_slice(&[0, 0]);
+    result
+}
+
+fn positional_continuation(
+    fields: &[(u8, i32, bool)],
+    peeks: BTreeSet<i32>,
+) -> WaitingContinuation<BindPattern, TaggedContinuation> {
+    let mut cont = continuation_fixtures().remove(0).1;
+    cont.patterns = fields
+        .iter()
+        .enumerate()
+        .map(|(position, (_, free_count, remainder))| BindPattern {
+            patterns: vec![corpus::gint(i64::try_from(position).unwrap())],
+            remainder: remainder.then_some(Var {
+                var_instance: Some(VarInstance::FreeVar(i32::try_from(position).unwrap())),
+            }),
+            free_count: *free_count,
+        })
+        .collect::<Vec<_>>()
+        .into();
+    cont.peeks = peeks;
+    cont
+}
+
+fn assert_ordered_receive_correspondence(fields: &[(u8, i32, bool)], peeks: BTreeSet<i32>) {
+    use rspace_plus_plus::rspace::rho_path::RhoPathV2;
+
+    let original = positional_continuation(fields, peeks);
+    let decoded = assert_continuation_round_trip("ordered receive", &original);
+    let channels = fields
+        .iter()
+        .map(|(channel, _, _)| bincode::serialize(&corpus::gint(i64::from(*channel))).unwrap())
+        .collect::<Vec<_>>();
+    let refs = channels.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let identity = frozen_identity(&original);
+    let path = RhoPathV2::continuation_key(&refs, &identity).unwrap();
+    let view = RhoPathV2::parse_continuation(&path).unwrap();
+    assert_eq!(view.channel_count(), fields.len());
+    assert_eq!(view.encoded_identity_frame(), framed_bytes(&identity));
+    assert_eq!(view.channel_count(), decoded.patterns.len());
+    for (position, frame) in view.channel_frames().enumerate() {
+        assert_eq!(frame, framed_bytes(&channels[position]));
+        assert_eq!(decoded.patterns[position], original.patterns[position]);
+        assert_eq!(decoded.patterns[position].free_count, fields[position].1);
+        assert_eq!(
+            decoded.peeks.contains(&i32::try_from(position).unwrap()),
+            original.peeks.contains(&i32::try_from(position).unwrap()),
+        );
+    }
+    assert_eq!(!decoded.peeks.is_empty(), !original.peeks.is_empty());
+    for query in 0..=4_u8 {
+        let query_frame =
+            framed_bytes(&bincode::serialize(&corpus::gint(i64::from(query))).unwrap());
+        let actual = view
+            .channel_frames()
+            .enumerate()
+            .filter_map(|(position, frame)| {
+                (frame == query_frame).then(|| u64::try_from(position).unwrap())
+            })
+            .collect::<Vec<_>>();
+        let expected = fields
+            .iter()
+            .enumerate()
+            .filter_map(|(position, (channel, _, _))| {
+                (*channel == query).then(|| u64::try_from(position).unwrap())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(actual
+            .iter()
+            .all(|&position| position < u64::try_from(fields.len()).unwrap()));
+    }
+}
+
+#[test]
+fn ordered_receive_signed_fields_survive_repeated_channel_permutations() {
+    for channels in [[0, 1, 0], [0, 0, 1]] {
+        let fields = [
+            (channels[0], i32::MIN, true),
+            (channels[1], 0, false),
+            (channels[2], i32::MAX, true),
+        ];
+        assert_ordered_receive_correspondence(&fields, BTreeSet::from([-1, 2, 7]));
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn ordered_receive_codec_preserves_arbitrary_signed_fields(
+        fields in proptest::collection::vec((0..4_u8, proptest::num::i32::ANY, proptest::bool::ANY), 1..65),
+        peeks in proptest::collection::btree_set(proptest::num::i32::ANY, 0..17),
+    ) {
+        assert_ordered_receive_correspondence(&fields, peeks);
+    }
+}
+
+#[test]
+fn ordered_receive_raw_peeks_and_source_suffix_are_not_erased() {
+    let fields = [(0, i32::MIN, true), (1, 0, false), (0, i32::MAX, true)];
+    let original = positional_continuation(&fields, BTreeSet::from([-1, 7]));
+    let decoded = assert_continuation_round_trip("invalid-only raw peeks", &original);
+    assert!(!decoded.peeks.is_empty());
+    assert!((0..3_i32).all(|position| !decoded.peeks.contains(&position)));
+    let mut erased = original.clone();
+    erased.peeks.clear();
+    assert_ne!(frozen_identity(&erased), frozen_identity(&original));
+
+    let mut alias = original.clone();
+    alias.source.hash = Blake2b256Hash::new(&[99]);
+    assert_eq!(frozen_identity(&alias), frozen_identity(&original));
+    for record in [&original, &alias] {
+        let leaf = encode_continuations(&vec![record.clone()]);
+        let encoded: Vec<Vec<u8>> = bincode::deserialize(&leaf).unwrap();
+        let identity = frozen_identity(record);
+        assert_eq!(&encoded[0][..identity.len()], identity);
+        assert_eq!(
+            &encoded[0][identity.len()..],
+            bincode::serialize(&record.source).unwrap(),
+        );
+        assert_continuation_round_trip("source alias", record);
+    }
+    assert_ne!(
+        encode_continuations(&vec![original]),
+        encode_continuations(&vec![alias]),
+    );
+}
+
+#[test]
+fn ordered_receive_fixture_detects_erased_and_shifted_fields() {
+    let fields = [(0, i32::MIN, true), (1, 0, false), (0, i32::MAX, true)];
+    let original = positional_continuation(&fields, BTreeSet::from([-1, 2, 7]));
+    let mut mutants = Vec::new();
+    for mutation in 0..7 {
+        let mut mutant = original.clone();
+        match mutation {
+            0 => std::sync::Arc::make_mut(&mut mutant.patterns).swap(0, 2),
+            1 => std::sync::Arc::make_mut(&mut mutant.patterns)[0]
+                .patterns
+                .clear(),
+            2 => std::sync::Arc::make_mut(&mut mutant.patterns)[0].remainder = None,
+            3 => std::sync::Arc::make_mut(&mut mutant.patterns)[0].free_count = 0,
+            4 => {
+                mutant.peeks.remove(&2);
+                mutant.peeks.insert(0);
+            }
+            5 => mutant.persist = false,
+            6 => std::sync::Arc::make_mut(&mut mutant.continuation).guard = None,
+            _ => unreachable!(),
+        }
+        mutants.push(mutant);
+    }
+    for (mutation, mutant) in mutants.iter().enumerate() {
+        assert_ne!(
+            frozen_identity(mutant),
+            frozen_identity(&original),
+            "mutation {mutation}"
+        );
+        assert_continuation_round_trip("field mutation", mutant);
     }
 }
 

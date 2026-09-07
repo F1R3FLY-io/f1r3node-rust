@@ -459,4 +459,120 @@ Print Assumptions final_only_cleanup_rejects_premature_cleanup_mutant.
 Print Assumptions exact_group_mutation_rejects_prefix_wide_mutant.
 Print Assumptions continuation_authority_mutant_catalog_is_duplicate_free_and_exact.
 
+Module OrderedReceivePositionMutants.
+Import OrderedReceivePositions.
+
+Definition a : Path := [0; 1].
+Definition b : Path := [0; 1; 0].
+Definition p0 := PatternFieldsState [[10]] (Some [1]) i32_min.
+Definition p1 := PatternFieldsState [[20]; [21]] None 0%Z.
+Definition p2 := PatternFieldsState [[30]] (Some [2]) i32_max.
+Definition receive := ReceiveFieldsState [a; b; a] [p0; p1; p2]
+  [40] true [-1; 2; 7]%Z [50].
+
+Example dropped_repeated_position_is_detected :
+  positions [a; b; a] a <> [0].
+Proof. vm_compute. discriminate. Qed.
+
+Example duplicated_position_is_detected :
+  positions [a; b; a] a <> [0; 2; 2].
+Proof. vm_compute. discriminate. Qed.
+
+Example reordered_positions_are_detected :
+  positions [a; b; a] a <> [2; 0].
+Proof. vm_compute. discriminate. Qed.
+
+Example channel_order_changes_occurrences :
+  positions [a; b; a] a = [0; 2] /\
+  positions [a; a; b] a = [0; 1].
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example prefix_related_channel_is_not_an_alias :
+  positions [a; b; a] b = [1] /\ positions [a; b; a] [0] = [].
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example shifted_pattern_is_detected :
+  bind_at receive 2 <> Some (BindFieldsState a p0 true).
+Proof. vm_compute. discriminate. Qed.
+
+Example erased_terms_are_detected :
+  bind_at receive 2 <>
+  Some (BindFieldsState a (PatternFieldsState [] (Some [2]) i32_max) true).
+Proof. vm_compute. discriminate. Qed.
+
+Example erased_remainder_is_detected :
+  bind_at receive 2 <>
+  Some (BindFieldsState a (PatternFieldsState [[30]] None i32_max) true).
+Proof. vm_compute. discriminate. Qed.
+
+Example erased_signed_count_is_detected :
+  bind_at receive 0 <>
+  Some (BindFieldsState a (PatternFieldsState [[10]] (Some [1]) 0%Z) false).
+Proof. vm_compute. discriminate. Qed.
+
+Example shifted_peek_is_detected :
+  bind_at receive 0 <> Some (BindFieldsState a p0 true) /\
+  bind_at receive 2 = Some (BindFieldsState a p2 true).
+Proof. vm_compute. split; [discriminate|reflexivity]. Qed.
+
+Example raw_peek_normalization_changes_coarse_observation :
+  map (effective_peek [-1; 7]%Z) [0; 1; 2] =
+    map (effective_peek []) [0; 1; 2] /\
+  coarse_peek [-1; 7]%Z <> coarse_peek [].
+Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
+
+Example mismatched_arity_cannot_truncate_a_pattern :
+  bind_at (ReceiveFieldsState [a; b; a] [p0; p1] [40] true [] [50]) 0 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example replacing_first_source_is_detected :
+  let first := ContinuationRecordState [1] [2] true [-1]%Z in
+  let alias := ContinuationRecordState [1] [3] true [-1]%Z in
+  first_identity [1] [first; alias] = Some first /\
+  first_identity [1] [first; alias] <> Some alias.
+Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
+
+Example source_identity_erasure_does_not_erase_source :
+  source_free_fields (replace_source receive [99]) = source_free_fields receive /\
+  replace_source receive [99] <> receive.
+Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
+
+Example equal_installed_and_resting_records_are_distinct_occurrences :
+  let record := ContinuationRecordState [1] [2] true [-1]%Z in
+  target_record (InstalledTarget record) = target_record (OrdinaryTarget [3] record) /\
+  (InstalledTarget record, 2) <> (OrdinaryTarget [3] record, 2).
+Proof. split; [reflexivity|discriminate]. Qed.
+
+Print Assumptions dropped_repeated_position_is_detected.
+Print Assumptions duplicated_position_is_detected.
+Print Assumptions reordered_positions_are_detected.
+Print Assumptions channel_order_changes_occurrences.
+Print Assumptions prefix_related_channel_is_not_an_alias.
+Print Assumptions shifted_pattern_is_detected.
+Print Assumptions erased_terms_are_detected.
+Print Assumptions erased_remainder_is_detected.
+Print Assumptions erased_signed_count_is_detected.
+Print Assumptions shifted_peek_is_detected.
+Print Assumptions raw_peek_normalization_changes_coarse_observation.
+Print Assumptions mismatched_arity_cannot_truncate_a_pattern.
+Print Assumptions replacing_first_source_is_detected.
+Print Assumptions source_identity_erasure_does_not_erase_source.
+Print Assumptions equal_installed_and_resting_records_are_distinct_occurrences.
+
+Example checked_position_does_not_narrow_or_saturate :
+  checked_position (-1)%Z = None /\
+  checked_position 18446744073709551616%Z = None /\
+  checked_position position_max = Some position_max /\
+  checked_position 0%Z = Some 0%Z.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Example fixed_width_position_does_not_reuse_signed_peek_range :
+  checked_position 2147483648%Z = Some 2147483648%Z.
+Proof. vm_compute. reflexivity. Qed.
+
+Print Assumptions checked_position_does_not_narrow_or_saturate.
+Print Assumptions fixed_width_position_does_not_reuse_signed_peek_range.
+
+End OrderedReceivePositionMutants.
+
 End TwoLevelRSpaceContinuationAuthorityMutants.

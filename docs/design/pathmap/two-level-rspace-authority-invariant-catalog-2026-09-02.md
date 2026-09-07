@@ -10,7 +10,7 @@ Scope: the selected two-level RSpace representation, its operations and lifecycl
 
 This living engineering report is the non-duplicative traceability authority between the committed Rocq models and executable Rust properties for the two-level RSpace design. The outer `PathMap` stores one exact endpoint per loaded channel. Each real endpoint owns an independently guarded, channel-relative `Bag`, represented by `PathMap<Multiplicity>`. A loaded channel with an empty Bag remains observably different from an unloaded channel.
 
-The formal catalogs contain **171 distinct obligations**. They are normalized below into ten executable property families. Each formal invariant has exactly one primary executable owner even when several formal modules derive related consequences. This prevents duplicated green tests from obscuring an untested seam.
+The original ten-module formal catalogs contain **171 distinct obligations**. They are normalized below into ten executable property families. The ordered-receive extension in TLRS-PROP-11 separately maps 22 additional capstones. Each formal invariant has exactly one primary executable owner even when several formal modules derive related consequences. This prevents duplicated green tests from obscuring an untested seam.
 
 `VERIFIED` means current Rust tests exercise the production behavior represented by the family. `PARTIAL` means useful executable evidence exists but one or more material refinements remain open. `GAP` means the production surface or its semantic property test does not yet exist.
 
@@ -215,6 +215,85 @@ Required behavior: exact validation subject, exact object-inventory binding, ind
 Current executable evidence: `rba1_checkpoint_recovery_properties.rs` verifies catalog traceability and explicitly records the production adapter as unimplemented. Generic durable recovery tests do not admit and compare a direct RBA1 two-level authority.
 
 Open implementation and executable obligation: exact-subject mutation matrix, inventory substitution, independent generation mutation, crash cutpoints around object/install/catalog acknowledgement, accepted/refused semantic successor checks, invalid-current-format precedence, and loaded-empty restart equivalence. Direct RBA1 recovery remains GAP.
+
+### TLRS-PROP-11 — Ordered receive fields and occurrence identity (2026-09-06)
+
+Status: **PARTIAL — structural proof and existing-code codec witnesses verified;
+the borrowed receive view and derived index remain tasks 8009–8013**
+
+The required proof slice, task 8008, extends the existing
+[`TwoLevelRSpaceContinuationAuthority.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthority.v)
+with `OrderedReceivePositions`. Its 22 additional capstones are separate from
+the original ten-module, 171-constructor inventory above. The companion adds 17
+executable formal controls. The existing proof runner now requires 33 closed
+assumption reports from each module, including their prior 11 and 16 reports.
+Independent `coqchk` checks the compiled modules and dependencies; no admitted
+lemma or additional axiom is used.
+
+**Concrete field boundary.** Each position owns a complete `BindPattern`:
+ordered terms, optional remainder and signed `free_count: i32`. It is not the
+aggregate `Receive.bind_count`. The model uses mathematical integers for this
+field; Rust representability is the full signed-i32 interval, not nonnegativity.
+The body denotes the complete `TaggedContinuation`, including guard and random
+state. Source-free identity consists of ordered patterns, body, persistence and
+the raw signed peek set within one exact ordered channel group. The first
+representative's `Consume` source is separately observable.
+
+An empty aligned logical view has no bind. This does not change admission:
+consume rejects empty groups, install permits them when arity agrees, and the
+current RhoPathV2 continuation constructor rejects empty groups. Task 8009 must
+preserve those distinct boundaries rather than making the constructor's
+restriction a universal receive rule.
+
+**Invariant-to-executable traceability.** All theorem names in this table are
+within `OrderedReceivePositions`. The primary Rust codec owner is
+[`models/tests/cold_store_records.rs`](../../../models/tests/cold_store_records.rs);
+the existing-code position witnesses compose canonical field bytes with
+`RhoPathV2::channel_frames`, not a new production receive cursor.
+
+| ID | Formal capstones | Executable witness and remaining refinement |
+|---|---|---|
+| TLRS-RECEIVE-01 | `positions_exact`, `indexed_bind_correspondence` | `ordered_receive_codec_preserves_arbitrary_signed_fields` compares every returned position against an independent ordered-channel oracle, including absent queries. Task 8009 must apply the same relation to its borrowed view. |
+| TLRS-RECEIVE-02 | `positions_are_bounded`, `positions_are_unique`, `positions_are_increasing` | The same property compares the complete position vector and checks bounds and strict order. Formal controls detect dropped, duplicated and reordered positions. |
+| TLRS-RECEIVE-03 | `bind_at_preserves_all_fields`, `same_channel_does_not_erase_distinct_pattern_fields` | `ordered_receive_signed_fields_survive_repeated_channel_permutations` covers `[a,b,a]` and `[a,a,b]` with distinct terms/remainders and signed count extrema. `ordered_receive_fixture_detects_erased_and_shifted_fields` detects observer-insensitive fixtures. |
+| TLRS-RECEIVE-04 | `bind_at_exists_exactly_in_range`, `mismatched_arity_refuses_every_position` | Existing `consume_arity_refusal` covers play/replay/install admission. The future byte-view accessor must reject mismatched arity before yielding any position; that implementation obligation remains in 8009. |
+| TLRS-RECEIVE-05 | `effective_peek_is_signed_membership`, `wide_position_does_not_wrap_to_signed_peek` | The positional fixture preserves asymmetric raw peeks and compares each effective flag. A position outside signed-i32 range must not wrap when testing membership; the general theorem has no traversal-depth bound. |
+| TLRS-RECEIVE-06 | `coarse_peek_preserves_raw_nonemptiness` | `ordered_receive_raw_peeks_and_source_suffix_are_not_erased` keeps `{-1,7}` at arity three: all effective flags are false, but the coarse nonempty flag is true. Removing those raw peeks changes identity. |
+| TLRS-RECEIVE-07 | `source_replacement_preserves_identity_and_positions`, `distinct_source_remains_observable` | The same source-suffix test compares the exact common identity prefix and separately serialized source suffix, and checks both complete records through the decoder. |
+| TLRS-RECEIVE-08 | `first_identity_retains_head_source`, `appending_aliases_preserves_first_identity` | Existing `record_index::continuation_identity_lookup_retains_first_representative_and_loaded_empty` and the continuation/join lifecycle differential bind first-match retention to the current PathMap store. The model's record list is a ghost observation of one exact group, not a proposed list-backed implementation. |
+| TLRS-RECEIVE-09 | `installed_and_resting_positions_are_distinct` | `hot_store_spec::byte_equal_installed_and_resting_continuations_remain_distinct` keeps two byte-identical records in separate occurrence classes, refuses installed removal and removes only the resting occurrence. It reuses the existing `ResolvedTarget` constructors and hot-store API. |
+| TLRS-RECEIVE-10 | `empty_aligned_receive_has_no_bind` | Existing empty-pattern codec fixture and arity admission tests. Empty-view access remains a specific 8009 obligation, not a new persisted empty-group format. |
+| TLRS-RECEIVE-11 | `escaped_channel_occurrences_are_exact` | Existing RhoPath all-byte, malformed-frame and count tests; `v2_wide_repeated_channel_positions_preserve_every_occurrence` tests prefix-related binary channels at arities 65, 257 and 4097. The formal lemma reuses the verified zero-escape frame round trip. |
+| TLRS-RECEIVE-12 | `checked_position_is_exact`, `successful_position_codes_cannot_alias`, `representable_arity_has_representable_occurrences` | Formal boundary controls accept zero, signed-i32-plus-one and unsigned-u64 maximum, and refuse negative/overflow values without wrap or saturation. Current positional witnesses use checked `u64::try_from`; the production position type and all byte-view conversion sites remain 8009 obligations. |
+
+The 17 new formal controls cover dropped/duplicated/reordered positions, channel
+permutation, prefix aliasing, shifted patterns, erased terms/remainder/signed
+count, shifted peeks, raw-peek normalization, arity truncation, last-source-wins,
+source erasure, installed/resting collapse and both fixed-width boundary cases.
+Rust field-mutant fixtures are observer-sensitivity controls: they demonstrate
+that the asserted observations distinguish changed fields. They are not a claim
+that mutation testing rewrote the production implementation.
+
+**Codec observation repair.** The prior continuation differential compared a
+machine decoder with an independently derived decoder reading the same emitted
+record. It could miss a shared encoder permutation. The strengthened helper also
+compares every decoded field with the original record and compares complete bytes
+with the independent frozen tuple
+`(patterns, continuation, persist, peeks, source)`. The actual generated stable
+encoders for each `BindPattern` and `TaggedContinuation` are also compared with
+their frozen bincode field encodings. Exact decoded pattern and continuation
+bytes check all metadata, including guard/random state, in addition to semantic
+equality. The signed-field property
+uses 256 cases with seed `41318008` in the recorded repeat; deterministic extrema,
+negative-only peeks, source aliases and field-erasure cases supplement generation.
+
+**Proof boundary.** These capstones prove structural field/position laws and exact
+escaped-channel identity. They do not formally verify every generated protobuf or
+bincode implementation, the complete RhoPathV2 outer parser, semantic RCI2 channel
+equality, index revision publication or selected-COMM equivalence. Existing codec
+tests provide concrete executable correspondence, not proof extraction. The
+representation, stale-index, activation, lifecycle and resource obligations stay
+with tasks 8009–8013 and 6021. The new family therefore remains PARTIAL.
 
 ## Current production gaps
 

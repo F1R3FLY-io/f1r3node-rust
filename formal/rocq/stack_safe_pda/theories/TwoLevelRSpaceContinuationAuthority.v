@@ -1,7 +1,7 @@
 From Stdlib Require Import
   Bool List Arith Lia ZArith Sorting.Sorted.
 From StackSafePDA Require Import
-  PathMapCanonicalStreamPublicationBase TwoLevelRSpaceAuthority.
+  PathMapCanonicalStreamPublicationBase TwoLevelRSpaceAuthority RhoPathV1Datum.
 
 Import ListNotations.
 Import TwoLevelRSpaceAuthority.
@@ -1448,6 +1448,380 @@ Proof.
     simpl; [|tauto].
   apply join_channel_other_group_membership_is_preserved. exact Hdifferent.
 Qed.
+
+Module OrderedReceivePositions.
+Open Scope nat_scope.
+
+Record PatternFields : Type := PatternFieldsState {
+  pattern_terms : list Path;
+  pattern_remainder : option Path;
+  pattern_free_count : Z
+}.
+
+Record ReceiveFields : Type := ReceiveFieldsState {
+  receive_channels : GroupKey;
+  receive_patterns : list PatternFields;
+  receive_body : Path;
+  receive_persistent : bool;
+  receive_peeks : list Z;
+  receive_source : Path
+}.
+
+Record BindFields : Type := BindFieldsState {
+  bind_channel : Path;
+  bind_pattern : PatternFields;
+  bind_peek : bool
+}.
+
+Definition aligned (receive : ReceiveFields) : Prop :=
+  length (receive_channels receive) = length (receive_patterns receive).
+
+Definition effective_peek (peeks : list Z) (position : nat) : bool :=
+  existsb (Z.eqb (Z.of_nat position)) peeks.
+
+Definition coarse_peek (peeks : list Z) : bool :=
+  match peeks with [] => false | _ :: _ => true end.
+
+Definition bind_at (receive : ReceiveFields) (position : nat)
+    : option BindFields :=
+  if Nat.eqb (length (receive_channels receive)) (length (receive_patterns receive))
+  then
+    match nth_error (receive_channels receive) position,
+          nth_error (receive_patterns receive) position with
+    | Some channel, Some pattern =>
+        Some (BindFieldsState channel pattern
+          (effective_peek (receive_peeks receive) position))
+    | _, _ => None
+    end
+  else None.
+
+Definition channel_at_is (channels : GroupKey) (channel : Path)
+    (position : nat) : bool :=
+  match nth_error channels position with
+  | Some actual => if path_eq_dec actual channel then true else false
+  | None => false
+  end.
+
+Definition positions (channels : GroupKey) (channel : Path) : list nat :=
+  filter (channel_at_is channels channel) (seq 0 (length channels)).
+
+Lemma channel_at_is_exact : forall channels channel position,
+  channel_at_is channels channel position = true <->
+  nth_error channels position = Some channel.
+Proof.
+  intros. unfold channel_at_is.
+  destruct (nth_error channels position) as [actual|]; [|split; discriminate].
+  destruct (path_eq_dec actual channel) as [->|Hdifferent].
+  - tauto.
+  - split; [discriminate|intro H; inversion H; contradiction].
+Qed.
+
+Theorem positions_exact : forall channels channel position,
+  In position (positions channels channel) <->
+  nth_error channels position = Some channel.
+Proof.
+  intros. unfold positions. rewrite filter_In, channel_at_is_exact.
+  split; [tauto|]. intro Hnth. split; [|exact Hnth].
+  apply in_seq. split; [lia|].
+  apply nth_error_Some. rewrite Hnth. discriminate.
+Qed.
+
+Theorem positions_are_bounded : forall channels channel position,
+  In position (positions channels channel) -> position < length channels.
+Proof.
+  intros channels channel position Hin. apply positions_exact in Hin.
+  apply nth_error_Some. rewrite Hin. discriminate.
+Qed.
+
+Theorem positions_are_unique : forall channels channel,
+  NoDup (positions channels channel).
+Proof. intros. apply NoDup_filter, seq_NoDup. Qed.
+
+Lemma seq_strictly_sorted : forall count start,
+  StronglySorted Nat.lt (seq start count).
+Proof.
+  induction count as [|count IH]; intro start; simpl; constructor.
+  - apply IH.
+  - apply Forall_forall. intros position Hin. apply in_seq in Hin. lia.
+Qed.
+
+Lemma filter_strictly_sorted : forall values keep,
+  StronglySorted Nat.lt values -> StronglySorted Nat.lt (filter keep values).
+Proof.
+  intros values keep Hsorted. induction Hsorted; simpl; [constructor|].
+  destruct (keep a); [constructor|exact IHHsorted].
+  - exact IHHsorted.
+  - apply Forall_forall. intros value Hin. apply filter_In in Hin.
+    rewrite Forall_forall in H. apply H. exact (proj1 Hin).
+Qed.
+
+Theorem positions_are_increasing : forall channels channel,
+  StronglySorted Nat.lt (positions channels channel).
+Proof. intros. apply filter_strictly_sorted, seq_strictly_sorted. Qed.
+
+Theorem mismatched_arity_refuses_every_position : forall receive position,
+  ~ aligned receive -> bind_at receive position = None.
+Proof.
+  intros receive position Hmismatch. unfold bind_at.
+  destruct (Nat.eqb (length (receive_channels receive))
+    (length (receive_patterns receive))) eqn:Harity; [|reflexivity].
+  apply Nat.eqb_eq in Harity. contradiction.
+Qed.
+
+Theorem bind_at_preserves_all_fields : forall receive position bind,
+  aligned receive ->
+  (bind_at receive position = Some bind <->
+   exists channel pattern,
+     nth_error (receive_channels receive) position = Some channel /\
+     nth_error (receive_patterns receive) position = Some pattern /\
+     bind = BindFieldsState channel pattern
+       (effective_peek (receive_peeks receive) position)).
+Proof.
+  intros receive position bind Haligned. unfold bind_at.
+  unfold aligned in Haligned. rewrite Haligned, Nat.eqb_refl.
+  destruct (nth_error (receive_channels receive) position) as [channel|] eqn:Hchannel;
+  destruct (nth_error (receive_patterns receive) position) as [pattern|] eqn:Hpattern.
+  - split.
+    + intro H. inversion H; subst. exists channel, pattern. auto.
+    + intros [c [p [Hc [Hp Hb]]]]. inversion Hc; inversion Hp; subst. reflexivity.
+  - split; [discriminate|intros [c [p [_ [H _]]]]; discriminate].
+  - split; [discriminate|intros [c [p [H _]]]; discriminate].
+  - split; [discriminate|intros [c [p [H _]]]; discriminate].
+Qed.
+
+Theorem bind_at_exists_exactly_in_range : forall receive position,
+  aligned receive ->
+  ((exists bind, bind_at receive position = Some bind) <->
+    position < length (receive_channels receive)).
+Proof.
+  intros receive position Haligned. split.
+  - intros [bind Hbind]. apply (bind_at_preserves_all_fields position bind Haligned) in Hbind.
+    destruct Hbind as [channel [pattern [Hchannel _]]].
+    apply nth_error_Some. rewrite Hchannel. discriminate.
+  - intro Hrange.
+    assert (Hchannel : nth_error (receive_channels receive) position <> None).
+    { apply nth_error_Some. exact Hrange. }
+    assert (Hpattern : nth_error (receive_patterns receive) position <> None).
+    { apply nth_error_Some. unfold aligned in Haligned. lia. }
+    destruct (nth_error (receive_channels receive) position) as [channel|] eqn:Hc;
+      [|contradiction].
+    destruct (nth_error (receive_patterns receive) position) as [pattern|] eqn:Hp;
+      [|contradiction].
+    exists (BindFieldsState channel pattern (effective_peek (receive_peeks receive) position)).
+    apply (bind_at_preserves_all_fields position _ Haligned). exists channel, pattern. auto.
+Qed.
+
+Theorem indexed_bind_correspondence : forall receive channel position,
+  aligned receive ->
+  (In position (positions (receive_channels receive) channel) <->
+   exists bind, bind_at receive position = Some bind /\ bind_channel bind = channel).
+Proof.
+  intros receive channel position Haligned. rewrite positions_exact. split.
+  - intro Hchannel.
+    assert (Hrange : position < length (receive_channels receive)).
+    { apply nth_error_Some. rewrite Hchannel. discriminate. }
+    destruct ((proj2 (bind_at_exists_exactly_in_range position Haligned)) Hrange)
+      as [bind Hbind].
+    exists bind. split; [exact Hbind|].
+    apply (bind_at_preserves_all_fields position bind Haligned) in Hbind.
+    destruct Hbind as [c [p [Hc [_ Hb]]]]. rewrite Hchannel in Hc.
+    inversion Hc; subst. reflexivity.
+  - intros [bind [Hbind Hchannel]].
+    apply (bind_at_preserves_all_fields position bind Haligned) in Hbind.
+    destruct Hbind as [c [p [Hc [_ Hb]]]]. subst bind. simpl in Hchannel.
+    now subst c.
+Qed.
+
+Theorem effective_peek_is_signed_membership : forall peeks position,
+  effective_peek peeks position = true <-> In (Z.of_nat position) peeks.
+Proof.
+  intros. unfold effective_peek. rewrite existsb_exists. split.
+  - intros [peek [Hin Heq]]. apply Z.eqb_eq in Heq. now subst peek.
+  - intro Hin. exists (Z.of_nat position). split; [exact Hin|apply Z.eqb_refl].
+Qed.
+
+Theorem wide_position_does_not_wrap_to_signed_peek : forall peeks position,
+  canonical_peeks peeks -> (i32_max < Z.of_nat position)%Z ->
+  effective_peek peeks position = false.
+Proof.
+  intros peeks position [_ Hrange] Hwide.
+  destruct (effective_peek peeks position) eqn:Hpeek; [|reflexivity].
+  apply effective_peek_is_signed_membership in Hpeek.
+  rewrite Forall_forall in Hrange. specialize (Hrange _ Hpeek).
+  unfold peek_in_i32_range in Hrange. lia.
+Qed.
+
+Theorem coarse_peek_preserves_raw_nonemptiness : forall peeks,
+  coarse_peek peeks = true <-> peeks <> [].
+Proof. intros [|peek peeks]; simpl; split; congruence. Qed.
+
+Definition source_free_fields (receive : ReceiveFields) :=
+  (receive_patterns receive, receive_body receive,
+   receive_persistent receive, receive_peeks receive).
+
+Definition replace_source (receive : ReceiveFields) (source : Path) : ReceiveFields :=
+  ReceiveFieldsState (receive_channels receive) (receive_patterns receive)
+    (receive_body receive) (receive_persistent receive) (receive_peeks receive) source.
+
+Theorem source_replacement_preserves_identity_and_positions : forall receive source,
+  source_free_fields (replace_source receive source) = source_free_fields receive /\
+  receive_channels (replace_source receive source) = receive_channels receive /\
+  forall position, bind_at (replace_source receive source) position = bind_at receive position.
+Proof. intros. repeat split; reflexivity. Qed.
+
+Theorem distinct_source_remains_observable : forall receive source,
+  source <> receive_source receive -> replace_source receive source <> receive.
+Proof.
+  intros receive source Hdifferent Heq.
+  apply (f_equal receive_source) in Heq. simpl in Heq. contradiction.
+Qed.
+
+Theorem same_channel_does_not_erase_distinct_pattern_fields : forall
+    receive left right left_bind right_bind,
+  bind_at receive left = Some left_bind ->
+  bind_at receive right = Some right_bind ->
+  bind_pattern left_bind <> bind_pattern right_bind -> left_bind <> right_bind.
+Proof. intros receive left right left_bind right_bind Hl Hr Hpattern Heq.
+  subst. contradiction. Qed.
+
+Theorem empty_aligned_receive_has_no_bind : forall body persistent peeks source position,
+  bind_at (ReceiveFieldsState [] [] body persistent peeks source) position = None.
+Proof. intros. unfold bind_at. destruct position; reflexivity. Qed.
+
+Lemma frame_equality_preserves_channel : forall left right,
+  RhoPathV1Datum.bytes_valid left = true ->
+  RhoPathV1Datum.bytes_valid right = true ->
+  RhoPathV1Datum.encode_frame left = RhoPathV1Datum.encode_frame right -> left = right.
+Proof.
+  intros left right Hleft Hright Heq.
+  pose proof (RhoPathV1Datum.frame_encode_parse_round_trip left [] Hleft) as Hl.
+  pose proof (RhoPathV1Datum.frame_encode_parse_round_trip right [] Hright) as Hr.
+  repeat rewrite app_nil_r in Hl, Hr. rewrite Heq, Hr in Hl.
+  now inversion Hl.
+Qed.
+
+Lemma framed_nth_error : forall channels position,
+  nth_error (map RhoPathV1Datum.encode_frame channels) position =
+  option_map RhoPathV1Datum.encode_frame (nth_error channels position).
+Proof.
+  induction channels as [|channel tail IH]; intros [|position]; simpl; auto.
+Qed.
+
+Theorem escaped_channel_occurrences_are_exact : forall channels channel position,
+  Forall (fun bytes => RhoPathV1Datum.bytes_valid bytes = true) channels ->
+  RhoPathV1Datum.bytes_valid channel = true ->
+  (In position (positions (map RhoPathV1Datum.encode_frame channels)
+    (RhoPathV1Datum.encode_frame channel)) <-> In position (positions channels channel)).
+Proof.
+  intros channels channel position Hchannels Hchannel.
+  repeat rewrite positions_exact. split.
+  - intro Hencoded. rewrite framed_nth_error in Hencoded.
+    destruct (nth_error channels position) as [actual|] eqn:Hactual;
+      simpl in Hencoded; [|discriminate].
+    injection Hencoded as Hframes.
+    assert (Hvalid : RhoPathV1Datum.bytes_valid actual = true).
+    { rewrite Forall_forall in Hchannels. apply Hchannels.
+      eapply nth_error_In; eassumption. }
+    apply (frame_equality_preserves_channel actual channel Hvalid Hchannel) in Hframes.
+    now subst actual.
+  - intro Hnth. rewrite framed_nth_error.
+    exact (f_equal (option_map RhoPathV1Datum.encode_frame) Hnth).
+Qed.
+
+Fixpoint first_identity (identity : Path) (records : list ContinuationRecord)
+    : option ContinuationRecord :=
+  match records with
+  | [] => None
+  | record :: tail =>
+      if path_eq_dec (continuation_identity record) identity
+      then Some record else first_identity identity tail
+  end.
+
+Theorem first_identity_retains_head_source : forall record tail,
+  first_identity (continuation_identity record) (record :: tail) = Some record.
+Proof.
+  intros. simpl. destruct (path_eq_dec (continuation_identity record)
+    (continuation_identity record)); congruence.
+Qed.
+
+Theorem appending_aliases_preserves_first_identity : forall records identity prior suffix,
+  first_identity identity records = Some prior ->
+  first_identity identity (records ++ suffix) = Some prior.
+Proof.
+  induction records as [|record tail IH]; intros identity prior suffix Hfirst;
+    simpl in *; [discriminate|].
+  destruct (path_eq_dec (continuation_identity record) identity).
+  - exact Hfirst.
+  - now apply IH.
+Qed.
+
+Theorem installed_and_resting_positions_are_distinct : forall record path (position : nat),
+  (InstalledTarget record, position) <> (OrdinaryTarget path record, position).
+Proof. intros. discriminate. Qed.
+
+Definition position_max : Z := 18446744073709551615%Z.
+
+Definition checked_position (position : Z) : option Z :=
+  if (Z.leb 0 position && Z.leb position position_max)%bool
+  then Some position else None.
+
+Theorem checked_position_is_exact : forall position,
+  checked_position position = Some position <->
+  (0 <= position <= position_max)%Z.
+Proof.
+  intros position. unfold checked_position.
+  destruct (Z.leb 0 position && Z.leb position position_max)%bool eqn:Hrange.
+  - apply andb_true_iff in Hrange. rewrite !Z.leb_le in Hrange. tauto.
+  - split; [discriminate|]. intros [Hlower Hupper].
+    assert (Htrue : (Z.leb 0 position && Z.leb position position_max)%bool = true).
+    { apply andb_true_iff. rewrite !Z.leb_le. auto. }
+    congruence.
+Qed.
+
+Theorem successful_position_codes_cannot_alias : forall left right encoded,
+  checked_position left = Some encoded ->
+  checked_position right = Some encoded -> left = right.
+Proof.
+  intros left right encoded Hl Hr. unfold checked_position in *.
+  destruct (Z.leb 0 left && Z.leb left position_max)%bool; [|discriminate].
+  destruct (Z.leb 0 right && Z.leb right position_max)%bool; congruence.
+Qed.
+
+Theorem representable_arity_has_representable_occurrences : forall channels channel position,
+  (Z.of_nat (length channels) <= position_max)%Z ->
+  In position (positions channels channel) ->
+  checked_position (Z.of_nat position) = Some (Z.of_nat position).
+Proof.
+  intros channels channel position Harity Hin.
+  apply positions_are_bounded in Hin.
+  apply checked_position_is_exact. lia.
+Qed.
+
+Print Assumptions checked_position_is_exact.
+Print Assumptions successful_position_codes_cannot_alias.
+Print Assumptions representable_arity_has_representable_occurrences.
+
+Print Assumptions first_identity_retains_head_source.
+Print Assumptions appending_aliases_preserves_first_identity.
+Print Assumptions installed_and_resting_positions_are_distinct.
+Print Assumptions positions_exact.
+Print Assumptions positions_are_bounded.
+Print Assumptions positions_are_unique.
+Print Assumptions positions_are_increasing.
+Print Assumptions mismatched_arity_refuses_every_position.
+Print Assumptions bind_at_preserves_all_fields.
+Print Assumptions bind_at_exists_exactly_in_range.
+Print Assumptions indexed_bind_correspondence.
+Print Assumptions effective_peek_is_signed_membership.
+Print Assumptions wide_position_does_not_wrap_to_signed_peek.
+Print Assumptions coarse_peek_preserves_raw_nonemptiness.
+Print Assumptions source_replacement_preserves_identity_and_positions.
+Print Assumptions distinct_source_remains_observable.
+Print Assumptions same_channel_does_not_erase_distinct_pattern_fields.
+Print Assumptions empty_aligned_receive_has_no_bind.
+Print Assumptions escaped_channel_occurrences_are_exact.
+
+End OrderedReceivePositions.
 
 Print Assumptions EqualityEpoch.fresh_from_rejects_every_prior.
 Print Assumptions issued_ordinary_capability_resolves.

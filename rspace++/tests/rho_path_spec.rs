@@ -86,7 +86,11 @@ fn v2_continuation_preserves_order_and_zero_escaping() {
         assert!(frame.ends_with(&[0, 0]));
         assert!(frame.len() >= expected.len() + 2);
     }
-    assert!(view.encoded_identity_frame().windows(2).any(|pair| pair == [0, 255]));
+    assert!(
+        view.encoded_identity_frame()
+            .windows(2)
+            .any(|pair| pair == [0, 255])
+    );
 }
 
 #[test]
@@ -98,6 +102,35 @@ fn v2_continuation_rejects_count_mismatch_without_fallback() {
     let mut underdeclared = valid;
     underdeclared[13] = 1;
     assert!(RhoPathV2::parse_continuation(&underdeclared).is_err());
+}
+
+#[test]
+fn v2_wide_repeated_channel_positions_preserve_every_occurrence() {
+    for count in [65, 257, 4097] {
+        let channels = (0..count)
+            .map(|position| {
+                if position % 3 == 1 {
+                    &[0, 1, 0][..]
+                } else {
+                    &[0, 1][..]
+                }
+            })
+            .collect::<Vec<_>>();
+        let path = RhoPathV2::continuation_key(&channels, b"identity").unwrap();
+        let view = RhoPathV2::parse_continuation(&path).unwrap();
+        assert_eq!(view.channel_count(), count);
+        assert_eq!(view.channel_frames().len(), count);
+        let actual = view
+            .channel_frames()
+            .enumerate()
+            .filter_map(|(position, frame)| (frame == [0, 255, 1, 0, 0]).then_some(position))
+            .collect::<Vec<_>>();
+        let expected = (0..count)
+            .filter(|position| position % 3 != 1)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 }
 
 #[test]
