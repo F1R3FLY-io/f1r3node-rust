@@ -94,6 +94,24 @@ are recorded in the integration report.
 | RA10 | Complete evidence admits a nonempty valid fixture. | Explicit seven-program floor and successful untouched archive replay. The formal toy fixture is not a replacement for this runtime witness. |
 | RA11 | Captured order is not a total execution schedule. | Reuse `rig_is_order_insensitive` (5,040 permutations), `rig_distinguishes_a_different_multiset` and `a_produces_channel_hash_is_not_part_of_its_replay_identity`; do not require harmless permutations or ignored metadata to fail actual replay. |
 
+RA09's causal-error recognition is refined before the test repair: the existing
+`failed_runtime_refuses` theorem excludes `RuntimeRefused` from acceptance regardless
+of diagnostic wrapping. The observed current runtime wraps RSpace's capitalized
+unused-COMM diagnostic in `ReplayFailure::InternalError`; the legacy wrapper checks
+lowercase `unused`. For this successful-evaluation mutation, both represent refusal,
+not successful replay. This does not establish the separate failed-evaluation
+suppression behavior, which is unchanged.
+
+The test-only recognizer must retain strict cost/status checks and the existing
+COMM-cost/unused-event cases. Its additional internal-error case must match the
+complete anchored wrapper and diagnostic, a canonical positive `usize` count, and
+the exact suffix. Required controls accept the observed count and generated positive
+counts; reject zero, signed/whitespace/leading-zero/overflowed counts, wrong wrappers,
+extra prefixes/suffixes, and unrelated internal errors. The mutation must explicitly
+differ from the archived identity. The successful untouched replay and `expect_err`
+remain mandatory. These executable controls qualify the Rust diagnostic recognizer;
+the abstract theorem does not prove a string parser or concrete runtime.
+
 Verification first checks the immutable archive seal and context, then decodes the full
 ordered payload and checks its fixed point. It reconstructs the pinned genesis, disables
 both replay caches, invokes the existing runtime with the archived inputs, and compares

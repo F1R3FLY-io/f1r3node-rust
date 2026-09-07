@@ -69,10 +69,6 @@ pub struct LmdbDirStoreManager {
 }
 
 struct StoreState {
-    // Cached LmdbStoreManagers keyed by env config name. Each Arc<Mutex<...>>
-    // is created once per env config and reused for every database that shares
-    // that env. heed 0.22 rejects duplicate env opens of the same directory
-    // with EnvAlreadyOpened, so the cache must survive across store() calls.
     envs: HashMap<PathBuf, Arc<Mutex<LmdbStoreManager>>>,
     authorities: HashMap<String, Arc<RSpaceStateAuthority>>,
     authority_prefixes: BTreeSet<String>,

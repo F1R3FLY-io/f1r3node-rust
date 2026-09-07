@@ -1021,6 +1021,57 @@ fn replay_archive_event_edits_cannot_reuse_original_seal() {
     }
 }
 
+const UNUSED_COMM_INTERNAL_PREFIX: &str = "runtime replay: ReplayFailure(InternalError { msg: \"Replay check failed: RSpace Error: RSpace Bug Found Error: Unused COMM event: replayData multimap has ";
+const UNUSED_COMM_INTERNAL_SUFFIX: &str = " elements left\" })";
+
+fn is_unused_comm_internal_refusal(error: &str) -> bool {
+    error
+        .strip_prefix(UNUSED_COMM_INTERNAL_PREFIX)
+        .and_then(|tail| tail.strip_suffix(UNUSED_COMM_INTERNAL_SUFFIX))
+        .is_some_and(|digits| {
+            digits
+                .parse::<usize>()
+                .is_ok_and(|count| count > 0 && count.to_string() == digits)
+        })
+}
+
+#[test]
+fn replay_archive_unused_comm_refusal_rejects_unrelated_errors() {
+    let diagnostic =
+        |count: &str| format!("{UNUSED_COMM_INTERNAL_PREFIX}{count}{UNUSED_COMM_INTERNAL_SUFFIX}");
+    assert!(is_unused_comm_internal_refusal(&diagnostic("2")));
+    assert!(is_unused_comm_internal_refusal(&diagnostic("17")));
+    for count in ["", "0", "00", "02", "+2", "-2", " 2", "2 ", "2.0", "٢"] {
+        assert!(
+            !is_unused_comm_internal_refusal(&diagnostic(count)),
+            "{count:?}"
+        );
+    }
+    assert!(!is_unused_comm_internal_refusal(&diagnostic(&format!(
+        "{}0",
+        usize::MAX
+    ))));
+    for error in [
+        "runtime replay: ReplayFailure(InternalError { msg: \"stale current root\" })",
+        "runtime replay: ReplayFailure(InternalError { msg: \"Unused COMM event\" })",
+        "runtime replay: RuntimeError(\"Unused COMM event: replayData multimap has 2 elements left\")",
+        "final-root mismatch",
+        "archive digest",
+    ] {
+        assert!(!is_unused_comm_internal_refusal(error), "{error}");
+    }
+    let observed = diagnostic("2");
+    for error in [
+        format!("prefix{observed}"),
+        format!("{observed}suffix"),
+        observed.replace("InternalError", "UnusedCOMMEvent"),
+        observed.replace("Replay check failed: ", ""),
+        observed.replace(" elements left", " elements left elsewhere"),
+    ] {
+        assert!(!is_unused_comm_internal_refusal(&error), "{error}");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 32,
@@ -1043,6 +1094,17 @@ proptest! {
         let mut changed = bytes.clone();
         changed.insert(position, bytes[position]);
         prop_assert!(decode_archive(&changed, &seal).is_err());
+    }
+
+    #[test]
+    fn replay_archive_unused_comm_refusal_requires_canonical_positive_count(count in 1usize..=usize::MAX) {
+        let diagnostic = |digits: &str| {
+            format!("{UNUSED_COMM_INTERNAL_PREFIX}{digits}{UNUSED_COMM_INTERNAL_SUFFIX}")
+        };
+        prop_assert!(is_unused_comm_internal_refusal(&diagnostic(&count.to_string())));
+        for digits in [format!("0{count}"), format!("+{count}"), format!(" {count}"), format!("{count} ")] {
+            prop_assert!(!is_unused_comm_internal_refusal(&diagnostic(&digits)));
+        }
     }
 }
 
@@ -1112,7 +1174,9 @@ async fn replay_archive_runtime_rejects_cost_status_and_comm_mutations() {
             _ => None,
         })
         .unwrap();
-    event.consume.hash = vec![0x5a; 32].into();
+    let changed_hash: prost::bytes::Bytes = vec![0x5a; 32].into();
+    assert_ne!(event.consume.hash, changed_hash);
+    event.consume.hash = changed_hash;
     mutations.push(("COMM identity", identity));
     let mut extra = original.clone();
     let event = extra
@@ -1135,6 +1199,7 @@ async fn replay_archive_runtime_rejects_cost_status_and_comm_mutations() {
             _ => {
                 error.starts_with("runtime replay: ReplayFailure(UnusedCOMMEvent")
                     || error.starts_with("runtime replay: ReplayFailure(ReplayCostMismatch")
+                    || is_unused_comm_internal_refusal(&error)
             }
         };
         assert!(expected, "{label}: {error}");

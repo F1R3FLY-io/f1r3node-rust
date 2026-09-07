@@ -5510,7 +5510,31 @@ both red regressions. Expanded scope properties passed 8/8; after adding migrati
 controls the broader release state gate passed **55/55**, with **32 cases per
 generated property**. The sixteen invalid-configuration cases each run in both
 authority-first and ordinary-first order. The unchanged concurrent Casper archive
-suite is running; these focused results do not yet close 8283 or baseline 5636.
+suite at `52551503f` completed with **10 passed, 1 failed and 1 explicit capture
+ignored** in 542.73 seconds. All scope-collision failures disappeared; complete
+seven-workload replay and the other runtime controls passed. The remaining COMM
+identity control observed the required runtime refusal but rejected its diagnostic
+wrapper. Its log SHA-256 is
+`230ea46d6ee8b9449207eead80ebb66160dbf7c09823007264889a7de3199141`.
+This is not yet a passing full gate or closure of 8283/baseline 5636.
+
+**CAUSAL-CONTROL REFINEMENT.** Read-only review traced the actual refusal to the
+pre-existing capitalized RSpace `Unused COMM event` diagnostic and lowercase
+`unused` test in `ReplayRuntime::check_replay_data_with_fix`. It becomes an
+`InternalError`, not `UnusedCOMMEvent`. Both spellings predate this campaign.
+The reviewed test-only repair recognizes only the complete anchored unused-COMM
+wrapper with a positive canonical count; unrelated internal errors still fail the
+control. The RA09 realization catalog states the required recognition/mutation
+properties before implementation. Existing formal refusal, actual successful
+control replay and final-root requirements remain unchanged. No production error
+classification or failed-evaluation suppression semantics are changed or claimed
+correct by this observation.
+
+The focused diagnostic controls pass **2/2**, including 32 generated count cases.
+An initial test build rejected a `bytes::Bytes` path because Casper uses the existing
+`prost::bytes` re-export; correcting that path adds no dependency. Independent
+review found no weakened acceptance. The full concurrent replay rerun remains
+required; helper success alone is not runtime-mutation evidence.
 
 | Evidence | Result or SHA-256 |
 |---|---|
