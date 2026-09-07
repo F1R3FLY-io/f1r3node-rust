@@ -5248,6 +5248,58 @@ formal checks 2 GiB, with swap disabled; these are ceilings, not peak-RSS measur
 The correspondence document records exact selection boundaries and commands. No golden
 was repinned and no full-workspace or universal-admission completion is implied.
 
+### J-074 — 2026-09-07: qualify live-write normalization without repeating a rejected repair
+
+**QUESTION.** Does task 6446's existing repair meet its live-root and ownership contract?
+Evidence-first review recovered the accepted implementation at `68534b6fc`, actual-key and
+held-catalog matrices at `f4441c1d05`, and dated teardown measurements at `5d4b2377a`.
+The task's original universal in-place removal proposal was already rejected by the real
+Rholang sibling-loss witness. Its body now preserves that history but leads with the accepted
+ownership-disjoint structural publication. No removal implementation was rewritten here.
+
+**GAP AND METHOD.** The existing fresh-empty regression calls structural removal, which now
+rebuilds its result; it does not exercise the two write-gateway normalizers. An independent
+source/model review found only allocated-root readiness in the current physical-ownership
+model. Obsolete compiled live-root/barrier proof artifacts without current source were excluded.
+Four separate live-write capstones were added to the existing model and kernel-checked before
+binding three new tests. The original eleven-entry ownership catalog remains unchanged.
+The [complete thirteen-law correspondence](../../../formal/rocq/stack_safe_pda/README.md#live-pathmap-write-gateway-correspondence-2026-09-07)
+distinguishes model proofs, source-realization premises, and executable ACT/ownership checks.
+
+**RESULT.** Direct properties cover both root and prefix gateways; normal completion and the
+identity of the resumed panic payload; unique/shared anchors; canonical empty ACT; reinsertion;
+idempotence; zero-value nonempty topology; sole-endpoint removal below a nonempty prefix; and
+an unaffected sibling. A generated property supplies 32 additional paths of zero through 256
+bytes, while the existing regressions retain deeper stack, actual Rholang-key, multiplicity,
+alias-drop-order, failure-atomicity and metric coverage. The runner binds exactly three executed
+gateway witnesses and rejects an empty/ignored selection by its passing-count check.
+
+**REJECTED CAUSAL HYPOTHESES.** Omitting normalization after the current one-byte guarded
+removal did not make reinsertion panic. A second trial using raw `remove_val(false)` followed
+by `prune_ascend` also reopened successfully. Their expected-panic assertions failed, so they
+were not retained as purported regression controls. The model's sentinel/readiness distinction
+and omission/open-cursor/success-only/count-empty/prefix-empty controls are formal contracts,
+not demonstrated mutations of the current Rust code. Earlier real-key failures also affected
+coherent cursors, so close/reopen alone is not identified as the sibling-loss cause. Neither
+result waives the independently documented dangling-path construction issue.
+
+**BOUNDARIES.** The formal state assumes the actual whole-map emptiness observation and
+completed Rust cursor reset/Drop; it preserves supplied counts and owners rather than proving
+their initial accuracy or upstream allocator behavior. Canonical ACT equality is tested, not
+proved from the upstream encoder. This is correctness evidence only: no new performance result,
+production algorithm, serialized bytes, consensus identity, accounting rule, dependency, or
+upstream PathMap source change. Existing measurement and consensus reports therefore require
+no changed performance or activation verdict from this slice.
+
+**VERIFICATION.** Six current Rocq modules and their kernel checks passed with 58 closed-context
+reports. The selected release gates passed 101 cases; focused debug passed four. Nextest passed
+five executions of three Rholang scenarios, including duplicated guard targets, not five different
+scenarios. The actual runner block rejected real zero-test and incomplete one-test output. An
+earlier zero-test channel-prefix selection is excluded; the corrected library selection passed
+eight. Rust scopes used an 8 GiB hard memory cap, formal checks 2 GiB, and both disabled swap.
+These limits are not peak-RSS measurements. The correspondence report records the exact scope;
+this is not a full-workspace acceptance run or a new persistence performance verdict.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

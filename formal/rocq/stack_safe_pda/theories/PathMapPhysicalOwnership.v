@@ -518,4 +518,107 @@ Print Assumptions semantic_focus_does_not_imply_physical_isolation.
 Print Assumptions focused_raw_owner_release_can_destroy_shared_prefix_sibling.
 Print Assumptions physical_ownership_invariant_catalog_is_unique_complete_and_exact.
 
+Record live_write_state : Type := LiveWriteState {
+  live_anchor : physical_anchor;
+  live_empty : bool;
+  live_value_count : nat;
+  live_cursor_open : bool
+}.
+
+Definition live_write_well_formed (state : live_write_state) : Prop :=
+  (live_empty state = true ->
+    anchor_logical_paths (live_anchor state) = [] /\ live_value_count state = 0) /\
+  (anchor_root_mode (live_anchor state) = RootEmptySentinel -> live_empty state = true).
+
+Definition fresh_live_anchor (anchor : physical_anchor) : physical_anchor :=
+  PhysicalAnchor (anchor_identity anchor) RootUninitialized [] []
+    (anchor_raw_headers anchor) (anchor_arc_wrappers anchor)
+    (anchor_destructive_capability anchor).
+
+Definition close_live_cursor (state : live_write_state) : live_write_state :=
+  LiveWriteState (live_anchor state) (live_empty state) (live_value_count state) false.
+
+Definition normalized_live_image (state : live_write_state) : live_write_state :=
+  if live_empty state then
+    LiveWriteState (fresh_live_anchor (live_anchor state)) true 0 (live_cursor_open state)
+  else state.
+
+Definition normalize_closed_live_write (state : live_write_state)
+    : option live_write_state :=
+  if live_cursor_open state then None else Some (normalized_live_image state).
+
+Definition finish_live_write {Outcome : Type}
+    (state : live_write_state) (outcome : Outcome) : live_write_state * Outcome :=
+  (normalized_live_image (close_live_cursor state), outcome).
+
+Theorem live_normalization_requires_closed_cursor : forall state,
+  normalize_closed_live_write state = None <-> live_cursor_open state = true.
+Proof.
+  intros state. unfold normalize_closed_live_write.
+  destruct (live_cursor_open state); split; congruence.
+Qed.
+
+Theorem live_normalization_is_idempotent : forall state,
+  normalized_live_image (normalized_live_image state) = normalized_live_image state.
+Proof.
+  intros [anchor empty count open]. unfold normalized_live_image; simpl.
+  destruct empty; [destruct anchor|]; reflexivity.
+Qed.
+
+Theorem closed_live_image_is_write_ready : forall state,
+  live_write_well_formed state ->
+  write_ready (live_anchor (normalized_live_image state)).
+Proof.
+  intros state [_ sentinel_empty]. unfold normalized_live_image.
+  destruct (live_empty state) eqn:empty; [exact I|].
+  unfold write_ready.
+  destruct (anchor_root_mode (live_anchor state)) eqn:mode; try exact I.
+  specialize (sentinel_empty eq_refl). congruence.
+Qed.
+
+Theorem live_write_gateway_capstone : forall Outcome state (outcome : Outcome),
+  live_write_well_formed state ->
+  let after := fst (finish_live_write state outcome) in
+  live_cursor_open after = false /\
+  normalize_closed_live_write (close_live_cursor state) = Some after /\
+  write_ready (live_anchor after) /\
+  anchor_logical_paths (live_anchor after) = anchor_logical_paths (live_anchor state) /\
+  live_value_count after = live_value_count state /\
+  anchor_identity (live_anchor after) = anchor_identity (live_anchor state) /\
+  anchor_raw_headers (live_anchor after) = anchor_raw_headers (live_anchor state) /\
+  anchor_arc_wrappers (live_anchor after) = anchor_arc_wrappers (live_anchor state) /\
+  snd (finish_live_write state outcome) = outcome.
+Proof.
+  intros Outcome state outcome well_formed.
+  assert (closed_well_formed : live_write_well_formed (close_live_cursor state)).
+  { exact well_formed. }
+  pose proof (closed_live_image_is_write_ready closed_well_formed) as ready.
+  destruct state as [anchor empty count open].
+  destruct well_formed as [empty_sound sentinel_empty].
+  unfold finish_live_write, close_live_cursor, normalize_closed_live_write,
+    normalized_live_image in *; simpl in *.
+  destruct empty; simpl in *.
+  - destruct (empty_sound eq_refl) as [paths count_zero].
+    repeat split; try reflexivity; try exact I; congruence.
+  - repeat split; try reflexivity; exact ready.
+Qed.
+
+Theorem live_write_empty_and_nonempty_images_are_exact : forall Outcome state
+    (outcome : Outcome),
+  (live_empty state = true ->
+    live_anchor (fst (finish_live_write state outcome)) =
+      fresh_live_anchor (live_anchor state)) /\
+  (live_empty state = false ->
+    live_anchor (fst (finish_live_write state outcome)) = live_anchor state).
+Proof.
+  intros Outcome [anchor empty count open] outcome.
+  unfold finish_live_write, close_live_cursor, normalized_live_image; simpl.
+  destruct empty; simpl; split; intros; congruence.
+Qed.
+
+Print Assumptions live_normalization_requires_closed_cursor.
+Print Assumptions live_normalization_is_idempotent.
+Print Assumptions live_write_gateway_capstone.
+Print Assumptions live_write_empty_and_nonempty_images_are_exact.
+
 End PathMapPhysicalOwnership.

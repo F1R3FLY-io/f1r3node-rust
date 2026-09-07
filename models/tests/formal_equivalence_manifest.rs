@@ -783,6 +783,42 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
 }
 
 #[test]
+fn pathmap_live_write_gateway_contract_is_bound_to_executable_witnesses() {
+    let model =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/PathMapPhysicalOwnership.v");
+    for theorem in [
+        "live_normalization_requires_closed_cursor",
+        "live_normalization_is_idempotent",
+        "live_write_gateway_capstone",
+        "live_write_empty_and_nonempty_images_are_exact",
+    ] {
+        assert!(model.contains(&format!("Print Assumptions {theorem}.")));
+    }
+    let controls = read_repository_file(
+        "formal/rocq/stack_safe_pda/theories/PathMapPhysicalOwnershipMutants.v",
+    );
+    assert!(controls.contains("Print Assumptions live_write_negative_controls_are_nonvacuous."));
+    let tests =
+        read_repository_file("rspace++/tests/guarded_pathmap/two_phase_teardown_properties.rs");
+    for witness in [
+        "live_write_gateways_preserve_normal_and_unwind_outcomes",
+        "live_write_gateways_preserve_nonempty_topology_and_siblings",
+        "live_write_generated_gateway_observations",
+    ] {
+        assert!(tests.contains(witness));
+    }
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "theories/PathMapPhysicalOwnership.v 12",
+        "theories/PathMapPhysicalOwnershipMutants.v 3",
+        "-p rspace_plus_plus --lib live_write_",
+        "expected exactly three executed live-write gateway witnesses",
+    ] {
+        assert!(runner.contains(marker));
+    }
+}
+
+#[test]
 fn channel_image_v2_codec_proof_and_executable_boundaries_are_manifested() {
     let rocq = read_repository_file("formal/rocq/stack_safe_pda/theories/ChannelImage.v");
     for marker in [

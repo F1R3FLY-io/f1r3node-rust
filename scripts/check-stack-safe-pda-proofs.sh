@@ -115,11 +115,11 @@ rocq_check_modules "candidate-catalog authority isolation" \
   StackSafePDA.CandidateCatalogAuthorityIsolation \
   StackSafePDA.CandidateCatalogAuthorityIsolationMutants
 rocq_compile_with_closed_count \
-  theories/PathMapPhysicalOwnership.v 8 \
-  "the exact eleven-invariant PathMap physical-ownership authority"
+  theories/PathMapPhysicalOwnership.v 12 \
+  "the eleven-invariant PathMap ownership authority and four live-write capstones"
 rocq_compile_with_closed_count \
-  theories/PathMapPhysicalOwnershipMutants.v 2 \
-  "the exact eleven-mutant PathMap physical-ownership controls"
+  theories/PathMapPhysicalOwnershipMutants.v 3 \
+  "the eleven-mutant PathMap ownership controls and live-write negative controls"
 rocq_check_modules "PathMap physical ownership" \
   StackSafePDA.PathMapPhysicalOwnership \
   StackSafePDA.PathMapPhysicalOwnershipMutants
@@ -455,6 +455,12 @@ popd >/dev/null
 # the model manifest alone is not sufficient evidence of implementation
 # correspondence.
 pushd "$repo_root" >/dev/null
+live_write_test_output="$(tlc_bounded cargo test -j4 -p rspace_plus_plus --lib live_write_ 2>&1)"
+printf '%s\n' "$live_write_test_output"
+if ! grep -Eq '^test result: ok\. 3 passed; 0 failed; 0 ignored;' <<<"$live_write_test_output"; then
+  echo "stack-safe-pda: expected exactly three executed live-write gateway witnesses" >&2
+  exit 1
+fi
 tlc_bounded cargo test -p rspace_plus_plus --test mod \
   continuation_join_lifecycle_equivalence::legacy_and_pathmap_continuation_join_lifecycles_are_identical \
   -- --nocapture

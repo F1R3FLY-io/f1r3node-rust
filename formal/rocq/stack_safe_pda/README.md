@@ -35,6 +35,95 @@ The theorem kernel is schema-parametric. The generated Rust equivalence manifest
 
 The development contains no axioms, admitted goals, opaque assumptions, Verus `assume`, or external proof bodies.
 
+## Live PathMap write-gateway correspondence (2026-09-07)
+
+Task 6446 qualifies the existing ownership-disjoint structural repair, not the rejected
+universal in-place removal proposal. Structural removal publishes a freshly constructed
+filtered trie; value-only updates retain a guarded cursor. `with_write_cursor` and
+`with_write_cursor_at` both close/reset their cursor, normalize a truly empty **whole map**,
+and then return the original result or resume the original panic. Normalization is not rollback.
+
+The separate live-write subsection of `PathMapPhysicalOwnership.v` adds four printed
+capstones; it does not alter the existing eleven-entry ownership catalog. Its state records
+the physical anchor, actual whole-map emptiness observation, endpoint count and cursor status.
+`live_write_well_formed` is an explicit emptiness-consistency premise: empty observations have
+no logical endpoints and count zero, and a sentinel is observed empty. It is not a proof of
+initial count exactness, allocator correctness or complete physical ownership. In particular,
+zero values do **not** imply empty topology.
+
+The complete obligations extracted from the new capstones are:
+
+| ID | Model obligation | Implementation evidence |
+|---|---|---|
+| LW01 | Open cursors cannot pass `normalize_closed_live_write`. | Rust mutable-borrow boundary; the model rejects the open-cursor control. |
+| LW02 | Finishing a write closes the cursor. | Both gateway scopes and `GuardedWriteCursor::drop`; normal/unwind tests below. |
+| LW03 | The returned image is the checked normalization of the closed state. | Both gateway calls to `normalize_live_empty` occur after the closure-owned cursor is dropped. |
+| LW04 | A completed well-formed image is write-ready. | Reinsertion after each tested normal/unwind completion. |
+| LW05 | Normalization preserves logical endpoints. | Empty iteration, surviving sibling and retained snapshot checks. |
+| LW06 | Normalization preserves the supplied endpoint count. | Zero after final removal; exact surviving count under a nonempty prefix. |
+| LW07 | Normalization preserves anchor identity. | Unique-anchor identity before/after completion. |
+| LW08 | Normalization preserves the supplied raw-header count. | Normalizer replaces the map within its existing anchor; no owner creation. |
+| LW09 | Normalization preserves the supplied wrapper count. | Normalizer creates no wrapper; aliases retain their exact observations. |
+| LW10 | The result or unwind payload is unchanged. | `Arc::ptr_eq` checks the exact returned/resumed payload. |
+| LW11 | A truly empty image becomes the fresh-root representation. | Exact fresh-empty ACT bytes and subsequent writes. ACT equality is an executable check, not a byte-encoding theorem. |
+| LW12 | A nonempty image is unchanged by normalization. | Zero-value topology and nonempty-prefix sibling preservation. |
+| LW13 | Normalization is idempotent. | Repeated root/prefix no-op gateways preserve the canonical image. |
+
+The three `live_write_` tests in
+[`two_phase_teardown_properties.rs`](../../../rspace++/tests/guarded_pathmap/two_phase_teardown_properties.rs)
+exercise both gateway entrypoints, normal and unwind outcomes, unique/shared ownership,
+empty and nonempty paths, a sole endpoint below a nonempty prefix, and an unaffected sibling.
+The generated property uses 32 cases with paths of zero through 256 bytes. Existing Bag and
+guard regressions supply the opposite alias-drop order, actual encoded Rholang paths, exact
+multiplicities, failure atomicity and deeper stack witnesses; they are not duplicated here.
+
+The model-level negative controls distinguish omitted normalization, normalization with a
+live cursor, success-only cleanup, zero-count-as-empty, and prefix-empty-as-whole-map-empty.
+The sentinel fixture is proved well-formed and is write-ready only after normalization.
+These are abstract controls, **not mutations of the compiled Rust implementation**. Attempts
+to reproduce a sentinel panic by omitting normalization after a one-byte guarded removal,
+and after raw `remove_val(false)` plus `prune_ascend`, both allowed reinsertion on the current
+dependency. Those hypotheses were rejected; no executable sentinel-panic control is claimed.
+Likewise, earlier real-key failures affected coherent as well as split cursor protocols, so
+close/reopen alone is not asserted to be the historical sibling-loss cause.
+
+Rust reset/Drop completing before normalization and exposing the modeled image, the actual
+emptiness observation, `PathMap::new()` behavior, and existing CoW isolation are explicit
+realization premises. Header/wrapper/count laws preserve their supplied values; they do not
+prove those values were initially correct. The runner checks twelve ownership/live-write
+closed-context reports, three control reports, kernel acceptance, and exactly three executed
+Rust gateway tests. The manifest test checks inventory linkage only.
+
+### Recorded qualification
+
+Six current modules were compiled from source and kernel-checked together: physical ownership
+and controls (12/3 closed-context reports), reverse teardown and controls (23/13), and channel
+replacement and controls (5/2), for 58 reports. No orphaned compiled module is used as source
+evidence. These are scoped checks, not a run of the entire multi-model verification script.
+
+| Release selection | Passed |
+|---|---:|
+| `cargo test -p rspace_plus_plus --lib guarded_pathmap` | 31; one measurement-only case intentionally ignored |
+| `cargo test -p rspace_plus_plus --lib cow_root_publication` | 3 |
+| `cargo test -p rspace_plus_plus --test bag_spec` | 33 |
+| `cargo test -p rspace_plus_plus --lib channel_prefix_replacement` | 8 |
+| `cargo test -p models --test formal_equivalence_manifest` | 23 |
+| Rholang `mod`: both guard arrival-order regressions and `bounded_generated_terms_have_deterministic_play_replay_cost` | 3 |
+
+Every Cargo selection above used `--release -j4` under a systemd scope capped at 8 GiB,
+with swap disabled and `PROPTEST_RNG_SEED=41316446`. This is 101 selected test cases,
+not full-workspace CI. The actual live-write runner block passed its three tests in debug;
+the new manifest test also passed in debug. Nextest passed five executions of the three
+Rholang scenarios because the two guard cases are exposed by both `mod` and `reduce_spec`
+targets; this duplication is not additional semantic coverage. A channel-prefix invocation
+against `--test mod` selected zero tests and is excluded; the correct `--lib` selection above
+was subsequently run. The actual count-guard block rejected real zero-test and one-test binary
+outputs instead of accepting their successful process exit statuses.
+
+Formal checks used a 2 GiB hard cap with no swap. These configured limits are not peak-RSS
+measurements. No benchmark, golden repin, default cutover or broader campaign completion is
+implied by this qualification.
+
 ## RPB3 observation correspondence (2026-09-07)
 
 **SCOPE.** Task 7966 connects existing proof boundaries and executable observations; it does

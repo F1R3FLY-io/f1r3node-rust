@@ -260,4 +260,53 @@ Qed.
 Print Assumptions every_physical_ownership_mutant_has_a_causal_counterexample.
 Print Assumptions physical_ownership_mutant_catalog_is_unique_complete_and_exact.
 
+Definition empty_sentinel_fixture : live_write_state :=
+  LiveWriteState (PhysicalAnchor 0 RootEmptySentinel [] [] 1 1 WholeRootOwner)
+    true 0 false.
+
+Definition open_empty_sentinel_fixture : live_write_state :=
+  LiveWriteState (live_anchor empty_sentinel_fixture) true 0 true.
+
+Definition topology_only_fixture : live_write_state :=
+  LiveWriteState (PhysicalAnchor 0 (RootAllocated (0, 0)) [(0, 0)] []
+    1 1 WholeRootOwner) false 0 false.
+
+Definition prefix_sibling_fixture : live_write_state :=
+  LiveWriteState shared_prefix_sibling_fixture false 1 false.
+
+Definition mutant_normalize_by_value_count (state : live_write_state) :=
+  if Nat.eqb (live_value_count state) 0 then
+    fresh_live_anchor (live_anchor state)
+  else live_anchor state.
+
+Definition mutant_normalize_by_focus_empty
+    (state : live_write_state) (focus_empty : bool) :=
+  if focus_empty then fresh_live_anchor (live_anchor state) else live_anchor state.
+
+Definition mutant_success_only_normalization (state : live_write_state)
+    (outcome : option nat) :=
+  match outcome with
+  | Some _ => finish_live_write state outcome
+  | None => (close_live_cursor state, outcome)
+  end.
+
+Theorem live_write_negative_controls_are_nonvacuous :
+  live_write_well_formed empty_sentinel_fixture /\
+  live_write_well_formed topology_only_fixture /\
+  live_write_well_formed prefix_sibling_fixture /\
+  ~ write_ready (live_anchor empty_sentinel_fixture) /\
+  write_ready (live_anchor (fst (finish_live_write empty_sentinel_fixture 7))) /\
+  normalize_closed_live_write open_empty_sentinel_fixture = None /\
+  ~ write_ready (live_anchor
+      (fst (mutant_success_only_normalization empty_sentinel_fixture None))) /\
+  mutant_normalize_by_value_count topology_only_fixture <>
+      live_anchor (fst (finish_live_write topology_only_fixture 7)) /\
+  anchor_logical_paths (mutant_normalize_by_focus_empty prefix_sibling_fixture true) <>
+      anchor_logical_paths (live_anchor (fst (finish_live_write prefix_sibling_fixture 7))).
+Proof.
+  cbv; intuition congruence.
+Qed.
+
+Print Assumptions live_write_negative_controls_are_nonvacuous.
+
 End PathMapPhysicalOwnershipMutants.
