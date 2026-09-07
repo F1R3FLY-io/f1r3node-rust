@@ -8660,6 +8660,60 @@ operation, codec, cost model, dependency or consensus behavior changes in this s
 
 ---
 
+#### 5.29.9 Count-domain acceptance reopened — 2026-09-07
+
+**DERIVED DEFECT.** The removal of the 1,000-occurrence sentinel at `8701f470b6`
+does not finish task 5855's saturation criterion. A legal ParBag can contain two
+distinct endpoints of one family with multiplicities $`M`$ and one, where
+$`M = 2^{64}-1`$. Its cached exact aggregate is $`M+1`$, while the public legacy
+cardinality projection returns $`M`$. The existing
+`endpoint_overflow_is_atomic_while_bag_lattice_remains_closed` test explicitly
+admits this representation. Individual endpoint counts still fit `Multiplicity(u64)`.
+
+`sub_pars` currently treats that projection as exact availability. With an unbounded
+selection and a required empty complement, the counted iterator can select $`M`$
+and leave one. A required complement of exactly one instead permits a complement of
+two. These are source-derived counterexamples, not yet executed runtime regressions
+at this checkpoint. They concern aggregate interval arithmetic, not PathMap lookup,
+trie encoding or a reason to expand endpoint multiplicities.
+
+**COVERAGE CONTROL.** At `d6a01f7d3`, `matcher_connective_isolation` passes 13/13
+and `matcher_if_family` passes 8/8, including rollback, depth-4,096/128-KiB-stack
+and allocation-growth gates. The all-eight-family 1,001 test supplies exact bounds
+itself; reverting the top to 1,000 would not reject its whole-target witness. The
+recursive matcher oracle also imports production `ParCount` and `sub_pars`, so its
+agreement cannot independently qualify their arithmetic or enumeration order.
+
+Command: `cargo test --release -j4 -p rholang --test matcher_connective_isolation
+--test matcher_if_family -- --test-threads=4`, with `RUST_BACKTRACE=1` and
+`PROPTEST_RNG_SEED=41315855`, under systemd `MemoryHigh=4G`, `MemoryMax=6G`,
+`MemorySwapMax=0`, `CPUQuota=400%`, `TasksMax=512`. Log
+`/tmp/rspace-5855-existing-matcher-20260907.log` has SHA-256
+`ed047a898cefc5bfc1daa46513f57b2d0c809af9c0602153ca911cbdf348d3ed`.
+These are passing existing controls, not a performance experiment or repaired
+saturation evidence.
+
+**SELECTED REPAIR, NOT YET IMPLEMENTED.** Keep the existing checked `u128`
+aggregate cache and counted iterator. Use an explicit ordered
+`Finite(u128) | Unbounded` matcher bound: an unbounded lower bound cannot be met
+by a finite target, while an unbounded upper bound is intersected with that target.
+Prove overflow abstraction, zero scaling, exact selection/complement constraints,
+and concrete-expression lower bounds before changing Rust. Preserve the finite
+`u64` partition API as a widening entry point; never reinterpret its finite maximum
+silently as infinity. Do not change endpoint `Multiplicity(u64)`, serialized bytes,
+the PathMap crate, or the native-stack strategy.
+
+Required children 8339, 8340 and 8341 under task 5855 respectively own the checked
+formal contract and complete invariant catalogue, pre-fix witnesses plus the
+coordinated runtime repair, and independent ordered-partition/integration
+qualification. An independent bounded positional oracle must enforce conservation
+and first-occurrence order. Literal equivalence to the pre-`8701f470b6` subset code
+is not the criterion: that predecessor also emitted overlapping partitions.
+Historical §5.29 results and retired CBR-059 remain history; the current saturation
+acceptance is open. See journal J-081 for the PathMap-specific interpretation.
+
+---
+
 ### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]
 
 #### 5.30.1 Residual defect and hypothesis

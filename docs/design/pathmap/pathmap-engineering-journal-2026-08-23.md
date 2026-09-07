@@ -5631,6 +5631,32 @@ these test durations establish concrete decode counts, new performance ratios, a
 current full-workspace pass or completed persistent-backend qualification. No new
 upstream PathMap request, compatibility layer or consensus rule is introduced.
 
+### J-081 — 2026-09-07: exact aggregate counts are not endpoint multiplicities
+
+**DERIVED.** A PathMap endpoint's `Multiplicity(u64)` need not represent the sum of
+all endpoints in its family. ParBag already caches that sum exactly in `u128`.
+The supported two-endpoint case with counts `u64::MAX` and one exposes an integration
+error: `sub_pars` uses the saturated compatibility projection to constrain both
+selected and complementary Bags, admitting a nonempty complement where zero was
+required. This is not a PathMap defect and does not require a wider endpoint value,
+an occurrence vector, a new serialized format or an upstream patch.
+
+**OBSERVED COVERAGE LIMIT.** Existing matcher targets pass 13 and eight tests under
+a 6-GiB zero-swap cap. Their 1,001-occurrence witness supplies exact bounds rather
+than exercising top-derived selection. Recursive matcher agreement is not an
+independent interval oracle because it shares production bound and partition code.
+The current passes therefore do not close the supported saturation case.
+
+**DECISION.** Reuse the exact cache, encoded endpoints and lazy counted iterator.
+Formally distinguish finite aggregate bounds from unboundedness; derive exact
+selection and complement ranges before generating any candidate. Keep per-endpoint
+counters `u64`, and use an independent lawful positional oracle for complete small
+candidate sequences. Task 5855's required children 8339–8341 preserve formal-first
+ordering, runtime and qualification ownership. The repair is pending, not measured
+or claimed complete. See
+[§5.29.9](../stack-safety/stack-safety-report-2026-07-29.md#5299-count-domain-acceptance-reopened--2026-09-07)
+for the counterexamples, source pins, command, log digest and proof boundaries.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
