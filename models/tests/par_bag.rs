@@ -1147,6 +1147,206 @@ fn direct_act_image_round_trips_without_an_entry_projection() {
     assert_eq!(decoded, bag);
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct AdmittedLegacyObservations {
+    protobuf: Vec<u8>,
+    bincode: Vec<u8>,
+    event_preimages: [Vec<u8>; 3],
+    events: [Vec<u8>; 2],
+    records: [Vec<u8>; 3],
+    history_root: Vec<u8>,
+}
+
+fn admitted_legacy_observations(par: &Par) -> AdmittedLegacyObservations {
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    use models::rhoapi::{BindPattern, ListParWithRandom, ParWithRandom, TaggedContinuation};
+    use models::rust::event_hash_bytes::{
+        event_hash_bytes_bind_pattern, event_hash_bytes_list_par_with_random,
+        event_hash_bytes_tagged_continuation,
+    };
+    use models::rust::rholang::{bincode_encoder, protobuf_encoder};
+    use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
+    use rspace_plus_plus::rspace::hot_store_action::{
+        HotStoreAction, InsertAction, InsertContinuations, InsertData, InsertJoins,
+    };
+    use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+    use rspace_plus_plus::rspace::serializers::serializers::{
+        encode_continuations, encode_datums, encode_joins,
+    };
+    use rspace_plus_plus::rspace::state::rspace_state_authority::RSpaceStateAuthority;
+
+    let datum_value = ListParWithRandom {
+        pars: vec![par.clone(), par.clone()],
+        random_state: vec![1, 7, 9],
+    };
+    let pattern = BindPattern {
+        patterns: vec![par.clone()],
+        remainder: Some(Var::default()),
+        free_count: -3,
+    };
+    let body = TaggedContinuation {
+        guard: Some(par.clone()),
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(par.clone()),
+            random_state: vec![2, 8],
+        })),
+    };
+    let event_preimages = [
+        event_hash_bytes_list_par_with_random(&datum_value),
+        event_hash_bytes_bind_pattern(&pattern),
+        event_hash_bytes_tagged_continuation(&body),
+    ];
+    assert_eq!(
+        event_preimages[0],
+        bincode::serialize(&datum_value).unwrap()
+    );
+    assert_eq!(event_preimages[1], bincode::serialize(&pattern).unwrap());
+    assert_eq!(event_preimages[2], bincode::serialize(&body).unwrap());
+    let datum = Datum::create(par, datum_value, false);
+    let channels = vec![par.clone()];
+    let continuation = WaitingContinuation::create(
+        &channels,
+        &vec![pattern],
+        &body,
+        true,
+        std::collections::BTreeSet::from([0]),
+    );
+    let events = [
+        bincode::serialize(&datum.source).unwrap(),
+        bincode::serialize(&continuation.source).unwrap(),
+    ];
+    let datums = vec![datum.clone(), datum];
+    let continuations = vec![continuation];
+    let joins = vec![channels.clone()];
+    let records = [
+        encode_datums(&datums),
+        encode_continuations(&continuations),
+        encode_joins(&joins),
+    ];
+    let authority = RSpaceStateAuthority::in_memory();
+    let repository = HistoryRepositoryInstances::<
+        Par,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >::repository(authority.clone())
+    .unwrap();
+    let checkpoint = repository
+        .checkpoint(vec![
+            HotStoreAction::Insert(InsertAction::InsertData(InsertData {
+                channel: par.clone(),
+                data: datums,
+            })),
+            HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
+                channels,
+                continuations,
+            })),
+            HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+                channel: par.clone(),
+                joins,
+            })),
+        ])
+        .unwrap();
+    let root = checkpoint.root();
+    assert_eq!(
+        authority.current_verified_root().unwrap().unwrap().root(),
+        &root
+    );
+    let reader = checkpoint.get_history_reader(&root).unwrap();
+    assert_eq!(encode_datums(&reader.base().get_data(par)), records[0]);
+    assert_eq!(
+        encode_continuations(&reader.base().get_continuations(&vec![par.clone()])),
+        records[1]
+    );
+    assert_eq!(encode_joins(&reader.base().get_joins(par)), records[2]);
+    let bincode = bincode_encoder::encode(par);
+    assert_eq!(bincode, bincode::serialize(par).unwrap());
+    AdmittedLegacyObservations {
+        protobuf: protobuf_encoder::encode_to_vec(par),
+        bincode,
+        event_preimages,
+        events,
+        records,
+        history_root: root.bytes(),
+    }
+}
+
+fn assert_admitted_legacy_observations(label: &str, original: &Par) {
+    let expected = admitted_legacy_observations(original);
+    let admitted = Par::from_parts(
+        ParBag::from_compact_bytes(original.compact_snapshot())
+            .unwrap_or_else(|error| panic!("{label}: compact admission failed: {error}")),
+        original.locally_free.clone(),
+        original.connective_used,
+    );
+    assert_eq!(admitted_legacy_observations(&admitted), expected, "{label}");
+}
+
+#[test]
+fn admitted_compact_rpb3_preserves_codec_event_and_history_observations() {
+    let all_families = canonical_par_corpus();
+    assert_eq!(
+        [
+            all_families.family_cardinality::<Send>(),
+            all_families.family_cardinality::<Receive>(),
+            all_families.family_cardinality::<New>(),
+            all_families.family_cardinality::<Expr>(),
+            all_families.family_cardinality::<Match>(),
+            all_families.family_cardinality::<GUnforgeable>(),
+            all_families.family_cardinality::<Connective>(),
+            all_families.family_cardinality::<Bundle>(),
+            all_families.family_cardinality::<If>(),
+        ],
+        [1; 9]
+    );
+    assert_admitted_legacy_observations("all-nine-families", &all_families);
+    let corpus = corpus::par_corpus();
+    assert!(!corpus.is_empty());
+    for (label, original) in corpus {
+        assert_admitted_legacy_observations(&label, &original);
+    }
+    let repeated = corpus::gint(0).components().scale(3).unwrap();
+    let original = Par::from_parts(repeated, vec![0x15], true);
+    assert_admitted_legacy_observations("multiplicity-and-root-metadata", &original);
+}
+
+#[test]
+fn admitted_observation_witness_detects_lost_multiplicity_and_root_metadata() {
+    let singleton = corpus::gint(0);
+    let original = Par::from_parts(singleton.components().scale(3).unwrap(), vec![0x15], true);
+    let expected = admitted_legacy_observations(&original);
+    let lost_occurrences = Par::from_parts(singleton.into_components(), vec![0x15], true);
+    let mutant = admitted_legacy_observations(&lost_occurrences);
+    assert_ne!(mutant.protobuf, expected.protobuf);
+    assert_ne!(mutant.bincode, expected.bincode);
+    assert_ne!(mutant.event_preimages, expected.event_preimages);
+    assert_ne!(mutant.events, expected.events);
+    assert_ne!(mutant.records, expected.records);
+    assert_ne!(mutant.history_root, expected.history_root);
+    let lost_metadata = Par::from_parts(original.components().clone(), vec![], true);
+    assert_eq!(lost_metadata, original);
+    assert_ne!(
+        admitted_legacy_observations(&lost_metadata).protobuf,
+        expected.protobuf
+    );
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn admitted_compact_observations_preserve_generated_occurrences(
+        values in proptest::collection::vec(proptest::prelude::any::<i16>(), 0..9),
+        locally_free in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..4),
+        connective_used in proptest::prelude::any::<bool>(),
+    ) {
+        let original = Par::default().with_exprs(values.into_iter().flat_map(|value| {
+            let expr = Expr { expr_instance: Some(ExprInstance::GInt(i64::from(value))) };
+            [expr.clone(), expr]
+        }).collect()).with_locally_free(locally_free).with_connective_used(connective_used);
+        assert_admitted_legacy_observations("generated-duplicate-occurrences", &original);
+    }
+}
+
 #[test]
 fn protobuf_streams_legacy_canonical_order_without_reconstructing_production_vecs() {
     let mut source = canonical_par_corpus();

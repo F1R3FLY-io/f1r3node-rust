@@ -22,13 +22,124 @@ This development proves the algorithmic obligations shared by the generated Rust
 - `AccountingDemand.v` proves total termination and exact trace refinement of the explicit accounting worklist for every finite recognized process tree. It also proves occurrence-major whole-trace multiplicity replay, saturating COMM counts, sticky unknown demand, and preservation for every stateful channel callback. `formal/verus/accounting_demand.rs` checks the executable cursor-advance and `i64` saturation arithmetic without cheating. `formal/tlaplus/stack_safe_pda/AccountingDemand.tla` exhaustively checks bounded trace/callback/summary prefixes and weak-fair completion, with explicit grouped-multiplicity, family/branch reversal, all-receive-sources, missing-COMM, missing-callback, and dropped-unknown mutants. This layer begins after canonical protobuf recognition: the generated-schema conformance gate, arbitrary-byte cursor totality tests, and frozen recursive-oracle differential discharge the Rust recognition boundary; the theorem does not claim to verify arbitrary-byte protobuf parsing.
 - `ChannelImage.v` models the storage-independent RCI2 endpoint language: escaped RPB3-relative keys, positive fixed-width multiplicities, strict endpoint order, exact distinct count, root `connective_used`, prefix parsing, and exact parsing. It proves encoder/parser left inverses, uniqueness exactly on the modeled `Par` equality quotient, exclusion of root `locally_free`, connective separation, multiplicity preservation, canonicality of every admitted endpoint sequence, and rejection at the duplicate/permutation/noncanonical/zero-multiplicity boundaries. The RPB3 key validator is an explicit universally quantified Boolean boundary rather than an axiom; executable Rust delegates that boundary to the production RPB3 validator. `formal/verus/channel_image_cursor.rs` checks the production-shaped cursor, bounded arithmetic, byte unescaping, exact big-endian words, strict counts, and encoder/decoder refinement with `--no-cheating`. Neither proof claims to verify generated protobuf semantics, PathMap internals, BLAKE2b, allocation, or Rust slice-memory semantics; the complete schema corpus, hostile-byte property tests, and tiny-stack codec differentials discharge those executable boundaries.
 
-The generated RPB3 admission reducer itself is not yet within this formal boundary. In
-particular, `RPB3Admission.v`, its Verus cursor refinement, and the generated-table differential
-binding are tracked separately under pgmcp task 6020 (children 6743–6745). Until those artifacts
-and their proof-runner entries exist, the statements above must not be read as a formal proof of
-generated protobuf semantic reduction, score/body agreement, or admission equivalence.
+The RPB3 traversal kernel, scalar Verus helpers and generated-table differential now exist.
+They are not a proof of the full generated protobuf semantic reducer: `RPB3Admission.v`
+compares Boolean folds of an already-built tree, and its `local_valid` parameter does not
+model raw protobuf, descriptors or scores. The full-summary and concrete-cursor obligations
+remain required under tasks 6743 and 6744, respectively, within task 6020. The dated
+[observation correspondence](#rpb3-observation-correspondence-2026-09-07) below distinguishes
+what is proved, what is tested, and what remains unproved.
 - `PathMapReversePruneTeardown.v` is the formal-first contract for stack-safe destruction of campaign-owned `PathMap<()>`, `PathMap<Par>`, and Bag tries. It proves exact reverse-postorder payload detachment, one logical edge per immediate-parent-barrier prune, topology-only line/dense/comb coverage without depth limits, exact Par-PDA work transfer, root handling, rejected partial writer/iterator closure, destructive subtree closure, publication/error preservation, and absence of any nonempty unique raw-PathMap Drop at the integration boundary. Its primary ownership refinement is `Arc<AnchorRoot<PathMap<V>>>`: immutable wrapper clones never clone a raw PathMap header or root value, standard Arc finalization elects exactly one anchor teardown, and `Arc::make_mut` is the only operation that creates a fresh registered anchor/header for semantic mutation. Cross-anchor internal PathMap subtrie sharing is modeled separately and preserves the sibling image while the final anchor drains through public zipper CoW. `PathMapReversePruneTeardownMutants.v` kills twenty-seven causal traversal/ownership/publication controls for the twenty-five-invariant catalog, including snapshot-only `Arc::strong_count`, per-wrapper raw headers, manual family counters, unregistered `make_mut`, topology-blind walking, recursive multi-edge prune, early owned-writer Drop, and live detached-subtree release. `formal/tlaplus/stack_safe_pda/PathMapAnchorRootTeardown.tla` exhaustively explores clone, nonlast/final Drop, `make_mut`, abort, and both final-drop orders; four configurations reject the ownership race mutants. `formal/verus/pathmap_reverse_prune_teardown.rs` checks the executable one-edge/root steps and proves edge/payload conservation for the abstract reverse-terminal state machine with `--no-cheating`. These artifacts specify the runtime work before implementation; they do not verify the upstream PathMap node layout, Rust standard-library Arc internals, allocator behavior, panic code generation, or a future Rust integration that has not yet been written.
 
 The theorem kernel is schema-parametric. The generated Rust equivalence manifest binds each concrete schema surface to a theorem and an independent recursive-oracle differential. The manifest test is the coverage proof: a new generated traversal cannot remain converted without a theorem/differential row. PathMap still owns the internal ACTree03 byte grammar and parser. `EPM1.v` preserves that arena byte-for-byte and proves the surrounding framing and positional association law parametrically over the executable zero-marker extractor; the V6 physical refinement binds that law to the canonical writer/parser. Executable PathMap behavior remains checked by the Rust differential and malformed-input suites.
 
 The development contains no axioms, admitted goals, opaque assumptions, Verus `assume`, or external proof bodies.
+
+## RPB3 observation correspondence (2026-09-07)
+
+**SCOPE.** Task 7966 connects existing proof boundaries and executable observations; it does
+not replace the separate full-admission developments in tasks 6743/6744. RPB3 is the canonical
+component-key representation stored in `ParBag`; ACT is its compact trie image. Root
+`locally_free` and `connective_used` remain outside that component image and are supplied
+unchanged when constructing `Par::from_parts`. A successful compact-image admission is not
+permission to reconstruct, discard or recompute those root fields.
+
+### Formal boundary inventory
+
+| Boundary | Actual theorem or checked contract | What it does not establish |
+|---|---|---|
+| Boolean traversal | `RPB3Admission.v`: `rpb3_pda_result_exact`, `rpb3_pda_equivalent_to_recursive_validation`, termination, instruction-count and deterministic-result theorems. The algebra is `local_valid label && forallb children`. | Raw-wire parsing, descriptor interpretation, ordered score/body summaries, default/presence rules, complete/incomplete dispatch and specialized EPathMap/EZipper semantics. Boolean conjunction cannot distinguish child permutations. These remain task 6743. |
+| Existing traversal controls | `RPB3AdmissionMutants.v`: omitted local validity is refuted; a standalone exact-input predicate distinguishes `[42]` from `[42;7]`. | The latter is not a mutation of the real protobuf machine. Neither control proves score/order/default/child-loss coverage. Task 6743 still owns those original requirements. |
+| Checked scalar steps | `rpb3_admission_cursor.rs`: `checked_region`, `checked_advance`, `worklist_step`, `checked_next_slot`, `child_frame_step`, `root_consumption_authorized`, `rejects_unbalanced_root`, `rejects_duplicate_slot`. | A simulation of production frames, varints, oneof tracking, worklist/arena ownership and full summaries. Root authorization receives completeness and child validity as supplied Booleans; it does not prove their calculation. The last two predicates are positive contracts, not deliberately failing implementations. Task 6744 remains required. |
+| Channel and path composition | `ChannelImage.v` quantifies over an arbitrary RPB3 endpoint decider; `RhoPathV2.v` frames opaque payload bytes; the lifecycle model relates abstract images and roots. | None silently discharges the generated admission reducer. String-typed lifecycle witnesses are not proof of Rholang-value correspondence. |
+
+The existing RPB3 model and controls were compiled and kernel-checked before adding the
+new observation witnesses. They printed one and two closed capstones, respectively; Verus
+with `--no-cheating` checked eight helper contracts with zero errors. This verifies the
+named narrow artifacts, not the missing full-summary model. Task 6020 and its cursor child
+6744 were returned to `in_progress` after their completion claims failed this source audit;
+6743 was already open. No duplicate proof task or new parser was introduced.
+
+### Executable observation map
+
+In the table, **A** is the existing test module in
+[`protobuf_admission.rs`](../../../models/src/rust/rholang/protobuf_admission.rs),
+**B** is [`par_bag.rs`](../../../models/src/rust/par_bag.rs), and **C** is the integration suite
+[`tests/par_bag.rs`](../../../models/tests/par_bag.rs). The production admission endpoints
+are `validate_canonical_protobuf_inner`, `validate_canonical_component_protobuf_indexed`
+and `ParBag::from_compact_bytes`. Test helpers expose observations without adding a
+production decoded projection. The table covers all 22 existing tests in A, plus the
+production-validator differential and the three new C witnesses.
+
+| ID | Observation and exact executable witnesses | Boundary being exercised |
+|---|---|---|
+| RPO-01 | A: `borrowed_and_owned_roots_have_identical_admission_and_error_semantics` | Same success/error for owned and indexed regions; shifted source provenance remains visible. |
+| RPO-02 | A: `every_descriptor_message_field_and_oneof_arm_matches_the_recursive_oracle`; `generated_rpb3_table_differential_is_bound_to_admission_runner` | 56 ordinary messages plus two externs (`Par`, `EPathMap`), five oneofs/54 arms; actual generated registry identity; protobuf fixed points against Prost and generated bincode against derived serde. This enumerates descriptors, not every possible input. |
+| RPO-03 | A: `every_generated_rpb3_family_fixture_returns_the_authoritative_body_and_score`; `every_component_family_matches_the_authoritative_rpb3_score`; `every_incomplete_component_shape_matches_the_nonsemantic_rpb3_score` | All nine family tags, exact body/score, complete/incomplete and stability summaries; corrupted claimed scores are rejected. Full-summary proof remains 6743. |
+| RPO-04 | A: `raw_par_score_preserves_multiplicity_and_quotients_only_root_locally_free`; `raw_par_default_equality_ignores_only_root_locally_free` | Multiplicity and connective metadata remain observable; only the defined root-LF equality quotient is applied. Equality is not an exact serialization oracle. |
+| RPO-05 | A: `eset_and_emap_admission_bind_identity_representatives_and_value_winners`; `complete_lane_rejects_sorter_normalization_aliases` | Ordered canonical scores, collection representatives and Map value winners agree with the typed authority; normalization aliases are not admitted. |
+| RPO-06 | A: `pathmap_backed_externs_keep_specialized_wire_and_admission_paths`; `epathmap_snapshot_and_every_nested_map_value_are_validated`; `every_epm1_framing_layer_and_homogeneous_mode_is_admitted_once` | Specialized Par/EPathMap/EZipper routes, nested map values, complete EPM1 framing and homogeneous modes, without replacing the trie by an entry list. |
+| RPO-07 | A: `descriptor_wide_hostile_wires_match_decode_plus_canonical_reencode`; `every_descriptor_scalar_field_rejects_explicit_default_presence`; `scalar_aliases_defaults_unknowns_and_duplicate_oneofs_are_rejected` | Mutation corpus, minimal representations, unknown/duplicate fields and presence rules; a present default-valued oneof remains valid while an ordinary explicit scalar default is rejected. |
+| RPO-08 | A: `map_entries_follow_btree_order_and_prost_default_omission`; `admission_rejects_native_or_mismatched_schema_tables_without_panicking` | Correct map framing/order/default omission and explicit refusal of inappropriate schema programs. |
+| RPO-09 | A: `canonical_encoder_images_validate_without_constructing_an_ast`; `every_forbidden_cutover_fallback_makes_the_verdict_red` | Successful admission has zero typed decodes, reconstructed keys and endpoint replays, and exactly one byte-native validation; each forbidden counter independently invalidates acceptance. |
+| RPO-10 | A: `depth_20000_validation_uses_the_heap_worklist_on_a_small_native_stack`; `width_4096_validation_uses_counted_occurrences_on_a_small_native_stack` | Concrete fixed-stack depth/width witnesses; not a universal resource theorem. |
+| RPO-11 | B: `production_component_admission_is_differentially_equivalent_for_all_nine_families` | Actual production key validator versus retained typed validator, with nine families, payload-bit mutations, unknown fields and truncation. |
+| RPO-12 | C: `admitted_compact_rpb3_preserves_codec_event_and_history_observations` | Actual compact admission followed by root-metadata-preserving Par reconstruction, exact protobuf/bincode, three event-hash preimages, complete Produce/Consume bytes, DATA/CONT/JOIN bytes, selected legacy history root and cold read-back. Explicit nine-family and nonempty-corpus floors prevent scalar-only success after corpus shrinkage. |
+| RPO-13 | C: `admitted_observation_witness_detects_lost_multiplicity_and_root_metadata` | Deliberately losing occurrences changes every measured byte/root observation. Losing root LF can preserve Par equality yet change protobuf, refuting equality-only acceptance. |
+| RPO-14 | C: `admitted_compact_observations_preserve_generated_occurrences` | 32 property cases with bounded duplicate scalar occurrences and root metadata; not arbitrary recursive AST generation. |
+
+The composed C verdict records expected observations **before** compact admission. Both
+sides independently check generated bincode/event preimages against derived serde, construct
+production datum/continuation records, checkpoint through the actual legacy repository and
+read the three record kinds back. It is a preservation differential, not a second implementation
+of hashing. Existing `event_hash_encoder_differential`, `event_hash_bytes_differential`,
+`epathmap_canonical_fixtures`, `cold_store_records` and `serializer_par_byte_goldens` retain their
+separate independent-oracle and pinned-identity roles. No golden was regenerated.
+
+### Runner binding and exclusions
+
+[`check-stack-safe-pda-proofs.sh`](../../../scripts/check-stack-safe-pda-proofs.sh) now
+kernel-checks both RPB3 modules, invokes the existing Verus model with `--no-cheating`, runs
+the complete A module rather than only its generic registry test, runs the production B
+differential, and runs all `admitted_` tests in C. The runner requires exact passing counts
+of 22, one and three, with zero ignored tests, so a missing filter or ignored witness cannot
+silently pass. The formal manifest checks those runner entries. Manifest strings establish
+inventory binding, not successful execution or semantic
+equivalence; actual command results must be recorded separately.
+
+**MEASURED VERIFICATION.** The release selections passed 123 tests: 22 admission, one
+production-validator differential, nine cold-record, thirteen EPathMap fixture, eleven
+event-byte, five event-encoder, twenty-two formal-manifest, thirty-three ParBag and seven
+serializer-golden tests. Focused debug selections passed 28 tests (22 + 1 + 3 + 2);
+nextest separately passed all three new observation tests. Counts of reruns are not added
+to the distinct release-test count. The final manifest change passed again in debug and release.
+All selected tests passed without ignores; existing workspace warnings remain.
+
+The exact runner helper was also sourced from the checked script and exercised through
+its normal memory-bounded launcher: 22/1/3 passing selections were accepted, a real zero-test
+selection was rejected, and a three-test success presented with expected count four was
+rejected. The controls checked both Cargo's successful footer and the guard's diagnostic,
+so an unrelated compiler failure cannot satisfy the intended-failure verdict.
+
+Rust ran with an 8 GiB hard/6 GiB high memory cap, swap disabled, four build jobs and bounded
+test concurrency. Formal checks used a separate 2 GiB hard cap with swap disabled. Property
+reruns used seed `41317966`. These are configured limits, not measured peak memory or benchmark
+results. Representative focused commands, run within those scopes, are:
+
+```sh
+cargo test --locked -j4 -p models --lib protobuf_admission::tests -- --test-threads=2
+cargo test --locked -j4 -p models --lib production_component_admission_is_differentially_equivalent_for_all_nine_families -- --test-threads=2
+cargo test --locked -j4 -p models --test par_bag admitted_ -- --test-threads=2
+cargo test --locked -j4 -p models --test formal_equivalence_manifest rpb3 -- --test-threads=2
+cargo test --release --locked -j4 -p models --test par_bag --test event_hash_encoder_differential --test event_hash_bytes_differential --test epathmap_canonical_fixtures --test cold_store_records --test formal_equivalence_manifest --test serializer_par_byte_goldens -- --test-threads=2
+```
+
+The admission and production-validator selections were repeated with `--release` as well.
+This is the scoped binding gate, not a claim that the entire multi-model formal script,
+full workspace CI or all remaining campaign obligations passed.
+
+No production codec, default/presence rule, hashing algorithm, backend or charge rule changes
+in this slice. The new composition tests do not execute COMMs, replay deploys, terminate a
+writer, prove arbitrary-input parser equivalence, resume a durable import session or activate
+the PathMap DAG backend. Those remain their existing required tasks. The absence of a new
+consensus format is not evidence that the entire campaign is consensus-qualified.

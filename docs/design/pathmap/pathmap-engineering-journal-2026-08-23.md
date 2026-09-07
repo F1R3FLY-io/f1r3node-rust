@@ -5205,6 +5205,49 @@ No legacy source algorithm, default backend, format, consensus identity, charge 
 dependency or upstream PathMap implementation changes. The stack-safety report receives no
 new performance claim because this slice measures correctness, not resource scaling.
 
+### J-073 — 2026-09-07: bind compact admission to observable legacy state
+
+**QUESTION.** Does the RPB3 admission evidence reach the codec, event and history observations
+of the same admitted value? Task 7966 found broad existing descriptor coverage—56 ordinary
+messages, two externs, five oneofs/54 arms and 22 semantic tests—but the combined formal runner
+selected only the generic registry differential and omitted the existing RPB3 Verus invocation.
+
+**IMPLEMENTATION.** The runner now includes that Verus check, kernel checks for the two RPB3
+modules, the full semantic admission module, the nine-family production-versus-typed admission
+differential and the new compact-admission observation witnesses. Exact passing-count checks
+reject empty selections and ignored witnesses. A new test composes
+`ParBag::from_compact_bytes` with exact protobuf/bincode, production event-hash preimages and
+complete event bytes, all three cold-record kinds, actual legacy checkpoint identity and cold
+read-back. It reuses the existing corpus and requires an explicit nine-family floor. Root metadata
+is supplied unchanged to `Par::from_parts`, not inferred from the component trie. A 32-case
+property varies duplicate scalar occurrences and root metadata. Independent review added the
+family floor; loss-of-multiplicity and loss-of-LF controls make insufficient verdicts observable.
+
+**ASSURANCE AUDIT.** Existing `RPB3Admission.v` is a Boolean traversal kernel over an already
+constructed tree, not the full raw-wire/descriptor/score/default/presence reducer requested in
+6743. Existing Verus proves eight helper contracts, not the full frame/cursor simulation in
+6744. Both narrow artifacts checked successfully before the new witnesses were added. The
+full obligations remain in those existing required tasks; 6020 and 6744 were reopened rather
+than treating file presence or finite Rust differentials as universal proof. No duplicate proof
+task, parser or dependency was introduced. The earlier September 4 absence finding remains
+a historical observation; files now exist, but the stronger capstone is still not established.
+
+The [formal boundary and fourteen-row observation map](../../../formal/rocq/stack_safe_pda/README.md#rpb3-observation-correspondence-2026-09-07)
+names every existing semantic test, production endpoint and remaining proof boundary. These
+are correctness/binding changes, not timing or allocation improvements. No production bytes,
+hashes, backend selection, accounting or upstream PathMap code changes; full COMM/replay,
+process durability, concrete admission proof and default cutover remain separate acceptance.
+
+**VERIFICATION.** Release selections passed 123 distinct tests; focused debug selections
+passed 28; nextest separately passed the three new observation tests. The final manifest was
+rechecked in both profiles. Exact runner-helper execution accepted its 22/1/3 passing groups
+and rejected real empty and wrong-count selections for the intended reason. Existing Rocq
+and control modules compiled with one/two closed printed capstones, kernel checks passed,
+and Verus reported eight verified contracts with zero errors. Rust used an 8 GiB hard cap,
+formal checks 2 GiB, with swap disabled; these are ceilings, not peak-RSS measurements.
+The correspondence document records exact selection boundaries and commands. No golden
+was repinned and no full-workspace or universal-admission completion is implied.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

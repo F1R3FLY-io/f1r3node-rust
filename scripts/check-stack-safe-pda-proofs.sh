@@ -61,6 +61,20 @@ rocq_reject_placeholders() {
   done
 }
 
+rpb3_run_tests() {
+  local expected="$1" output
+  shift
+  if ! output="$(tlc_bounded cargo test -p models "$@" -- --nocapture 2>&1)"; then
+    printf '%s\n' "$output"
+    return 1
+  fi
+  printf '%s\n' "$output"
+  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; 0 ignored;" <<<"$output"; then
+    echo "stack-safe-pda: expected $expected nonignored RPB3 tests for $*" >&2
+    return 1
+  fi
+}
+
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
@@ -174,6 +188,9 @@ if [[ "$rpb3_admission_mutants_closed_capstones" != "2" ]]; then
   echo "stack-safe-pda: expected both RPB3 admission mutant capstones to be closed; got $rpb3_admission_mutants_closed_capstones" >&2
   exit 1
 fi
+rocq_check_modules "RPB3 admission" \
+  StackSafePDA.RPB3Admission \
+  StackSafePDA.RPB3AdmissionMutants
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
@@ -415,6 +432,8 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/channel_image_cursor.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/rpb3_admission_cursor.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/rspace_canonical_egress.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/incremental_prepare_streaming.rs"
@@ -425,8 +444,10 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
 # the RPB3 Rocq/Verus boundary.  Keep it under the same cgroup envelope so a
 # green formal run cannot silently omit the Rust oracle comparison.
 pushd "$repo_root" >/dev/null
-tlc_bounded cargo test -p models --lib \
-  generated_rpb3_table_differential_is_bound_to_admission_runner -- --nocapture
+rpb3_run_tests 22 --lib protobuf_admission::tests
+rpb3_run_tests 1 --lib \
+  production_component_admission_is_differentially_equivalent_for_all_nine_families
+rpb3_run_tests 3 --test par_bag admitted_
 popd >/dev/null
 
 # Bind the RhoPath V2 lifecycle refinement to the end-to-end Rust differential

@@ -1825,9 +1825,16 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         "theories/RPB3AdmissionMutants.v",
         "rpb3_admission_closed_capstones",
         "rpb3_admission_mutants_closed_capstones",
-        "generated_rpb3_table_differential_is_bound_to_admission_runner",
+        "formal/verus/rpb3_admission_cursor.rs",
+        "StackSafePDA.RPB3AdmissionMutants",
+        "rpb3_run_tests 22 --lib protobuf_admission::tests",
+        "production_component_admission_is_differentially_equivalent_for_all_nine_families",
+        "rpb3_run_tests 3 --test par_bag admitted_",
     ] {
-        assert!(runner.contains(marker), "RPB3 formal runner is missing `{marker}`");
+        assert!(
+            runner.contains(marker),
+            "RPB3 formal runner is missing `{marker}`"
+        );
     }
 }
 
