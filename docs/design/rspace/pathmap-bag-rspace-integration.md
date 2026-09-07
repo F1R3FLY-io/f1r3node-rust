@@ -222,12 +222,38 @@ and 400% CPU quota, with database scratch under `target/campaign-5636-scratch`.
 These are qualification run details, not a performance experiment or measured
 per-operation RSS improvement.
 
-Fresh-process read-only verification and runtime mutation qualification are in
-progress. The captured pre-root is
+Source and archive checkpoint `498f401a65f9a90a63357ce855983c965f5c52c6` preserves
+the exact capture harness: its BLAKE2b-256 matches the recorded
+`7a2b6f9aaf12dbb413636bdbbcb0b769709feacaf24018d17b1c2ec6bfbf994d`.
+Fresh-process qualification passed five format/integrity tests, failed three runtime
+tests at the pre-root check, and ignored the explicit capture entry (281.82 seconds).
+The three runtime failures share the process-cached genesis construction; they are
+not three independent root observations and did not reach the cost/status/COMM
+mutation checks. The captured pre-root is
 `ffd6bbbf7e48e9e6a062eef22d82e3559d298cd72e316748a8cbdf24b82b36f8`,
 which differs from the existing default-genesis test's `87b8dede…846da87b` literal.
-The original pin is preserved and its exact test is being run separately; no
-compatibility verdict or replacement golden is inferred from the new capture.
+The original pin's exact test separately **passed** in 324.66 seconds under a
+6 GiB/zero-swap cap, using the same compiled release binary. By source, both paths
+use the same default test genesis parameters; they differ in wrapper/caching,
+store scope and runtime thread configuration. This is an unresolved construction
+discrepancy, not an approved successor epoch. Existing root-reachable task 5304
+(`rederive-and-repair-blessed-normalized-term-pin-drift-2026-08-11`) owns attribution.
+An additional fresh diagnostic process failed after 283.95 seconds and recorded
+the regenerated pre-root
+`0f19169db09e269dadc4094f5c6832b52a4c53f3ee61541130dd97f84987126a`.
+It used a 6 GiB memory-max, zero swap and four workers; its diagnostic log has
+SHA-256 `3a52f2eff5cf1798157587e8c8a7054459bda288ace6eeaeefdbb877b4adafc7`.
+The current archive contains genesis configuration but neither the genesis
+`ProcessedDeploy` traces nor an exported pre-state. Consequently, configuration
+equality alone has not established the formal genesis-realization premise.
+The bounded repair is to preserve the exact genesis replay input in a new archive
+version and qualify reconstruction through the existing uncached genesis replay
+API. It must preserve this v1 observation and the independent determinism obligation;
+a fresh construction cannot retroactively supply the original capture's missing trace.
+pgmcp artifact 489 preserves the capture, verification and diagnostic observations.
+Neither the archive nor the old pin is rewritten, and the archive is not accepted
+as a portable replay baseline yet. The original golden's SHA-256 remains
+`d6772d138ee1d3a2cdab79de9c76dac0da40516e686d8cbfd02608f6669878c1`.
 
 ### Reproducible baseline evidence
 
@@ -266,10 +292,10 @@ scope peaks including compilation are not per-operation allocation measurements.
 | Original requirement | Evidence established by this audit | Remaining obligation / owner |
 |---|---|---|
 | Frozen authorities and observable contract | Source `dcc4600d4`, freeze `6a1c4341d`, corrected fourteen-row matrix, exact current test targets | Preserve ordered compatibility state and first-source retention through later implementations; concrete bridge 7942. |
-| Captured and synthetic corpus | Named codec/matcher/lifecycle fixtures and epoch-labelled partial goldens above | Complete archived replay input/event/order/final-root expectations are not established; 5636 remains open. Generated all-pattern lifecycle acceptance is separately 7964. |
+| Captured and synthetic corpus | Named codec/matcher/lifecycle fixtures, epoch-labelled partial goldens and the full current-epoch archive | Cross-process archive replay refuses a different constructed pre-root; genesis attribution remains 5304 and archive qualification remains 5636. Generated all-pattern lifecycle acceptance is separately 7964. |
 | Reproducible capped measurements and preregistration | Committed source/harness coordinates, commands, resource envelope, run identifiers and summary files | Original preregistration, raw samples/artifacts and observed tool versions must be recovered and linked; 5636 remains open. No retroactive preregistration claim. |
 | Failure classification | Finite inventory below, with existing reachable repair/acceptance owners | It is not an assertion that every workspace target currently passes. Whole-workspace qualification remains 5647. |
-| Golden byte/order/root outputs | Independent literal serializer/genesis/history fixtures, scoped to their epochs | These are not interchangeable and do not replace the missing complete captured replay fixture. |
+| Golden byte/order/root outputs | Independent literal serializer/genesis/history fixtures and a new sealed full replay capture, scoped to their epochs | The new archive cannot replace missing historical inputs, and its actual cross-process replay is not yet qualified. |
 | Read and preserve the two living reports' semantics | Stack-safety report remains the dated measurement ledger with stable section identifiers; consensus register retains its may-change-consensus-only inclusion rule | This source/evidence correction changes no consensus surface or measured performance result. Activation, full resource measurements and independent verification remain open. |
 
 #### Classified failure and non-acceptance inventory
@@ -286,7 +312,8 @@ the final workspace gate or silently change another task's disposition.
 | Structural removal loses a sibling in the superseded in-place proposal | Existing ownership-disjoint publication at `68534b6fc`, real-key witnesses `f4441c1d05`, and normalization qualification `329240271`. Task 6446 is `claimed_done`, not independently verified. | 6446, `guarded-pathmap-live-empty-root-write-safety`. |
 | Whole-tree allocation costs during final guarded teardown | Dated scaling/ownership evidence is separate from the remaining allocation contract; normalization tests do not discharge it. | 6441, `guarded-pathmap-final-root-allocation-teardown`, and PMU-005. |
 | Attempted normalizer-omission panic controls do not fail as hypothesized | Two expected-panic assertions were rejected during 6446. J-074 records the negative causal result; they are not passing regression evidence. | 6446's preserved verification history; no production fix inferred from either trial. |
-| Missing archived replay and currently unresolved experiment provenance | Acceptance-evidence gaps, not demonstrated runtime defects, and not evidence that stored history was deleted. | 5636, `rspace-pathmap-contract-baseline`. |
+| Captured pre-root differs from a fresh process's constructed genesis; separate old-pin test passes | Source/capture/verification evidence at `498f401a6`; the five pure archive checks pass but three runtime cases reject their shared regenerated pre-root. No root is silently refreshed and no causal attribution is claimed yet. | Existing 5304, `rederive-and-repair-blessed-normalized-term-pin-drift-2026-08-11`, through 4121 to root 4131; archive qualification stays 5636. |
+| Missing historical archive and currently unresolved experiment provenance | Historical acceptance-evidence gaps, not evidence that stored history was deleted. The new current-epoch capture is explicitly separate. | 5636, `rspace-pathmap-contract-baseline`. |
 
 Remaining A/B/C layout qualification belongs to 5642, transactional matching to 5646,
 generated matching/replay acceptance to 7964, full workspace/portability/closure to

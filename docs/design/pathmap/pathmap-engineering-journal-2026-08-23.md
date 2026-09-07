@@ -5411,10 +5411,21 @@ records all provenance, resource limits and the publication-path correction. The
 first run's missing-directory publication failure is retained; it was a harness
 path-resolution error, not a runtime replay failure or an OOM. No old golden changed.
 
-**OPEN QUALIFICATION.** Fresh-process replay and causal cost/status/COMM mutation
-controls are running. The observed current pre-root differs from the old default
-genesis pin, which is preserved pending direct qualification. The historical
-experiment records are still unavailable through current-version get/timeline;
+**OPEN QUALIFICATION.** Source/archive checkpoint `498f401a6` preserves the exact
+capture code and bytes. Fresh-process verification passed five format/integrity
+checks, failed three runtime cases at the pre-root check, and ignored explicit
+capture. Those cases share one process-cached genesis construction: they are not
+three independent root samples and have not qualified the runtime mutations.
+The separate original genesis-pin test passed, so construction context/determinism
+must be attributed before archive acceptance. Existing 5304 owns this root-reachable
+investigation; no duplicate bug or replacement golden is introduced. The current
+archive's missing genesis trace is now explicit: a separate diagnostic process
+regenerated `0f19169d…4987126a`, not the captured `ffd6bbbf…82b36f8`, and failed
+after 283.95 seconds under a 6 GiB/zero-swap cap. Artifact 489 records the exact
+roots and log digests. A new self-contained archive must record and actually replay
+the genesis inputs; matching configuration alone does not satisfy RA03. This does
+not discharge task 5304's independent construction-determinism requirement.
+The historical experiment records are still unavailable through current-version get/timeline;
 dynamic STDIO discovery exposes the timeline tool but does not bypass its same
 current-record lookup. No historical data deletion, backend improvement or complete
 campaign acceptance is inferred. There are no production changes in this slice.

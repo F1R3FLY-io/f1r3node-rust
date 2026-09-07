@@ -315,7 +315,13 @@ async fn replay_record(
     record: &ReplayRecord,
     actual_pre: &StateHash,
 ) -> Result<(), String> {
-    replay_boundary(runtime, record, actual_pre)?;
+    replay_boundary(runtime, record, actual_pre).map_err(|error| {
+        format!(
+            "{error}; actual pre-root {}; archived pre-root {}",
+            hex::encode(actual_pre),
+            record.pre_root_hex
+        )
+    })?;
     let final_root = runtime
         .replay_compute_state(
             actual_pre,
