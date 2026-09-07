@@ -11,6 +11,14 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use casper::rust::errors::CasperError;
+use casper::rust::metrics_constants::{
+    BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC,
+    BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, BLOCK_REPLAY_PHASE_RESET_CALLS_METRIC,
+    BLOCK_REPLAY_PHASE_RESET_TIME_METRIC, BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC,
+    BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_WORK_METRIC, BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
+    BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC, RUNTIME_SPAWN_REPLAY_CALLS_METRIC,
+    RUNTIME_SPAWN_REPLAY_TIME_METRIC,
+};
 use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
@@ -737,6 +745,92 @@ async fn measure_replay_per_deploy_cost() {
     )
     .await
     .unwrap()
+}
+
+#[allow(clippy::mutable_key_type)]
+#[tokio::test(flavor = "current_thread")]
+async fn replay_phase_telemetry_reports_empty_block_work() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+            let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+            replay_ops
+                .replay_deploys(
+                    &genesis_block.body.state.post_state_hash,
+                    Vec::new(),
+                    Vec::new(),
+                    true,
+                    &BlockData::from_block(&genesis_block),
+                )
+                .await
+                .expect("empty block replay");
+        },
+    )
+    .await
+    .expect("runtime manager");
+
+    let snapshot = snapshotter.snapshot().into_hashmap();
+    let counter_value = |metric_name: &str| {
+        snapshot
+            .iter()
+            .filter_map(|(key, (_, _, value))| {
+                if key.key().name() != metric_name {
+                    return None;
+                }
+                match value {
+                    metrics_util::debugging::DebugValue::Counter(value) => Some(*value),
+                    _ => None,
+                }
+            })
+            .sum::<u64>()
+    };
+    let histogram_values = |metric_name: &str| {
+        snapshot
+            .iter()
+            .filter_map(|(key, (_, _, value))| {
+                if key.key().name() != metric_name {
+                    return None;
+                }
+                match value {
+                    metrics_util::debugging::DebugValue::Histogram(values) => Some(
+                        values
+                            .iter()
+                            .map(|value| value.into_inner())
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                }
+            })
+            .flatten()
+            .collect::<Vec<_>>()
+    };
+
+    for metric_name in [
+        RUNTIME_SPAWN_REPLAY_CALLS_METRIC,
+        BLOCK_REPLAY_PHASE_RESET_CALLS_METRIC,
+        BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_CALLS_METRIC,
+    ] {
+        assert!(counter_value(metric_name) >= 1);
+    }
+    for metric_name in [
+        RUNTIME_SPAWN_REPLAY_TIME_METRIC,
+        BLOCK_REPLAY_PHASE_RESET_TIME_METRIC,
+        BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC,
+        BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_TIME_METRIC,
+        BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC,
+    ] {
+        assert!(!histogram_values(metric_name).is_empty());
+    }
+    for metric_name in [
+        BLOCK_REPLAY_PHASE_USER_DEPLOYS_WORK_METRIC,
+        BLOCK_REPLAY_PHASE_SYSTEM_DEPLOYS_WORK_METRIC,
+    ] {
+        assert!(histogram_values(metric_name).contains(&0.0));
+    }
 }
 
 // Run manually: cargo test -p casper --release --test mod cost_accounting_perf -- --nocapture --include-ignored

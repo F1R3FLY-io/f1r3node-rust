@@ -74,11 +74,15 @@ The benchmark is a release gate. Node-local timing must never control block vali
 
 ### 4.4 Repeat-deploy scan and the signature-index fast path
 
-The repeat-deploy ancestor scan is `O(DAG-in-window)` for each validated block. Under sustained load this scan is the residual cost of issue #24. The remedy is the repeat-deploy signature index (see the glossary): a per-signature carrier record over valid, invalid, and approved blocks.
+The repeat-deploy ancestor scan is `O(DAG-in-window)` for each validated block. The scan is one measured issue #24 cost. The repeat-deploy signature index is its narrow fast path: a per-signature carrier record over valid, invalid, and approved blocks.
 
 The fast path preserves the ratified predicate exactly. An index absence inside the expiration window skips the scan for that signature. An index hit routes to window and parent-scope verification, never directly to a verdict. An index read failure or an incomplete index falls back to the unchanged ancestor scan. This refusal rule follows the same principle as the `BlockNotHeld` precedent in section 4.1: unreadable history is no information, never an absence proof.
 
 A node-local index may decide a verdict only when it is a provably complete cache of the on-chain data that the ratified predicate reads. Completeness requires crash-safe write ordering (index entries before DAG visibility) and a persisted height watermark: the height since which every insert has recorded carriers on this database. The fast path engages only for scan windows that start at or above the watermark, so no backfill walk exists and no walk-completeness state exists to certify or to forge. The index lives in a dedicated store: it must never share a keyspace with rows that unverified wire data can key (the PR #382 review demonstrated a completeness-marker forgery through an unverified `rejected_deploys` signature landing in a shared table). The verdict-equivalence obligation is testable: index-served verdicts must equal scan-served verdicts for every block, and one test must pin engagement itself (a verdict reachable only through the skip).
+
+The index is not a complete issue #24 repair. It removes one cost only: the ancestor scan for a signature that has no carrier in the expiration window. It does not reduce the scan for a signature with an index hit, the merge path, or the replay path. Run 33707959088 used the PR #382 revision and still had six completed finalization failures. Its worst iteration measured 171.5 ms in `repeat_deploy`, 752.6 ms in `merge_call`, and 965 ms in replay. The same iteration left 147 deploys unfinalized at the existing 45-second limit.
+
+The remaining issue #24 work is the merge cost, the replay cost, and the residual `repeat_deploy` cost on index hits. A later repair must follow measured work. It must not infer fast-path engagement from total `repeat_deploy` time. Carrier-index counters, ancestor-read counts, merge sub-stage measurements, and replay sub-stage measurements must identify the remaining cost first.
 
 ## 5. The remedy ladder for base-bias starvation
 
@@ -176,6 +180,16 @@ The required claims cover deterministic count derivation, unavailable-history re
 
 `interpreter_util.rs` already has the mandatory attribute. PR #299 defers the remaining attributes and formal discharge to PR #311. This deferral does not claim that tests prove Rust conformance.
 
+### 7.2 Correct by Construction scope for issue #24
+
+The issue #24 carrier fast path adds these mandatory production artifacts:
+
+- `casper/src/rust/validate.rs`
+- `block-storage/src/rust/dag/carrier_index.rs`
+- `block-storage/src/rust/dag/block_dag_key_value_storage.rs`
+
+`CLAIM-FINALITY-002` defines their carrier-index obligations. The claim remains pending until the production bridge and soak gate pass.
+
 ### Historical position: the F1R3FLY specialization
 
 CBC Casper is abstract. The same safety theorem applies to binary consensus, to a linear chain, and to a high-dimensional DAG. The Ethereum-oriented instantiation — Casper the Friendly GHOST (CTFG) — chose a chain of blocks with LMD-GHOST as the estimator. A block names one parent. Extra references thicken the message DAG for fork-choice scoring, in the manner of uncles or attestations. They are not concurrent state merges.
@@ -218,7 +232,8 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 | 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. |
 | 2026-08-22 | Four production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
 | 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
-| 2026-09-01 | The repeat-deploy signature index is a consensus-complete carrier cache over valid, invalid, and approved blocks. An in-window absence skips the ancestor scan, a hit requires scope verification, and a read failure falls back to the scan. | Proposed in the issue #24 fast-path PR. Pending ratification. |
+| 2026-09-01 | The repeat-deploy signature index is a consensus-complete carrier cache over valid, invalid, and approved blocks. An in-window absence skips the ancestor scan, a hit requires scope verification, and a read failure falls back to the scan. | Implemented as an issue #24 fast path. Semantic ratification and final issue resolution remain pending. |
+| 2026-09-03 | `validate.rs`, `carrier_index.rs`, and `block_dag_key_value_storage.rs` join the mandatory issue #24 CbC scope. | Ratified for `CLAIM-FINALITY-002`. Claim discharge remains pending. |
 
 The phase-2 working record lives in the TDD plan
 [`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).
