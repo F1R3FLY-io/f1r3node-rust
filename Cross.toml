@@ -1,5 +1,5 @@
 [target.aarch64-unknown-linux-gnu]
-image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main@sha256:f0914f14dc1aba2a821781bba314c82f0bedc4df84a7ad724d5f26b682a0215d"
 pre-build = [
 	"dpkg --add-architecture arm64",
 	"apt-get update",
@@ -14,7 +14,7 @@ pre-build = [
 passthrough = ["RUSTFLAGS=-C target-feature=+aes,+neon"]
 
 [target.x86_64-unknown-linux-gnu]
-image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main"
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main@sha256:8506ddf781cfeef95cb57770ef6978752149291ca9dc7322daafe01a61cce899"
 pre-build = [
 	"apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev",
 	# https://github.com/sfackler/rust-openssl/issues/2217#issuecomment-2230398481

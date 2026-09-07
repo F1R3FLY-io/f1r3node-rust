@@ -67,7 +67,7 @@ jobs:
       candidate_arm64_digest: ${{ steps.candidate.outputs.candidate_arm64_digest }}
     steps:
       - name: Checkout workflow configuration
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -120,7 +120,7 @@ jobs:
 
       - name: Keep the verified candidate evidence for this run
         if: github.event.inputs.candidate_tag != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: candidate-evidence
           path: ${{ runner.temp }}/candidate/release-evidence.json
@@ -234,7 +234,7 @@ jobs:
       contents: read
     steps:
       - name: Clone trusted system-integration launcher
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
           ref: ${{ needs.validate_pr.outputs.system_integration_ref }}
@@ -285,7 +285,7 @@ jobs:
 
       - name: Create runner-management token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.CI_GITHUB_APP_ID }}
           private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
@@ -357,14 +357,14 @@ jobs:
     environment: release-credentials
     steps:
       - name: Checkout trusted release controls
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: ci-control
           persist-credentials: false
 
       - name: Download the evidence this run validated
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: candidate-evidence
           path: ${{ runner.temp }}/gate
@@ -401,7 +401,7 @@ jobs:
           echo "Published oci-validation-evidence.json on ${CANDIDATE_TAG}."
 
       - name: Upload candidate marker
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-candidate
           path: ${{ runner.temp }}/gate/release-candidate.json
