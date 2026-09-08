@@ -22,8 +22,8 @@ use super::canonical_bytes_arena::CanonicalBytesArena;
 use super::canonical_path_admission::{
     CanonicalPathObligation, CanonicalPathObligationId, CanonicalPathObligationKind,
     CanonicalPathObligationResolution, CanonicalPathSource, CanonicalPathStreamReducer,
-    CanonicalPathSummary, CanonicalPathTopologyAdmission, FrozenCanonicalPathObligation,
-    LocatedPathByte, NestedEpmMode,
+    CanonicalPathSummary, CanonicalPathTopologyAdmission, CanonicalPathTransition,
+    FrozenCanonicalPathObligation, LocatedPathByte, NestedEpmMode,
 };
 use super::canonical_score_bytes::{
     CanonicalScoreArena, CanonicalScoreArenaError, CanonicalScoreHandle,
@@ -38,8 +38,8 @@ use super::indexed_protobuf::{
     OwnedIndexedByteRegion,
 };
 use super::match_schema::{
-    resolve_protobuf_field, wire_program_by_type_id, ResolvedProtobufField,
-    ResolvedProtobufPayload, RhoMatchFieldKind, RhoMatchPayloadKind, RhoMatchProgram,
+    ResolvedProtobufField, ResolvedProtobufPayload, RhoMatchFieldKind, RhoMatchPayloadKind,
+    RhoMatchProgram, resolve_protobuf_field, wire_program_by_type_id,
 };
 use super::match_schema_tables::*;
 #[cfg(test)]
@@ -2297,10 +2297,24 @@ impl<'src> CanonicalPathFrame<'src> {
         if self.waiting.is_some() {
             return Err(self.protocol_error("canonical path resumed before its child returned"));
         }
-        for byte in self.cursor.by_ref() {
-            self.reducer
+        while let Some(byte) = self.cursor.next() {
+            let transition = self
+                .reducer
                 .edge(&self.input, byte)
                 .map_err(Self::path_error)?;
+            if matches!(transition, CanonicalPathTransition::ObligationStarted(_)) {
+                if let Some(plan) = self.reducer.plan_opaque_interior(self.input.len()) {
+                    assert!(
+                        self.reducer
+                            .try_advance_opaque_interior(self.input.len(), plan),
+                        "a fresh opaque interior plan remains valid without intervening mutation"
+                    );
+                    assert!(
+                        self.cursor.skip_exact(plan.width),
+                        "the parent cursor and reducer consume the same input"
+                    );
+                }
+            }
             if let Some(completed) = self
                 .reducer
                 .completed_obligation(&self.input)
@@ -3458,7 +3472,7 @@ mod tests {
         Bundle, Connective, ConnectiveBody, EMap, ESet, Expr, GPrivate, GUnforgeable, If,
         KeyValuePair, Match, MatchCase, New, Par, Receive, ReceiveBind, Send,
     };
-    use crate::rust::par_bag::{with_component_key, ParBagComponent, PAR_BAG_KEY_DOMAIN};
+    use crate::rust::par_bag::{PAR_BAG_KEY_DOMAIN, ParBagComponent, with_component_key};
     use crate::rust::rhoapi_ext::EPathMap;
     use crate::rust::rholang::match_schema_tables::{
         BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
@@ -3468,9 +3482,9 @@ mod tests {
     };
     use crate::rust::rholang::protobuf_schema::ProtobufField;
     use crate::rust::rholang::schema_test_adapters::{
-        explicit_default_mutants, schema_fixtures, GENERATED_SCHEMA_TEST_EXTERN_COUNT,
-        GENERATED_SCHEMA_TEST_EXTERN_NAMES, GENERATED_SCHEMA_TEST_MESSAGE_COUNT,
-        GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT, GENERATED_SCHEMA_TEST_ONEOF_COUNT,
+        GENERATED_SCHEMA_TEST_EXTERN_COUNT, GENERATED_SCHEMA_TEST_EXTERN_NAMES,
+        GENERATED_SCHEMA_TEST_MESSAGE_COUNT, GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT,
+        GENERATED_SCHEMA_TEST_ONEOF_COUNT, explicit_default_mutants, schema_fixtures,
     };
     use crate::rust::rholang::{bincode_encoder, protobuf_decoder, protobuf_encoder};
 

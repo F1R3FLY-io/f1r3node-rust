@@ -10112,6 +10112,29 @@ to the existing scalar grammar. See
 [J-095](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-095--2026-09-08-prove-strict-opaque-interiors-before-batching)
 for method, raw artifacts and the remaining implementation/resource boundaries.
 
+#### 5.33.15 Strict opaque-interior implementation (2026-09-08, task 6018)
+
+The standalone driver now batches only the verified strict interior of an opaque
+payload; completion, truncation and child dispatch remain scalar. It reuses the
+shared owner-frame loop and checked indexed cursor rather than copying or decoding
+the payload. All 384 models unit tests pass after correcting a test-only visibility
+error. The strengthened paired probe shows depth-32 parent visits dropping from
+8,402 to 164 for an 8,239-byte payload, with `feed_path` owner descents dropping
+from 266,224 to 2,640. Two additional plan/revalidation walks are excluded from
+that descent counter. Frame capacity remains unchanged, and borrowed/frozen
+results agree. Final qualification passes the strengthened probe, all 384 models
+unit tests, 23 manifest tests and 36 ParBag integration tests, including unchanged
+depth 4,096. The focused gate passes 81 Rust checks, the expected closed proof
+reports and three independent kernel checks. All cases are nonignored. No timing
+or isolated RSS claim follows from these operation counts.
+
+This removes payload-width-dependent repeated work, not all depth-dependent work.
+Ordinary nested Region bytes still reconstruct owners. That is iterative heap
+work, not a return of native recursion; focused-owner refinement and the remaining
+persistent ACT resource gates are still required. See
+[J-096](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-096--2026-09-08-skip-strict-opaque-interiors-through-the-shared-machine)
+for model bindings, exact controls and qualification status.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

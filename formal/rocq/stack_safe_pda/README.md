@@ -759,6 +759,56 @@ a proof of a different parser. The model does not establish absolute endpoints,
 whole-pipeline linearity or throughput. Journal J-095 records the pre-change
 resource baseline and the independently checked proof artifacts.
 
+#### Rust strict-interior binding
+
+The stream reducer exposes a checked plan containing consumed origin, obligation
+ID and positive width. Application recomputes eligibility and bounds, permitting
+a narrower width but refusing stale or oversized requests without mutation.
+The selected graph must be Open at every enclosing owner and at its payload.
+One shared `feed_path` owner loop performs either a scalar byte step or the
+verified interior decrement; its existing selection/retirement journals remain
+responsible for frame ownership. The batch creates no obligation and preserves
+the global obligation clock. The public persistent and standalone `edge` APIs
+continue to emit every original scalar event.
+
+The private driver plans only when it receives `ObligationStarted`, avoiding
+planning walks on ordinary grammar bytes. It applies the strict interior,
+advances the existing checked cursor and leaves the next byte scalar. Borrowed
+and frozen cursors reuse their existing fast-forward implementations; the
+test-only borrowed-arena cursor retains its scalar compatibility traversal.
+`IndexedByteReader::skip_exact` uses the same checked cursor operation. A rejected
+skip preserves position and counters, including overflow-sized requests.
+
+| Executable binding | SOI obligations |
+|---|---|
+| `opaque_interior_plans_match_independent_all_owner_minimum` | 01/07: generated lengths and owners versus an independent widened minimum. |
+| `opaque_interior_matches_independent_scalar_steps_and_public_events` | 02–05/08: separate pools and normalized full graphs, scalar events, next-byte transition and exact child descriptors. |
+| `opaque_interior_narrower_chunks_compose_with_pool_reuse` | 02/04/05/08: multiple narrower requests, exact completion anchors and stable slot occupancy. |
+| `opaque_interior_stale_and_invalid_plans_are_exact_noops` | 01/06/07: origin/ID/width/input refusal snapshots include physical slots, journals, counters and clock. |
+| `opaque_interior_mode_guards_cover_every_owner_and_leaf` | 06/08: every owner depth, Dead/SplitComplete, pending and nonopaque leaf states. |
+| `opaque_interior_boundary_matrix_retains_scalar_refusal_and_final_anchor` | 03–06: independent Region/path/payload/input boundaries at depths 0/1/2/8, including subsequent scalar steps. |
+| `opaque_interior_huge_lengths_are_clipped_before_conversion_or_addition` | 01/03/07: `u64::MAX` residuals, short input and near-maximum consumed positions. |
+| `opaque_interior_keeps_persistent_forks_and_public_scalar_events_unchanged` | 02/05/08: independently retained ACT fork, original public events, exact payload, resolution and global clock. |
+| `checked_opaque_cursor_skips_preserve_next_bytes_and_refuse_without_mutation` | 04/06/07: 128 generated cases across borrowed, protobuf-contiguous, arena and frozen backings. |
+| `opaque_batching_keeps_enclosing_truncation_before_child_dispatch` | 03/05: actual encoded overlong child fails at its enclosing boundary before child dispatch. |
+| `opaque_batching_seeks_without_traversing_payload_interiors` | 04/05/09: actual RawPar child validation, exact anchor, scalar suffix and measured compatibility fallback. |
+| `opaque_payload_cursor_resource_matrix_preserves_completion` | 02–05/08/09: 32 encoded width/depth/backing cells with paired scalar descents and exact pending-child observations. |
+
+The two generated graph tests and cursor property each use 128 cases. Synthetic
+graphs deliberately exercise every local bound even where a complete encoded
+path would establish additional relations; encoded driver fixtures supply the
+reachable-path evidence. Previous scalar wrong-ID/post-Dead traces remain
+unchanged. `edges` and consumed bytes remain logical counts. Test-only
+`bulk_operations`, `bulk_bytes` and `region_descents` measure batches, skipped
+bytes and descents in `feed_path`; the last does **not** include the two planner
+walks. Those walks occur once per plan/application, not per skipped byte.
+
+The focused runner now requires twenty standalone and eight interior tests in
+addition to the existing frame-storage, span and byte-policy tests. No claim of
+whole-pipeline linearity follows from this binding: ordinary nested Region
+reconstruction and persistent ACT payload handling retain their separate
+required acceptance boundaries.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

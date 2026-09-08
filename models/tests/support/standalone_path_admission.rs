@@ -767,6 +767,130 @@ fn standalone_children_share_borrowed_payloads_and_survive_parent_drop() {
 }
 
 #[test]
+fn opaque_batching_keeps_enclosing_truncation_before_child_dispatch() {
+    let key = [0x0d, 6, 5, 0x10, 4, 0xaa, 0xbb, 0xcc, 0xdd];
+    for input in [
+        IndexedByteRegion::from_borrowed(&key, 7, 101),
+        fragmented(&key),
+    ] {
+        let expected = input.position_at(7).unwrap().physical;
+        let mut parent = CanonicalPathFrame::new(input);
+        let mut stats = CanonicalProtobufAdmissionStats::default();
+        let error = match parent.step(&mut stats) {
+            Err(error) => error,
+            Ok(_) => panic!("truncated owner cannot dispatch its child"),
+        };
+        match error {
+            CanonicalProtobufAdmissionError::CanonicalPath {
+                position, detail, ..
+            } => {
+                assert_eq!(
+                    position,
+                    CanonicalPathSource::in_source(expected.source, expected.offset)
+                );
+                assert!(detail.contains("Truncated"));
+            }
+            other => panic!("enclosing truncation must precede child validation: {other}"),
+        }
+        assert_eq!(stats.canonical_path_obligations, 0);
+        assert!(parent.waiting.is_none());
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn checked_opaque_cursor_skips_preserve_next_bytes_and_refuse_without_mutation(
+        bytes in prop::collection::vec(any::<u8>(), 0..256),
+        initial in any::<usize>(), requested in any::<usize>(),
+    ) {
+        let initial = initial % (bytes.len() + 1);
+        let mut arena = CanonicalBytesArena::new();
+        let mut handle = arena.empty();
+        for (i, byte) in bytes.iter().copied().enumerate() {
+            handle = arena.append(handle, CanonicalLocatedByte::new(byte, origin(i))).unwrap();
+        }
+        for input in [
+            IndexedByteRegion::from_borrowed(&bytes, 7, 101),
+            IndexedByteRegion::from_protobuf_region(ProtobufRegion::new(bytes.clone().into()), 9),
+            IndexedByteRegion::from_arena(&arena, handle, origin(bytes.len())),
+            fragmented(&bytes),
+        ] {
+            let expected = input.located_bytes().collect::<Vec<_>>();
+            for width in [0, requested % (bytes.len() + 1), bytes.len() - initial, usize::MAX] {
+                let mut cursor = input.located_bytes();
+                for expected_byte in &expected[..initial] {
+                    prop_assert_eq!(cursor.next(), Some(*expected_byte));
+                }
+                let before_traversed = cursor.bytes_traversed();
+                let should_accept = width <= bytes.len() - initial;
+                prop_assert_eq!(cursor.skip_exact(width), should_accept);
+                let at = if should_accept { initial + width } else { initial };
+                prop_assert_eq!(cursor.bytes_yielded(), at);
+                if !should_accept {
+                    prop_assert_eq!(cursor.bytes_traversed(), before_traversed);
+                }
+                prop_assert_eq!(cursor.collect::<Vec<_>>(), expected[at..].to_vec());
+            }
+        }
+    }
+}
+
+#[test]
+fn opaque_batching_seeks_without_traversing_payload_interiors() {
+    for width in [0, 1, 2, 16, 128, 8192] {
+        let raw = expr(ExprInstance::GByteArray(vec![37; width])).with_sends(vec![Send {
+            chan: Some(integer(7)),
+            ..Send::default()
+        }]);
+        let body = protobuf_encoder::encode_to_vec(&raw);
+        let mut key = payload(0x0f, &body);
+        let consumed = key.len();
+        key.push(0xff);
+        let header = consumed - body.len();
+        let mut arena = CanonicalBytesArena::new();
+        let mut handle = arena.empty();
+        for (i, byte) in key.iter().copied().enumerate() {
+            handle = arena
+                .append(handle, CanonicalLocatedByte::new(byte, origin(i)))
+                .unwrap();
+        }
+        for input in [
+            IndexedByteRegion::from_borrowed(&key, 7, 101),
+            fragmented(&key),
+        ] {
+            let anchor = input.position_at(consumed - 1).unwrap().physical;
+            let mut parent = CanonicalPathFrame::new(input);
+            let mut stats = CanonicalProtobufAdmissionStats::default();
+            let FrameAction::Push(child) = parent.step(&mut stats).unwrap() else {
+                panic!("raw payload must suspend for child validation");
+            };
+            assert_eq!(parent.cursor.bytes_yielded(), consumed);
+            assert_eq!(parent.cursor.bytes_traversed(), header + 1);
+            assert_eq!(parent.reducer.stats().bulk_operations, 1);
+            assert_eq!(parent.reducer.stats().bulk_bytes, body.len() - 1);
+            let Frame::Message(ref message) = child else {
+                panic!("expected RawPar child")
+            };
+            assert_eq!(message.body.end_position().physical, anchor);
+            let (summary, _, _) = drive_admission(child, 0).unwrap();
+            parent.accept(summary, &mut stats).unwrap();
+            assert!(parent.step(&mut stats).is_err());
+        }
+        let borrowed_arena = IndexedByteRegion::from_arena(&arena, handle, origin(key.len()));
+        let mut parent = CanonicalPathFrame::new(borrowed_arena);
+        let mut stats = CanonicalProtobufAdmissionStats::default();
+        assert!(matches!(
+            parent.step(&mut stats).unwrap(),
+            FrameAction::Push(_)
+        ));
+        assert_eq!(parent.cursor.bytes_yielded(), consumed);
+        assert_eq!(parent.cursor.bytes_traversed(), consumed);
+    }
+}
+
+#[test]
 fn opaque_payload_cursor_resource_matrix_preserves_completion() {
     for width in [16, 128, 1024, 8192] {
         let map = EPathMap::new_map(
@@ -801,17 +925,42 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
                 assert_eq!(parent.reducer.consumed_len(), completed_at);
                 assert_eq!(parent.cursor.bytes_yielded(), completed_at);
                 assert!(parent.cursor.bytes_traversed() <= completed_at);
+                let skipped = map.trie_snapshot().len() - 1;
+                assert_eq!(parent.cursor.bytes_traversed(), completed_at - skipped);
+                assert_eq!(parent.reducer.stats().bulk_operations, 1);
+                assert_eq!(parent.reducer.stats().bulk_bytes, skipped);
+                let mut scalar = CanonicalPathStreamReducer::new();
+                for byte in parent.input.located_bytes().take(completed_at) {
+                    scalar.edge(&parent.input, byte).unwrap();
+                }
+                assert_eq!(
+                    scalar.active_obligation(),
+                    parent.reducer.active_obligation()
+                );
+                assert_eq!(
+                    scalar.completed_obligation(&parent.input),
+                    parent.reducer.completed_obligation(&parent.input)
+                );
+                assert_eq!(scalar.stats().edges, parent.reducer.stats().edges);
+                assert_eq!(
+                    scalar.stats().region_descents - parent.reducer.stats().region_descents,
+                    (skipped - 1) * depth
+                );
                 assert_eq!(stats.canonical_path_obligations, 1);
                 let before = parent.reducer.stats();
                 assert!(parent.step(&mut stats).is_err());
                 assert_eq!(parent.reducer.stats(), before);
                 assert_eq!(parent.cursor.bytes_yielded(), completed_at);
                 println!(
-                    "opaque payload {backing}: width={width}, depth={depth}, payload={}, consumed={}, traversed={}, frame_backing={}",
+                    "opaque payload {backing}: width={width}, depth={depth}, payload={}, consumed={}, traversed={}, frame_backing={}, batches={}, skipped={}, region_descents={}, scalar_region_descents={}",
                     child.snapshot.len(),
                     completed_at,
                     parent.cursor.bytes_traversed(),
                     parent.reducer.retained_frame_bytes(),
+                    parent.reducer.stats().bulk_operations,
+                    parent.reducer.stats().bulk_bytes,
+                    parent.reducer.stats().region_descents,
+                    scalar.stats().region_descents,
                 );
             }
         }

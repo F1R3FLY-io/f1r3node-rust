@@ -6769,6 +6769,92 @@ can differ from saved-graph accounting. Those later required refinements remain
 in task 6018. No importer or backend is activated, and no LMDB comparison follows
 from this local proof and baseline.
 
+### J-096 — 2026-09-08: skip strict opaque interiors through the shared machine
+
+**IMPLEMENTATION.** The J-095 model now binds to the standalone stream reducer.
+A plan names its consumed origin, obligation ID and positive width. Application
+rechecks the current live owner chain and every bound; stale origin/ID, zero,
+oversized or ineligible requests are exact no-ops. The shared `feed_path` loop
+decrements and rebuilds each selected owner once per batch, retaining the existing
+frame-selection and retirement journals. The scalar boundary path is unchanged.
+The public persistent and stream byte APIs still emit the original events.
+
+The private parent driver plans only after `ObligationStarted`, not on ordinary
+grammar bytes. It then uses the existing indexed cursor fast-forward through a
+checked `skip_exact` seam shared with `IndexedByteReader`. Borrowed input changes
+its offset; frozen input seeks existing byte/provenance leaf indexes without
+traversing the skipped payload. The test-only borrowed-arena compatibility
+backing still traverses when skipping; it is not mistaken for a production
+fast-forward result. No byte/provenance arena, decoded value, new trie encoding
+or PathMap modification is introduced.
+
+**FORMAL-TO-IMPLEMENTATION COVERAGE.** Eight new reducer tests include generated
+independent all-bound minima and separate-pool scalar graph comparisons,
+arbitrary narrower chunks, selected-slot ownership, exact no-op physical state
+snapshots, all owner modes, boundary matrices, maximum declared lengths, and
+retained persistent forks. The global obligation clock is compared explicitly.
+Three driver/cursor tests cover all four indexed backings, actual child validation,
+exact final anchors, unconsumed suffixes, and enclosing truncation before child
+dispatch. In particular, `[0x0d,6,5,0x10,4,0xaa,0xbb,0xcc,0xdd]` must truncate
+at `0xcc` without dispatching the malformed child. Omitting an enclosing bound
+would cross that boundary. The original scalar protocol tests remain intact.
+
+**PAIRED RESOURCE RESULT.** The same 32 encoded cells from J-095 now include an
+independent scalar reducer control. Both runs must agree on consumed bytes,
+logical edge counts, active obligation and completed payload descriptor. The
+probe additionally requires the exact descent reduction: one descent per
+enclosing owner for the whole batch instead of one per skipped byte.
+
+| Byte-array width | Parent visits, depth 0: baseline → batch | Parent visits, depth 32: baseline → batch | Depth-32 scalar → batch `feed_path` descents |
+|---|---:|---:|---:|
+| 16 | 62 → 3 | 178 → 119 | 3,562 → 1,706 |
+| 128 | 178 → 4 | 338 → 164 | 8,176 → 2,640 |
+| 1,024 | 1,074 → 4 | 1,234 → 164 | 36,848 → 2,640 |
+| 8,192 | 8,242 → 4 | 8,402 → 164 | 266,224 → 2,640 |
+
+Borrowed/frozen results agree. Each cell performs one batch, skipping respectively
+59/174/1,070/8,238 payload bytes and leaving the final byte scalar. Frame/journal
+capacity remains 736/736/5,504/22,016 bytes at depths 0/1/8/32. The
+`region_descents` counter records actual descents in `feed_path`, **not** the two
+additional plan/revalidation walks. Those walks are independent of skipped
+payload width. Test-only counters add instrumentation to the test reducer; they
+are absent from production builds. No isolated RSS or timing claim is made.
+
+**QUALIFICATION.** The first combined build found a test-only
+visibility error, corrected by using the existing source constructor without
+expanding production visibility. The following complete models run passes
+384/384, zero ignored, in 56.21 seconds. The resource probe was then strengthened
+with its paired scalar descent control. On that exact final source, the probe
+passes again, all **384** models unit tests pass in 55.62 seconds, all **23**
+manifest tests pass, and all **36** ParBag integration tests pass in 293.81
+seconds, including unchanged depth 4,096. The combined gate passes **81** focused
+Rust checks, 48 import / 17 score / 76 RPB3 closed reports, and three independent
+kernel checks. Its 32 prerequisite reports are not additional new capstones.
+All reported tests have zero ignored cases. No running test was restarted or
+shortened. An independent source review found no blocking semantic issue.
+
+| Artifact | SHA-256 |
+|---|---|
+| Initial test-only compile failure | `f06c84a6c4acc84690d5b95437623cf6741b17296d06711c0267333291f96aba` |
+| First complete 384-test pass | `20c73ee7dd658aa9fff51fb42e485c2150ff03007c2aeda965754a61e696b48b` |
+| Final paired probe, 384 models, 23 manifest and 36 ParBag | `c11e4340d60d1ef9ca81d1bfd89be7cafb89c69920ccb0d46c8774fb0bfbdce7` |
+| Final combined proof/runtime gate | `4c8f0c1f3c7bfff1b62986f688d6f84486efcbd4fa5bd111200009783c16d64d` |
+
+The runtime/resource service uses 4/6-GiB high/hard memory limits, zero swap,
+four build jobs and four test threads. Properties use seed `41315976`. The final
+service reports 1.4G peak memory including compilation and zero swap. Proofs use
+1/2-GiB high/hard limits. Qualification processes overlap; elapsed times above
+are test execution records, not a controlled performance comparison.
+
+**BOUNDARY.** This closes redundant standalone opaque-interior visits and their
+payload-width-dependent owner reconstruction. It does not close all of task
+6018. Ordinary nested Region bytes still rebuild the owner spine, and persistent
+ACT payload ownership/traversal has separate resource requirements. The next
+required refinement is a focused active path with suspended owners, with proof
+that saved-graph accounting remains distinct from post-Dead input consumption.
+No production importer, codec, charge schedule, hash or persistence backend is
+switched here. These local counts are not a PathMap/ACT-versus-LMDB verdict.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

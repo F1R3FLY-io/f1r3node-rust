@@ -214,6 +214,12 @@ pub(crate) struct CanonicalPathAdmissionStats {
     pub(crate) states: usize,
     pub(crate) frames: usize,
     pub(crate) max_topology_depth: usize,
+    #[cfg(test)]
+    pub(crate) bulk_operations: usize,
+    #[cfg(test)]
+    pub(crate) bulk_bytes: usize,
+    #[cfg(test)]
+    pub(crate) region_descents: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,6 +449,36 @@ pub(crate) struct CanonicalPathStreamReducer {
     current: InnerPath,
     consumed: usize,
     machine: CanonicalPathMachine<FrameStorage<CanonicalByteRange>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OpaqueInteriorPlan {
+    pub(crate) from: usize,
+    pub(crate) id: CanonicalPathObligationId,
+    pub(crate) width: usize,
+}
+
+enum PathAdvance<'a, B> {
+    Byte { bytes: &'a B, byte: LocatedPathByte },
+    OpaqueInterior { width: u64 },
+}
+
+impl<B> PathAdvance<'_, B> {
+    fn width(&self) -> u64 {
+        match self {
+            Self::Byte { .. } => 1,
+            Self::OpaqueInterior { width } => *width,
+        }
+    }
+
+    fn scalar(&self) -> (&B, LocatedPathByte) {
+        match self {
+            Self::Byte { bytes, byte } => (bytes, *byte),
+            Self::OpaqueInterior { .. } => {
+                unreachable!("a strict interior never reaches a boundary")
+            }
+        }
+    }
 }
 
 trait PathByteView {
@@ -738,8 +774,13 @@ impl CanonicalPathReducer {
         arena: &CanonicalBytesArena,
         handle: CanonicalPathReducerHandle,
     ) -> Result<Option<CanonicalPathCompletedObligation>, CanonicalPathAdmissionError> {
-        self.machine
-            .completed_obligation(&ArenaPathBytes { arena, bytes: handle.bytes }, &self.states[handle.state.0])
+        self.machine.completed_obligation(
+            &ArenaPathBytes {
+                arena,
+                bytes: handle.bytes,
+            },
+            &self.states[handle.state.0],
+        )
     }
 
     /// Freeze a completed opaque payload so a child PDA can own its indexed
@@ -801,7 +842,10 @@ impl CanonicalPathReducer {
         resolution: CanonicalPathObligationResolution,
     ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
         let state = self.machine.resolved_state(
-            &ArenaPathBytes { arena, bytes: handle.bytes },
+            &ArenaPathBytes {
+                arena,
+                bytes: handle.bytes,
+            },
             &self.states[handle.state.0],
             id,
             resolution,
@@ -823,8 +867,15 @@ impl CanonicalPathReducer {
         source: CanonicalPathSource,
     ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
         let mut state = self.states[handle.state.0].clone();
-        self.machine
-            .reject_path_obligation(&ArenaPathBytes { arena, bytes: handle.bytes }, &mut state, id, source)?;
+        self.machine.reject_path_obligation(
+            &ArenaPathBytes {
+                arena,
+                bytes: handle.bytes,
+            },
+            &mut state,
+            id,
+            source,
+        )?;
         let next = PathStateId(self.states.len());
         self.states.push(state);
         Ok(CanonicalPathReducerHandle {
@@ -865,6 +916,85 @@ impl CanonicalPathStreamReducer {
         self.machine.active_obligation_in(&self.current)
     }
 
+    pub(crate) fn plan_opaque_interior(&self, input_len: usize) -> Option<OpaqueInteriorPlan> {
+        let available = input_len.checked_sub(self.consumed)?;
+        let mut bound = u64::try_from(available).unwrap_or(u64::MAX);
+        let mut current = &self.current;
+        loop {
+            if current.status != PathStatus::Open {
+                return None;
+            }
+            let top = current.stack?;
+            match &self.machine.frames[top.0] {
+                Frame::Region {
+                    remaining,
+                    phase:
+                        RegionPhase::Path {
+                            remaining: path_remaining,
+                            path,
+                            ..
+                        },
+                    ..
+                } => {
+                    bound = bound.min(*remaining).min(*path_remaining);
+                    current = path;
+                }
+                Frame::Obligation {
+                    obligation,
+                    status: ObligationStatus::Payload { remaining },
+                    ..
+                } => {
+                    let width = usize::try_from(bound.min(*remaining).saturating_sub(1)).ok()?;
+                    return (width != 0).then_some(OpaqueInteriorPlan {
+                        from: self.consumed,
+                        id: obligation.id,
+                        width,
+                    });
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    pub(crate) fn try_advance_opaque_interior(
+        &mut self,
+        input_len: usize,
+        plan: OpaqueInteriorPlan,
+    ) -> bool {
+        let Some(fresh) = self.plan_opaque_interior(input_len) else {
+            return false;
+        };
+        if plan.from != fresh.from
+            || plan.id != fresh.id
+            || plan.width == 0
+            || plan.width > fresh.width
+        {
+            return false;
+        }
+        let mut current = self.current.clone();
+        self.machine.feed_path::<IndexedPathBytes<'_, '_>>(
+            &mut current,
+            PathAdvance::OpaqueInterior {
+                width: u64::try_from(plan.width)
+                    .expect("a planned width is bounded by a u64 payload"),
+            },
+        );
+        self.machine
+            .frames
+            .finish(current.stack == self.current.stack);
+        self.current = current;
+        self.consumed += plan.width;
+        self.machine.stats.edges += plan.width;
+        self.machine.stats.max_topology_depth =
+            self.machine.stats.max_topology_depth.max(self.consumed);
+        #[cfg(test)]
+        {
+            self.machine.stats.bulk_operations += 1;
+            self.machine.stats.bulk_bytes += plan.width;
+        }
+        true
+    }
+
     pub(crate) fn completed_obligation(
         &self,
         input: &IndexedByteRegion<'_>,
@@ -872,8 +1002,13 @@ impl CanonicalPathStreamReducer {
         Option<CanonicalPathCompletedObligation<CanonicalByteRange>>,
         CanonicalPathAdmissionError,
     > {
-        self.machine
-            .completed_obligation(&IndexedPathBytes { input, consumed: self.consumed }, &self.current)
+        self.machine.completed_obligation(
+            &IndexedPathBytes {
+                input,
+                consumed: self.consumed,
+            },
+            &self.current,
+        )
     }
 
     pub(crate) fn edge(
@@ -914,9 +1049,15 @@ impl CanonicalPathStreamReducer {
         id: CanonicalPathObligationId,
         resolution: CanonicalPathObligationResolution,
     ) -> Result<(), CanonicalPathAdmissionError> {
-        self.current =
-            self.machine
-                .resolved_state(&IndexedPathBytes { input, consumed: self.consumed }, &self.current, id, resolution)?;
+        self.current = self.machine.resolved_state(
+            &IndexedPathBytes {
+                input,
+                consumed: self.consumed,
+            },
+            &self.current,
+            id,
+            resolution,
+        )?;
         Ok(())
     }
 }
@@ -960,7 +1101,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         self.stats.edges += 1;
         self.stats.max_topology_depth = self.stats.max_topology_depth.max(bytes.consumed_len());
         let mut state = current.clone();
-        let transition = self.feed_path(bytes, &mut state, byte);
+        let transition = self.feed_path(&mut state, PathAdvance::Byte { bytes, byte });
         self.frames.finish(state.stack == current.stack);
         (state, transition)
     }
@@ -1000,15 +1141,14 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                     payload_start,
                     ..
                 } => {
-                    let payload =
-                        bytes
-                            .slice(*payload_start..bytes.consumed_len())
-                            .ok_or_else(|| {
-                                CanonicalPathAdmissionError::new(
-                                    CanonicalPathAdmissionErrorKind::SizeOverflow,
-                                    obligation.tag_source,
-                                )
-                            })?;
+                    let payload = bytes
+                        .slice(*payload_start..bytes.consumed_len())
+                        .ok_or_else(|| {
+                            CanonicalPathAdmissionError::new(
+                                CanonicalPathAdmissionErrorKind::SizeOverflow,
+                                obligation.tag_source,
+                            )
+                        })?;
                     return Ok(Some(CanonicalPathCompletedObligation {
                         obligation: *obligation,
                         payload,
@@ -1038,9 +1178,8 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
 
     fn feed_path<B: PathByteView<Span = S::Span>>(
         &mut self,
-        bytes: &B,
         root: &mut InnerPath,
-        byte: LocatedPathByte,
+        advance: PathAdvance<'_, B>,
     ) -> CanonicalPathTransition {
         struct RegionContext<Span> {
             owner: InnerPath,
@@ -1053,6 +1192,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
             next: Option<FrameId>,
         }
 
+        let width = advance.width();
         let mut current = root.clone();
         let mut contexts = Vec::<RegionContext<S::Span>>::new();
         let transition = loop {
@@ -1060,7 +1200,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 break CanonicalPathTransition::Continue;
             }
             let Some(top) = current.stack else {
-                break self.feed_path_shallow(bytes.consumed_len(), &mut current, byte);
+                break self.feed_path_advance_shallow(&mut current, &advance);
             };
             let Frame::Region {
                 remaining,
@@ -1075,23 +1215,28 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 next,
             } = self.frame(top)
             else {
-                break self.feed_path_shallow(bytes.consumed_len(), &mut current, byte);
+                break self.feed_path_advance_shallow(&mut current, &advance);
             };
 
-            if remaining == 0 || path_remaining == 0 {
+            if remaining < width || path_remaining < width {
+                let (_, byte) = advance.scalar();
                 current.kill(CanonicalPathAdmissionError::new(
                     CanonicalPathAdmissionErrorKind::RegionFrameOverrun,
                     byte.source,
                 ));
                 break CanonicalPathTransition::Continue;
             }
+            #[cfg(test)]
+            {
+                self.stats.region_descents += 1;
+            }
             contexts.push(RegionContext {
                 owner: current,
                 checkpoint: self.frames.checkpoint(),
-                remaining: remaining - 1,
+                remaining: remaining - width,
                 previous,
                 declared_len,
-                path_remaining: path_remaining - 1,
+                path_remaining: path_remaining - width,
                 start_depth,
                 next,
             });
@@ -1152,6 +1297,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 continue;
             }
 
+            let (bytes, byte) = advance.scalar();
             let endpoint = byte.source;
             self.finish_region_path(
                 bytes,
@@ -1170,6 +1316,44 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         }
         *root = current;
         transition
+    }
+
+    fn feed_path_advance_shallow<B: PathByteView<Span = S::Span>>(
+        &mut self,
+        path: &mut InnerPath,
+        advance: &PathAdvance<'_, B>,
+    ) -> CanonicalPathTransition {
+        match advance {
+            PathAdvance::Byte { bytes, byte } => {
+                self.feed_path_shallow(bytes.consumed_len(), path, *byte)
+            }
+            PathAdvance::OpaqueInterior { width } => {
+                let top = path
+                    .stack
+                    .expect("a planned interior has an active payload");
+                let Frame::Obligation {
+                    obligation,
+                    status: ObligationStatus::Payload { remaining },
+                    payload_start,
+                    next,
+                } = self.frame(top)
+                else {
+                    unreachable!("only opaque payloads admit interior plans")
+                };
+                let checkpoint = self.frames.checkpoint();
+                let previous = path.stack;
+                path.stack = Some(self.push_frame(Frame::Obligation {
+                    obligation,
+                    status: ObligationStatus::Payload {
+                        remaining: remaining - width,
+                    },
+                    payload_start,
+                    next,
+                }));
+                self.frames.select(checkpoint, previous, path.stack);
+                CanonicalPathTransition::Continue
+            }
+        }
     }
 
     fn feed_path_shallow(
@@ -1947,8 +2131,10 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         if let Some(previous) = previous {
             let order = bytes.compare(previous, completed);
             if order != std::cmp::Ordering::Less {
-                let source = bytes.first_mismatch_source(previous, completed)
-                    .map(CanonicalPathSource::from_provenance).unwrap_or(endpoint);
+                let source = bytes
+                    .first_mismatch_source(previous, completed)
+                    .map(CanonicalPathSource::from_provenance)
+                    .unwrap_or(endpoint);
                 owner.kill(CanonicalPathAdmissionError::new(
                     if order == std::cmp::Ordering::Equal {
                         CanonicalPathAdmissionErrorKind::DuplicatePathInRegion
@@ -2125,6 +2311,10 @@ mod frame_storage_tests;
 mod byte_policy_tests;
 
 #[cfg(test)]
+#[path = "../../../tests/support/canonical_path_opaque_interior.rs"]
+mod opaque_interior_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::rust::canonical_path;
@@ -2144,17 +2334,21 @@ mod tests {
 
     fn linear_result(bytes: &[u8]) -> Result<CanonicalPathSummary, CanonicalPathAdmissionError> {
         let mut admission = CanonicalPathTopologyAdmission::new();
-        assert!(admission
-            .value(false, CanonicalPathSource::new(0))
-            .is_none());
+        assert!(
+            admission
+                .value(false, CanonicalPathSource::new(0))
+                .is_none()
+        );
         for (offset, byte) in bytes.iter().copied().enumerate() {
             let transition = admission
                 .edge(LocatedPathByte::new(byte, offset))
                 .expect("obligation-free driver use");
             assert_eq!(transition, CanonicalPathTransition::Continue);
-            assert!(admission
-                .value(false, CanonicalPathSource::new(offset))
-                .is_none());
+            assert!(
+                admission
+                    .value(false, CanonicalPathSource::new(offset))
+                    .is_none()
+            );
         }
         admission
             .value(true, CanonicalPathSource::new(bytes.len()))
@@ -2353,14 +2547,18 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(reducer
-            .value(left, true, CanonicalPathSource::new(13))
-            .unwrap()
-            .is_ok());
-        assert!(reducer
-            .value(right, true, CanonicalPathSource::new(23))
-            .unwrap()
-            .is_ok());
+        assert!(
+            reducer
+                .value(left, true, CanonicalPathSource::new(13))
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            reducer
+                .value(right, true, CanonicalPathSource::new(23))
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2455,10 +2653,12 @@ mod tests {
                         ),
                     )
                     .unwrap();
-                assert!(reducer
-                    .value(state, true, CanonicalPathSource::new(offset + 1))
-                    .unwrap()
-                    .is_ok());
+                assert!(
+                    reducer
+                        .value(state, true, CanonicalPathSource::new(offset + 1))
+                        .unwrap()
+                        .is_ok()
+                );
                 let edges = offset + 1;
                 let reducer_stats = reducer.stats();
                 let arena_stats = arena.stats();
@@ -2509,19 +2709,23 @@ mod tests {
         admission.edge(LocatedPathByte::new(GINT, 15)).unwrap();
         admission.edge(LocatedPathByte::new(0, 16)).unwrap();
         admission.edge(LocatedPathByte::new(TERM, 17)).unwrap();
-        assert!(admission
-            .value(true, CanonicalPathSource::new(18))
-            .unwrap()
-            .is_ok());
+        assert!(
+            admission
+                .value(true, CanonicalPathSource::new(18))
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
     fn malformed_value_free_topology_is_retained_but_not_admitted_as_a_value() {
         let mut admission = CanonicalPathTopologyAdmission::new();
         admission.edge(LocatedPathByte::new(0xff, 41)).unwrap();
-        assert!(admission
-            .value(false, CanonicalPathSource::new(42))
-            .is_none());
+        assert!(
+            admission
+                .value(false, CanonicalPathSource::new(42))
+                .is_none()
+        );
         let error = admission
             .value(true, CanonicalPathSource::new(42))
             .unwrap()
@@ -2535,10 +2739,12 @@ mod tests {
         admission
             .edge(LocatedPathByte::new(GBOOL_TRUE, 44))
             .unwrap();
-        assert!(admission
-            .value(true, CanonicalPathSource::new(45))
-            .unwrap()
-            .is_ok());
+        assert!(
+            admission
+                .value(true, CanonicalPathSource::new(45))
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2660,10 +2866,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(map
-            .value(true, CanonicalPathSource::new(22))
-            .unwrap()
-            .is_ok());
+        assert!(
+            map.value(true, CanonicalPathSource::new(22))
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2690,10 +2897,12 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(admission
-            .value(true, CanonicalPathSource::new(5))
-            .unwrap()
-            .is_ok());
+        assert!(
+            admission
+                .value(true, CanonicalPathSource::new(5))
+                .unwrap()
+                .is_ok()
+        );
 
         let mut wrong_mode = CanonicalPathTopologyAdmission::new();
         wrong_mode
@@ -2737,9 +2946,11 @@ mod tests {
         // A rejected branch is dead rather than structurally fatal: topology
         // below it may still be traversed when it has no value endpoint.
         rejected.edge(LocatedPathByte::new(GBOOL_TRUE, 23)).unwrap();
-        assert!(rejected
-            .value(false, CanonicalPathSource::new(24))
-            .is_none());
+        assert!(
+            rejected
+                .value(false, CanonicalPathSource::new(24))
+                .is_none()
+        );
 
         // Exercise the other non-Map discriminator independently.
         let _ = NestedEpmMode::Set;

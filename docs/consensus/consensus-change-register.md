@@ -5059,6 +5059,20 @@ The final scoped gate also passes 69 focused Rust tests, its proof/kernel checks
 includes the unchanged depth-4,096 import/ACT test and does not substitute for
 whole-workspace replay or release qualification.
 
+The subsequent strict-interior refinement batches opaque payload bytes only in
+the internal standalone driver. Its public byte transition APIs and scalar
+completion/error boundaries remain unchanged. Fourteen additional closed model
+capstones, independently checked before implementation, bind to actual frame
+graph, cursor, stale-request and enclosing-truncation properties. The initial
+complete models run passes 384 tests. Final exact-source qualification passes
+384 models, 23 manifest, 36 ParBag integration and 81 focused Rust checks,
+the expected closed proof reports and three independent kernel checks; all tests
+are nonignored and the depth-4,096 integration case remains unchanged.
+This is not an importer activation or a change to accepted encodings, hash inputs,
+charges, storage metering or persistence format. Journal J-095/J-096 and
+stack-safety §5.33.14–15 delimit the evidence and remaining resource boundaries;
+whole-workspace consensus/replay qualification is not inferred from these tests.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

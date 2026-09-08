@@ -439,7 +439,10 @@ impl<'a> IndexedByteRegion<'a> {
                 let handle = arena
                     .slice(*root, *start..end)
                     .expect("an indexed arena view stays inside its root");
-                IndexedLocatedByteCursorInner::Arena(arena.located_bytes(handle))
+                IndexedLocatedByteCursorInner::Arena {
+                    cursor: arena.located_bytes(handle),
+                    remaining: *len,
+                }
             }
             IndexedByteBacking::Frozen {
                 root, start, len, ..
@@ -697,7 +700,10 @@ enum IndexedLocatedByteCursorInner<'a> {
         at: usize,
     },
     #[cfg(test)]
-    Arena(CanonicalLocatedByteCursor<'a>),
+    Arena {
+        cursor: CanonicalLocatedByteCursor<'a>,
+        remaining: usize,
+    },
     Frozen(FrozenCanonicalLocatedByteCursor),
 }
 
@@ -711,6 +717,27 @@ impl IndexedLocatedByteCursor<'_> {
     pub(crate) const fn bytes_yielded(&self) -> usize { self.yielded }
 
     pub(crate) const fn bytes_traversed(&self) -> usize { self.traversed }
+
+    pub(crate) fn skip_exact(&mut self, width: usize) -> bool {
+        let remaining = match &self.inner {
+            IndexedLocatedByteCursorInner::Borrowed { bytes, at, .. } => bytes.len() - at,
+            #[cfg(test)]
+            IndexedLocatedByteCursorInner::Contiguous { region, at, .. } => region.len() - at,
+            #[cfg(test)]
+            IndexedLocatedByteCursorInner::Arena { remaining, .. } => *remaining,
+            IndexedLocatedByteCursorInner::Frozen(cursor) => cursor.len(),
+        };
+        if width > remaining {
+            return false;
+        }
+        if !self.fast_forward(width) {
+            for _ in 0..width {
+                self.next()
+                    .expect("a checked cursor skip stays inside its input");
+            }
+        }
+        true
+    }
 
     fn fast_forward(&mut self, width: usize) -> bool {
         let advanced = match &mut self.inner {
@@ -726,7 +753,7 @@ impl IndexedLocatedByteCursor<'_> {
                 true
             }
             #[cfg(test)]
-            IndexedLocatedByteCursorInner::Arena(_) => false,
+            IndexedLocatedByteCursorInner::Arena { .. } => false,
             IndexedLocatedByteCursorInner::Frozen(cursor) => {
                 cursor.fast_forward(width);
                 true
@@ -778,7 +805,11 @@ impl Iterator for IndexedLocatedByteCursor<'_> {
                 })
             }
             #[cfg(test)]
-            IndexedLocatedByteCursorInner::Arena(cursor) => cursor.next(),
+            IndexedLocatedByteCursorInner::Arena { cursor, remaining } => {
+                let byte = cursor.next();
+                *remaining -= usize::from(byte.is_some());
+                byte
+            }
             IndexedLocatedByteCursorInner::Frozen(cursor) => cursor.next(),
         };
         self.yielded += usize::from(byte.is_some());
@@ -928,14 +959,11 @@ impl<'a> IndexedByteReader<'a> {
         operation: IndexedByteReadOperation,
     ) -> Result<(), IndexedByteReadError> {
         let end = self.require(width, operation)?;
-        if self.cursor.fast_forward(width) {
-            self.at = end;
-            return Ok(());
-        }
-        while self.at < end {
-            self.next_raw()
-                .expect("a range checked against the view has every requested byte");
-        }
+        assert!(
+            self.cursor.skip_exact(width),
+            "reader and cursor share one checked input"
+        );
+        self.at = end;
         Ok(())
     }
 
