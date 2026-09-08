@@ -7,6 +7,8 @@ artifacts:
   - scripts/ci/check-tla-invariants.sh
   - .github/workflows/slashing-tests.yml
   - .github/workflows/ci.yml
+  - scripts/ci/test-soak-claim-inventory.sh
+  - docs/claims/soak-claim-inventory.json
 references:
   - docs/plans/soak-recurrence-prevention-2026-09-08.md
   - docs/tdd-plans/soak-gates-2026-09-08.md
@@ -37,15 +39,17 @@ The test uses a verifier-process fixture. Real TLC runs separately confirm the c
 
 [Cycle B2](../cbc-evidence/github-workflows-slashing-tests-yml.md) enables the bounded formal tier for pull requests and pushes. Local workflow tests preserve the nightly and exhaustive configuration inventories.
 
-The real bounded gate passed both baseline models and recognized both expected counterexamples. Hosted confirmation of the changed workflow remains pending.
+The real bounded gate passed both baseline models and recognized both expected counterexamples. The [hosted observation](../cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.json) confirms the route and retains downloaded TLC logs.
 
-Neither cycle formally proves the shell implementation. Neither cycle establishes a residual finalization repair or a disk resource bound.
+[Cycle B3](../cbc-evidence/scripts-ci-test-soak-claim-inventory-sh.md) adds the [claim inventory](soak-claim-inventory.json) and checks its input digests. The inventory distinguishes baseline results from pending obligations.
+
+These cycles do not formally prove the shell implementation. They do not establish a residual finalization repair or a disk resource bound.
 
 ## Open obligations
 
-- A hosted pull-request run must confirm the new bounded route.
-- Required-check enforcement must reject missing or skipped formal results.
-- The claim inventory must identify every required check and pending obligation.
+- Required-check enforcement must reject missing, skipped, canceled, or stale formal results.
+- The inventory must include each new required check when its development cycle starts.
+- The complete acceptance identity must bind the workflow, node image, harness, configuration, workload, and attempt.
 - Required-check results must bind to the tested candidate and attempt.
 - The complete gate requires formal discharge or explicit reviewed treatment of its trusted implementation.
 

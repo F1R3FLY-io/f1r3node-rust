@@ -5,12 +5,15 @@ claimed_by: claude-session-74f6ecbb
 claimed_at: 2026-09-08T01:30:00Z
 handoff_status: ready
 next_steps:
-  - User opens the PR against dev and the issue it references; #378 is closed, and this is a distinct defect in the #379 implementation
-  - system-integration agent commits and pushes its half (request in ../system-integration/docs/ToDos.md, id SI-TASK-SOAK-DISK-POST-MORTEM-2026-09-07)
+  - Review and commit the uncommitted G0/B3 inventory cycle after explicit authorization.
+  - Confirm required-check enforcement with a maintainer who can inspect classic protection.
+  - Inspect the retained artifact from failed soak run 34180346282 without inferring its cause from the workflow verdict.
+  - Run D1 historical disk RED in a disposable container without host cleanup mounts.
   - "DONE 2026-09-08T06:20Z: repinned SYSTEM_INTEGRATION_REF x3 to SI 7f488f93 (PR #137 head after main 0fb6337 was merged in at 1e411383; descends per merge-base --is-ancestor). The first SI push c32f1f1d was refused because it was cut from dev and lacked #132 and #134"
   - "DONE 2026-09-08T06:40Z: repinned again to SI 022ae6d3, the #137 head that bounds the post-mortem du walks at 10s in aggregate and covers them in tests; descends from 7f488f93 and 0fb6337"
   - Re-pin to the merged SHA once SI #137 lands
-  - After the next soak with both halves, read the soak-health tag and the pm tags to name the consumer, then prune it
+  - Complete the diagnostic prerequisites before starting a non-overlapping soak.
+  - Identify the growing consumer before selecting its lifecycle correction.
 ---
 
 # Weekend soak disk deaths after the #379 floor
@@ -64,3 +67,21 @@ The [finalization and disk prevention plan](../plans/soak-recurrence-prevention-
 The plan is documentation only. It does not discharge `CLAIM-FINALITY-002` or establish that the disk consumer has been corrected.
 
 At 11:30 UTC on September 8, node PR #399 and system-integration PR #137 remained open against `dev`. Soak run `34180346282` was active, and this work did not alter that run.
+
+## Gate G0 inventory cycle
+
+The [B3 inventory evidence](../cbc-evidence/scripts-ci-test-soak-claim-inventory-sh.md) records one RED/GREEN cycle against base `43af06da`. The new inventory binds four claims to source digests, baseline checks, evidence, and pending obligations.
+
+The hosted formal job passed on the PR's synthetic checkout `bad72c4c`. The retained observation includes downloaded TLC logs and the verified artifact digest.
+
+The visible `dev` rules omit the TLA+ check, and classic required-check protection remains inaccessible. G0 remains pending until enforcement and complete acceptance identity are established.
+
+The current shell tests are GREEN. They do not discharge the shell implementation, `CLAIM-FINALITY-002`, or the proposed resource claim.
+
+System-integration PR #137 remains open. Soak run `34180346282` was still active at 12:50 UTC, and this cycle did not change that run.
+
+At 13:20 UTC, run `34180346282` had completed with failure. Its three soak segments, report aggregation, and dashboard assembly reported failure.
+
+Artifact `10057623626`, named `merge-recovery-soak-79200s-34180346282-1`, remains available at 851355201 bytes. Its contents, tested node identity, and failure causes have not yet been inspected.
+
+The workflow API reported no active soaks at that observation. No new soak was dispatched.

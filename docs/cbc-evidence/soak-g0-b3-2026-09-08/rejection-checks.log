@@ -1,0 +1,10 @@
+PASS: missing-claim rejected: FAIL: The required claim inventory is incomplete or duplicated.
+PASS: stale-production rejected: FAIL: The candidate input is stale: casper/src/rust/validate.rs.
+PASS: stale-specification rejected: FAIL: The candidate input is stale: docs/claims/repeat-deploy-carrier-index-equivalence.md.
+PASS: stale-model rejected: FAIL: The candidate input is stale: formal/tlaplus/carrier_index/CarrierIndex.tla.
+PASS: missing-check rejected: FAIL: CLAIM-FINALITY-002 lacks required checks.
+PASS: missing-evidence rejected: FAIL: BOUNDED-TLA has missing evidence references.
+PASS: false-discharge rejected: FAIL: CLAIM-FINALITY-002 must retain its pending candidate obligations.
+PASS: skipped-check rejected: FAIL: Inventory verification must not promote baseline checks to candidate acceptance.
+PASS: incomplete-identity rejected: FAIL: Acceptance identity lacks node_sha.
+PASS: false-acceptance rejected: FAIL: Soak acceptance remains pending.

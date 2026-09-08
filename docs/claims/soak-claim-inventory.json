@@ -1,0 +1,637 @@
+{
+  "schema_version": 1,
+  "scope": "soak-recurrence-prevention",
+  "candidate": {
+    "base_commit": "43af06dab41ddf81b8dd1fcc5cf9e1303027aab7",
+    "binding": "source-sha256",
+    "inputs_sha256": {
+      ".github/oci-validation.env": "9dad9e66220f6fefd30ad4e77fdc8dee3f458465b273542ba04963606347c05e",
+      ".github/workflows/ci.yml": "5e73cf64ac529828ca1871959e60f644118766d4493b3c59647f4c24b053588c",
+      ".github/workflows/merge-recovery-soak.yml": "d1468c04bd8a1a99d8327114347d0ba9acd965b1342457846c226f27537227b1",
+      ".github/workflows/slashing-tests.yml": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
+      "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "39382399fd484b5d9b670d3ad35af642659df61c6475497a90f5af7dc645f711",
+      "block-storage/src/rust/dag/carrier_index.rs": "c6eb50e73dfc7f3dd019ac56acc1799528427718b230c8f186f6b2f124733247",
+      "block-storage/tests/carrier_index_property_test.rs": "700acda3e7ca5da39f80313df0813c5aeeafc2274853eb82be85630497850eec",
+      "casper/src/rust/finality/deploy_lifecycle.rs": "e844227f1dca5300018010d9aaa0d79f7a9ad748a4591aba0e43af9e376df893",
+      "casper/src/rust/merging/dag_merger.rs": "25d83a370530140a6b7279bc3bc839e67796c942a6237830d29cdf5a97c8bb92",
+      "casper/src/rust/rholang/replay_runtime.rs": "6dece2677bf1ae26c42b73d00f04945f19083b5c19af9a6f2130700ad2366919",
+      "casper/src/rust/util/rholang/interpreter_util.rs": "1b9130811d808da352a37b860f0f159e0ef0c08fd01bbc431be02cc41339c79e",
+      "casper/src/rust/validate.rs": "87d72346aa9a1050e58cf0d08adcd6ceb55de212c2899685f8153c7c89bd0aa9",
+      "casper/tests/batch2/validate_test.rs": "d2b2a5436a31da1021d634bbbbcf478cc53f812a2f9d3808f36f1d47bb765cb9",
+      "docs/cbc-evidence/casper-src-rust-finality-deploy-lifecycle-rs.md": "6f05187d21932fb3178582857cb12742a02e1d0aac12034a86d9f04ab5008df4",
+      "docs/cbc-evidence/soak-g0-2026-09-08/MC_CarrierIndex.log": "188cfd3165715b5ed67993fe370bbaae41867bd247ed94311d23745b8363e0c3",
+      "docs/cbc-evidence/soak-g0-2026-09-08/MC_CarrierIndex_dag_first_pre_fix.log": "1f1e86b20b24ad71d4e58d5184abe0269819074f7a38f7d881dcff5470379bb8",
+      "docs/cbc-evidence/soak-g0-2026-09-08/MC_CarrierIndex_read_failure_pre_fix.log": "006a3853c2857fc0505f6e76fb990a01507263145df85edd8d9efda99c79091b",
+      "docs/cbc-evidence/soak-g0-2026-09-08/gate-green.log": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "docs/cbc-evidence/soak-g0-2026-09-08/gate-red.log": "79fefd2ce87b9d9e882168821cf102762307a5a9760ffccfe67548ac6a847098",
+      "docs/cbc-evidence/soak-g0-2026-09-08/manifest.json": "b4e857a74cf4e091c7cff84a495e0db77d6a5ea3f2234f81078c2bdbe4ce0cde",
+      "docs/cbc-evidence/soak-g0-2026-09-08/release-workflows.log": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "docs/cbc-evidence/soak-g0-2026-09-08/workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/b1-regression.log": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/carrier_index-MC_CarrierIndex.log": "f6abbcec51fa06fb03f9bdc6a89582dc0c7e723f3a1d8b03915b97b397e0ecf5",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/carrier_index-MC_CarrierIndex_dag_first_pre_fix.log": "344949da03e216b4e852be5fb5f6dccf46736ef8fc111c8548fd10190a8645bb",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/carrier_index-MC_CarrierIndex_read_failure_pre_fix.log": "3aa870af96411d35f6d6314094aae4a2d5d186a9ff4a4e5bbd62b4935dab9f26",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/forbidden-exhaustive.log": "a493c0b027d3ab657896d93433fade6f93c1634ce47d693d17dd407bbf4349b6",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/green.log": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.json": "2e132518c37579b90c0c0a143e0ee553278e4b763562ee3b54eb3f6c1ea68a0e",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/real-gate.log": "2e5a94583adfe5b8081631e554c29ae7437b3c4b9e1be35025b14d677be65d6d",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/red.log": "e1fd6c977271e23832e45f5717aea6a0b31ba3cff6af6c4addd18721b04743e5",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/release-gates.log": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/release-workflows.log": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/replay_liveness-MC_ReplayHotLoop.log": "b64524e0d14b287a1d7d938e2cc8cb7bb59175d018d027ebb8d16c047186438c",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/dev-required-checks.json": "c104ef2dce9c1ec7e6b4aecc78e2971f2a7de655e448bfa282e4d26870362de1",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-artifacts.json": "e110ae3fd6a077aa2a5de3e2b1ea1ca06dc4c00dba3616c4d75446ac8b8933f4",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-job.json": "a0a8e22b55f123b1fef0dd32f03ed79c547006368494667a75ce69efc3e5f48c",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.json": "0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-run.json": "1b7769b7164eba9653a08080c0cc1f5e689a346012f93e2ca3c0f3405217ee32",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-carrier_index-MC_CarrierIndex.log": "8830d18c8b4df3e2ab2bd5469e07275c1599701776fcc0ccaea49e53c56cef7a",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log": "bc3efd682bde71f944dd810d3920480f79bf96ee611e0144625bef0a16761ec4",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log": "0a53c3af73068820850076408449e054288163582f2a0fc93f3743bb2226b03a",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-replay_liveness-MC_ReplayHotLoop.log": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
+      "docs/claims/repeat-deploy-carrier-index-equivalence.md": "16f110d8ebf50d2f39a3fbb45364019684a5118b0a65db106c6d9f5b810230ba",
+      "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
+      "docs/claims/soak-formal-gate.md": "6356b7f25fcfec4050f1637b9fad6380ce410a7587fd7a55400c2a73119ab9f1",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "00ff7b8bc57caf3d3aea258625cc3e0ab15aecaf224a0860c01690567ca407e1",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "58e3bec31dd5a990211459f421b14de39e007203bb51ee2654f4f5cf394425e6",
+      "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
+      "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
+      "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
+      "formal/rocq/finalized_floor/theories/BootstrapReplayContext.v": "84950a0d916f5c7d23be6a881b41787546915e78b3da18192ad1135c59f36d95",
+      "formal/rocq/finalized_floor/theories/CertifiedFloorPromotion.v": "4fdc61e5759e896e861901c4466106cb44e8684e1a34c75cc09b257a97c921ab",
+      "formal/rocq/finalized_floor/theories/CliqueOracle.v": "4ae106b574b48bd5d31b870b6f8414ec407b3920ffb0a3aa62b3858765261c71",
+      "formal/rocq/finalized_floor/theories/EffectCausalClosure.v": "c3287bc6f06590e226b1684a444de925e67503d12a811a0567afbf6de1341276",
+      "formal/rocq/finalized_floor/theories/FinalizedOccurrenceStatus.v": "3d6eb559b06d83453362b3b07af25e5224a779a2b0ca5676dd4463b0e6cd5301",
+      "formal/rocq/finalized_floor/theories/FinalizerProgress.v": "e97d3e3606ef66e66186b9512ce1e675b91b24535e9aebc0731401086e4cdf3d",
+      "formal/rocq/finalized_floor/theories/Floor.v": "cd2634a511e696bfcd4a97158379e01de3fee7716d36bec5df9f5984efe1ac83",
+      "formal/rocq/finalized_floor/theories/Foundation.v": "a511e491f6a177d8bee293bb9ce15c76c543e8b4cfe2aecb2c3c3dd0680a092f",
+      "formal/rocq/finalized_floor/theories/FtExact.v": "073cb75aaf4a3f1e97e49caaf6825daf7314884e12b0465e26b7edcee4f4b9af",
+      "formal/rocq/finalized_floor/theories/FtProvenance.v": "63a1641768529964f9fde9293704bc739bd3e9e28a8da6bfb21e6ba97cbe6451",
+      "formal/rocq/finalized_floor/theories/GuardBridge.v": "cfee6bc19f0239d0702f5dbae6ce930a83f355e279452753729036cb3d80315e",
+      "formal/rocq/finalized_floor/theories/HeartbeatFinalityBackpressure.v": "be1fa917c6670fd1c0c6ccdb4226af740749e330e1927b220a4efaa52b43b136",
+      "formal/rocq/finalized_floor/theories/IntegerAdd.v": "c08f57f2818e4a3e35fd3ecb2a0170a0601bbab0bc3d8af5b46c8e67cbfc79a6",
+      "formal/rocq/finalized_floor/theories/LocalFaultDeferral.v": "3327e8f7cae882ec4dfb11f2dd828ac2d5c2723a50c4312ffc7a20bb41818241",
+      "formal/rocq/finalized_floor/theories/MainTheorem.v": "18d8dffc00bdc0345fa9044b8fe29e57e4be33721f717bc78b93eb3b7228e742",
+      "formal/rocq/finalized_floor/theories/Merge.v": "11495221a467d5f4d766c4d3f2005fbb748a35c2645376d44be89c8886b0bb66",
+      "formal/rocq/finalized_floor/theories/MergeRecoveryCoherence.v": "81404f671bab6910b65971478fed4c0b4025699e11ddb91182debbc9e66103ca",
+      "formal/rocq/finalized_floor/theories/OccurrenceDisposition.v": "180a9d28ef6b56cab0273096a65badc4295c7026283ae7686d7c5503f6adc1c4",
+      "formal/rocq/finalized_floor/theories/ParallelValidatorConsensus.v": "38b23aad622ca128b53f03e5ffb0568d1e476aa9a67e1039d65eeca55b6e9858",
+      "formal/rocq/finalized_floor/theories/ProtocolActivationCoherence.v": "4a6ac9264924dc50d044e4b815c89941389ccb75d30cbfa9f368204eaf45b650",
+      "formal/rocq/finalized_floor/theories/ProtocolVersionLifecycle.v": "bda3e1a7dec49be191237a5cf79f57b5ba8af2336b0a962713cdc5f8fae993f0",
+      "formal/rocq/finalized_floor/theories/Recovery.v": "9d0e0fca66b3ef53fadbf2d0ece859356187ad5f355b35e2bd1c6106c5ff3cc0",
+      "formal/rocq/finalized_floor/theories/RejectionReasonConfluence.v": "8fae656714ef52aabccc0ddbf5ca77feabeb29de0c4cbed8b7537af07429225a",
+      "formal/rocq/finalized_floor/theories/Selection.v": "beaf706cd013f25867b116f597f1aa90ef1facceb89f5015af71a19bdb7c9644",
+      "formal/rocq/finalized_floor/theories/SettledEffectProbe.v": "b86cc54b55621ffd98f16d0dff3c51be0b2cd24529e9faaafd8b88c06a4ad1a5",
+      "formal/rocq/finalized_floor/theories/SnapshotFloorMaterialization.v": "40ce24630303b6658cedf3d8976f51c7cab8bc1912a8601a9360fe599c3d9392",
+      "formal/rocq/finalized_floor/theories/StateEffectProvenance.v": "6067b41a228bd70e155da11eb7d35f140f714553e47f1855ac99f8a7a3f60302",
+      "formal/rocq/finalized_floor/theories/StateLineageFinality.v": "66e527e0cf8d7d6bb914f5e2352063103ba41e31e0d6aa7453b08bffa4a60486",
+      "formal/tlaplus/carrier_index/CarrierIndex.tla": "5aae4327a4aca056d571d56d778dfe82684165fb4faa7123f480b8afd4d67575",
+      "formal/tlaplus/carrier_index/MC_CarrierIndex.cfg": "4c5dc2805bb8ca65e1e4ff2fa9059efb30aef0b9caf71d7317d837d9c4249cd2",
+      "formal/tlaplus/carrier_index/MC_CarrierIndex.tla": "2018d282687b9489c801c5f279be34fe680e896fb2a60b0c42936fa2f47db0cb",
+      "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.cfg": "ca704ce77b04c0aba4b0d6e3879ccc785b826dc166446b4ad634d6b0c480d9e1",
+      "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.tla": "186e6f96007d49f027d12c5a21e1e0c3c9e07f8fa1a948a05665b03842cc0f08",
+      "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.cfg": "2957030a60ce09a49d49ff2251cd100170e01e727c944d51aaab08e130b10dee",
+      "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.tla": "9316c773d6b2a7a6842382662fe737be9a25398b3fe559e89ebabc3221443a55",
+      "formal/tlaplus/replay_liveness/MC_ReplayHotLoop.cfg": "cf88ab98868e7135b5c43a56e4310db087ecf9d5c2bff36359e0e7959920749b",
+      "formal/tlaplus/replay_liveness/MC_ReplayHotLoop.tla": "36ce516043089ae4e672c2c0ec5fd89f3a115c2bd9c3606a5f30503de2c9d25f",
+      "formal/tlaplus/replay_liveness/MC_ReplayHotLoop_quadratic_pre_fix.cfg": "e4d9b18ca321c2896a36e234be4f9cb31819cffa9cfcccdf06523dd79594a202",
+      "formal/tlaplus/replay_liveness/MC_ReplayHotLoop_task_chain_pre_fix.cfg": "7631efee0837f04b4a1c5c2c59b6cbe2f72503c75bd6307be1e4f65f49a1ce91",
+      "formal/tlaplus/replay_liveness/ReplayHotLoop.tla": "460651b3d5ac5b58d43fb89bdfeba2d3dd2cab71897de88e8185298e4f4cf2b4",
+      "rspace++/src/rspace/replay_rspace.rs": "14c254ef0ac3db29a44313f8da8c7df02576ff113c135dc78650247fa12f1cb5",
+      "scripts/bench/test-run-merge-recovery-soak.sh": "2d0bc41e2945203ea2c75659f9a8f9ee6b6f6538f645945b6247322d2ba4c4b3",
+      "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
+      "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+      "scripts/ci/check-tla-invariants.sh": "0b03474948e8738539515d15f734cfd47e0201045a0f8fd5648bdcd929c61b27",
+      "scripts/ci/test-check-tla-invariants.sh": "31291fc837b98385f5c7d3497ee20bb152b3d62e4b6e889ba94a4e74c8f1c46b",
+      "scripts/ci/test-soak-claim-inventory.sh": "dbd16e78ab45353585a3beff0942141fd9c6ce9a1f45dccc9392e790b0fb165e",
+      "scripts/ci/test-soak-pr-formal-gate.sh": "5e349346e03a2b534b35c6c30e152152f8c3bceb32d2982a00217b442eb71756",
+      "scripts/run-merge-recovery-soak.sh": "2107899197cc3b676dd01a458c3b67c79708445277d371f7e4ccb45f4cdd4abb"
+    }
+  },
+  "claims": [
+    {
+      "id": "CLAIM-FINALITY-001",
+      "declared_status": "mechanized",
+      "candidate_status": "pending",
+      "specification": "docs/claims/settled-effect-probe-equivalence.md",
+      "implementation": [
+        {
+          "path": "casper/src/rust/finality/deploy_lifecycle.rs",
+          "symbols": [
+            "effect_in_state_of",
+            "settled_sigs_of_lineage",
+            "FloorSettledProbe::settled"
+          ]
+        },
+        {
+          "path": "casper/src/rust/util/rholang/interpreter_util.rs",
+          "symbols": [
+            "sig_settled_in_base",
+            "sig_settled_in_floor"
+          ]
+        },
+        {
+          "path": "casper/src/rust/merging/dag_merger.rs",
+          "symbols": [
+            "merge"
+          ]
+        }
+      ],
+      "checks": [
+        "SETTLED-PROBE"
+      ],
+      "pending_obligations": [
+        "The legacy ledger records a narrower historical discharge, not exact-candidate acceptance.",
+        "Rerun the settled-probe verifier and production tests after relevant source changes.",
+        "Retain the InvalidRejectedDeploy comparison and the complete soak evidence.",
+        "The whole-node finalization deadline is outside this claim."
+      ]
+    },
+    {
+      "id": "CLAIM-FINALITY-002",
+      "declared_status": "pending",
+      "candidate_status": "pending",
+      "specification": "docs/claims/repeat-deploy-carrier-index-equivalence.md",
+      "implementation": [
+        {
+          "path": "casper/src/rust/validate.rs",
+          "symbols": [
+            "Validate::repeat_deploy"
+          ]
+        },
+        {
+          "path": "block-storage/src/rust/dag/carrier_index.rs",
+          "symbols": [
+            "CarrierIndex"
+          ]
+        },
+        {
+          "path": "block-storage/src/rust/dag/block_dag_key_value_storage.rs",
+          "symbols": [
+            "BlockDagKeyValueStorage"
+          ]
+        }
+      ],
+      "checks": [
+        "BOUNDED-TLA"
+      ],
+      "pending_obligations": [
+        "Measure the dominant finalization work bound before selecting a residual repair.",
+        "Resolve the C5 conflict with repeat_deploy_certified_index_engagement_skips_the_scan without narrowing the required claim to pass a test.",
+        "Compare forced-index and reference validation, state roots, and rejected deploys.",
+        "Exercise durable insert, crash, restart, prune, read failure, and validation boundaries.",
+        "Add the carrier fuzz target and retain its seeds.",
+        "Keep a new work-bound claim separate if F1 identifies another production stage."
+      ]
+    },
+    {
+      "id": "CLAIM-SOAK-GATE-001",
+      "declared_status": "pending",
+      "candidate_status": "pending",
+      "specification": "docs/claims/soak-formal-gate.md",
+      "implementation": [
+        {
+          "path": "scripts/ci/check-tla-invariants.sh",
+          "symbols": [
+            "POST_FIX_CONFIGS",
+            "NEGATIVE_CONTROLS"
+          ]
+        },
+        {
+          "path": ".github/workflows/slashing-tests.yml",
+          "symbols": [
+            "tla-model-check"
+          ]
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "symbols": [
+            "lint"
+          ]
+        }
+      ],
+      "checks": [
+        "BOUNDED-TLA",
+        "FORMAL-GATE-TESTS"
+      ],
+      "pending_obligations": [
+        "Visible dev rules omit TLA+ invariant check. Classic required-check protection remains inaccessible with the current token.",
+        "Required-check enforcement must reject missing, skipped, canceled, or stale results.",
+        "The shell and workflow implementation require formal discharge or explicit reviewed treatment as trusted code.",
+        "The inventory checker validates records. It does not verify model truth or authorize acceptance."
+      ]
+    },
+    {
+      "id": "CLAIM-SOAK-001",
+      "declared_status": "proposed-unratified",
+      "candidate_status": "pending",
+      "specification": "docs/plans/soak-recurrence-prevention-2026-09-08.md",
+      "implementation": [
+        {
+          "path": "scripts/run-merge-recovery-soak.sh",
+          "symbols": [
+            "disk_free_mb",
+            "reclaim_disk_space",
+            "disk_usage_snapshot",
+            "disk_usage_tag_summary",
+            "bounded"
+          ]
+        },
+        {
+          "path": ".github/workflows/merge-recovery-soak.yml",
+          "symbols": [
+            "soak",
+            "retry_within_window"
+          ]
+        }
+      ],
+      "checks": [
+        "DISK-ADMISSION"
+      ],
+      "pending_obligations": [
+        "The maintainer must ratify the resource claim and any new mandatory CbC attributes.",
+        "Run the pre-ca85cfe3e disk RED in a disposable container without host cleanup mounts.",
+        "Create formal/tlaplus/soak_disk/SoakDisk.tla and matching admission controls during D1.",
+        "Prove aggregate response time, confirmed writer termination, and durable minimal evidence during D2.",
+        "Identify every writer and justify the common-unit reserve inequality R + G*T + J + M.",
+        "Identify and correct the growing consumer during D3.",
+        "Repin system-integration after PR #137 merges and repeat cross-repository verification.",
+        "Preserve earlier product failures and require full-duration completion independently of safe disk stops."
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "SETTLED-PROBE",
+      "command": "bash scripts/check-finalized-floor-ALL.sh",
+      "configurations": [
+        "formal/rocq/finalized_floor/_CoqProject",
+        "formal/rocq/finalized_floor/theories/SettledEffectProbe.v"
+      ],
+      "verifier": {
+        "name": "Rocq kernel and assumption checks",
+        "version": "Not retained in the legacy ledger. Record the version on revalidation."
+      },
+      "assumptions": [
+        "The mechanization uses complete lineage segments.",
+        "Walk-bound soundness and availability deferral remain documented seam premises."
+      ],
+      "bounds": [
+        "The proof concerns settled-probe semantics, not a 45-second finalization deadline."
+      ],
+      "production_tests": [
+        {
+          "path": "casper/src/rust/finality/deploy_lifecycle.rs",
+          "command": "cargo test --release -p casper --lib batched_walk_",
+          "result": "not-run-for-candidate"
+        },
+        {
+          "path": "casper/src/rust/finality/deploy_lifecycle.rs",
+          "command": "cargo test --release -p casper --lib floor_probe_",
+          "result": "not-run-for-candidate"
+        }
+      ],
+      "ci": {
+        "workflow": ".github/workflows/slashing-tests.yml",
+        "job": "No finalized_floor job is configured.",
+        "enforcement": "The rocq-build job rebuilds slashing, fork_choice, and rspace_guards only."
+      },
+      "evidence_refs": [
+        "SETTLED-LEGACY"
+      ],
+      "result": "historical-baseline",
+      "pending_obligations": [
+        "Retain exact-candidate verifier and test logs, tool versions, source digests, and end-to-end output comparisons."
+      ]
+    },
+    {
+      "id": "BOUNDED-TLA",
+      "command": "RUN_EXHAUSTIVE_TLA=0 TLA_TOOLS_JAR=\"$TLA_TOOLS_JAR\" bash scripts/ci/check-tla-invariants.sh --soak-pr",
+      "configurations": [
+        "formal/tlaplus/replay_liveness/MC_ReplayHotLoop.cfg",
+        "formal/tlaplus/carrier_index/MC_CarrierIndex.cfg",
+        "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.cfg",
+        "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.cfg"
+      ],
+      "verifier": {
+        "name": "TLC",
+        "version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+        "release": "v1.7.4",
+        "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+      },
+      "assumptions": [
+        "Carrier Crash leaves all modeled variables unchanged and does not model durable flush or restart.",
+        "Replay completion assumes scheduler fairness.",
+        "The existing production property uses in-memory operation traces."
+      ],
+      "bounds": [
+        "Carrier: two signatures, three blocks, watermark zero, and scan start at most two.",
+        "Replay: eight events, indexed replay, inline singleton, and yield interval four.",
+        "Execution: two workers, 120-second configuration timeout, and 60-second kill grace."
+      ],
+      "expected_results": [
+        {
+          "configuration": "MC_ReplayHotLoop",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_CarrierIndex",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_CarrierIndex_dag_first_pre_fix",
+          "exit_code": 12,
+          "invariant": "IndexCompleteForWindow"
+        },
+        {
+          "configuration": "MC_CarrierIndex_read_failure_pre_fix",
+          "exit_code": 12,
+          "invariant": "AbsenceProofSound"
+        }
+      ],
+      "production_tests": [
+        {
+          "path": "block-storage/tests/carrier_index_property_test.rs",
+          "command": "cargo test --release -p block-storage carrier_index_matches_reference_operation_trace",
+          "result": "historical-in-memory-baseline"
+        },
+        {
+          "path": "casper/tests/batch2/validate_test.rs",
+          "command": "cargo test --release -p casper repeat_deploy_",
+          "result": "not-run-for-candidate"
+        }
+      ],
+      "ci": {
+        "workflow": ".github/workflows/slashing-tests.yml",
+        "job": "tla-model-check",
+        "enforcement": "Hosted execution is confirmed. Required-check enforcement remains unconfirmed."
+      },
+      "evidence_refs": [
+        "B2-LOCAL",
+        "B2-HOSTED"
+      ],
+      "result": "historical-baseline",
+      "pending_obligations": [
+        "These finite baseline models establish neither durable production equivalence nor a whole-node deadline or disk reserve.",
+        "Retain a new matched production and formal RED/GREEN pair after F1 identifies the residual bound."
+      ]
+    },
+    {
+      "id": "FORMAL-GATE-TESTS",
+      "command": "bash scripts/ci/test-check-tla-invariants.sh && bash scripts/ci/test-soak-pr-formal-gate.sh",
+      "configurations": [
+        ".github/workflows/slashing-tests.yml",
+        "scripts/ci/check-tla-invariants.sh"
+      ],
+      "verifier": {
+        "name": "Bash and Ruby regression tests with verifier-process fixtures",
+        "version": "The fixture runtime is not pinned and is not proof authority."
+      },
+      "assumptions": [
+        "The fixture controls only the external verifier process.",
+        "Workflow parsing and local command execution do not establish GitHub required-check enforcement."
+      ],
+      "bounds": [
+        "B1 covers 14 classifier cases. B2 covers six event and failure scenarios."
+      ],
+      "production_tests": [
+        {
+          "path": "scripts/ci/test-check-tla-invariants.sh",
+          "command": "bash scripts/ci/test-check-tla-invariants.sh",
+          "result": "historical-baseline"
+        },
+        {
+          "path": "scripts/ci/test-soak-pr-formal-gate.sh",
+          "command": "bash scripts/ci/test-soak-pr-formal-gate.sh",
+          "result": "historical-baseline"
+        }
+      ],
+      "ci": {
+        "workflow": ".github/workflows/ci.yml",
+        "job": "lint",
+        "enforcement": "Visible dev rules require Lint. These fixture tests do not replace the actual formal job."
+      },
+      "evidence_refs": [
+        "B1-LOCAL",
+        "B2-LOCAL"
+      ],
+      "result": "historical-baseline",
+      "pending_obligations": [
+        "Verify missing, skipped, canceled, and stale required-check handling through the hosted enforcement boundary."
+      ]
+    },
+    {
+      "id": "DISK-ADMISSION",
+      "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+      "configurations": [
+        "scripts/run-merge-recovery-soak.sh",
+        ".github/workflows/merge-recovery-soak.yml",
+        ".github/oci-validation.env"
+      ],
+      "verifier": {
+        "name": "Bash driver regression tests",
+        "version": "The historical record does not retain the runtime version. The resource model does not exist yet."
+      },
+      "assumptions": [
+        "Historical pre-fix execution requires a disposable container without host cleanup mounts.",
+        "Successful cleanup is not an assumption.",
+        "The current harness pin identifies PR #137 head, not its eventual merged revision."
+      ],
+      "bounds": [
+        "The known admission scenario holds free space at 7000 MB with no-op cleanup.",
+        "The driver must refuse admission below floor plus band. This does not bound all writers."
+      ],
+      "production_tests": [
+        {
+          "path": "scripts/bench/test-run-merge-recovery-soak.sh",
+          "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+          "result": "not-run-in-this-cycle"
+        }
+      ],
+      "ci": {
+        "workflow": ".github/workflows/ci.yml",
+        "job": "lint",
+        "enforcement": "The driver regression is separate from the missing formal resource and full-duration acceptance checks."
+      },
+      "evidence_refs": [
+        "DISK-INCIDENT",
+        "PENDING-PLAN"
+      ],
+      "result": "not-run",
+      "pending_obligations": [
+        "D1 requires historical production RED and the matching model counterexample.",
+        "D2 and D3 require aggregate response and all-writer resource bounds, not just a safe stop."
+      ]
+    }
+  ],
+  "evidence": {
+    "SETTLED-LEGACY": {
+      "path": "docs/cbc-evidence/casper-src-rust-finality-deploy-lifecycle-rs.md",
+      "role": "historical-baseline",
+      "identity": "Legacy ledger: c9aff7732, verified 2026-08-27T23:01:30Z.",
+      "limitations": [
+        "The legacy ledger lacks complete source, tool, and log digests. It is not new candidate acceptance."
+      ]
+    },
+    "B1-LOCAL": {
+      "path": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.json",
+      "role": "historical-baseline",
+      "identity": "7034e21683044fb1525d213d5a1ae2e16bbb57c0",
+      "limitations": [
+        "The source and claim digests identify the historical B1 revision, not the current files."
+      ]
+    },
+    "B2-LOCAL": {
+      "path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.json",
+      "role": "historical-baseline",
+      "identity": "3fee1ca8a111b8d6435d926902cd4d991e652e2a",
+      "limitations": [
+        "The manifest binds local bounded model checks and process fixtures, not a production repair."
+      ]
+    },
+    "B2-HOSTED": {
+      "path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.json",
+      "role": "hosted-baseline",
+      "identity": "PR #399 formal run 34228660038, attempt 1, job 102069244605.",
+      "limitations": [
+        "The workflow checks a synthetic merge. The observation records its actual checkout separately from the PR head.",
+        "One successful formal job does not establish success of the whole workflow or required-check enforcement."
+      ]
+    },
+    "DISK-INCIDENT": {
+      "path": "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md",
+      "role": "incident",
+      "identity": "Runs 33939315110, 33978505238, and 34056342543.",
+      "limitations": [
+        "The incidents identify disk exhaustion after protection fired. They do not identify the growing consumer."
+      ]
+    },
+    "PENDING-PLAN": {
+      "path": "docs/plans/soak-recurrence-prevention-2026-09-08.md",
+      "role": "pending-plan",
+      "identity": "Approved prevention plan dated 2026-09-08.",
+      "limitations": [
+        "The plan states obligations. It is not verifier or workload evidence."
+      ]
+    }
+  },
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pending",
+      "checks": [
+        "BOUNDED-TLA",
+        "FORMAL-GATE-TESTS"
+      ],
+      "pending_obligations": [
+        "Confirm required-check enforcement and obtain the complete acceptance candidate identity."
+      ]
+    },
+    {
+      "id": "D1",
+      "status": "pending",
+      "checks": [
+        "DISK-ADMISSION"
+      ],
+      "pending_obligations": [
+        "Retain paired historical production and formal RED/GREEN evidence in disposable isolation."
+      ]
+    },
+    {
+      "id": "D2",
+      "status": "pending",
+      "checks": [
+        "DISK-ADMISSION"
+      ],
+      "pending_obligations": [
+        "Add emergency-response fault tests and a model with one aggregate response deadline."
+      ]
+    },
+    {
+      "id": "O1",
+      "status": "pending",
+      "checks": [
+        "BOUNDED-TLA",
+        "DISK-ADMISSION"
+      ],
+      "pending_obligations": [
+        "Exercise emission, both collectors, labels, units, restart epochs, artifact retrieval, and controlled-stop retrieval."
+      ]
+    },
+    {
+      "id": "F1",
+      "status": "pending",
+      "checks": [
+        "BOUNDED-TLA"
+      ],
+      "pending_obligations": [
+        "Measure authenticated work dimensions, queues, throughput, and repeated work in a safe non-overlapping diagnostic run."
+      ]
+    },
+    {
+      "id": "F2",
+      "status": "pending",
+      "checks": [
+        "SETTLED-PROBE",
+        "BOUNDED-TLA"
+      ],
+      "pending_obligations": [
+        "Select and register the measured work-bound claim, production property, model, and expected-failure control after F1."
+      ]
+    },
+    {
+      "id": "F3",
+      "status": "pending",
+      "checks": [
+        "BOUNDED-TLA"
+      ],
+      "pending_obligations": [
+        "Resolve C5 and retain forced-path differential, durable crash-boundary, and fuzz results."
+      ]
+    },
+    {
+      "id": "D3",
+      "status": "pending",
+      "checks": [
+        "DISK-ADMISSION"
+      ],
+      "pending_obligations": [
+        "Identify every disk writer and test the smallest safe lifecycle correction with a matching resource-model control."
+      ]
+    },
+    {
+      "id": "A1",
+      "status": "pending",
+      "checks": [
+        "SETTLED-PROBE",
+        "BOUNDED-TLA",
+        "FORMAL-GATE-TESTS",
+        "DISK-ADMISSION"
+      ],
+      "pending_obligations": [
+        "Add every new required check before acceptance. Baseline check mappings are not complete acceptance coverage.",
+        "Complete the exact-candidate 60h stability soak with unchanged workload and the 45-second finalization limit.",
+        "Retain independent finalization and disk verdicts and every iteration failure."
+      ]
+    }
+  ],
+  "acceptance": {
+    "status": "pending",
+    "identity": {
+      "workflow_control_sha": null,
+      "node_sha": null,
+      "image_digest": null,
+      "harness_sha": null,
+      "configuration": null,
+      "workload_profile": null,
+      "run_id": null,
+      "run_attempt": null
+    },
+    "pending_obligations": [
+      "No acceptance run exists for the combined repair.",
+      "Do not infer the tested node SHA from an Actions workflow head SHA.",
+      "Retain node-metrics-timeseries.csv, all iteration outcomes, labels, units, and restart epochs.",
+      "A safe early stop does not complete the soak or erase earlier finalization failures."
+    ]
+  }
+}

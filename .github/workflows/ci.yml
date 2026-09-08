@@ -347,6 +347,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash scripts/ci/test-soak-pr-formal-gate.sh
 
+      - name: Verify soak claim inventory
+        shell: bash -euo pipefail {0}
+        run: bash scripts/ci/test-soak-claim-inventory.sh
+
       - name: Verify coverage summary aggregation
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-coverage-summary.sh
