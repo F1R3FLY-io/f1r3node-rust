@@ -1,7 +1,19 @@
 use models::rhoapi::If;
-use models::rust::par_bag::ParComponentItem;
+use models::rust::par_bag::{
+    canonical_connective_parts, canonical_count_expr_is_hole, CanonicalConnectiveParts,
+    CanonicalOwnedConnectiveChildren, ParBagComponent, ParComponentItem,
+};
+use models::rust::rholang::protobuf_cursor::{
+    CanonicalByteRange, CanonicalParRegionIndex, CanonicalRegionDelimitedCursor,
+    CanonicalRegionDelimitedRun, ProtobufRegion,
+};
+use models::rust::rholang::protobuf_decoder;
 
 use super::exports::*;
+
+#[cfg(test)]
+#[path = "../../../../tests/support/par_count_byte_native.rs"]
+mod byte_native_tests;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum CountBound {
@@ -161,20 +173,108 @@ impl ParCount {
 
     /// Borrowed entry used by the production PDA while it still owns the AST.
     /// Avoids cloning an entire recursive connective solely to compute bounds.
-    pub fn min_max_par_ref(&self, par: &Par) -> (ParCount, ParCount) {
-        self.min_max_drive(CountNode::Par(par))
-    }
+    pub fn min_max_par_ref(&self, par: &Par) -> (ParCount, ParCount) { self.min_max_resident(par) }
 
     /// Borrowed entry used by the production PDA while it still owns the AST.
     /// The legacy owned method remains for source compatibility.
     pub fn min_max_con_ref(&self, con: &Connective) -> (ParCount, ParCount) {
-        self.min_max_drive(CountNode::Connective(con))
+        self.min_max_drive::<ResidentByteSource>(CountNode::Connective(con))
+    }
+
+    fn min_max_resident(&self, par: &Par) -> (ParCount, ParCount) {
+        let mut minimum = Self::new(par);
+        minimum.exprs = CountBound::Finite(0);
+        let mut hole = false;
+        par.visit_encoded::<Expr>(|entry| {
+            let multiplicity = entry.multiplicity();
+            let is_hole = canonical_count_expr_is_hole(entry.payload()).unwrap_or_else(|| {
+                #[cfg(test)]
+                byte_native_tests::decoded_component();
+                let expr = entry
+                    .decode()
+                    .expect("Par invariant: expression endpoints are canonical");
+                expression_is_hole(&expr)
+            });
+            if is_hole {
+                hole = true;
+            } else {
+                minimum.exprs = minimum.exprs.add(CountBound::from(multiplicity.get()));
+            }
+        });
+        let mut result = (
+            minimum.clone(),
+            if hole { Self::unbounded() } else { minimum },
+        );
+        par.visit_encoded::<Connective>(|entry| {
+            #[cfg(test)]
+            byte_native_tests::copied_endpoint(entry.payload().len(), entry.multiplicity().get());
+            let region = ProtobufRegion::copy_from_slice(entry.payload());
+            let child = self.min_max_drive::<DecodedSource>(CountNode::EncodedConnective(region));
+            result.0 = result.0.add(&child.0.scale(entry.multiplicity().get()));
+            result.1 = result.1.add(&child.1.scale(entry.multiplicity().get()));
+        });
+        result
+    }
+
+    fn encoded_par_frame(
+        &self,
+        index: CanonicalParRegionIndex,
+    ) -> ((ParCount, ParCount), Option<CanonicalRegionDelimitedCursor>) {
+        let count = |run: Option<CanonicalRegionDelimitedRun>| {
+            let mut total = 0u128;
+            if let Some(run) = run {
+                let mut cursor = run.cursor();
+                while cursor
+                    .next_region()
+                    .expect("canonical Par family run")
+                    .is_some()
+                {
+                    total += 1;
+                }
+            }
+            CountBound::Finite(total)
+        };
+        let mut minimum = ParCount {
+            sends: count(index.sends),
+            receives: count(index.receives),
+            news: count(index.news),
+            exprs: CountBound::Finite(0),
+            matches: count(index.matches),
+            unforgeables: count(index.unforgeables),
+            bundles: count(index.bundles),
+            conditionals: count(index.conditionals),
+        };
+        let mut hole = false;
+        if let Some(run) = index.exprs {
+            let mut cursor = run.cursor();
+            while let Some(expr) = cursor.next_region().expect("canonical Expr run") {
+                let is_hole = canonical_count_expr_is_hole(expr.as_bytes()).unwrap_or_else(|| {
+                    let decoded = decode_count_component(
+                        expr.as_bytes(),
+                        Expr::decode_protobuf_deferred_epathmap_validation,
+                    );
+                    expression_is_hole(&decoded)
+                });
+                if is_hole {
+                    hole = true;
+                } else {
+                    minimum.exprs = minimum.exprs.add(CountBound::Finite(1));
+                }
+            }
+        }
+        let result = (
+            minimum.clone(),
+            if hole { Self::unbounded() } else { minimum },
+        );
+        (result, index.connectives.map(|run| run.cursor()))
     }
 
     fn par_frame(&self, par: &Par) -> (usize, (ParCount, ParCount)) {
         let mut wildcard = false;
         let mut concrete_exprs = 0u128;
         par.try_visit_components::<Expr, std::convert::Infallible>(|expr, multiplicity| {
+            #[cfg(test)]
+            byte_native_tests::decoded_component();
             if matches!(
                 expr.as_ref().expr_instance.as_ref(),
                 Some(EVarBody(EVar {
@@ -211,6 +311,8 @@ impl ParCount {
         work.push(CountWork::ReducePar { child_count, base });
         par.try_visit_components::<Connective, std::convert::Infallible>(
             |connective, multiplicity| {
+                #[cfg(test)]
+                byte_native_tests::decoded_component();
                 work.push(CountWork::Scale(multiplicity.get()));
                 work.push(CountWork::Visit(match connective {
                     ParComponentItem::Borrowed(value) => CountNode::Connective(value),
@@ -227,6 +329,8 @@ impl ParCount {
         work.push(CountWork::ReducePar { child_count, base });
         par.try_into_components::<Connective, std::convert::Infallible>(
             |connective, multiplicity| {
+                #[cfg(test)]
+                byte_native_tests::decoded_component();
                 work.push(CountWork::Scale(multiplicity.get()));
                 work.push(CountWork::Visit(CountNode::OwnedConnective(connective)));
                 Ok(())
@@ -243,26 +347,108 @@ impl ParCount {
     /// children are evaluated left-to-right, their values are reduced in one
     /// heap-resident frame, and the public entry points retain their original
     /// owned signatures.
-    fn min_max_drive(&self, root: CountNode<'_>) -> (ParCount, ParCount) {
+    fn min_max_drive<S: ResidentCountSource>(&self, root: CountNode<'_>) -> (ParCount, ParCount) {
         let mut work = vec![CountWork::Visit(root)];
         let mut values = Vec::new();
 
         while let Some(task) = work.pop() {
+            #[cfg(test)]
+            byte_native_tests::live_work(work.len() + 1);
             match task {
-                CountWork::Visit(CountNode::Par(par)) => self.schedule_borrowed_par(par, &mut work),
+                CountWork::Visit(CountNode::Par(par)) => {
+                    S::borrowed(self, par, &mut work, &mut values)
+                }
+                CountWork::Visit(CountNode::EncodedPar(region)) => {
+                    #[cfg(test)]
+                    byte_native_tests::visited_region(false, &region);
+                    match CanonicalParRegionIndex::parse(region.clone()) {
+                        Ok(index) => {
+                            let (result, children) = self.encoded_par_frame(index);
+                            if let Some(children) = children {
+                                work.push(CountWork::ContinueFold {
+                                    operator: CountOperator::Parallel,
+                                    children: CountChildren::EncodedConnectives(children),
+                                    result,
+                                });
+                            } else {
+                                values.push(result);
+                            }
+                        }
+                        Err(_) => work.push(CountWork::Visit(CountNode::OwnedPar(
+                            decode_count_component(region.as_bytes(), |bytes| {
+                                protobuf_decoder::decode_par(bytes)
+                            }),
+                        ))),
+                    }
+                }
+                CountWork::Visit(CountNode::EncodedConnective(region)) => {
+                    #[cfg(test)]
+                    byte_native_tests::visited_region(true, &region);
+                    match canonical_connective_parts(region.as_bytes()) {
+                        Some(
+                            parts @ (CanonicalConnectiveParts::And(_)
+                            | CanonicalConnectiveParts::Or(_)),
+                        ) => {
+                            let (operator, children) = match parts {
+                                CanonicalConnectiveParts::And(children) => {
+                                    (CountOperator::And, children)
+                                }
+                                CanonicalConnectiveParts::Or(children) => {
+                                    (CountOperator::Or, children)
+                                }
+                                _ => unreachable!("the matched connective is AND or OR"),
+                            };
+                            let body = region
+                                .subregion(CanonicalByteRange {
+                                    start: region.len() - children.message().len(),
+                                    end: region.len(),
+                                })
+                                .expect("canonical connective body ends at its owner boundary");
+                            let children = children
+                                .bind_owned(body)
+                                .expect("canonical connective cursor retains its exact owner");
+                            work.push(CountWork::ContinueFold {
+                                operator,
+                                children: CountChildren::EncodedPars(children),
+                                result: operator.seed(),
+                            });
+                        }
+                        Some(CanonicalConnectiveParts::Not(_)) => {
+                            values.push((Self::zero(), Self::unbounded()));
+                        }
+                        Some(
+                            CanonicalConnectiveParts::VarRef | CanonicalConnectiveParts::Absent,
+                        ) => {
+                            values.push((Self::zero(), Self::zero()));
+                        }
+                        Some(CanonicalConnectiveParts::Predicate { .. }) => {
+                            let mut one = Self::zero();
+                            one.exprs = CountBound::Finite(1);
+                            values.push((one.clone(), one));
+                        }
+                        None => work.push(CountWork::Visit(CountNode::OwnedConnective(
+                            decode_count_component(
+                                region.as_bytes(),
+                                Connective::decode_protobuf_deferred_epathmap_validation,
+                            ),
+                        ))),
+                    }
+                }
                 CountWork::Visit(CountNode::Connective(connective)) => {
                     match connective.connective_instance.as_ref() {
                         Some(ConnAndBody(ConnectiveBody { ps })) => {
-                            work.push(CountWork::ReduceAnd(ps.len()));
-                            for par in ps.iter().rev() {
-                                work.push(CountWork::Visit(CountNode::Par(par)));
-                            }
+                            work.push(CountWork::ContinueFold {
+                                operator: CountOperator::And,
+                                children: CountChildren::BorrowedPars(ps.iter()),
+                                result: CountOperator::And.seed(),
+                            });
                         }
                         Some(ConnOrBody(ConnectiveBody { ps })) => {
-                            work.push(CountWork::ReduceOr(ps.len()));
-                            for par in ps.iter().rev() {
-                                work.push(CountWork::Visit(CountNode::Par(par)));
-                            }
+                            work.push(CountWork::ContinueFold {
+                                operator: CountOperator::Or,
+                                children: CountChildren::BorrowedPars(ps.iter()),
+                                result: CountOperator::Or.seed(),
+                            });
                         }
                         Some(ConnNotBody(_)) => values.push((Self::zero(), Self::unbounded())),
                         None | Some(VarRefBody(_)) => {
@@ -281,16 +467,18 @@ impl ParCount {
                 CountWork::Visit(CountNode::OwnedConnective(connective)) => {
                     match connective.connective_instance {
                         Some(ConnAndBody(ConnectiveBody { ps })) => {
-                            work.push(CountWork::ReduceAnd(ps.len()));
-                            for par in ps.into_iter().rev() {
-                                work.push(CountWork::Visit(CountNode::OwnedPar(par)));
-                            }
+                            work.push(CountWork::ContinueFold {
+                                operator: CountOperator::And,
+                                children: CountChildren::OwnedPars(ps.into_iter()),
+                                result: CountOperator::And.seed(),
+                            });
                         }
                         Some(ConnOrBody(ConnectiveBody { ps })) => {
-                            work.push(CountWork::ReduceOr(ps.len()));
-                            for par in ps.into_iter().rev() {
-                                work.push(CountWork::Visit(CountNode::OwnedPar(par)));
-                            }
+                            work.push(CountWork::ContinueFold {
+                                operator: CountOperator::Or,
+                                children: CountChildren::OwnedPars(ps.into_iter()),
+                                result: CountOperator::Or.seed(),
+                            });
                         }
                         Some(ConnNotBody(_)) => values.push((Self::zero(), Self::unbounded())),
                         None | Some(VarRefBody(_)) => {
@@ -307,7 +495,7 @@ impl ParCount {
                     }
                 }
                 CountWork::Visit(CountNode::OwnedPar(par)) => {
-                    self.schedule_owned_par(par, &mut work);
+                    S::owned(self, par, &mut work, &mut values);
                 }
                 CountWork::Scale(amount) => {
                     let (minimum, maximum) = values
@@ -324,23 +512,35 @@ impl ParCount {
                     }
                     values.push(result);
                 }
-                CountWork::ReduceAnd(child_count) => {
-                    let start = values.len() - child_count;
-                    let mut result = (Self::zero(), Self::unbounded());
-                    for (child_min, child_max) in values.drain(start..) {
-                        result.0 = result.0.max(&child_min);
-                        result.1 = result.1.min(&child_max);
+                CountWork::ContinueFold {
+                    operator,
+                    mut children,
+                    result,
+                } => {
+                    if let Some(child) = children.next() {
+                        work.push(CountWork::AcceptChild {
+                            operator,
+                            children,
+                            result,
+                        });
+                        work.push(CountWork::Visit(child));
+                    } else {
+                        values.push(result);
                     }
-                    values.push(result);
                 }
-                CountWork::ReduceOr(child_count) => {
-                    let start = values.len() - child_count;
-                    let mut result = (Self::unbounded(), Self::zero());
-                    for (child_min, child_max) in values.drain(start..) {
-                        result.0 = result.0.min(&child_min);
-                        result.1 = result.1.max(&child_max);
-                    }
-                    values.push(result);
+                CountWork::AcceptChild {
+                    operator,
+                    children,
+                    result,
+                } => {
+                    let child = values
+                        .pop()
+                        .expect("one interval per suspended count child");
+                    work.push(CountWork::ContinueFold {
+                        operator,
+                        children,
+                        result: operator.combine(result, child),
+                    });
                 }
             }
         }
@@ -361,6 +561,146 @@ enum CountNode<'a> {
     Connective(&'a Connective),
     OwnedPar(Par),
     OwnedConnective(Connective),
+    EncodedPar(ProtobufRegion),
+    EncodedConnective(ProtobufRegion),
+}
+
+fn expression_is_hole(expr: &Expr) -> bool {
+    matches!(
+        expr.expr_instance.as_ref(),
+        Some(EVarBody(EVar {
+            v: Some(Var {
+                var_instance: Some(FreeVar(_) | Wildcard(_))
+            }),
+        }))
+    )
+}
+
+fn decode_count_component<T, E: std::fmt::Debug>(
+    bytes: &[u8],
+    decode: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> T {
+    #[cfg(test)]
+    byte_native_tests::decoded_component();
+    decode(bytes).expect("Par count cursor delegates unproved framing to its generated decoder")
+}
+
+trait ResidentCountSource {
+    fn borrowed<'a>(
+        counter: &ParCount,
+        par: &'a Par,
+        work: &mut Vec<CountWork<'a>>,
+        values: &mut Vec<(ParCount, ParCount)>,
+    );
+    fn owned<'a>(
+        counter: &ParCount,
+        par: Par,
+        work: &mut Vec<CountWork<'a>>,
+        values: &mut Vec<(ParCount, ParCount)>,
+    );
+}
+
+struct ResidentByteSource;
+struct DecodedSource;
+
+impl ResidentCountSource for ResidentByteSource {
+    fn borrowed<'a>(
+        counter: &ParCount,
+        par: &'a Par,
+        _work: &mut Vec<CountWork<'a>>,
+        values: &mut Vec<(ParCount, ParCount)>,
+    ) {
+        values.push(counter.min_max_resident(par));
+    }
+
+    fn owned<'a>(
+        counter: &ParCount,
+        par: Par,
+        _work: &mut Vec<CountWork<'a>>,
+        values: &mut Vec<(ParCount, ParCount)>,
+    ) {
+        values.push(counter.min_max_resident(&par));
+    }
+}
+
+impl ResidentCountSource for DecodedSource {
+    fn borrowed<'a>(
+        counter: &ParCount,
+        par: &'a Par,
+        work: &mut Vec<CountWork<'a>>,
+        _values: &mut Vec<(ParCount, ParCount)>,
+    ) {
+        counter.schedule_borrowed_par(par, work);
+    }
+
+    fn owned<'a>(
+        counter: &ParCount,
+        par: Par,
+        work: &mut Vec<CountWork<'a>>,
+        _values: &mut Vec<(ParCount, ParCount)>,
+    ) {
+        counter.schedule_owned_par(par, work);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CountOperator {
+    Parallel,
+    And,
+    Or,
+}
+
+impl CountOperator {
+    fn seed(self) -> (ParCount, ParCount) {
+        match self {
+            Self::Parallel => (ParCount::zero(), ParCount::zero()),
+            Self::And => (ParCount::zero(), ParCount::unbounded()),
+            Self::Or => (ParCount::unbounded(), ParCount::zero()),
+        }
+    }
+
+    fn combine(
+        self,
+        left: (ParCount, ParCount),
+        right: (ParCount, ParCount),
+    ) -> (ParCount, ParCount) {
+        match self {
+            Self::Parallel => (left.0.add(&right.0), left.1.add(&right.1)),
+            Self::And => (left.0.max(&right.0), left.1.min(&right.1)),
+            Self::Or => (left.0.min(&right.0), left.1.max(&right.1)),
+        }
+    }
+}
+
+enum CountChildren<'a> {
+    BorrowedPars(std::slice::Iter<'a, Par>),
+    OwnedPars(std::vec::IntoIter<Par>),
+    EncodedPars(CanonicalOwnedConnectiveChildren<ProtobufRegion>),
+    EncodedConnectives(CanonicalRegionDelimitedCursor),
+}
+
+impl<'a> CountChildren<'a> {
+    fn next(&mut self) -> Option<CountNode<'a>> {
+        match self {
+            Self::BorrowedPars(children) => children.next().map(CountNode::Par),
+            Self::OwnedPars(children) => children.next().map(CountNode::OwnedPar),
+            Self::EncodedPars(children) => {
+                let range = children.next()?;
+                let region = children
+                    .body()
+                    .subregion(CanonicalByteRange {
+                        start: range.start,
+                        end: range.end,
+                    })
+                    .expect("validated child range remains in its retained connective owner");
+                Some(CountNode::EncodedPar(region))
+            }
+            Self::EncodedConnectives(children) => children
+                .next_region()
+                .expect("canonical connective family run")
+                .map(CountNode::EncodedConnective),
+        }
+    }
 }
 
 enum CountWork<'a> {
@@ -369,7 +709,15 @@ enum CountWork<'a> {
         child_count: usize,
         base: (ParCount, ParCount),
     },
-    ReduceAnd(usize),
-    ReduceOr(usize),
     Scale(u64),
+    ContinueFold {
+        operator: CountOperator,
+        children: CountChildren<'a>,
+        result: (ParCount, ParCount),
+    },
+    AcceptChild {
+        operator: CountOperator,
+        children: CountChildren<'a>,
+        result: (ParCount, ParCount),
+    },
 }

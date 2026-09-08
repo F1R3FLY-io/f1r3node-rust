@@ -95,11 +95,21 @@ in the task and stack-safety report §5.29.9; no current full-workspace pass fol
 ### Executable binding checkpoint
 
 `scripts/check-stack-safe-pda-proofs.sh --matcher-counts` executes the prerequisite
-model, ten closed-capstone guards and whole-module kernel check, then requires
-exactly 8, 3, 16, 8 and 57 nonignored tests in the count-interval, count-fold,
-connective-isolation, conditional-family and PDA-equivalence suites respectively.
-The focused mode and full runner share the same functions. The September 7–8 run
-passed all 92 selected Rust tests; unrelated workspace tests are not included.
+model, ten interval and 21 byte-native closed-report guards and both whole-module
+kernel checks. It requires exactly 8, 3, 16, 8 and 57 nonignored tests in the
+count-interval, count-fold, connective-isolation, conditional-family and
+PDA-equivalence suites, then 11 byte-native count tests, three generated Expr
+classifier tests and four models-local physical byte-read tests (110 total).
+The focused mode and full runner share the same runtime functions. The historical
+September 7–8 run passed the original 92 selected Rust tests; that result does not
+establish the subsequently extended gate or include unrelated workspace tests.
+
+The subsequent byte-native implementation run passes the extended 110-test gate,
+31 closed reports and both kernel checks. Its log SHA-256 is
+`f0b61715a64f1c0fc3238ce9007a7cf00f9f440a9fac330594a9a3541f93a936`;
+the stack-safety report §5.29.9 records the command, bounds and remaining resource
+qualification. Private test support resides in the respective `tests/support`
+directories; production builds contain no measurement counters.
 
 | Invariant group | Executed implementation binding |
 |---|---|

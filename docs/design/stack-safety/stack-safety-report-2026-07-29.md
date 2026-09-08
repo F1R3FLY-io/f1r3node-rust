@@ -8858,6 +8858,61 @@ stack size or a depth-tight physical allocation bound. This formal checkpoint do
 not change the measured runtime ladder above: 8344/8345 still must implement and
 qualify the byte-native route before 8341 and parent 5855 can close.
 
+**BYTE-NATIVE IMPLEMENTATION CHECKPOINT — 2026-09-08.** The original depth-4,096
+`min_max_par` probe now completes on its original 128-KiB stack: construction
+108,634,356 µs, borrowed count 6,253 µs and root drop 50,331 µs; exit zero,
+one passing test. The release command used four build jobs under systemd
+`MemoryHigh=4G`, `MemoryMax=6G`, `MemorySwapMax=0`, `CPUQuota=400%`,
+`TasksMax=512` and a 900-second scope watchdog. The complete log
+`/tmp/rspace-8344-depth4096-20260908.log` has SHA-256
+`8d88b51cbd5e6fcb94bef879a4132e4bbd3a4b4737c9ebb12a8c96d2e1136737`.
+The three phase observations are retained as
+[machine-readable measurements](measurements/par-count-byte-native-2026-09-08.tsv).
+This supersedes the timeout for this count path, not the construction cost or
+the remaining campaign acceptance gates. The values are phase-attributed diagnostic
+observations, not a controlled timing distribution or application speedup claim.
+
+Resident counts now borrow each Expr endpoint for hole classification and copy only
+the currently visited Connective endpoint into an immutable byte owner. Nested Pars
+and Connectives retain subranges of that owner; each suspended AND/OR frame stores
+its cursor and accumulated interval. Completed endpoint results are scaled once by
+their multiplicity. The resident endpoint visitor finishes that subtree before
+advancing, so sibling payload copies are not retained together. Structural public
+Connective entries retain their child Pars and never serialize the whole input to
+obtain counts. Unproved framing still delegates to the generated decoder; fallback
+work is excluded from the admitted byte-path resource claim.
+
+The three pre-implementation decoder-work controls failed with 9, 1 and 1 decoded
+components against a required zero, then all passed after the byte refinement.
+An expanded nine-test checkpoint passed schema-arm, duplicate-family, ordered-visit,
+depth/width, multiplicity, copy and decoder-authority checks; metadata, terminal-arm
+and full registered integration checks are tracked separately rather than inferred
+from that checkpoint. Models-local instrumentation measures actual varint byte
+fetches, including scalar payload bytes: index/run and branch cursor paths read a
+position at most twice; Wildcard classification reads its key three times. Four
+tests pass, including a real restarted-prefix control that increases total reads
+from 128 to 1,120 and the hottest position to 33 reads, rejecting the three-read
+bound. These counters do not measure PathMap zipper reconstruction, allocation or
+unbounded malformed-input retries. Source-level cursor-call counts are not reported
+as physical byte reads. Raw diagnostics and qualification limits are retained in
+pgmcp task 8344; resource task 8345 and parent closure remain required.
+
+**REGISTERED IMPLEMENTATION GATE PASSED.** The final bounded
+`scripts/check-stack-safe-pda-proofs.sh --matcher-counts` run exits zero and passes
+31 closed reports, both kernel checks and exactly 110 selected Rust tests:
+8 interval, 3 independent fold, 16 connective-isolation, 8 conditional-family,
+57 PDA-equivalence, 11 byte-native count, 3 Expr classification and 4 physical-read
+tests. Every suite reports zero failures and zero ignored tests. The eight-family
+fixtures now also exercise owned and borrowed public Connective entry points at
+maximum and maximum-plus-one compressed counts. Metadata invariance and terminal
+Connectives, including all signed-boundary VarRef pairs and NOT without descent,
+are included. The earlier 10-test guard correctly rejected the newly expanded
+11-test result; the final run uses the updated explicit inventory. Final log
+`/tmp/rspace-8344-registered-final-20260908.log` has SHA-256
+`f0b61715a64f1c0fc3238ce9007a7cf00f9f440a9fac330594a9a3541f93a936`.
+This establishes the implementation checkpoint, not the separate allocation/resource
+qualification, a timing benchmark distribution or the full-workspace release gate.
+
 ---
 
 ### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]

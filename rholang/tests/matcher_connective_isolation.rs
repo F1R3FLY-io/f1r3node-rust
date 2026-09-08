@@ -293,6 +293,25 @@ fn every_partitioned_par_family_admits_compressed_multiplicity_above_the_legacy_
                     .unwrap();
                 assert_eq!(endpoint_total, expected_total);
                 assert_eq!(target.family_cardinality_exact::<$family>(), endpoint_total);
+                let mut expected_interval = ParCount::zero();
+                expected_interval.$field = CountBound::Finite(expected_total);
+                let structural = Connective {
+                    connective_instance: Some(ConnAndBody(ConnectiveBody {
+                        ps: vec![target.clone()],
+                    })),
+                };
+                assert_eq!(
+                    zero.min_max_con_ref(&structural),
+                    (expected_interval.clone(), expected_interval.clone()),
+                    "borrowed {} connective entry must retain compressed child mass",
+                    $label,
+                );
+                assert_eq!(
+                    zero.min_max_con(structural),
+                    (expected_interval.clone(), expected_interval),
+                    "owned {} connective entry must retain compressed child mass",
+                    $label,
+                );
                 assert_eq!(
                     target.family_distinct_len::<$family>(),
                     1 + usize::from(other_count != 0)

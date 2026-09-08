@@ -8,11 +8,11 @@ use models::rhoapi::{
     GUnforgeable, If, KeyValuePair, Match, New, Par, Receive, Send, Var,
 };
 use models::rust::par_bag::{
-    canonical_collection_remainder, canonical_connective_parts, canonical_expr_oneof_tag,
-    canonical_expr_parts, canonical_if_parts, canonical_match_parts, canonical_new_parts,
-    canonical_par_connective_used, canonical_par_locally_free_is_empty, canonical_receive_parts,
-    canonical_send_parts, canonical_single_expr_from_par, canonical_single_if_from_par,
-    canonical_single_match_from_par, canonical_single_new_from_par,
+    canonical_collection_remainder, canonical_connective_parts, canonical_count_expr_is_hole,
+    canonical_expr_oneof_tag, canonical_expr_parts, canonical_if_parts, canonical_match_parts,
+    canonical_new_parts, canonical_par_connective_used, canonical_par_locally_free_is_empty,
+    canonical_receive_parts, canonical_send_parts, canonical_single_expr_from_par,
+    canonical_single_if_from_par, canonical_single_match_from_par, canonical_single_new_from_par,
     canonical_single_receive_from_par, canonical_single_send_from_par, with_component_key,
     CanonicalConnectiveCursorError, CanonicalConnectiveParts, CanonicalExprParts,
     CanonicalParBagKey, ParBag, ParBagCodecError, ParBagProtobufError, ParComponentTag,
@@ -479,6 +479,132 @@ fn canonical_expr_outer_envelope_rejects_wrong_wire_for_every_generated_arm() {
             canonical_expr_oneof_tag(&bytes),
             None,
             "{label}: a descriptor-incompatible wire type was accepted"
+        );
+    }
+}
+
+fn assert_count_expr_classification(expr: &Expr) -> Vec<u8> {
+    use models::rhoapi::var::VarInstance;
+    use models::rhoapi::EVar;
+    use models::rust::rholang::{protobuf_decoder, protobuf_encoder};
+
+    let bytes = protobuf_encoder::encode_to_vec(expr);
+    let decoded =
+        protobuf_decoder::decode_expr(bytes.as_slice()).expect("generated Expr bytes decode");
+    let expected = matches!(
+        decoded.expr_instance,
+        Some(ExprInstance::EVarBody(EVar {
+            v: Some(Var {
+                var_instance: Some(VarInstance::FreeVar(_) | VarInstance::Wildcard(_)),
+            }),
+        }))
+    );
+    assert_eq!(canonical_count_expr_is_hole(&bytes), Some(expected));
+    bytes
+}
+
+#[test]
+fn canonical_count_expr_is_hole_covers_every_generated_arm() {
+    let arms = corpus::every_expr_instance();
+    assert_eq!(EXPR_INSTANCE_PROTOBUF_VARIANTS.len(), 36);
+    assert_eq!(arms.len(), EXPR_INSTANCE_PROTOBUF_VARIANTS.len());
+    for ((label, instance), field) in arms.into_iter().zip(EXPR_INSTANCE_PROTOBUF_VARIANTS) {
+        assert_eq!(label, field.name);
+        let mut bytes = assert_count_expr_classification(&Expr {
+            expr_instance: Some(instance),
+        });
+        let actual = field
+            .kind
+            .wire_type()
+            .expect("a selected oneof arm has one concrete wire type")
+            .code() as u8;
+        for wrong in [0u8, 1, 2, 5].into_iter().filter(|wire| *wire != actual) {
+            bytes[0] = (bytes[0] & !0x07) | wrong;
+            assert_eq!(
+                canonical_count_expr_is_hole(&bytes),
+                None,
+                "{label}: a descriptor-incompatible wire type was classified"
+            );
+        }
+    }
+}
+
+#[test]
+fn canonical_count_expr_is_hole_preserves_missing_forms_and_signed_variables() {
+    use models::rhoapi::var::{VarInstance, WildcardMsg};
+    use models::rhoapi::{EMethod, EVar};
+
+    let mut expressions = vec![
+        Expr::default(),
+        Expr {
+            expr_instance: Some(ExprInstance::EVarBody(EVar { v: None })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::EVarBody(EVar {
+                v: Some(Var::default()),
+            })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(VarInstance::Wildcard(WildcardMsg {})),
+                }),
+            })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot { p: None })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::EMinusBody(EMinus { p1: None, p2: None })),
+        },
+        Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod::default())),
+        },
+    ];
+    for level in [i32::MIN, -1, 0, 1, i32::MAX] {
+        for variable in [VarInstance::FreeVar(level), VarInstance::BoundVar(level)] {
+            expressions.push(Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar {
+                    v: Some(Var {
+                        var_instance: Some(variable),
+                    }),
+                })),
+            });
+        }
+    }
+    for expr in expressions {
+        assert_count_expr_classification(&expr);
+    }
+}
+
+#[test]
+fn canonical_count_expr_is_hole_refuses_unproved_framing() {
+    let one = assert_count_expr_classification(&Expr {
+        expr_instance: Some(ExprInstance::GBool(true)),
+    });
+    for malformed in [
+        vec![0x2a, 0x01],
+        vec![0xaa, 0x00, 0x00],
+        vec![0x08, 0x80, 0x00],
+        vec![0x2a, 0x80, 0x00],
+        [one.as_slice(), one.as_slice()].concat(),
+        vec![0x2b, 0x2c],
+        vec![0x92, 0x02, 0x00],
+        vec![0x91, 0x02, 0, 0, 0, 0, 0, 0, 0],
+        vec![0xf8, 0x07, 0x00],
+        vec![0x9a, 0x01, 0x02, 0x12, 0x00],
+        vec![0x9a, 0x01, 0x04, 0x0a, 0x02, 0x20, 0x00],
+        vec![
+            0x9a, 0x01, 0x08, 0x0a, 0x06, 0x10, 0x80, 0x80, 0x80, 0x80, 0x10,
+        ],
+        vec![0x9a, 0x01, 0x06, 0x0a, 0x04, 0x10, 0x00, 0x10, 0x01],
+        vec![0x9a, 0x01, 0x05, 0x0a, 0x03, 0x1a, 0x01, 0x00],
+        vec![0x9a, 0x01, 0x04, 0x0a, 0x00, 0x0a, 0x00],
+    ] {
+        assert_eq!(
+            canonical_count_expr_is_hole(&malformed),
+            None,
+            "unproved Expr framing was classified: {malformed:02x?}"
         );
     }
 }

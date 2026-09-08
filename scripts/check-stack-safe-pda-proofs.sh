@@ -116,6 +116,11 @@ matcher_count_runtime() {
   rholang_run_tests 16 --test matcher_connective_isolation
   rholang_run_tests 8 --test matcher_if_family
   rholang_run_tests 57 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
+  rholang_run_tests 11 --lib rust::interpreter::matcher::par_count::byte_native_tests::
+  TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+    rpb3_run_tests 3 --release -j4 --test par_bag canonical_count_expr_is_hole
+  TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+    rpb3_run_tests 4 --release -j4 --lib par_count_header_
 }
 
 if [[ "${1:-}" == "--matcher-counts" || "${1:-}" == "--matcher-count-byte-native-proofs" ]]; then
@@ -123,8 +128,8 @@ if [[ "${1:-}" == "--matcher-counts" || "${1:-}" == "--matcher-count-byte-native
   TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128 \
     tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
   matcher_count_proofs
+  matcher_count_byte_native_proofs
   if [[ "${1:-}" == "--matcher-count-byte-native-proofs" ]]; then
-    matcher_count_byte_native_proofs
     popd >/dev/null
     exit 0
   fi

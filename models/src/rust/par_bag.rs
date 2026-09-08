@@ -1035,6 +1035,10 @@ fn read_canonical_varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
     let mut value = 0u64;
     for shift in (0u32..=63).step_by(7) {
         let byte = *bytes.get(*at)?;
+        #[cfg(test)]
+        crate::rust::rholang::protobuf_cursor::par_count_header_work::record_byte(
+            bytes.as_ptr() as usize + *at,
+        );
         *at += 1;
         let payload = u64::from(byte & 0x7f);
         if shift == 63 && payload > 1 {
@@ -1240,6 +1244,24 @@ pub fn canonical_exact_hole_expr(message: &[u8]) -> Option<CanonicalExactHole> {
         CanonicalVar::Free(level) => Some(CanonicalExactHole::FreeVar(level)),
         CanonicalVar::Wildcard => Some(CanonicalExactHole::Wildcard),
         CanonicalVar::Absent | CanonicalVar::Bound(_) => None,
+    }
+}
+
+pub fn canonical_count_expr_is_hole(message: &[u8]) -> Option<bool> {
+    const EVAR_TAG: u32 = 19;
+    const EVAR_VAR_KEY: u64 = (1 << 3) | 2;
+
+    if message.is_empty() {
+        return Some(false);
+    }
+    let envelope = canonical_expr_envelope(message)?;
+    if envelope.tag != EVAR_TAG || envelope.payload.is_empty() {
+        return Some(false);
+    }
+    let variable = canonical_single_delimited_field(envelope.payload, EVAR_VAR_KEY)?;
+    match canonical_var(variable)? {
+        CanonicalVar::Free(_) | CanonicalVar::Wildcard => Some(true),
+        CanonicalVar::Absent | CanonicalVar::Bound(_) => Some(false),
     }
 }
 

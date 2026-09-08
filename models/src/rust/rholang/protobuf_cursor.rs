@@ -21,6 +21,10 @@ use prost::bytes::Bytes;
 use super::match_schema_tables::PAR_PROTOBUF_REGION_PROGRAM;
 use super::protobuf_schema::{ProtobufField, ProtobufWireType};
 
+#[cfg(test)]
+#[path = "../../../tests/support/par_count_header_work.rs"]
+pub(crate) mod par_count_header_work;
+
 /// A half-open range inside the message passed to a cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CanonicalByteRange {
@@ -398,6 +402,8 @@ fn read_canonical_varint(bytes: &[u8], at: &mut usize) -> Result<u64, CanonicalP
         let Some(&byte) = bytes.get(*at) else {
             return Err(CanonicalProtobufError::TruncatedVarint { offset: start });
         };
+        #[cfg(test)]
+        par_count_header_work::record_byte(bytes.as_ptr() as usize + *at);
         *at += 1;
         if shift_group == 9 && byte > 1 {
             return Err(CanonicalProtobufError::VarintOverflow { offset: start });

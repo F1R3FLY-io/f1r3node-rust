@@ -5715,6 +5715,33 @@ PathMap internals or physical allocation. §5.29.9 and the formal README record
 source/log digests and the remaining realization premises. No new runtime code has
 landed, so the resource gap and tasks 8344/8345 remain open.
 
+**MEASURED IMPLEMENTATION CHECKPOINT — 2026-09-08.** After that formal checkpoint,
+the count route was refined to borrow resident Expr bytes and retain one immutable
+Connective endpoint payload at a time. All nested traversal uses shared owner-bound
+subranges; multiplicity scales the completed interval rather than expanding entries.
+The original depth-4,096/128-KiB probe now passes: 108.634 seconds constructing the
+fixture, 6.253 ms counting and 50.331 ms dropping. This is a diagnostic observation,
+not a benchmark distribution or a claim about overall RSpace throughput. The prior
+timeout remains recorded as the control; §5.29.9 records commands and digests.
+
+**DERIVED / TESTED.** A retained trie alone does not prevent repeated suffix
+decoding. Byte-native traversal also needs suspended cursor state and an accumulated
+result. Exact work controls now distinguish ordered visits from merely equal AND/OR
+results, and keep work independent of multiplicity through maximum `u64`. Models-local
+physical byte-read counters show two passes for field/child cursors and up to three
+reads of the Wildcard key. The actual restarted-prefix control violates this bound.
+The measured primitive includes varint scalar bytes; it is not a count of zipper
+operations. No PathMap implementation change, new dependency or public codec change
+is involved. Required implementation/resource qualification remains open until its
+registered gates and remaining PCBN obligations pass.
+
+**IMPLEMENTATION GATE PASSED.** The final registered run passes 31 closed reports,
+both kernel checks and all 110 selected Rust tests, with no ignored tests. It
+includes the public structural maximum-plus-one cases and metadata/terminal-arm
+coverage. §5.29.9 records its immutable log digest, and pgmcp artifact 513 preserves
+the depth and physical-read diagnostic excerpts. Allocation/resource qualification
+remains task 8345; these passing focused tests are not full-workspace acceptance.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
