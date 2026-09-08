@@ -67,16 +67,8 @@ impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where E: de::Error {
-                match value {
-                    "secp256k1" => Ok(Box::new(Secp256k1)),
-                    "secp256k1-eth" => Ok(Box::new(Secp256k1Eth)),
-                    #[cfg(feature = "schnorr_secp256k1_experimental")]
-                    "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
-                    #[cfg(feature = "schnorr_secp256k1_experimental")]
-                    "frost-secp256k1" => Ok(Box::new(FrostSecp256k1)),
-                    // "ed25519" => Ok(Box::new(Ed25519)),
-                    _ => Err(de::Error::custom(format!("Unknown algorithm: {}", value))),
-                }
+                SignaturesAlgFactory::apply(value)
+                    .ok_or_else(|| de::Error::custom(format!("Unknown algorithm: {}", value)))
             }
         }
 
@@ -94,7 +86,7 @@ impl SignaturesAlgFactory {
             // https://rchain.atlassian.net/browse/RCHAIN-3560
             // case Ed25519.name => Some(Ed25519)
             "secp256k1" => Some(Box::new(Secp256k1)),
-            "secp256k1-eth" => Some(Box::new(Secp256k1Eth)),
+            "secp256k1:eth" | "secp256k1-eth" => Some(Box::new(Secp256k1Eth)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
             "schnorr-secp256k1" => Some(Box::new(SchnorrSecp256k1)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
@@ -113,8 +105,11 @@ mod tests {
         let alg = SignaturesAlgFactory::apply("secp256k1").unwrap();
         assert_eq!(alg.name(), "secp256k1");
 
-        let eth = SignaturesAlgFactory::apply("secp256k1-eth").unwrap();
+        let eth = SignaturesAlgFactory::apply("secp256k1:eth").unwrap();
         assert_eq!(eth.name(), "secp256k1:eth");
+
+        let eth_alias = SignaturesAlgFactory::apply("secp256k1-eth").unwrap();
+        assert_eq!(eth_alias.name(), "secp256k1:eth");
     }
 
     #[test]
@@ -167,13 +162,20 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_accepts_eth_alias() {
-        // Known-bug pin (issue #380): name() emits "secp256k1:eth" but the
-        // factory and Deserialize only accept "secp256k1-eth", so a boxed
-        // Secp256k1Eth does not survive a serde round-trip. This asserts the
-        // alias that DOES deserialize; update the pin when #380 is fixed.
-        let encoded = bincode::serialize("secp256k1-eth").unwrap();
+    fn deserialize_accepts_eth_canonical_name_and_alias() {
+        for name in ["secp256k1:eth", "secp256k1-eth"] {
+            let encoded = bincode::serialize(name).unwrap();
+            let decoded: Box<dyn SignaturesAlg> = bincode::deserialize(&encoded).unwrap();
+            assert_eq!(decoded.name(), "secp256k1:eth");
+        }
+    }
+
+    #[test]
+    fn serde_roundtrip_preserves_secp256k1_eth() {
+        let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1Eth);
+        let encoded = bincode::serialize(&alg).unwrap();
         let decoded: Box<dyn SignaturesAlg> = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded.name(), alg.name());
         assert_eq!(decoded.name(), "secp256k1:eth");
     }
 }

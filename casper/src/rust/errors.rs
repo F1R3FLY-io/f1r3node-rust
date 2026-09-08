@@ -138,6 +138,13 @@ impl From<String> for CasperError {
     fn from(error: String) -> Self { CasperError::RuntimeError(error) }
 }
 
+/// Conversion from a poisoned `std::sync::Mutex` / `RwLock` guard. Lets
+/// `?` propagate a lock-acquisition failure directly instead of the
+/// per-site `.map_err(|e| CasperError::LockError(e.to_string()))?`.
+impl<T> From<std::sync::PoisonError<T>> for CasperError {
+    fn from(error: std::sync::PoisonError<T>) -> Self { CasperError::LockError(error.to_string()) }
+}
+
 /// Conversion from `std::time::SystemTimeError`. Wraps the underlying
 /// error message into `CasperError::RuntimeError`. Used by `?`
 /// propagation in `construct_deploy::source_deploy_now` and
