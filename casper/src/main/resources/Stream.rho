@@ -174,27 +174,37 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
     // reads paramsP without consuming — safe because params are
     // immutable while the stream is not closed.
     //
-    // Phase 9 slice 9c-i: reply-payload cap.  `n` is capped at 65536
-    // (matches `MAX_ENTRIES` in fileio's Rust `handlers.rs`).  Above
-    // the cap the method returns `FSERR_QUOTA_EXCEEDED` before any
-    // gathering starts.  Defense-in-depth against a caller requesting
-    // a billion-item chunk that would allocate an unbounded reply
-    // list AND against the per-item runtime cost cascading through
+    // Phase 9 slice 9c-i: reply-payload cap.  `n` is capped at
+    // `MAX_CHUNK_ITEMS = 65536` (matches Rust's `MAX_CHUNK_ITEMS`
+    // constant in `rholang::rust::interpreter::io`).  Above the cap
+    // the method returns `FSERR_QUOTA_EXCEEDED` before any gathering
+    // starts.  Defense-in-depth against a caller requesting a
+    // billion-item chunk that would allocate an unbounded reply list
+    // AND against the per-item runtime cost cascading through
     // `gatherN` past the caller's intended budget.  LineStream chunk
     // returns `FSERR_UNSUPPORTED` earlier via the chunk-builder
     // dispatch, so this cap only bites `EntryStream.chunk(n)` and
     // `ByteStream.chunk(n)` — matching the plan doc §Phase 9 line
-    // 1225 slice 9c deliverable.  The cap number 65536 is embedded
-    // as an integer literal (Rholang has no shared-constant
-    // mechanism cross-file); the golden-hash pin in
-    // `compose_fs_genesis_source_golden_hex` catches any accidental
-    // drift.
+    // 1225 slice 9c deliverable.
+    //
+    // M-36 fix (2026-09-08, A8-F3): the cap is bound via
+    // `match 65536 { MAX_CHUNK_ITEMS => ... }` so the guard reads
+    // `i > MAX_CHUNK_ITEMS` rather than a bare `65536` literal.
+    // Rholang has no shared-constant mechanism cross-file so the
+    // pair-alignment with Rust `MAX_CHUNK_ITEMS` is enforced by the
+    // source-scan pin `stream_chunk_enforces_max_chunk_items_cap` in
+    // `fileio_cost_spec.rs`; the semantic drift check runs through
+    // the fingerprint fold slot 11 in
+    // `consensus_runtime_fingerprint`, so a per-validator patch of
+    // this literal without a coordinated Rust-side change would
+    // surface as a network_id mismatch at peering.
     method chunk(@n) {
+      match 65536 { MAX_CHUNK_ITEMS =>
       match n {
         i /\ Int => {
           match i <= 0 {
             true => return!([false, "FSERR_BAD_ARG", "n must be positive"])
-            false => match i > 65536 {
+            false => match i > MAX_CHUNK_ITEMS {
               true => return!(
                 [false, "FSERR_QUOTA_EXCEEDED",
                  "chunk n exceeds MAX_CHUNK_ITEMS=65536"])
@@ -263,6 +273,7 @@ new foldConcurrentDispatch, foldConcurrentWorker, mapReduceDispatch, mapReduceWo
           }
         }
         _ => return!([false, "FSERR_BAD_ARG", "n must be an integer"])
+      }
       }
     } |
 

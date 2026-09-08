@@ -328,4 +328,145 @@ mod tests {
             dag_cfg.name, cfg.name
         );
     }
+
+    /// M-38 fix (2026-09-08, A8-F5): full-mapping enumeration pin.
+    ///
+    /// Only `payload-source-index` had both a presence pin + env-
+    /// colocation pin (the T-3 canary above).  The other 30+
+    /// mappings relied on the LMDB store failing to open at first
+    /// use — a silent removal during merge (as happened to
+    /// `payload-source-index` in the cost-accounted-rho merge) is
+    /// caught only when the affected code path runs, and E2E tests
+    /// often miss that.
+    ///
+    /// This pin enumerates the full DB-name set (excluding rspace-*
+    /// which vary by `legacy_rspace_paths` config) and asserts each
+    /// is present.  A merge that silently drops any entry surfaces
+    /// HERE at CI time, not at a downstream E2E boot.
+    ///
+    /// Adding a new DB entry is a two-line change: add to
+    /// `rnode_db_mapping()` + add to `EXPECTED_DB_NAMES` below.
+    /// Same discipline as the WalOp tag pin (M-37).
+    ///
+    /// Companion `..._env_colocation` pin walks each DB name and
+    /// asserts its env matches the expected one — the same class
+    /// of silent-hazard as the payload-source-index env-colocation
+    /// pin, generalized.
+    #[test]
+    fn rnode_db_mapping_pins_full_dag_and_related_stores() {
+        let mapping = rnode_db_mapping(None);
+        let names: Vec<&str> = mapping.iter().map(|(db, _)| db.id()).collect();
+
+        // Non-rspace core DB set.  Order does not matter for the
+        // pin (we do subset containment); order in
+        // `rnode_db_mapping()` is documentation-only.
+        let expected_core: &[&str] = &[
+            // Block storage
+            "blocks",
+            "blocks-approved",
+            "finalization-certificates",
+            "block-metadata",
+            "dag-admission-schema",
+            "equivocation-tracker-v5",
+            "equivocation-evidence-v5",
+            "latest-messages",
+            "invalid-blocks",
+            "deploy-index",
+            "deploy-occurrence-index",
+            "payload-source-index",
+            "floor-index",
+            "frontier-index",
+            "deploy-lifecycle-events",
+            "carrier-index",
+            "carrier-index-meta",
+            "deploy-lifecycle-terminal",
+            "last-finalized-block",
+            "genesis-hash",
+            FinalizationLedger::STORE_NAME,
+            "mergeable-channel-cache",
+            // Deploy storage
+            "deploy_storage",
+            "deploy_envelope_storage_v6",
+            "rejected_deploy_buffer",
+            // Reporting
+            "reporting-cache",
+            // CasperBuffer
+            "parents-map",
+            // Rholang evaluator
+            "eval-history",
+            "eval-roots",
+            "eval-cold",
+            // Transaction
+            "transaction",
+        ];
+
+        for name in expected_core {
+            assert!(
+                names.contains(name),
+                "M-38: rnode_db_mapping() is missing expected DB `{name}`.  \
+                 Either it was silently dropped (as happened to `payload-\
+                 source-index` in the cost-accounted-rho merge — a runtime \
+                 KvStoreError at LMDB-backed genesis boot), or the pin is \
+                 stale (name changed).  Fix at the mapping, not here."
+            );
+        }
+
+        // The non-legacy rspace-* triple is always present alongside
+        // the core set.
+        for name in &["rspace-history", "rspace-roots", "rspace-cold"] {
+            assert!(
+                names.contains(name),
+                "M-38: rnode_db_mapping(None) is missing `{name}` — the \
+                 non-legacy branch dropped an rspace mapping.  Silent removal \
+                 breaks rspace history opening at runtime."
+            );
+        }
+
+        // Count pin: bump when adding a new mapping.  A silent
+        // addition wouldn't fire the containment checks, but a
+        // silent removal WOULD leave the count wrong — this is the
+        // symmetric backstop for both directions.
+        const EXPECTED_MAPPING_COUNT_NONLEGACY: usize = 34;
+        assert_eq!(
+            mapping.len(),
+            EXPECTED_MAPPING_COUNT_NONLEGACY,
+            "M-38: rnode_db_mapping(None) count drifted.  Either add the new \
+             entry to `expected_core` above and bump this count, or find the \
+             silent-removed entry.  Current count {}, expected {}.",
+            mapping.len(),
+            EXPECTED_MAPPING_COUNT_NONLEGACY
+        );
+    }
+
+    /// M-38 companion (2026-09-08, A8-F5): legacy-rspace branch pin.
+    /// Independent of the non-legacy pin because the two branches
+    /// diverge in the rspace-* group (legacy has 4: history, roots,
+    /// cold, channels; non-legacy has 3: history, roots, cold).  A
+    /// silent removal of `rspace-channels` from the legacy branch
+    /// would only fire on legacy-config genesis boot — this pin
+    /// catches it at CI.
+    #[test]
+    fn rnode_db_mapping_pins_legacy_rspace_branch() {
+        let mapping = rnode_db_mapping(Some(true));
+        let names: Vec<&str> = mapping.iter().map(|(db, _)| db.id()).collect();
+        for name in &[
+            "rspace-history",
+            "rspace-roots",
+            "rspace-cold",
+            "rspace-channels",
+        ] {
+            assert!(
+                names.contains(name),
+                "M-38: legacy rnode_db_mapping(Some(true)) is missing \
+                 `{name}` — required for legacy-config genesis boot."
+            );
+        }
+        const EXPECTED_MAPPING_COUNT_LEGACY: usize = 35;
+        assert_eq!(
+            mapping.len(),
+            EXPECTED_MAPPING_COUNT_LEGACY,
+            "M-38: rnode_db_mapping(Some(true)) count drifted from {}",
+            EXPECTED_MAPPING_COUNT_LEGACY
+        );
+    }
 }

@@ -1132,6 +1132,119 @@ fn fixed_channels_byte_54_stays_reserved_after_a8_m1_retirement() {
     );
 }
 
+/// M-39 fix (2026-09-08, A8-F6): FixedChannels assigned-set pin.
+///
+/// Pre-fix, only byte 54 had an explicit reservation pin.  Bytes 9,
+/// 38, and 39 in FixedChannels are ALSO skipped (never assigned to
+/// a native), but no test enforced those gaps.  A future author
+/// could assign one of them to a new native without noticing —
+/// aliasing any historical channel-derived identity that was
+/// pre-computed against a byte-N `PrivateName` in that slot (e.g.,
+/// from an offline analysis, a debug tool that snapshots the
+/// tuplespace, or a legacy sidecar that persisted channel bytes).
+///
+/// This pin source-scans `system_processes.rs` for every
+/// `byte_name(N)` call inside `impl FixedChannels`, extracts the
+/// full assigned-N set, and asserts:
+///   1. No byte in `RESERVED_GAPS` (9, 38, 39, 54) is assigned.
+///   2. The assigned set exactly matches the expected set (catches
+///      silent removal too — same class as M-38's mapping pin).
+///
+/// Adding a new FixedChannels native is a two-line change:
+///   - Add `pub fn foo() -> Par { byte_name(N) }` in
+///     `system_processes.rs` (with N = next unused byte).
+///   - Add `N` to `EXPECTED_ASSIGNED` below.
+///
+/// If you genuinely need to open a currently-reserved gap, do the
+/// same three retirements the original assignment did (add native
+/// handler + URN binding + dispatch registration + cost helper),
+/// then remove the byte from `RESERVED_GAPS`.  The pin fires until
+/// both sides agree.
+#[test]
+fn fixed_channels_assigned_set_pinned_and_gaps_reserved() {
+    let src = include_str!("../src/rust/interpreter/system_processes.rs");
+
+    // Isolate `impl FixedChannels { ... }` block so we do not
+    // catch stray `byte_name(N)` calls elsewhere (there are none
+    // today, but the guard makes the scan future-proof).
+    let impl_start = src
+        .find("impl FixedChannels {")
+        .expect("impl FixedChannels { block must exist");
+    let after = &src[impl_start..];
+    // Bound scan at the next top-level `impl` OR `pub struct`
+    // declaration to avoid straying into `BodyRefs`.
+    let end_rel = after[1..]
+        .find("\npub struct ")
+        .or_else(|| after[1..].find("\nimpl "))
+        .map(|i| i + 1)
+        .unwrap_or(after.len());
+    let block = &after[..end_rel];
+
+    // Extract every `byte_name(N)` occurrence (comments already
+    // filtered by requiring the exact `byte_name(N)` call form).
+    let mut assigned: Vec<u32> = Vec::new();
+    for line in block.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let mut rest = trimmed;
+        while let Some(idx) = rest.find("byte_name(") {
+            let tail = &rest[idx + "byte_name(".len()..];
+            let close = tail.find(')').unwrap_or(0);
+            let n_str = &tail[..close];
+            if let Ok(n) = n_str.trim().parse::<u32>() {
+                assigned.push(n);
+            }
+            rest = &tail[close..];
+        }
+    }
+    assigned.sort_unstable();
+
+    // Expected assigned set (M-39 canonical, 2026-09-08).  Adding
+    // a new native means adding its byte here AND at its
+    // declaration site in `system_processes.rs`.
+    let expected_assigned: &[u32] = &[
+        0, 1, 2, 3, 4, 5, 6, 7, 8, // io + crypto
+        10, 11, 12, 13, 14, 15, 16, 17, 18, 19, // block/reg/vault
+        20, 21, 22, 23, 24, 25, 26, 27, 28, 29, // gpt/ollama/etc
+        30, 31, 32, 33, 34, 35, 36, 37, // chroma + registry_lookup
+        40, 41, 42, 43, 44, 45, 46, 47, 48, 49, // fs_open..fs_truncate
+        50, 51, 52, 53, // fs_flush..fs_entries
+        55, 56, 57, 58, 59, 60, 61, // fs_rename..fs_quarantine
+        62, 63, 64, 65, // fs_lock_*
+        66, 67, 68, // fs_entries_stream_*
+    ];
+
+    // Reserved gaps: bytes intentionally NOT assigned.  Byte 54 is
+    // the retirement gap (A8-M-1); 9, 38, 39 are historical unused
+    // slots pinned here so they stay unused.
+    let reserved_gaps: &[u32] = &[9, 38, 39, 54];
+
+    // 1. No reserved gap has been assigned.
+    for gap in reserved_gaps {
+        assert!(
+            !assigned.contains(gap),
+            "M-39: FixedChannels byte {gap} is a reserved gap but got assigned. \
+             Any pre-computed channel-derived identity against this byte would \
+             silently alias the new native.  Pick the next unused byte (as of \
+             M-39, the next free is 69) or explicitly retire this reservation."
+        );
+    }
+
+    // 2. Assigned set matches expected.  Catches silent removal
+    // (missing byte) AND silent addition (extra byte) — either
+    // direction is a hard-fork surface change.
+    assert_eq!(
+        assigned,
+        expected_assigned.to_vec(),
+        "M-39: FixedChannels assigned-set drifted.  Either a native \
+         was added without updating `expected_assigned`, or one was \
+         silently removed.  Both directions are hard-fork surface \
+         changes affecting channel-derived identity."
+    );
+}
+
 /// A8-M-1 review-follow-up pin (2026-09-03).  Companion to the byte
 /// 54 pin above: `BodyRefs::FS_ENTRIES_STREAM = 54` was also retired
 /// and the const slot marked reserved.  Source-scan enforces no new

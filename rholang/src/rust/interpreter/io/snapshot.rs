@@ -2312,25 +2312,55 @@ mod tests {
         // Any renumbering here is a hard-fork of the WAL root — pin
         // the values so a reorderer in the enum can't silently change
         // the tag.
-        assert_eq!(op_tag(WalOp::Write), 1);
-        assert_eq!(op_tag(WalOp::WriteAt), 2);
-        assert_eq!(op_tag(WalOp::Truncate), 3);
-        assert_eq!(op_tag(WalOp::Chmod), 4);
-        assert_eq!(op_tag(WalOp::Chown), 5);
-        assert_eq!(op_tag(WalOp::RemoveFile), 6);
-        assert_eq!(op_tag(WalOp::RemoveDir), 7);
-        assert_eq!(op_tag(WalOp::Rename), 8);
-        assert_eq!(op_tag(WalOp::CopyFile), 9);
-        assert_eq!(op_tag(WalOp::Read), 10);
-        assert_eq!(op_tag(WalOp::ReadAt), 11);
-        // M-5 fix (2026-08-06): state-read journaling ops.
-        assert_eq!(op_tag(WalOp::Stat), 12);
-        assert_eq!(op_tag(WalOp::Entries), 13);
-        assert_eq!(op_tag(WalOp::Size), 14);
-        // Streaming-backing slice Step 3 (2026-08-25).
-        assert_eq!(op_tag(WalOp::EntriesStreamNext), 15);
-        // Consensus ban-lift (2026-09-04).
-        assert_eq!(op_tag(WalOp::Exists), 16);
+        //
+        // M-37 fix (2026-09-08, A8-F4): the pin list is hoisted to a
+        // slice so a `len()` assertion pairs the by-value pins with
+        // an explicit COUNT.  Adding a new WalOp variant requires
+        // (a) adding a match arm to `op_tag` (Rust match
+        // exhaustiveness — compile error otherwise), (b) adding a
+        // pin below with the tag value, and (c) bumping
+        // `EXPECTED_WAL_OP_COUNT`.  Miss (b) or (c) and this test
+        // fires — closes the "silent new variant tag drift" hazard
+        // that the prior all-inline-`assert_eq!` shape allowed.
+        let pins: &[(WalOp, u8)] = &[
+            (WalOp::Write, 1),
+            (WalOp::WriteAt, 2),
+            (WalOp::Truncate, 3),
+            (WalOp::Chmod, 4),
+            (WalOp::Chown, 5),
+            (WalOp::RemoveFile, 6),
+            (WalOp::RemoveDir, 7),
+            (WalOp::Rename, 8),
+            (WalOp::CopyFile, 9),
+            (WalOp::Read, 10),
+            (WalOp::ReadAt, 11),
+            // M-5 fix (2026-08-06): state-read journaling ops.
+            (WalOp::Stat, 12),
+            (WalOp::Entries, 13),
+            (WalOp::Size, 14),
+            // Streaming-backing slice Step 3 (2026-08-25).
+            (WalOp::EntriesStreamNext, 15),
+            // Consensus ban-lift (2026-09-04).
+            (WalOp::Exists, 16),
+        ];
+        for (op, tag) in pins {
+            assert_eq!(
+                op_tag(*op),
+                *tag,
+                "op_tag({op:?}) drifted from pinned value {tag}"
+            );
+        }
+        // M-37 (2026-09-08, A8-F4): count pin.  Bump when adding a
+        // WalOp variant AND adding the pin above.  A silent variant
+        // addition (no pin) trips this even if `op_tag` gets an arm.
+        const EXPECTED_WAL_OP_COUNT: usize = 16;
+        assert_eq!(
+            pins.len(),
+            EXPECTED_WAL_OP_COUNT,
+            "M-37: pin count drifted — either add a pin entry \
+             for a new WalOp variant OR bump EXPECTED_WAL_OP_COUNT \
+             (hard-fork surface either way)"
+        );
     }
 
     // ------------------------------------------------------------------

@@ -2253,7 +2253,16 @@ mod tests {
         //   Dir.openFile create + exclusive) is scoped to a separate
         //   slice.  Hard-fork-free per the f1r3node_no_running_network
         //   invariant.
-        const EXPECTED: &str = "bbc2ab4c1b8e82626012c542bc5f22a51b6c311e6d684546a34012b1ff849562";
+        // Prior anchor: bbc2ab4c (2026-09-06 M-22..M-28 batch).
+        // 2026-09-08: M-36 (A8-F3) — `Stream.rho::chunk(@n)` guard
+        //   binds `MAX_CHUNK_ITEMS` via `match 65536 { MAX_CHUNK_ITEMS
+        //   => ... }` so the numeric literal appears in one place
+        //   (the binding) rather than embedded in the comparison.
+        //   Zero semantic change: same guard, same error code, same
+        //   FSERR_QUOTA_EXCEEDED message.  Fingerprint slot 11
+        //   (Rust MAX_CHUNK_ITEMS) is the pair-alignment target and
+        //   remains 65536.
+        const EXPECTED: &str = "bb7a84866db089696d63af44bdaf4461cc0d3f9ddca8b8bee7a72e644af62b79";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -2263,6 +2272,88 @@ mod tests {
         // Print the hash so `--nocapture` runs surface it for
         // easy regeneration.
         println!("compose_fs_genesis_source hash = {hex}");
+    }
+
+    /// M-40 fix (2026-09-08, A8-F7): golden-hex byte-anchor for
+    /// `compose_fs_genesis_source` with a NON-EMPTY bundle.
+    ///
+    /// The prior `compose_fs_genesis_source_golden_hex` above uses
+    /// `&[]` (empty bundle), which meant `bundle_rho` was always
+    /// substituted as `"{}"` — the shape of `format_bundle_for_
+    /// rholang` for the non-empty case was outside the composed-
+    /// source golden's coverage.  A drift in the bundle formatter
+    /// (say, reordering `(root, rel, mode, kind, cmode)` fields, or
+    /// silently swapping the Consensus/Oracular flag serialization)
+    /// would ship undetected by the empty-bundle anchor.
+    ///
+    /// This pin uses a fixed 4-entry bundle that exercises the
+    /// Cartesian product of BundleEntryKind × BundleConsensusMode:
+    ///   - Oracular File
+    ///   - Oracular Dir
+    ///   - Consensus File
+    ///   - Consensus Dir
+    ///
+    /// so any per-kind-per-mode format branch that drifts trips
+    /// the anchor.  Regenerate the golden hex the same way as the
+    /// empty-bundle sister test if a genuine hard-fork Genesis
+    /// change lands.
+    #[test]
+    fn compose_fs_genesis_source_golden_hex_with_non_empty_bundle() {
+        use crypto::rust::hash::blake2b256::Blake2b256;
+        let bundle = [
+            BundleEntry {
+                logical_name: "cfg".into(),
+                canon_path: PathBuf::from("/etc/rnode/cfg"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "logs/".into(),
+                canon_path: PathBuf::from("/var/log/rnode"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "state.bin".into(),
+                canon_path: PathBuf::from("/@bundle/consensus/state.bin"),
+                kind: BundleEntryKind::File,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+            BundleEntry {
+                logical_name: "shared/".into(),
+                canon_path: PathBuf::from("/@bundle/consensus/shared"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+        ];
+        let src = compose_fs_genesis_source("00", "00", &bundle, None);
+        let h = Blake2b256::hash(src.into_bytes());
+        let hex: String = h.iter().fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        });
+        // Regenerate via
+        //   cargo test --package casper --lib -- \
+        //     compose_fs_genesis_source_golden_hex_with_non_empty_bundle \
+        //     --nocapture
+        // ONLY when intentionally hard-forking the Genesis composition
+        // OR the bundle format (both are hard-fork surfaces).
+        // Pinned 2026-09-08 (M-40 landing).
+        const EXPECTED: &str = "431e045815ee3a3c01875918d37ea501c4e2420e5fb98eb061b09e295384d7c3";
+        assert_eq!(
+            hex, EXPECTED,
+            "M-40: compose_fs_genesis_source() hash for non-empty bundle \
+             changed.  Either a Genesis hard fork OR a bundle-format drift \
+             (format_bundle_for_rholang tuple field reorder, cmode string \
+             change, etc.).  If intentional, rerun with --nocapture and \
+             update EXPECTED."
+        );
+        println!("compose_fs_genesis_source (non-empty bundle) hash = {hex}");
     }
 
     /// M-4 fix (2026-08-06): cross-language drift pin for
