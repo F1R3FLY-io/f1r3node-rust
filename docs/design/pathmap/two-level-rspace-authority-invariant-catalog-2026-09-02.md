@@ -308,12 +308,13 @@ The private exact `u128` aggregate is exercised from the crate-private child pro
 
 ## Absolute datum address and flat-delta refinement (task 6588)
 
-**2026-09-08, formal foundation; task still open.** The preparation model already
-constructs exact Stored/Fresh addresses and parses absolute keys. Its existing
+**2026-09-08, formal and executable refinement.** The preparation model
+constructs exact Stored/Fresh addresses and parses absolute keys. Its original
 `fully_parsed_partition_is_exact_flat_partition` theorem restates the recorded
 computation; it does not independently prove that grouped channel counts equal
-flat absolute-key counts. This distinction is a remaining proof obligation, not
-evidence of a runtime defect.
+flat absolute-key counts. The new grouped and trace theorems below discharge
+that distinction independently; no runtime defect or algorithm replacement was
+needed for this slice.
 
 The following new invariants extend, rather than replace, the existing 24 closed
 preparation capstones. Each theorem is in `TwoLevelRSpaceMatchPreparation.v`.
@@ -322,9 +323,10 @@ preparation capstones. Each theorem is in `TwoLevelRSpaceMatchPreparation.v`.
 |---|---|---|
 | TLRS-ADDR-01 | `parsed_relative_offset_is_exact`: the marker length is in bounds and skipping that prefix yields exactly the channel-relative key | `rho_path_spec::datum_offsets_refine_exact_prefix_and_raw_identity_suffix`; 128 generated cases and shifted-offset control pass |
 | TLRS-ADDR-02 | `parsed_identity_offset_is_exact`: raw identity length is bounded by absolute length and the end-relative slice is exactly the raw identity, without a second unescape | The same passing property, with empty/nonempty identity handling and an independent shifted identity-offset control |
-| TLRS-DELTA-01 | `flat_record_removal_is_exact_opposite_cancellation`: removal cancels existing additions before extending removals | Planned independent BagDelta record-operation trace property; executable binding not yet complete |
-| TLRS-DELTA-02 | `flat_record_addition_preserves_other`: addition preserves both counts at every other absolute key | The same planned record-operation trace property; executable binding not yet complete |
-| TLRS-DELTA-03 | `flat_record_removal_preserves_other`: removal preserves both counts at every other absolute key | The same planned record-operation trace property; executable binding not yet complete |
+| TLRS-DELTA-01 | `flat_record_removal_is_exact_opposite_cancellation`: removal cancels existing additions before extending removals | `flat_delta_refinement_tests::flat_delta_operation_traces_refine_independent_logical_counts`; 128 generated traces pass, with separate addition/removal counts checked after every record |
+| TLRS-DELTA-02 | `flat_record_addition_preserves_other`: addition preserves both counts at every other absolute key | The same passing trace property checks all 12 fixture endpoints, including endpoints untouched by the current record |
+| TLRS-DELTA-03 | `flat_record_removal_preserves_other`: removal preserves both counts at every other absolute key | The same passing trace property checks both normalized supports and exact distinct-support cardinalities |
+| TLRS-DELTA-04 | `flat_record_addition_preserves_normalization` and `flat_record_removal_preserves_normalization`: successful recording preserves unique, positive, bounded, disjoint supports | The trace property checks the positive and negative parts of an independent signed-count oracle separately; `flat_delta_record_overflow_preserves_both_supports` checks refusal without mutation in both polarities |
 
 The amended theory compiles with **29 closed reports** and passes independent
 kernel checking after rebuilding its exact imports. Proof runs use a 2-GiB hard
@@ -342,11 +344,67 @@ zero swap. Its log has SHA-256
 These are current byte-boundary checks, not a new latency/RSS benchmark or
 complete accepted-match transaction verification.
 
-Remaining task-6588 obligations are preservation of unique, positive, bounded,
-disjoint supports; separate addition/removal grouped-lookup equality over valid
-marker/relative decompositions; unique groups and no extra endpoints; finite
-record-trace composition; and the independent executable oracle with channel,
-offset, polarity, cancellation, omission, overflow and malformed-path controls.
+The subsequent normalized-support extension compiles with **31 closed reports**;
+its compile log has SHA-256
+`6eda5bea911eb616d45737b83ead130c9bab2ff031fccda6fee67f1f0dbd79e6`.
+This is the intermediate compile result, preceding the grouped proof extension.
+
+The independent oracle in `rspace++/tests/data_index/flat_delta_refinement.rs`
+passes **6 tests**, including 128 generated traces with seed `41316588`.
+It indexes expected counts by logical channel/datum pairs rather than by the
+production partition function. A compensating tail cancels negative balances so
+every generated case tests successful store application as well as its original
+trace's success or refusal. Tests compare addition and removal counts separately,
+all endpoint counts, distinct supports, exact aggregate cardinality, loaded
+channel membership, and frozen pre-update candidate catalogs. Two endpoints can
+each reach `u64::MAX` without expanding multiplicities into individual elements.
+Explicit controls distinguish wrong channels and offsets, polarity swaps,
+skipped/doubled cancellation, omitted entries, overflow, a valid entry followed
+by malformed framing, and a Fresh-shifted navigation ordinal used as identity.
+The run log has SHA-256
+`042deb95bc81cc27cfef57f719cdbd3a71ac7aa0ba980d73c8b20929052f6d18`.
+
+The accompanying existing-witness run passes **76 test executions**: 26 DataIndex,
+19 two-level channel authority, 6 candidate reservation, 3 Bag multiplicity/delta,
+and all 22 RhoPath tests. Its log has SHA-256
+`62fea3de9edeee2b21f4b106328db688788157f640b99ce2801bed9d1841b3bb`.
+Both Rust runs use the 6-GiB hard memory cap and zero swap. These are correctness
+results, not performance measurements or full-workspace qualification.
+
+The completed preparation theory has **38 closed reports** and passes kernel
+checking. The finite-trace client has **4 closed reports**; the named formal
+mutation client has **12 closed reports**. Their obligations are:
+
+| ID | Formal statement | Executable owner |
+|---|---|---|
+| TLRS-DELTA-05 | `grouped_partition_preserves_both_flat_sides`: each successfully parsed query has exactly its original addition and removal counts | `flat_delta_operation_traces_refine_independent_logical_counts`, including actual store application |
+| TLRS-DELTA-06 | `normalized_parsed_partition_exists` and `partition_parsed_marker_domain`: normalized fully parsed input succeeds with unique, normalized groups and exactly the touched markers | The trace property’s guaranteed successful tail, exact endpoint/aggregate counts, and loaded-channel membership |
+| TLRS-DELTA-07 | `grouped_partition_has_exact_source_endpoints`: every nonzero grouped endpoint witnesses a same-polarity original absolute entry with identical multiplicity | Exact support cardinalities, all fixture endpoints, and omitted/wrong-channel/polarity controls |
+| TLRS-DELTA-08 | `normalized_partition_refusal_is_exactly_parse_refusal`: normalized input cannot gain a grouping-only refusal | `valid_prefix_then_malformed_delta_preserves_published_authority`, underflow cases in generated traces, and existing failure-atomicity witnesses; arithmetic application refusal remains distinct from parsing/grouping refusal |
+| TLRS-DELTA-09 | `finite_flat_record_trace_refines_logical_sum` and `normalized_supports_are_separate_signed_projections`: every successful finite trace preserves normalized supports and refines an independent signed operation sum | Checks after every record against the independent logical-pair oracle |
+| TLRS-DELTA-10 | `finite_flat_trace_partitions_into_exact_logical_supports`: complete traces compose with grouping to produce the positive and negative parts separately | The full generated trace followed by real `DataStore::apply_delta`, including frozen CoW snapshots and full-width multiplicity witnesses |
+
+The formal mutation client includes a successful exact-partition witness before
+checking wrong channel grouping, shifted boundaries, swapped polarities, omitted
+groups, non-disjoint supports whose net count is zero, skipped/doubled cancellation,
+same-key arrival cancellation, record overflow, late malformed paths, malformed
+Fresh construction, invalid frame escapes, and non-byte constructor input.
+
+The focused command is
+`bash scripts/check-stack-safe-pda-proofs.sh --match-preparation`.
+It rebuilds exact imports, requires the stated closed-report counts, rejects proof
+placeholders, kernel-checks all three clients, and requires exactly 82 nonignored
+runtime witness executions. The final composed gate exited **0**, including all
+38 preparation, 4 trace, 12 control, and 21 datum-framing closed reports,
+an explicit successful kernel check, and all 82 tests with no failures or ignored
+cases. Its log has SHA-256
+`ce86a1a4940f74be67eeb4504027604ad3d6f67895520393f7236acb6dd57dc0`.
+The preparation source checked by this run has SHA-256
+`acb2d056173c68706a8d7b0129e52d299151532f3a10d834b5eb9c65baf85226`.
+Earlier client attempts failed on module import, working-directory, implication
+application, and literal-scope details; none were treated as passing evidence.
+The successful gate is local execution evidence, not a daemon-issued verification
+receipt or evidence that the entire persistence campaign is complete.
 Equality of net signed counts alone is insufficient because erroneous equal
 entries on both sides could cancel observationally.
 

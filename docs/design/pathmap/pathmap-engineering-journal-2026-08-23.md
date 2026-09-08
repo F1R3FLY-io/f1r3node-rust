@@ -5805,12 +5805,32 @@ The [invariant catalog](two-level-rspace-authority-invariant-catalog-2026-09-02.
 records the theorem/property correspondence and log digests. No runtime PathMap
 layout or codec changes.
 
-**REMAINING.** The current partition capstone restates its computation rather
-than establishing independent grouped-count equality. Normalized support
-closure, separate addition/removal grouped observations and independent
-record-operation traces remain task-6588 requirements. Private parse/group
+**FOLLOW-UP EVIDENCE.** Two further closed capstones establish preservation of
+normalized supports. The independent Rust delta oracle passes six tests,
+including 128 operation traces with a guaranteed successful-application tail,
+separate addition/removal support checks, malformed/refusal controls, frozen
+CoW catalogs, and two full-width `u64::MAX` endpoint counts without expansion.
+Another 76 existing witness executions pass. Log digests and exact ownership are
+in the invariant catalog above; this adds correctness evidence, not a speedup claim.
+
+**GROUPED REFINEMENT.** Seven additional preparation capstones establish exact
+separate grouped counts, successful partition existence, exact touched markers,
+and original source-entry witnesses for every nonzero endpoint. The theory now
+has 38 closed reports and passes kernel checking. Four trace-client capstones
+compose normalization, the independent signed operation sum, and both grouped
+supports; twelve formal controls distinguish concrete incorrect alternatives.
+The focused `--match-preparation` gate rebuilds imports and binds these proofs to
+the 82 runtime witness executions. Its final run includes the composed trace
+capstone and passed: 38 preparation, 4 trace, 12 control, and 21 framing closed
+reports, successful kernel checking, and all 82 runtime tests. Its SHA-256 is
+`ce86a1a4940f74be67eeb4504027604ad3d6f67895520393f7236acb6dd57dc0`.
+The invariant catalog records the exact acceptance evidence.
+
+**BOUNDARY.** Private parse/group
 interleaving may differ between model and production; public success/refusal
-observations are the required refinement. This foundation is not task completion.
+observations are the required refinement. This completes the local task-6588
+proof/test slice, not daemon verification, backend qualification, or the
+PathMap/ACT-versus-LMDB comparison.
 
 ## Upstream PathMap integration request register
 

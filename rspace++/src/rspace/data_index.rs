@@ -2633,6 +2633,10 @@ mod channel_prefix_replacement_properties;
 mod two_level_channel_authority_tests;
 
 #[cfg(test)]
+#[path = "../../tests/data_index/flat_delta_refinement.rs"]
+mod flat_delta_refinement_tests;
+
+#[cfg(test)]
 #[path = "../../tests/data_index/digest_collision_replay.rs"]
 mod digest_collision_replay_tests;
 

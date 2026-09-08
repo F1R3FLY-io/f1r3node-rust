@@ -1047,6 +1047,257 @@ Proof.
   now split.
 Qed.
 
+Lemma flat_set_count_key_membership : forall bag path count other,
+  In other (map fst (flat_set_count path count bag)) ->
+  other = path \/ In other (map fst bag).
+Proof.
+  intros bag. induction bag as [|[current value] tail IH];
+    intros path count other Hin; simpl in *.
+  - destruct (N.eqb count 0); simpl in Hin; intuition congruence.
+  - destruct (path_eq_dec path current) as [Hequal|Hdifferent].
+    + subst current. destruct (N.eqb count 0); simpl in Hin;
+        intuition congruence.
+    + simpl in Hin. destruct Hin as [Hequal|Hin].
+      * right. now left.
+      * destruct (IH path count other Hin) as [Hequal|Htail].
+        -- now left.
+        -- right. now right.
+Qed.
+
+Lemma flat_set_count_preserves_unique : forall bag path count,
+  NoDup (map fst bag) -> NoDup (map fst (flat_set_count path count bag)).
+Proof.
+  intros bag. induction bag as [|[current value] tail IH];
+    intros path count Hunique; simpl in *.
+  - destruct (N.eqb count 0); simpl; repeat constructor; simpl; tauto.
+  - inversion Hunique as [|current' keys Habsent Htail]; subst.
+    destruct (path_eq_dec path current) as [Hequal|Hdifferent].
+    + subst current. destruct (N.eqb count 0); simpl; [exact Htail|].
+      now constructor.
+    + simpl. constructor.
+      * intro Hin. apply flat_set_count_key_membership in Hin.
+        destruct Hin as [Hequal|Hin]; congruence.
+      * now apply IH.
+Qed.
+
+Lemma nodup_implies_flat_paths_unique : forall bag seen,
+  NoDup (map fst bag) ->
+  (forall path, In path seen -> ~ In path (map fst bag)) ->
+  flat_paths_unique_from seen bag = true.
+Proof.
+  intros bag. induction bag as [|[current value] tail IH];
+    intros seen Hunique Hdisjoint; simpl in *; [reflexivity|].
+  inversion Hunique as [|current' keys Habsent Htail]; subst.
+  apply andb_true_iff. split.
+  - apply negb_true_iff, path_memberb_false_spec.
+    intro Hin. apply (Hdisjoint current Hin). now left.
+  - apply IH; [exact Htail|].
+    intros path [Hequal|Hin] Hmember.
+    + subst path. contradiction.
+    + apply (Hdisjoint path Hin). now right.
+Qed.
+
+Lemma flat_set_count_preserves_valid_entries : forall bag path count,
+  forallb (fun entry => path_valid (fst entry) && multiplicity_valid (snd entry)) bag = true ->
+  path_valid path = true -> count <= multiplicity_max ->
+  forallb (fun entry => path_valid (fst entry) && multiplicity_valid (snd entry))
+    (flat_set_count path count bag) = true.
+Proof.
+  intros bag path count Hvalid Hpath Hbound.
+  assert (Hcount : count <> 0 -> multiplicity_valid count = true).
+  { intro Hpositive. unfold multiplicity_valid.
+    apply andb_true_iff. split; [apply N.ltb_lt|apply N.leb_le]; lia. }
+  induction bag as [|[current value] tail IH]; simpl in *.
+  - destruct (N.eqb count 0) eqn:Hzero; [reflexivity|].
+    simpl. rewrite Hpath, Hcount; [reflexivity|now apply N.eqb_neq].
+  - apply andb_true_iff in Hvalid as [Hhead Htail].
+    destruct (path_eq_dec path current) as [Hequal|Hdifferent].
+    + subst current. destruct (N.eqb count 0) eqn:Hzero; [exact Htail|].
+      simpl. rewrite Hpath, Hcount, Htail; [reflexivity|now apply N.eqb_neq].
+    + simpl. rewrite Hhead, IH; [reflexivity|exact Htail].
+Qed.
+
+Lemma flat_set_count_preserves_well_formed : forall bag path count,
+  flat_bag_well_formedb bag = true ->
+  path_valid path = true -> count <= multiplicity_max ->
+  flat_bag_well_formedb (flat_set_count path count bag) = true.
+Proof.
+  intros bag path count Hwellformed Hpath Hbound.
+  unfold flat_bag_well_formedb in *. apply andb_true_iff in Hwellformed as [Hvalid Hunique].
+  apply andb_true_iff. split.
+  - now apply flat_set_count_preserves_valid_entries.
+  - apply nodup_implies_flat_paths_unique.
+    + apply flat_set_count_preserves_unique. now apply flat_paths_unique_implies_nodup.
+    + intros other Hin. contradiction.
+Qed.
+
+Lemma flat_lookup_well_formed_bound : forall bag path,
+  flat_bag_well_formedb bag = true -> flat_lookup path bag <= multiplicity_max.
+Proof.
+  intros bag path Hwellformed.
+  apply andb_true_iff in Hwellformed as [Hvalid _].
+  induction bag as [|[current value] tail IH]; simpl in *; [lia|].
+  apply andb_true_iff in Hvalid as [Hhead Htail].
+  destruct (path_eq_dec path current); [|now apply IH].
+  apply andb_true_iff in Hhead as [_ Hvalue].
+  unfold multiplicity_valid in Hvalue.
+  apply andb_true_iff in Hvalue as [_ Hbound]. now apply N.leb_le.
+Qed.
+
+Lemma flat_record_change_preserves_well_formed : forall
+    destination cancellation path amount after_destination after_cancellation,
+  flat_bag_well_formedb destination = true ->
+  flat_bag_well_formedb cancellation = true ->
+  flat_record_change destination cancellation path amount =
+    Some (after_destination, after_cancellation) ->
+  flat_bag_well_formedb after_destination = true /\
+  flat_bag_well_formedb after_cancellation = true.
+Proof.
+  intros destination cancellation path amount after_destination after_cancellation
+    Hdestination Hcancellation Hrecord.
+  unfold flat_record_change, checked_flat_add in Hrecord.
+  destruct (path_valid path && multiplicity_valid amount) eqn:Hvalid; [|discriminate].
+  apply andb_true_iff in Hvalid as [Hpath Hamount].
+  destruct (N.leb
+    (flat_lookup path destination + (amount - N.min (flat_lookup path cancellation) amount))
+    multiplicity_max) eqn:Hbound; [|discriminate].
+  inversion Hrecord; subst. split.
+  - apply flat_set_count_preserves_well_formed; auto. now apply N.leb_le.
+  - unfold flat_subtract. apply flat_set_count_preserves_well_formed; auto.
+    pose proof (@flat_lookup_well_formed_bound cancellation path Hcancellation). lia.
+Qed.
+
+Lemma flat_lookup_member_value : forall bag path amount,
+  NoDup (map fst bag) -> In (path, amount) bag -> flat_lookup path bag = amount.
+Proof.
+  intros bag. induction bag as [|[current value] tail IH];
+    intros path amount Hunique Hin; simpl in *; [contradiction|].
+  inversion Hunique as [|head keys Habsent Htail]; subst.
+  destruct Hin as [Hequal|Hin].
+  - inversion Hequal; subst. destruct (path_eq_dec path path); congruence.
+  - destruct (path_eq_dec path current) as [Hequal|Hdifferent].
+    + subst current. exfalso. apply Habsent. now apply in_map with (f := fst) in Hin.
+    + now apply IH.
+Qed.
+
+Lemma flat_lookup_nonzero_member : forall bag path,
+  flat_lookup path bag <> 0 -> In path (map fst bag).
+Proof.
+  intros bag. induction bag as [|[current value] tail IH];
+    intros path Hnonzero; simpl in *; [contradiction|].
+  destruct (path_eq_dec path current) as [Hequal|Hdifferent].
+  - left. symmetry. exact Hequal.
+  - right. now apply IH.
+Qed.
+
+Lemma flat_disjoint_is_pointwise : forall additions removals,
+  flat_bag_well_formedb additions = true ->
+  flat_delta_disjointb (FlatBagDeltaState additions removals) = true <->
+  forall path, flat_lookup path additions = 0 \/ flat_lookup path removals = 0.
+Proof.
+  intros additions removals Hwellformed.
+  unfold flat_delta_disjointb; simpl. rewrite forallb_forall.
+  split.
+  - intros Hdisjoint path. destruct (N.eq_dec (flat_lookup path additions) 0)
+      as [Hzero|Hnonzero]; [now left|right].
+    apply flat_lookup_nonzero_member in Hnonzero.
+    apply in_map_iff in Hnonzero as [[current value] [Hequal Hin]].
+    simpl in Hequal. subst current.
+    apply N.eqb_eq. exact (Hdisjoint (path, value) Hin).
+  - intros Hdisjoint [path value] Hin; simpl.
+    destruct (Hdisjoint path) as [Hzero|Hzero]; [|now apply N.eqb_eq].
+    apply andb_true_iff in Hwellformed as [Hvalid Hunique].
+    pose proof (@flat_lookup_member_value additions path value
+      (@flat_paths_unique_implies_nodup additions Hunique) Hin) as Hlookup.
+    rewrite Hlookup in Hzero. subst value.
+    apply forallb_forall with (x := (path, 0)) in Hvalid; [|exact Hin].
+    cbn [multiplicity_valid] in Hvalid.
+    rewrite andb_false_r in Hvalid. discriminate.
+Qed.
+
+Lemma flat_record_change_preserves_disjoint : forall
+    destination cancellation path amount after_destination after_cancellation,
+  flat_bag_well_formedb destination = true ->
+  flat_bag_well_formedb cancellation = true ->
+  (forall other, flat_lookup other destination = 0 \/ flat_lookup other cancellation = 0) ->
+  flat_record_change destination cancellation path amount =
+    Some (after_destination, after_cancellation) ->
+  forall other, flat_lookup other after_destination = 0 \/
+    flat_lookup other after_cancellation = 0.
+Proof.
+  intros destination cancellation path amount after_destination after_cancellation
+    Hdestination Hcancellation Hdisjoint Hrecord other.
+  destruct (path_eq_dec path other) as [Hequal|Hdifferent].
+  - subst other.
+    assert (Hadd : flat_record_addition (FlatBagDeltaState destination cancellation)
+        path amount = Some (FlatBagDeltaState after_destination after_cancellation)).
+    { unfold flat_record_addition. simpl. now rewrite Hrecord. }
+    apply andb_true_iff in Hdestination as [_ Hdestination].
+    apply andb_true_iff in Hcancellation as [_ Hcancellation].
+    pose proof (@flat_record_addition_is_exact_opposite_cancellation
+      (FlatBagDeltaState destination cancellation) path amount
+      after_destination after_cancellation Hdestination Hcancellation Hadd)
+      as [Hcancel Hdest]. simpl in Hcancel, Hdest.
+    rewrite Hcancel, Hdest.
+    destruct (Hdisjoint path) as [Hzero|Hzero].
+    + rewrite Hzero.
+      destruct (N.le_ge_cases (flat_lookup path cancellation) amount) as [Hle|Hge].
+      * right. rewrite N.min_l by exact Hle. lia.
+      * left. rewrite N.min_r by exact Hge. lia.
+    + right. rewrite Hzero. reflexivity.
+  - pose proof (@flat_record_change_preserves_other destination cancellation path amount
+      after_destination after_cancellation other Hdifferent Hrecord) as [Hdest Hcancel].
+    rewrite Hdest, Hcancel. apply Hdisjoint.
+Qed.
+
+Theorem flat_record_addition_preserves_normalization : forall delta path amount after,
+  flat_delta_well_formedb delta = true ->
+  flat_record_addition delta path amount = Some after ->
+  flat_delta_well_formedb after = true.
+Proof.
+  intros [additions removals] path amount after Hnormalized Hrecord.
+  unfold flat_delta_well_formedb in Hnormalized.
+  apply andb_true_iff in Hnormalized as [Hbags Hdisjoint].
+  apply andb_true_iff in Hbags as [Hadd Hremove]. simpl in *.
+  unfold flat_record_addition in Hrecord. simpl in Hrecord.
+  destruct (flat_record_change additions removals path amount)
+    as [[after_additions after_removals]|] eqn:Hchange; [|discriminate].
+  inversion Hrecord; subst after.
+  pose proof (@flat_record_change_preserves_well_formed additions removals path amount
+    after_additions after_removals Hadd Hremove Hchange) as [Hafter_add Hafter_remove].
+  unfold flat_delta_well_formedb; simpl. rewrite Hafter_add, Hafter_remove; simpl.
+  apply (proj2 (@flat_disjoint_is_pointwise after_additions after_removals Hafter_add)).
+  apply (@flat_record_change_preserves_disjoint additions removals path amount
+    after_additions after_removals Hadd Hremove); [|exact Hchange].
+  now apply (proj1 (@flat_disjoint_is_pointwise additions removals Hadd)).
+Qed.
+
+Theorem flat_record_removal_preserves_normalization : forall delta path amount after,
+  flat_delta_well_formedb delta = true ->
+  flat_record_removal delta path amount = Some after ->
+  flat_delta_well_formedb after = true.
+Proof.
+  intros [additions removals] path amount after Hnormalized Hrecord.
+  unfold flat_delta_well_formedb in Hnormalized.
+  apply andb_true_iff in Hnormalized as [Hbags Hdisjoint].
+  apply andb_true_iff in Hbags as [Hadd Hremove]. simpl in *.
+  unfold flat_record_removal in Hrecord. simpl in Hrecord.
+  destruct (flat_record_change removals additions path amount)
+    as [[after_removals after_additions]|] eqn:Hchange; [|discriminate].
+  inversion Hrecord; subst after.
+  pose proof (@flat_record_change_preserves_well_formed removals additions path amount
+    after_removals after_additions Hremove Hadd Hchange) as [Hafter_remove Hafter_add].
+  unfold flat_delta_well_formedb; simpl. rewrite Hafter_add, Hafter_remove; simpl.
+  apply (proj2 (@flat_disjoint_is_pointwise after_additions after_removals Hafter_add)).
+  assert (Hswapped : forall other,
+    flat_lookup other removals = 0 \/ flat_lookup other additions = 0).
+  { intro other. apply (proj1 (@flat_disjoint_is_pointwise additions removals Hadd))
+      with (path := other) in Hdisjoint. tauto. }
+  intro other.
+  pose proof (@flat_record_change_preserves_disjoint removals additions path amount
+    after_removals after_additions Hremove Hadd Hswapped Hchange other). tauto.
+Qed.
+
 (** Candidate-pool authority ------------------------------------------ *)
 
 Record OrdinalCandidate : Type := OrdinalCandidateState {
@@ -1816,6 +2067,417 @@ Fixpoint lookup_partitioned_delta
       else lookup_partitioned_delta marker tail
   end.
 
+Definition partition_side (polarity : ChangePolarity) (delta : FlatBagDelta) : FlatBag :=
+  match polarity with
+  | ChangeAddition => flat_delta_additions delta
+  | ChangeRemoval => flat_delta_removals delta
+  end.
+
+Definition partition_record (polarity : ChangePolarity) (delta : FlatBagDelta) :=
+  match polarity with
+  | ChangeAddition => flat_record_addition delta
+  | ChangeRemoval => flat_record_removal delta
+  end.
+
+Definition partition_polarity_eq_dec : forall left right : ChangePolarity,
+    {left = right} + {left <> right}.
+Proof. decide equality. Defined.
+
+Definition parsed_pair (change : ParsedFlatChange) : Path * Path :=
+  (parsed_change_marker change, parsed_change_relative change).
+
+Definition partition_pair_eq_dec : forall left right : Path * Path,
+    {left = right} + {left <> right}.
+Proof. decide equality; apply path_eq_dec. Defined.
+
+Definition change_contribution
+    (polarity : ChangePolarity) (marker relative : Path)
+    (change : ParsedFlatChange) : N :=
+  if partition_pair_eq_dec (marker, relative) (parsed_pair change) then
+    if partition_polarity_eq_dec polarity (parsed_change_polarity change)
+    then parsed_change_amount change else 0
+  else 0.
+
+Fixpoint independent_change_mass
+    (polarity : ChangePolarity) (marker relative : Path)
+    (changes : list ParsedFlatChange) : N :=
+  match changes with
+  | [] => 0
+  | change :: tail => change_contribution polarity marker relative change +
+      independent_change_mass polarity marker relative tail
+  end.
+
+Definition grouped_count
+    (polarity : ChangePolarity) (marker relative : Path)
+    (groups : list PartitionedChannelDelta) : N :=
+  match lookup_partitioned_delta marker groups with
+  | None => 0
+  | Some delta => flat_lookup relative (partition_side polarity delta)
+  end.
+
+Definition partition_groups_valid (groups : list PartitionedChannelDelta) : Prop :=
+  NoDup (map partitioned_channel_marker groups) /\
+  Forall (fun group => flat_delta_well_formedb (partitioned_channel_delta group) = true) groups.
+
+Definition pending_pair_fresh
+    (groups : list PartitionedChannelDelta) (change : ParsedFlatChange) : Prop :=
+  forall polarity, grouped_count polarity (parsed_change_marker change)
+    (parsed_change_relative change) groups = 0.
+
+Definition parsed_change_valid (change : ParsedFlatChange) : Prop :=
+  path_valid (parsed_change_relative change) = true /\
+  multiplicity_valid (parsed_change_amount change) = true.
+
+Lemma partition_side_well_formed : forall delta polarity,
+  flat_delta_well_formedb delta = true ->
+  flat_bag_well_formedb (partition_side polarity delta) = true.
+Proof.
+  intros delta polarity Hvalid. unfold flat_delta_well_formedb in Hvalid.
+  apply andb_true_iff in Hvalid as [Hbags _].
+  apply andb_true_iff in Hbags as [Hadd Hremove]. destruct polarity; assumption.
+Qed.
+
+Lemma partition_record_normalized : forall polarity delta path amount after,
+  flat_delta_well_formedb delta = true ->
+  partition_record polarity delta path amount = Some after ->
+  flat_delta_well_formedb after = true.
+Proof.
+  intros polarity. destruct polarity; [apply flat_record_addition_preserves_normalization|
+    apply flat_record_removal_preserves_normalization].
+Qed.
+
+Lemma partition_empty_count : forall polarity path,
+  flat_lookup path (partition_side polarity empty_flat_delta) = 0.
+Proof. intros polarity path. destruct polarity; reflexivity. Qed.
+
+Lemma partition_record_fresh_exists : forall polarity delta path amount,
+  path_valid path = true -> multiplicity_valid amount = true ->
+  flat_lookup path (flat_delta_additions delta) = 0 ->
+  flat_lookup path (flat_delta_removals delta) = 0 ->
+  exists after, partition_record polarity delta path amount = Some after.
+Proof.
+  intros polarity delta path amount Hpath Hamount Hadd Hremove.
+  assert (Hbound : N.leb amount multiplicity_max = true).
+  { unfold multiplicity_valid in Hamount. now apply andb_true_iff in Hamount as [_ Hamount]. }
+  destruct polarity; unfold partition_record, flat_record_addition, flat_record_removal,
+    flat_record_change, checked_flat_add;
+    rewrite Hpath, Hamount, Hadd, Hremove, N.min_0_l, N.sub_0_r, N.add_0_l, Hbound;
+    eexists; reflexivity.
+Qed.
+
+Lemma partition_record_fresh_observation : forall written delta path amount after,
+  flat_delta_well_formedb delta = true ->
+  (forall polarity, flat_lookup path (partition_side polarity delta) = 0) ->
+  partition_record written delta path amount = Some after ->
+  forall polarity other,
+  flat_lookup other (partition_side polarity after) =
+    flat_lookup other (partition_side polarity delta) +
+      (if path_eq_dec other path then
+         if partition_polarity_eq_dec polarity written then amount else 0
+       else 0).
+Proof.
+  intros written delta path amount after Hvalid Hfresh Hrecord polarity other.
+  pose proof (Hfresh ChangeAddition) as Hzadd.
+  pose proof (Hfresh ChangeRemoval) as Hzremove.
+  cbn [partition_side] in Hzadd, Hzremove.
+  destruct (path_eq_dec other path) as [Hequal|Hdifferent].
+  - subst other.
+    pose proof (@partition_side_well_formed delta ChangeAddition Hvalid) as Hadd.
+    pose proof (@partition_side_well_formed delta ChangeRemoval Hvalid) as Hremove.
+    apply andb_true_iff in Hadd as [_ Hadd].
+    apply andb_true_iff in Hremove as [_ Hremove].
+    destruct after as [additions removals].
+    destruct written.
+    + pose proof (@flat_record_addition_is_exact_opposite_cancellation
+        delta path amount additions removals Hadd Hremove Hrecord) as [Hr Ha].
+      specialize (Hfresh ChangeRemoval) as Hzero.
+      change (flat_lookup path (flat_delta_removals delta) = 0) in Hzero.
+      rewrite Hzero in Hr, Ha. simpl in Hr, Ha.
+      destruct polarity; cbn [partition_side flat_delta_additions flat_delta_removals];
+        repeat match goal with
+        | |- context [partition_polarity_eq_dec ?left ?right] =>
+            destruct (partition_polarity_eq_dec left right); try congruence
+        end; rewrite ?Ha, ?Hr, ?Hzadd, ?Hzremove; lia.
+    + pose proof (@flat_record_removal_is_exact_opposite_cancellation
+        delta path amount additions removals Hadd Hremove Hrecord) as [Ha Hr].
+      specialize (Hfresh ChangeAddition) as Hzero.
+      change (flat_lookup path (flat_delta_additions delta) = 0) in Hzero.
+      rewrite Hzero in Hr, Ha. simpl in Hr, Ha.
+      destruct polarity; cbn [partition_side flat_delta_additions flat_delta_removals];
+        repeat match goal with
+        | |- context [partition_polarity_eq_dec ?left ?right] =>
+            destruct (partition_polarity_eq_dec left right); try congruence
+        end; rewrite ?Ha, ?Hr, ?Hzadd, ?Hzremove; lia.
+  - assert (Hneq : path <> other) by congruence.
+    destruct written.
+    + pose proof (@flat_record_addition_preserves_other delta path amount after other Hneq Hrecord).
+      destruct polarity; simpl in *; lia.
+    + pose proof (@flat_record_removal_preserves_other delta path amount after other Hneq Hrecord).
+      destruct polarity; simpl in *; lia.
+Qed.
+
+Lemma grouped_count_cons : forall polarity marker relative group groups,
+  grouped_count polarity marker relative (group :: groups) =
+    if path_eq_dec marker (partitioned_channel_marker group)
+    then flat_lookup relative (partition_side polarity (partitioned_channel_delta group))
+    else grouped_count polarity marker relative groups.
+Proof.
+  intros. unfold grouped_count; simpl.
+  destruct (path_eq_dec marker (partitioned_channel_marker group)); reflexivity.
+Qed.
+
+Lemma partition_record_marker_domain : forall change groups after,
+  record_partitioned_change change groups = BuildOk after ->
+  forall marker, In marker (map partitioned_channel_marker after) <->
+    marker = parsed_change_marker change \/ In marker (map partitioned_channel_marker groups).
+Proof.
+  intros change groups. induction groups as [|group tail IH]; intros after Hrecord marker;
+    simpl in Hrecord.
+  - destruct (match parsed_change_polarity change with
+      | ChangeAddition => flat_record_addition empty_flat_delta
+      | ChangeRemoval => flat_record_removal empty_flat_delta
+      end (parsed_change_relative change) (parsed_change_amount change));
+      inversion Hrecord; subst; simpl; intuition congruence.
+  - destruct (path_eq_dec (parsed_change_marker change) (partitioned_channel_marker group))
+      as [Hequal|Hdifferent].
+    + destruct (match parsed_change_polarity change with
+        | ChangeAddition => flat_record_addition (partitioned_channel_delta group)
+        | ChangeRemoval => flat_record_removal (partitioned_channel_delta group)
+        end (parsed_change_relative change) (parsed_change_amount change));
+        inversion Hrecord; subst; simpl; intuition congruence.
+    + destruct (record_partitioned_change change tail) as [next|reason] eqn:Hnext;
+        inversion Hrecord; subst; simpl.
+      rewrite (IH next eq_refl marker). intuition congruence.
+Qed.
+
+Lemma change_contribution_same_marker : forall change polarity relative,
+  change_contribution polarity (parsed_change_marker change) relative change =
+    if path_eq_dec relative (parsed_change_relative change) then
+      if partition_polarity_eq_dec polarity (parsed_change_polarity change)
+      then parsed_change_amount change else 0
+    else 0.
+Proof.
+  intros. unfold change_contribution, parsed_pair.
+  destruct (partition_pair_eq_dec _ _) as [Hequal|Hdifferent];
+    destruct (path_eq_dec relative (parsed_change_relative change));
+    try reflexivity; congruence.
+Qed.
+
+Lemma change_contribution_other_marker : forall change polarity marker relative,
+  marker <> parsed_change_marker change ->
+  change_contribution polarity marker relative change = 0.
+Proof.
+  intros. unfold change_contribution, parsed_pair.
+  destruct (partition_pair_eq_dec _ _); [congruence|reflexivity].
+Qed.
+
+Lemma change_contribution_other_pair : forall change polarity marker relative,
+  (marker, relative) <> parsed_pair change ->
+  change_contribution polarity marker relative change = 0.
+Proof.
+  intros. unfold change_contribution.
+  destruct (partition_pair_eq_dec _ _); congruence.
+Qed.
+
+Lemma record_partitioned_groups_valid : forall change groups after,
+  partition_groups_valid groups ->
+  record_partitioned_change change groups = BuildOk after ->
+  partition_groups_valid after.
+Proof.
+  intros change groups. induction groups as [|group tail IH]; intros after [Hunique Hvalid] Hrecord;
+    cbn [record_partitioned_change] in Hrecord.
+  - change (match partition_record (parsed_change_polarity change) empty_flat_delta
+        (parsed_change_relative change) (parsed_change_amount change) with
+      | Some delta => BuildOk [PartitionedChannelDeltaState (parsed_change_marker change) delta]
+      | None => BuildRefused (RefuseFlatDeltaPartition (parsed_change_absolute change))
+      end = BuildOk after) in Hrecord.
+    destruct (partition_record _ _ _ _) as [delta|] eqn:Hdelta; [|discriminate].
+    inversion Hrecord; subst after. split.
+    + simpl. repeat constructor. simpl. tauto.
+    + constructor; [|constructor]. simpl.
+      exact (@partition_record_normalized (parsed_change_polarity change)
+        empty_flat_delta (parsed_change_relative change) (parsed_change_amount change)
+        delta eq_refl Hdelta).
+  - inversion Hunique as [|head keys Habsent Htail_unique]; subst.
+    inversion Hvalid as [|head remaining Hhead_valid Htail_valid]; subst.
+    destruct (path_eq_dec (parsed_change_marker change) (partitioned_channel_marker group))
+      as [Hequal|Hdifferent].
+    + change (match partition_record (parsed_change_polarity change) (partitioned_channel_delta group)
+          (parsed_change_relative change) (parsed_change_amount change) with
+        | Some delta => BuildOk (PartitionedChannelDeltaState (partitioned_channel_marker group) delta :: tail)
+        | None => BuildRefused (RefuseFlatDeltaPartition (parsed_change_absolute change))
+        end = BuildOk after) in Hrecord.
+      destruct (partition_record _ _ _ _) as [delta|] eqn:Hdelta; [|discriminate].
+      inversion Hrecord; subst after. split; [exact Hunique|].
+      constructor; [|exact Htail_valid]. simpl.
+      eapply partition_record_normalized; eauto.
+    + destruct (record_partitioned_change change tail) as [next|reason] eqn:Hnext;
+        [|discriminate]. inversion Hrecord; subst after.
+      destruct (IH next (conj Htail_unique Htail_valid) eq_refl) as [Hnext_unique Hnext_valid].
+      split.
+      * simpl. constructor; [|exact Hnext_unique]. intro Hin.
+        apply (@partition_record_marker_domain change tail next Hnext) in Hin.
+        destruct Hin; congruence.
+      * now constructor.
+Qed.
+
+Lemma record_partitioned_fresh_exists : forall change groups,
+  parsed_change_valid change -> pending_pair_fresh groups change ->
+  exists after, record_partitioned_change change groups = BuildOk after.
+Proof.
+  intros change groups. induction groups as [|group tail IH]; intros [Hpath Hamount] Hfresh.
+  - destruct (@partition_record_fresh_exists (parsed_change_polarity change)
+      empty_flat_delta (parsed_change_relative change) (parsed_change_amount change)
+      Hpath Hamount eq_refl eq_refl) as [delta Hdelta].
+    cbn [record_partitioned_change]. change (exists after,
+      match partition_record (parsed_change_polarity change) empty_flat_delta
+        (parsed_change_relative change) (parsed_change_amount change) with
+      | Some next => BuildOk [PartitionedChannelDeltaState (parsed_change_marker change) next]
+      | None => BuildRefused (RefuseFlatDeltaPartition (parsed_change_absolute change))
+      end = BuildOk after).
+    rewrite Hdelta. eauto.
+  - cbn [record_partitioned_change].
+    destruct (path_eq_dec (parsed_change_marker change) (partitioned_channel_marker group))
+      as [Hequal|Hdifferent].
+    + assert (Hlocal : forall polarity, flat_lookup (parsed_change_relative change)
+        (partition_side polarity (partitioned_channel_delta group)) = 0).
+      { intro polarity. specialize (Hfresh polarity).
+        unfold pending_pair_fresh in Hfresh. rewrite grouped_count_cons in Hfresh.
+        destruct (path_eq_dec _ _); congruence. }
+      destruct (@partition_record_fresh_exists (parsed_change_polarity change)
+        (partitioned_channel_delta group) (parsed_change_relative change) (parsed_change_amount change)
+        Hpath Hamount (Hlocal ChangeAddition) (Hlocal ChangeRemoval)) as [delta Hdelta].
+      change (exists after, match partition_record (parsed_change_polarity change)
+          (partitioned_channel_delta group) (parsed_change_relative change) (parsed_change_amount change) with
+        | Some next => BuildOk (PartitionedChannelDeltaState (partitioned_channel_marker group) next :: tail)
+        | None => BuildRefused (RefuseFlatDeltaPartition (parsed_change_absolute change))
+        end = BuildOk after).
+      rewrite Hdelta. eauto.
+    + assert (Htail : pending_pair_fresh tail change).
+      { intro polarity. specialize (Hfresh polarity).
+        rewrite grouped_count_cons in Hfresh. destruct (path_eq_dec _ _); congruence. }
+      destruct (IH (conj Hpath Hamount) Htail) as [after Hafter].
+      rewrite Hafter. eauto.
+Qed.
+
+Lemma record_partitioned_fresh_observation : forall change groups after,
+  partition_groups_valid groups -> pending_pair_fresh groups change ->
+  record_partitioned_change change groups = BuildOk after ->
+  forall polarity marker relative,
+  grouped_count polarity marker relative after =
+    grouped_count polarity marker relative groups +
+    change_contribution polarity marker relative change.
+Proof.
+  intros change groups. induction groups as [|group tail IH];
+    intros after [Hunique Hvalid] Hfresh Hrecord polarity marker relative;
+    cbn [record_partitioned_change] in Hrecord.
+  - change (match partition_record (parsed_change_polarity change) empty_flat_delta
+        (parsed_change_relative change) (parsed_change_amount change) with
+      | Some next => BuildOk [PartitionedChannelDeltaState (parsed_change_marker change) next]
+      | None => BuildRefused (RefuseFlatDeltaPartition (parsed_change_absolute change))
+      end = BuildOk after) in Hrecord.
+    destruct (partition_record _ _ _ _) as [delta|] eqn:Hdelta; [|discriminate].
+    inversion Hrecord; subst after. rewrite grouped_count_cons. simpl partitioned_channel_marker.
+    destruct (path_eq_dec marker (parsed_change_marker change)) as [Hequal|Hdifferent].
+    + subst marker. rewrite change_contribution_same_marker.
+      pose proof (@partition_record_fresh_observation (parsed_change_polarity change)
+        empty_flat_delta (parsed_change_relative change) (parsed_change_amount change)
+        delta eq_refl (fun p => partition_empty_count p (parsed_change_relative change))
+        Hdelta polarity relative) as Hcount.
+      rewrite partition_empty_count in Hcount.
+      exact Hcount.
+    + rewrite change_contribution_other_marker by exact Hdifferent. reflexivity.
+  - inversion Hunique as [|head keys Habsent Htail_unique]; subst.
+    inversion Hvalid as [|head remaining Hhead_valid Htail_valid]; subst.
+    destruct (path_eq_dec (parsed_change_marker change) (partitioned_channel_marker group))
+      as [Hequal|Hdifferent].
+    + change (match partition_record (parsed_change_polarity change) (partitioned_channel_delta group)
+          (parsed_change_relative change) (parsed_change_amount change) with
+        | Some next => BuildOk (PartitionedChannelDeltaState (partitioned_channel_marker group) next :: tail)
+        | None => BuildRefused (RefuseFlatDeltaPartition (parsed_change_absolute change))
+        end = BuildOk after) in Hrecord.
+      destruct (partition_record _ _ _ _) as [delta|] eqn:Hdelta; [|discriminate].
+      inversion Hrecord; subst after.
+      assert (Hlocal : forall p, flat_lookup (parsed_change_relative change)
+        (partition_side p (partitioned_channel_delta group)) = 0).
+      { intro p. specialize (Hfresh p). rewrite grouped_count_cons in Hfresh.
+        destruct (path_eq_dec _ _); congruence. }
+      rewrite !grouped_count_cons. simpl partitioned_channel_marker.
+      destruct (path_eq_dec marker (partitioned_channel_marker group)) as [Hmarker|Hmarker].
+      * rewrite <- Hequal in Hmarker. subst marker.
+        rewrite change_contribution_same_marker.
+        exact (@partition_record_fresh_observation (parsed_change_polarity change)
+          (partitioned_channel_delta group) (parsed_change_relative change) (parsed_change_amount change)
+          delta Hhead_valid Hlocal Hdelta polarity relative).
+      * rewrite change_contribution_other_marker by congruence. lia.
+    + destruct (record_partitioned_change change tail) as [next|reason] eqn:Hnext;
+        [|discriminate]. inversion Hrecord; subst after.
+      assert (Htail : pending_pair_fresh tail change).
+      { intro p. specialize (Hfresh p). rewrite grouped_count_cons in Hfresh.
+        destruct (path_eq_dec _ _); congruence. }
+      rewrite !grouped_count_cons.
+      destruct (path_eq_dec marker (partitioned_channel_marker group)) as [Hmarker|Hmarker].
+      * rewrite change_contribution_other_marker by congruence. lia.
+      * exact (IH next (conj Htail_unique Htail_valid) Htail eq_refl polarity marker relative).
+Qed.
+
+Theorem fresh_partition_refines_independent_mass : forall changes groups,
+  partition_groups_valid groups ->
+  NoDup (map parsed_pair changes) ->
+  Forall parsed_change_valid changes ->
+  Forall (pending_pair_fresh groups) changes ->
+  exists after,
+    partition_parsed_changes changes groups = BuildOk after /\
+    partition_groups_valid after /\
+    forall polarity marker relative,
+      grouped_count polarity marker relative after =
+        grouped_count polarity marker relative groups +
+        independent_change_mass polarity marker relative changes.
+Proof.
+  intros changes. induction changes as [|change tail IH];
+    intros groups Hgroups Hunique Hvalid Hfresh.
+  - exists groups. split; [reflexivity|]. split; [exact Hgroups|].
+    intros. simpl. lia.
+  - inversion Hunique as [|head keys Habsent Htail_unique]; subst.
+    inversion Hvalid as [|head rest Hchange_valid Htail_valid]; subst.
+    inversion Hfresh as [|head rest Hchange_fresh Htail_fresh]; subst.
+    destruct (@record_partitioned_fresh_exists change groups Hchange_valid Hchange_fresh)
+      as [next Hnext].
+    pose proof (@record_partitioned_groups_valid change groups next Hgroups Hnext) as Hnext_valid.
+    pose proof (@record_partitioned_fresh_observation change groups next Hgroups Hchange_fresh Hnext)
+      as Hnext_count.
+    assert (Hnext_fresh : Forall (pending_pair_fresh next) tail).
+    { apply Forall_forall. intros candidate Hin polarity.
+      rewrite Hnext_count.
+      pose proof ((proj1 (Forall_forall _ _)) Htail_fresh candidate Hin) as Hprior.
+      rewrite Hprior.
+      rewrite change_contribution_other_pair; [reflexivity|].
+      intro Hequal. apply Habsent.
+      apply in_map_iff. exists candidate. split; [exact Hequal|exact Hin]. }
+    destruct (IH next Hnext_valid Htail_unique Htail_valid Hnext_fresh)
+      as [after [Hafter [Hafter_valid Hafter_count]]].
+    exists after. split.
+    + cbn [partition_parsed_changes]. now rewrite Hnext.
+    + split; [exact Hafter_valid|]. intros polarity marker relative.
+      rewrite Hafter_count, Hnext_count. cbn [independent_change_mass]. lia.
+Qed.
+
+Theorem partition_parsed_marker_domain : forall changes groups after,
+  partition_parsed_changes changes groups = BuildOk after ->
+  forall marker, In marker (map partitioned_channel_marker after) <->
+    In marker (map parsed_change_marker changes) \/
+    In marker (map partitioned_channel_marker groups).
+Proof.
+  intros changes. induction changes as [|change tail IH]; intros groups after Hpartition marker;
+    cbn [partition_parsed_changes] in Hpartition.
+  - inversion Hpartition; subst. simpl. tauto.
+  - destruct (record_partitioned_change change groups) as [next|reason] eqn:Hnext;
+      [|discriminate].
+    rewrite (IH next after Hpartition marker).
+    rewrite (@partition_record_marker_domain change groups next Hnext marker).
+    simpl. intuition congruence.
+Qed.
+
 Theorem parsed_flat_change_reconstructs_absolute : forall polarity entry change,
   parse_flat_change polarity entry = BuildOk change ->
   parsed_change_absolute change =
@@ -1828,6 +2490,457 @@ Proof.
   inversion Hparse; subst change. simpl.
   pose proof (@parse_absolute_datum_sound absolute view Hview) as [_ Hsound].
   exact Hsound.
+Qed.
+
+Definition parsed_change_origin (change : ParsedFlatChange) : Prop :=
+  parse_flat_change (parsed_change_polarity change)
+    (parsed_change_absolute change, parsed_change_amount change) = BuildOk change.
+
+Lemma parse_flat_change_fields : forall polarity path amount change,
+  parse_flat_change polarity (path, amount) = BuildOk change ->
+  parsed_change_absolute change = path /\ parsed_change_amount change = amount /\
+  parsed_change_polarity change = polarity /\ parsed_change_origin change.
+Proof.
+  intros polarity path amount change Hparse. unfold parse_flat_change in Hparse; simpl in Hparse.
+  destruct (parse_absolute_datum path) as [view|] eqn:Hview; [|discriminate].
+  inversion Hparse; subst change. repeat split.
+  unfold parsed_change_origin, parse_flat_change; simpl. now rewrite Hview.
+Qed.
+
+Lemma path_valid_from_bytes_valid : forall path,
+  bytes_valid path = true -> path_valid path = true.
+Proof.
+  intros path Hvalid. unfold bytes_valid in Hvalid. unfold path_valid.
+  apply forallb_forall. intros byte Hin.
+  apply forallb_forall with (x := byte) in Hvalid; [|exact Hin].
+  unfold RhoPathV1Datum.byte_valid in Hvalid.
+  apply Nat.ltb_lt in Hvalid. apply Nat.leb_le. lia.
+Qed.
+
+Lemma partition_path_valid_skipn : forall count path,
+  path_valid path = true -> path_valid (skipn count path) = true.
+Proof.
+  intros count. induction count as [|count IH]; intros path Hvalid; [exact Hvalid|].
+  destruct path as [|byte tail]; [reflexivity|]. simpl.
+  apply IH. apply andb_true_iff in Hvalid as [_ Htail]. exact Htail.
+Qed.
+
+Lemma parse_flat_change_is_valid : forall polarity path amount change,
+  multiplicity_valid amount = true ->
+  parse_flat_change polarity (path, amount) = BuildOk change -> parsed_change_valid change.
+Proof.
+  intros polarity path amount change Hamount Hparse.
+  unfold parse_flat_change in Hparse; simpl in Hparse.
+  destruct (parse_absolute_datum path) as [view|] eqn:Hview; [|discriminate].
+  inversion Hparse; subst change. split; [|exact Hamount]. simpl.
+  destruct (@parsed_relative_offset_is_exact path view Hview) as [_ Hrelative].
+  rewrite <- Hrelative. apply partition_path_valid_skipn, path_valid_from_bytes_valid.
+  exact (proj1 (@parse_absolute_datum_sound path view Hview)).
+Qed.
+
+Lemma parse_flat_side_source_keys : forall polarity entries changes,
+  parse_flat_side polarity entries = BuildOk changes ->
+  map parsed_change_absolute changes = map fst entries.
+Proof.
+  intros polarity entries. induction entries as [|[path amount] tail IH]; intros changes Hparse;
+    cbn [parse_flat_side] in Hparse.
+  - inversion Hparse. reflexivity.
+  - destruct (parse_flat_change polarity (path, amount)) as [change|reason] eqn:Hchange;
+      [|discriminate].
+    destruct (parse_flat_side polarity tail) as [rest|reason] eqn:Hrest; [|discriminate].
+    inversion Hparse; subst changes. simpl.
+    rewrite (proj1 (@parse_flat_change_fields polarity path amount change Hchange)).
+    f_equal. exact (IH rest eq_refl).
+Qed.
+
+Lemma parse_flat_side_valid_origins : forall polarity entries changes,
+  forallb (fun entry => path_valid (fst entry) && multiplicity_valid (snd entry)) entries = true ->
+  parse_flat_side polarity entries = BuildOk changes ->
+  Forall (fun change => parsed_change_valid change /\ parsed_change_origin change) changes.
+Proof.
+  intros polarity entries. induction entries as [|[path amount] tail IH];
+    intros changes Hvalid Hparse; cbn [parse_flat_side] in Hparse.
+  - inversion Hparse; constructor.
+  - apply andb_true_iff in Hvalid as [Hhead Htail].
+    apply andb_true_iff in Hhead as [_ Hamount].
+    destruct (parse_flat_change polarity (path, amount)) as [change|reason] eqn:Hchange;
+      [|discriminate].
+    destruct (parse_flat_side polarity tail) as [rest|reason] eqn:Hrest; [|discriminate].
+    inversion Hparse; subst changes. constructor.
+    + split.
+      * exact (@parse_flat_change_is_valid polarity path amount change Hamount Hchange).
+      * exact (proj2 (proj2 (proj2 (@parse_flat_change_fields polarity path amount change Hchange)))).
+    + exact (IH rest Htail eq_refl).
+Qed.
+
+Lemma flat_well_formed_key_nonzero : forall bag path,
+  flat_bag_well_formedb bag = true -> In path (map fst bag) -> flat_lookup path bag <> 0.
+Proof.
+  intros bag path Hvalid Hin.
+  apply andb_true_iff in Hvalid as [Hentries Hunique].
+  apply in_map_iff in Hin as [[key amount] [Hequal Hin]]. simpl in Hequal. subst key.
+  rewrite (@flat_lookup_member_value bag path amount
+    (@flat_paths_unique_implies_nodup bag Hunique) Hin).
+  apply forallb_forall with (x := (path, amount)) in Hentries; [|exact Hin].
+  apply andb_true_iff in Hentries as [_ Hamount].
+  unfold multiplicity_valid in Hamount. apply andb_true_iff in Hamount as [Hpositive _].
+  apply N.ltb_lt in Hpositive. cbn in Hpositive. lia.
+Qed.
+
+Lemma partition_nodup_app : forall (A : Type) (left right : list A),
+  NoDup left -> NoDup right ->
+  (forall item, In item left -> ~ In item right) -> NoDup (left ++ right).
+Proof.
+  intros A left right Hleft. induction Hleft as [|head tail Habsent Htail IH];
+    intros Hright Hcross; simpl; [exact Hright|].
+  constructor.
+  - intro Hin. apply in_app_or in Hin. destruct Hin; [contradiction|].
+    apply (Hcross head); [now left|assumption].
+  - apply IH; [exact Hright|]. intros item Hin. apply Hcross. now right.
+Qed.
+
+Lemma normalized_flat_source_keys_unique : forall delta,
+  flat_delta_well_formedb delta = true ->
+  NoDup (map fst (flat_delta_additions delta) ++ map fst (flat_delta_removals delta)).
+Proof.
+  intros delta Hvalid.
+  pose proof (@partition_side_well_formed delta ChangeAddition Hvalid) as Hadd.
+  pose proof (@partition_side_well_formed delta ChangeRemoval Hvalid) as Hremove.
+  unfold flat_delta_well_formedb in Hvalid.
+  apply andb_true_iff in Hvalid as [_ Hdisjoint].
+  apply partition_nodup_app.
+  - apply flat_paths_unique_implies_nodup.
+    exact (proj2 ((proj1 (andb_true_iff _ _)) Hadd)).
+  - apply flat_paths_unique_implies_nodup.
+    exact (proj2 ((proj1 (andb_true_iff _ _)) Hremove)).
+  - intros path Hin_add Hin_remove.
+    pose proof (@flat_well_formed_key_nonzero _ path Hadd Hin_add) as Hnonzero_add.
+    pose proof (@flat_well_formed_key_nonzero _ path Hremove Hin_remove) as Hnonzero_remove.
+    pose proof ((proj1 (@flat_disjoint_is_pointwise
+      (flat_delta_additions delta) (flat_delta_removals delta) Hadd)) Hdisjoint path).
+    tauto.
+Qed.
+
+Lemma partition_nodup_map_inv : forall (A B : Type) (f : A -> B) items,
+  NoDup (map f items) -> NoDup items.
+Proof.
+  intros A B f items. induction items as [|head tail IH]; intros Hunique; [constructor|].
+  inversion Hunique as [|key keys Habsent Htail]; subst. constructor.
+  - intro Hin. apply Habsent. now apply in_map.
+  - now apply IH.
+Qed.
+
+Lemma parsed_origins_reconstruct_pairs : forall changes,
+  Forall parsed_change_origin changes ->
+  map parsed_change_absolute changes = map (fun key => fst key ++ snd key) (map parsed_pair changes).
+Proof.
+  intros changes Horigins. induction Horigins as [|change tail Horigin Htail IH]; simpl;
+    [reflexivity|]. f_equal; [|exact IH].
+  unfold parsed_change_origin in Horigin.
+  exact (@parsed_flat_change_reconstructs_absolute (parsed_change_polarity change)
+    (parsed_change_absolute change, parsed_change_amount change) change Horigin).
+Qed.
+
+Lemma parsed_normalized_delta_inputs : forall delta changes,
+  flat_delta_well_formedb delta = true -> parse_all_flat_changes delta = BuildOk changes ->
+  NoDup (map parsed_pair changes) /\ Forall parsed_change_valid changes /\
+  Forall parsed_change_origin changes.
+Proof.
+  intros delta changes Hvalid Hparse.
+  pose proof (@partition_side_well_formed delta ChangeAddition Hvalid) as Hadd.
+  pose proof (@partition_side_well_formed delta ChangeRemoval Hvalid) as Hremove.
+  unfold parse_all_flat_changes in Hparse.
+  destruct (parse_flat_side ChangeAddition (flat_delta_additions delta)) as [adds|reason]
+    eqn:Hadds; [|discriminate].
+  destruct (parse_flat_side ChangeRemoval (flat_delta_removals delta)) as [removes|reason]
+    eqn:Hremoves; [|discriminate]. inversion Hparse; subst changes.
+  apply andb_true_iff in Hadd as [Hadd _].
+  apply andb_true_iff in Hremove as [Hremove _].
+  pose proof (@parse_flat_side_valid_origins ChangeAddition _ _ Hadd Hadds) as Ha.
+  pose proof (@parse_flat_side_valid_origins ChangeRemoval _ _ Hremove Hremoves) as Hr.
+  assert (Hboth : Forall (fun c => parsed_change_valid c /\ parsed_change_origin c) (adds ++ removes)).
+  { apply Forall_app. auto. }
+  assert (Horigins : Forall parsed_change_origin (adds ++ removes)).
+  { eapply Forall_impl; [|exact Hboth]. intros c Hc. exact (proj2 Hc). }
+  split.
+  - apply (@partition_nodup_map_inv _ _ (fun key => fst key ++ snd key)).
+    rewrite <- (parsed_origins_reconstruct_pairs Horigins), map_app.
+    rewrite (@parse_flat_side_source_keys ChangeAddition _ _ Hadds),
+      (@parse_flat_side_source_keys ChangeRemoval _ _ Hremoves).
+    now apply normalized_flat_source_keys_unique.
+  - split; [|exact Horigins].
+    eapply Forall_impl; [|exact Hboth]. intros c Hc. exact (proj1 Hc).
+Qed.
+
+Lemma parsed_change_contribution_matches_absolute : forall written path amount change absolute view polarity,
+  parse_flat_change written (path, amount) = BuildOk change ->
+  parse_absolute_datum absolute = Some view ->
+  change_contribution polarity (decoded_view_marker view) (decoded_view_relative view) change =
+    if path_eq_dec absolute path then
+      if partition_polarity_eq_dec polarity written then amount else 0
+    else 0.
+Proof.
+  intros written path amount change absolute view polarity Hchange Hquery.
+  unfold parse_flat_change in Hchange; simpl in Hchange.
+  destruct (parse_absolute_datum path) as [source|] eqn:Hsource; [|discriminate].
+  inversion Hchange; subst change.
+  unfold change_contribution, parsed_pair.
+  cbn [parsed_change_marker parsed_change_relative parsed_change_polarity parsed_change_amount].
+  destruct (partition_pair_eq_dec _ _) as [Hpair|Hpair];
+    destruct (path_eq_dec absolute path) as [Hpath|Hpath]; try reflexivity.
+  - pose proof (f_equal (fun key : Path * Path => fst key ++ snd key) Hpair) as Hconcat.
+    cbn in Hconcat.
+    pose proof (proj2 (@parse_absolute_datum_sound absolute view Hquery)) as Habsolute.
+    pose proof (proj2 (@parse_absolute_datum_sound path source Hsource)) as Hstored.
+    change (absolute = decoded_view_marker view ++ decoded_view_relative view) in Habsolute.
+    change (path = decoded_view_marker source ++ decoded_view_relative source) in Hstored.
+    congruence.
+  - subst path. rewrite Hquery in Hsource. inversion Hsource; subst source. contradiction.
+Qed.
+
+Lemma independent_mass_app : forall polarity marker relative left right,
+  independent_change_mass polarity marker relative (left ++ right) =
+    independent_change_mass polarity marker relative left +
+    independent_change_mass polarity marker relative right.
+Proof.
+  intros polarity marker relative left. induction left; intros right; simpl; [reflexivity|].
+  rewrite IHleft. lia.
+Qed.
+
+Lemma parsed_side_mass_matches_flat_lookup : forall written entries changes,
+  NoDup (map fst entries) -> parse_flat_side written entries = BuildOk changes ->
+  forall absolute view polarity,
+  parse_absolute_datum absolute = Some view ->
+  independent_change_mass polarity (decoded_view_marker view) (decoded_view_relative view) changes =
+    if partition_polarity_eq_dec polarity written then flat_lookup absolute entries else 0.
+Proof.
+  intros written entries. induction entries as [|[path amount] tail IH];
+    intros changes Hunique Hparse absolute view polarity Hquery;
+    cbn [parse_flat_side] in Hparse.
+  - inversion Hparse; subst changes. destruct (partition_polarity_eq_dec _ _); reflexivity.
+  - inversion Hunique as [|head keys Habsent Htail_unique]; subst.
+    destruct (parse_flat_change written (path, amount)) as [change|reason] eqn:Hchange;
+      [|discriminate].
+    destruct (parse_flat_side written tail) as [rest|reason] eqn:Hrest; [|discriminate].
+    inversion Hparse; subst changes. cbn [independent_change_mass].
+    rewrite (@parsed_change_contribution_matches_absolute written path amount change
+      absolute view polarity Hchange Hquery).
+    rewrite (IH rest Htail_unique eq_refl absolute view polarity Hquery).
+    change ((if path_eq_dec absolute path then
+        if partition_polarity_eq_dec polarity written then amount else 0 else 0) +
+      (if partition_polarity_eq_dec polarity written then flat_lookup absolute tail else 0) =
+      if partition_polarity_eq_dec polarity written then
+        if path_eq_dec absolute path then amount else flat_lookup absolute tail else 0).
+    destruct (path_eq_dec absolute path) as [Hequal|Hdifferent];
+      destruct (partition_polarity_eq_dec polarity written); try lia.
+    subst absolute. rewrite flat_lookup_absent by exact Habsent. lia.
+Qed.
+
+Theorem parsed_delta_mass_matches_flat_lookup : forall delta changes,
+  flat_delta_well_formedb delta = true -> parse_all_flat_changes delta = BuildOk changes ->
+  forall absolute view polarity,
+  parse_absolute_datum absolute = Some view ->
+  independent_change_mass polarity (decoded_view_marker view) (decoded_view_relative view) changes =
+    flat_lookup absolute (partition_side polarity delta).
+Proof.
+  intros delta changes Hvalid Hparse absolute view polarity Hquery.
+  pose proof (@partition_side_well_formed delta ChangeAddition Hvalid) as Hadd.
+  pose proof (@partition_side_well_formed delta ChangeRemoval Hvalid) as Hremove.
+  apply andb_true_iff in Hadd as [_ Hadd].
+  apply andb_true_iff in Hremove as [_ Hremove].
+  unfold parse_all_flat_changes in Hparse.
+  destruct (parse_flat_side ChangeAddition (flat_delta_additions delta)) as [adds|reason]
+    eqn:Hadds; [|discriminate].
+  destruct (parse_flat_side ChangeRemoval (flat_delta_removals delta)) as [removes|reason]
+    eqn:Hremoves; [|discriminate]. inversion Hparse; subst changes.
+  rewrite independent_mass_app.
+  rewrite (@parsed_side_mass_matches_flat_lookup ChangeAddition _ _
+      (@flat_paths_unique_implies_nodup _ Hadd) Hadds absolute view polarity Hquery).
+  rewrite (@parsed_side_mass_matches_flat_lookup ChangeRemoval _ _
+      (@flat_paths_unique_implies_nodup _ Hremove) Hremoves absolute view polarity Hquery).
+  destruct polarity; cbn [partition_side];
+    repeat match goal with
+    | |- context [partition_polarity_eq_dec ?left ?right] =>
+        destruct (partition_polarity_eq_dec left right); try congruence
+    end; lia.
+Qed.
+
+Theorem normalized_parsed_partition_exists : forall delta changes,
+  flat_delta_well_formedb delta = true -> parse_all_flat_changes delta = BuildOk changes ->
+  exists groups, partition_flat_delta delta = BuildOk groups /\
+    partition_groups_valid groups /\
+    (forall polarity marker relative,
+      grouped_count polarity marker relative groups =
+        independent_change_mass polarity marker relative changes) /\
+    (forall marker, In marker (map partitioned_channel_marker groups) <->
+      In marker (map parsed_change_marker changes)).
+Proof.
+  intros delta changes Hvalid Hparse.
+  destruct (@parsed_normalized_delta_inputs delta changes Hvalid Hparse)
+    as [Hunique [Hchanges Horigins]].
+  assert (Hempty : partition_groups_valid []).
+  { split; constructor. }
+  assert (Hfresh : Forall (pending_pair_fresh []) changes).
+  { apply Forall_forall. intros change Hin polarity. reflexivity. }
+  destruct (@fresh_partition_refines_independent_mass changes [] Hempty Hunique Hchanges Hfresh)
+    as [groups [Hpartition [Hgroups Hcounts]]].
+  exists groups. split.
+  - unfold partition_flat_delta. now rewrite Hparse.
+  - split; [exact Hgroups|]. split.
+    + intros. exact (Hcounts polarity marker relative).
+    + intro marker. rewrite (@partition_parsed_marker_domain changes [] groups Hpartition marker).
+      simpl. tauto.
+Qed.
+
+Theorem grouped_partition_preserves_both_flat_sides : forall delta groups,
+  flat_delta_well_formedb delta = true -> partition_flat_delta delta = BuildOk groups ->
+  partition_groups_valid groups /\
+  forall absolute view,
+    parse_absolute_datum absolute = Some view ->
+    grouped_count ChangeAddition (decoded_view_marker view) (decoded_view_relative view) groups =
+      flat_lookup absolute (flat_delta_additions delta) /\
+    grouped_count ChangeRemoval (decoded_view_marker view) (decoded_view_relative view) groups =
+      flat_lookup absolute (flat_delta_removals delta).
+Proof.
+  intros delta groups Hvalid Hpartition.
+  unfold partition_flat_delta in Hpartition.
+  destruct (parse_all_flat_changes delta) as [changes|reason] eqn:Hparse; [|discriminate].
+  destruct (@normalized_parsed_partition_exists delta changes Hvalid Hparse)
+    as [expected [Hexpected [Hgroups [Hcounts Hmarkers]]]].
+  unfold partition_flat_delta in Hexpected. rewrite Hparse in Hexpected.
+  rewrite Hpartition in Hexpected. inversion Hexpected; subst expected.
+  split; [exact Hgroups|]. intros absolute view Hquery.
+  rewrite !Hcounts. split;
+    exact (@parsed_delta_mass_matches_flat_lookup delta changes Hvalid Hparse absolute view _ Hquery).
+Qed.
+
+Lemma independent_mass_nonzero_witness : forall changes polarity marker relative,
+  independent_change_mass polarity marker relative changes <> 0 ->
+  exists change, In change changes /\ parsed_pair change = (marker, relative) /\
+    parsed_change_polarity change = polarity /\ parsed_change_amount change <> 0.
+Proof.
+  intros changes. induction changes as [|change tail IH]; intros polarity marker relative Hnonzero;
+    cbn [independent_change_mass] in Hnonzero; [contradiction|].
+  destruct (N.eq_dec (change_contribution polarity marker relative change) 0) as [Hzero|Hpositive].
+  - rewrite Hzero in Hnonzero. simpl in Hnonzero.
+    destruct (IH polarity marker relative Hnonzero) as [found [Hin Hfound]].
+    exists found. split; [now right|exact Hfound].
+  - unfold change_contribution in Hpositive.
+    destruct (partition_pair_eq_dec _ _) as [Hpair|Hpair]; [|contradiction].
+    destruct (partition_polarity_eq_dec _ _) as [Hpolarity|Hpolarity]; [|contradiction].
+    exists change. split; [now left|]. split; [symmetry; exact Hpair|].
+    split; [symmetry; exact Hpolarity|exact Hpositive].
+Qed.
+
+Theorem grouped_partition_has_no_extra_endpoints : forall delta groups polarity marker relative,
+  flat_delta_well_formedb delta = true -> partition_flat_delta delta = BuildOk groups ->
+  grouped_count polarity marker relative groups <> 0 ->
+  exists changes change,
+    parse_all_flat_changes delta = BuildOk changes /\ In change changes /\
+    parsed_change_origin change /\ parsed_pair change = (marker, relative) /\
+    parsed_change_polarity change = polarity /\ parsed_change_amount change <> 0.
+Proof.
+  intros delta groups polarity marker relative Hvalid Hpartition Hnonzero.
+  unfold partition_flat_delta in Hpartition.
+  destruct (parse_all_flat_changes delta) as [changes|reason] eqn:Hparse; [|discriminate].
+  destruct (@normalized_parsed_partition_exists delta changes Hvalid Hparse)
+    as [expected [Hexpected [Hgroups [Hcounts Hmarkers]]]].
+  unfold partition_flat_delta in Hexpected. rewrite Hparse, Hpartition in Hexpected.
+  inversion Hexpected; subst expected. rewrite Hcounts in Hnonzero.
+  destruct (@independent_mass_nonzero_witness changes polarity marker relative Hnonzero)
+    as [change [Hin Hproperties]].
+  destruct (@parsed_normalized_delta_inputs delta changes Hvalid Hparse) as [_ [_ Horigins]].
+  exists changes, change. split; [reflexivity|]. split; [exact Hin|]. split.
+  - exact ((proj1 (Forall_forall _ _)) Horigins change Hin).
+  - exact Hproperties.
+Qed.
+
+Theorem normalized_partition_refusal_is_exactly_parse_refusal : forall delta reason,
+  flat_delta_well_formedb delta = true ->
+  (partition_flat_delta delta = BuildRefused reason <->
+   parse_all_flat_changes delta = BuildRefused reason).
+Proof.
+  intros delta reason Hvalid. split.
+  - intro Hrefused. destruct (parse_all_flat_changes delta) as [changes|failure] eqn:Hparse.
+    + destruct (@normalized_parsed_partition_exists delta changes Hvalid Hparse)
+        as [groups [Hgroups _]]. congruence.
+    + unfold partition_flat_delta in Hrefused. rewrite Hparse in Hrefused.
+      now inversion Hrefused.
+  - intro Hparse. unfold partition_flat_delta. now rewrite Hparse.
+Qed.
+
+Lemma parsed_side_member_source : forall polarity entries changes,
+  parse_flat_side polarity entries = BuildOk changes ->
+  forall change, In change changes ->
+  In (parsed_change_absolute change, parsed_change_amount change) entries /\
+  parsed_change_polarity change = polarity.
+Proof.
+  intros polarity entries. induction entries as [|[path amount] tail IH];
+    intros changes Hparse change Hin; cbn [parse_flat_side] in Hparse.
+  - inversion Hparse; subst. contradiction.
+  - destruct (parse_flat_change polarity (path, amount)) as [head|reason] eqn:Hhead;
+      [|discriminate].
+    destruct (parse_flat_side polarity tail) as [rest|reason] eqn:Hrest; [|discriminate].
+    inversion Hparse; subst changes. destruct Hin as [Hequal|Hin].
+    + subst change. destruct (@parse_flat_change_fields polarity path amount head Hhead)
+        as [Hpath [Hamount [Hpolarity Horigin]]].
+      split; [|exact Hpolarity]. left. now rewrite Hpath, Hamount.
+    + destruct (IH rest eq_refl change Hin) as [Hmember Hpolarity].
+      split; [now right|exact Hpolarity].
+Qed.
+
+Lemma parsed_delta_member_source : forall delta changes change polarity,
+  parse_all_flat_changes delta = BuildOk changes -> In change changes ->
+  parsed_change_polarity change = polarity ->
+  In (parsed_change_absolute change, parsed_change_amount change) (partition_side polarity delta).
+Proof.
+  intros delta changes change polarity Hparse Hin Hpolarity.
+  unfold parse_all_flat_changes in Hparse.
+  destruct (parse_flat_side ChangeAddition (flat_delta_additions delta)) as [adds|reason]
+    eqn:Hadds; [|discriminate].
+  destruct (parse_flat_side ChangeRemoval (flat_delta_removals delta)) as [removes|reason]
+    eqn:Hremoves; [|discriminate]. inversion Hparse; subst changes.
+  apply in_app_or in Hin. destruct Hin as [Hin|Hin].
+  - destruct (@parsed_side_member_source ChangeAddition _ _ Hadds change Hin) as [Hmember Hside].
+    rewrite Hpolarity in Hside. rewrite Hside. exact Hmember.
+  - destruct (@parsed_side_member_source ChangeRemoval _ _ Hremoves change Hin) as [Hmember Hside].
+    rewrite Hpolarity in Hside. rewrite Hside. exact Hmember.
+Qed.
+
+Theorem grouped_partition_has_exact_source_endpoints : forall delta groups polarity marker relative,
+  flat_delta_well_formedb delta = true -> partition_flat_delta delta = BuildOk groups ->
+  grouped_count polarity marker relative groups <> 0 ->
+  exists absolute amount view,
+    In (absolute, amount) (partition_side polarity delta) /\
+    parse_absolute_datum absolute = Some view /\
+    decoded_view_marker view = marker /\ decoded_view_relative view = relative /\
+    grouped_count polarity marker relative groups = amount.
+Proof.
+  intros delta groups polarity marker relative Hvalid Hpartition Hnonzero.
+  destruct (@grouped_partition_has_no_extra_endpoints delta groups polarity marker relative
+    Hvalid Hpartition Hnonzero) as [changes [change [Hparse [Hin [Horigin [Hpair [Hpolarity Hamount]]]]]]].
+  pose proof (@parsed_delta_member_source delta changes change polarity Hparse Hin Hpolarity) as Hmember.
+  unfold parsed_change_origin, parse_flat_change in Horigin; simpl in Horigin.
+  destruct (parse_absolute_datum (parsed_change_absolute change)) as [view|] eqn:Hview;
+    [|discriminate].
+  injection Horigin as Hrepresentation.
+  pose proof (f_equal parsed_change_marker Hrepresentation) as Hmarker.
+  pose proof (f_equal parsed_change_relative Hrepresentation) as Hrelative.
+  cbn [parsed_change_marker parsed_change_relative] in Hmarker, Hrelative.
+  unfold parsed_pair in Hpair. injection Hpair as Hpair_marker Hpair_relative.
+  rewrite Hpair_marker in Hmarker. rewrite Hpair_relative in Hrelative.
+  exists (parsed_change_absolute change), (parsed_change_amount change), view.
+  split; [exact Hmember|]. split; [exact Hview|]. split; [exact Hmarker|].
+  split; [exact Hrelative|].
+  pose proof (proj2 (@grouped_partition_preserves_both_flat_sides delta groups Hvalid Hpartition)
+    (parsed_change_absolute change) view Hview) as Hcounts.
+  rewrite Hmarker, Hrelative in Hcounts.
+  assert (Hexact : flat_lookup (parsed_change_absolute change) (partition_side polarity delta) =
+      parsed_change_amount change).
+  { apply flat_lookup_member_value; [|exact Hmember]. apply flat_paths_unique_implies_nodup.
+    pose proof (@partition_side_well_formed delta polarity Hvalid) as Hside.
+    now apply andb_true_iff in Hside as [_ Hside]. }
+  destruct polarity; simpl in Hexact; intuition congruence.
 Qed.
 
 Record FullyParsedPartition (delta : FlatBagDelta) : Type :=
@@ -2124,6 +3237,8 @@ Qed.
 
 (** Closed capstones used by the proof gate. *)
 Print Assumptions constructed_candidate_is_codec_exact.
+Print Assumptions flat_record_addition_preserves_normalization.
+Print Assumptions flat_record_removal_preserves_normalization.
 Print Assumptions parsed_relative_offset_is_exact.
 Print Assumptions parsed_identity_offset_is_exact.
 Print Assumptions flat_record_removal_is_exact_opposite_cancellation.
@@ -2152,5 +3267,12 @@ Print Assumptions preparation_ready_has_exact_flat_delta_and_partition.
 Print Assumptions preparation_refusal_is_atomic.
 Print Assumptions unrelated_partition_channel_is_untouched.
 Print Assumptions loaded_empty_catalog_preserves_loaded_state.
+Print Assumptions fresh_partition_refines_independent_mass.
+Print Assumptions partition_parsed_marker_domain.
+Print Assumptions parsed_delta_mass_matches_flat_lookup.
+Print Assumptions normalized_parsed_partition_exists.
+Print Assumptions grouped_partition_preserves_both_flat_sides.
+Print Assumptions grouped_partition_has_exact_source_endpoints.
+Print Assumptions normalized_partition_refusal_is_exactly_parse_refusal.
 
 End TwoLevelRSpaceMatchPreparation.

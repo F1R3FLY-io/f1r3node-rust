@@ -243,6 +243,59 @@ free_map_journal_runtime() {
     rpb3_run_tests 2 --release -j4 --test formal_equivalence_manifest freemap_journal
 }
 
+match_preparation_proof_clients() {
+  rocq_reject_placeholders \
+    theories/TwoLevelRSpaceMatchPreparation.v \
+    theories/TwoLevelRSpaceFlatDeltaTrace.v \
+    theories/TwoLevelRSpaceMatchPreparationMutants.v
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparation.v 38 \
+    "constructive RSpace preparation and grouped delta refinement"
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceFlatDeltaTrace.v 4 \
+    "finite flat-delta traces and separate normalized supports"
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceMatchPreparationMutants.v 12 \
+    "absolute-address and flat-delta mutation controls"
+}
+
+rspace_preparation_run_tests() {
+  local expected="$1" output
+  shift
+  if ! output="$(TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+      tlc_bounded cargo test --release -j4 -p rspace_plus_plus "$@" -- --test-threads=4 2>&1)"; then
+    printf '%s\n' "$output"
+    return 1
+  fi
+  printf '%s\n' "$output"
+  if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; 0 ignored;" <<<"$output"; then
+    echo "stack-safe-pda: expected $expected nonignored RSpace preparation tests for $*" >&2
+    return 1
+  fi
+}
+
+if [[ "${1:-}" == "--match-preparation" ]]; then
+  export PROPTEST_RNG_SEED="${PROPTEST_RNG_SEED:-41316588}"
+  export TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  pushd "$rocq_root" >/dev/null
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/PathMapCanonicalStreamPublicationBase.v
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/TwoLevelRSpaceAuthority.v
+  rocq_compile_with_closed_count theories/RhoPathV1Datum.v 21 "exact datum framing and partition"
+  match_preparation_proof_clients
+  rocq_check_modules "RSpace preparation, trace refinement and mutation controls" \
+    StackSafePDA.TwoLevelRSpaceMatchPreparation \
+    StackSafePDA.TwoLevelRSpaceFlatDeltaTrace \
+    StackSafePDA.TwoLevelRSpaceMatchPreparationMutants
+  popd >/dev/null
+  pushd "$repo_root" >/dev/null
+  rspace_preparation_run_tests 6 --lib flat_delta_refinement_tests
+  rspace_preparation_run_tests 26 --test data_index_spec
+  rspace_preparation_run_tests 19 --lib two_level_channel_authority
+  rspace_preparation_run_tests 6 --lib candidate_pool_reservation
+  rspace_preparation_run_tests 2 --test bag_spec transaction_delta
+  rspace_preparation_run_tests 1 --test bag_spec multiplicity_rejects_zero_and_detects_overflow
+  rspace_preparation_run_tests 22 --test rho_path_spec
+  popd >/dev/null
+  exit 0
+fi
+
 if [[ "${1:-}" == "--free-map-journal" ]]; then
   pushd "$rocq_root" >/dev/null
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
@@ -510,9 +563,7 @@ rocq_compile_with_closed_count \
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceContinuationAuthorityMutants.v 33 \
   "the continuation and join authority causal controls"
-rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceMatchPreparation.v 29 \
-  "the constructive two-level RSpace match PREPARE authority"
+match_preparation_proof_clients
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceMatchTransaction.v 15 \
   "the exact two-level RSpace accepted-match authority"
@@ -544,6 +595,8 @@ rocq_reject_placeholders \
   theories/TwoLevelRSpaceContinuationAuthority.v \
   theories/TwoLevelRSpaceContinuationAuthorityMutants.v \
   theories/TwoLevelRSpaceMatchPreparation.v \
+  theories/TwoLevelRSpaceFlatDeltaTrace.v \
+  theories/TwoLevelRSpaceMatchPreparationMutants.v \
   theories/TwoLevelRSpaceMatchTransaction.v \
   theories/TwoLevelRSpaceMatchTransactionMutants.v \
   theories/TwoLevelRSpaceCheckpointRecovery.v \
@@ -567,6 +620,8 @@ rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
   StackSafePDA.TwoLevelRSpaceContinuationAuthority \
   StackSafePDA.TwoLevelRSpaceContinuationAuthorityMutants \
   StackSafePDA.TwoLevelRSpaceMatchPreparation \
+  StackSafePDA.TwoLevelRSpaceFlatDeltaTrace \
+  StackSafePDA.TwoLevelRSpaceMatchPreparationMutants \
   StackSafePDA.TwoLevelRSpaceMatchTransaction \
   StackSafePDA.TwoLevelRSpaceMatchTransactionMutants \
   StackSafePDA.TwoLevelRSpaceCheckpointRecovery \
