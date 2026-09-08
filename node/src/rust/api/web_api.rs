@@ -48,6 +48,10 @@ pub trait WebApi {
     /// Get API status information
     async fn status(&self) -> Result<ApiStatus>;
 
+    /// Whether the Casper instance has entered the Running state and can serve
+    /// deploys. Backs the `/api/ready` readiness probe.
+    fn is_ready(&self) -> bool;
+
     /// Prepare deploy request
     async fn prepare_deploy(&self, request: Option<PrepareRequest>) -> Result<PrepareResponse>;
 
@@ -451,6 +455,8 @@ impl WebApi for WebApiImpl {
             epoch_length: self.epoch_length,
         })
     }
+
+    fn is_ready(&self) -> bool { self.is_ready.load(Ordering::Acquire) }
 
     async fn prepare_deploy(&self, request: Option<PrepareRequest>) -> Result<PrepareResponse> {
         let seq_number = BlockAPI::get_latest_message(&self.engine_cell)
@@ -1362,6 +1368,11 @@ pub struct PrepareResponse {
     pub names: Vec<String>,
     #[serde(rename = "seqNumber")]
     pub seq_number: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReadyResponse {
+    pub ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

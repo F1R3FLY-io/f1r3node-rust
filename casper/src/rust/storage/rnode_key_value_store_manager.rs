@@ -151,7 +151,7 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         ),
         // Buffer of deploys rejected during multi-parent merge; shares sizing
         // with deploy_storage since its entries are the same value type
-        // (Signed<DeployData>) and it is bounded by `deployLifespan`.
+        // (Signed<DeployData>) and it is bounded by `deploy_lifespan`.
         (
             Db::new("rejected_deploy_buffer".to_string(), None),
             deploy_storage_env_config(),

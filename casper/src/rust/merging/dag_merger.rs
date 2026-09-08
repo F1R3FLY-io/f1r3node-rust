@@ -926,15 +926,22 @@ pub fn merge(
         }
     };
 
-    // Late blocks: With the new actualBlocks definition that includes sibling branches,
-    // there are no "late" blocks when scope is provided - all non-ancestor blocks are in actualBlocks.
-    // Late block filtering is now only relevant for legacy code paths without scope.
+    // Late blocks: with the `actual_blocks` definition that includes sibling
+    // branches, there are no "late" blocks when a scope is provided — every
+    // non-ancestor block is already in `actual_blocks`. Late-block filtering
+    // only matters on the `scope: None` path.
+    //
+    // The only production caller (`interpreter_util::compute_parents_post_state`)
+    // always passes `Some(visible_blocks)`. `scope: None` is a legacy /
+    // test-only shape. On that path `disable_late_block_filtering` is the
+    // switch below; when a scope is present the flag is a no-op, since
+    // `scope.is_some()` already forces the empty set.
     let late_blocks: HashSet<BlockHash> = if disable_late_block_filtering || scope.is_some() {
-        // No late blocks when scope is provided (all relevant blocks are in actualBlocks)
         HashSet::new()
     } else {
-        // Legacy: query nonFinalizedBlocks (non-deterministic, but no scope means
-        // this is not a multi-parent merge validation)
+        // Legacy no-scope path: `non_finalized_blocks()` iterates storage in a
+        // non-deterministic order. Acceptable here because this path is never a
+        // multi-parent merge validation (no scope ⇒ no consensus comparison).
         let non_finalized_blocks = dag.non_finalized_blocks()?;
         non_finalized_blocks
             .difference(&actual_blocks)
