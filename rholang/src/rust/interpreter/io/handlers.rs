@@ -7504,6 +7504,60 @@ mod rq2_wrapper_pins {
         );
     }
 
+    /// T-17 review-fix (C1, 2026-09-08): companion to
+    /// `spawn_blocking_par_panic_fallback_matches_pre_wrapper_err`
+    /// covering the `_with_fallback` variant.  A regression that
+    /// swapped the Ok/Err branches inside
+    /// `spawn_blocking_par_with_fallback` would pass the happy-path
+    /// pin below but produce the closure's Par instead of the
+    /// fallback on JoinError — this pin catches that.
+    ///
+    /// Uses a distinct sentinel FSERR-string so a wire-format drift
+    /// in the DD-RemoveDirReplyShape sites (which pass
+    /// `err_with_count` / `err_with_manifest` fallbacks) surfaces
+    /// via the same class of pin.
+    #[tokio::test]
+    async fn spawn_blocking_par_with_fallback_panic_calls_on_join_err() {
+        let via_wrapper = spawn_blocking_par_with_fallback(
+            || -> Par { panic!("simulated task panic") },
+            || err("FSERR_T17_TEST", "fallback sentinel"),
+        )
+        .await;
+        let expected = err("FSERR_T17_TEST", "fallback sentinel");
+        assert_eq!(
+            via_wrapper, expected,
+            "T-17 wire drift: spawn_blocking_par_with_fallback MUST invoke the \
+             on_join_err closure and forward its Par on JoinError.  A regression \
+             that swapped Ok/Err branches, dropped the fallback, or reshaped its \
+             return would silently break the 3 DD-RemoveDirReplyShape migrated \
+             call sites."
+        );
+    }
+
+    /// T-17 review-fix (C1, 2026-09-08): happy-path companion.
+    /// `spawn_blocking_par_with_fallback` MUST forward the
+    /// closure's Par unchanged when the task completes normally
+    /// (i.e., the fallback closure is NOT invoked).  Verified by
+    /// using a sentinel fallback distinct from the happy return —
+    /// a regression that always invoked the fallback would produce
+    /// the wrong Par.
+    #[tokio::test]
+    async fn spawn_blocking_par_with_fallback_happy_path_forwards_closure_par() {
+        let payload = err("FSERR_T17_HAPPY", "closure sentinel");
+        let expected = payload.clone();
+        let via_wrapper = spawn_blocking_par_with_fallback(
+            move || payload,
+            || err("FSERR_T17_FALLBACK", "wrong: fallback fired on happy path"),
+        )
+        .await;
+        assert_eq!(
+            via_wrapper, expected,
+            "T-17 wire drift: spawn_blocking_par_with_fallback MUST forward the \
+             closure's Par unchanged on the Ok branch.  A regression that always \
+             invoked the fallback would surface as the wrong FSERR string."
+        );
+    }
+
     /// `consensus_divergence_reply` must produce the exact
     /// `err(FSERR_CONSENSUS_DIVERGENCE, format!("<name> follower \
     /// re-execute diverges from leader: <reason>"))` shape that the
