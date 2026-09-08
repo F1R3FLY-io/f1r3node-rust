@@ -519,6 +519,79 @@ passes **23** manifest and **36** ParBag cases, with depth 4,096 unchanged.
 After relocating the graph checker under `tests/` and clarifying the layout
 probe's nonhistorical label, the complete models-library rerun passes 360/360.
 
+### Indexed standalone transport: refinement contract (task 6018)
+
+This is the next required resource refinement after reusable frames, not a new
+validator or a change to ACT traversal. The existing standalone input and located
+cursor already own or borrow every input byte. Copying the same stream into a
+second arena is unnecessary if the grammar's byte-dependent operations can use
+checked ranges into that immutable input. The persistent ACT policy still needs
+its existing branch handles and arena; those public signatures remain intact.
+
+The shared grammar will parameterize its previous-key span representation.
+An arena span remains `CanonicalBytesHandle`; an indexed span is
+`CanonicalByteRange`. `InnerPath` and frame IDs remain lifetime-free. The read
+policy supplies consumed length, checked slices, span length, byte comparison
+and physical provenance. Indexed slices must stay within the **consumed prefix**,
+not merely within the full input. Pending-child rejection remains before any
+append or consumed-offset advance. A region-taking child constructor will serve
+both the frozen ACT adapter and the indexed standalone adapter.
+
+#### Exact child completion anchors
+
+The existing `payload_end` is a completion anchor: the final physical payload
+byte, or the length-field byte for an empty payload. It is not necessarily the
+next physical byte or an arithmetically incremented offset. The current frozen
+adapter installs this value as the child view's end position. A plain input
+subview would instead expose the following byte's provenance and could change a
+child framing error without changing the payload bytes.
+
+The planned anchored-subview operation changes only the end position. Frozen
+backing uses its existing constant-size subview and `root_end`, rebased to the
+exact child window. Borrowed backing carries an optional end override inside
+that variant, not an additional field on every region. An interior subview uses
+the next byte's provenance; one ending at the anchored boundary inherits the
+anchor. Empty views use the supplied anchor without inventing a payload byte.
+
+The following implementation bindings must follow verified span/anchor laws:
+
+| ID | Required invariant and discriminating witness |
+|---|---|
+| IST-01 | Consumed indexed prefix equals the independently accumulated located-byte reference, including all source IDs and offsets. |
+| IST-02 | Checked slices agree for empty, nested and overflow cases; reject a range inside full input but beyond consumed bytes. |
+| IST-03 | Anchoring preserves bytes and byte locations while replacing only the end position; test borrowed/frozen, empty/nonempty, interior/equal-end nested windows and discontinuous sources. |
+| IST-04 | Ordering depends only on byte values. A mismatch reports the current key's source; equal and proper-prefix cases retain the supplied endpoint fallback. |
+| IST-05 | Suspended child spans retain their denotation after parent advancement or teardown through the external borrowed lifetime or shared frozen backing. |
+| IST-06 | Validity, stability, errors, provenance, pending IDs/kinds and completion anchors match the retained arena reference after each byte/resolution, including wrong-ID and post-Dead traces. |
+| IST-07 | Reusable-frame ownership preserves span denotation when slots are retired/reused; no selected span borrows from a retired frame. |
+| IST-08 | Backing identity and actual transport activity demonstrate absence of payload/provenance copies; report view/frame layouts, retained backing and byte visits separately. |
+
+#### Baseline and acceptance boundary
+
+The existing flat-key layout probe, extended only with two measurements, passes
+before any indexed transport implementation. On the current test build,
+`IndexedByteRegion` is **72 bytes**, `CanonicalPathFrame` **664 bytes**, and the
+outer admission `Frame` **1,136 bytes**. The indexed region and outer frame must
+not grow; removing the standalone arena should reduce its own frame footprint.
+These are current-toolchain layout observations, not a portable ABI contract.
+The capped baseline log SHA-256 is
+`7ddff6de7b8dde5515e81f2e92aa05149e30ca8b3c95dcb21dc3ae2b5e4c8d48`
+(pgmcp artifact 534). Its only source difference from `b4d5a212a` is additional
+test output; no production transport is changed at this checkpoint.
+
+Reuse the existing frozen-payload, empty-anchor, indexed subview/provenance and
+standalone trace/recovery tests. Extend their discriminating cases rather than
+creating a second semantic oracle. Allocation evidence must come from backing
+identity or executed storage activity, not a counter hardcoded to zero. Fixture
+construction is outside the measured operation and teardown is reported
+separately.
+
+This refinement alone does not eliminate repeated payload traversal or enclosing
+Region reconstruction. Checked opaque-payload bulk consumption and absolute
+region endpoints remain subsequent required steps. Their proofs must preserve
+enclosing bounds and child-first error order, and may not skip local UTF-8 or
+grammar validation. No importer or persistence backend is activated by this plan.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

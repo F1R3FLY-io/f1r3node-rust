@@ -677,6 +677,11 @@ fn flat_key_storage_and_frame_layout_are_observed_directly() {
         std::mem::size_of::<ExistingVariantsFrame>(),
         std::mem::size_of::<Frame>()
     );
+    println!(
+        "canonical-key transport layout: indexed_region={}, canonical_path_frame={}",
+        std::mem::size_of::<IndexedByteRegion>(),
+        std::mem::size_of::<CanonicalPathFrame>()
+    );
     let mut exclusive_frame_capacity = None;
     for width in [16, 128, 1024, 8192] {
         let key = payload(6, &vec![b'x'; width]);
