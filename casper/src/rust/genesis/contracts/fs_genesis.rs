@@ -781,6 +781,17 @@ new
   Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
   gatherChunks, drainChunks, allocInnersLoop, parkInnersLoop,
   clearInnersLoop, closeInnersLoop,
+  // M-13 (A1-F-10, 2026-09-04) writeByte helpers.  Buffer.rho's own
+  // outer `new` binds these; `lib_body` strips that outer scope
+  // when pasting Buffer's body into the composed source, so the
+  // composed outer scope must re-bind them here or the pasted
+  // `contract hexDigit(...)` binds `hexDigit` as a ContextFree
+  // name and the downstream `hexDigit!(...)` call collides.  The
+  // comment in the M-13 anchor claimed these were added at
+  // composition time; that commit landed the Buffer-side binding
+  // and the anchor comment but the composed-scope re-binding did
+  // not.  Fix (2026-09-08): re-bind at the composed outer scope.
+  hexDigit, intToOneByte,
   Stdin, stdinFdP, stdinStateP,
   Stdout, stdoutFdP, stdoutStateP,
   Fs, fsBundleP,
@@ -2262,7 +2273,20 @@ mod tests {
         //   FSERR_QUOTA_EXCEEDED message.  Fingerprint slot 11
         //   (Rust MAX_CHUNK_ITEMS) is the pair-alignment target and
         //   remains 65536.
-        const EXPECTED: &str = "bb7a84866db089696d63af44bdaf4461cc0d3f9ddca8b8bee7a72e644af62b79";
+        // Prior anchor: bb7a8486 (2026-09-08 M-36).
+        // 2026-09-08: M-13 composed-scope fix — added `hexDigit,
+        //   intToOneByte` to the outer `new` in
+        //   `compose_fs_genesis_source`.  Buffer.rho's `contract
+        //   hexDigit(...)` needed these bound at the composed outer
+        //   scope; without them, `CompiledRholangSource::new` on the
+        //   composed source panicked with UnexpectedReuseOfName-
+        //   ContextFree.  The M-13 anchor comment claimed the
+        //   binding was added at composition time but the actual
+        //   edit never landed — this rebases the 4
+        //   `_compiles` tests to green.  Zero semantic change;
+        //   these are internal `new` bindings not visible to
+        //   Rholang callers.
+        const EXPECTED: &str = "571aa2d2eac9adc779bc91cc8ca9dd1b1bc8619334abdc552f65d0c4dfd49af3";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -2344,7 +2368,9 @@ mod tests {
         // ONLY when intentionally hard-forking the Genesis composition
         // OR the bundle format (both are hard-fork surfaces).
         // Pinned 2026-09-08 (M-40 landing).
-        const EXPECTED: &str = "431e045815ee3a3c01875918d37ea501c4e2420e5fb98eb061b09e295384d7c3";
+        // Rolled 2026-09-08 by M-13 composed-scope fix (see the
+        //   `compose_fs_genesis_source_golden_hex` docstring).
+        const EXPECTED: &str = "e61ba3b68c31382db747f470588b4ed26da597c1396bdd74af45c1c1efc201c0";
         assert_eq!(
             hex, EXPECTED,
             "M-40: compose_fs_genesis_source() hash for non-empty bundle \
@@ -2427,7 +2453,9 @@ mod tests {
         // ONLY when intentionally hard-forking Genesis composition
         // OR bundle format.
         // Pinned 2026-09-08 (M-40 S4 review-fix landing).
-        const EXPECTED: &str = "05d2b1eb036805c3eac7aa1d6dc315535bbd04801f31480bca5fe233fb26f0a2";
+        // Rolled 2026-09-08 by M-13 composed-scope fix (see the
+        //   `compose_fs_genesis_source_golden_hex` docstring).
+        const EXPECTED: &str = "29d256fc365c8be27a82f5a78cb48fe17e4a1225154106fcb7e9a8551f355f76";
         assert_eq!(
             hex, EXPECTED,
             "M-40 review-fix (S4): compose_fs_genesis_source() hash for \
