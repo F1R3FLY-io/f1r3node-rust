@@ -560,7 +560,17 @@ fn concrete_match_oracle_domain_tracks_reached_required_fields_only() {
 }
 
 fn compare(label: &str, target: Par, pattern: Par) {
+    compare_with_entry_map(label, target, pattern, BTreeMap::new());
+}
+
+fn compare_with_entry_map(
+    label: &str,
+    target: Par,
+    pattern: Par,
+    entry_map: BTreeMap<i32, Par>,
+) {
     let mut recursive = RecursiveContext::new();
+    recursive.free_map = entry_map.clone();
     let recursive_verdict = recursive
         .spatial_match(target.clone(), pattern.clone())
         .is_some();
@@ -580,9 +590,36 @@ fn compare(label: &str, target: Par, pattern: Par) {
     }
 
     let mut pda = SpatialMatcherContext::new();
+    pda.free_map = entry_map;
     let pda_verdict = pda.spatial_match(target, pattern).is_some();
     assert_eq!(pda_verdict, recursive_verdict, "{label}: verdict");
     assert_eq!(pda.free_map, recursive_map, "{label}: FreeMap");
+    assert_binding_bytes(label, &pda.free_map, &recursive_map);
+}
+
+fn assert_binding_bytes(
+    label: &str,
+    actual_map: &BTreeMap<i32, Par>,
+    expected_map: &BTreeMap<i32, Par>,
+) {
+    assert_eq!(actual_map.len(), expected_map.len(), "{label}: binding count");
+    for (level, actual) in actual_map {
+        let expected = expected_map
+            .get(level)
+            .expect("the complete FreeMap comparison proved the binding exists");
+        let (protobuf_agrees, bincode_agrees) = binding_byte_agreement(actual, expected);
+        assert!(protobuf_agrees, "{label}: binding {level} protobuf bytes");
+        assert!(bincode_agrees, "{label}: binding {level} bincode bytes");
+    }
+}
+
+fn binding_byte_agreement(actual: &Par, expected: &Par) -> (bool, bool) {
+    (
+        models::rust::rholang::protobuf_encoder::encode_to_vec(actual)
+            == models::rust::rholang::protobuf_encoder::encode_to_vec(expected),
+        models::rust::rholang::bincode_encoder::encode(actual)
+            == models::rust::rholang::bincode_encoder::encode(expected),
+    )
 }
 
 fn cover_generated_query_root(
@@ -3206,6 +3243,32 @@ fn the_differential_judge_can_go_red() {
         .spatial_match(target, new_gint_par(8, Vec::new(), false))
         .is_some();
     assert_ne!(recursive_result, mutated_result);
+
+    let mut original = new_gint_par(7, Vec::new(), false);
+    original.locally_free = vec![1];
+    let mut mutated = original.clone();
+    mutated.locally_free = vec![2];
+    assert_eq!(original, mutated, "Par equality ignores root metadata");
+    assert_eq!(binding_byte_agreement(&original, &mutated), (false, true));
+    assert_eq!(
+        binding_byte_agreement(&original, &new_gint_par(8, Vec::new(), false)),
+        (false, false),
+    );
+    let original_map = BTreeMap::from([(41, original)]);
+    let mutated_map = BTreeMap::from([(41, mutated)]);
+    assert_eq!(original_map, mutated_map);
+    compare_with_entry_map(
+        "nonempty entry map and fresh capture preserve binding bytes",
+        new_gint_par(7, Vec::new(), false),
+        new_freevar_par(0, Vec::new()),
+        original_map.clone(),
+    );
+    compare_with_entry_map(
+        "nonempty entry map survives root refusal byte-for-byte",
+        new_gint_par(7, Vec::new(), false),
+        new_gint_par(8, Vec::new(), false),
+        original_map,
+    );
 }
 
 #[test]

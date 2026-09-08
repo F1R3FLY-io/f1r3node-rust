@@ -9495,6 +9495,68 @@ PathMap operation, or execution order. The accounting defect is repaired and cla
 in [§5.32](#532-accounting-demand-canonical-protobuf-region-pda-ss-a17-ss-y11) and CBR-066; this
 diagnostic subsection remains the provenance of the negative result that exposed it.
 
+#### 5.31.7 Current-source acceptance reconciliation (2026-09-08)
+
+**DECISION.** Task 5905 reuses the journal implemented at `b922130ee` and its
+release-safe rollback witnesses at `c84783812`. No production transaction,
+PathMap operation, binding order, or codec is changed by this acceptance slice.
+The existing runner now shares its journal proof commands between the aggregate
+gate and the focused command:
+
+```sh
+env ALLOW_UNBOUNDED_TLC=0 RUST_BACKTRACE=1 \
+  bash scripts/check-stack-safe-pda-proofs.sh --free-map-journal
+```
+
+**MEASURED.** The focused command exits zero at this checkpoint, based on
+`fac9e9a2c`, with the following results (pgmcp artifact **516**):
+
+| Boundary | Current evidence |
+|---|---|
+| Rocq | Two closed journal capstones, ten closed dependency reports, and independent kernel checks of both modules |
+| Verus | 15 verified, zero errors, `--no-cheating --num-threads 1` |
+| TLA+ | 2,497,772 generated / 936,053 distinct states, zero remaining; 13 invariants at `MaxActions=7`, `MaxDepth=2` |
+| mCRL2 | Baseline branching bisimulation and no-leak both true; OR-leak and partial-apply controls both false for both checks |
+| Rust | 7 transaction + 57 matcher differential + 2 allocation/capture + 2 manifest tests; 68 passed, zero failed or ignored |
+
+The journal has **four** proof backends. The historical aggregate's fifth backend
+is Z3 for separate EPathMap laws, not a fifth journal proof. The matcher suite
+includes the existing 20,000-depth / 256-KiB stack witness and exact journal
+write/rollback counters. Six opt-in profiling probes remain outside this normal
+gate; none is counted as a pass. Rust commands use a 6-GiB hard cap, 4-GiB high
+threshold, four-core quota and zero swap; proof commands use 1–2-GiB hard caps and
+zero swap. TLA+ state and mCRL2 artifacts are disk-backed under `target/`.
+
+**EXECUTABLE OBSERVATION GAP CLOSED.** The common recursive-oracle comparison
+now checks each binding's protobuf and bincode bytes, in addition to verdict
+and complete `FreeMap` equality. Nonempty entry maps are checked after successful
+capture and root refusal. A pure comparison predicate supplies the mutation
+controls without intercepting panics. Changing only root `locally_free` preserves
+`Par` equality but changes protobuf bytes; bincode deliberately blanks that field
+through `PAR_PROGRAM`'s `EmptyBytes`. A value mutation changes both codecs.
+CBR-065's independently documented atomic-failure correction remains an explicit
+exception to the recursive oracle's leaked-map behavior.
+
+**NEGATIVE EVIDENCE RETAINED.** The first mutation fixture incorrectly passed
+metadata through `new_gint_par`, which ignores those legacy arguments; the judge
+failed because the supposed mutant was identical. Explicit field mutation then
+disproved the assumption that root metadata must change bincode bytes. These
+56-pass/one-control-failure runs are not production regressions. Their SHA-256
+digests are `d8a4eae266b3e0a5288a84bad3110f41856ccae1098f57f5f286da07d71d3b9d`
+and `672d385e959bb4e23ca992f13bf23558a89bd0c499205a9af5e3c4bb91f918d9`.
+The final passing gate's digest is
+`660d13ead1cc27c5626a5af2249a3969411889f47a0c5de2a26453a02602b29b`.
+
+**SCOPE.** Section 5.31.4's profiler measurements remain dated historical
+observations, not newly measured release results. Current allocation tests check
+requested allocation growth, not peak residency. The separate repository-wide
+panic-policy check reports four passes and one failure across eight other
+campaign files; the journal helper is not an offender. Artifact 516 retains that
+log (SHA-256 `d88e65499b9bd64e38f90cf5191be233b7ad7e4e6985f3fcc34bb6786190afe4`)
+and required release task 7962 owns its resolution. No policy exception was added.
+This is focused journal acceptance, not current workspace, CI, persistence, or
+whole-campaign closure.
+
 ### 5.32 Accounting-demand canonical protobuf-region PDA [SS-A17, SS-Y11]
 
 #### 5.32.1 Contract and repair hypothesis

@@ -141,6 +141,125 @@ matcher_count_original_stack_probe() {
   fi
 }
 
+free_map_journal_rocq() {
+  local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  local free_map_rocq_output free_map_closed_capstones
+  rocq_reject_placeholders theories/FreeMapJournal.v
+  free_map_rocq_output="$(
+    tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/FreeMapJournal.v 2>&1
+  )"
+  printf '%s\n' "$free_map_rocq_output"
+  free_map_closed_capstones="$({
+    printf '%s\n' "$free_map_rocq_output" | grep -c '^Closed under the global context$'
+  } || true)"
+  if [[ "$free_map_closed_capstones" != "2" ]]; then
+    echo "stack-safe-pda: expected both FreeMap Rocq capstones to be closed; got $free_map_closed_capstones" >&2
+    exit 1
+  fi
+  rocq_check_modules "FreeMap journal refinement" StackSafePDA.FreeMapJournal
+}
+
+free_map_journal_verus() {
+  local verus_bin
+  verus_bin="${VERUS:-$(command -v verus || :)}"
+  if [[ -z "$verus_bin" || ! -x "$verus_bin" ]]; then
+    echo "stack-safe-pda: Verus not found on PATH" >&2
+    return 3
+  fi
+  tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+    "$repo_root/formal/verus/free_map_transaction.rs"
+}
+
+free_map_journal_tlc() {
+  local tla_metadir
+  tla_metadir="$(tlc_metadir free-map-journal)"
+  pushd "$repo_root/formal/tlaplus/stack_safe_pda" >/dev/null
+  tlc_run "$tla_metadir" FreeMapJournal.cfg FreeMapJournal.tla -cleanup
+  popd >/dev/null
+}
+
+free_map_journal_mcrl2() {
+  local mcrl2_root="$repo_root/formal/mcrl2/stack_safe_pda" mcrl2_tmp="$1"
+  local free_map_bisimulation free_map_no_leak mutant mutant_bisimulation mutant_no_leak
+  tlc_bounded mcrl22lps \
+    "$mcrl2_root/free_map_journal_impl.mcrl2" "$mcrl2_tmp/free-map-impl.lps"
+  tlc_bounded mcrl22lps \
+    "$mcrl2_root/free_map_journal_spec.mcrl2" "$mcrl2_tmp/free-map-spec.lps"
+  tlc_bounded lps2lts "$mcrl2_tmp/free-map-impl.lps" "$mcrl2_tmp/free-map-impl.lts"
+  tlc_bounded lps2lts "$mcrl2_tmp/free-map-spec.lps" "$mcrl2_tmp/free-map-spec.lts"
+
+  free_map_bisimulation="$(
+    tlc_bounded ltscompare --equivalence=branching-bisim \
+      "$mcrl2_tmp/free-map-impl.lts" "$mcrl2_tmp/free-map-spec.lts" 2>&1 | tail -n 1
+  )"
+  if [[ "$free_map_bisimulation" != "true" ]]; then
+    echo "stack-safe-pda: expected FreeMap journal branching bisimulation; got: $free_map_bisimulation" >&2
+    exit 1
+  fi
+
+  tlc_bounded lps2pbes -f "$mcrl2_root/free_map_journal_no_leak.mcf" \
+    "$mcrl2_tmp/free-map-impl.lps" "$mcrl2_tmp/free-map-no-leak.pbes"
+  free_map_no_leak="$(
+    tlc_bounded pbes2bool "$mcrl2_tmp/free-map-no-leak.pbes" 2>&1 | tail -n 1
+  )"
+  if [[ "$free_map_no_leak" != "true" ]]; then
+    echo "stack-safe-pda: expected no FreeMap journal binding leak; got: $free_map_no_leak" >&2
+    exit 1
+  fi
+
+  for mutant in or_leak partial_apply; do
+    tlc_bounded mcrl22lps \
+      "$mcrl2_root/free_map_journal_${mutant}_mutant.mcrl2" \
+      "$mcrl2_tmp/free-map-${mutant}.lps"
+    tlc_bounded lps2lts \
+      "$mcrl2_tmp/free-map-${mutant}.lps" "$mcrl2_tmp/free-map-${mutant}.lts"
+    mutant_bisimulation="$(
+      tlc_bounded ltscompare --equivalence=branching-bisim \
+        "$mcrl2_tmp/free-map-${mutant}.lts" "$mcrl2_tmp/free-map-spec.lts" 2>&1 | tail -n 1
+    )"
+    if [[ "$mutant_bisimulation" != "false" ]]; then
+      echo "stack-safe-pda: expected FreeMap ${mutant} mutant to break bisimulation; got: $mutant_bisimulation" >&2
+      exit 1
+    fi
+    tlc_bounded lps2pbes -f "$mcrl2_root/free_map_journal_no_leak.mcf" \
+      "$mcrl2_tmp/free-map-${mutant}.lps" "$mcrl2_tmp/free-map-${mutant}-leak.pbes"
+    mutant_no_leak="$(
+      tlc_bounded pbes2bool "$mcrl2_tmp/free-map-${mutant}-leak.pbes" 2>&1 | tail -n 1
+    )"
+    if [[ "$mutant_no_leak" != "false" ]]; then
+      echo "stack-safe-pda: expected FreeMap ${mutant} mutant leak witness; got: $mutant_no_leak" >&2
+      exit 1
+    fi
+  done
+  echo "FreeMap journal mCRL2: baseline bisimulation/no-leak true; both mutants false/false"
+}
+
+free_map_journal_runtime() {
+  rholang_run_tests 7 --lib free_map_transaction::tests
+  rholang_run_tests 57 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
+  rholang_run_tests 1 --test matcher_freemap_journal binding_journal_allocation_growth_is_subquadratic_on_success_and_deep_refusal
+  rholang_run_tests 1 --test matcher_freemap_journal sole_freevar_captures_a_deep_target_without_decoding_its_suffix
+  TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+    rpb3_run_tests 2 --release -j4 --test formal_equivalence_manifest freemap_journal
+}
+
+if [[ "${1:-}" == "--free-map-journal" ]]; then
+  pushd "$rocq_root" >/dev/null
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
+  matcher_count_proofs
+  free_map_journal_rocq
+  popd >/dev/null
+  free_map_journal_verus
+  free_map_journal_tlc
+  mkdir -p "$repo_root/target"
+  free_map_journal_mcrl2 "$(mktemp -d "$repo_root/target/free-map-journal-mcrl2.XXXXXX")"
+  pushd "$repo_root" >/dev/null
+  free_map_journal_runtime
+  popd >/dev/null
+  echo "stack-safe-pda: focused FreeMap journal four-backend and 68-test gate passed"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--matcher-counts" || "${1:-}" == "--matcher-count-byte-native-proofs" ]]; then
   pushd "$rocq_root" >/dev/null
   TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128 \
@@ -452,17 +571,7 @@ rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
   StackSafePDA.TwoLevelRSpaceMatchTransactionMutants \
   StackSafePDA.TwoLevelRSpaceCheckpointRecovery \
   StackSafePDA.TwoLevelRSpaceCheckpointRecoveryMutants
-free_map_rocq_output="$(
-  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/FreeMapJournal.v 2>&1
-)"
-printf '%s\n' "$free_map_rocq_output"
-free_map_closed_capstones="$({
-  printf '%s\n' "$free_map_rocq_output" | grep -c '^Closed under the global context$'
-} || true)"
-if [[ "$free_map_closed_capstones" != "2" ]]; then
-  echo "stack-safe-pda: expected both FreeMap Rocq capstones to be closed; got $free_map_closed_capstones" >&2
-  exit 1
-fi
+free_map_journal_rocq
 accounting_demand_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/AccountingDemand.v 2>&1
 )"
@@ -511,8 +620,7 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/bag_checked_delta.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/rmp2_par_bag_transcript.rs"
-tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
-  "$repo_root/formal/verus/free_map_transaction.rs"
+free_map_journal_verus
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/accounting_demand.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
@@ -1325,7 +1433,7 @@ for epm1_positional_mutant in \
     exit 1
   fi
 done
-tlc_run "$tla_metadir" FreeMapJournal.cfg FreeMapJournal.tla -cleanup
+free_map_journal_tlc
 tlc_run "$tla_metadir" AccountingDemand.cfg AccountingDemand.tla -cleanup
 popd >/dev/null
 
@@ -1395,55 +1503,6 @@ if [[ "$rho_path_v2_bisimulation" != "true" ]]; then
   exit 1
 fi
 
-tlc_bounded mcrl22lps \
-  "$mcrl2_root/free_map_journal_impl.mcrl2" "$mcrl2_tmp/free-map-impl.lps"
-tlc_bounded mcrl22lps \
-  "$mcrl2_root/free_map_journal_spec.mcrl2" "$mcrl2_tmp/free-map-spec.lps"
-tlc_bounded lps2lts "$mcrl2_tmp/free-map-impl.lps" "$mcrl2_tmp/free-map-impl.lts"
-tlc_bounded lps2lts "$mcrl2_tmp/free-map-spec.lps" "$mcrl2_tmp/free-map-spec.lts"
-
-free_map_bisimulation="$(
-  tlc_bounded ltscompare --equivalence=branching-bisim \
-    "$mcrl2_tmp/free-map-impl.lts" "$mcrl2_tmp/free-map-spec.lts" 2>&1 | tail -n 1
-)"
-if [[ "$free_map_bisimulation" != "true" ]]; then
-  echo "stack-safe-pda: expected FreeMap journal branching bisimulation; got: $free_map_bisimulation" >&2
-  exit 1
-fi
-
-tlc_bounded lps2pbes -f "$mcrl2_root/free_map_journal_no_leak.mcf" \
-  "$mcrl2_tmp/free-map-impl.lps" "$mcrl2_tmp/free-map-no-leak.pbes"
-free_map_no_leak="$(
-  tlc_bounded pbes2bool "$mcrl2_tmp/free-map-no-leak.pbes" 2>&1 | tail -n 1
-)"
-if [[ "$free_map_no_leak" != "true" ]]; then
-  echo "stack-safe-pda: expected no FreeMap journal binding leak; got: $free_map_no_leak" >&2
-  exit 1
-fi
-
-for mutant in or_leak partial_apply; do
-  tlc_bounded mcrl22lps \
-    "$mcrl2_root/free_map_journal_${mutant}_mutant.mcrl2" \
-    "$mcrl2_tmp/free-map-${mutant}.lps"
-  tlc_bounded lps2lts \
-    "$mcrl2_tmp/free-map-${mutant}.lps" "$mcrl2_tmp/free-map-${mutant}.lts"
-  mutant_bisimulation="$(
-    tlc_bounded ltscompare --equivalence=branching-bisim \
-      "$mcrl2_tmp/free-map-${mutant}.lts" "$mcrl2_tmp/free-map-spec.lts" 2>&1 | tail -n 1
-  )"
-  if [[ "$mutant_bisimulation" != "false" ]]; then
-    echo "stack-safe-pda: expected FreeMap ${mutant} mutant to break bisimulation; got: $mutant_bisimulation" >&2
-    exit 1
-  fi
-  tlc_bounded lps2pbes -f "$mcrl2_root/free_map_journal_no_leak.mcf" \
-    "$mcrl2_tmp/free-map-${mutant}.lps" "$mcrl2_tmp/free-map-${mutant}-leak.pbes"
-  mutant_no_leak="$(
-    tlc_bounded pbes2bool "$mcrl2_tmp/free-map-${mutant}-leak.pbes" 2>&1 | tail -n 1
-  )"
-  if [[ "$mutant_no_leak" != "false" ]]; then
-    echo "stack-safe-pda: expected FreeMap ${mutant} mutant leak witness; got: $mutant_no_leak" >&2
-    exit 1
-  fi
-done
+free_map_journal_mcrl2 "$mcrl2_tmp"
 
 echo "stack-safe-pda: Rocq, Verus, Z3, TLC, and mCRL2 verification passed"

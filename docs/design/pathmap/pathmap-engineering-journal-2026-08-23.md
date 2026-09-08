@@ -5767,6 +5767,28 @@ README freezes the parent reproduction command. The exact-count and repeated-suf
 chain is ready for agent-grade submission, not independent CI verification or
 whole-campaign completion.
 
+### J-082 — 2026-09-08: qualify binding bytes at their actual codec boundary
+
+**DERIVED AND MEASURED.** Task 5905's journal already uses the selected relative
+PathMap zipper, shared immutable target, and CoW closure proof. Acceptance needed
+an observation repair, not another representation. `Par` equality ignores root
+`locally_free`; protobuf preserves it while bincode's explicit `EmptyBytes`
+normalization does not. Therefore equality alone is insufficient for protobuf
+binding equivalence, and a metadata-only bincode mutation control is invalid.
+The common oracle judge now compares both codecs for every binding. Its shared
+pure predicate rejects metadata changes for protobuf and value changes for both
+codecs; nonempty entry maps survive capture and refusal byte-for-byte.
+
+**DECISION.** Keep the production journal and PathMap authority unchanged; reuse
+the four existing formal backends through one focused runner. All 68 registered
+tests pass, including the fixed-stack and allocation-growth witnesses. Historical
+profiling is not relabeled as current performance evidence. The unsuccessful
+control designs and current workspace-policy failure remain explicit in
+[§5.31.7](../stack-safety/stack-safety-report-2026-07-29.md#5317-current-source-acceptance-reconciliation-2026-09-08)
+and pgmcp artifact 516. Required release task 7962 owns the separate policy
+failure; focused journal acceptance does not imply complete campaign acceptance.
+CBR-065's retired classification is unchanged.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

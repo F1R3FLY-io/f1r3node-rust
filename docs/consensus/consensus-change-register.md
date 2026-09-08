@@ -4489,6 +4489,16 @@ These findings do not alter CBR-065's `BUG_FIX_RULED_NONCONSENSUS` classificatio
 the separate accounting optimization. Stack-safety report §§5.31.6 and 5.32 contain the controls,
 limitations, and artifact digests.
 
+**CBR-065 acceptance reconciliation (2026-09-08).** The focused journal gate now
+passes four proof backends and 68 active Rust tests, including per-binding
+protobuf/bincode comparisons and nonempty-entry-map preservation. Metadata-only
+controls distinguish protobuf preservation from bincode's existing root
+`locally_free` normalization; they do not change either codec. The implementation
+and CBR-065 atomic-failure ruling are unchanged. This remains a retired
+`BUG_FIX_RULED_NONCONSENSUS` entry, not a newly activated consensus change.
+Stack-safety report §5.31.7 and pgmcp artifact 516 retain the failed control
+attempts, passing evidence, and separate unresolved workspace-policy check.
+
 **CBR-066 classification continuation (2026-08-21).** The authoritative ParBag remains its existing
 `PathMap<Multiplicity>`; the repair consumes each trie endpoint's borrowed canonical protobuf body
 through `visit_encoded` and does not project, sort, duplicate, or replace the trie. Scalar accounting
