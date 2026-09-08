@@ -1066,6 +1066,115 @@ fn flat_key_storage_and_frame_layout_are_observed_directly() {
 }
 
 #[test]
+fn ordinary_region_work_matrix_tracks_all_owner_walks() {
+    let map = EPathMap::new_map([(integer(1), integer(2))], Vec::new(), false, None);
+    let map_key = payload(0x10, map.trie_snapshot());
+    for width in [1, 16, 128, 1024] {
+        for depth in [0, 1, 8, 32] {
+            for workload in ["bytes", "children"] {
+                let mut key = if workload == "bytes" {
+                    encode_trie_path(&expr(ExprInstance::GByteArray(vec![37; width])))
+                } else {
+                    let mut tuple = vec![0x0c];
+                    prost::encoding::encode_varint(width as u64, &mut tuple);
+                    for _ in 0..width {
+                        tuple.extend_from_slice(&map_key);
+                    }
+                    tuple
+                };
+                let mut eager_owner_steps = 0;
+                for _ in 0..depth {
+                    eager_owner_steps += key.len();
+                    let mut region = Vec::new();
+                    prost::encoding::encode_varint(key.len() as u64, &mut region);
+                    region.extend_from_slice(&key);
+                    key = payload(0x0d, &region);
+                }
+                let mut first_observation = None;
+                for (backing, input) in [
+                    ("borrowed", IndexedByteRegion::from_borrowed(&key, 7, 101)),
+                    ("frozen", fragmented(&key)),
+                ] {
+                    let mut parent = CanonicalPathFrame::new(input);
+                    let mut stats = CanonicalProtobufAdmissionStats::default();
+                    let result = loop {
+                        match parent.step(&mut stats).unwrap() {
+                            FrameAction::Complete(FrameSummary::CanonicalPath(summary)) => {
+                                break summary;
+                            }
+                            FrameAction::Push(child) => {
+                                let (summary, _, _) = drive_admission(child, 0).unwrap();
+                                parent.accept(summary, &mut stats).unwrap();
+                            }
+                            _ => panic!("expected one canonical-key result"),
+                        }
+                    };
+                    let work = parent.reducer.owner_work();
+                    let reducer = parent.reducer.stats();
+                    assert!(result.canonical_path_stable);
+                    assert_eq!(parent.reducer.consumed_len(), key.len());
+                    assert_eq!(reducer.edges, key.len());
+                    assert_eq!(parent.cursor.bytes_yielded(), key.len());
+                    assert_eq!(
+                        stats.canonical_path_obligations,
+                        if workload == "children" { width } else { 0 }
+                    );
+                    assert_eq!(
+                        stats.canonical_path_resolutions,
+                        stats.canonical_path_obligations
+                    );
+                    if depth == 0 {
+                        assert_eq!(
+                            work.active_queries
+                                + work.completed_queries
+                                + work.plans
+                                + work.resolutions
+                                + work.rebuilds
+                                + reducer.region_descents,
+                            0
+                        );
+                    }
+                    if workload == "bytes" {
+                        assert_eq!(work.plans, 0);
+                        assert_eq!(work.resolutions, 0);
+                        assert_eq!(reducer.bulk_bytes, 0);
+                        assert_eq!(parent.cursor.bytes_traversed(), key.len());
+                        assert_eq!(work.active_queries, eager_owner_steps);
+                        assert_eq!(work.completed_queries, eager_owner_steps);
+                        assert_eq!(reducer.region_descents, eager_owner_steps);
+                        assert_eq!(work.rebuilds, eager_owner_steps);
+                    }
+                    parent.reducer.assert_frame_invariants();
+                    let observation = (
+                        work,
+                        reducer,
+                        parent.cursor.bytes_traversed(),
+                        parent.reducer.retained_frame_bytes(),
+                    );
+                    if let Some(expected) = first_observation {
+                        assert_eq!(observation, expected);
+                    } else {
+                        first_observation = Some(observation);
+                    }
+                    println!(
+                        "ordinary region {workload}/{backing}: width={width}, depth={depth}, encoded={}, visits={}, active_queries={}, completed_queries={}, plans={}, resolutions={}, feed_descents={}, rebuilds={}, frame_backing={}",
+                        key.len(),
+                        parent.cursor.bytes_traversed(),
+                        work.active_queries,
+                        work.completed_queries,
+                        work.plans,
+                        work.resolutions,
+                        reducer.region_descents,
+                        work.rebuilds,
+                        parent.reducer.retained_frame_bytes(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn deep_tuple_admission_and_teardown_use_a_small_stack() {
     std::thread::Builder::new()
         .stack_size(64 * 1024)

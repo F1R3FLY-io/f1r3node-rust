@@ -10135,6 +10135,31 @@ persistent ACT resource gates are still required. See
 [J-096](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-096--2026-09-08-skip-strict-opaque-interiors-through-the-shared-machine)
 for model bindings, exact controls and qualification status.
 
+#### 5.33.16 Focused-owner proof and all-owner-work baseline (2026-09-08, task 6018)
+
+The next proof-first checkpoint measures owner work omitted by the earlier
+feed-descent counter. At depth 32, a 1,024-byte value causes 35,344 active-query,
+completed-query, feed-descent and rebuild steps each. A key with 1,024 nested-map
+children has only 3,299 parent cursor visits after opaque batching but 604,624
+total parent ancestor operations across queries, planning, resolution, feed and
+rebuild. The 64-cell borrowed/frozen baseline passes; it includes actual child
+validation and selected-frame checks. These are iterative heap operations, not
+native recursion or a timing result.
+
+Eighteen new closed model capstones establish the focused path/spine
+representation, graph-stamp accounting, minimum cache, local-action refinement
+and transaction/fault-selection laws. The full RPB3 theory has 94 closed reports
+and passes independent kernel checking. The formal README extracts FRO-01–12
+before implementation. Actual slot mutation and the full malformed-ancestor
+completion scheduler remain runtime correspondence obligations; no focused
+runtime or complete linearity claim is made at this checkpoint. See
+[J-097](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-097--2026-09-08-focused-owner-proof-and-complete-ancestor-work-baseline)
+for methodology, the individual operation counts and qualification status.
+
+The strengthened baseline and all **385** models tests pass, zero ignored. The
+combined gate passes **82** focused Rust checks, its expected closed reports and
+three independent kernel checks. No production runtime behavior changes here.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

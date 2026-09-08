@@ -222,6 +222,16 @@ pub(crate) struct CanonicalPathAdmissionStats {
     pub(crate) region_descents: usize,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CanonicalPathOwnerWork {
+    pub(crate) active_queries: usize,
+    pub(crate) completed_queries: usize,
+    pub(crate) plans: usize,
+    pub(crate) resolutions: usize,
+    pub(crate) rebuilds: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PathStateId(usize);
 
@@ -727,6 +737,8 @@ struct CanonicalPathMachine<S: FrameStore> {
     frames: S,
     next_obligation: u64,
     stats: CanonicalPathAdmissionStats,
+    #[cfg(test)]
+    owner_work: std::cell::Cell<CanonicalPathOwnerWork>,
 }
 
 impl CanonicalPathReducer {
@@ -901,6 +913,9 @@ impl CanonicalPathStreamReducer {
     pub(crate) const fn retained_state_bytes(&self) -> usize { std::mem::size_of::<InnerPath>() }
 
     #[cfg(test)]
+    pub(crate) fn owner_work(&self) -> CanonicalPathOwnerWork { self.machine.owner_work.get() }
+
+    #[cfg(test)]
     pub(crate) fn retained_frame_bytes(&self) -> usize { self.machine.frames.retained_bytes() }
 
     #[cfg(test)]
@@ -936,6 +951,8 @@ impl CanonicalPathStreamReducer {
                         },
                     ..
                 } => {
+                    #[cfg(test)]
+                    self.machine.record_owner_work(|work| work.plans += 1);
                     bound = bound.min(*remaining).min(*path_remaining);
                     current = path;
                 }
@@ -1068,7 +1085,16 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
             frames: S::new(),
             next_obligation: 0,
             stats: CanonicalPathAdmissionStats::default(),
+            #[cfg(test)]
+            owner_work: std::cell::Cell::default(),
         }
+    }
+
+    #[cfg(test)]
+    fn record_owner_work(&self, record: impl FnOnce(&mut CanonicalPathOwnerWork)) {
+        let mut work = self.owner_work.get();
+        record(&mut work);
+        self.owner_work.set(work);
     }
 
     fn prepare_edge(
@@ -1158,7 +1184,11 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 Frame::Region {
                     phase: RegionPhase::Path { path: child, .. },
                     ..
-                } => path = child,
+                } => {
+                    #[cfg(test)]
+                    self.record_owner_work(|work| work.completed_queries += 1);
+                    path = child;
+                }
                 _ => return Ok(None),
             }
         }
@@ -1244,6 +1274,8 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         };
 
         while let Some(context) = contexts.pop() {
+            #[cfg(test)]
+            self.record_owner_work(|work| work.rebuilds += 1);
             let mut owner = context.owner;
             let previous = owner.stack;
             if let PathStatus::Dead(error) = current.status {
@@ -1839,7 +1871,11 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 Frame::Region {
                     phase: RegionPhase::Path { path: child, .. },
                     ..
-                } => path = child,
+                } => {
+                    #[cfg(test)]
+                    self.record_owner_work(|work| work.active_queries += 1);
+                    path = child;
+                }
                 _ => return None,
             }
         }
@@ -1874,6 +1910,8 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                         unreachable!()
                     };
                     let child = path.clone();
+                    #[cfg(test)]
+                    self.record_owner_work(|work| work.resolutions += 1);
                     owners.push((current, frame, self.frames.checkpoint()));
                     current = child;
                 }
@@ -1998,6 +2036,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                         unreachable!()
                     };
                     let child = path.clone();
+                    self.record_owner_work(|work| work.resolutions += 1);
                     owners.push((current, frame, self.frames.checkpoint()));
                     current = child;
                 }
@@ -2034,6 +2073,8 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         mut owners: Vec<(InnerPath, Frame<S::Span>, FrameCheckpoint)>,
     ) {
         while let Some((mut owner, frame, checkpoint)) = owners.pop() {
+            #[cfg(test)]
+            self.record_owner_work(|work| work.rebuilds += 1);
             let previous_owner = owner.stack;
             let Frame::Region {
                 remaining,

@@ -3177,3 +3177,601 @@ Print Assumptions strict_bulk_positive_boundary_and_projection_controls.
 Print Assumptions strict_bulk_causal_controls_reject_missing_bounds_boundary_crossing_and_stale_requests.
 
 End StrictOpaqueInterior.
+
+Module FocusedRegionOwners.
+
+Module Slots := ReusableFrameOwnership.
+Import CanonicalKeyProtocol.
+
+Inductive path_status := OpenPath | SplitPath | DeadPath (code source offset : nat).
+
+Record path_metadata := PathMetadata {
+  path_escape_allowed : bool;
+  path_status_value : path_status;
+  path_completed_segments : nat;
+  path_first_tag : option (nat * nat * nat);
+  path_stable : bool
+}.
+
+Record region_metadata := RegionMetadata {
+  region_slot : nat;
+  region_owner : path_metadata;
+  region_previous : option (list located_byte);
+  region_declared_length : nat;
+  region_start_depth : nat;
+  region_next : Slots.graph
+}.
+
+Record leaf := Leaf {
+  leaf_metadata : path_metadata;
+  leaf_frames : Slots.graph
+}.
+
+Inductive path_graph :=
+| LeafGraph (current : leaf)
+| RegionGraph (metadata : region_metadata) (region_remaining path_remaining : nat)
+    (child : path_graph).
+
+Fixpoint graph_slots (value : path_graph) : list nat :=
+  match value with
+  | LeafGraph current => Slots.graph_slots (leaf_frames current)
+  | RegionGraph metadata _ _ child =>
+      region_slot metadata :: graph_slots child ++ Slots.graph_slots (region_next metadata)
+  end.
+
+Record owner := Owner {
+  owner_metadata : region_metadata;
+  owner_region_end : nat;
+  owner_path_end : nat
+}.
+
+Definition owner_bound (current : owner) := Nat.min (owner_region_end current) (owner_path_end current).
+
+Definition minimum_push (bound : nat) (rest : option nat) :=
+  Some (match rest with None => bound | Some other => Nat.min bound other end).
+
+Record cached_owner := CachedOwner {
+  owner_value : owner;
+  owner_cached_minimum : option nat
+}.
+
+Definition cached_minimum (owners : list cached_owner) :=
+  match owners with [] => None | current :: _ => owner_cached_minimum current end.
+
+Definition push_owner (current : owner) (owners : list cached_owner) :=
+  CachedOwner current (minimum_push (owner_bound current) (cached_minimum owners)) :: owners.
+
+Fixpoint cache_valid (owners : list cached_owner) : Prop :=
+  match owners with
+  | [] => True
+  | current :: rest =>
+      owner_cached_minimum current = minimum_push (owner_bound (owner_value current)) (cached_minimum rest) /\
+      cache_valid rest
+  end.
+
+Definition residual_graph (stamp : nat) (current : owner) (child : path_graph) :=
+  RegionGraph (owner_metadata current) (owner_region_end current - stamp)
+    (owner_path_end current - stamp) child.
+
+Fixpoint reify (stamp : nat) (current : path_graph) (owners : list cached_owner) : path_graph :=
+  match owners with
+  | [] => current
+  | first :: rest => reify stamp (residual_graph stamp (owner_value first) current) rest
+  end.
+
+Definition absolute_owner stamp metadata region_remaining path_remaining :=
+  Owner metadata (stamp + region_remaining) (stamp + path_remaining).
+
+Fixpoint decompose (stamp : nat) (current : path_graph) (owners : list cached_owner)
+    : leaf * list cached_owner :=
+  match current with
+  | LeafGraph focused => (focused, owners)
+  | RegionGraph metadata region_remaining path_remaining child =>
+      decompose stamp child (push_owner (absolute_owner stamp metadata region_remaining path_remaining) owners)
+  end.
+
+Lemma absolute_residual_exact stamp metadata region_remaining path_remaining child :
+  residual_graph stamp (absolute_owner stamp metadata region_remaining path_remaining) child =
+    RegionGraph metadata region_remaining path_remaining child.
+Proof.
+  unfold residual_graph, absolute_owner; cbn. f_equal; lia.
+Qed.
+
+Lemma decompose_reifies stamp current owners :
+  let '(focused, suspended) := decompose stamp current owners in
+  reify stamp (LeafGraph focused) suspended = reify stamp current owners.
+Proof.
+  revert owners. induction current as [focused|metadata region_remaining path_remaining child IH]; intro owners; cbn.
+  - reflexivity.
+  - specialize (IH (push_owner (absolute_owner stamp metadata region_remaining path_remaining) owners)).
+    destruct (decompose stamp child (push_owner (absolute_owner stamp metadata region_remaining path_remaining) owners))
+      as [focused suspended]. cbn in IH. rewrite absolute_residual_exact in IH. exact IH.
+Qed.
+
+Theorem concrete_decomposition_reifies_every_path_and_region_field stamp current focused owners :
+  decompose stamp current [] = (focused, owners) ->
+  reify stamp (LeafGraph focused) owners = current.
+Proof.
+  intro observed. pose proof (decompose_reifies stamp current []) as exact.
+  rewrite observed in exact. exact exact.
+Qed.
+
+Theorem cached_minimum_push_and_pop_preserve_the_exact_prefix current owners :
+  cache_valid owners ->
+  cache_valid (push_owner current owners) /\
+  cached_minimum (push_owner current owners) = minimum_push (owner_bound current) (cached_minimum owners) /\
+  tl (push_owner current owners) = owners.
+Proof. intro valid. unfold push_owner; cbn. repeat split; auto. Qed.
+
+Lemma decompose_cache_valid stamp current owners :
+  cache_valid owners -> cache_valid (snd (decompose stamp current owners)).
+Proof.
+  revert owners. induction current as [focused|metadata region_remaining path_remaining child IH]; intros owners valid; cbn.
+  - exact valid.
+  - apply IH. cbn. auto.
+Qed.
+
+Definition owner_held_slots (current : owner) :=
+  region_slot (owner_metadata current) :: Slots.graph_slots (region_next (owner_metadata current)).
+
+Fixpoint detached_slots (focused : path_graph) (owners : list cached_owner) :=
+  match owners with
+  | [] => graph_slots focused
+  | first :: rest => owner_held_slots (owner_value first) ++ detached_slots focused rest
+  end.
+
+Lemma reify_slot_membership stamp focused owners slot :
+  In slot (graph_slots (reify stamp focused owners)) <->
+  In slot (graph_slots focused) \/ exists current, In current owners /\ In slot (owner_held_slots (owner_value current)).
+Proof.
+  revert focused. induction owners as [|first rest IH]; intro focused; cbn.
+  - split; [auto|intros [inside|[current [inside _]]]; [exact inside|contradiction]].
+  - rewrite IH. unfold residual_graph, owner_held_slots; cbn. rewrite in_app_iff.
+    split.
+    + intros [[same|[child|tail]]|[current [inside held]]].
+      * right. exists first. split; [now left|now left].
+      * now left.
+      * right. exists first. split; [now left|now right].
+      * right. exists current. split; [now right|exact held].
+    + intros [child|[current [[same|inside] held]]].
+      * left. right. now left.
+      * subst current. destruct held as [same|tail]; [left; now left|left; right; now right].
+      * right. exists current. auto.
+Qed.
+
+Theorem detached_spine_preserves_exact_frame_membership_and_count stamp focused owners :
+  (forall slot, In slot (graph_slots (reify stamp focused owners)) <-> In slot (detached_slots focused owners)) /\
+  length (graph_slots (reify stamp focused owners)) = length (detached_slots focused owners).
+Proof.
+  split.
+  - intro slot. rewrite reify_slot_membership.
+    induction owners as [|first rest IH]; cbn.
+    + split; [intros [inside|[current [inside _]]]; [exact inside|contradiction]|auto].
+    + rewrite in_app_iff. rewrite <- IH. firstorder subst; auto.
+  - revert focused. induction owners as [|first rest IH]; intro focused; cbn; [reflexivity|].
+    rewrite IH, app_length. unfold owner_held_slots, residual_graph; cbn.
+    clear IH. induction rest as [|current rest IH]; cbn in *.
+    + rewrite app_length. lia.
+    + rewrite !app_length in *. lia.
+Qed.
+
+Lemma nodup_append_left {A : Type} (left right : list A) : NoDup (left ++ right) -> NoDup left.
+Proof.
+  induction left as [|first rest IH]; intro distinct; [constructor|].
+  inversion distinct; subst. constructor.
+  - intro inside. apply H1. apply in_or_app. now left.
+  - now apply IH.
+Qed.
+
+Lemma reify_nodup_focus stamp focused owners :
+  NoDup (graph_slots (reify stamp focused owners)) -> NoDup (graph_slots focused).
+Proof.
+  revert focused. induction owners as [|first rest IH]; intros focused distinct; [exact distinct|].
+  cbn in distinct. apply IH in distinct. unfold residual_graph in distinct; cbn in distinct.
+  inversion distinct; subst. now apply nodup_append_left in H2.
+Qed.
+
+Theorem detached_region_child_and_outer_continuation_are_disjoint stamp focused first rest :
+  NoDup (graph_slots (reify stamp focused (first :: rest))) ->
+  forall slot, In slot (graph_slots focused) -> ~ In slot (owner_held_slots (owner_value first)).
+Proof.
+  intro distinct. cbn in distinct. apply reify_nodup_focus in distinct.
+  unfold residual_graph in distinct; cbn in distinct. inversion distinct; subst.
+  intros slot child [same|tail].
+  - subst slot. apply H1. apply in_or_app. now left.
+  - eapply Slots.nodup_append_disjoint; eauto.
+Qed.
+
+Definition subtract_owner width current :=
+  match current with
+  | RegionGraph metadata region_remaining path_remaining child =>
+      RegionGraph metadata (region_remaining - width) (path_remaining - width) child
+  | LeafGraph focused => LeafGraph focused
+  end.
+
+Fixpoint decrement_region_graph width current :=
+  match current with
+  | LeafGraph focused => LeafGraph focused
+  | RegionGraph metadata region_remaining path_remaining child =>
+      RegionGraph metadata (region_remaining - width) (path_remaining - width)
+        (decrement_region_graph width child)
+  end.
+
+Theorem widened_endpoints_recover_exact_residuals_without_early_overflow
+    stamp remaining machine_limit declared_limit :
+  stamp <= machine_limit -> remaining <= declared_limit ->
+  stamp + remaining <= machine_limit + declared_limit /\
+  stamp + remaining - stamp = remaining.
+Proof. lia. Qed.
+
+Lemma endpoint_shift remaining stamp width : remaining - (stamp + width) = remaining - stamp - width.
+Proof. lia. Qed.
+
+Lemma stamp_shift_reifies stamp width focused owners :
+  reify (stamp + width) (decrement_region_graph width focused) owners =
+    decrement_region_graph width (reify stamp focused owners).
+Proof.
+  revert focused. induction owners as [|first rest IH]; intro focused; cbn; [reflexivity|].
+  rewrite <- IH. unfold residual_graph; cbn. rewrite !endpoint_shift. reflexivity.
+Qed.
+
+Theorem advancing_graph_stamp_decrements_every_owner_without_rewriting_spine stamp width focused owners :
+  reify (stamp + width) (LeafGraph focused) owners =
+    decrement_region_graph width (reify stamp (LeafGraph focused) owners).
+Proof. exact (stamp_shift_reifies stamp width (LeafGraph focused) owners). Qed.
+
+Definition minimum_above stamp bound :=
+  match bound with None => True | Some ending => stamp < ending end.
+
+Lemma minimum_push_above stamp ending rest :
+  minimum_above stamp (minimum_push ending rest) <-> stamp < ending /\ minimum_above stamp rest.
+Proof.
+  destruct rest as [other|]; cbn.
+  - destruct (le_dec ending other).
+    + rewrite Nat.min_l by lia. lia.
+    + rewrite Nat.min_r by lia. lia.
+  - tauto.
+Qed.
+
+Theorem cached_minimum_checks_all_enclosing_region_and_path_endpoints stamp owners :
+  cache_valid owners ->
+  (minimum_above stamp (cached_minimum owners) <->
+    Forall (fun current => stamp < owner_region_end (owner_value current) /\
+      stamp < owner_path_end (owner_value current)) owners).
+Proof.
+  induction owners as [|first rest IH]; intro valid; cbn in *.
+  - split; auto.
+  - destruct valid as [cache valid]. rewrite cache, minimum_push_above, (IH valid).
+    unfold owner_bound. assert (minimum : stamp < Nat.min (owner_region_end (owner_value first))
+      (owner_path_end (owner_value first)) <->
+      stamp < owner_region_end (owner_value first) /\ stamp < owner_path_end (owner_value first)).
+    { destruct (le_dec (owner_region_end (owner_value first)) (owner_path_end (owner_value first))).
+      - rewrite Nat.min_l by lia. lia.
+      - rewrite Nat.min_r by lia. lia. }
+    rewrite minimum. split; [intros [head tail]; constructor; assumption|].
+    intro all. inversion all; subst. auto.
+Qed.
+
+Definition expired stamp current := owner_bound (owner_value current) <=? stamp.
+
+Fixpoint first_expired stamp (outer_first : list cached_owner) : option cached_owner :=
+  match outer_first with
+  | [] => None
+  | first :: rest => if expired stamp first then Some first else first_expired stamp rest
+  end.
+
+Theorem zero_boundary_selection_is_outer_first_with_no_skipped_predecessor stamp owners selected :
+  first_expired stamp (rev owners) = Some selected ->
+  exists before after,
+    rev owners = before ++ selected :: after /\
+    Forall (fun current => expired stamp current = false) before /\ expired stamp selected = true.
+Proof.
+  generalize (rev owners). intro outer_first. induction outer_first as [|first rest IH]; cbn; [discriminate|].
+  destruct (expired stamp first) eqn:head.
+  - intro found. inversion found; subst. exists [], rest. cbn. repeat split; auto.
+  - intro found. destruct (IH found) as [before [after [shape [clear chosen]]]].
+    exists (first :: before), after. cbn. split; [now rewrite shape|]. split; [constructor; assumption|exact chosen].
+Qed.
+
+Record focused := Focused {
+  graph_stamp : nat;
+  focused_leaf : leaf;
+  focused_owners : list cached_owner
+}.
+
+Definition focused_graph current :=
+  reify (graph_stamp current) (LeafGraph (focused_leaf current)) (focused_owners current).
+
+Record shallow_result := ShallowResult {
+  shallow_leaf : leaf;
+  shallow_event : nat;
+  shallow_clock : nat
+}.
+
+Fixpoint eager_shallow (action : leaf -> shallow_result) (current : path_graph)
+    : path_graph * nat * nat :=
+  match current with
+  | LeafGraph current =>
+      let after := action current in (LeafGraph (shallow_leaf after), shallow_event after, shallow_clock after)
+  | RegionGraph metadata remaining path_remaining child =>
+      let '(next, event, clock) := eager_shallow action child in
+      (RegionGraph metadata (remaining - 1) (path_remaining - 1) next, event, clock)
+  end.
+
+Definition ordinary_focused (action : leaf -> shallow_result) current :=
+  let after := action (focused_leaf current) in
+  (Focused (graph_stamp current + 1) (shallow_leaf after) (focused_owners current),
+    shallow_event after, shallow_clock after).
+
+Lemma eager_shallow_reify action stamp current owners next event clock :
+  eager_shallow action current = (next, event, clock) ->
+  eager_shallow action (reify stamp current owners) =
+    (reify (stamp + 1) next owners, event, clock).
+Proof.
+  revert current next event clock. induction owners as [|first rest IH]; intros current next event clock step; cbn; [exact step|].
+  apply IH. unfold residual_graph; cbn. rewrite step. rewrite !endpoint_shift. reflexivity.
+Qed.
+
+Theorem ordinary_shared_shallow_action_refines_eager_owners_and_preserves_exact_events action current next event clock :
+  ordinary_focused action current = (next, event, clock) ->
+  eager_shallow action (focused_graph current) = (focused_graph next, event, clock) /\
+  focused_owners next = focused_owners current.
+Proof.
+  destruct current as [stamp current owners]. unfold ordinary_focused; cbn.
+  destruct (action current) as [after observed allocated] eqn:local.
+  intro accepted. inversion accepted; subst; clear accepted. split; [|reflexivity].
+  unfold focused_graph; cbn. eapply eager_shallow_reify. cbn. now rewrite local.
+Qed.
+
+Definition ordinary_binding (grammar action : leaf -> shallow_result) :=
+  forall current, grammar current = action current.
+
+Lemma eager_shallow_inherits_local_action_binding grammar action current :
+  ordinary_binding grammar action -> eager_shallow grammar current = eager_shallow action current.
+Proof.
+  intro binding. induction current as [current|metadata remaining path_remaining child IH]; cbn.
+  - now rewrite binding.
+  - now rewrite IH.
+Qed.
+
+Theorem explicit_shared_grammar_binding_transfers_ordinary_observations grammar action current next event clock :
+  ordinary_binding grammar action ->
+  ordinary_focused action current = (next, event, clock) ->
+  eager_shallow grammar (focused_graph current) = (focused_graph next, event, clock).
+Proof.
+  intros binding step. rewrite (eager_shallow_inherits_local_action_binding (focused_graph current) binding).
+  now apply ordinary_shared_shallow_action_refines_eager_owners_and_preserves_exact_events in step as [step _].
+Qed.
+
+Definition leaf_pending (current : leaf) : option nat :=
+  match leaf_frames current with
+  | Slots.LinkGraph _ metadata _ =>
+      match Slots.frame_obligation metadata with
+      | Some obligation => if Slots.obligation_status obligation =? 1
+          then Some (Slots.obligation_number obligation) else None
+      | None => None
+      end
+  | _ => None
+  end.
+
+Definition is_pending current := match leaf_pending current with Some _ => true | None => false end.
+
+Inductive completion_result :=
+| CompletedOwner (current : leaf)
+| RefusedOwner (code source offset : nat).
+
+Inductive completion_observation :=
+| SuspendedCompletion (current : focused) (popped : nat)
+| RefusedCompletion (current : focused) (code source offset popped : nat).
+
+Definition add_pop result :=
+  match result with
+  | SuspendedCompletion current popped => SuspendedCompletion current (S popped)
+  | RefusedCompletion current code source offset popped => RefusedCompletion current code source offset (S popped)
+  end.
+
+Fixpoint complete_equal_suffix
+    (complete : region_metadata -> nat -> leaf -> completion_result)
+    (stamp : nat) (current : leaf) (owners : list cached_owner) : completion_observation :=
+  if is_pending current then SuspendedCompletion (Focused stamp current owners) 0 else
+  match owners with
+  | [] => SuspendedCompletion (Focused stamp current []) 0
+  | first :: rest =>
+      if owner_path_end (owner_value first) =? stamp then
+        match complete (owner_metadata (owner_value first))
+          (owner_region_end (owner_value first) - stamp) current with
+        | CompletedOwner next => add_pop (complete_equal_suffix complete stamp next rest)
+        | RefusedOwner code source offset => RefusedCompletion (Focused stamp current owners) code source offset 0
+        end
+      else SuspendedCompletion (Focused stamp current owners) 0
+  end.
+
+Definition completion_focus result :=
+  match result with
+  | SuspendedCompletion current _ | RefusedCompletion current _ _ _ _ => current
+  end.
+
+Definition completion_pops result :=
+  match result with
+  | SuspendedCompletion _ popped | RefusedCompletion _ _ _ _ popped => popped
+  end.
+
+Theorem incremental_equal_boundary_completion_only_removes_the_consumed_suffix complete stamp current owners :
+  let result := complete_equal_suffix complete stamp current owners in
+  completion_pops result + length (focused_owners (completion_focus result)) = length owners /\
+  focused_owners (completion_focus result) = skipn (completion_pops result) owners.
+Proof.
+  revert current. induction owners as [|first rest IH]; intro current; cbn;
+    destruct (is_pending current) eqn:pending; cbn; try (split; reflexivity).
+  destruct (owner_path_end (owner_value first) =? stamp) eqn:boundary; cbn; [|split; reflexivity].
+  destruct (complete (owner_metadata (owner_value first)) (owner_region_end (owner_value first) - stamp) current)
+    as [next|code source offset]; cbn; [|split; reflexivity].
+  specialize (IH next). destruct (complete_equal_suffix complete stamp next rest); cbn in *;
+    destruct IH as [count suffix]; (split; [lia|exact suffix]).
+Qed.
+
+Theorem pending_child_at_zero_boundary_preserves_all_owners_without_completion complete stamp current owners id :
+  leaf_pending current = Some id ->
+  complete_equal_suffix complete stamp current owners = SuspendedCompletion (Focused stamp current owners) 0.
+Proof.
+  intro pending. destruct owners; cbn; unfold is_pending; rewrite pending; reflexivity.
+Qed.
+
+Definition resolve_focused (resolve : leaf -> leaf) (id : nat) (current : focused) : option focused :=
+  match leaf_pending (focused_leaf current) with
+  | Some expected => if id =? expected then
+      Some (Focused (graph_stamp current) (resolve (focused_leaf current)) (focused_owners current)) else None
+  | None => None
+  end.
+
+Theorem wrong_obligation_id_refuses_without_a_candidate_or_owner_change resolve id expected current :
+  leaf_pending (focused_leaf current) = Some expected -> id <> expected ->
+  resolve_focused resolve id current = None.
+Proof.
+  intros pending wrong. unfold resolve_focused. rewrite pending.
+  apply Nat.eqb_neq in wrong. now rewrite wrong.
+Qed.
+
+Definition kill_metadata code source offset current :=
+  PathMetadata (path_escape_allowed current) (DeadPath code source offset)
+    (path_completed_segments current) (path_first_tag current) (path_stable current).
+
+Definition kill_graph code source offset current :=
+  match current with
+  | LeafGraph current => LeafGraph (Leaf (kill_metadata code source offset (leaf_metadata current)) (leaf_frames current))
+  | RegionGraph metadata remaining path_remaining child =>
+      RegionGraph (RegionMetadata (region_slot metadata)
+        (kill_metadata code source offset (region_owner metadata)) (region_previous metadata)
+        (region_declared_length metadata) (region_start_depth metadata) (region_next metadata))
+        remaining path_remaining child
+  end.
+
+Inductive representation := FocusedRepresentation (current : focused) | ReifiedRepresentation (current : path_graph).
+
+Definition represented_graph current :=
+  match current with FocusedRepresentation current => focused_graph current | ReifiedRepresentation current => current end.
+
+Record world := World {
+  world_representation : representation;
+  input_consumed : nat;
+  obligation_clock : nat
+}.
+
+Inductive selection := ReturnedError | AcceptedStep | DeferredRefusal (code source offset : nat).
+
+Definition select_transaction (choice : selection) (before : focused) (candidate : focused)
+    (before_consumed after_consumed before_clock after_clock : nat) : world :=
+  match choice with
+  | ReturnedError => World (FocusedRepresentation before) before_consumed before_clock
+  | AcceptedStep => World (FocusedRepresentation candidate) after_consumed after_clock
+  | DeferredRefusal code source offset =>
+      let selected := match focused_owners before with
+        | [] => focused_graph candidate
+        | _ :: _ => focused_graph before
+        end in
+      World (ReifiedRepresentation (kill_graph code source offset selected)) after_consumed after_clock
+  end.
+
+Theorem transaction_selection_uses_the_pre_step_graph_for_outer_refusal_but_keeps_global_clock
+    before candidate first rest before_consumed after_consumed before_clock after_clock code source offset :
+  focused_owners before = first :: rest ->
+  select_transaction (DeferredRefusal code source offset) before candidate
+    before_consumed after_consumed before_clock after_clock =
+  World (ReifiedRepresentation (kill_graph code source offset (focused_graph before))) after_consumed after_clock.
+Proof. intro owners. unfold select_transaction. now rewrite owners. Qed.
+
+Theorem shallow_fresh_frame_selection_and_returned_error_are_distinct
+    before candidate before_consumed after_consumed before_clock after_clock code source offset :
+  focused_owners before = [] ->
+  select_transaction (DeferredRefusal code source offset) before candidate
+    before_consumed after_consumed before_clock after_clock =
+    World (ReifiedRepresentation (kill_graph code source offset (focused_graph candidate))) after_consumed after_clock /\
+  select_transaction ReturnedError before candidate before_consumed after_consumed before_clock after_clock =
+    World (FocusedRepresentation before) before_consumed before_clock.
+Proof. intro owners. unfold select_transaction. rewrite owners. auto. Qed.
+
+Definition shared_protocol := path_graph -> nat -> nat -> nat -> path_graph * nat * nat.
+
+Definition reified_protocol_step (shared : shared_protocol) (request : nat) (current : world) : option world :=
+  match world_representation current with
+  | FocusedRepresentation _ => None
+  | ReifiedRepresentation graph =>
+      let '(next, consumed, clock) := shared graph (input_consumed current) (obligation_clock current) request in
+      Some (World (ReifiedRepresentation next) consumed clock)
+  end.
+
+Theorem reified_fault_operations_use_the_exact_same_shared_protocol_without_reaccounting
+    shared request graph consumed clock next next_consumed next_clock :
+  shared graph consumed clock request = (next, next_consumed, next_clock) ->
+  reified_protocol_step shared request (World (ReifiedRepresentation graph) consumed clock) =
+    Some (World (ReifiedRepresentation next) next_consumed next_clock).
+Proof. intro result. unfold reified_protocol_step; cbn. now rewrite result. Qed.
+
+Definition control_path := PathMetadata false OpenPath 2 (Some (13, 7, 91)) true.
+Definition control_frame := Slots.FrameMetadata [4; 8] None.
+Definition control_leaf := Leaf control_path (Slots.LinkGraph 3 control_frame Slots.EmptyGraph).
+Definition control_metadata slot := RegionMetadata slot control_path (Some [LocatedByte 8 2 31])
+  7 3 (Slots.LinkGraph (slot + 10) control_frame Slots.EmptyGraph).
+Definition control_outer := absolute_owner 3 (control_metadata 1) 12 8.
+Definition control_inner := absolute_owner 3 (control_metadata 2) 9 6.
+Definition control_owners := push_owner control_inner (push_owner control_outer []).
+Definition control_focused := Focused 3 control_leaf control_owners.
+Definition control_action current := ShallowResult current 71 19.
+Definition control_pending := Leaf control_path (Slots.LinkGraph 4
+  (Slots.FrameMetadata [] (Some (Slots.ObligationMetadata 17 2 3 7 91 1))) Slots.EmptyGraph).
+Definition complete_control metadata (remaining : nat) (current : leaf) := CompletedOwner
+  (Leaf (region_owner metadata) (region_next metadata)).
+
+Theorem focused_representation_accounting_completion_and_selection_positive_controls :
+  cache_valid control_owners /\
+  cached_minimum control_owners = Some 9 /\
+  ordinary_focused control_action control_focused = (Focused 4 control_leaf control_owners, 71, 19) /\
+  first_expired 11 (rev control_owners) = Some (hd (CachedOwner control_outer None) (push_owner control_outer [])) /\
+  completion_pops (complete_equal_suffix complete_control 9 control_leaf
+    (push_owner (Owner (control_metadata 2) 9 9) (push_owner (Owner (control_metadata 1) 12 9) []))) = 2 /\
+  complete_equal_suffix complete_control 9 control_pending
+    (push_owner (Owner (control_metadata 2) 9 9) []) =
+    SuspendedCompletion (Focused 9 control_pending (push_owner (Owner (control_metadata 2) 9 9) [])) 0 /\
+  resolve_focused (fun current => current) 17 (Focused 9 control_pending control_owners) =
+    Some (Focused 9 control_pending control_owners).
+Proof. repeat split; reflexivity. Qed.
+
+Definition consumed_residual (consumed : nat) (current : owner) := owner_path_end current - consumed.
+Definition inner_first_zero stamp owners := first_expired stamp owners.
+Definition fault_suffix graph consumed (clock : nat) request :=
+  (if request =? 0 then graph else kill_graph 93 8 consumed graph, consumed + 1, clock).
+
+Theorem focused_causal_controls_reject_wrong_stamps_wrong_boundary_order_and_dead_absorption :
+  owner_path_end control_inner - 3 = 6 /\ consumed_residual 5 control_inner = 4 /\
+  first_expired 11 (rev control_owners) <> inner_first_zero 11 control_owners /\
+  resolve_focused (fun current => current) 18 (Focused 9 control_pending control_owners) = None /\
+  focused_graph control_focused <> focused_graph (Focused 5 control_leaf control_owners) /\
+  reified_protocol_step fault_suffix 1
+    (World (ReifiedRepresentation (kill_graph 41 2 31 (focused_graph control_focused))) 20 19) =
+    Some (World (ReifiedRepresentation (kill_graph 93 8 20 (focused_graph control_focused))) 21 19) /\
+  obligation_clock (select_transaction (DeferredRefusal 41 2 31) control_focused
+    (Focused 4 control_leaf control_owners) 3 4 18 19) = 19.
+Proof.
+  repeat split; vm_compute; congruence.
+Qed.
+
+Print Assumptions concrete_decomposition_reifies_every_path_and_region_field.
+Print Assumptions cached_minimum_push_and_pop_preserve_the_exact_prefix.
+Print Assumptions detached_spine_preserves_exact_frame_membership_and_count.
+Print Assumptions detached_region_child_and_outer_continuation_are_disjoint.
+Print Assumptions widened_endpoints_recover_exact_residuals_without_early_overflow.
+Print Assumptions advancing_graph_stamp_decrements_every_owner_without_rewriting_spine.
+Print Assumptions cached_minimum_checks_all_enclosing_region_and_path_endpoints.
+Print Assumptions zero_boundary_selection_is_outer_first_with_no_skipped_predecessor.
+Print Assumptions ordinary_shared_shallow_action_refines_eager_owners_and_preserves_exact_events.
+Print Assumptions explicit_shared_grammar_binding_transfers_ordinary_observations.
+Print Assumptions incremental_equal_boundary_completion_only_removes_the_consumed_suffix.
+Print Assumptions pending_child_at_zero_boundary_preserves_all_owners_without_completion.
+Print Assumptions wrong_obligation_id_refuses_without_a_candidate_or_owner_change.
+Print Assumptions transaction_selection_uses_the_pre_step_graph_for_outer_refusal_but_keeps_global_clock.
+Print Assumptions shallow_fresh_frame_selection_and_returned_error_are_distinct.
+Print Assumptions reified_fault_operations_use_the_exact_same_shared_protocol_without_reaccounting.
+Print Assumptions focused_representation_accounting_completion_and_selection_positive_controls.
+Print Assumptions focused_causal_controls_reject_wrong_stamps_wrong_boundary_order_and_dead_absorption.
+
+End FocusedRegionOwners.

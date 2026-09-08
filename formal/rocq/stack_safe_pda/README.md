@@ -809,6 +809,112 @@ whole-pipeline linearity follows from this binding: ordinary nested Region
 reconstruction and persistent ACT payload handling retain their separate
 required acceptance boundaries.
 
+### Focused Region owners: representation and accounting contract (task 6018)
+
+The strict-interior implementation does not eliminate ancestor walks for ordinary
+grammar bytes, queries or child resolution. A **focused path** is the currently
+active leaf parser. Its **owner spine** holds the suspended enclosing Region
+metadata and continuations, innermost last in the planned Rust vector. Detaching
+the leaf permits ordinary byte transitions and obligation queries without
+traversing or rewriting the spine. This is a representation refinement of the
+existing grammar, not a new canonical codec or parser language.
+
+`FocusedRegionOwners` models exact path metadata, Region lengths, previous
+located-byte spans and reusable-frame continuation graphs. Its model lists are
+innermost first; Rust vector orientation must be bound explicitly. **Reification**
+means rebuilding the original nested graph from the focus and suspended owners.
+The model keeps a separate **graph stamp**, the consumed position to which saved
+Region residuals belong. The public input-consumption clock may advance after a
+Dead state while the selected graph remains unchanged. Subtracting the public
+clock from every saved endpoint would therefore change observable behavior.
+
+Absolute endpoints require arithmetic wide enough for the sum of a machine
+position and a declared `u64` remainder. The natural-number proof establishes
+the bound, not Rust overflow safety by itself. Runtime must bind that bound to
+its chosen representation and preserve short-input handling for `u64::MAX`
+declarations. This is not a change to multiplicity or language integer types.
+
+```text
+Algorithm FOCUSED-REGION-STEP(input, focus, owners, graph_stamp)
+1. Check the focused obligation and cached enclosing minimum before consuming.
+2. Retain the pre-step focus and any owners touched by this transaction.
+3. For an ordinary interior byte, run the existing shallow grammar exactly once;
+   advance the graph stamp without rewriting suspended owners.
+4. Detach newly entered owners. Complete only the innermost exhausted suffix,
+   using the existing local Region completion; suspend a pending child at zero.
+5. Commit the selected graph and retire only unreachable slots. An outer refusal
+   selects the exact pre-step graph, while retaining the grammar's global clock.
+6. Reify a selected fault graph once and continue through the same shared fault
+   protocol. Do not treat Dead as absorbing or replay healthy input prefixes.
+```
+
+The following complete binding catalogue is required before the focused runtime
+is qualified. Existing scalar controls are evidence about the reference, not
+evidence that the not-yet-implemented focused representation satisfies them.
+
+| ID | Required invariant and executable witness |
+|---|---|
+| FRO-01 | Decompose/reify preserves every path status, tag/source, stability bit, segment count, Region/path remainder, declared length, start, previous span and continuation. Compare independently allocated normalized graphs, including empty and deep spines. |
+| FRO-02 | Detached owner slots, focused frames and continuation graphs are disjoint; free slots do not overlap any selected root. Check push/pop, local replacement, failed transactions and retained payload spans against the actual slot pool. |
+| FRO-03 | Widened endpoints reconstruct exact residuals at the graph stamp. Advance the stamp only when the selected graph advances; test near machine limits, `u64::MAX` declarations, short input and post-Dead consumption. |
+| FRO-04 | A push stores the exact prefix minimum and a pop restores it in constant time. Every Region and framed-path bound participates; simultaneous expired ancestors retain outer-first refusal precedence. |
+| FRO-05 | The ordinary operation invokes the identical shallow grammar and preserves exact public events, first-tag effects and the global obligation clock. Prove pointwise action correspondence and compare scalar traces; assert zero owner rewrites on strict ordinary interiors. |
+| FRO-06 | Successful equal-boundary completion removes only the consumed innermost suffix. Pending children at zero preserve all owners. Bind actual sibling ordering, child-before-owner errors, malformed ancestors and completion provenance to `finish_region_path`, not only to suffix arithmetic. |
+| FRO-07 | Wrong-ID, wrong-phase and pending-edge refusal preserve parser state and selected physical slots. Compare exact snapshots and subsequent valid operations. |
+| FRO-08 | Returned errors preserve the old state; outer deferred refusals select the immediately preceding graph, not the graph at focus entry, while preserving permitted global-clock advancement. Shallow fresh-frame failure retains its distinct selection rule. |
+| FRO-09 | Reified faults use the existing shared protocol. Later scalar consumption and private resolution retain nonabsorbing Dead behavior, with no second grammar and no repeated healthy-prefix reification. |
+| FRO-10 | Borrowed/frozen cursors, checked opaque skips, child spans, exact physical anchors and pending dispatch are unchanged. Repeat existing cursor, boundary and provenance properties through the focused driver. |
+| FRO-11 | Count all owner work: active/completed queries, planning, resolution, feed descent, rebuild, detachment and reification. Width/depth, repeated-child and cascading-completion controls must expose hidden ancestor scans. Report capacity, bytes, visits and time separately. |
+| FRO-12 | Public persistent ACT forks and the scalar event protocol remain unchanged. Retain independent fork/restore witnesses and tiny-stack admission plus teardown, without depth limits or new byte arenas. |
+
+The model's ordinary-action equivalence is conditional on the shared shallow
+operation. Its suffix theorem proves exactly which owners are removed and the
+pending suspension rule, not the full malformed-ancestor scheduler. Physical
+slot mutation, Rust-width arithmetic, the real grammar binding and whole-pipeline
+resource slopes remain explicit implementation obligations. No full focused
+parser correctness or production activation follows from this model alone.
+
+#### Pre-change all-owner-work baseline
+
+The new module compiles with eighteen closed capstones (94 reports in the full
+RPB3 theory) and passes independent kernel checking before focused runtime work.
+
+| Capstone | Binding |
+|---|---|
+| `concrete_decomposition_reifies_every_path_and_region_field` | FRO-01: exact normalized graph reconstruction. |
+| `cached_minimum_push_and_pop_preserve_the_exact_prefix` | FRO-04: exact cached prefix after push/pop. |
+| `detached_spine_preserves_exact_frame_membership_and_count` | FRO-01/02: no logical frame is lost or added. |
+| `detached_region_child_and_outer_continuation_are_disjoint` | FRO-02: selected child and held owner/continuation do not alias under distinct graph slots. |
+| `widened_endpoints_recover_exact_residuals_without_early_overflow` | FRO-03: mathematical sum bound and exact subtraction. |
+| `advancing_graph_stamp_decrements_every_owner_without_rewriting_spine` | FRO-03/05: reified residuals equal eager decrements. |
+| `cached_minimum_checks_all_enclosing_region_and_path_endpoints` | FRO-04: no enclosing bound is omitted. |
+| `zero_boundary_selection_is_outer_first_with_no_skipped_predecessor` | FRO-04/06: first expired owner in outer-first order. |
+| `ordinary_shared_shallow_action_refines_eager_owners_and_preserves_exact_events` | FRO-05: exact event/clock and unchanged spine. |
+| `explicit_shared_grammar_binding_transfers_ordinary_observations` | FRO-05: pointwise leaf-action agreement implies owner-fold agreement by induction. |
+| `incremental_equal_boundary_completion_only_removes_the_consumed_suffix` | FRO-06: exact popped suffix and count, conditional on local completion. |
+| `pending_child_at_zero_boundary_preserves_all_owners_without_completion` | FRO-06: pending suspension precedes completion. |
+| `wrong_obligation_id_refuses_without_a_candidate_or_owner_change` | FRO-07: wrong-ID resolution produces no candidate. |
+| `transaction_selection_uses_the_pre_step_graph_for_outer_refusal_but_keeps_global_clock` | FRO-08: exact pre-step graph and independent clock selection. |
+| `shallow_fresh_frame_selection_and_returned_error_are_distinct` | FRO-08: shallow candidate versus returned-error rollback. |
+| `reified_fault_operations_use_the_exact_same_shared_protocol_without_reaccounting` | FRO-09: shared post-fault behavior without residual reinterpretation. |
+| `focused_representation_accounting_completion_and_selection_positive_controls` | FRO-01/03–08: concrete admissible controls. |
+| `focused_causal_controls_reject_wrong_stamps_wrong_boundary_order_and_dead_absorption` | FRO-03/04/07–09: distinguish wrong stamp, wrong order, wrong ID, stale graph and absorbing-fault mutations. |
+
+`ordinary_region_work_matrix_tracks_all_owner_walks` drives complete encoded
+byte arrays and tuples of nested map obligations through borrowed and frozen
+inputs: widths 1/16/128/1,024 and depths 0/1/8/32, for 64 cells. It validates all
+dispatched children, exact final summaries, logical consumption, pending counts
+and frame ownership. Ordinary-byte expected walks are independently calculated
+as the sum of encoded child lengths before each enclosing Region is added.
+Both backings must produce identical work, visit and capacity observations.
+
+`CanonicalPathOwnerWork` is test-only observation state, separate from semantic
+parser state: reads increment query counters without changing the parser graph.
+It adds the planner, query, resolution and rebuild walks omitted from the earlier
+feed-descent-only counter. The probe counts the parent, not fixture construction
+or independent child-validator work, and is not a timing benchmark. J-097 records
+the observations and final qualification artifacts.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

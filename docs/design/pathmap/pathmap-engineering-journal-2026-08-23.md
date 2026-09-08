@@ -6855,6 +6855,94 @@ that saved-graph accounting remains distinct from post-Dead input consumption.
 No production importer, codec, charge schedule, hash or persistence backend is
 switched here. These local counts are not a PathMap/ACT-versus-LMDB verdict.
 
+### J-097 — 2026-09-08: focused-owner proof and complete ancestor-work baseline
+
+**QUESTION AND HYPOTHESIS.** After J-096, do ordinary key bytes and repeated child
+obligations still perform work proportional to enclosing depth? Yes: the active
+obligation query, completed-payload query, planner, resolution and frame rebuild
+also walk Region owners. The hypothesis is that an active leaf with a suspended
+owner spine, exact cached minima and a separate graph-accounting stamp removes
+those walks on ordinary interior operations. Payload batching alone cannot do so.
+
+**METHOD.** `ordinary_region_work_matrix_tracks_all_owner_walks` constructs actual
+canonical byte-array keys and tuples containing repeated nested-map obligations.
+It wraps them in 0/1/8/32 Regions at widths 1/16/128/1,024 and runs both borrowed
+and frozen backing: 64 cells. Each dispatched child is validated, and completion,
+logical consumption, obligation/resolution counts and slot ownership are checked.
+The strengthened probe independently sums the encoded child lengths to predict
+ordinary-byte ancestor work and requires exact parity between both backings.
+
+The new `CanonicalPathOwnerWork` counters exist only in test builds. They measure
+parent active queries, completed queries, plan/revalidation, resolution descent
+and owner rebuilds; the existing `region_descents` measures parent feed descent.
+Query observation counters are deliberately separate from semantic parser state.
+Fixture construction and separately dispatched child-validator work are outside
+these parent counters. No timing, isolated RSS, whole-pipeline linearity or backend
+comparison is inferred from them.
+
+**OBSERVATIONS.** At depth 32, the byte-array fixture records the following counts
+in **each** of active query, completed query, feed descent and rebuild:
+
+| Byte-array width | Encoded parent bytes | Walks per listed operation |
+|---:|---:|---:|
+| 1 | 99 | 1,584 |
+| 16 | 114 | 2,064 |
+| 128 | 291 | 6,672 |
+| 1,024 | 1,187 | 35,344 |
+
+For 1,024 nested-map children at depth 32, the 46,307-byte key incurs 3,299 actual
+parent cursor visits after opaque batching, but still incurs 102,368 active-query,
+101,904 completed-query, 65,536 planning, 32,768 resolution, 134,640 feed-descent
+and 167,408 rebuild steps. The sum is 604,624 parent ancestor operations. Thus
+counting only physical cursor visits would conceal the remaining cost. Both
+backings agree; depth-zero owner counts are zero in both workloads. The initial
+64-cell probe passes in 0.07 seconds; its bounded service peaks at 1.5G including
+compilation, with zero swap. Those elapsed/peak observations are not isolated
+performance measurements.
+
+**PROOF-FIRST DESIGN.** `FocusedRegionOwners` adds eighteen closed capstones and
+passes independent kernel checking (94 total RPB3 reports). It proves exact
+normalized graph decomposition/reification, detached frame membership and
+disjointness, widened endpoint bounds, graph-stamp residuals, cached minima,
+outer-first expiration, ordinary shared-leaf action refinement, exact completed
+suffix/count, pending-at-zero suspension, wrong-ID refusal, and selected graph
+versus global-clock behavior. The ordinary-action premise is pointwise agreement
+of the leaf operation; whole-owner-fold agreement is derived, not assumed.
+Positive and causal controls distinguish stale stamps, wrong boundary order and
+incorrectly absorbing Dead states.
+
+The formal README records all eighteen capstone bindings and the full FRO-01–12
+runtime invariant catalogue. Physical slot materialization, actual Rust-width
+arithmetic, malformed-ancestor scheduling and the complete grammar/resource
+binding are not established by the mathematical representation laws alone.
+Suspended Region slots must remain reserved; ordinary leaf updates must not leave
+stale child links available to shared graph traversals. Each transaction must
+retain its pre-step focus and touched owners until selection commits. Reification
+of a fault must restore that selected graph, not the graph from initial entry.
+
+| Artifact | SHA-256 |
+|---|---|
+| Initial all-owner baseline | `d4e399f325056ffabf346e64e2e70ae19a2231255e361c1bb6fc7844fc4fc42f` |
+| Focused-owner `coqc`, 94 closed reports | `fbaac15a57d99de9eb64bc8c69181528cafbc481db47a0f9d1c3d16e2b7ac1b0` |
+| Independent focused-owner `coqchk` | `1ce34debe39368510aec7fd1345254922d75c1cdd0e8b68beb77e5dad742ccdf` |
+| Strengthened baseline and all 385 models tests | `d7990799ee2a989cc425182e885433bbc0b06f417e51de9c91059ad6eb98de67` |
+| Final combined proof/runtime gate | `dbc8aa9e081c99885c49030da003e16d6506be07fbd94ea0425b2aa23443cfd4` |
+
+**QUALIFICATION.** On the strengthened exact-source baseline, all **385** models
+unit tests pass, zero ignored, in 53.44 seconds. Its service has 4/6-GiB high/hard
+limits, zero swap, four build jobs and four test threads; the 1.5G peak includes
+compilation. The final combined gate passes **82** focused Rust checks, 48 import /
+17 score / 94 RPB3 closed reports, and three independent kernel checks. Its 32
+prerequisite reports are separate from the 18 new capstones. Properties use seed
+`41315976`; proofs use 1/2-GiB high/hard limits. Every process exits zero.
+
+This checkpoint changes only formal models,
+test instrumentation, tests and documentation; the focused runtime is not yet
+implemented. The current scalar reference remains necessary for the subsequent
+paired comparison. Tasks 6018/5976 remain open. No codec, hash, charge, production
+admission or persistence authority is changed, so no new consensus-register
+classification is introduced. The same-contract LMDB comparison remains pending.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
