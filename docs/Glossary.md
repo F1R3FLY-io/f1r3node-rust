@@ -29,7 +29,6 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
-
 ### Release candidate
 
 A release candidate is one immutable source commit with its tested artifacts and [release evidence](#release-evidence). Standard release gates evaluate this identity.
@@ -152,6 +151,30 @@ dashboard reports p95 and maximum run aggregates in blocks.
 **Preferred usage.** Use this term to describe shard agreement on finalized
 state. *Distinguish from* finalization distance from the block graph tip.
 *Avoid*: block height and finalization latency.
+
+### Correct by Construction
+
+Correct by Construction (CbC) is the development process that connects a correctness claim to implementation behavior, formal verification, and retained evidence.
+
+**Preferred usage.** Use CbC for this verification process. Distinguish it from CBC Casper, which names the consensus protocol.
+
+### Work bound
+
+A work bound limits counted operations as a function of input size and explicit operating assumptions. A work bound does not directly establish elapsed time.
+
+**Preferred usage.** Name the counted operation, input dimensions, and assumptions. Distinguish a work bound from a finalization deadline.
+
+### Disk hygiene
+
+Disk hygiene removes eligible inactive files and caches between soak iterations. Disk hygiene must preserve active node state and required evidence.
+
+**Preferred usage.** Use this term for preventive cleanup. Distinguish disk hygiene from emergency writer termination by the disk guardian.
+
+### Disk guardian
+
+The disk guardian monitors free disk during a soak iteration. The disk guardian triggers protection when the configured disk conditions require a stop.
+
+**Preferred usage.** Use this term for the concurrent protection process. A guardian event does not establish that every writer stopped or that the runner survived.
 
 ### Verification tier
 
