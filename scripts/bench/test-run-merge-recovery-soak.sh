@@ -246,4 +246,77 @@ jq -e '
 test -s "$TMP/fake-poetry-2.pid"
 ! kill -0 "$(cat "$TMP/fake-poetry-2.pid")" 2>/dev/null
 
-printf 'soak driver tests passed (fail-closed + deadline paths)\n'
+# Scenario 3: free space is inside the hygiene band and hygiene cannot lift
+# it out. df is shimmed to report a constant 7000MB (floor 4096 + band 4096),
+# docker is shimmed to a no-op so the developer's daemon is never pruned, and
+# the session sweep is pointed at a private tree. The driver must sweep the
+# stale session dir, keep the live one, and end the soak fail-closed BEFORE
+# the first iteration — the weekend runs 33939315110/33978505238/34056342543
+# each ran one more iteration from exactly this state and lost the VM. The
+# breach evidence must carry du attribution, not just df.
+mkdir -p "$TMP/bin3" "$TMP/si3" "$TMP/tmp3/test-stale" "$TMP/tmp3/test-live" "$TMP/runner3/_diag"
+perl -e 'utime $^T - 7200, $^T - 7200, @ARGV' "$TMP/tmp3/test-stale"
+printf '7000\n' >"$TMP/fake-df-avail"
+cat >"$TMP/bin3/df" <<'SH'
+#!/usr/bin/env bash
+printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n'
+printf '/dev/fake 47000 40000 %s 85%% /\n' "$(cat "$FAKE_DF_AVAIL_FILE")"
+SH
+cat >"$TMP/bin3/docker" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$TMP/bin3/df" "$TMP/bin3/docker"
+PATH="$TMP/bin3:$TMP/bin:$PATH" \
+	FAKE_DF_AVAIL_FILE="$TMP/fake-df-avail" \
+	FAKE_POETRY_PID_FILE="$TMP/fake-poetry-3.pid" \
+	FAKE_DATA_DIR="$TMP/si3/integration-tests/data" \
+	FAKE_ARCHIVE_DIR="$TMP/si3/integration-tests/log-archive" \
+	SOAK_DURATION_SECONDS=120 \
+	SYSTEM_INTEGRATION_DIR="$TMP/si3" \
+	SOAK_OUTPUT_DIR="$TMP/output3" \
+	SOAK_RSS_CEILING_MB=0 \
+	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_TMP_ROOT="$TMP/tmp3" \
+	SOAK_RUNNER_ROOT="$TMP/runner3" \
+	SOAK_GUARDIAN_POLL_SECONDS=1 \
+	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
+	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver3.log" 2>&1 &
+DRIVER_PID=$!
+
+for _ in $(seq 1 60); do
+	kill -0 "$DRIVER_PID" 2>/dev/null || break
+	sleep 0.5
+done
+if kill -0 "$DRIVER_PID" 2>/dev/null; then
+	cat "$TMP/driver3.log" >&2
+	echo 'soak driver did not stop when hygiene left free space inside the band' >&2
+	exit 1
+fi
+set +e
+wait "$DRIVER_PID"
+status=$?
+set -e
+DRIVER_PID=""
+if [ "$status" -ne 1 ]; then
+	cat "$TMP/driver3.log" >&2
+	echo "a no-op hygiene pass inside the band must fail the soak closed (driver exited $status)" >&2
+	exit 1
+fi
+
+test ! -e "$TMP/tmp3/test-stale"
+test -d "$TMP/tmp3/test-live"
+grep -q 'free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming' "$TMP/driver3.log"
+grep -q '^disk hygiene: 7000MB free -> 7000MB free$' "$TMP/driver3.log"
+grep -q '^disk usage: ' "$TMP/driver3.log"
+grep -q '^host_protection_breach: disk floor: free 7000MB still inside hygiene band (floor 4096MB + band 4096MB) after hygiene$' \
+	"$TMP/output3/early-exit.txt"
+grep -q 'still inside hygiene band' "$TMP/output3/protection-breach.txt"
+grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output3/summary.txt"
+grep -q "$TMP/output3" "$TMP/output3/disk-floor-breach.txt"
+grep -q "$TMP/runner3/_diag" "$TMP/output3/disk-floor-breach.txt"
+grep -q "$TMP/tmp3/test-live" "$TMP/output3/disk-floor-breach.txt"
+test "$(find "$TMP/output3" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 0
+test ! -e "$TMP/fake-poetry-3.pid"
+
+printf 'soak driver tests passed (fail-closed + deadline + disk-band paths)\n'

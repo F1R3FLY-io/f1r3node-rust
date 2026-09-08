@@ -182,6 +182,12 @@ if ! [[ "$DISK_HYGIENE_BAND_MB" =~ ^[0-9]+$ ]]; then
 	printf 'SOAK_DISK_HYGIENE_BAND_MB must be a non-negative integer\n' >&2
 	exit 2
 fi
+# Where harness sessions leave their compose and genesis files (the
+# `test-*` sweep below), and where the runner keeps _diag and _work. Both are
+# overridable so the driver test can sweep and measure a private tree instead
+# of the developer's real /tmp.
+SOAK_TMP_ROOT="${SOAK_TMP_ROOT:-/tmp}"
+SOAK_RUNNER_ROOT="${SOAK_RUNNER_ROOT:-/opt/actions-runner}"
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
 # session dirs and the runner's _diag all live on the one boot volume, so one
@@ -216,9 +222,79 @@ reclaim_disk_space() {
 		docker image prune -f >/dev/null 2>&1 || true
 		docker builder prune -af >/dev/null 2>&1 || true
 	fi
-	find /tmp -maxdepth 1 -name 'test-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+	find "$SOAK_TMP_ROOT" -maxdepth 1 -name 'test-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
 	after="$(disk_free_mb)" || after=""
 	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
+}
+
+# Run a command under a wall-clock bound where timeout(1) exists, and bare
+# where it does not (macOS without coreutils). Attribution is best-effort and
+# must never hold up the guard it serves.
+bounded() {
+	local seconds="$1"
+	shift
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$seconds" "$@"
+	else
+		"$@"
+	fi
+}
+
+# Where the space went. df says how much is left; only du says who took it.
+# Weekend runs 33939315110, 33978505238 and 34056342543 died of ENOSPC after
+# the floor fired, and the last three hygiene passes before the third death
+# reclaimed nothing (7956 -> 7956MB, 7596 -> 7596MB, 7355 -> 7355MB): the
+# growth was outside everything reclaim_disk_space sweeps, and nothing on the
+# terminated VM could say where. This prints on every hygiene pass (stdout
+# reaches the workflow log even when the VM dies later), into the breach
+# evidence on every disk stop, and from the guardian on a breach. Metadata
+# walks of the harness and runner roots finish in seconds; docker's own
+# accounting stands in for /var/lib/docker, which du would crawl for minutes.
+disk_usage_roots() {
+	printf '%s\n' "$OUTPUT_DIR" "${HARNESS_TELEMETRY_DIRS[@]}" \
+		"$SOAK_RUNNER_ROOT/_diag" "$SOAK_RUNNER_ROOT/_work"
+	find "$SOAK_TMP_ROOT" -maxdepth 1 -name 'test-*' 2>/dev/null || true
+}
+
+disk_usage_snapshot() {
+	local root
+	df -Pm "$OUTPUT_DIR" 2>/dev/null || true
+	while IFS= read -r root; do
+		[ -d "$root" ] || continue
+		bounded 20 du -sm "$root" 2>/dev/null ||
+			printf '?\t%s (du timed out)\n' "$root"
+	done < <(disk_usage_roots)
+	if command -v docker >/dev/null 2>&1; then
+		bounded 20 docker system df 2>/dev/null || true
+	fi
+}
+
+# One line of the same attribution, short enough to ride in an OCI freeform
+# tag beside the guardian's last words (256 chars per value). Per-root
+# timeouts are tight because this runs between killing the writers and the
+# stamp: the VMs above died ~20s after the stamp, so every second spent here
+# is a second the stamp may not get.
+disk_usage_tag_summary() {
+	local label root mb tmp_mb=0 summary=""
+	for label in out:"$OUTPUT_DIR" data:"${HARNESS_TELEMETRY_DIRS[0]}" \
+		arch:"${HARNESS_TELEMETRY_DIRS[1]}" sub:"${HARNESS_TELEMETRY_DIRS[2]}" \
+		diag:"$SOAK_RUNNER_ROOT/_diag"; do
+		root="${label#*:}"
+		[ -d "$root" ] || continue
+		mb="$(bounded 3 du -sm "$root" 2>/dev/null | awk '{ print $1 }')"
+		[[ "$mb" =~ ^[0-9]+$ ]] || mb='?'
+		summary="${summary}${label%%:*}=${mb}M,"
+	done
+	while IFS= read -r root; do
+		mb="$(bounded 3 du -sm "$root" 2>/dev/null | awk '{ print $1 }')"
+		[[ "$mb" =~ ^[0-9]+$ ]] && tmp_mb=$((tmp_mb + mb))
+	done < <(find "$SOAK_TMP_ROOT" -maxdepth 1 -name 'test-*' 2>/dev/null || true)
+	summary="${summary}tmp=${tmp_mb}M"
+	if command -v docker >/dev/null 2>&1; then
+		summary="${summary},dock=$(bounded 5 docker system df --format '{{.Type}}={{.Size}}' 2>/dev/null |
+			tr -d ' ' | paste -sd '+' - || true)"
+	fi
+	printf '%s\n' "$summary"
 }
 
 # The floor is only as good as the probe behind it: an OUTPUT_DIR that df
@@ -841,7 +917,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 			fi
 		}
 		guardian_stamp_health_tag() {
-			local state="$1" avail="$2" iid tags
+			local state="$1" avail="$2" detail="${3:-}" iid tags
 			command -v oci >/dev/null 2>&1 || return 0
 			iid="$(curl -fsS --max-time 5 -H 'Authorization: Bearer Oracle' \
 				http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || return 0
@@ -852,12 +928,14 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 			tags="$(timeout 15 oci --auth instance_principal compute instance get \
 				--instance-id "$iid" --query 'data."freeform-tags"' \
 				--output json 2>/dev/null)" || return 0
+			# An OCI freeform tag value holds 256 chars; the attribution detail
+			# is optional and trimmed to whatever fits after the last words.
 			tags="$(printf '%s' "$tags" | python3 -c '
 import json, sys
 tags = json.load(sys.stdin) or {}
-tags["soak-health"] = sys.argv[1]
+tags["soak-health"] = sys.argv[1][:256]
 print(json.dumps(tags))
-' "$state:$(date +%s):avail=${avail}MB")" || return 0
+' "$state:$(date +%s):avail=${avail}MB${detail:+:$detail}")" || return 0
 			timeout 15 oci --auth instance_principal compute instance update \
 				--instance-id "$iid" --freeform-tags "$tags" --force \
 				>/dev/null 2>&1 || true
@@ -892,7 +970,14 @@ print(json.dumps(tags))
 							docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
 							printf 'orchestrator disk guardian: host free disk %sMB < floor %sMB (hard floor %sMB, consecutive %s); killed all node processes and containers to protect the runner\n' \
 								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" >"$HOST_GUARDIAN_BREACH"
-							guardian_stamp_health_tag disk-breach "$disk_mb"
+							# Who filled it rides in the tag: on weekend runs
+							# 33939315110, 33978505238 and 34056342543 the VM
+							# was gone ~20s after this stamp and the tag was
+							# the only evidence that survived. The full
+							# snapshot follows for the case where the runner
+							# lives long enough to upload it.
+							guardian_stamp_health_tag disk-breach "$disk_mb" "$(disk_usage_tag_summary)"
+							disk_usage_snapshot >"$OUTPUT_DIR/disk-breach-usage.txt" 2>/dev/null || true
 							exit 0
 						fi
 					fi
@@ -960,15 +1045,27 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	# Iteration-boundary disk hygiene (issue #378): reclaim per-iteration
 	# leftovers while free space is merely low, so the guardian floor above
 	# is the backstop and not the routine outcome. If hygiene cannot lift
-	# free space back over the floor, end the run here — cleanly, with df
-	# evidence — rather than start an iteration whose nodes will write into
-	# a nearly full disk and fail with a misleading consensus verdict.
+	# free space back OUT OF THE BAND, end the run here — cleanly, with df
+	# and du evidence — rather than start an iteration whose nodes will write
+	# into a nearly full disk and fail with a misleading consensus verdict.
+	#
+	# Out of the band, not merely over the floor. The first cut compared
+	# against the floor, and weekend runs 33939315110, 33978505238 and
+	# 34056342543 all walked through it: hygiene reclaimed nothing at 7956MB,
+	# 7596MB and 7355MB free, each pass was still 3GB over the floor, so each
+	# started another iteration; the iteration crossed the floor mid-run, the
+	# guardian fired, and the runner was dead ~20s later with no report. A
+	# pass that ends inside the band has already proven that nothing it
+	# sweeps is what is growing, and the next iteration only moves the
+	# breach into the guardian's window. Every observed pass that did
+	# recover space cleared the band (8054 -> 14381MB, 8047 -> 14265MB).
 	if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 		DISK_MB="$(disk_free_mb)"
 		if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
 			printf 'free disk %sMB inside hygiene band (floor %sMB + band %sMB); reclaiming\n' \
 				"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
 			reclaim_disk_space
+			disk_usage_snapshot 2>/dev/null | sed 's/^/disk usage: /'
 			# The guardian may have fired while hygiene ran (a builder prune
 			# can outlast the soft floor's 15s window), and it exits after
 			# firing — space recovered afterwards does not un-fire it or
@@ -984,13 +1081,13 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 				break
 			fi
 			DISK_MB="$(disk_free_mb)"
-			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
+			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
 				EARLY_EXIT_REASON="host_protection_breach"
-				df -Pm "$OUTPUT_DIR" >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
-				printf 'orchestrator disk floor: free disk %sMB < floor %sMB after hygiene; ending soak (fail-closed)\n' \
-					"$DISK_MB" "$DISK_FREE_FLOOR_MB" | tee "$OUTPUT_DIR/protection-breach.txt"
-				printf 'host_protection_breach: disk floor: free %sMB < floor %sMB after hygiene\n' \
-					"$DISK_MB" "$DISK_FREE_FLOOR_MB" >"$OUTPUT_DIR/early-exit.txt"
+				disk_usage_snapshot >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
+				printf 'orchestrator disk floor: free disk %sMB still inside hygiene band (floor %sMB + band %sMB) after hygiene; ending soak (fail-closed)\n' \
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" | tee "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: disk floor: free %sMB still inside hygiene band (floor %sMB + band %sMB) after hygiene\n' \
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" >"$OUTPUT_DIR/early-exit.txt"
 				FAILURES="$((FAILURES + 1))"
 				break
 			fi
@@ -1156,7 +1253,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if [ -z "$BREACH_LINE" ] && [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 			DISK_MB="$(disk_free_mb)"
 			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
-				df -Pm "$OUTPUT_DIR" >"$ITERATION_DIR/disk-floor-breach.txt" 2>/dev/null || true
+				disk_usage_snapshot >"$ITERATION_DIR/disk-floor-breach.txt" 2>/dev/null || true
 				BREACH_LINE="iteration $ITERATIONS failed with free disk ${DISK_MB}MB < floor ${DISK_FREE_FLOOR_MB}MB; infrastructure, not a workload verdict"
 			fi
 		fi
