@@ -843,6 +843,71 @@ fn handlers_top_comment_count_matches_actual_handlers() {
     );
 }
 
+/// M-51 fix (2026-09-08, A7-F19) — companion to the handler count
+/// pin above.  The top-of-file comment ALSO claims a specific number
+/// of "Phase-5-verifying handlers" (currently 15).  Pre-fix, only
+/// the "28 total" claim was enforced; the "14" (later "15") verify
+/// count drifted silently when fs_exists's Consensus ban was lifted.
+///
+/// Count = unique handler fns whose body contains
+/// `match verify_reply_hash_matches_cached`.  `fs_remove_dir` has
+/// TWO verify sites (recursive + non-recursive branches) but counts
+/// once because it's one handler.
+#[test]
+fn handlers_top_comment_phase5_verifying_count_matches_actual() {
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+
+    // Extract the set of handler fns whose body region contains
+    // a `match verify_reply_hash_matches_cached` call.  Body region
+    // = from `pub async fn fs_X(` to the next `pub async fn` OR
+    // the end of the impl block.
+    let mut current_fn: Option<&str> = None;
+    let mut verifying: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for line in src.lines() {
+        if let Some(rest) = line.strip_prefix("    pub async fn ") {
+            if let Some((name, _)) = rest.split_once('(') {
+                current_fn = Some(name);
+            }
+        }
+        if line.contains("match verify_reply_hash_matches_cached") {
+            if let Some(name) = current_fn {
+                verifying.insert(name);
+            }
+        }
+    }
+
+    let actual = verifying.len();
+
+    // Extract the count claimed in the top comment's "N Phase-5-
+    // verifying handlers" phrase.
+    let claimed = src
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim_start_matches("// ").trim_start_matches("//");
+            // Find e.g. "for the 15 Phase-5-verifying handlers"
+            let after_for_the = trimmed.split("for the ").nth(1)?;
+            let (num_str, rest) = after_for_the.split_once(' ')?;
+            if !rest.starts_with("Phase-5-verifying") {
+                return None;
+            }
+            num_str.parse::<usize>().ok()
+        })
+        .expect(
+            "handlers.rs top comment must contain `for the N Phase-5-verifying handlers` — \
+             docstring shape changed",
+        );
+
+    assert_eq!(
+        claimed, actual,
+        "M-51: handlers.rs top-comment Phase-5-verifying count drift: comment claims \
+         `{claimed}` verifying handlers, actual count of unique handler fns with \
+         `match verify_reply_hash_matches_cached` is `{actual}` ({:?}).  Update the \
+         top comment's claim (both the leading count AND the trailing `N/28 verify \
+         matrix` phrase) to match.",
+        verifying
+    );
+}
+
 /// **Slice 9b regression pin — shared MeteredMachine.**
 ///
 /// Verify `setup_reducer` in `rho_runtime.rs` creates ONE

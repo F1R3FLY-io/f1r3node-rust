@@ -8,14 +8,19 @@
 //   2. Cost pre-charge at handler entry via `metering.reserve_primitive`
 //      (or `reserve_incremental_primitive` for length-parameterized
 //      helpers).  Consensus mode: `is_replay = true` STILL charges +
-//      re-executes for the 14 Phase-5-verifying handlers (each
+//      re-executes for the 15 Phase-5-verifying handlers (each
 //      compares its fresh reply hash to the leader's cached hash and
 //      fires FSERR_CONSENSUS_DIVERGENCE on mismatch — see
-//      `verify_reply_hash_matches_cached`).  Non-verifying handlers
-//      (locks, quarantine) tautologically echo `previous_output` on
-//      replay per the pre-Phase-5 pattern.  See
-//      `docs/consensus-invariants.md` §"Per-op re-execute behavior"
-//      for the current 14/28 verify matrix.
+//      `verify_reply_hash_matches_cached`).  The 15 are: fs_write,
+//      fs_write_at, fs_truncate, fs_chmod, fs_remove_file,
+//      fs_remove_dir, fs_rename, fs_copy_file, fs_read, fs_read_at,
+//      fs_stat, fs_entries, fs_size, fs_seek, fs_exists (the last
+//      lifted from an explicit Consensus ban on 2026-09-04, when
+//      SNAPSHOT_FORMAT_VERSION bumped 5 → 6).  Non-verifying handlers
+//      (locks, quarantine, open/close/flush/tell, streaming-open)
+//      tautologically echo `previous_output` on replay per the pre-
+//      Phase-5 pattern.  See `docs/consensus-invariants.md` §"Per-op
+//      re-execute behavior" for the current 15/28 verify matrix.
 //   3. Path-taking leaf ops descend via `safe_descend_verified`
 //      (H-5 rename-and-recreate check + H-P7-6 O_NOFOLLOW at every
 //      step) and issue the leaf syscall as an `*at` call against the
@@ -3377,7 +3382,8 @@ impl FsProcesses {
                                     FSERR_QUOTA_EXCEEDED,
                                     format!(
                                         "entries exceeds MAX_ENTRIES={MAX_ENTRIES}; use \
-                                         entriesStream for large directories",
+                                         entriesStreamOpen / _Next / _Close for large \
+                                         directories",
                                     ),
                                 );
                             }
@@ -4898,9 +4904,11 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // Streaming-backing slice (2026-08-25) — three natives implementing
-    // per-fd directory-entries streaming.  Companion to (eventually
-    // replacing, once Dir.rho swaps) the bulk `entriesStream` stub
-    // above.
+    // per-fd directory-entries streaming.  The bulk `fs_entries_stream`
+    // stub they were introduced alongside was retired 2026-09-03
+    // (A8-M-1); these per-fd natives are the sole surface, and
+    // `Dir.rho::entries()` now dispatches to `entriesStreamOpen` /
+    // `_Next` / `_Close`.
     //
     // Safety pattern mirrors bulk `fs_entries`: `entriesStreamOpen` does
     // `safe_descend_verified` + `openat(O_DIRECTORY|O_NOFOLLOW|

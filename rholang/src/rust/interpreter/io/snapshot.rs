@@ -244,8 +244,9 @@ crate::register_consensus_constant!(order = 10, name = SNAPSHOT_FORMAT_VERSION, 
 /// - Bumping this value is a hard fork of the manifest protocol.
 ///   All producers and consumers on the network MUST upgrade
 ///   before the change activates.
-/// - Item #10 of the hard-fork surface catalog.  Golden-hex pin
-///   in `manifest_line_format_is_pinned_at_v1`.
+/// - Listed under `§ 3. WAL entry serialization` in
+///   `docs/consensus-invariants.md`.  Golden-hex pin in
+///   `manifest_line_format_is_pinned_at_v1`.
 ///
 /// # Version history
 ///
@@ -353,7 +354,8 @@ fn encode_entry(e: &WalEntry, buf: &mut Vec<u8>) {
 
 fn encode_outcome(o: WalOutcome, buf: &mut Vec<u8>) {
     // Tag 0 = Success (no payload); tag 1 = Failure + u32-be code.
-    // Renumbering here is a hard fork (catalog item #9).
+    // Renumbering here is a hard fork — see `§ 3. WAL entry
+    // serialization` in `docs/consensus-invariants.md`.
     match o {
         WalOutcome::Success => buf.push(0),
         WalOutcome::Failure { code } => {
@@ -1465,8 +1467,8 @@ impl ManifestEntry {
     /// non-`sig` fields, hashed via Blake2b256 to produce the
     /// message the signature covers.  Anything that changes the
     /// canonicalization is a hard-fork of the manifest format
-    /// (bump `MANIFEST_FORMAT_VERSION`; see hard-fork catalog
-    /// item #10).
+    /// (bump `MANIFEST_FORMAT_VERSION`; see `§ 3. WAL entry
+    /// serialization` in `docs/consensus-invariants.md`).
     ///
     /// M-1 fix (2026-08-06): version byte is `MANIFEST_FORMAT_VERSION`
     /// (was `SNAPSHOT_FORMAT_VERSION` pre-fix — that conflated
@@ -1548,7 +1550,8 @@ impl ManifestEntry {
     /// an unknown `v` surface `SnapshotError::UnsupportedManifestVersion`
     /// cleanly rather than silently mis-decoding a future schema.
     /// Field order: `v`, `block_number`, `root`, `entries`,
-    /// `ts_ms`, [`sig`].  Item #10 of the hard-fork surface catalog.
+    /// `ts_ms`, [`sig`].  Listed under `§ 3. WAL entry serialization`
+    /// in `docs/consensus-invariants.md`.
     pub fn to_line(&self) -> String {
         let root_field = match &self.root {
             Some(r) => format!("\"{}\"", hex_encode(r)),

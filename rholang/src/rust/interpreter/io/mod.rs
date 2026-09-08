@@ -1,8 +1,13 @@
-// File I/O native primitives — Phase 1 of the File I/O FIP.
+// File I/O native primitives — File I/O FIP.
 //
-// This module exposes the 22 syscall bridges backing the Rholang-side
-// `Fs`/`File`/`Dir` agent library (Phases 5-6, which are blocked on the
-// prerequisite Agents/Private-Methods/Try-Catch/Versioned-Registry FIPs).
+// This module exposes the 28 syscall bridges backing the shipped
+// Rholang-side `Fs` / `File` / `Dir` / `Buffer` / `Stream` / `Stdin` /
+// `Stdout` agent libraries (composed at genesis by
+// `casper::genesis::contracts::fs_genesis::compose_fs_genesis_source`).
+// The prerequisite Agents / Private-Methods / Try-Catch / Versioned-
+// Registry FIPs all shipped as of mid-2026; Phase 5 (WAL re-execute +
+// verify across 14 handlers + 2 explicit Consensus bans, plus fs_exists
+// post-ban-lift) landed 2026-09-02.
 //
 // URNs live under `rho:io:fs:native:1.0.0/*` and are registered in
 // `std_system_processes()` but filtered out of the user-reachable

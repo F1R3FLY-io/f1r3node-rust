@@ -27,12 +27,14 @@
 // FsGenesis (`casper/src/rust/genesis/contracts/fs_genesis.rs`), which
 // runs at genesis and publishes the resulting `bundle+{*fs}` at the
 // registry URI derived from `FS_GENERATOR_PK`.  Deploys reach the Fs
-// via `getFS(rho:id:<hash>)`; the canonical spec URI
-// `rho:io:fs:1.0.0` is NOT yet wired (tracked as PB-B-3 in
-// FIPS/fileio/.../powerbox-requirements.md).  MVP simplification #1
-// in the fs_genesis docstring notes the shared-Fs model — all deploys
-// look up the same handle.  Per-principal delegation waits on the
-// powerbox slice (PB-M-1).
+// via `getFS(rho:id:<hash>)`.  The canonical spec URI
+// `rho:io:fs:1.0.0` is also wired via `insertVersion` (PB-B-3 landed
+// 2026-08-24 — see MVP simplification #4 in the fs_genesis docstring).
+// MVP simplification #1 there notes the shared-Fs model — all deploys
+// look up the same handle.  Per-principal delegation is a candidate
+// design (post-A8-M-2 narrowing of PB-M-1) rather than a scheduled
+// slice; shards may ship shared-Fs permanently or roll their own
+// delegation mechanism.
 //
 // ## Stdio (slice 18 — spec §842-844, §867, §1085, §1114)
 //
@@ -54,7 +56,9 @@
 // MVP (see §Publication above), all deploys hold the SAME Fs, so the
 // "fresh cap after close" guarantee is per-cap-instance only — the
 // underlying fd is shared across every deploy on the validator.
-// Isolation returns to per-deploy scope when PB-M-1 lands.
+// Isolation would return to per-deploy scope if per-principal
+// delegation ships, but post-A8-M-2 narrowing that shape is a
+// candidate rather than a scheduled slice.
 //
 // Ambient-authority note: Stdin and Stdout are module-level agents.
 // The genesis wiring slice (19) MUST NOT export `Stdin` / `Stdout`

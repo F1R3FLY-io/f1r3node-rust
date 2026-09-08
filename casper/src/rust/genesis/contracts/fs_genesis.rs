@@ -30,14 +30,17 @@
 //!
 //! 1. **Shared-Fs model.**  A single Fs instance is published at the
 //!    registry URI derived from FS_GENERATOR_PK.  All deploys look up
-//!    the same handle and thus share the cache and stdio caps.  Spec
-//!    §867 sketches per-principal Fs instances from the powerbox as
-//!    the eventual production shape — IF a future powerbox slice
-//!    lands that shape it would require runtime changes to the URN
-//!    resolver (each grantee sees a distinct cap).  Post-PB-M-1
-//!    narrowing, the per-principal delegation is a candidate design
-//!    rather than a scheduled slice: shards may ship shared-Fs
-//!    permanently or roll their own delegation mechanism.
+//!    the same Fs handle and thus share the same static bundle and
+//!    stdio fds; individual `openFile` / `openDir` calls fresh-mint
+//!    File / Dir caps (slice 27 reverted the earlier memoization —
+//!    FIP §Fresh-mint per open).  Spec §867 sketches per-principal
+//!    Fs instances from the powerbox as the eventual production shape
+//!    — IF a future powerbox slice lands that shape it would require
+//!    runtime changes to the URN resolver (each grantee sees a
+//!    distinct Fs cap).  Post-PB-M-1 narrowing, the per-principal
+//!    delegation is a candidate design rather than a scheduled slice:
+//!    shards may ship shared-Fs permanently or roll their own
+//!    delegation mechanism.
 //!
 //! 2. **Empty static bundle.**  The published Fs has `bMap = {}`, so
 //!    `openFile` / `openDir` return `FSERR_UNSUPPORTED` for every
@@ -2047,7 +2050,8 @@ mod tests {
         // the per-runtime `MAX_OPEN_FDS = 1024` cap and per-block
         // runtime respawn.  Wiring the sweep is tracked as a
         // Deferred item.  EOS-shape brittleness comment added to
-        // pin the load-bearing coupling with handlers.rs:2667.
+        // pin the load-bearing coupling with the
+        // `handlers.rs::fs_entries_stream_next` terminator branch.
         //
         // Anchor roll 2026-08-25 (streaming-backing slice Step 5):
         // Dir.rho::entries() body swapped from bulk `fsEntries` list-
@@ -2088,47 +2092,47 @@ mod tests {
         // manifest-carrying reply for symmetric follower replay.
         // See the "H-29-3 lift" plan-doc entry for full description.
         //
-        // Prior anchor: 91adaac8 (H-29-3 lift slice 1, 2026-08-26).
-        // Prior anchor: 1f3e8878 (Phase 8 review cursor-relative TOCTOU docstring, 2026-08-26).
-        // Prior anchor: 5efce8f4 (streaming-slice Step 5 Fixup A close-on-malformed, 2026-08-26).
-        // Prior anchor: 60035818 (streaming-slice Step 5 initial Dir.rho swap, 2026-08-25).
-        // Prior anchor: 434a828b (streaming-slice Step 2 three natives, 2026-08-25).
-        // Prior anchor: 46db7011 (PB-B-3 insertVersion shipped, 2026-08-24).
-        // Prior anchor: af6f10fa (10c reclassification docstrings, 2026-08-23).
-        // Prior anchor: fbea2d02 (slice 9c-ii toByteArray cap, 2026-08-23).
-        // Prior anchor: 126a35ab (slice 9c-i reply-payload cap, 2026-08-23).
-        // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
-        // Prior anchor: c243b4db (pre-merge).
-        // Prior anchor: 1e6c53b8 (pre-H-29-3-lift, 2026-08-26).
-        // Prior anchor: f120b393 (pre-Fs.revoke, 2026-09-02: 9c-iii Buffer
-        //   pairwise-merge + PB-B-5 Buffer versioned URN + prior).
-        // Prior anchor: c7884a9f (Fs.revoke ambient-authority off-switch,
-        //   2026-09-03).
-        // Prior anchor: 2040b957 (DD-RemoveDirReplyShape unwrap in
-        //   Dir.rho, 2026-09-03).
+        // Prior anchor: H-29-3 lift slice 1, 2026-08-26.
+        // Prior anchor: Phase 8 review cursor-relative TOCTOU docstring, 2026-08-26.
+        // Prior anchor: streaming-slice Step 5 Fixup A close-on-malformed, 2026-08-26.
+        // Prior anchor: streaming-slice Step 5 initial Dir.rho swap, 2026-08-25.
+        // Prior anchor: streaming-slice Step 2 three natives, 2026-08-25.
+        // Prior anchor: PB-B-3 insertVersion shipped, 2026-08-24.
+        // Prior anchor: 10c reclassification docstrings, 2026-08-23.
+        // Prior anchor: slice 9c-ii toByteArray cap, 2026-08-23.
+        // Prior anchor: slice 9c-i reply-payload cap, 2026-08-23.
+        // Prior anchor: cost-accounted-rho merge, 2026-08-21.
+        // Prior anchor: pre-merge.
+        // Prior anchor: pre-H-29-3-lift, 2026-08-26.
+        // Prior anchor: pre-Fs.revoke, 2026-09-02: 9c-iii Buffer
+        //   pairwise-merge + PB-B-5 Buffer versioned URN + prior.
+        // Prior anchor: Fs.revoke ambient-authority off-switch,
+        //   2026-09-03.
+        // Prior anchor: DD-RemoveDirReplyShape unwrap in
+        //   Dir.rho, 2026-09-03.
         // 2026-09-03: B1 fix — Dir.rho::exists gates on cmode and
         //   rejects Consensus with FSERR_UNSUPPORTED (the underlying
         //   fs_exists native has no Phase 5 verify).
-        // Prior anchor: fa812488 (B1, 2026-09-03).
+        // Prior anchor: B1, 2026-09-03.
         // 2026-09-03: B4 fix — Dir.rho::openFile / openDir / removeDir
         //   changed to options-map signatures per spec §Dir >
         //   Composition + Mutation.  Prior positional `@mode` /
         //   `@recursive` args replaced with `@options` maps carrying
         //   `mode` / `recursive` keys.  Callers migrated in same slice.
-        // Prior anchor: a04d47f9 (B4, 2026-09-03).
+        // Prior anchor: B4, 2026-09-03.
         // 2026-09-03: SC-1 stale-comment fix — File.rho's `readInto`
         //   reachability caveat was contradicted by PB-B-5 (Allocator
         //   published at rho:serve:1.0.0:<pk>:buffer:1.0.0).  Comment-
         //   only edit inside File.rho's outer `new` body; `lib_body`
         //   preserves comments, so the composed source bytes rolled.
         //   No Rholang semantics changed.
-        // Prior anchor: f0f14d1e (SC-1, 2026-09-03).
+        // Prior anchor: SC-1, 2026-09-03.
         // 2026-09-03: FS-4 spec/code alignment — File.rho's `readN`
         //   method comment updated from "Non-normative extension" to
         //   reference the new §Read-side stream producers > Bounded
         //   convenience spec entry.  Comment-only edit inside File.rho's
         //   outer `new` body; no Rholang semantics changed.
-        // Prior anchor: 98ff01d3 (FS-4, 2026-09-03).
+        // Prior anchor: FS-4, 2026-09-03.
         // 2026-09-03: A8-M-1 dead-code cleanup — the bulk
         //   `fsEntriesStream(`rho:io:fs:native:1.0.0/entriesStream`)`
         //   URN binding was removed from the composed outer `new`
@@ -2140,7 +2144,7 @@ mod tests {
         //   f1r3node_no_running_network invariant, but any future
         //   external caller that had bound to the retired URN would
         //   need to migrate.
-        // Prior anchor: ff7d928f (A8-M-1, 2026-09-03).
+        // Prior anchor: A8-M-1, 2026-09-03.
         // 2026-09-03: A8-M-2 comment softening — File.rho's
         //   `bytes()` method comment reworded from "Fixed when
         //   per-principal Fs delegation lands" to reflect the post-
@@ -2148,7 +2152,7 @@ mod tests {
         //   Comment-only edit inside File.rho's outer `new` body;
         //   `lib_body` preserves comments, so the composed bytes
         //   rolled.  No Rholang semantics changed.
-        // Prior anchor: 9d985fa7 (A8-M-2, 2026-09-03).
+        // Prior anchor: A8-M-2, 2026-09-03.
         // 2026-09-04: RH-2 stream-lifetime release-once helper —
         //   `releaseSeqLockOnce` contract added to File.rho +
         //   bound at composed outer `new` scope; every stream
@@ -2159,7 +2163,7 @@ mod tests {
         //   Rholang semantics changed — the helper preserves the
         //   pre-RH-2 idempotent-release invariant + tail sequencing
         //   (via `for (_ <- doneCh)` await in the caller).
-        // Prior anchor: 65b46499 (RH-2, 2026-09-04).
+        // Prior anchor: RH-2, 2026-09-04.
         // 2026-09-04: chmod input shape migrated from rwx-string to
         //   Int mode-bits for consistency with stat.mode (which
         //   emits Int).  File.rho::chmod + Dir.rho::chmod switched
@@ -2171,7 +2175,7 @@ mod tests {
         //   Dir.chmod tables replaced with Int).  Consensus-observable
         //   surface change — free per the f1r3node_no_running_network
         //   invariant.
-        // Prior anchor: 4d8f4c0e (chmod-Int, 2026-09-04).
+        // Prior anchor: chmod-Int, 2026-09-04.
         // 2026-09-04: Consensus ban-lift on fs_exists.  Arity of the
         //   `rho:io:fs:native:1.0.0/exists` URN bumped 3 → 4 to carry
         //   cmode, mirroring fs_stat / fs_entries / fs_size shape.
@@ -2184,7 +2188,7 @@ mod tests {
         //   FSERR_NOT_FOUND workaround.  Consensus-observable URN
         //   signature change — free per the f1r3node_no_running_
         //   network invariant.
-        // Prior anchor: 28487bd2 (exists-ban-lift, 2026-09-04).
+        // Prior anchor: exists-ban-lift, 2026-09-04.
         // 2026-09-04: RH-A5-2 fix — File.rho::readN now wraps its
         //   fsRead! call in fsLockSequential!(fd, *this, cmode, false,
         //   ...), mirroring every other cursor-mutating peer method
@@ -2201,7 +2205,7 @@ mod tests {
         //   makes readN return FSERR_BUSY (wait:false) instead of
         //   racing the cursor.  Hard-fork-free per the
         //   f1r3node_no_running_network invariant.
-        // Prior anchor: 1676f235 (M-15/M-18, 2026-09-04).
+        // Prior anchor: M-15/M-18, 2026-09-04.
         // 2026-09-04: M-22 fix (A5-RH-A5-3) — options-map mode/
         //   recursive extraction now type-guards the value at the
         //   `{"mode": v /\ String ..._}` (or `Bool` for recursive)
@@ -2213,7 +2217,7 @@ mod tests {
         //   Dir.removeDir.  Dir.openDir already used `options.get`
         //   with a proper type-guard.  Hard-fork-free per the
         //   f1r3node_no_running_network invariant.
-        // Prior anchor: f068fdbd (M-13, 2026-09-04).
+        // Prior anchor: M-13, 2026-09-04.
         // 2026-09-04: M-18 fix (A1-F-15) — Fs.openFile / openDir now
         //   return `[false, "FSERR_UNSUPPORTED", "logical name
         //   malformed"]` (was `[false, "FSERR_IO", "malformed bundle
@@ -2226,7 +2230,7 @@ mod tests {
         //   the bundle but shaped wrong, equivalent user-facing
         //   outcome.  Hard-fork-free per the f1r3node_no_running_
         //   network invariant.
-        // Prior anchor: 055277c6 (M-12, 2026-09-04).
+        // Prior anchor: M-12, 2026-09-04.
         // 2026-09-04: M-13 fix (A1-F-10) — Buffer's four previously-
         //   deferred methods (`writeByte`, `slice`, `validUtf8PrefixLen`,
         //   `view`) implemented in Buffer.rho.  `writeByte` uses two
@@ -2238,7 +2242,7 @@ mod tests {
         //   follow the existing `read` / `toByteArray` gatherChunks
         //   pattern.  Hard-fork-free per the f1r3node_no_running_network
         //   invariant.
-        // Prior anchor: 4e5ba950 (M-10 partial, 2026-09-04).
+        // Prior anchor: M-10 partial, 2026-09-04.
         // 2026-09-04: M-12 fix (A1-F-09) — `"rw"` removed as a file
         //   mode alias in Fs.openFile / Dir.openFile disjunctions and
         //   in mode.rs::parse_open_mode.  `"r+"` newly added as its
@@ -2250,7 +2254,7 @@ mod tests {
         //   mode migrate to `"r+"`; dir modes `"r"` / `"rw"` are
         //   unchanged.  Hard-fork-free per the f1r3node_no_running_
         //   network invariant.
-        // Prior anchor: 1bca8631 (RH-A5-2, 2026-09-04).
+        // Prior anchor: RH-A5-2, 2026-09-04.
         // 2026-09-04: M-10 partial (A5-RH-A5-1 fix) — Dir.openDir
         //   now extracts `options.get("path")` explicitly and rejects
         //   `path: true` with FSERR_UNSUPPORTED "path=true not yet
@@ -2264,7 +2268,7 @@ mod tests {
         //   Dir.openFile create + exclusive) is scoped to a separate
         //   slice.  Hard-fork-free per the f1r3node_no_running_network
         //   invariant.
-        // Prior anchor: bbc2ab4c (2026-09-06 M-22..M-28 batch).
+        // Prior anchor: 2026-09-06 M-22..M-28 batch.
         // 2026-09-08: M-36 (A8-F3) — `Stream.rho::chunk(@n)` guard
         //   binds `MAX_CHUNK_ITEMS` via `match 65536 { MAX_CHUNK_ITEMS
         //   => ... }` so the numeric literal appears in one place
@@ -2273,7 +2277,7 @@ mod tests {
         //   FSERR_QUOTA_EXCEEDED message.  Fingerprint slot 11
         //   (Rust MAX_CHUNK_ITEMS) is the pair-alignment target and
         //   remains 65536.
-        // Prior anchor: bb7a8486 (2026-09-08 M-36).
+        // Prior anchor: 2026-09-08 M-36.
         // 2026-09-08: M-13 composed-scope fix — added `hexDigit,
         //   intToOneByte` to the outer `new` in
         //   `compose_fs_genesis_source`.  Buffer.rho's `contract
@@ -2286,7 +2290,16 @@ mod tests {
         //   `_compiles` tests to green.  Zero semantic change;
         //   these are internal `new` bindings not visible to
         //   Rholang callers.
-        const EXPECTED: &str = "571aa2d2eac9adc779bc91cc8ca9dd1b1bc8619334abdc552f65d0c4dfd49af3";
+        // Prior anchor: 2026-09-08 M-13 composed-scope fix.
+        // 2026-09-08: M-41..M-51 stale-comment sweep — Rholang-side
+        //   comment-only edits (Fs.rho PB-B-3 landed / PB-M-1
+        //   narrowing, File.rho fresh-mint per open, Dir.rho EOS
+        //   line cite → symbol cite).  Rust-side cleanups in
+        //   mod.rs / handlers.rs / response.rs / verify.rs /
+        //   snapshot.rs / wal.rs don't affect the composed source;
+        //   Rholang-side edits roll the composed hash.  Hard-fork-
+        //   free per the f1r3node_no_running_network invariant.
+        const EXPECTED: &str = "be834c75034a8fe1b89cb74088bd0d62c64bdea943d7647eac9fe07d419caadd";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -2370,7 +2383,7 @@ mod tests {
         // Pinned 2026-09-08 (M-40 landing).
         // Rolled 2026-09-08 by M-13 composed-scope fix (see the
         //   `compose_fs_genesis_source_golden_hex` docstring).
-        const EXPECTED: &str = "e61ba3b68c31382db747f470588b4ed26da597c1396bdd74af45c1c1efc201c0";
+        const EXPECTED: &str = "edcf6728b37c1d314eecc745b31e9f076c0ebf3f1038c0c0f45bb6445d1da01e";
         assert_eq!(
             hex, EXPECTED,
             "M-40: compose_fs_genesis_source() hash for non-empty bundle \
@@ -2455,7 +2468,7 @@ mod tests {
         // Pinned 2026-09-08 (M-40 S4 review-fix landing).
         // Rolled 2026-09-08 by M-13 composed-scope fix (see the
         //   `compose_fs_genesis_source_golden_hex` docstring).
-        const EXPECTED: &str = "29d256fc365c8be27a82f5a78cb48fe17e4a1225154106fcb7e9a8551f355f76";
+        const EXPECTED: &str = "c99328d07c38749eff58e19602e878151c15ffa67f6cdfd426922c9d34875698";
         assert_eq!(
             hex, EXPECTED,
             "M-40 review-fix (S4): compose_fs_genesis_source() hash for \

@@ -176,13 +176,15 @@ new Dir, rootP, cmodeP in {
                       //   [false, "EOS"]       → [false, "EOS", "..."]
                       //     (2-element native terminator → 3-element
                       //      Stream producer terminator).  The EOS
-                      //      shape is pinned by handlers.rs:2667 as
-                      //      strictly 2-element — a future native-side
-                      //      change that emits `[false, "EOS", msg]`
-                      //      (3-element) would silently route through
-                      //      the malformed arm below.  Load-bearing
-                      //      coupling; any handler-side EOS-shape
-                      //      change requires updating this match arm.
+                      //      shape is pinned by
+                      //      `handlers.rs::fs_entries_stream_next`'s
+                      //      terminator branch as strictly 2-element —
+                      //      a future native-side change that emits
+                      //      `[false, "EOS", msg]` (3-element) would
+                      //      silently route through the malformed arm
+                      //      below.  Load-bearing coupling; any
+                      //      handler-side EOS-shape change requires
+                      //      updating this match arm.
                       //   [false, code, msg]   → close fd, forward.
                       //   _ (malformed)        → close fd, forward
                       //                          FSERR_IO.  Defensive;

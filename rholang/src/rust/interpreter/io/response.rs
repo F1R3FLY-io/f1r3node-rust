@@ -143,7 +143,7 @@ pub fn err_eos() -> Par {
 /// quantities:
 /// - `fs_write` / `fs_write_at` reply `n` (bytes written by the
 ///   syscall; libc `write()` returns `ssize_t` with negatives
-///   flagged as errors upstream at `handlers.rs:1663`, so a
+///   flagged as errors upstream in `handlers.rs::fs_write`, so a
 ///   well-formed reply always has `n >= 0` bounded above by
 ///   `MAX_WRITE_BYTES < i64::MAX`).
 /// - `fs_seek` reply `new_pos` (POSIX file offset; non-negative in
@@ -161,7 +161,7 @@ pub fn err_eos() -> Par {
 /// # Fd extraction uses [`extract_ok_fd`] instead
 ///
 /// A prior version of this helper was ALSO used for fd extraction
-/// on `fs_open`'s replay branch (see `handlers.rs:936`).  Fds are
+/// on `fs_open`'s replay branch (see `handlers.rs::fs_open`).  Fds are
 /// seeded from state-hash entropy via `seed_next_fd_from_state_hash`
 /// and commonly exceed `i64::MAX` — Rholang's `GInt` wraps those
 /// bits to negative `i64`, and this helper's reject-negative guard
@@ -211,8 +211,8 @@ pub fn extract_ok_u64(previous: &[Par]) -> Option<u64> {
 ///
 /// The mutating fs handlers already parse their fd argument via
 /// `RhoNumber::unapply(fd_par).map(|n| n as u64)` — bit-preserving
-/// reinterpret (e.g., `handlers.rs::fs_write` line 1452).  This
-/// helper matches that shape for fs_open's / entriesStream_open's
+/// reinterpret (e.g., in `handlers.rs::fs_write`).  This helper
+/// matches that shape for fs_open's / entriesStream_open's
 /// replay-branch shadow-install path so both sides derive
 /// bit-identical fd values regardless of sign.
 ///

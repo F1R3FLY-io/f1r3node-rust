@@ -1176,20 +1176,19 @@ in {
     // sequential streams.  Positional producers (bytesAt) are safe
     // to interleave with sequential ones by design.
     //
-    // ## Shared-Fs caveat (Phase 6 MVP)
+    // ## Cross-deploy hazard note (post slice-27, 2026-08-04)
     //
-    // Under the current shared-Fs model (see PB-M-1 / PB-M-11 in
-    // FIPS/fileio/.../powerbox-requirements.md), two distinct deploys
-    // both calling `openFile("shared")` receive the SAME File cap
-    // from the Fs cache — so what Phase 5 documented as a same-deploy
-    // discipline ("don't create overlapping sequential streams")
-    // silently becomes a cross-deploy hazard.  Alice's `bytes()`
-    // stream and Bob's `bytes()` stream on the shared File interleave
-    // reads on the same fd.  A per-principal Fs delegation slice
-    // (candidate PB-M-1 successor) would close this, but post-PB-M-1
-    // narrowing the delegation shape isn't scheduled — shards that
-    // need strict cross-deploy stream isolation today should provision
-    // per-deploy file caps out of band.
+    // Slice 27 reverted the earlier Fs memoization: every `openFile`
+    // call now mints a FRESH File cap, so two deploys that both call
+    // `openFile("shared")` receive DISTINCT File caps (each with its
+    // own fd from `fs_open` on the same canonical path).  FIP §Fresh-
+    // mint per open enshrines the guarantee.  The Phase-5-documented
+    // "don't create overlapping sequential streams" discipline is
+    // therefore per-File-cap; two deploys running on the same logical
+    // name each get their own cursor, and each deploy separately
+    // observes the same-cap sequential-producer exclusion.  Shards
+    // that need to SHARE a cursor across deploys must exchange a File
+    // cap out of band; there is no built-in cap-sharing mechanism.
     method bytes() {
       for (@state <- @[*private, *stateP]) {
         match state {

@@ -1,8 +1,18 @@
-// Phase 1 (Consensus re-execute + verify, 2026-09-01).
+// Consensus re-execute + verify (Phase 1 landed 2026-09-01; Phase
+// 5 completed the extension across the full verifying-handler set
+// on 2026-09-02).
 //
-// Follower-side hash comparison for observation-only WAL ops
-// (Stat first; Read / ReadAt / Entries / Size / EntriesStreamNext
-// follow in Phase 2).
+// Follower-side hash comparison for the 15 verifying WAL ops.  Every
+// `pub async fn fs_*` handler in `handlers.rs` whose replay branch
+// contains `match verify_reply_hash_matches_cached(...)` hands its
+// fresh replay reply here for comparison against the leader's cached
+// reply.  Coverage today: fs_write, fs_write_at, fs_truncate,
+// fs_chmod, fs_remove_file, fs_remove_dir, fs_rename, fs_copy_file,
+// fs_read, fs_read_at, fs_stat, fs_entries, fs_size, fs_seek,
+// fs_exists (the last lifted from an explicit Consensus ban on
+// 2026-09-04, when SNAPSHOT_FORMAT_VERSION bumped 5 → 6).  The pin
+// `handlers_top_comment_phase5_verifying_count_matches_actual` in
+// `fileio_cost_spec.rs` enforces the count.
 //
 // Contract with the caller (typically a handler's is_replay = true
 // Consensus branch): the handler re-executes the same syscall

@@ -57,9 +57,10 @@ use crypto::rust::hash::blake2b256::Blake2b256;
 /// on the network MUST agree on this value — a divergent cap
 /// would produce different `FSERR_QUOTA_EXCEEDED` reply
 /// distributions on identical inputs and fork consensus at the
-/// tuplespace level.  Item #11 of the hard-fork surface catalog
-/// (see `snapshot.rs`).  Any change here must be coordinated as
-/// a network hard fork.  Pinned by `max_wal_entries_pinned_at_65536`.
+/// tuplespace level.  Listed under `§ 5. Byte gates` in
+/// `docs/consensus-invariants.md`.  Any change here must be
+/// coordinated as a network hard fork.  Pinned by
+/// `max_wal_entries_pinned_at_65536`.
 pub const MAX_WAL_ENTRIES: usize = 65_536;
 
 // M-8 fix: compile-time floor check.  Ensures the cap is above
@@ -137,8 +138,9 @@ pub struct WalEntry {
 }
 
 /// H-6 fix (2026-08-06): outcome of the syscall the WAL entry
-/// represents.  Encoded at the tail of `encode_entry` (item #9 of
-/// the hard-fork surface catalog).  Bumping the layout or the
+/// represents.  Encoded at the tail of `encode_entry` — listed
+/// under `§ 3. WAL entry serialization` in
+/// `docs/consensus-invariants.md`.  Bumping the layout or the
 /// numeric tags is a hard fork of the WAL root — coordinate via
 /// `SNAPSHOT_FORMAT_VERSION`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1366,15 +1368,16 @@ mod tests {
     // ---------------------------------------------------------------
 
     /// M-8 pin: the cap is 65536.  A regression changing this
-    /// value is a network hard fork (item #11 of the catalog);
-    /// pinned here so a `MAX_WAL_ENTRIES = 128` edit surfaces
-    /// in CI rather than fork consensus on a live network.
+    /// value is a network hard fork (listed under `§ 5. Byte gates`
+    /// in `docs/consensus-invariants.md`); pinned here so a
+    /// `MAX_WAL_ENTRIES = 128` edit surfaces in CI rather than
+    /// fork consensus on a live network.
     #[test]
     fn max_wal_entries_pinned_at_65536() {
         assert_eq!(
             MAX_WAL_ENTRIES, 65_536,
-            "M-8: MAX_WAL_ENTRIES is consensus-observable (item #11 of the \
-             hard-fork surface catalog).  Changing the cap alters when \
+            "M-8: MAX_WAL_ENTRIES is consensus-observable (see `§ 5. Byte gates` \
+             in `docs/consensus-invariants.md`).  Changing the cap alters when \
              validators emit FSERR_QUOTA_EXCEEDED on identical inputs — a \
              coordinated hard fork is required."
         );
