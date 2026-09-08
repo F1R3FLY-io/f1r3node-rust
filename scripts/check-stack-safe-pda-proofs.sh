@@ -274,9 +274,17 @@ rspace_preparation_run_tests() {
 epathmap_import_proofs() {
   local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/CanonicalEPathMapImport.v
-  rocq_compile_with_closed_count theories/CanonicalEPathMapImport.v 29 \
-    "canonical Var, EPathMap envelope and singleton prefilter contracts"
-  rocq_check_modules "singleton EPathMap prefilter" StackSafePDA.CanonicalEPathMapImport
+  rocq_compile_with_closed_count theories/CanonicalEPathMapImport.v 48 \
+    "canonical Var, envelope, carrier, signed GInt and singleton chain contracts"
+  rocq_check_modules "canonical singleton EPathMap import" StackSafePDA.CanonicalEPathMapImport
+}
+
+epathmap_score_proofs() {
+  local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  rocq_reject_placeholders theories/CanonicalEPathMapScore.v
+  rocq_compile_with_closed_count theories/CanonicalEPathMapScore.v 17 \
+    "concrete EPathMap score bytes, endpoint framing and checked capacity"
+  rocq_check_modules "concrete EPathMap score" StackSafePDA.CanonicalEPathMapScore
 }
 
 epathmap_import_runtime() {
@@ -287,6 +295,9 @@ epathmap_import_runtime() {
   rpb3_run_tests 1 --release -j4 --lib canonical_var_cursor_accepts_exact_encoder_images_only
   rpb3_run_tests 3 --release -j4 --lib canonical_var_proof_
   rpb3_run_tests 5 --release -j4 --lib canonical_epathmap_envelope_proof_
+  rpb3_run_tests 5 --release -j4 --lib canonical_epathmap_carrier_proof_
+  rpb3_run_tests 5 --release -j4 --lib singleton_chain_proof_
+  rpb3_run_tests 4 --release -j4 --lib canonical_epathmap_score_proof_
   rpb3_run_tests 5 --release -j4 --lib singleton_epathmap
   rpb3_run_tests 1 --release -j4 --lib \
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
@@ -299,11 +310,14 @@ if [[ "${1:-}" == "--epathmap-import" ]]; then
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
   epathmap_import_proofs
+  rocq_compile_with_closed_count theories/ChannelImage.v 11 "RCI2 byte framing"
+  rocq_compile_with_closed_count theories/RhoPathV1Datum.v 21 "RhoPath zero framing"
+  epathmap_score_proofs
   popd >/dev/null
   pushd "$repo_root" >/dev/null
   epathmap_import_runtime
   popd >/dev/null
-  echo "stack-safe-pda: focused Var/EPathMap proof and 20-test gate passed"
+  echo "stack-safe-pda: focused Var/EPathMap proof and runtime gates passed"
   exit 0
 fi
 
@@ -594,6 +608,7 @@ rocq_compile_with_closed_count \
 rocq_compile_with_closed_count \
   theories/RhoPathV1Datum.v 21 \
   "the exact RhoPath V1 datum-key schema and partition"
+epathmap_score_proofs
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceContinuationAuthority.v 33 \
   "the exact two-level RSpace continuation and join authority"

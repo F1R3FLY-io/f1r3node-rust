@@ -6068,6 +6068,100 @@ size and terminal obligations. Shared byte-native key admission remains task
 6018. This checkpoint changes no admission semantics, persistence format or
 consensus behavior and supplies no new performance or LMDB comparison result.
 
+### J-087 — 2026-09-08: exact nested import and concrete score-byte verification
+
+**QUESTION.** Does the singleton importer preserve the exact nested metadata,
+signed terminal image and raw RPB3 endpoint, rather than merely accepting the
+same shallow envelope? This extends task 5976 and J-086 without changing the
+production codec or introducing another parser.
+
+**FORMAL MODEL.** `CanonicalEPathMapImport.v` now has forty-eight closed reports:
+the previous twenty-nine plus exact Par/Expr carriers, nested envelope composition,
+signed64 zigzag, chain termination/reference equivalence, refusal, metadata folds
+and full-import observations. ACT inspection and canonical-key admission remain
+explicit parameters. Strict snapshot shrinkage establishes termination, not
+physical-byte linearity. The checked depth bound models `usize::checked_add`,
+not an artificial traversal ceiling.
+
+`CanonicalEPathMapScore.v` separately derives literal constructor/flag bytes,
+zero escaping, semantic-score equality, endpoint framing and trailer recovery,
+checked capacity and prefix-free score ordering. With snapshot length $`n`$,
+zero-byte count $`z`$ and Expr length $`p`$, the score occupies $`26+n+z`$ bytes,
+the endpoint $`39+n+z+p`$, and the checked reserve $`69+2n+p`$. These are exact
+encoding laws, not allocation or speed measurements. The proof README is the
+invariant-to-test catalogue; the existing focused gate registers the modules and
+each expected runtime test count.
+
+**DISCONFIRMING RESULT AND REPAIR.** The first carrier test run failed two of
+five tests because the independent test oracle cast signed GInt to u64. That
+assumption was wrong: `RhoTypes.proto` declares `sint64`, hence zigzag. Minus one
+encodes as `2a 02 10 01`, not a ten-byte two's-complement payload. Both signed
+extrema also distinguish these encodings. The model now proves the signed64
+zigzag bijection and exact image; the test oracle was corrected and the minimized
+minus-one regression seed retained. Production encoding and the raw-u64 shape
+recognizer did not change. The initial failure log SHA-256 is
+`dd606adaa267e10ae6baf14c64b7d4318b05b07d9f4e76c12c10dbb0a1f9568b`.
+
+**EXECUTABLE RESULTS.** The corrected five carrier tests pass. Five real-ACT
+chain tests pass, including invalid versus unstable keys, all nested metadata
+axes, continued validation after false stability, and an opaque malformed helper
+terminal refused by complete import. Four score tests pass: direct emission,
+independent score-tree encoding and arena-cursor encoding agree; complete keys,
+Expr bytes, outer metadata, multiplicity one and causal mutations are checked.
+Carrier and score properties each use 1,024 generated cases; the chain property
+uses 128. The complete models library passes **337/337**, with zero ignored or
+filtered tests. Commands use release mode, four build/test workers, seed
+`41315976`, and a systemd 6-GiB memory ceiling with swap disabled.
+
+| Evidence | SHA-256 |
+|---|---|
+| Import model, forty-eight closed reports | `f126a1a819df5f2201ac8eb0cd0e7def66f0456fd6eaaa039f8414c5ce928a81` |
+| Import model compilation log | `58131bd1b98a559342cbc579392dee075a370586df413d1315e44bb80ef75d00` |
+| Import model independent kernel-check log | `988eb49dbfecb6707890616420e9db471fadbd4887302bd32df2de6328f714c1` |
+| Five chain tests | `20fd636c70bcd73558c4b2a8b6f206dcbb32649b2569443ad19075ae4e1ffdf9` |
+| Four score tests | `93e2fa638d4d58c55a4b6a0d9936869cf83809c657224461b9a623d918ae55af` |
+| Full 337-test models library | `e616874567fafe54708eddc3f7950c407cef6c9c445350c0a93825f7590fe4d3` |
+
+**COMPOSITION AND REVIEW.** Three additional score capstones instantiate the
+import model with the actual five-byte header and concrete score length, derive
+the endpoint/trailer/capacity observations, and witness a successful full import.
+The score module now has seventeen closed reports and passes independent kernel
+checking. Its source SHA-256 is
+`534e52a38586e40a11f91a35df777d40e086d5a370e282b6a057c033f6d55b88`;
+compiler/kernel log digests are
+`50a42f93a901ca30c1167e2e22f36739f962dc64ac817384ead7c2ae5cc11f2f` and
+`9a5fe68eea3022823f0cf6059caea027628720fbabb874eda8319ae325c38204`.
+
+Independent review found that the new whole-Par stability assertion read the
+same imported cache already asserted. The property now also checks the separately
+constructed typed term's component cache and whole-Par stability against the
+explicit metadata booleans. This uses the existing typed construction authority,
+not a new cache-bypass API. The reviewed full library rerun passes **337/337**;
+log SHA-256:
+`286c579c84ebb1548fa476ebce09d7a75744afb2e39d441e531261f1433cd2df`.
+
+**INTEGRATED GATE.** `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import`
+exits zero on the reviewed sources: forty-eight import and seventeen score
+capstones, both independent kernel checks, and all thirty-four runtime bindings
+pass. The gate also rebuilds its existing eleven-capstone ChannelImage and
+twenty-one-capstone RhoPath framing dependencies; these are not counted as new
+import proofs. Gate log SHA-256:
+`e68b6d07141adfbedcd303eebd136d004956defe676f4f83691321feab78d675`.
+The separate release integration command
+`cargo test --release -j4 -p models --test formal_equivalence_manifest --test par_bag -- --test-threads=4`
+also exits zero under the same 6-GiB cap: **23 manifest + 36 ParBag tests**, none
+ignored or filtered, including the depth-4,096 compact import/ACT validation case.
+Its log SHA-256 is
+`d7134739f435358dbb91daaf633efd37cf3e26a9a15257875c03e2d00581ef0a`.
+This is targeted integration coverage, not a full-workspace or CI verdict.
+
+**INTERPRETATION.** These checks bind formal contracts to existing runtime
+behavior; they are not full Rust/ACT verification. The chain reference shares the
+real ACT/key validators while independently descending and folding metadata.
+Standalone byte-native key admission and its resource qualification remain owned
+by task 6018. This entry neither declares task 5976 complete nor supplies a new
+performance, memory-slope, consensus-transition or LMDB-comparison result.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

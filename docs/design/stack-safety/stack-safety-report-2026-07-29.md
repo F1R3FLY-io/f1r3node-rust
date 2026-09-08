@@ -9906,6 +9906,24 @@ opaque snapshot bytes and exact remainder presence without decoding. Journal
 J-086 records the evidence and the remaining carrier/chain/import boundaries.
 These are correctness results, not additional memory-slope measurements.
 
+The CEI-04–06 continuation adds exact Par/Expr framing, signed64 GInt images,
+chain/reference equivalence and the complete metadata fold. Import-model kernel
+checking now covers forty-eight closed reports. Concrete score-byte laws live
+in `CanonicalEPathMapScore.v`; their direct/tree/arena differentials retain raw
+Expr payloads and multiplicity one. Five carrier, five chain and four score
+tests pass, and the expanded models library passes all 337 tests under the
+6-GiB zero-swap cap. Journal J-087 preserves the evidence, including the initial
+test-oracle error about `sint64` zigzag and its correction. No runtime integer
+format changed. Neither strict snapshot shrinkage nor these bounded tests proves
+total physical-byte linearity or allocator behavior.
+
+The final composed gate passes forty-eight import and seventeen concrete-score
+capstones, both independent kernel checks and all thirty-four focused Rust
+bindings. The reviewed models-library rerun remains 337/337, and the separate
+equivalence-manifest/ParBag integration run passes 23/23 and 36/36, including
+depth-4,096 compact admission. J-087 retains commands and log digests. These
+results do not establish a full-workspace pass or a production backend comparison.
+
 This eliminates the measured ineligible-width copying branch. It does not prove
 all admitted inputs decode-free or linear in physical bytes: accepted key
 validation still constructs typed results, and its shared byte-native replacement

@@ -4981,10 +4981,16 @@ concrete Var encoder-image grammar and binds it to generated-encoder/cursor
 properties, without changing that grammar or the production decoder. The local
 CEI-02–03 extension proves the concrete envelope grammar and binds it to five
 passing Rust tests, without promoting opaque snapshot bytes to ACT admission.
-The complete carrier/chain/stability/import refinement and shared byte-native key-admission
-obligations remain open. This evidence must not
+The subsequent carrier/chain development proves exact framing, signed64 zigzag,
+reference equivalence and metadata folds under explicit ACT/key-validator
+premises. Concrete score-byte properties preserve the exact Expr endpoint,
+outer metadata and multiplicity one. The initial signed-integer test oracle was
+corrected to match the existing `sint64` schema; this changes no runtime encoding
+or accepted-byte language. The 337-test models library passes, but shared
+byte-native key-admission and implementation-wide resource obligations remain
+open. This evidence must not
 be promoted to a verdict for the entire admission or persistence campaign. See
-the stack-safety report §5.33.6 and PathMap journal J-084 for the exact scope.
+the stack-safety report §5.33.6 and PathMap journal J-084 through J-087 for the exact scope.
 
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that

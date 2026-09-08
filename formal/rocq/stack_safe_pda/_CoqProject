@@ -48,6 +48,7 @@ theories/TwoLevelRSpaceRepresentationMutants.v
 theories/TwoLevelRSpaceGuardedOwnershipMutants.v
 theories/TwoLevelRSpaceCheckpointMutants.v
 theories/RhoPathV1Datum.v
+theories/CanonicalEPathMapScore.v
 theories/RhoPathV2.v
 theories/TwoLevelRSpaceContinuationAuthority.v
 theories/TwoLevelRSpaceContinuationAuthorityMutants.v

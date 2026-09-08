@@ -44,7 +44,8 @@ through the original inspector. The proof's named `inspector_refines_epm1_framin
 premise requires a successful inspection to agree with a complete EPM1 parse.
 The prefilter section's twelve closed reports cover six general contracts and
 six synthetic controls. The binary Var section below adds seven closed reports,
-and the concrete envelope section adds ten.
+and the concrete envelope section adds ten. Carrier, nested-chain and signed-GInt
+sections add nineteen, for forty-eight closed reports in this module.
 
 | Formal contract | Executable correspondence in `models/tests/support/epathmap_fast_import.rs` |
 |---|---|
@@ -57,13 +58,15 @@ and the concrete envelope section adds ten.
 The Rust counters are test-only and thread-local. Their scope is inspector calls
 and owned endpoint-key copying, not total allocation, memory residency or runtime.
 The formal controls use synthetic topology and do not establish actual ACT parser
-correctness. Outer Par metadata, CEI-04–06/08 (the chain, stability and importer
-correspondence obligations), nested composition of CEI-02–03 and the shared
-byte-native key-validation replacement in task 6018 remain required.
+correctness. The carrier and chain models below now cover outer Par metadata,
+nested composition and the exact stability fold. The shared byte-native
+key-validation replacement and its physical-resource qualification remain task
+6018; neither a symbolic inspector nor a passing bounded differential discharges
+that implementation boundary.
 
 Run `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import` from the
-repository root. It rebuilds the imports, requires twenty-nine closed reports and
-successful kernel checking, and runs twenty Rust tests with property seed
+repository root. It rebuilds the imports, checks the exact registered capstone
+counts and independent kernel validation, and runs thirty-four Rust tests with property seed
 `41315976` by default. Proof/Rust cgroup ceilings are 2/6 GiB with swap disabled.
 Both stages are also registered in the aggregate gate; this is an internal
 admission optimization, not a new generated schema traversal/manifest entry.
@@ -134,9 +137,10 @@ expose locally-free payload bytes; only its nonempty/presence flag is observed.
 The prefilter result must not be mistaken for the complete fast-import proof.
 The following contracts are requirements. CEI-01 and CEI-07 and the local
 CEI-02–03 envelope boundary have the checked model sections described above.
-The remaining carrier/nested composition and CEI-04–06/08 remain unproved.
-They keep the proof boundary aligned with the current implementation and its
-independent canonical encoder/semantic references.
+The carrier and chain sections now prove their explicit models, including
+CEI-04–06. The score section supplies concrete CEI-08 byte and length laws.
+These model-to-implementation boundaries remain bound by the independent
+canonical encoder/semantic references and the explicit premises below.
 
 | Contract | Exact obligation | Required executable binding |
 |---|---|---|
@@ -160,7 +164,8 @@ admitted-stability distinctions without wrapping keys in fabricated snapshots.
 ### Composed import refinement boundaries (2026-09-08)
 
 The task 5976 source review fixes the following proof and executable-oracle
-interfaces. These are remaining obligations, not additional completed proofs.
+interfaces. The checked models and executable bindings below distinguish
+completed local contracts from remaining implementation-wide obligations.
 The implementation under review is
 [`par_bag.rs`](../../../models/src/rust/par_bag.rs), specifically
 `canonical_singleton_epathmap_chain_proof` composed with
@@ -170,7 +175,7 @@ The implementation under review is
 |---|---|---|
 | EPathMap envelope | Required field 9 retains its exact borrowed bytes, even when empty or not a valid ACT image. Field 5 distinguishes absence from a present empty Var. Locally-free bytes are a reconstruction witness; the helper exposes only whether that field is absent. | Helper acceptance of an opaque snapshot must not imply root-route or full-import acceptance. Late malformed Var bytes must fail even after locally-free/connective metadata makes the component unstable. |
 | Chain transition | State consists of the current snapshot, depth and accumulated stability. Every descent still performs snapshot inspection and key admission; a false stability accumulator does not terminate validation. | Compare depth, terminal bytes and each metadata axis against a recursive reference over the same inspected slices. Keep ACT/key-parser correspondence as explicit premises. |
-| Opaque terminal | A nested-envelope decline returns a terminal from the chain helper. The composed importer subsequently requires an exact metadata-free singleton GInt image. | Construct a malformed nested EPathMap for which the helper returns a terminal but full import declines. Prove this shape cannot satisfy the GInt grammar. GInt uses int64/u64 varint interpretation, not Var's sint32 zigzag; include minimum, maximum, minus one and zero. |
+| Opaque terminal | A nested-envelope decline returns a terminal from the chain helper. The composed importer subsequently requires an exact metadata-free singleton GInt image. | Construct a malformed nested EPathMap for which the helper returns a terminal but full import declines. Prove this shape cannot satisfy the GInt grammar. `RhoTypes.proto` declares GInt as `sint64`: apply signed-64 zigzag before the u64 varint, rather than Var's signed-32 bound; include minimum, maximum, minus one and zero. |
 | Stability | Invalid or unstable keys decline the specialization. Valid unstable value metadata instead yields an admitted component with false stability. Component stability excludes the outermost Par metadata; whole-Par stability includes it. | Use explicit independent expected booleans for every metadata axis. Comparing two cached stability values alone is insufficient. |
 | Imported endpoint | Preserve the RPB3 score, exact Expr payload, big-endian u64 score-length trailer, multiplicity one and outer Par metadata. | Independently encode the semantic score tree and inspect the complete endpoint key, in addition to term/protobuf/hash comparisons. |
 
@@ -180,8 +185,8 @@ The score authority for this importer is
 independent tree encoder in
 [`score_tree.rs`](../../../models/src/rust/rholang/sorter/score_tree.rs).
 The generic expression sorter uses a different collection-score route and is
-not the oracle for this RPB3 endpoint. There is not yet a concrete score-byte
-Rocq theorem in this import development; a semantic fold does not establish one.
+not the oracle for this RPB3 endpoint. `CanonicalEPathMapScore.v` now proves the
+concrete fixed-shape score bytes independently of the semantic metadata fold.
 
 Completeness claims must include the implementation's checked size arithmetic
 and depth representability premises. Successful-import soundness alone does not
@@ -189,6 +194,72 @@ prove acceptance for every structurally eligible input. A strictly shrinking
 nested snapshot proves termination, not linear work in the original physical
 input size. Allocation failure, the full ACT/key validator and fallback decoder
 correspondence remain explicit boundaries until their own evidence is supplied.
+
+### Carrier, chain and signed terminal bindings (CEI-04–06)
+
+The `Carrier` development recognizes the exact ordered Par fields: one Expr
+field 5, optional nonempty locally-free field 9, and optional true connective
+field 10. Nested EPathMap recognition composes that carrier with Expr field 32
+and the checked envelope grammar. The complete GInt image is a separate,
+metadata-free singleton carrier. Its `sint64` payload uses the bijection between
+signed 64-bit integers and minimal unsigned-64 zigzag varints.
+
+The `Chain` machine agrees with its recursive reference in both directions,
+including refusal, subject to checked depth representability. Every descent
+strictly reduces the current snapshot length. Proof induction is not a runtime
+fuel or traversal limit. Invalid or unstable keys decline the specialization;
+valid unstable value metadata does not. A false accumulated stability bit never
+skips later snapshot or key validation. A helper terminal is opaque until the
+full importer's separate GInt check succeeds.
+
+| Checked invariant group | Executable binding |
+|---|---|
+| Exact carrier grammar, nested composition and remainder image | `canonical_epathmap_carrier_proof_ordered_images`, `nested_metadata_images`: generated valid images, independent ordered cursor and malformed-field controls. |
+| Exact raw-u64 and signed-zigzag GInt images; map/GInt disjointness | Carrier `exact_int64_terminal`, `map_shape_excludes_integer`, `boundary_controls`: generated protobuf differential across full-domain i64 values, extrema, nonminimal/overflow/trailing refusals and malformed map shapes. |
+| Inspector/key authority and validation after false stability | `singleton_chain_proof_invalid_and_unstable_keys_decline`, `false_stability_does_not_skip_later_act`: real ACT images, isolated key/ACT mutations and inspector-call witnesses. |
+| Machine/reference equivalence and exact metadata fold | Chain `recursive_reference_and_metadata`, `every_metadata_axis_and_integer_extremum`: 128 generated chains and independent one-axis changes at three nested levels, including outer metadata exclusion from component stability. |
+| Opaque terminal versus complete admission | `singleton_chain_proof_opaque_malformed_terminal_is_not_full_import`: malformed nested remainder accepted only as an opaque helper terminal; the complete importer refuses it. |
+
+Four carrier properties use 1,024 generated cases each. The recursive chain
+reference is test-only and shares the real ACT inspector/key validator as an
+explicit boundary, but independently frames, descends and folds metadata.
+These tests therefore do not independently verify those shared validators.
+
+The initial signed test oracle mistakenly used an i64-to-u64 cast. The schema
+and generated encoder exposed that error at minus one and the signed extrema.
+The corrected oracle uses zigzag and retains the minimized minus-one regression
+seed. No runtime GInt codec or accepted-byte language changed in this correction.
+
+### Concrete score and endpoint bindings (CEI-08)
+
+`CanonicalEPathMapScore.v` proves the specialized integer atoms, zero escaping,
+fixed-shape semantic serialization, exact endpoint framing, score-length trailer,
+checked reserve arithmetic, parser round-trip and prefix-free score ordering.
+Let $`n`$ be snapshot bytes, $`z`$ its zero-byte count and $`p`$ the exact Expr
+payload length. Score length is $`26+n+z`$, endpoint length is $`39+n+z+p`$,
+and the current checked reserve is $`69+2n+p`$. The reserve bounds the emitted
+endpoint; it does not guarantee allocator success. Equal-score endpoint ordering
+uses an explicit non-prefix payload premise; unequal-score ordering does not
+depend on the appended payload or trailer.
+
+`models/tests/support/epathmap_score_admission.rs` checks direct score emission
+against both the semantic tree encoder and the canonical-score arena cursor.
+Three 1,024-case properties cover arbitrary snapshot bytes, complete imported
+keys/root metadata/multiplicity-one observations and ordering. Fixed controls
+independently mutate constructor, escaped zero, connective, Expr payload and
+trailer, and retain an equal-score/different-payload ordering witness. Arbitrary
+snapshot bytes are legitimate score-encoding inputs, not claimed ACT images;
+full-import properties separately construct valid EPM1 snapshots.
+
+The module's seventeen checked capstones include three composition results:
+`concrete_checked_import_sizes_exact` instantiates the import model's header with
+five bytes and its score-length parameter with the concrete encoder;
+`full_import_has_concrete_rpb3_endpoint` derives exact endpoint splitting,
+semantic score, capacity fit and multiplicity one from the full-import contract;
+`concrete_full_import_positive_control` witnesses a successful composition.
+The proof retains the ACT/key implementation premises rather than replacing them
+with a claim about a synthetic inspector. Platform representability and allocator
+success remain separate implementation obligations.
 
 ## Exact matcher count intervals (2026-09-07)
 

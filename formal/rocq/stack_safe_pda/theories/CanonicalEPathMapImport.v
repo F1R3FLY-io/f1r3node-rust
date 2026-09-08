@@ -1199,3 +1199,870 @@ Print Assumptions envelope_framing_and_scalar_refusal_controls.
 Print Assumptions snapshot_bytes_remain_opaque.
 
 End Envelope.
+
+Module Carrier.
+
+Import Envelope.
+
+Definition delimited_bytes (key : nat) (body : bytes) : bytes :=
+  encode_varint key ++ encode_frame body.
+
+Definition delimited_cursor (key : nat) (input : bytes) : option bytes :=
+  match decode_varint input with
+  | Some (observed, payload) =>
+      if observed =? key then
+        match decode_frame payload with Some (body, []) => Some body | _ => None end
+      else None
+  | None => None
+  end.
+
+Lemma delimited_cursor_exact :
+  forall key input body,
+    delimited_cursor key input = Some body <-> input = delimited_bytes key body.
+Proof.
+  intros key input body. split.
+  - unfold delimited_cursor.
+    destruct (decode_varint input) as [[observed payload]|] eqn:header; try discriminate.
+    destruct (observed =? key) eqn:same_key; try discriminate.
+    destruct (decode_frame payload) as [[observed_body rest]|] eqn:frame; try discriminate.
+    destruct rest; try discriminate. intro same. inversion same; subst.
+    apply Nat.eqb_eq in same_key. subst.
+    apply decoded_varint_reconstructs_bytes in header. apply envelope_frame_exact_bytes in frame.
+    rewrite app_nil_r in frame. subst. reflexivity.
+  - intro same. subst. unfold delimited_cursor, delimited_bytes.
+    rewrite canonical_varint_round_trip, Nat.eqb_refl.
+    pose proof (canonical_frame_round_trip body []) as frame.
+    rewrite app_nil_r in frame. now rewrite frame.
+Qed.
+
+Definition carrier_connective_bytes (connective : bool) : bytes :=
+  if connective then [80; 1] else [].
+
+Definition carrier_connective_cursor (input : bytes) : option bool :=
+  if list_eq_dec Nat.eq_dec input [80; 1] then Some true
+  else match input with [] => Some false | _ => None end.
+
+Lemma carrier_connective_exact :
+  forall input connective,
+    carrier_connective_cursor input = Some connective <-> input = carrier_connective_bytes connective.
+Proof.
+  intros input connective. split.
+  - unfold carrier_connective_cursor.
+    destruct (list_eq_dec Nat.eq_dec input [80; 1]) as [same|different].
+    + intro parsed. inversion parsed; subst. reflexivity.
+    + destruct input; try discriminate. intro parsed. inversion parsed; reflexivity.
+  - intro same. subst. destruct connective; reflexivity.
+Qed.
+
+Definition carrier_metadata_bytes (locally_free : bytes) (connective : bool) : bytes :=
+  (match locally_free with [] => [] | _ => 74 :: encode_frame locally_free end) ++
+  carrier_connective_bytes connective.
+
+Definition carrier_metadata_cursor (input : bytes) : option (bytes * bool) :=
+  match strip_key 74 input with
+  | Some payload =>
+      match decode_frame payload with
+      | Some (head :: tail, rest) =>
+          option_map (fun connective => (head :: tail, connective)) (carrier_connective_cursor rest)
+      | _ => None
+      end
+  | None => option_map (fun connective => ([], connective)) (carrier_connective_cursor input)
+  end.
+
+Lemma carrier_metadata_sound :
+  forall input locally_free connective,
+    carrier_metadata_cursor input = Some (locally_free, connective) ->
+    input = carrier_metadata_bytes locally_free connective.
+Proof.
+  intros input locally_free connective. unfold carrier_metadata_cursor.
+  destruct (strip_key 74 input) as [payload|] eqn:key.
+  - destruct (decode_frame payload) as [[body rest]|] eqn:frame; try discriminate.
+    destruct body; try discriminate.
+    destruct (carrier_connective_cursor rest) eqn:child; cbn [option_map]; try discriminate.
+    intro same. inversion same; subst.
+    apply strip_key_exact in key. apply envelope_frame_exact_bytes in frame.
+    apply carrier_connective_exact in child. subst. reflexivity.
+  - destruct (carrier_connective_cursor input) eqn:child; cbn [option_map]; try discriminate.
+    intro same. inversion same; subst. now apply carrier_connective_exact in child.
+Qed.
+
+Lemma carrier_metadata_complete :
+  forall locally_free connective,
+    carrier_metadata_cursor (carrier_metadata_bytes locally_free connective) =
+      Some (locally_free, connective).
+Proof.
+  intros [|head tail] connective.
+  - assert (absent : strip_key 74 (carrier_connective_bytes connective) = None)
+      by (destruct connective; reflexivity).
+    unfold carrier_metadata_cursor, carrier_metadata_bytes. cbn [app]. rewrite absent.
+    rewrite (proj2 (carrier_connective_exact _ _) eq_refl). reflexivity.
+  - unfold carrier_metadata_cursor, carrier_metadata_bytes. cbn [app].
+    rewrite strip_key_here, canonical_frame_round_trip.
+    rewrite (proj2 (carrier_connective_exact _ _) eq_refl). reflexivity.
+Qed.
+
+Record carrier : Type := Carrier {
+  carrier_expr : bytes;
+  carrier_locally_free : bytes;
+  carrier_connective : bool
+}.
+
+Definition carrier_bytes (input : carrier) : bytes :=
+  (42 :: encode_frame (carrier_expr input)) ++
+  carrier_metadata_bytes (carrier_locally_free input) (carrier_connective input).
+
+Lemma carrier_without_metadata_is_delimited :
+  forall body, carrier_bytes (Carrier body [] false) = delimited_bytes 42 body.
+Proof.
+  intro body. unfold carrier_bytes.
+  cbn [carrier_expr carrier_locally_free carrier_connective carrier_metadata_bytes carrier_connective_bytes app].
+  rewrite app_nil_r. reflexivity.
+Qed.
+
+Definition carrier_cursor (input : bytes) : option carrier :=
+  match strip_key 42 input with
+  | Some payload =>
+      match decode_frame payload with
+      | Some (body, rest) =>
+          option_map (fun metadata => Carrier body (fst metadata) (snd metadata))
+            (carrier_metadata_cursor rest)
+      | None => None
+      end
+  | None => None
+  end.
+
+Theorem carrier_cursor_exact_grammar :
+  forall input result, carrier_cursor input = Some result <-> input = carrier_bytes result.
+Proof.
+  intros input result. split.
+  - unfold carrier_cursor.
+    destruct (strip_key 42 input) as [payload|] eqn:key; try discriminate.
+    destruct (decode_frame payload) as [[body rest]|] eqn:frame; try discriminate.
+    destruct (carrier_metadata_cursor rest) as [[lf connective]|] eqn:metadata;
+      cbn [option_map fst snd]; try discriminate.
+    intro same. inversion same; subst.
+    apply strip_key_exact in key. apply envelope_frame_exact_bytes in frame.
+    apply carrier_metadata_sound in metadata. subst. reflexivity.
+  - intro same. subst. destruct result as [expr lf connective].
+    unfold carrier_bytes, carrier_cursor. cbn [carrier_expr carrier_locally_free carrier_connective app].
+    rewrite strip_key_here, canonical_frame_round_trip, carrier_metadata_complete. reflexivity.
+Qed.
+
+Definition map_expr_cursor (input : bytes) : option envelope :=
+  match delimited_cursor 258 input with Some body => envelope_cursor body | None => None end.
+
+Definition nested_parts_cursor (input : bytes) : option (carrier * envelope) :=
+  match carrier_cursor input with
+  | Some root => option_map (fun map_parts => (root, map_parts)) (map_expr_cursor (carrier_expr root))
+  | None => None
+  end.
+
+Theorem nested_parts_exact_composition :
+  forall input root map_parts,
+    nested_parts_cursor input = Some (root, map_parts) <->
+    input = carrier_bytes root /\
+    exists envelope_input,
+      valid_protobuf envelope_input /\
+      carrier_expr root = delimited_bytes 258 (protobuf_bytes envelope_input) /\
+      map_parts = observe envelope_input.
+Proof.
+  intros input root map_parts. split.
+  - unfold nested_parts_cursor, map_expr_cursor.
+    destruct (carrier_cursor input) as [observed_root|] eqn:carrier_parsed; try discriminate.
+    destruct (delimited_cursor 258 (carrier_expr observed_root)) as [body|] eqn:expr_parsed;
+      try discriminate.
+    destruct (envelope_cursor body) as [observed_map|] eqn:map_parsed;
+      cbn [option_map]; try discriminate.
+    intro same. inversion same; subst.
+    apply carrier_cursor_exact_grammar in carrier_parsed.
+    apply delimited_cursor_exact in expr_parsed.
+    apply envelope_observation_exact in map_parsed.
+    destruct map_parsed as [envelope_input [valid [body_same map_same]]].
+    split; [exact carrier_parsed|]. exists envelope_input. subst. auto.
+  - intros [carrier_same [envelope_input [valid [expr_same map_same]]]].
+    unfold nested_parts_cursor, map_expr_cursor.
+    rewrite (proj2 (carrier_cursor_exact_grammar _ _) carrier_same), expr_same.
+    rewrite (proj2 (delimited_cursor_exact _ _ _) eq_refl).
+    unfold envelope_cursor. rewrite protobuf_cursor_complete by exact valid.
+    subst. reflexivity.
+Qed.
+
+Theorem nested_remainder_preserves_exact_var :
+  forall input root map_parts body,
+    nested_parts_cursor input = Some (root, map_parts) ->
+    remainder map_parts = Some body ->
+    exists value, BinaryVar.valid_var value /\ body = BinaryVar.encode_var value.
+Proof.
+  intros input root map_parts body parsed present.
+  apply nested_parts_exact_composition in parsed.
+  destruct parsed as [_ [envelope_input [[lf_valid rem_valid] [_ ->]]]].
+  cbn [observe remainder] in present. rewrite present in rem_valid.
+  destruct rem_valid as [value parsed]. exists value.
+  now apply BinaryVar.canonical_var_exact_encoder_image in parsed.
+Qed.
+
+Definition u64_limit : N := 18446744073709551616%N.
+
+Definition parse_u64 (input : bytes) : option N :=
+  match BinaryVar.binary_varint input with
+  | Some (value, []) => if N.ltb value u64_limit then Some value else None
+  | _ => None
+  end.
+
+Theorem canonical_u64_exact_image :
+  forall input value,
+    parse_u64 input = Some value <->
+    (value < u64_limit)%N /\ input = BinaryVar.emit_binary_varint 9 value.
+Proof.
+  intros input value. split.
+  - unfold parse_u64.
+    destruct (BinaryVar.binary_varint input) as [[observed rest]|] eqn:parsed; try discriminate.
+    destruct rest; try discriminate.
+    destruct (N.ltb observed u64_limit) eqn:bounded; try discriminate.
+    intro same. inversion same; subst. apply N.ltb_lt in bounded.
+    split; [exact bounded|].
+    pose proof (@BinaryVar.binary_varint_exact_reconstruction 9 input value [] parsed) as exact_bytes.
+    rewrite app_nil_r in exact_bytes. apply exact_bytes.
+    change (value < 1180591620717411303424)%N. unfold u64_limit in bounded. lia.
+  - intros [bounded ->]. unfold parse_u64.
+    pose proof (@BinaryVar.binary_varint_emitted_round_trip 9 value []) as parsed.
+    rewrite app_nil_r in parsed. rewrite parsed.
+    + apply N.ltb_lt in bounded. now rewrite bounded.
+    + change (value < 1180591620717411303424)%N. unfold u64_limit in bounded. lia.
+Qed.
+
+Definition gint_bytes (value : N) : bytes :=
+  delimited_bytes 42 (16 :: BinaryVar.emit_binary_varint 9 value).
+
+Definition gint_cursor (input : bytes) : option N :=
+  match delimited_cursor 42 input with
+  | Some expr => match strip_key 16 expr with Some payload => parse_u64 payload | None => None end
+  | None => None
+  end.
+
+Theorem gint_terminal_exact_uint64_image :
+  forall input value,
+    gint_cursor input = Some value <-> (value < u64_limit)%N /\ input = gint_bytes value.
+Proof.
+  intros input value. split.
+  - unfold gint_cursor.
+    destruct (delimited_cursor 42 input) as [expr|] eqn:carrier_parsed; try discriminate.
+    destruct (strip_key 16 expr) as [payload|] eqn:expr_parsed; try discriminate.
+    intro parsed. apply canonical_u64_exact_image in parsed. destruct parsed as [bounded same].
+    apply delimited_cursor_exact in carrier_parsed. apply strip_key_exact in expr_parsed.
+    subst. split; [exact bounded|reflexivity].
+  - intros [bounded ->]. unfold gint_cursor, gint_bytes.
+    rewrite (proj2 (delimited_cursor_exact _ _ _) eq_refl), strip_key_here.
+    apply canonical_u64_exact_image. auto.
+Qed.
+
+Theorem map_framing_is_disjoint_from_gint_terminal :
+  forall body locally_free connective,
+    gint_cursor (carrier_bytes (Carrier (delimited_bytes 258 body) locally_free connective)) = None.
+Proof.
+  intros body locally_free connective.
+  destruct (gint_cursor (carrier_bytes (Carrier (delimited_bytes 258 body) locally_free connective)))
+    as [value|] eqn:parsed; [|reflexivity].
+  apply gint_terminal_exact_uint64_image in parsed. destruct parsed as [_ same].
+  assert (carrier_same :
+    Carrier (delimited_bytes 258 body) locally_free connective =
+      Carrier (16 :: BinaryVar.emit_binary_varint 9 value) [] false).
+  { pose proof (proj2 (carrier_cursor_exact_grammar _
+      (Carrier (delimited_bytes 258 body) locally_free connective)) eq_refl) as left.
+    rewrite same in left.
+    unfold gint_bytes in left. rewrite <- carrier_without_metadata_is_delimited in left.
+    rewrite (proj2 (carrier_cursor_exact_grammar _ _) eq_refl) in left.
+    now inversion left. }
+  now inversion carrier_same.
+Qed.
+
+Theorem carrier_and_terminal_controls :
+  carrier_cursor [42; 0; 74; 1; 7; 80; 1] = Some (Carrier [] [7] true) /\
+  carrier_cursor [42; 0; 74; 0] = None /\
+  carrier_cursor [42; 0; 80; 0] = None /\
+  carrier_cursor [74; 1; 7; 42; 0] = None /\
+  carrier_cursor [42; 0; 42; 0] = None /\
+  gint_cursor [42; 2; 16; 1] = Some 1%N /\
+  gint_cursor [42; 11; 16; 255; 255; 255; 255; 255; 255; 255; 255; 255; 1] =
+    Some 18446744073709551615%N /\
+  gint_cursor [42; 3; 16; 128; 0] = None /\
+  gint_cursor [42; 11; 16; 128; 128; 128; 128; 128; 128; 128; 128; 128; 2] = None /\
+  gint_cursor [42; 2; 16; 0; 80; 1] = None.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Definition signed64 (value : Z) : Prop :=
+  (-9223372036854775808 <= value < 9223372036854775808)%Z.
+
+Lemma zigzag_signed64_bound :
+  forall value, signed64 value -> (BinaryVar.zigzag value < u64_limit)%N.
+Proof.
+  intros value bounded. unfold signed64 in bounded.
+  unfold BinaryVar.zigzag. destruct (Z.ltb value 0) eqn:negative; apply N2Z.inj_lt.
+  - change (Z.of_N (Z.to_N (-2 * value - 1)) < 18446744073709551616)%Z.
+    apply Z.ltb_lt in negative. rewrite Z2N.id by lia. lia.
+  - change (Z.of_N (Z.to_N (2 * value)) < 18446744073709551616)%Z.
+    apply Z.ltb_ge in negative. rewrite Z2N.id by lia. lia.
+Qed.
+
+Lemma unzigzag_u64_bound :
+  forall value, (value < u64_limit)%N -> signed64 (BinaryVar.unzigzag value).
+Proof.
+  intros value bounded. apply N2Z.inj_lt in bounded.
+  unfold u64_limit in bounded. change (Z.of_N value < 18446744073709551616)%Z in bounded.
+  pose proof (BinaryVar.halves value) as [quotient_nonnegative [remainder_bound equation]].
+  unfold signed64, BinaryVar.unzigzag.
+  destruct (Z.eqb (Z.of_N value mod 2) 0); lia.
+Qed.
+
+Theorem signed64_zigzag_bijection :
+  (forall value, signed64 value ->
+      (BinaryVar.zigzag value < u64_limit)%N /\ BinaryVar.unzigzag (BinaryVar.zigzag value) = value) /\
+  (forall value, (value < u64_limit)%N ->
+      signed64 (BinaryVar.unzigzag value) /\ BinaryVar.zigzag (BinaryVar.unzigzag value) = value).
+Proof.
+  split; intros; split; auto using zigzag_signed64_bound, BinaryVar.unzigzag_zigzag,
+    unzigzag_u64_bound, BinaryVar.zigzag_unzigzag.
+Qed.
+
+Definition signed_gint_bytes (value : Z) : bytes := gint_bytes (BinaryVar.zigzag value).
+
+Definition signed_gint_cursor (input : bytes) : option Z :=
+  option_map BinaryVar.unzigzag (gint_cursor input).
+
+Theorem signed_gint_terminal_exact_image :
+  forall input value,
+    signed_gint_cursor input = Some value <-> signed64 value /\ input = signed_gint_bytes value.
+Proof.
+  intros input value. split.
+  - unfold signed_gint_cursor.
+    destruct (gint_cursor input) as [word|] eqn:parsed; cbn [option_map]; try discriminate.
+    intro same. inversion same; subst.
+    apply gint_terminal_exact_uint64_image in parsed. destruct parsed as [bounded exact_bytes].
+    split; [now apply unzigzag_u64_bound|].
+    unfold signed_gint_bytes. now rewrite BinaryVar.zigzag_unzigzag.
+  - intros [bounded ->]. unfold signed_gint_cursor, signed_gint_bytes.
+    assert (parsed : gint_cursor (gint_bytes (BinaryVar.zigzag value)) = Some (BinaryVar.zigzag value)).
+    { apply gint_terminal_exact_uint64_image. split; [now apply zigzag_signed64_bound|reflexivity]. }
+    rewrite parsed. cbn [option_map]. now rewrite BinaryVar.unzigzag_zigzag.
+Qed.
+
+Lemma signed_interpretation_preserves_raw_admission :
+  forall input,
+    (exists word, gint_cursor input = Some word) <->
+    exists value, signed_gint_cursor input = Some value.
+Proof.
+  intro input. unfold signed_gint_cursor.
+  destruct (gint_cursor input) as [word|]; cbn [option_map].
+  - split; intro; eexists; reflexivity.
+  - split; intros [? impossible]; discriminate.
+Qed.
+
+Theorem signed_gint_semantic_controls :
+  signed_gint_cursor [42; 2; 16; 0] = Some 0%Z /\
+  signed_gint_cursor [42; 2; 16; 1] = Some (-1)%Z /\
+  signed_gint_cursor [42; 2; 16; 2] = Some 1%Z /\
+  signed_gint_cursor [42; 11; 16; 255; 255; 255; 255; 255; 255; 255; 255; 255; 1] =
+    Some (-9223372036854775808)%Z /\
+  signed_gint_cursor [42; 11; 16; 254; 255; 255; 255; 255; 255; 255; 255; 255; 1] =
+    Some 9223372036854775807%Z /\
+  signed_gint_bytes (-1) = [42; 2; 16; 1] /\
+  signed_gint_bytes (-9223372036854775808) =
+    [42; 11; 16; 255; 255; 255; 255; 255; 255; 255; 255; 255; 1] /\
+  signed_gint_bytes 9223372036854775807 =
+    [42; 11; 16; 254; 255; 255; 255; 255; 255; 255; 255; 255; 1] /\
+  signed_gint_bytes (-1) <> gint_bytes 18446744073709551615 /\
+  signed_gint_cursor (signed_gint_bytes 9223372036854775808) = None /\
+  signed_gint_cursor (signed_gint_bytes (-9223372036854775809)) = None.
+Proof. vm_compute. intuition discriminate. Qed.
+
+Print Assumptions carrier_cursor_exact_grammar.
+Print Assumptions nested_parts_exact_composition.
+Print Assumptions nested_remainder_preserves_exact_var.
+Print Assumptions canonical_u64_exact_image.
+Print Assumptions gint_terminal_exact_uint64_image.
+Print Assumptions map_framing_is_disjoint_from_gint_terminal.
+Print Assumptions carrier_and_terminal_controls.
+Print Assumptions signed64_zigzag_bijection.
+Print Assumptions signed_gint_terminal_exact_image.
+Print Assumptions signed_gint_semantic_controls.
+
+End Carrier.
+
+Module Chain.
+
+Import Envelope Carrier.
+
+Definition map_metadata_stable (parts : envelope) : bool :=
+  locally_free_is_empty parts && negb (connective_used parts) &&
+    match remainder parts with None => true | Some _ => false end.
+
+Definition nested_metadata_stable (root : carrier) (parts : envelope) : bool :=
+  (match carrier_locally_free root with [] => true | _ => false end) &&
+    negb (carrier_connective root) && map_metadata_stable parts.
+
+Record layer : Type := Layer {
+  layer_value : bytes;
+  layer_root : carrier;
+  layer_map : envelope
+}.
+
+Fixpoint metadata_fold (layers : list layer) : bool :=
+  match layers with
+  | [] => true
+  | head :: tail => nested_metadata_stable (layer_root head) (layer_map head) && metadata_fold tail
+  end.
+
+Record machine_state : Type := MachineState {
+  current_snapshot : bytes;
+  current_depth : nat;
+  accumulated_stability : bool
+}.
+
+Record chain_result : Type := ChainResult {
+  result_depth : nat;
+  result_terminal : bytes;
+  result_stability : bool
+}.
+
+Inductive action : Type :=
+| Stop : option chain_result -> action
+| Resume : machine_state -> action.
+
+Section Admission.
+
+Variable inspect : bytes -> option SingletonPrefilter.inspection.
+Variable admit_key : bytes -> option bool.
+Variable depth_limit : nat.
+
+Definition admitted_value (source : bytes) : option bytes :=
+  match SingletonPrefilter.prefiltered_singleton_import inspect source with
+  | Some result =>
+      match SingletonPrefilter.inspected_keys result,
+            value_bodies (SingletonPrefilter.inspected_snapshot result) with
+      | [key], [value] =>
+          match admit_key key with Some true => Some value | _ => None end
+      | _, _ => None
+      end
+  | None => None
+  end.
+
+Theorem admitted_value_retains_inspector_and_key_authority :
+  forall source value,
+    SingletonPrefilter.inspector_refines_epm1_framing inspect ->
+    admitted_value source = Some value ->
+    exists result key,
+      inspect source = Some result /\
+      decode_epm1_prefix source = Some (SingletonPrefilter.inspected_snapshot result, []) /\
+      snapshot_mode (SingletonPrefilter.inspected_snapshot result) = MapMode /\
+      SingletonPrefilter.inspected_keys result = [key] /\
+      value_bodies (SingletonPrefilter.inspected_snapshot result) = [value] /\
+      admit_key key = Some true.
+Proof.
+  intros source value refinement. unfold admitted_value,
+    SingletonPrefilter.prefiltered_singleton_import, SingletonPrefilter.original_singleton_import.
+  destruct (SingletonPrefilter.singleton_hint source); try discriminate.
+  destruct (inspect source) as [result|] eqn:inspected; try discriminate.
+  destruct (SingletonPrefilter.singleton_inspection result) eqn:singleton; try discriminate.
+  destruct (SingletonPrefilter.inspected_keys result) as [|key [|extra key_tail]] eqn:keys; try discriminate.
+  destruct (value_bodies (SingletonPrefilter.inspected_snapshot result)) as [|body [|extra value_tail]] eqn:values;
+    try discriminate.
+  destruct (admit_key key) as [[|]|] eqn:admitted; try discriminate.
+  intro same. inversion same; subst.
+  exists result, key. repeat split; try assumption.
+  - now apply refinement.
+  - unfold SingletonPrefilter.singleton_inspection in singleton.
+    destruct (snapshot_mode (SingletonPrefilter.inspected_snapshot result)); try discriminate; reflexivity.
+Qed.
+
+Inductive recursive_reference : bytes -> list layer -> bytes -> Prop :=
+| ReferenceTerminal : forall source terminal,
+    admitted_value source = Some terminal -> nested_parts_cursor terminal = None ->
+    recursive_reference source [] terminal
+| ReferenceNested : forall source value root parts layers terminal,
+    admitted_value source = Some value -> nested_parts_cursor value = Some (root, parts) ->
+    length (snapshot parts) < length source ->
+    recursive_reference (snapshot parts) layers terminal ->
+    recursive_reference source (Layer value root parts :: layers) terminal.
+
+Definition transition (state : machine_state) : action :=
+  match admitted_value (current_snapshot state) with
+  | None => Stop None
+  | Some value =>
+      if current_depth state <? depth_limit then
+        match nested_parts_cursor value with
+        | None => Stop (Some (ChainResult (S (current_depth state)) value (accumulated_stability state)))
+        | Some (root, parts) =>
+            if length (snapshot parts) <? length (current_snapshot state) then
+              Resume (MachineState (snapshot parts) (S (current_depth state))
+                (accumulated_stability state && nested_metadata_stable root parts))
+            else Stop None
+        end
+      else Stop None
+  end.
+
+Inductive executes : machine_state -> option chain_result -> Prop :=
+| ExecuteStop : forall state output, transition state = Stop output -> executes state output
+| ExecuteResume : forall state next output,
+    transition state = Resume next -> executes next output -> executes state output.
+
+Lemma transition_return_exact :
+  forall source depth stable result,
+    transition (MachineState source depth stable) = Stop (Some result) <->
+    exists terminal,
+      admitted_value source = Some terminal /\ depth < depth_limit /\
+      nested_parts_cursor terminal = None /\ result = ChainResult (S depth) terminal stable.
+Proof.
+  intros source depth stable result. split.
+  - unfold transition. cbn [current_snapshot current_depth accumulated_stability].
+    destruct (admitted_value source) as [value|] eqn:admitted; try discriminate.
+    destruct (depth <? depth_limit) eqn:bounded; try discriminate.
+    destruct (nested_parts_cursor value) as [[root parts]|] eqn:nested.
+    + destruct (length (snapshot parts) <? length source); discriminate.
+    + intro same. inversion same; subst. exists value.
+      apply Nat.ltb_lt in bounded. auto.
+  - intros [terminal [admitted [bounded [nested ->]]]].
+    unfold transition. cbn [current_snapshot current_depth accumulated_stability].
+    apply Nat.ltb_lt in bounded. now rewrite admitted, bounded, nested.
+Qed.
+
+Lemma transition_resume_exact :
+  forall source depth stable next,
+    transition (MachineState source depth stable) = Resume next <->
+    exists value root parts,
+      admitted_value source = Some value /\ nested_parts_cursor value = Some (root, parts) /\
+      length (snapshot parts) < length source /\ depth < depth_limit /\
+      next = MachineState (snapshot parts) (S depth) (stable && nested_metadata_stable root parts).
+Proof.
+  intros source depth stable next. split.
+  - unfold transition. cbn [current_snapshot current_depth accumulated_stability].
+    destruct (admitted_value source) as [value|] eqn:admitted; try discriminate.
+    destruct (depth <? depth_limit) eqn:bounded; try discriminate.
+    destruct (nested_parts_cursor value) as [[root parts]|] eqn:nested; try discriminate.
+    destruct (length (snapshot parts) <? length source) eqn:shrinks; try discriminate.
+    intro same. inversion same; subst. exists value, root, parts.
+    apply Nat.ltb_lt in bounded, shrinks. auto.
+  - intros [value [root [parts [admitted [nested [shrinks [bounded ->]]]]]]].
+    unfold transition. cbn [current_snapshot current_depth accumulated_stability].
+    apply Nat.ltb_lt in bounded, shrinks. now rewrite admitted, bounded, nested, shrinks.
+Qed.
+
+Lemma executes_sound :
+  forall state output,
+    executes state output ->
+    match output with
+    | None => True
+    | Some result =>
+        exists layers,
+          recursive_reference (current_snapshot state) layers (result_terminal result) /\
+          result_depth result = current_depth state + S (length layers) /\
+          result_stability result = accumulated_stability state && metadata_fold layers /\
+          result_depth result <= depth_limit
+    end.
+Proof.
+  intros state output execution.
+  induction execution as [state output stopped|state next output resumed execution induction].
+  - destruct output as [result|]; [|exact I]. destruct state as [source depth stable].
+    apply transition_return_exact in stopped.
+    destruct stopped as [terminal [admitted [bounded [nested ->]]]].
+    exists []. cbn [current_snapshot current_depth accumulated_stability result_terminal result_depth result_stability metadata_fold length].
+    split; [now constructor|]. rewrite andb_true_r. repeat split; lia.
+  - destruct output as [result|]; [|exact I]. destruct state as [source depth stable].
+    apply transition_resume_exact in resumed.
+    destruct resumed as [value [root [parts [admitted [nested [shrinks [bounded ->]]]]]]].
+    destruct induction as [layers [reference [exact_depth [exact_stability result_bound]]]].
+    exists (Layer value root parts :: layers).
+    cbn [current_snapshot current_depth accumulated_stability] in *.
+    split; [econstructor; eassumption|].
+    cbn [length metadata_fold layer_root layer_map].
+    split; [lia|]. split; [|exact result_bound].
+    rewrite exact_stability. now rewrite andb_assoc.
+Qed.
+
+Lemma reference_executes :
+  forall source layers terminal,
+    recursive_reference source layers terminal ->
+    forall depth stable,
+      depth + S (length layers) <= depth_limit ->
+      executes (MachineState source depth stable)
+        (Some (ChainResult (depth + S (length layers)) terminal (stable && metadata_fold layers))).
+Proof.
+  intros source layers terminal reference.
+  induction reference as [source terminal admitted nested|
+    source value root parts layers terminal admitted nested shrinks reference induction];
+    intros depth stable bounded.
+  - cbn [length metadata_fold] in *. rewrite andb_true_r.
+    replace (depth + 1) with (S depth) by lia.
+    apply ExecuteStop. apply transition_return_exact. exists terminal. repeat split; auto; lia.
+  - eapply ExecuteResume with
+      (next := MachineState (snapshot parts) (S depth) (stable && nested_metadata_stable root parts)).
+    + apply transition_resume_exact. exists value, root, parts. repeat split; auto; cbn in bounded; lia.
+    + specialize (induction (S depth) (stable && nested_metadata_stable root parts)).
+      cbn [length metadata_fold layer_root layer_map] in *.
+      replace (depth + S (S (length layers))) with (S depth + S (length layers)) by lia.
+      rewrite andb_assoc. apply induction. lia.
+Qed.
+
+Lemma executions_are_deterministic :
+  forall state left, executes state left ->
+    forall right, executes state right -> left = right.
+Proof.
+  intros state left execution. induction execution as
+    [state left stopped|state next left resumed execution induction];
+    intros right other; inversion other; subst; try congruence.
+  match goal with same : transition state = Resume _ |- _ =>
+    rewrite resumed in same; inversion same; subst end.
+  now apply induction.
+Qed.
+
+Lemma bounded_execution_exists :
+  forall fuel state,
+    length (current_snapshot state) < fuel -> exists output, executes state output.
+Proof.
+  induction fuel as [|fuel induction]; intros state bounded; [lia|].
+  destruct (transition state) as [output|next] eqn:step.
+  - exists output. now constructor.
+  - destruct state as [source depth stable]. apply transition_resume_exact in step.
+    destruct step as [value [root [parts [admitted [nested [shrinks [depth_bound ->]]]]]]].
+    destruct (induction (MachineState (snapshot parts) (S depth)
+      (stable && nested_metadata_stable root parts))) as [output execution].
+    + cbn [current_snapshot] in *. lia.
+    + exists output. eapply ExecuteResume; [|exact execution].
+      apply transition_resume_exact. exists value, root, parts. auto.
+Qed.
+
+Theorem chain_machine_terminates_and_checks_progress :
+  (forall state, exists output, executes state output) /\
+  (forall state next, transition state = Resume next ->
+    length (current_snapshot next) < length (current_snapshot state) /\
+    current_depth next = S (current_depth state) /\ current_depth next <= depth_limit).
+Proof.
+  split.
+  - intro state. apply bounded_execution_exists with (fuel := S (length (current_snapshot state))). lia.
+  - intros [source depth stable] next step. apply transition_resume_exact in step.
+    destruct step as [value [root [parts [_ [_ [shrinks [bounded ->]]]]]]].
+    cbn [current_snapshot current_depth]. auto with arith.
+Qed.
+
+Theorem chain_machine_matches_recursive_reference :
+  forall source result,
+    executes (MachineState source 0 true) (Some result) <->
+    exists layers,
+      recursive_reference source layers (result_terminal result) /\
+      result_depth result = S (length layers) /\
+      result_stability result = metadata_fold layers /\ result_depth result <= depth_limit.
+Proof.
+  intros source result. split.
+  - intro execution. apply executes_sound in execution. exact execution.
+  - intros [layers [reference [depth_same [stable_same bounded]]]].
+    pose proof (reference_executes reference 0 true) as execution.
+    cbn [Nat.add andb] in execution. rewrite <- depth_same, <- stable_same in execution.
+    destruct result. cbn in *. now apply execution.
+Qed.
+
+Theorem chain_refusal_has_no_bounded_reference :
+  forall source,
+    executes (MachineState source 0 true) None <->
+    ~ exists layers terminal,
+      recursive_reference source layers terminal /\ S (length layers) <= depth_limit.
+Proof.
+  intro source. split.
+  - intros refused [layers [terminal [reference bounded]]].
+    pose proof (reference_executes reference 0 true bounded) as accepted.
+    pose proof (executions_are_deterministic refused accepted). discriminate.
+  - intro no_reference.
+    destruct (proj1 chain_machine_terminates_and_checks_progress (MachineState source 0 true)) as [[result|] execution];
+      [|exact execution].
+    exfalso. apply chain_machine_matches_recursive_reference in execution.
+    destruct execution as [layers [reference [depth_same [_ bounded]]]].
+    apply no_reference. exists layers, (result_terminal result). split; [exact reference|lia].
+Qed.
+
+Definition control_shape (next : action) : nat * (bytes * nat) :=
+  match next with
+  | Stop None => (0, ([], 0))
+  | Stop (Some result) => (1, (result_terminal result, result_depth result))
+  | Resume state => (2, (current_snapshot state, current_depth state))
+  end.
+
+Theorem accumulated_false_does_not_bypass_admission :
+  (forall source depth left right,
+    control_shape (transition (MachineState source depth left)) =
+      control_shape (transition (MachineState source depth right))) /\
+  (forall source depth,
+    admitted_value source = None -> transition (MachineState source depth false) = Stop None).
+Proof.
+  split.
+  - intros source depth left right. unfold transition.
+    cbn [current_snapshot current_depth accumulated_stability].
+    destruct (admitted_value source) as [value|]; [|reflexivity].
+    destruct (depth <? depth_limit); [|reflexivity].
+    destruct (nested_parts_cursor value) as [[root parts]|]; [|reflexivity].
+    destruct (length (snapshot parts) <? length source); reflexivity.
+  - intros source depth rejected. unfold transition. cbn [current_snapshot]. now rewrite rejected.
+Qed.
+
+Definition all_metadata_clear (entry : layer) : Prop :=
+  carrier_locally_free (layer_root entry) = [] /\
+  carrier_connective (layer_root entry) = false /\
+  locally_free_is_empty (layer_map entry) = true /\
+  connective_used (layer_map entry) = false /\ remainder (layer_map entry) = None.
+
+Lemma nested_metadata_exact_axes :
+  forall value root parts,
+    nested_metadata_stable root parts = true <-> all_metadata_clear (Layer value root parts).
+Proof.
+  intros value [expr lf connective] [body map_connective lf_empty rem].
+  unfold nested_metadata_stable, map_metadata_stable, all_metadata_clear.
+  cbn [carrier_locally_free carrier_connective locally_free_is_empty connective_used remainder layer_root layer_map].
+  destruct lf, connective, map_connective, lf_empty, rem; cbn; intuition discriminate.
+Qed.
+
+Theorem chain_fold_accounts_for_every_metadata_axis :
+  forall layers, metadata_fold layers = true <-> Forall all_metadata_clear layers.
+Proof.
+  induction layers as [|[value root parts] tail induction].
+  - cbn [metadata_fold]. split; intro; [constructor|reflexivity].
+  - cbn [metadata_fold layer_root layer_map].
+    rewrite andb_true_iff, (@nested_metadata_exact_axes value root parts), induction.
+    split; [intros [head_clear tail_clear]; constructor; assumption|intro all; inversion all; auto].
+Qed.
+
+Definition canonical_remainder (parts : envelope) : Prop :=
+  match remainder parts with
+  | None => True
+  | Some body => exists value, BinaryVar.valid_var value /\ body = BinaryVar.encode_var value
+  end.
+
+Lemma nested_parts_canonical_remainder :
+  forall value root parts,
+    nested_parts_cursor value = Some (root, parts) -> canonical_remainder parts.
+Proof.
+  intros value root parts parsed. unfold canonical_remainder.
+  destruct (remainder parts) as [body|] eqn:present; [|exact I].
+  eapply nested_remainder_preserves_exact_var; eassumption.
+Qed.
+
+Lemma reference_preserves_every_remainder :
+  forall source layers terminal,
+    recursive_reference source layers terminal ->
+    Forall (fun entry => canonical_remainder (layer_map entry)) layers.
+Proof.
+  intros source layers terminal reference. induction reference; [constructor|].
+  constructor; [cbn [layer_map]; eapply nested_parts_canonical_remainder; eassumption|assumption].
+Qed.
+
+Record import_observation : Type := ImportObservation {
+  imported_expr : bytes;
+  imported_snapshot : bytes;
+  imported_root_locally_free : bytes;
+  imported_root_connective : bool;
+  imported_component_stable : bool;
+  imported_multiplicity : nat;
+  imported_score_connective : bool
+}.
+
+Definition observe_import (root : carrier) (parts : envelope) (nested_stable : bool) : import_observation :=
+  ImportObservation (carrier_expr root) (snapshot parts) (carrier_locally_free root)
+    (carrier_connective root) (map_metadata_stable parts && nested_stable) 1 (connective_used parts).
+
+Variable header_length : nat.
+Variable size_limit : N.
+Variable actual_score_length : carrier -> envelope -> nat.
+
+Definition checked_import_sizes (root : carrier) (parts : envelope) : Prop :=
+  (N.of_nat (header_length + length (snapshot parts) * 2 + length (carrier_expr root) + 64) <= size_limit)%N /\
+  (N.of_nat (actual_score_length root parts) < u64_limit)%N.
+
+Definition full_import_admitted (input : bytes) (observed : import_observation) : Prop :=
+  exists root parts result word,
+    nested_parts_cursor input = Some (root, parts) /\
+    executes (MachineState (snapshot parts) 0 true) (Some result) /\
+    gint_cursor (result_terminal result) = Some word /\ checked_import_sizes root parts /\
+    observed = observe_import root parts (result_stability result).
+
+Theorem full_import_exact_input_and_observations :
+  forall input observed,
+    full_import_admitted input observed ->
+    exists root parts layers word,
+      input = carrier_bytes root /\ nested_parts_cursor input = Some (root, parts) /\
+      recursive_reference (snapshot parts) layers (gint_bytes word) /\
+      S (length layers) <= depth_limit /\ (word < u64_limit)%N /\
+      canonical_remainder parts /\
+      Forall (fun entry => canonical_remainder (layer_map entry)) layers /\
+      checked_import_sizes root parts /\ observed = observe_import root parts (metadata_fold layers).
+Proof.
+  intros input observed [root [parts [result [word [parsed [execution [terminal [sizes observed_same]]]]]]]].
+  pose proof (proj1 (nested_parts_exact_composition _ _ _) parsed) as [input_same _].
+  apply chain_machine_matches_recursive_reference in execution.
+  destruct execution as [layers [reference [depth_same [stable_same bounded]]]].
+  apply gint_terminal_exact_uint64_image in terminal. destruct terminal as [word_bounded terminal_same].
+  destruct sizes as [capacity_bound score_bound].
+  rewrite terminal_same in reference. rewrite stable_same in observed_same.
+  exists root, parts, layers, word. repeat split; try assumption.
+  - lia.
+  - now apply nested_parts_canonical_remainder in parsed.
+  - eapply reference_preserves_every_remainder. exact reference.
+Qed.
+
+End Admission.
+
+Definition synthetic_leaf : bytes := encode_epm1 (Epm1Snapshot MapMode [0] [gint_bytes 0]).
+
+Definition synthetic_nested_value (child : bytes) : bytes :=
+  carrier_bytes (Carrier
+    (delimited_bytes 258 (protobuf_bytes (ProtobufEnvelope None false None child))) [7] false).
+
+Definition synthetic_outer (child : bytes) : bytes :=
+  encode_epm1 (Epm1Snapshot MapMode [0] [synthetic_nested_value child]).
+
+Definition synthetic_malformed_terminal : bytes :=
+  carrier_bytes (Carrier (delimited_bytes 258 [74]) [] false).
+
+Definition synthetic_opaque_leaf : bytes :=
+  encode_epm1 (Epm1Snapshot MapMode [0] [synthetic_malformed_terminal]).
+
+Theorem chain_positive_control :
+  executes SingletonPrefilter.synthetic_inspector (fun _ => Some true) 10
+    (MachineState (synthetic_outer synthetic_leaf) 0 true)
+    (Some (ChainResult 2 (gint_bytes 0) false)).
+Proof.
+  eapply ExecuteResume with (next := MachineState synthetic_leaf 1 false).
+  - vm_compute. reflexivity.
+  - apply ExecuteStop. vm_compute. reflexivity.
+Qed.
+
+Theorem chain_causal_refusal_controls :
+  executes SingletonPrefilter.synthetic_inspector (fun _ => Some true) 0
+    (MachineState synthetic_leaf 0 true) None /\
+  executes SingletonPrefilter.synthetic_inspector (fun _ => Some true) 10
+    (MachineState (synthetic_outer SingletonPrefilter.forged_count) 0 true) None /\
+  transition SingletonPrefilter.synthetic_inspector (fun _ => None) 10
+    (MachineState synthetic_leaf 1 false) = Stop None /\
+  transition SingletonPrefilter.synthetic_inspector (fun _ => Some false) 10
+    (MachineState synthetic_leaf 1 false) = Stop None /\
+  executes SingletonPrefilter.synthetic_inspector (fun _ => Some true) 10
+    (MachineState synthetic_opaque_leaf 0 true)
+    (Some (ChainResult 1 synthetic_malformed_terminal true)) /\
+  gint_cursor synthetic_malformed_terminal = None.
+Proof.
+  split; [apply ExecuteStop; vm_compute; reflexivity|].
+  split.
+  - eapply ExecuteResume with (next := MachineState SingletonPrefilter.forged_count 1 false).
+    + vm_compute. reflexivity.
+    + apply ExecuteStop. vm_compute. reflexivity.
+  - split; [vm_compute; reflexivity|].
+    split; [vm_compute; reflexivity|].
+    split; [apply ExecuteStop; vm_compute; reflexivity|vm_compute; reflexivity].
+Qed.
+
+Print Assumptions admitted_value_retains_inspector_and_key_authority.
+Print Assumptions chain_machine_terminates_and_checks_progress.
+Print Assumptions chain_machine_matches_recursive_reference.
+Print Assumptions chain_refusal_has_no_bounded_reference.
+Print Assumptions accumulated_false_does_not_bypass_admission.
+Print Assumptions chain_fold_accounts_for_every_metadata_axis.
+Print Assumptions full_import_exact_input_and_observations.
+Print Assumptions chain_positive_control.
+Print Assumptions chain_causal_refusal_controls.
+
+End Chain.

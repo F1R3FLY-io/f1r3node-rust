@@ -1,11 +1,242 @@
 use std::cell::Cell;
 
-use super::{canonical_singleton_epathmap_chain_proof, read_canonical_varint};
-use crate::rhoapi::expr::ExprInstance;
-use crate::rhoapi::{EPathMap, Expr, Par};
-use crate::rust::epathmap_trie_codec::{
-    inspect_canonical_map_snapshot, inspect_canonical_snapshot, snapshot_route_hint,
+use super::epathmap_envelope_admission_tests::{
+    encode, field, frame, reference, reference_carrier,
 };
+use super::{
+    canonical_singleton_epathmap_chain_proof, canonical_singleton_epathmap_parts,
+    import_canonical_singleton_epathmap_par, read_canonical_varint,
+};
+use crate::rhoapi::expr::ExprInstance;
+use crate::rhoapi::var::VarInstance;
+use crate::rhoapi::{EPathMap, Expr, Par, Var};
+use crate::rust::epathmap_trie_codec::{
+    CanonicalSnapshotKey, EPathMapMode, inspect_canonical_map_snapshot, inspect_canonical_snapshot,
+    snapshot_route_hint,
+};
+use crate::rust::rholang::protobuf_encoder;
+
+fn stable_key(snapshot: &[u8], key: &CanonicalSnapshotKey) -> Option<bool> {
+    let bytes = match key {
+        CanonicalSnapshotKey::Relative(range) => snapshot.get(range.clone())?,
+        CanonicalSnapshotKey::Owned(bytes) => bytes,
+    };
+    crate::rust::canonical_path::validate_canonical_path(bytes)
+        .ok()
+        .map(|parts| parts.stable)
+}
+
+fn nested_reference(value: &[u8]) -> Option<(&[u8], bool)> {
+    let (expr, lf, connective) = reference_carrier(value)?;
+    let mut input = expr.strip_prefix(&[130])?;
+    let body = frame(&mut input, 2)?;
+    if !input.is_empty() {
+        return None;
+    }
+    let (snapshot, map_connective, map_lf_empty, remainder) = reference(body)?;
+    Some((
+        snapshot,
+        lf.is_empty() && !connective && map_lf_empty && !map_connective && remainder.is_none(),
+    ))
+}
+
+fn recursive_chain_reference(snapshot: &[u8]) -> Option<(usize, &[u8], bool)> {
+    let inspection = inspect_canonical_map_snapshot(snapshot).ok()?;
+    if inspection.mode != EPathMapMode::Map
+        || inspection.keys.len() != 1
+        || inspection.value_bodies.len() != 1
+        || stable_key(snapshot, &inspection.keys[0]) != Some(true)
+    {
+        return None;
+    }
+    let value = snapshot.get(inspection.value_bodies[0].clone())?;
+    let Some((nested, stable)) = nested_reference(value) else {
+        return Some((1, value, true));
+    };
+    if nested.len() >= snapshot.len() {
+        return None;
+    }
+    let (depth, terminal, rest_stable) = recursive_chain_reference(nested)?;
+    Some((depth.checked_add(1)?, terminal, stable && rest_stable))
+}
+
+fn observed_chain(snapshot: &[u8]) -> Option<(usize, &[u8], bool)> {
+    canonical_singleton_epathmap_chain_proof(snapshot)
+        .map(|parts| (parts.depth, parts.terminal, parts.nested_values_stable))
+}
+
+fn snapshot_carrier(snapshot: &[u8]) -> Vec<u8> {
+    field(42, &field(258, &encode(None, false, None, snapshot)))
+}
+
+type Metadata = (bool, bool, bool, bool, bool);
+
+fn metadata_chain(layers: &[Metadata], terminal: i64) -> Par {
+    let mut value = int(terminal);
+    for &(root_lf, root_connective, map_lf, map_connective, remainder) in layers.iter().rev() {
+        value = carrier(EPathMap::new_map(
+            [(int(1), value)],
+            if map_lf { vec![1] } else { Vec::new() },
+            map_connective,
+            remainder.then(Var::default),
+        ))
+        .with_locally_free(if root_lf { vec![1] } else { Vec::new() })
+        .with_connective_used(root_connective);
+    }
+    value
+}
+
+fn check_metadata_chain(layers: &[Metadata], terminal: i64) {
+    let expected = metadata_chain(layers, terminal);
+    let bytes = protobuf_encoder::encode_to_vec(&expected);
+    let parts = canonical_singleton_epathmap_parts(&bytes).unwrap();
+    let observed = observed_chain(parts.snapshot).unwrap();
+    assert_eq!(Some(observed), recursive_chain_reference(parts.snapshot));
+    assert_eq!(observed.0, layers.len());
+    assert_eq!(observed.1, protobuf_encoder::encode_to_vec(&int(terminal)));
+    let clear = |&(root_lf, root_connective, map_lf, map_connective, remainder): &Metadata| {
+        !root_lf && !root_connective && !map_lf && !map_connective && !remainder
+    };
+    assert_eq!(observed.2, layers[1..].iter().all(clear));
+    let component_stable = !layers[0].2 && !layers[0].3 && !layers[0].4 && observed.2;
+    let imported = import_canonical_singleton_epathmap_par(&bytes).unwrap();
+    assert_eq!(
+        imported.components().cached_canonical_path_stability(),
+        Some(component_stable)
+    );
+    assert_eq!(
+        expected.components().cached_canonical_path_stability(),
+        Some(component_stable)
+    );
+    assert_eq!(
+        crate::rust::pathmap_crate_type_mapper::eval_stable_par_for_test(&expected),
+        component_stable && !layers[0].0 && !layers[0].1
+    );
+    assert_eq!(
+        crate::rust::pathmap_crate_type_mapper::eval_stable_par_for_test(&imported),
+        component_stable && !layers[0].0 && !layers[0].1
+    );
+    assert_eq!(protobuf_encoder::encode_to_vec(&imported), bytes);
+    assert_eq!(imported, expected);
+    assert_eq!(imported.locally_free(), expected.locally_free());
+    assert_eq!(imported.connective_used(), expected.connective_used());
+    assert_eq!(
+        crate::rust::canonical_path::encode_trie_path(&imported),
+        crate::rust::canonical_path::encode_trie_path(&expected)
+    );
+}
+
+#[test]
+fn singleton_chain_proof_every_metadata_axis_and_integer_extremum() {
+    for terminal in [i64::MIN, -1, 0, 1, i64::MAX] {
+        let clean = (false, false, false, false, false);
+        check_metadata_chain(&[clean, clean, clean], terminal);
+        for level in 0..3 {
+            for axis in 0..5 {
+                let mut layers = [clean; 3];
+                layers[level] = (axis == 0, axis == 1, axis == 2, axis == 3, axis == 4);
+                check_metadata_chain(&layers, terminal);
+            }
+        }
+    }
+}
+
+#[test]
+fn singleton_chain_proof_false_stability_does_not_skip_later_act() {
+    let child = carrier(map(1, 4)).with_locally_free(vec![1]);
+    let outer = EPathMap::new_map([(int(1), child)], Vec::new(), false, None);
+    let snapshot = outer.trie_snapshot();
+    let (positive, work) = observe(|| observed_chain(snapshot));
+    assert_eq!(positive.unwrap().2, false);
+    assert_eq!(work.inspections, 2);
+    let inspection = inspect_canonical_map_snapshot(snapshot).unwrap();
+    let value = &snapshot[inspection.value_bodies[0].clone()];
+    let nested = canonical_singleton_epathmap_parts(value).unwrap().snapshot;
+    let (arena_start, _, _) = arena_and_count(nested);
+    let offset = nested.as_ptr() as usize - snapshot.as_ptr() as usize + arena_start;
+    let mut malformed = snapshot.to_vec();
+    malformed[offset] = 255;
+    let (actual, work) = observe(|| observed_chain(&malformed));
+    assert_eq!(actual, None);
+    assert_eq!(work.inspections, 2);
+    assert_eq!(recursive_chain_reference(&malformed), None);
+    assert!(import_canonical_singleton_epathmap_par(&snapshot_carrier(&malformed)).is_none());
+}
+
+#[test]
+fn singleton_chain_proof_invalid_and_unstable_keys_decline() {
+    let valid = map(1, 4);
+    let snapshot = valid.trie_snapshot();
+    assert!(observed_chain(snapshot).is_some());
+    let inspection = inspect_canonical_map_snapshot(snapshot).unwrap();
+    assert_eq!(stable_key(snapshot, &inspection.keys[0]), Some(true));
+    let CanonicalSnapshotKey::Relative(range) = &inspection.keys[0] else {
+        panic!("single inline ACT key fixture must expose its source range");
+    };
+    let mut invalid = snapshot.to_vec();
+    invalid[range.start] = 255;
+    let inspected = inspect_canonical_map_snapshot(&invalid).unwrap();
+    assert_eq!(stable_key(&invalid, &inspected.keys[0]), None);
+    assert_eq!(observed_chain(&invalid), None);
+    assert_eq!(recursive_chain_reference(&invalid), None);
+    let unstable = EPathMap::new_map(
+        [(int(1).with_connective_used(true), int(7))],
+        Vec::new(),
+        false,
+        None,
+    );
+    let snapshot = unstable.trie_snapshot();
+    let inspected = inspect_canonical_map_snapshot(snapshot).unwrap();
+    assert_eq!(stable_key(snapshot, &inspected.keys[0]), Some(false));
+    assert_eq!(observed_chain(snapshot), None);
+    assert_eq!(recursive_chain_reference(snapshot), None);
+}
+
+#[test]
+fn singleton_chain_proof_opaque_malformed_terminal_is_not_full_import() {
+    let inner = carrier(EPathMap::new_map(
+        [(int(1), int(7))],
+        Vec::new(),
+        false,
+        Some(Var {
+            var_instance: Some(VarInstance::FreeVar(0)),
+        }),
+    ));
+    let outer = EPathMap::new_map([(int(1), inner)], Vec::new(), false, None);
+    let snapshot = outer.trie_snapshot();
+    assert!(import_canonical_singleton_epathmap_par(&snapshot_carrier(snapshot)).is_some());
+    let inspection = inspect_canonical_map_snapshot(snapshot).unwrap();
+    let value_range = inspection.value_bodies[0].clone();
+    let (expr, _, _) = reference_carrier(&snapshot[value_range.clone()]).unwrap();
+    let remainder = super::canonical_epathmap_parts_from_expr(expr)
+        .unwrap()
+        .remainder
+        .unwrap();
+    let offset = remainder.as_ptr() as usize - snapshot.as_ptr() as usize;
+    let mut malformed = snapshot.to_vec();
+    malformed[offset] = 32;
+    let proof = observed_chain(&malformed).unwrap();
+    assert_eq!(proof.0, 1);
+    assert_eq!(proof.1, &malformed[value_range]);
+    assert_eq!(Some(proof), recursive_chain_reference(&malformed));
+    assert!(!super::canonical_singleton_gint_par(proof.1));
+    assert!(import_canonical_singleton_epathmap_par(&snapshot_carrier(&malformed)).is_none());
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::WithSource("regressions"))),
+        ..proptest::test_runner::Config::with_cases(128)
+    })]
+
+    #[test]
+    fn singleton_chain_proof_recursive_reference_and_metadata(
+        layers in proptest::collection::vec(proptest::prelude::any::<Metadata>(), 1..9),
+        terminal in proptest::prelude::any::<i64>(),
+    ) {
+        check_metadata_chain(&layers, terminal);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Work {
