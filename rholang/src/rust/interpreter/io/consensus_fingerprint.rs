@@ -64,6 +64,25 @@ use linkme::distributed_slice;
 const FINGERPRINT_DELIMITER: &str = "#cf";
 const FINGERPRINT_HEX_LEN: usize = 16; // 8 bytes × 2
 
+// Minors-batch-1 review-fix (2026-09-08, S4/C3): compile-time pin
+// on the delimiter shape.  `§ 9a` in `docs/consensus-invariants.md`
+// declares these consensus-observable, but neither the literal
+// value nor the length had a test-pin before this fix — a future
+// refactor that renamed the delimiter to `#fp` or changed the hex
+// length would pass all runtime tests silently while peers on the
+// network rejected the mismatched-shape peering handshake.  Const
+// asserts fire at compile time, so a drift is caught before CI.
+const _: () = assert!(
+    FINGERPRINT_DELIMITER.len() == 3,
+    "FINGERPRINT_DELIMITER shape drifted; peers with a mismatched \
+     delimiter length reject the peering handshake."
+);
+const _: () = assert!(
+    FINGERPRINT_HEX_LEN == 16,
+    "FINGERPRINT_HEX_LEN drifted from 16 (8 bytes × 2); peers \
+     expecting the prior length reject the handshake."
+);
+
 /// M-35 review fix (S1/C1, 2026-09-08): expected count of registered
 /// `ConsensusFoldEntry` records.  Guards against silent
 /// `linkme::distributed_slice` truncation under cdylib / LTO /
@@ -275,6 +294,23 @@ pub fn augment_network_id(network_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minors-batch-1 review-fix (2026-09-08, S4/C3): runtime pin on
+    /// the exact delimiter literal.  The compile-time `const _:
+    /// () = assert!(...)` checks length; this test asserts the
+    /// exact bytes.  A rename from `#cf` to (say) `#fp` would
+    /// preserve length but split peering — this pin catches that.
+    #[test]
+    fn fingerprint_delimiter_pinned_to_hash_cf() {
+        assert_eq!(
+            FINGERPRINT_DELIMITER, "#cf",
+            "FINGERPRINT_DELIMITER drifted from `#cf`.  Peers on \
+             the network use the delimiter to split the augmented \
+             network_id; a mismatched literal fails the peering \
+             handshake with a wrong-network message.  Documented in \
+             `docs/consensus-invariants.md § 9a`."
+        );
+    }
 
     /// Determinism: two calls in the same process produce the same
     /// fingerprint.  If not, MAX_WAL_ENTRIES or the hash function
