@@ -1,6 +1,10 @@
 # Finalization and Disk Recurrence Prevention Plan
 
-**Status:** Proposed. The repair and acceptance gates below remain open.
+**Status:** Implementation started. The repair and acceptance gates below remain open.
+
+**Progress:** [Gate G0, cycle B1](../tdd-plans/soak-gates-2026-09-08.md) now rejects carrier negative controls that do not produce the expected invariant violation.
+
+The bounded pull-request formal job remains open. This cycle does not discharge finalization or disk claims.
 
 **Branch:** `fix/soak-disk-hygiene-stop`
 

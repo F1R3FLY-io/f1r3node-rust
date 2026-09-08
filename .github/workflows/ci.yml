@@ -339,6 +339,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-workflows.sh
 
+      - name: Verify TLA+ negative-control classification
+        shell: bash -euo pipefail {0}
+        run: bash scripts/ci/test-check-tla-invariants.sh
+
       - name: Verify coverage summary aggregation
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-coverage-summary.sh

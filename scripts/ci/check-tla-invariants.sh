@@ -20,11 +20,6 @@
 #   • replay_liveness/MC_ReplayHotLoop.tla / .cfg
 #   • carrier_index/MC_CarrierIndex.tla / .cfg
 #
-# A non-zero exit code from TLC for any post-fix configuration is a CI
-# failure; the pre-fix configurations (e.g. MC_ConcurrentTracker_pre_fix)
-# are *expected* to violate their invariants and are skipped here (they
-# are the formal-side counter-examples, run manually for validation).
-#
 # The exhaustive tier (RUN_EXHAUSTIVE_TLA=1) holds the configs whose state
 # spaces exceed the per-config wall-clock cap: MC_EquivocationDetector and
 # MC_EquivocationDetectorEager_3v hit the 45m cap on every nightly since
@@ -58,8 +53,7 @@ else
     for candidate in \
         /usr/share/tla/tla2tools.jar \
         /opt/tlaplus/tla2tools.jar \
-        "$HOME/.tla/tla2tools.jar"
-    do
+        "$HOME/.tla/tla2tools.jar"; do
         if [[ -f "$candidate" ]]; then
             TLC_CMD="java -XX:+UseParallelGC -jar $candidate"
             break
@@ -122,10 +116,20 @@ fi
 # Registered entries are hand-maintained above: a malformed entry or a
 # missing config file is a broken registration, not a skippable condition —
 # a silent SKIP here would let a renamed or deleted model quietly leave CI.
+NEGATIVE_CONTROLS=(
+    carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
+    carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
+)
+
 failed=0
 timeouts=0
 violations=0
-for entry in "${POST_FIX_CONFIGS[@]}"; do
+for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
+    entry="${check%%:*}"
+    expected_invariant=""
+    if [[ "$check" == *:* ]]; then
+        expected_invariant="${check#*:}"
+    fi
     if [[ "$entry" != */* ]]; then
         echo "ERROR: malformed POST_FIX_CONFIGS entry '$entry' (expected <subdir>/<config>)" >&2
         exit 2
@@ -145,15 +149,21 @@ for entry in "${POST_FIX_CONFIGS[@]}"; do
     (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
     status=$?
     set -e
-    elapsed="$(( $(date +%s) - started_epoch ))s"
-    if (( status == 0 )); then
+    elapsed="$(($(date +%s) - started_epoch))s"
+    if ((status == 0)) && [[ -z "$expected_invariant" ]]; then
         echo "OK     $entry ($elapsed)"
-    elif (( status == 124 )); then
+    elif ((status == 12)) && [[ -n "$expected_invariant" ]] &&
+        grep -Fxq "Error: Invariant $expected_invariant is violated." "$log"; then
+        echo "EXPECTED-FAIL $entry ($expected_invariant, $elapsed)"
+    elif ((status == 124)); then
         echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
         failed=$((failed + 1))
         timeouts=$((timeouts + 1))
     else
         echo "FAIL   $entry ($elapsed)"
+        if [[ -n "$expected_invariant" ]]; then
+            echo "Expected invariant $expected_invariant with TLC exit 12, received exit $status."
+        fi
         echo "--- last 40 lines of $log ---"
         tail -40 "$log"
         echo "--- end log ---"
@@ -162,9 +172,10 @@ for entry in "${POST_FIX_CONFIGS[@]}"; do
     fi
 done
 
-if (( failed > 0 )); then
+if ((failed > 0)); then
     echo "FAILED: $failed config(s) did not verify — $timeouts cap timeout(s), $violations violation-or-error(s)."
     exit 1
 fi
 
 echo "All $((${#POST_FIX_CONFIGS[@]})) post-fix TLA+ configurations clean."
+echo "All ${#NEGATIVE_CONTROLS[@]} negative controls violated their expected invariants."
