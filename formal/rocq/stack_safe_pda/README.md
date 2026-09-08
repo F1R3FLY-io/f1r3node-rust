@@ -42,7 +42,8 @@ decision with a negative EPM1 mode/count hint. It does not replace ACT validatio
 or the importer. The hint reads only framing; every hinted singleton still passes
 through the original inspector. The proof's named `inspector_refines_epm1_framing`
 premise requires a successful inspection to agree with a complete EPM1 parse.
-Twelve closed reports cover six general contracts and six synthetic controls.
+The prefilter section's twelve closed reports cover six general contracts and
+six synthetic controls. The binary Var section below adds seven closed reports.
 
 | Formal contract | Executable correspondence in `models/tests/support/epathmap_fast_import.rs` |
 |---|---|
@@ -55,18 +56,74 @@ Twelve closed reports cover six general contracts and six synthetic controls.
 The Rust counters are test-only and thread-local. Their scope is inspector calls
 and owned endpoint-key copying, not total allocation, memory residency or runtime.
 The formal controls use synthetic topology and do not establish actual ACT parser
-correctness. CEI-01–06/08 (the remaining canonical EPathMap import grammar,
-metadata/stability and importer correspondence obligations) and the shared
+correctness. CEI-02–06/08 (the remaining envelope, metadata/stability and importer
+correspondence obligations) and the shared
 byte-native key-validation replacement in task 6018 remain required.
 
 Run `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import` from the
-repository root. It rebuilds the imports, requires twelve closed reports and
-successful kernel checking, and runs twelve Rust tests with property seed
+repository root. It rebuilds the imports, requires nineteen closed reports and
+successful kernel checking, and runs fifteen Rust tests with property seed
 `41315976` by default. Proof/Rust cgroup ceilings are 2/6 GiB with swap disabled.
 Both stages are also registered in the aggregate gate; this is an internal
 admission optimization, not a new generated schema traversal/manifest entry.
 The [journal](../../../docs/design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-084--2026-09-08-reject-ineligible-singleton-imports-before-expanded-key-inspection)
 retains causal evidence and the distinction between formal premises and runtime tests.
+
+### Exact canonical Var grammar (CEI-01)
+
+`BinaryVar` models the concrete `RhoTypes.proto` oneof: empty bytes mean no selected
+arm; keys `08` and `10` select Bound and Free, respectively; `1a 00` is the empty
+Wildcard message. Scalar payloads are the unique minimal base-128 encoding of a
+zigzag-encoded signed 32-bit integer. Explicit Bound/Free zero remains distinct
+from an absent oneof. Payload arithmetic uses binary `N`, and signed values use
+`Z`; the existing EPM1 parser correspondence is symbolic, avoiding evaluation of
+large unary naturals.
+
+The seven new closed reports establish the EPM1 parser link, exact u32 encoder
+image, signed-i32/u32 zigzag bijection, exact Var encoder image, and three grouped
+positive/refusal/presence controls. The main theorem is an iff for all inputs and
+values, not a property conditional on randomly sampled acceptance. An auxiliary
+lemma proves that accepted u32 payloads occupy at most five bytes. The encoder's
+five-group budget follows from this integer bound; it is not a limit on term,
+trie or PDA traversal depth.
+
+`models/tests/support/canonical_var_admission.rs` binds these invariants to the
+existing generated protobuf encoder and production cursor. Three properties run
+1,024 cases each: all four forms round-trip; accepted bytes are exact encoder
+images with four guaranteed accepted controls in every case; and generated
+Bound/Free messages reject truncated, nonminimal-key/payload, duplicate, trailing,
+unknown-field and overflowing variants. The signed generators range over the
+full i32 domain; the existing deterministic image matrix retains extremal and
+Wildcard witnesses. These are executable implementation correspondences, not a
+claim that Rocq has verified the Rust compiler or generated machine code. No
+production Var encoding, admission rule or dependency changes.
+
+### Import contract coverage (task 5976)
+
+The prefilter result must not be mistaken for the complete fast-import proof.
+The following contracts are requirements; only CEI-01 and CEI-07 have the checked
+model sections described above. The other rows remain unproved.
+They keep the proof boundary aligned with the current implementation and its
+independent canonical encoder/semantic references.
+
+| Contract | Exact obligation | Required executable binding |
+|---|---|---|
+| CEI-01: Var bytes | Recognize exactly absent, Bound/Free signed-i32 and empty Wildcard encoder images. Minimal keys and payload varints, complete consumption, the u32 zigzag bound, and present zero versus absence are distinct obligations. | Generate signed values across the full i32 domain with guaranteed valid Bound and Free examples; compare both recognition and re-encoding. Retain extrema, truncation, redundant varints, unknown/duplicate/trailing fields, overflow and nonempty-Wildcard controls. Conditional random-byte acceptance alone is insufficient. |
+| CEI-02: remainder presence | Every present remainder has canonical Var bytes. An absent remainder differs from a present empty/default Var; both presence and bytes survive envelope recognition. | Absent/default/bound/free/wildcard cases at outer and nested levels; malformed remainders remain rejected after an earlier unstable layer. |
+| CEI-03: envelope metadata | Recognize the actual ordered EPathMap fields, reject duplicates and preserve map locally-free/connective/remainder information separately from outer Par metadata. Parsing a snapshot field does not validate its opaque ACT contents. | Canonical writer images and independent mutations of each framing, order, presence and metadata axis. |
+| CEI-04: chain traversal | The iterative chain helper agrees with a recursive reference that either descends through an eligible nested envelope or returns an opaque terminal. Successful helper output does not imply that terminal is a valid imported term. | Compare depth, terminal bytes and folded metadata; require later nested validation even after an earlier instability. |
+| CEI-05: stability fold | Key admission must succeed and classify keys as stable. Component stability includes map metadata/remainder presence and nested value-Par metadata, but excludes the outer Par metadata. An unstable admitted value is not a rejected key. | Independent semantic stability comparisons, one-axis-at-a-time metadata changes, and invalid-key controls. |
+| CEI-06: terminal filter | The full importer accepts only a metadata-free, exact singleton GInt terminal. Prove the complete importer validates every remainder, rather than falsely assigning this guarantee to the intermediate chain helper. | Noninteger, malformed nested-envelope and trailing-metadata terminals must decline the fast import; valid integer boundaries must pass. |
+| CEI-08: imported observation | The direct score corresponds to the EPathMap score tree; exact Expr bytes, outer Par metadata and multiplicity one are preserved. Fast-path decline delegates to the existing generated decoder. | Byte/term/score/hash differentials against independently constructed terms and the generated codec; preserve fallback behavior. |
+
+CEI-07 is the separately checked prefilter contract above. The Var development
+uses binary unsigned/signed arithmetic rather than evaluating large values as
+unary naturals. Reuse the existing EPM1 framing and shared admission machine;
+do not introduce another general protobuf parser to prove these local contracts.
+Task 6018 owns the remaining standalone byte-native key-admission entry and its
+resource qualification. Its existing worklist already handles message, EPM1 and
+opaque nested-path obligations; a shared entry must preserve rejected-key versus
+admitted-stability distinctions without wrapping keys in fabricated snapshots.
 
 ## Exact matcher count intervals (2026-09-07)
 

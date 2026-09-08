@@ -924,8 +924,7 @@ fn channel_image_v2_codec_proof_and_executable_boundaries_are_manifested() {
     assert!(coq_project.contains("theories/ChannelImage.v"));
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     for marker in [
-        "theories/ChannelImage.v",
-        "channel_image_closed_capstones",
+        "rocq_compile_with_closed_count theories/ChannelImage.v 11",
         "formal/verus/channel_image_cursor.rs",
     ] {
         assert!(

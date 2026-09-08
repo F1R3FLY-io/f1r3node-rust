@@ -5932,6 +5932,81 @@ The independent plan-agent review found no correctness/counter-vacuity blocker;
 its packaging observation was addressed by registering the theory in
 `_CoqProject` and documenting the proof-to-test correspondence in the formal README.
 
+**BROADER RUNTIME CHECK.** After commit `e548607a1`, the complete release-mode
+`models` library suite passes 315 tests with zero failed, ignored or filtered
+tests. The command is `cargo test --release -j4 -p models --lib -- --test-threads=4`,
+with `PROPTEST_RNG_SEED=41315976` and the same 6-GiB, zero-swap cgroup envelope.
+Its log SHA-256 is `34d40f597350c6a5950a57d836ea73ca0df7d17b121801a07b7061694bea670c`.
+This is broader correctness evidence, not a controlled timing result. Subsequent
+Var grammar proof work does not change the runtime measured by this run.
+
+**INTEGRATION-GATE REPAIR.** The expanded integration run initially passed
+22 of 23 formal-manifest tests and stopped before ParBag tests. Its ChannelImage
+check still required the old `channel_image_closed_capstones` variable, removed
+when commit `64395f681` adopted the shared proof-count helper. The actual
+eleven-proof ChannelImage gate remained intact. The assertion now requires
+`rocq_compile_with_closed_count theories/ChannelImage.v 11`; it does not add a
+dummy variable or weaken the count. The rerun passes all 23 manifest and 36
+ParBag tests, including the depth-4,096 import/ACT witness. The red log SHA-256 is
+`bc7d160dcffbd8835fd2bab33f839ae38a27c608b8f5bd9b536f681de5d7c3d3`;
+the green log SHA-256 is
+`734be395aed72c36c108e12dbee31e5af7d0d2cbaebd27216107880e95fd54a0`.
+This required verification repair is recorded on release task 7962 and changes
+no ChannelImage runtime or persistence behavior.
+
+### J-085 — 2026-09-08: exact canonical Var images before importer-fold verification
+
+**QUESTION.** Does the Var cursor accept exactly the canonical encoder's oneof
+images, including present defaults, signed boundaries and malformed bytes?
+
+**MODEL AND ORDER.** The existing `CanonicalEPathMapImport.v` now includes the
+concrete `BinaryVar` section. Its parser and encoder are definitions, not assumed
+recognizers. Unsigned and signed arithmetic use binary `N` and `Z`; the link to
+the existing EPM1 varint parser is symbolic. Seven additional closed reports
+prove exact minimal-u32 images, the signed32 zigzag bijection, exact Var images
+and non-vacuous positive/refusal/presence controls. The model rejects nonminimal,
+unknown, duplicate, trailing, truncated, overflowing and nonempty-Wildcard forms.
+It distinguishes no selected arm from an explicitly present Bound/Free zero.
+Its five-byte payload bound follows from u32, not an artificial traversal limit.
+
+Rocq compilation and kernel checking passed before adding the invariant-derived
+Rust properties. The model source SHA-256 is
+`f3934d516911f1ed632dc902e11d2a691dbf9a500f7edcbdd1be3aa44184d711`;
+the compiler log SHA-256 is
+`0f512a0362b87e02944af65935adffa07d556889cc7a1045f10c80e7ae9ce950`;
+the kernel-check log SHA-256 is
+`0b28924b6daefa4d91f02225b13f3387313c0bbec54eaa6a0ea1630a1976d37f`.
+Both proof commands use the 2-GiB, zero-swap cgroup envelope.
+
+**EXECUTABLE BINDING.** Three new properties under `models/tests/support/`
+use the existing generated encoder and production cursor. Each runs 1,024 cases
+over full-domain i32 generators and/or arbitrary byte strings. Every image
+converse case includes four guaranteed admitted forms, so rejection-heavy random
+inputs cannot make the property vacuous. Generated scalar mutations cover
+minimality, complete consumption, unknown fields, duplicates, truncation and
+overflow. The existing deterministic Var matrix supplies signed extrema and
+Wildcard cases. The shared focused gate now requires nineteen closed reports and
+fifteen executed Rust tests; it remains registered in the aggregate runner.
+
+The expanded gate passed all fifteen tests, including the three 1,024-case
+properties, and kernel checking with nineteen closed reports. Its log SHA-256 is
+`5f51012c831abbb100fc4fb2ceedd96d5b001047c09bab30e613c0e9ef32bb53`.
+The earlier broader checks in J-084 cover the unchanged production implementation;
+this checkpoint adds test-only module registration and formal evidence, not a
+new runtime admission path.
+
+**REMAINING BOUNDARY.** CEI-02–06/08 are still required. In particular, nested
+envelope recognition may decline into an opaque terminal returned by the chain
+helper. The final importer's exact singleton-GInt filter rejects that terminal
+unless it has the required image. Therefore a successful helper result is not a
+proof that all nested remainders or terminal bytes were admitted. The remaining
+model must compose both stages and preserve every metadata axis. Task 6018 still
+owns the shared byte-native key-admission entry and its resource qualification;
+the existing message/EPM1/opaque-path worklist must be reused without fabricating
+a snapshot around a standalone key. No new runtime decoder, dependency,
+consensus rule, performance result or campaign-completion claim follows from
+this proof-only extension.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

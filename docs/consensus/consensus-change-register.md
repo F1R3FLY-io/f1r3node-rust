@@ -4976,8 +4976,11 @@ entry, not a new consensus-changing surface or retirement of CBR-044.
 The prefilter model proves identical singleton import and fallback observations
 under its explicit inspector-framing premise. Real ACT controls retain rejection
 of forged counts and same-hint corruption; the generated/mutated framing property
-exercises that premise against Rust. The complete Var/stability refinement and
-shared byte-native key-admission obligations remain open. This evidence must not
+exercises that premise against Rust. The subsequent CEI-01 checkpoint proves the
+concrete Var encoder-image grammar and binds it to generated-encoder/cursor
+properties, without changing that grammar or the production decoder. The complete
+envelope/chain/stability/import refinement and shared byte-native key-admission
+obligations remain open. This evidence must not
 be promoted to a verdict for the entire admission or persistence campaign. See
 the stack-safety report §5.33.6 and PathMap journal J-084 for the exact scope.
 

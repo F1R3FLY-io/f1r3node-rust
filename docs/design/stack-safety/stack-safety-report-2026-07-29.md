@@ -9887,13 +9887,19 @@ The model-derived work controls distinguish the previous implementation:
 | Corrupted ACT with unchanged mode/count hint | Full inspection rejects | Still rejects; hint is not admission |
 
 The red run fails three of four work-control tests; the corrected run passes all
-four. The focused `--epathmap-import` gate additionally binds twelve closed Rocq
+four. The initial `--epathmap-import` gate bound twelve closed Rocq
 reports to a 128-case generated/mutated framing property and seven existing
 Var/admission/stability tests. Formal equivalence is conditional on the named
 inspector-framing refinement; the Rust property exercises that premise. Synthetic
 formal topology controls are not presented as complete ACT verification.
+The subsequent CEI-01 grammar checkpoint expands this gate to nineteen closed
+reports and fifteen tests, adding three 1,024-case Var image/mutation properties.
+Binary arithmetic proves exact signed32/u32 encoding, presence distinctions and
+malformed-image refusal; it does not replace or optimize the production decoder.
 The [PathMap journal J-084](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-084--2026-09-08-reject-ineligible-singleton-imports-before-expanded-key-inspection)
 records commands, causal controls and evidence digests.
+Journal J-085 records the Var proof-to-property binding and remaining import
+obligations. Both the initial and expanded gates passed under zero-swap limits.
 
 This eliminates the measured ineligible-width copying branch. It does not prove
 all admitted inputs decode-free or linear in physical bytes: accepted key

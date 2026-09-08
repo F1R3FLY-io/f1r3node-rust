@@ -5557,6 +5557,10 @@ mod resident_send_projection_tests;
 pub(crate) mod epathmap_fast_import_tests;
 
 #[cfg(test)]
+#[path = "../../tests/support/canonical_var_admission.rs"]
+mod canonical_var_admission_tests;
+
+#[cfg(test)]
 mod fast_key_tests {
     use super::*;
     use crate::rhoapi::{
