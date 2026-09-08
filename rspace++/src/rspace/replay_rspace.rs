@@ -34,7 +34,8 @@ use super::metrics_constants::{
     REPLAY_WAITING_CONTINUATIONS_STORED_TOTAL_METRIC,
 };
 use super::rspace_interface::{
-    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
+    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
+    ProduceCommitGuard, RSpaceResult, commit_produce,
 };
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
@@ -379,14 +380,18 @@ where
         data: A,
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        let produce_ref = Produce::create(&channel, &data, persist);
-        let _lock_guard = self.produce_lock(&channel).await;
-        metrics::counter!("replay_rspace.produce.calls", "source" => "rspace").increment(1);
-        let start = Instant::now();
-        let result = self.locked_produce(channel, data, persist, produce_ref);
-        metrics::histogram!("replay_produce_time_seconds", "source" => "rspace")
-            .record(start.elapsed().as_secs_f64());
-        result
+        self.produce_with_guard(channel, data, persist, None).await
+    }
+
+    async fn produce_guarded(
+        &self,
+        channel: C,
+        data: A,
+        persist: bool,
+        guard: &dyn ProduceCommitGuard,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        self.produce_with_guard(channel, data, persist, Some(guard))
+            .await
     }
 
     async fn install(
@@ -845,20 +850,67 @@ where
         )
     }
 
-    fn locked_produce(
+    async fn produce_with_guard(
         &self,
         channel: C,
         data: A,
         persist: bool,
-        produce_ref: Produce,
+        guard: Option<&dyn ProduceCommitGuard>,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        let produce_ref = Produce::create(&channel, &data, persist);
+        let lock_guard = self.produce_lock(&channel).await;
+        metrics::counter!("replay_rspace.produce.calls", "source" => "rspace").increment(1);
+        let start = Instant::now();
+        let data = Arc::new(data);
+        let prepared = self.locked_produce(
+            channel.clone(),
+            Arc::clone(&data),
+            persist,
+            produce_ref.clone(),
+            guard,
+        );
+        metrics::histogram!("replay_produce_time_seconds", "source" => "rspace")
+            .record(start.elapsed().as_secs_f64());
+        drop(lock_guard);
+        let notification = prepared?;
+        self.notify_produce(produce_ref, &channel, &data, persist);
+        drop(data);
+        match notification {
+            Some((candidate, comm, source)) => {
+                self.log_comm(
+                    &candidate.data_candidates,
+                    &candidate.channels,
+                    candidate.continuation.clone(),
+                    comm,
+                    "comm.produce",
+                );
+                let consume = candidate.continuation.source.clone();
+                Ok(self
+                    .wrap_result(
+                        candidate.channels,
+                        candidate.continuation,
+                        consume,
+                        candidate.data_candidates,
+                    )
+                    .map(|(continuation, data)| (continuation, data, source)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn locked_produce(
+        &self,
+        channel: C,
+        data: Arc<A>,
+        persist: bool,
+        produce_ref: Produce,
+        guard: Option<&dyn ProduceCommitGuard>,
+    ) -> Result<Option<(ProduceCandidate<C, P, A, K>, COMM, Produce)>, RSpaceError> {
         // Span[F].traceI("locked-produce") from Scala - works because this is NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-produce").entered();
         event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
 
         let grouped_channels = self.get_store().get_joins(&channel);
-
-        self.log_produce(produce_ref.clone(), &channel, &data, persist);
 
         // O(1) hash lookup. `IOEvent` derives `Hash`/`Eq`, and `Produce`'s
         // manual impls hash/compare on `self.hash` only — the metadata
@@ -870,54 +922,58 @@ where
             .lock()
             .unwrap()
             .get_distinct_values_sorted(&IOEvent::Produce(produce_ref.clone()));
-        match comms_option {
-            None => Ok(self.store_data(channel, data, persist, produce_ref)),
-            Some(comms) => {
-                match self.get_comm_or_produce_candidate(
-                    channel.clone(),
-                    data.clone(),
-                    persist,
-                    comms.clone(),
-                    produce_ref.clone(),
-                    grouped_channels,
-                ) {
-                    Some((comm, pc)) => {
-                        // ★ Produced-datum totality, mirroring the play space's
-                        // `locked_produce`: the datum rides in its own pool at
-                        // index `-1`, so the COMM consumed it exactly when a
-                        // candidate carries that index; otherwise it must be
-                        // STORED rather than dropped, or replay's post-state
-                        // diverges from play's. Stored after `handle_match`,
-                        // which addresses the store by index.
-                        let comm_consumed_the_produced_datum = pc
-                            .data_candidates
-                            .iter()
-                            .any(|candidate| candidate.datum_index < 0);
+        let prepared = comms_option.and_then(|comms| {
+            self.get_comm_or_produce_candidate(
+                channel.clone(),
+                Arc::clone(&data),
+                persist,
+                comms.clone(),
+                produce_ref.clone(),
+                grouped_channels,
+            )
+            .map(|(comm, pc)| (comm, pc, comms))
+        });
+        commit_produce(guard, || {
+            self.increment_produce_counter(&produce_ref, persist);
+            match prepared {
+                Some((comm, pc, comms)) => {
+                    // ★ Produced-datum totality, mirroring the play space's
+                    // `locked_produce`: the datum rides in its own pool at
+                    // index `-1`, so the COMM consumed it exactly when a
+                    // candidate carries that index; otherwise it must be
+                    // STORED rather than dropped, or replay's post-state
+                    // diverges from play's. Stored after `handle_match`,
+                    // which addresses the store by index.
+                    let comm_consumed_the_produced_datum = pc
+                        .data_candidates
+                        .iter()
+                        .any(|candidate| candidate.datum_index < 0);
 
-                        let result = self.handle_match(pc, comms).map(|consume_result| {
-                            let p = comm
-                                .produces
-                                .into_iter()
-                                .find(|p| p.hash == produce_ref.hash);
-                            (consume_result.0, consume_result.1, p.unwrap_or(produce_ref.clone()))
-                        });
+                    let notification = self.handle_match(&pc, comms);
+                    let source = comm
+                        .produces
+                        .into_iter()
+                        .find(|p| p.hash == produce_ref.hash)
+                        .unwrap_or(produce_ref.clone());
 
-                        if !comm_consumed_the_produced_datum {
-                            let _ = self.store_data(channel, data, persist, produce_ref);
-                        }
-
-                        Ok(result)
+                    if !comm_consumed_the_produced_datum {
+                        let _ = self.store_data(channel, data, persist, produce_ref);
                     }
-                    None => Ok(self.store_data(channel, data, persist, produce_ref)),
+
+                    Some((pc, notification, source))
+                }
+                None => {
+                    self.store_data(channel, data, persist, produce_ref);
+                    None
                 }
             }
-        }
+        })
     }
 
     fn get_comm_or_produce_candidate(
         &self,
         channel: C,
-        data: A,
+        data: Arc<A>,
         persist: bool,
         comms: Vec<COMM>,
         produce_ref: Produce,
@@ -940,15 +996,12 @@ where
     fn run_matcher_produce(
         &self,
         channel: C,
-        data: A,
+        data: Arc<A>,
         persist: bool,
         comm: COMM,
         produce_ref: Produce,
         grouped_channels: Vec<Vec<C>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
-        // Wrap once — the per-channel speculative candidates below
-        // share the payload by refcount.
-        let data = Arc::new(data);
         self.run_matcher_for_channels(
             grouped_channels,
             |channels| {
@@ -985,7 +1038,16 @@ where
                     c.clone(),
                     result
                         .into_iter()
-                        .filter(|(datum, i)| self.matches(comm.clone(), (datum.clone(), *i)))
+                        .filter(|(datum, _)| {
+                            comm.produces.contains(&datum.source) &&
+                                (datum.persist ||
+                                    *comm.times_repeated.get(&datum.source).unwrap_or(&0) ==
+                                        self.pending_produce_count(
+                                            &datum.source,
+                                            &produce_ref,
+                                            persist,
+                                        ))
+                        })
                         .collect(),
                 )
             },
@@ -1009,11 +1071,11 @@ where
         }
     }
 
-    fn handle_match(
-        &self,
-        pc: ProduceCandidate<C, P, A, K>,
-        comms: Vec<COMM>,
-    ) -> MaybeConsumeResult<C, P, A, K> {
+    fn pending_produce_count(&self, source: &Produce, pending: &Produce, persist: bool) -> i32 {
+        self.get_produce_count(source) + i32::from(!persist && source == pending)
+    }
+
+    fn handle_match(&self, pc: &ProduceCandidate<C, P, A, K>, comms: Vec<COMM>) -> COMM {
         let ProduceCandidate {
             channels,
             continuation,
@@ -1031,18 +1093,10 @@ where
 
         let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
         let comm_ref = COMM::new(
-            &data_candidates,
+            data_candidates,
             consume_ref.clone(),
             peeks.clone(),
             produce_counters_closure,
-        );
-
-        self.log_comm(
-            &data_candidates,
-            &channels,
-            continuation.clone(),
-            comm_ref.clone(),
-            "comm.produce",
         );
 
         assert!(
@@ -1054,15 +1108,15 @@ where
 
         if !persist {
             self.get_store()
-                .remove_continuation(&channels, continuation_index);
+                .remove_continuation(channels, *continuation_index);
             self.mark_replay_waiting_continuation_match();
         } else {
             self.mark_replay_waiting_continuation_match();
         }
 
         let _ = self.remove_matched_datum_and_join(channels.clone(), data_candidates.clone());
-        self.remove_bindings_for(comm_ref);
-        self.wrap_result(channels, continuation.clone(), consume_ref.clone(), data_candidates)
+        self.remove_bindings_for(comm_ref.clone());
+        comm_ref
     }
 
     fn remove_bindings_for(&self, comm_ref: COMM) {
@@ -1119,14 +1173,21 @@ where
     }
 
     pub fn log_produce(&self, produce_ref: Produce, channel: &C, data: &A, persist: bool) {
+        self.notify_produce(produce_ref.clone(), channel, data, persist);
+        self.increment_produce_counter(&produce_ref, persist);
+    }
+
+    fn notify_produce(&self, produce_ref: Produce, channel: &C, data: &A, persist: bool) {
         // Call logger for reporting events
         if let Ok(logger_guard) = self.logger.lock() {
-            logger_guard.log_produce(produce_ref.clone(), channel, data, persist);
+            logger_guard.log_produce(produce_ref, channel, data, persist);
         }
+    }
 
+    fn increment_produce_counter(&self, produce_ref: &Produce, persist: bool) {
         if !persist {
             let mut counter = self.produce_counter.lock().expect("produce counter lock");
-            let current = counter.get(&produce_ref).copied().unwrap_or(0);
+            let current = counter.get(produce_ref).copied().unwrap_or(0);
             counter.insert(produce_ref.clone(), current + 1);
         }
     }
@@ -1202,12 +1263,12 @@ where
     fn store_data(
         &self,
         channel: C,
-        data: A,
+        data: Arc<A>,
         persist: bool,
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
         self.get_store().put_datum(&channel, Datum {
-            a: Arc::new(data),
+            a: data,
             persist,
             source: produce_ref,
         });

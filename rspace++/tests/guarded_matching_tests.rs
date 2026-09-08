@@ -34,15 +34,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rspace_plus_plus::rspace::candidate_order::order_candidates_with_index;
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+use rspace_plus_plus::rspace::logging::StepCommObserver;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
-use rspace_plus_plus::rspace::rspace_interface::ISpace;
+use rspace_plus_plus::rspace::rspace_interface::{ISpace, ProduceCommitGuard, commit_produce};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::trace::event::{COMM, IOEvent, Produce};
 use serde::{Deserialize, Serialize};
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
@@ -150,6 +153,348 @@ impl Match<Pattern, String, GuardedContinuation> for GuardingMatch {
 
 type TestSpace = RSpace<String, Pattern, String, GuardedContinuation>;
 type TestReplaySpace = ReplayRSpace<String, Pattern, String, GuardedContinuation>;
+
+struct PublicationAuthority {
+    live: Arc<std::sync::RwLock<bool>>,
+    calls: AtomicUsize,
+}
+
+impl PublicationAuthority {
+    fn new(live: bool) -> Self {
+        Self {
+            live: Arc::new(std::sync::RwLock::new(live)),
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ProduceCommitGuard for PublicationAuthority {
+    fn with_commit(&self, commit: Box<dyn FnOnce() + '_>) -> Result<(), RSpaceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let live = self.live.read().expect("publication authority read");
+        if !*live {
+            return Err(RSpaceError::ProduceCommitDenied);
+        }
+        commit();
+        drop(live);
+        Ok(())
+    }
+}
+
+async fn assert_refused_publication_is_atomic(
+    space: &dyn ISpace<String, Pattern, String, GuardedContinuation>,
+    authority: &PublicationAuthority,
+) {
+    space.get_joins("reply".to_owned()).await;
+    space.get_data(&"reply".to_owned()).await;
+    space
+        .get_waiting_continuations(vec!["reply".to_owned()])
+        .await;
+    let before = space.create_soft_checkpoint().await;
+    space
+        .revert_to_soft_checkpoint(before.clone())
+        .await
+        .expect("restore checkpoint observation");
+    let result = space
+        .produce_guarded("reply".to_owned(), "7".to_owned(), false, authority)
+        .await;
+    assert_eq!(result.expect_err("revoked publication"), RSpaceError::ProduceCommitDenied);
+    let after = space.create_soft_checkpoint().await;
+    assert_eq!(before.log, after.log);
+    assert_eq!(before.produce_counter, after.produce_counter);
+    assert_eq!(before.cache_snapshot.data, after.cache_snapshot.data);
+    assert_eq!(before.cache_snapshot.continuations, after.cache_snapshot.continuations);
+    assert_eq!(
+        before.cache_snapshot.installed_continuations,
+        after.cache_snapshot.installed_continuations
+    );
+    assert_eq!(before.cache_snapshot.joins, after.cache_snapshot.joins);
+    assert_eq!(before.cache_snapshot.installed_joins, after.cache_snapshot.installed_joins);
+    space
+        .revert_to_soft_checkpoint(after)
+        .await
+        .expect("retain verified state");
+}
+
+#[tokio::test]
+async fn publication_refusal_on_cold_space_preserves_committed_root() {
+    let (space, replay, _) = fixture().await;
+    for space in [&space as &dyn ISpace<String, Pattern, String, GuardedContinuation>, &replay] {
+        let before = space.get_root().await;
+        let result = space
+            .produce_guarded(
+                "reply".to_owned(),
+                "7".to_owned(),
+                false,
+                &PublicationAuthority::new(false),
+            )
+            .await;
+        assert_eq!(result.expect_err("cold refusal"), RSpaceError::ProduceCommitDenied);
+        let after = space
+            .create_checkpoint()
+            .await
+            .expect("cold-space checkpoint");
+        assert_eq!(before, after.root);
+        assert!(after.log.is_empty());
+    }
+}
+
+struct InvalidPublicationGuard(bool);
+
+impl ProduceCommitGuard for InvalidPublicationGuard {
+    fn with_commit(&self, commit: Box<dyn FnOnce() + '_>) -> Result<(), RSpaceError> {
+        if self.0 {
+            commit();
+            Err(RSpaceError::ProduceCommitDenied)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn publication_protocol_violation_is_not_an_atomic_refusal() {
+    let calls = AtomicUsize::new(0);
+    for invoke in [false, true] {
+        assert_eq!(
+            commit_produce(Some(&InvalidPublicationGuard(invoke)), || calls
+                .fetch_add(1, Ordering::SeqCst)),
+            Err(RSpaceError::ProduceCommitProtocolViolation)
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn publication_guard_commits_once_or_not_at_all() {
+    let calls = AtomicUsize::new(0);
+    let authority = PublicationAuthority::new(false);
+    assert_eq!(
+        commit_produce(Some(&authority), || calls.fetch_add(1, Ordering::SeqCst)),
+        Err(RSpaceError::ProduceCommitDenied)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    *authority.live.write().expect("restore authority") = true;
+    assert_eq!(commit_produce(Some(&authority), || calls.fetch_add(1, Ordering::SeqCst)), Ok(0));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(commit_produce(None, || calls.fetch_add(1, Ordering::SeqCst)), Ok(1));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn publication_refusal_preserves_matched_and_unmatched_play_and_replay() {
+    for matched in [false, true] {
+        let (space, replay, _) = fixture().await;
+        let empty = space.create_checkpoint().await.expect("empty checkpoint");
+        if matched {
+            space
+                .consume(
+                    vec!["reply".to_owned()],
+                    vec![Pattern::Wildcard],
+                    GuardedContinuation::unguarded("receiver"),
+                    false,
+                    BTreeSet::new(),
+                )
+                .await
+                .expect("waiting receiver");
+        }
+        let authority = PublicationAuthority::new(false);
+        assert_refused_publication_is_atomic(&space, &authority).await;
+        *authority.live.write().expect("restore authority") = true;
+        let play_result = space
+            .produce_guarded("reply".to_owned(), "7".to_owned(), false, &authority)
+            .await
+            .expect("authorized play produce");
+        assert_eq!(play_result.is_some(), matched);
+        let expected = space.create_soft_checkpoint().await;
+        space.revert_to_soft_checkpoint(expected.clone()).await.expect("restore play observation");
+        let trace = space.create_checkpoint().await.expect("trace checkpoint");
+        let expected_root = trace.root;
+        replay
+            .rig_and_reset(empty.root, trace.log)
+            .await
+            .expect("rig replay");
+        if matched {
+            replay
+                .consume(
+                    vec!["reply".to_owned()],
+                    vec![Pattern::Wildcard],
+                    GuardedContinuation::unguarded("receiver"),
+                    false,
+                    BTreeSet::new(),
+                )
+                .await
+                .expect("replay waiting receiver");
+        }
+        let source = IOEvent::Produce(Produce::create(&"reply".to_owned(), &"7".to_owned(), false));
+        let bindings_before = replay
+            .replay_data
+            .lock()
+            .expect("replay bindings")
+            .get_distinct_values_sorted(&source);
+        *authority.live.write().expect("revoke before publication") = false;
+        assert_refused_publication_is_atomic(&replay, &authority).await;
+        assert_eq!(
+            bindings_before,
+            replay
+                .replay_data
+                .lock()
+                .expect("replay bindings")
+                .get_distinct_values_sorted(&source)
+        );
+        *authority.live.write().expect("restore authority") = true;
+        let replay_result = replay
+            .produce_guarded("reply".to_owned(), "7".to_owned(), false, &authority)
+            .await
+            .expect("authorized replay produce");
+        assert_eq!(replay_result.is_some(), matched);
+        let replayed = replay.create_soft_checkpoint().await;
+        assert_eq!(expected.produce_counter, replayed.produce_counter);
+        replay.revert_to_soft_checkpoint(replayed).await.expect("restore replay observation");
+        replay
+            .check_replay_data()
+            .await
+            .expect("all replay bindings consumed");
+        assert_eq!(expected_root, replay.create_checkpoint().await.expect("replay checkpoint").root);
+        assert_eq!(authority.calls.load(Ordering::SeqCst), 4);
+    }
+}
+
+#[tokio::test]
+async fn publication_replay_overlay_covers_repeated_identical_sources() {
+    let (space, replay, _) = fixture().await;
+    let empty = space.create_checkpoint().await.expect("empty checkpoint");
+    let authority = PublicationAuthority::new(true);
+    space
+        .consume(
+            vec!["reply".to_owned(); 2],
+            vec![Pattern::Wildcard; 2],
+            GuardedContinuation::unguarded("pair"),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("pair receiver");
+    assert!(
+        space
+            .produce_guarded("reply".to_owned(), "7".to_owned(), false, &authority)
+            .await
+            .expect("first identical produce")
+            .is_none()
+    );
+    let play = space
+        .produce_guarded("reply".to_owned(), "7".to_owned(), false, &authority)
+        .await
+        .expect("second identical produce")
+        .expect("pair COMM");
+    let trace = space.create_checkpoint().await.expect("trace");
+    replay
+        .rig_and_reset(empty.root, trace.log)
+        .await
+        .expect("rig replay");
+    replay
+        .consume(
+            vec!["reply".to_owned(); 2],
+            vec![Pattern::Wildcard; 2],
+            GuardedContinuation::unguarded("pair"),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("replay pair receiver");
+    assert!(
+        replay
+            .produce_guarded("reply".to_owned(), "7".to_owned(), false, &authority)
+            .await
+            .expect("replay first produce")
+            .is_none()
+    );
+    let replayed = replay
+        .produce_guarded("reply".to_owned(), "7".to_owned(), false, &authority)
+        .await
+        .expect("replay second produce")
+        .expect("replay pair COMM");
+    assert_eq!(play.0.continuation, replayed.0.continuation);
+    assert_eq!(
+        play.1.iter().map(|d| &d.matched_datum).collect::<Vec<_>>(),
+        replayed
+            .1
+            .iter()
+            .map(|d| &d.matched_datum)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(play.2, replayed.2);
+    replay
+        .check_replay_data()
+        .await
+        .expect("all repeated bindings consumed");
+    assert_eq!(space.to_map().await, replay.to_map().await);
+}
+
+struct RevokingPublicationObserver {
+    live: Arc<std::sync::RwLock<bool>>,
+    calls: AtomicUsize,
+}
+
+impl StepCommObserver<String, Pattern, String, GuardedContinuation>
+    for RevokingPublicationObserver
+{
+    fn observe_comm(
+        &self,
+        _: &[String],
+        _: &[String],
+        _: &[Pattern],
+        _: &GuardedContinuation,
+        _: &COMM,
+        _: &str,
+    ) {
+        let mut live = self
+            .live
+            .try_write()
+            .expect("observer must not run under authority guard");
+        *live = false;
+        self.calls.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn publication_observer_can_revoke_after_commit() {
+    let (mut space, _, _) = fixture().await;
+    let authority = PublicationAuthority::new(true);
+    let observer = Arc::new(RevokingPublicationObserver {
+        live: Arc::clone(&authority.live),
+        calls: AtomicUsize::new(0),
+    });
+    space.set_step_observer(Some(observer.clone()));
+    space
+        .consume(
+            vec!["reply".to_owned()],
+            vec![Pattern::Wildcard],
+            GuardedContinuation::unguarded("receiver"),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("waiting receiver");
+    assert!(
+        space
+            .produce_guarded("reply".to_owned(), "7".to_owned(), false, &authority)
+            .await
+            .expect("committed reply")
+            .is_some()
+    );
+    assert_eq!(observer.calls.load(Ordering::SeqCst), 1);
+    assert!(!*authority.live.read().expect("revoked authority"));
+    assert!(space.get_data(&"reply".to_owned()).await.is_empty());
+    assert!(
+        space
+            .get_waiting_continuations(vec!["reply".to_owned()])
+            .await
+            .is_empty()
+    );
+    assert_refused_publication_is_atomic(&space, &authority).await;
+    assert_eq!(observer.calls.load(Ordering::SeqCst), 1);
+}
 
 /// A play space and the replay space rigged against the same history — the
 /// `replay_rspace_tests.rs` fixture, with the guarding matcher.

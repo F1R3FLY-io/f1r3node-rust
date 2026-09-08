@@ -48,6 +48,24 @@ mr_status:
 ### F1R3Lang: frontend admission boundary
 
 ```yaml
+id: mettail-regex-flt-reduce-observe-wire-validation
+status: in_progress
+claimed_by: codex-f1r3lang
+branch: feature/f1r3lang-mettail-only
+scope: Guarded publication hook for the shared installed-language service
+acceptance:
+  - Refused matched and unmatched replies preserve logical storage, logs and counters
+  - Replay repeat-count eligibility and committed roots remain equivalent
+  - Observer and receiver callbacks run outside the authority guard
+  - Existing producer behavior and caller random state are retained
+next_steps:
+  - Finish host and MeTTaIL wrapper correspondence checks
+  - Connect the installed-language reduce and observe wire service
+```
+
+See the [guarded-publication contract](design/f1r3lang-frontend.md#guarded-system-contract-publication).
+
+```yaml
 id: rholang14-node-frozen-contract
 status: review
 claimed_by: codex-f1r3lang

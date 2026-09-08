@@ -77,6 +77,52 @@ live model/accounting digests were not relaxed. Formatting, whitespace checks
 and the scoped read-only correspondence review passed. These remain local
 implementation results, not trusted release-completion evidence.
 
+## Guarded publication handoff
+
+The [guarded publication contract](../design/f1r3lang-frontend.md#guarded-system-contract-publication)
+now has a generic host implementation. Play and replay share their ordinary
+produce mutation with a synchronous one-shot authority callback. Replay uses
+an identity-based pending-count overlay during preparation; observers and
+receiver dispatch follow guard release. The existing reporting interface is
+retained. ContractCall preserves its ordinary entry and adds an explicitly
+guarded producer entry.
+
+The MeTTaIL `GuardedReplyPublication.v` control model was compiled and separately
+kernel-checked before production implementation under a 1 GiB memory cap.
+All 15 printed theorem contexts were closed. Its source SHA-256 is
+`d83441345efdbf302444facf1af85997c1c08a195100813deec5f9d68e4a4040`.
+It proves the publication control boundary, not arbitrary Rust guards, all
+COMM semantics, signed-counter overflow behavior or subsequent receiver effects.
+
+| Host check | Local result | Log under `target/verification/` |
+|---|---|---|
+| Guarded matching and publication | Passed, 22 tests, including the existing 20,000-bind stack test | `guarded-publication-rspace-tests-3.log` |
+| Actual ContractCall future and receiver | Passed, matched and unmatched cases | `guarded-publication-contract-call-tests-2.log` |
+| Existing replay and reporting | Passed, 24 replay and four reporting tests | `guarded-publication-replay-regressions-1.log` |
+| Strict RSpace library and focused-test Clippy | Passed with warnings denied | `guarded-publication-rspace-clippy-2.log` |
+
+The failed checks are retained for reproducibility. The first publication tests
+incorrectly treated soft checkpoints as passive reads; they drain logs and
+counters. They also compared a cache miss with a lazily cached empty channel.
+The revised harness restores checkpoint observations and separately checks
+cold-refusal committed roots. Its second failure compared cache-only maps after
+play had checkpointed and replaced its hot cache; the final comparison uses
+retained counters and complete committed roots. The initial ContractCall fixture
+used a literal pattern with zero captures while expecting a captured argument;
+it now uses the existing free-variable binding convention. No production
+checks were weakened for these test corrections. Strict Clippy's five new
+redundant-borrow findings were removed without lint suppression.
+
+Read-only review also identified a malformed trusted guard reporting refusal
+after mutation and an introduced replay payload clone. The implementation
+distinguishes guard protocol violations from atomic refusals, tests both invalid
+invocation cases, and moves original replay candidate fields after notification.
+
+MeTTaIL wrapper correspondence and installed-language wire integration have
+separate checks. This local host checkpoint does not establish an active public
+frontend, an installed-table guard implementation, a runnable Regex application
+or independently verified release readiness.
+
 ## Next implementation boundary
 
 The existing MeTTaIL lowerer, neutral frontend extraction, shared language-service

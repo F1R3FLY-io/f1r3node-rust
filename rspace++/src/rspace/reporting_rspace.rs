@@ -20,7 +20,9 @@ use super::replay_rspace::ReplayRSpace;
 use super::rspace::RSpace;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
-use crate::rspace::rspace_interface::{ISpace, MaybeConsumeResult, MaybeProduceResult};
+use crate::rspace::rspace_interface::{
+    ISpace, MaybeConsumeResult, MaybeProduceResult, ProduceCommitGuard,
+};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 /// ReportingRspace works exactly like how ReplayRspace works. It can replay the
@@ -370,6 +372,18 @@ where
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         ReportingRspace::produce(self, channel, data, persist).await
+    }
+
+    async fn produce_guarded(
+        &self,
+        channel: C,
+        data: A,
+        persist: bool,
+        guard: &dyn ProduceCommitGuard,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        self.replay_rspace
+            .produce_guarded(channel, data, persist, guard)
+            .await
     }
 
     async fn install(

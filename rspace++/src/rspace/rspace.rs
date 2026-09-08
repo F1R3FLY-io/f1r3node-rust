@@ -35,7 +35,8 @@ use super::metrics_constants::{
 };
 use super::replay_rspace::ReplayRSpace;
 use super::rspace_interface::{
-    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult, RSpaceResult,
+    ContResult, ISpace, MaybeConsumeResult, MaybeProduceCandidate, MaybeProduceResult,
+    ProduceCommitGuard, RSpaceResult, commit_produce,
 };
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
@@ -437,22 +438,18 @@ where
         data: A,
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        let produce_ref = Produce::create(&channel, &data, persist);
+        self.produce_with_guard(channel, data, persist, None).await
+    }
 
-        let lock_start = Instant::now();
-        let _lock_guard = self.produce_lock(&channel).await;
-        let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-        tracing::trace!(target: "rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
-        metrics::counter!("rspace.produce.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
-            .increment(lock_start.elapsed().as_nanos() as u64);
-
-        metrics::counter!("rspace.produce.calls", "source" => RSPACE_METRICS_SOURCE).increment(1);
-        let start = Instant::now();
-        let result = self.locked_produce(channel, data, persist, &produce_ref);
-        let duration = start.elapsed();
-        metrics::histogram!("comm_produce_time_seconds", "source" => RSPACE_METRICS_SOURCE)
-            .record(duration.as_secs_f64());
-        result
+    async fn produce_guarded(
+        &self,
+        channel: C,
+        data: A,
+        persist: bool,
+        guard: &dyn ProduceCommitGuard,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        self.produce_with_guard(channel, data, persist, Some(guard))
+            .await
     }
 
     async fn install(
@@ -802,13 +799,50 @@ where
         map
     }
 
+    async fn produce_with_guard(
+        &self,
+        channel: C,
+        data: A,
+        persist: bool,
+        guard: Option<&dyn ProduceCommitGuard>,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        let produce_ref = Produce::create(&channel, &data, persist);
+        let lock_start = Instant::now();
+        let lock_guard = self.produce_lock(&channel).await;
+        let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
+        tracing::trace!(target: "rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
+        metrics::counter!("rspace.produce.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
+            .increment(lock_start.elapsed().as_nanos() as u64);
+        metrics::counter!("rspace.produce.calls", "source" => RSPACE_METRICS_SOURCE).increment(1);
+        let start = Instant::now();
+        let prepared = self.locked_produce(channel, data, persist, &produce_ref, guard);
+        metrics::histogram!("comm_produce_time_seconds", "source" => RSPACE_METRICS_SOURCE)
+            .record(start.elapsed().as_secs_f64());
+        drop(lock_guard);
+        let (result, notification) = prepared?;
+        if let Some((candidate, comm)) = notification {
+            self.observe_comm(
+                &candidate.channels,
+                &candidate.continuation,
+                &candidate.data_candidates,
+                &comm,
+                "comm.produce",
+            );
+        }
+        Ok(result)
+    }
+
     fn locked_produce(
         &self,
         channel: C,
         data: A,
         persist: bool,
         produce_ref: &Produce,
-    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        guard: Option<&dyn ProduceCommitGuard>,
+    ) -> Result<
+        (MaybeProduceResult<C, P, A, K>, Option<(ProduceCandidate<C, P, A, K>, COMM)>),
+        RSpaceError,
+    > {
         // Span[F].traceI("locked-produce") from Scala
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_PRODUCE_SPAN).entered();
         event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
@@ -817,8 +851,6 @@ where
         let grouped_channels = self.get_store().get_joins(&channel);
         metrics::counter!("rspace.produce.get_joins_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
-
-        self.log_produce(produce_ref, &channel, &data, persist);
 
         // Wrap the produced payload in an `Arc` once — the speculative
         // candidate below and the `store_data` fallthrough share it by
@@ -834,74 +866,78 @@ where
         metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
 
-        match extracted {
-            Some(produce_candidate) => {
-                let t2 = Instant::now();
-                // ★ The produced datum must be either CONSUMED or STORED —
-                // never neither. It rides in its own candidate pool at index
-                // `-1` (`extract_produce_candidate` above), so the fired COMM
-                // consumed it exactly when a candidate carries that index.
-                //
-                // With the guard-aware selector this is unreachable from any
-                // state the fixed matcher itself produced, and the reasoning is
-                // worth writing down because it is what makes the selector safe
-                // on this path: at quiescence no selection of RESTING data
-                // satisfies any waiting continuation (else the consume or
-                // produce that created that state would have fired it), and
-                // admissibility is monotone in the data — adding this datum can
-                // only create selections that CONTAIN it. So every selection
-                // available here contains the fresh datum.
-                //
-                // It is reachable from a state some OTHER matcher produced: a
-                // hot store restored from a checkpoint written before this fix
-                // can hold a resting datum stranded by defect D1 next to the
-                // continuation it satisfies, and a later produce of a datum
-                // that does not match spatially would then fire on the stranded
-                // pair. Dropping the produced message there would be silent
-                // message loss — no rule of the rho calculus discards a
-                // message — so it is stored instead. AFTER `process_match_found`,
-                // which addresses the store by index: `put_datum` inserts at
-                // position 0 and would shift every index out from under it.
-                let comm_consumed_the_produced_datum = produce_candidate
-                    .data_candidates
-                    .iter()
-                    .any(|candidate| candidate.datum_index < 0);
+        let mut notification = None;
+        let result = commit_produce(guard, || {
+            self.log_produce(produce_ref, &channel, &data, persist);
+            match extracted {
+                Some(produce_candidate) => {
+                    let t2 = Instant::now();
+                    // ★ The produced datum must be either CONSUMED or STORED —
+                    // never neither. It rides in its own candidate pool at index
+                    // `-1` (`extract_produce_candidate` above), so the fired COMM
+                    // consumed it exactly when a candidate carries that index.
+                    //
+                    // With the guard-aware selector this is unreachable from any
+                    // state the fixed matcher itself produced, and the reasoning is
+                    // worth writing down because it is what makes the selector safe
+                    // on this path: at quiescence no selection of RESTING data
+                    // satisfies any waiting continuation (else the consume or
+                    // produce that created that state would have fired it), and
+                    // admissibility is monotone in the data — adding this datum can
+                    // only create selections that CONTAIN it. So every selection
+                    // available here contains the fresh datum.
+                    //
+                    // It is reachable from a state some OTHER matcher produced: a
+                    // hot store restored from a checkpoint written before this fix
+                    // can hold a resting datum stranded by defect D1 next to the
+                    // continuation it satisfies, and a later produce of a datum
+                    // that does not match spatially would then fire on the stranded
+                    // pair. Dropping the produced message there would be silent
+                    // message loss — no rule of the rho calculus discards a
+                    // message — so it is stored instead. AFTER `process_match_found`,
+                    // which addresses the store by index: `put_datum` inserts at
+                    // position 0 and would shift every index out from under it.
+                    let comm_consumed_the_produced_datum = produce_candidate
+                        .data_candidates
+                        .iter()
+                        .any(|candidate| candidate.datum_index < 0);
 
-                let result =
-                    Ok(self
-                        .process_match_found(produce_candidate)
-                        .map(|consume_result| {
-                            (consume_result.0, consume_result.1, produce_ref.clone())
-                        }));
+                    let (matched, comm) = self.process_match_found_deferred(&produce_candidate);
+                    notification = comm.map(|comm| (produce_candidate, comm));
+                    let result = matched.map(|consume_result| {
+                        (consume_result.0, consume_result.1, produce_ref.clone())
+                    });
 
-                if !comm_consumed_the_produced_datum {
-                    tracing::debug!(
-                        target: "f1r3fly.rspace",
-                        "a COMM fired on resting data only; storing the produced datum rather \
-                         than dropping it (pre-fix stranded pair — see locked_produce)"
-                    );
-                    metrics::counter!(
-                        RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
-                        "source" => RSPACE_METRICS_SOURCE
-                    )
-                    .increment(1);
-                    let _ = self.store_data(channel, data, persist, produce_ref.clone());
+                    if !comm_consumed_the_produced_datum {
+                        tracing::debug!(
+                            target: "f1r3fly.rspace",
+                            "a COMM fired on resting data only; storing the produced datum rather \
+                             than dropping it (pre-fix stranded pair — see locked_produce)"
+                        );
+                        metrics::counter!(
+                            RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
+                            "source" => RSPACE_METRICS_SOURCE
+                        )
+                        .increment(1);
+                        let _ = self.store_data(channel, data, persist, produce_ref.clone());
+                    }
+
+                    metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
+                    .increment(t2.elapsed().as_nanos() as u64);
+                    event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
+                    result
                 }
-
-                metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
+                None => {
+                    let t2 = Instant::now();
+                    let result = self.store_data(channel, data, persist, produce_ref.clone());
+                    metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
-                result
+                    event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
+                    result
+                }
             }
-            None => {
-                let t2 = Instant::now();
-                let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
-                metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
-                    .increment(t2.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
-                result
-            }
-        }
+        })?;
+        Ok((result, notification))
     }
 
     /*
@@ -990,6 +1026,23 @@ where
         &self,
         pc: ProduceCandidate<C, P, A, K>,
     ) -> MaybeConsumeResult<C, P, A, K> {
+        let (result, comm) = self.process_match_found_deferred(&pc);
+        if let Some(comm) = comm {
+            self.observe_comm(
+                &pc.channels,
+                &pc.continuation,
+                &pc.data_candidates,
+                &comm,
+                "comm.produce",
+            );
+        }
+        result
+    }
+
+    fn process_match_found_deferred(
+        &self,
+        pc: &ProduceCandidate<C, P, A, K>,
+    ) -> (MaybeConsumeResult<C, P, A, K>, Option<COMM>) {
         let ProduceCandidate {
             channels,
             continuation,
@@ -1006,27 +1059,23 @@ where
         } = &continuation;
 
         let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
-        self.log_comm(
-            &channels,
-            &continuation,
-            &data_candidates,
-            COMM::new(
-                &data_candidates,
-                consume_ref.clone(),
-                peeks.clone(),
-                produce_counters_closure,
-            ),
-            "comm.produce",
+        let comm = COMM::new(
+            data_candidates,
+            consume_ref.clone(),
+            peeks.clone(),
+            produce_counters_closure,
         );
+        let notification = self.step_observer.as_ref().map(|_| comm.clone());
+        self.record_comm(comm, "comm.produce");
 
         if !persist {
             self.get_store()
-                .remove_continuation(&channels, continuation_index);
+                .remove_continuation(channels, *continuation_index);
         }
 
-        self.remove_matched_datum_and_join(&channels, &data_candidates);
+        self.remove_matched_datum_and_join(channels, data_candidates);
 
-        self.wrap_result(&channels, &continuation, consume_ref, &data_candidates)
+        (self.wrap_result(channels, continuation, consume_ref, data_candidates), notification)
     }
 
     fn log_comm(
@@ -1037,6 +1086,11 @@ where
         comm: COMM,
         label: &str,
     ) {
+        self.observe_comm(channels, wk, data_candidates, &comm, label);
+        self.record_comm(comm, label);
+    }
+
+    fn record_comm(&self, comm: COMM, label: &str) {
         // Increment counter FIRST (matching Scala) using constants to avoid memory
         // leaks Labels are always "comm.consume" or "comm.produce" based on the
         // RSpace implementation
@@ -1055,6 +1109,20 @@ where
             }
         }
 
+        self.event_log
+            .lock()
+            .expect("event log lock")
+            .insert(0, Event::Comm(comm));
+    }
+
+    fn observe_comm(
+        &self,
+        channels: &[C],
+        wk: &WaitingContinuation<P, K>,
+        data_candidates: &[ConsumeCandidate<C, A>],
+        comm: &COMM,
+        label: &str,
+    ) {
         // Live single-step emit seam. `None` in production (one branch-predicted
         // `is_none`, no alloc/vtable). When a StepCommObserver is installed,
         // hand it the full COMM payload — the rendezvous channels, the consumed
@@ -1067,21 +1135,8 @@ where
                 .iter()
                 .map(|candidate| (*candidate.datum.a).clone())
                 .collect();
-            observer.observe_comm(
-                channels,
-                &consumed,
-                &wk.patterns,
-                &wk.continuation,
-                &comm,
-                label,
-            );
+            observer.observe_comm(channels, &consumed, &wk.patterns, &wk.continuation, comm, label);
         }
-
-        // Then update event log (RSpace-specific behavior)
-        self.event_log
-            .lock()
-            .expect("event log lock")
-            .insert(0, Event::Comm(comm));
     }
 
     fn log_consume(

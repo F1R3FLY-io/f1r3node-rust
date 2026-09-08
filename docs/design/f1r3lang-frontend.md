@@ -198,6 +198,60 @@ their Rholang URI meaning. Registry resolution uses exact commitments.
 Filesystem module loading remains unavailable until the future injected File
 I/O capability exists.
 
+## Guarded system-contract publication
+
+The [RSpace interface](../../rspace++/src/rspace/rspace_interface.rs) supplies
+`produce_guarded` and `ProduceCommitGuard`. The guard is trusted host Rust code,
+not a Rholang value or a new source of language authority. It must invoke its
+one-shot callback exactly once on success and never on refusal, with authority
+protection held throughout that callback. `commit_produce` distinguishes an
+ordinary refusal from a malformed guard which accepts without invocation or
+reports failure after invocation. The latter is a protocol violation and does
+not promise that effects were absent.
+
+Ordinary `produce` retains a direct, allocation-free guard bypass while sharing
+the same mutation body. Guarded production follows this ordering:
+
+1. Acquire channel locks asynchronously and prepare the existing matcher’s
+   candidate outside the authority scope.
+2. Enter the synchronous authority callback. Apply the produce counter,
+   play event log, storage, COMM and replay-binding updates exactly once.
+3. Release authority and channel locks, then notify step observers or replay
+   reporting callbacks. Preserve the existing Produce-before-COMM reporting
+   order; reporting is not a new replay event log.
+4. Return the owned reply result and run the existing continuation
+   dispatch without holding the authority guard.
+
+Replay candidate selection reads a pending-count overlay: every datum with
+the pending produce identity sees its prospective increment, except for a
+persistent produce. The actual shared counter changes only inside the guard,
+before COMM construction. This preserves exact repeat-count matching without
+mutating counters on refusal. Replay result materialization consumes the
+original candidate after notification instead of forcing additional deep
+payload clones.
+
+[ContractCall](../../rholang/src/rust/interpreter/contract_call.rs) exposes
+`unapply_guarded` alongside its unchanged `unapply` interface. The returned
+producer checks authority when its future reaches the actual RSpace mutation,
+not when that future is created. Receiver callbacks can revoke the authority
+after commit; such later revocation does not undo the reply. Both paths retain
+the incoming random state and existing dispatch behavior.
+
+The MeTTaIL `GuardedReplyPublication` Rocq module checks the finite publication
+phase machine, concrete installed-authority decision, at-most-once mutation,
+refusal preservation and pending-counter equivalence. Its mutation function
+is universally quantified: it is a control-boundary proof, not a proof of every
+COMM implementation or arbitrary Rust guard. The host tests cover matched and
+unmatched refusal, counters and replay bindings, cold-cache committed roots,
+repeated produce identities, observer revocation, and actual producer-future
+and receiver dispatch. Lazy cache fills are not logical message mutations;
+soft checkpoint observations must be restored because they drain logs and
+counters.
+
+This hook does not activate the public frontend, expose the reduce/observe
+wire API, or establish rollback of subsequent receiver effects. The language
+service must still connect its installed-table authorization to this guard.
+
 ## Public-route coverage
 
 The baseline fixture identifies seven route families: node evaluation/gRPC,

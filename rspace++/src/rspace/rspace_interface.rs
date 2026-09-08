@@ -36,6 +36,29 @@ pub type MaybeConsumeResult<C, P, A, K> = Option<(ContResult<C, P, K>, Vec<RSpac
 pub type MaybeProduceResult<C, P, A, K> =
     Option<(ContResult<C, P, K>, Vec<RSpaceResult<C, A>>, Produce)>;
 
+pub trait ProduceCommitGuard: Send + Sync {
+    fn with_commit(&self, commit: Box<dyn FnOnce() + '_>) -> Result<(), RSpaceError>;
+}
+
+pub fn commit_produce<T>(
+    guard: Option<&dyn ProduceCommitGuard>,
+    commit: impl FnOnce() -> T,
+) -> Result<T, RSpaceError> {
+    match guard {
+        None => Ok(commit()),
+        Some(guard) => {
+            let mut result = None;
+            let decision = guard.with_commit(Box::new(|| result = Some(commit())));
+            match (result, decision) {
+                (Some(result), Ok(())) => Ok(result),
+                (None, Err(error)) => Err(error),
+                (Some(_), Err(_)) => Err(RSpaceError::ProduceCommitProtocolViolation),
+                (None, Ok(())) => Err(RSpaceError::ProduceCommitProtocolViolation),
+            }
+        }
+    }
+}
+
 /** The interface for RSpace
  *
  * @tparam C a type representing a channel
@@ -201,6 +224,14 @@ pub trait ISpace<
         channel: C,
         data: A,
         persist: bool,
+    ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError>;
+
+    async fn produce_guarded(
+        &self,
+        channel: C,
+        data: A,
+        persist: bool,
+        guard: &dyn ProduceCommitGuard,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError>;
 
     async fn install(
