@@ -885,6 +885,11 @@ pub(crate) struct FrozenCanonicalBytesStats {
 }
 
 impl FrozenCanonicalBytes {
+    #[cfg(test)]
+    pub(crate) fn shares_backing_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner.data, &other.inner.data)
+    }
+
     pub(crate) fn len(&self) -> usize { self.inner.len() }
 
     pub(crate) fn is_empty(&self) -> bool { self.inner.is_empty() }

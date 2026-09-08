@@ -1995,3 +1995,687 @@ Print Assumptions reusable_slot_causal_ownership_and_dead_controls.
 Print Assumptions ordered_multi_edit_region_completion_and_reuse_controls.
 
 End ReusableFrameOwnership.
+
+Module IndexedWindowTransport.
+
+Import CanonicalKeyProtocol.
+
+Definition provenance := (nat * nat)%type.
+Definition byte_provenance (value : located_byte) : provenance :=
+  (byte_source value, byte_offset value).
+Definition region_end (value : region) : provenance :=
+  (region_eof_source value, region_eof_offset value).
+
+Record window := Window {
+  window_owner : nat;
+  window_start : nat;
+  window_width : nat;
+  window_anchor : option provenance
+}.
+
+Definition window_valid (root : region) (view : window) : Prop :=
+  window_owner view = region_owner root /\
+  window_start view + window_width view <= length (region_bytes root).
+
+Definition window_bytes (root : region) (view : window) : list located_byte :=
+  firstn (window_width view) (skipn (window_start view) (region_bytes root)).
+
+Fixpoint append_reference (input : list located_byte) (count : nat)
+    (accumulated : list located_byte) : list located_byte :=
+  match count, input with
+  | S rest, byte :: tail => append_reference tail rest (accumulated ++ [byte])
+  | _, _ => accumulated
+  end.
+
+Theorem accumulated_located_prefix_is_exact input count accumulated :
+  append_reference input count accumulated = accumulated ++ firstn count input.
+Proof.
+  revert input accumulated. induction count; intros input accumulated;
+    destruct input; cbn; try rewrite app_nil_r; try reflexivity.
+  rewrite IHcount, <- app_assoc. reflexivity.
+Qed.
+
+Definition prefix_guard (limit : nat) (root : region) (consumed start stop : nat) : bool :=
+  (start <=? stop) && (stop <=? consumed) &&
+  (consumed <=? length (region_bytes root)) && (consumed <=? limit).
+
+Definition checked_window (limit : nat) (root : region) (consumed start stop : nat)
+    : option window :=
+  if prefix_guard limit root consumed start stop then
+    Some (Window (region_owner root) start (stop - start) None)
+  else None.
+
+Lemma prefix_guard_exact limit root consumed start stop :
+  prefix_guard limit root consumed start stop = true <->
+  start <= stop /\ stop <= consumed /\
+  consumed <= length (region_bytes root) /\ consumed <= limit.
+Proof.
+  unfold prefix_guard. repeat rewrite andb_true_iff. repeat rewrite Nat.leb_le. tauto.
+Qed.
+
+Theorem checked_window_accepts_exact_consumed_and_integer_bounds
+    limit root consumed start stop view :
+  checked_window limit root consumed start stop = Some view <->
+  start <= stop /\ stop <= consumed /\
+  consumed <= length (region_bytes root) /\ consumed <= limit /\
+  view = Window (region_owner root) start (stop - start) None.
+Proof.
+  unfold checked_window. destruct (prefix_guard limit root consumed start stop) eqn:guard.
+  - apply prefix_guard_exact in guard. split.
+    + intro accepted. inversion accepted; subst. tauto.
+    + intros (_ & _ & _ & _ & ->). reflexivity.
+  - split; [discriminate|]. intros (ordered & bounded & available & fits & _).
+    assert (prefix_guard limit root consumed start stop = true) by
+      (apply prefix_guard_exact; tauto). congruence.
+Qed.
+
+Lemma valid_window_length root view :
+  window_valid root view -> length (window_bytes root view) = window_width view.
+Proof.
+  intros [_ bounded]. unfold window_bytes. apply firstn_length_le.
+  rewrite length_skipn. lia.
+Qed.
+
+Theorem checked_window_has_exact_length_and_representable_absolute_end
+    limit root consumed start stop view :
+  checked_window limit root consumed start stop = Some view ->
+  window_valid root view /\ length (window_bytes root view) = stop - start /\
+  window_start view + window_width view = stop /\
+  window_start view + window_width view <= limit.
+Proof.
+  intro accepted. apply checked_window_accepts_exact_consumed_and_integer_bounds in accepted.
+  destruct accepted as (ordered & bounded & available & fits & ->).
+  assert (valid : window_valid root (Window (region_owner root) start (stop - start) None)).
+  { split; cbn; lia. }
+  split; [exact valid|]. split.
+  - exact (valid_window_length valid).
+  - cbn. lia.
+Qed.
+
+Theorem indexed_slice_equals_independently_accumulated_prefix
+    limit root consumed start stop view :
+  checked_window limit root consumed start stop = Some view ->
+  window_bytes root view =
+    firstn (stop - start)
+      (skipn start (append_reference (region_bytes root) consumed [])).
+Proof.
+  intro accepted. apply checked_window_accepts_exact_consumed_and_integer_bounds in accepted.
+  destruct accepted as (ordered & bounded & available & fits & ->).
+  unfold window_bytes. cbn. rewrite accumulated_located_prefix_is_exact. cbn.
+  rewrite skipn_firstn_comm, firstn_firstn, Nat.min_l; [reflexivity|lia].
+Qed.
+
+Definition subwindow_guard (limit : nat) (parent : window) (start stop : nat) :=
+  (start <=? stop) && (stop <=? window_width parent) &&
+  (window_start parent + stop <=? limit).
+
+Definition checked_subwindow (limit : nat) (parent : window) (start stop : nat)
+    : option window :=
+  if subwindow_guard limit parent start stop then
+    Some (Window (window_owner parent) (window_start parent + start) (stop - start)
+      (if stop =? window_width parent then window_anchor parent else None))
+  else None.
+
+Lemma subwindow_guard_exact limit parent start stop :
+  subwindow_guard limit parent start stop = true <->
+  start <= stop /\ stop <= window_width parent /\ window_start parent + stop <= limit.
+Proof.
+  unfold subwindow_guard. repeat rewrite andb_true_iff. repeat rewrite Nat.leb_le. tauto.
+Qed.
+
+Lemma checked_subwindow_exact limit parent start stop child :
+  checked_subwindow limit parent start stop = Some child <->
+  start <= stop /\ stop <= window_width parent /\ window_start parent + stop <= limit /\
+  child = Window (window_owner parent) (window_start parent + start) (stop - start)
+    (if stop =? window_width parent then window_anchor parent else None).
+Proof.
+  unfold checked_subwindow. destruct (subwindow_guard limit parent start stop) eqn:guard.
+  - apply subwindow_guard_exact in guard. split.
+    + intro accepted. inversion accepted; subst. tauto.
+    + intros (_ & _ & _ & ->). reflexivity.
+  - split; [discriminate|]. intros (ordered & bounded & fits & _).
+    assert (subwindow_guard limit parent start stop = true) by
+      (apply subwindow_guard_exact; tauto). congruence.
+Qed.
+
+Theorem nested_windows_preserve_owner_bounds_and_exact_slice
+    limit root parent start stop child :
+  window_valid root parent -> checked_subwindow limit parent start stop = Some child ->
+  window_valid root child /\ window_owner child = window_owner parent /\
+  window_start child + window_width child <= limit /\
+  window_bytes root child = firstn (stop - start) (skipn start (window_bytes root parent)).
+Proof.
+  intros [owner bounded] accepted. apply checked_subwindow_exact in accepted.
+  destruct accepted as (ordered & inside & fits & ->). cbn.
+  split; [split; cbn; [exact owner|lia]|]. split; [reflexivity|]. split; [lia|].
+  unfold window_bytes. cbn.
+  rewrite skipn_firstn_comm, firstn_firstn, Nat.min_l by lia.
+  rewrite skipn_skipn. replace (start + window_start parent) with (window_start parent + start) by lia.
+  reflexivity.
+Qed.
+
+Theorem checked_empty_windows_do_not_read_a_following_byte
+    limit root consumed point view :
+  checked_window limit root consumed point point = Some view ->
+  window_bytes root view = [] /\ window_width view = 0 /\
+  window_start view = point /\ point <= consumed /\ consumed <= limit.
+Proof.
+  intro accepted. apply checked_window_accepts_exact_consumed_and_integer_bounds in accepted.
+  destruct accepted as (_ & bounded & available & fits & ->).
+  unfold window_bytes. cbn. rewrite Nat.sub_diag. cbn. tauto.
+Qed.
+
+Definition root_position (root : region) (offset : nat) : option provenance :=
+  match nth_error (region_bytes root) offset with
+  | Some byte => Some (byte_provenance byte)
+  | None => if offset =? length (region_bytes root) then Some (region_end root) else None
+  end.
+
+Definition window_end (root : region) (view : window) : option provenance :=
+  match window_anchor view with
+  | Some anchor => Some anchor
+  | None => root_position root (window_start view + window_width view)
+  end.
+
+Inductive position_kind := BytePosition | EndPosition.
+Record position := Position {
+  position_logical : nat;
+  position_physical : provenance;
+  position_kind_of : position_kind
+}.
+
+Definition window_position (root : region) (view : window) (offset : nat) : option position :=
+  if offset <? window_width view then
+    option_map (fun byte => Position offset (byte_provenance byte) BytePosition)
+      (nth_error (region_bytes root) (window_start view + offset))
+  else if offset =? window_width view then
+    option_map (fun anchor => Position offset anchor EndPosition) (window_end root view)
+  else None.
+
+Definition anchor_window (view : window) (anchor : provenance) : window :=
+  Window (window_owner view) (window_start view) (window_width view) (Some anchor).
+
+Theorem explicit_completion_anchor_changes_only_the_end root view anchor :
+  window_bytes root (anchor_window view anchor) = window_bytes root view /\
+  (forall offset, offset < window_width view ->
+    window_position root (anchor_window view anchor) offset = window_position root view offset) /\
+  window_position root (anchor_window view anchor) (window_width view) =
+    Some (Position (window_width view) anchor EndPosition) /\
+  (forall offset, window_width view < offset ->
+    window_position root (anchor_window view anchor) offset = None).
+Proof.
+  split; [reflexivity|]. split.
+  - intros offset inside. unfold window_position, anchor_window; cbn -[Nat.ltb Nat.eqb].
+    assert (offset <? window_width view = true) by (apply Nat.ltb_lt; exact inside).
+    now rewrite H.
+  - split.
+    + unfold window_position, anchor_window; cbn -[Nat.ltb Nat.eqb].
+      rewrite Nat.ltb_irrefl, Nat.eqb_refl. reflexivity.
+    + intros offset outside. unfold window_position, anchor_window; cbn -[Nat.ltb Nat.eqb].
+      assert (offset <? window_width view = false) by (apply Nat.ltb_ge; lia).
+      assert (offset =? window_width view = false) by (apply Nat.eqb_neq; lia).
+      now rewrite H, H0.
+Qed.
+
+Theorem earlier_and_equal_end_subviews_select_the_correct_boundary
+    limit root parent start stop child :
+  checked_subwindow limit parent start stop = Some child ->
+  (stop < window_width parent ->
+    window_anchor child = None /\
+    window_end root child = root_position root (window_start parent + stop)) /\
+  (stop = window_width parent ->
+    window_anchor child = window_anchor parent /\ window_end root child = window_end root parent).
+Proof.
+  intro accepted. apply checked_subwindow_exact in accepted.
+  destruct accepted as (ordered & bounded & fits & ->). cbn. split.
+  - intro earlier. assert (stop =? window_width parent = false) by (apply Nat.eqb_neq; lia).
+    rewrite H. split; [reflexivity|]. unfold window_end; cbn.
+    f_equal. lia.
+  - intro same. subst stop. rewrite Nat.eqb_refl. split; [reflexivity|].
+    unfold window_end; cbn.
+    replace (window_start parent + start + (window_width parent - start)) with
+      (window_start parent + window_width parent) by lia. reflexivity.
+Qed.
+
+Lemma window_nth_is_source_nth root view offset :
+  offset < window_width view ->
+  nth_error (window_bytes root view) offset =
+    nth_error (region_bytes root) (window_start view + offset).
+Proof.
+  intro inside. unfold window_bytes. rewrite nth_error_firstn.
+  assert (offset <? window_width view = true) by (apply Nat.ltb_lt; exact inside).
+  rewrite H. apply nth_error_skipn.
+Qed.
+
+Theorem indexed_byte_positions_preserve_exact_physical_provenance root view offset byte :
+  offset < window_width view -> nth_error (window_bytes root view) offset = Some byte ->
+  window_position root view offset = Some (Position offset (byte_provenance byte) BytePosition).
+Proof.
+  intros inside found. rewrite window_nth_is_source_nth in found by exact inside.
+  unfold window_position.
+  assert (offset <? window_width view = true) by (apply Nat.ltb_lt; exact inside).
+  now rewrite H, found.
+Qed.
+
+Lemma root_position_at_end root :
+  root_position root (length (region_bytes root)) = Some (region_end root).
+Proof.
+  unfold root_position.
+  assert (nth_error (region_bytes root) (length (region_bytes root)) = None) by
+    (apply nth_error_None; lia).
+  now rewrite H, Nat.eqb_refl.
+Qed.
+
+Definition rebase_anchored_region (root : region) (view : window) (anchor : provenance) : region :=
+  Region (window_owner view) (window_bytes root view) (fst anchor) (snd anchor).
+
+Theorem rebased_frozen_and_inline_anchored_windows_have_identical_positions root view anchor :
+  window_valid root view -> forall offset,
+  window_position root (anchor_window view anchor) offset =
+  window_position (rebase_anchored_region root view anchor)
+    (Window (window_owner view) 0 (window_width view) None) offset.
+Proof.
+  intros valid offset. unfold window_position. cbn -[Nat.ltb Nat.eqb window_bytes window_end].
+  destruct (offset <? window_width view) eqn:inside.
+  - apply Nat.ltb_lt in inside.
+    now rewrite window_nth_is_source_nth by exact inside.
+  - destruct (offset =? window_width view) eqn:at_end; [|reflexivity].
+    apply Nat.eqb_eq in at_end. subst offset.
+    pose proof (root_position_at_end (rebase_anchored_region root view anchor)) as boundary.
+    cbn -[root_position window_bytes] in boundary.
+    rewrite (valid_window_length valid) in boundary.
+    unfold rebase_anchored_region in boundary.
+    unfold window_end, rebase_anchored_region; cbn -[root_position window_bytes].
+    rewrite boundary. destruct anchor. reflexivity.
+Qed.
+
+Fixpoint byte_lexicographic (left right : list nat) : comparison :=
+  match left, right with
+  | [], [] => Eq
+  | [], _ :: _ => Lt
+  | _ :: _, [] => Gt
+  | head_left :: tail_left, head_right :: tail_right =>
+      match Nat.compare head_left head_right with
+      | Eq => byte_lexicographic tail_left tail_right
+      | order => order
+      end
+  end.
+
+Fixpoint compare_located (left right : list located_byte) : comparison * option provenance :=
+  match left, right with
+  | [], [] => (Eq, None)
+  | [], _ :: _ => (Lt, None)
+  | _ :: _, [] => (Gt, None)
+  | head_left :: tail_left, head_right :: tail_right =>
+      match Nat.compare (byte_value head_left) (byte_value head_right) with
+      | Eq => compare_located tail_left tail_right
+      | order => (order, Some (byte_provenance head_right))
+      end
+  end.
+
+Definition reported_comparison (left right : list located_byte) (endpoint : provenance) :=
+  let '(order, mismatch) := compare_located left right in
+  (order, match mismatch with Some source => source | None => endpoint end).
+
+Theorem located_comparison_refines_content_only_lexicographic_order left right :
+  fst (compare_located left right) =
+    byte_lexicographic (map byte_value left) (map byte_value right).
+Proof.
+  revert right. induction left; intros right; destruct right; cbn; auto.
+  destruct (Nat.compare (byte_value a) (byte_value l)); cbn; auto.
+Qed.
+
+Lemma equal_content_prefixes_cancel prefix_left prefix_right tail_left tail_right :
+  map byte_value prefix_left = map byte_value prefix_right ->
+  compare_located (prefix_left ++ tail_left) (prefix_right ++ tail_right) =
+    compare_located tail_left tail_right.
+Proof.
+  revert prefix_right. induction prefix_left; intros prefix_right same;
+    destruct prefix_right; cbn in *; try discriminate; auto.
+  inversion same as [[head_equal tail_equal]].
+  rewrite head_equal, Nat.compare_refl. now apply IHprefix_left.
+Qed.
+
+Theorem first_content_mismatch_reports_the_current_physical_byte
+    prefix_left prefix_right tail_left tail_right byte_left byte_right endpoint :
+  map byte_value prefix_left = map byte_value prefix_right ->
+  byte_value byte_left <> byte_value byte_right ->
+  reported_comparison (prefix_left ++ byte_left :: tail_left)
+    (prefix_right ++ byte_right :: tail_right) endpoint =
+    (Nat.compare (byte_value byte_left) (byte_value byte_right), byte_provenance byte_right).
+Proof.
+  intros equal_prefix different. unfold reported_comparison.
+  rewrite equal_content_prefixes_cancel by exact equal_prefix. cbn.
+  destruct (Nat.compare (byte_value byte_left) (byte_value byte_right)) eqn:order; auto.
+  apply Nat.compare_eq_iff in order. contradiction.
+Qed.
+
+Theorem equal_and_proper_prefix_comparisons_preserve_endpoint_fallback
+    prefix_left prefix_right extra endpoint :
+  map byte_value prefix_left = map byte_value prefix_right -> extra <> [] ->
+  reported_comparison prefix_left prefix_right endpoint = (Eq, endpoint) /\
+  reported_comparison prefix_left (prefix_right ++ extra) endpoint = (Lt, endpoint) /\
+  reported_comparison (prefix_left ++ extra) prefix_right endpoint = (Gt, endpoint).
+Proof.
+  intros same nonempty. unfold reported_comparison.
+  pose proof (equal_content_prefixes_cancel prefix_left prefix_right [] [] same) as equal_case.
+  rewrite !app_nil_r in equal_case. rewrite equal_case. split; [reflexivity|].
+  pose proof (equal_content_prefixes_cancel prefix_left prefix_right [] extra same) as shorter.
+  pose proof (equal_content_prefixes_cancel prefix_left prefix_right extra [] same) as longer.
+  rewrite app_nil_r in shorter, longer. rewrite shorter, longer.
+  destruct extra; [contradiction|]. split; reflexivity.
+Qed.
+
+Definition completion_anchor (root : region) (consumed : nat) : option provenance :=
+  match consumed with
+  | 0 => None
+  | S previous => option_map byte_provenance (nth_error (region_bytes root) previous)
+  end.
+
+Theorem completion_anchor_comes_from_the_final_consumed_byte root consumed final :
+  0 < consumed ->
+  nth_error (append_reference (region_bytes root) consumed []) (consumed - 1) = Some final ->
+  completion_anchor root consumed = Some (byte_provenance final).
+Proof.
+  intros nonempty found. rewrite accumulated_located_prefix_is_exact in found. cbn in found.
+  rewrite nth_error_firstn in found.
+  assert (consumed - 1 <? consumed = true) by (apply Nat.ltb_lt; lia).
+  rewrite H in found. destruct consumed; [lia|]. cbn in *.
+  rewrite Nat.sub_0_r in found. now rewrite found.
+Qed.
+
+Lemma forall_window_bytes (P : located_byte -> Prop) input start width :
+  Forall P input -> Forall P (firstn width (skipn start input)).
+Proof.
+  intro all_bytes.
+  assert (tail_bytes : Forall P (skipn start input)).
+  { revert input all_bytes. induction start; intros input all_bytes; cbn; auto.
+    destruct input; cbn; [constructor|]. inversion all_bytes; subst. now apply IHstart. }
+  remember (skipn start input) as remaining eqn:remaining_eq.
+  clear remaining_eq input start all_bytes.
+  revert remaining tail_bytes. induction width; intros remaining tail_bytes; cbn; [constructor|].
+  destruct remaining; cbn; [constructor|]. inversion tail_bytes; subst. constructor; auto.
+Qed.
+
+Theorem indexed_and_rebased_windows_preserve_source_refinement sources root view anchor :
+  source_refines sources root ->
+  Forall (fun byte => byte_value byte < 256 /\
+    nth_error (sources (byte_source byte)) (byte_offset byte) = Some (byte_value byte))
+    (window_bytes root view) /\
+  source_refines sources (rebase_anchored_region root view anchor).
+Proof.
+  intro source_valid. unfold source_refines, rebase_anchored_region; cbn.
+  unfold window_bytes. split; apply forall_window_bytes; exact source_valid.
+Qed.
+
+Lemma borrowed_physical_offsets_require_a_separate_checked_origin
+    origin limit root view offset :
+  window_valid root view -> origin + length (region_bytes root) <= limit ->
+  offset <= window_width view -> origin + window_start view + offset <= limit.
+Proof. intros [_ bounded] origin_fits inside. lia. Qed.
+
+Record shared_backing := SharedBacking {
+  backing_leases : nat;
+  backing_region : region
+}.
+
+Definition backing_heap := nat -> option shared_backing.
+
+Definition update_backing (heap : backing_heap) (owner : nat) (entry : option shared_backing)
+    : backing_heap :=
+  fun requested => if Nat.eq_dec requested owner then entry else heap requested.
+
+Lemma updated_backing_same heap owner entry : update_backing heap owner entry owner = entry.
+Proof. unfold update_backing. destruct (Nat.eq_dec owner owner); congruence. Qed.
+
+Lemma updated_backing_other heap owner entry requested :
+  requested <> owner -> update_backing heap owner entry requested = heap requested.
+Proof. intro different. unfold update_backing. destruct (Nat.eq_dec requested owner); congruence. Qed.
+
+Definition retain_backing (heap : backing_heap) (owner : nat) : option backing_heap :=
+  match heap owner with
+  | Some (SharedBacking (S count) root) =>
+      Some (update_backing heap owner (Some (SharedBacking (S (S count)) root)))
+  | _ => None
+  end.
+
+Definition release_backing (heap : backing_heap) (owner : nat) : backing_heap :=
+  match heap owner with
+  | Some (SharedBacking (S (S count)) root) =>
+      update_backing heap owner (Some (SharedBacking (S count) root))
+  | Some _ => update_backing heap owner None
+  | None => heap
+  end.
+
+Definition observe_window (heap : backing_heap) (view : window)
+    : option (list located_byte * option provenance) :=
+  match heap (window_owner view) with
+  | Some (SharedBacking (S _) root) => Some (window_bytes root view, window_end root view)
+  | _ => None
+  end.
+
+Theorem suspended_window_retention_survives_parent_release heap view count root :
+  heap (window_owner view) = Some (SharedBacking (S count) root) ->
+  exists retained,
+    retain_backing heap (window_owner view) = Some retained /\
+    release_backing retained (window_owner view) (window_owner view) =
+      Some (SharedBacking (S count) root) /\
+    observe_window (release_backing retained (window_owner view)) view = observe_window heap view /\
+    (forall other, other <> window_owner view ->
+      release_backing retained (window_owner view) other = heap other).
+Proof.
+  intro present.
+  exists (update_backing heap (window_owner view) (Some (SharedBacking (S (S count)) root))).
+  split.
+  - unfold retain_backing. now rewrite present.
+  - unfold release_backing. rewrite updated_backing_same. split.
+    + apply updated_backing_same.
+    + split.
+      * unfold observe_window. now rewrite updated_backing_same, present.
+      * intros other different. now rewrite !updated_backing_other by exact different.
+Qed.
+
+Definition frame_windows := nat -> option window.
+Definition recycle_frame_window (cells : frame_windows) (slot : nat) (replacement : window)
+    : frame_windows :=
+  fun requested => if Nat.eq_dec requested slot then Some replacement else cells requested.
+
+Definition observe_frame_window (heap : backing_heap) (cells : frame_windows) (slot : nat) :=
+  match cells slot with Some view => observe_window heap view | None => None end.
+
+Theorem captured_descriptor_survives_recycling_its_frame_cell
+    heap cells slot captured replacement count root :
+  cells slot = Some captured ->
+  heap (window_owner captured) = Some (SharedBacking (S count) root) ->
+  exists retained,
+    retain_backing heap (window_owner captured) = Some retained /\
+    recycle_frame_window cells slot replacement slot = Some replacement /\
+    observe_window (release_backing retained (window_owner captured)) captured =
+      observe_frame_window heap cells slot.
+Proof.
+  intros captured_here present.
+  destruct (@suspended_window_retention_survives_parent_release heap captured count root present)
+    as (retained & acquired & alive & observed & others).
+  exists retained. split; [exact acquired|]. split.
+  - unfold recycle_frame_window. destruct (Nat.eq_dec slot slot); congruence.
+  - unfold observe_frame_window. now rewrite captured_here, observed.
+Qed.
+
+Record span_request := SpanRequest {
+  span_consumed : nat;
+  span_start : nat;
+  span_stop : nat;
+  span_completion : provenance
+}.
+
+Definition indexed_transport (limit : nat) (root : region) (request : span_request) : option region :=
+  option_map (fun view => rebase_anchored_region root view (span_completion request))
+    (checked_window limit root (span_consumed request) (span_start request) (span_stop request)).
+
+Definition reference_transport (limit : nat) (root : region) (request : span_request) : option region :=
+  if (span_consumed request <=? length (region_bytes root)) && (span_consumed request <=? limit) then
+    let prefix := append_reference (region_bytes root) (span_consumed request) [] in
+    if (span_start request <=? span_stop request) && (span_stop request <=? length prefix) then
+      Some (Region (region_owner root)
+        (firstn (span_stop request - span_start request) (skipn (span_start request) prefix))
+        (fst (span_completion request)) (snd (span_completion request)))
+    else None
+  else None.
+
+Theorem indexed_and_append_reference_transport_observations_are_identical limit root request :
+  indexed_transport limit root request = reference_transport limit root request.
+Proof.
+  destruct request as [consumed start stop anchor].
+  unfold indexed_transport, reference_transport; cbn.
+  destruct (consumed <=? length (region_bytes root)) eqn:available;
+    destruct (consumed <=? limit) eqn:fits; cbn.
+  - assert (prefix_length : length (append_reference (region_bytes root) consumed []) = consumed).
+    { rewrite accumulated_located_prefix_is_exact. cbn.
+      apply firstn_length_le. now apply Nat.leb_le in available. }
+    rewrite prefix_length.
+    unfold checked_window, prefix_guard. rewrite available, fits, !andb_true_r.
+    destruct ((start <=? stop) && (stop <=? consumed)) eqn:bounded; cbn; auto.
+    assert (accepted : checked_window limit root consumed start stop =
+        Some (Window (region_owner root) start (stop - start) None)).
+    { unfold checked_window, prefix_guard. now rewrite available, fits, !andb_true_r, bounded. }
+    unfold rebase_anchored_region. f_equal.
+    now rewrite (@indexed_slice_equals_independently_accumulated_prefix limit root consumed
+      start stop (Window (region_owner root) start (stop - start) None) accepted).
+  - unfold checked_window, prefix_guard. rewrite available, fits, andb_false_r. reflexivity.
+  - unfold checked_window, prefix_guard. rewrite available, fits, andb_false_r. reflexivity.
+  - unfold checked_window, prefix_guard. rewrite available, fits, !andb_false_r. reflexivity.
+Qed.
+
+Section Protocol.
+
+Context {State World Input Observation Error : Type}.
+
+Variable root : region.
+Variable limit : nat.
+Variable pending_refusal : State -> World -> Input -> option Error.
+Variable request_for : State -> World -> Input -> span_request.
+Variable shared_grammar : State -> World -> Input -> option region ->
+  ((State * World * Observation) + (World * Error))%type.
+
+Definition guarded_transport_step (transport : nat -> region -> span_request -> option region)
+    (state : State) (world : World) (input : Input) :=
+  match pending_refusal state world input with
+  | Some error => inr (world, error)
+  | None => shared_grammar state world input (transport limit root (request_for state world input))
+  end.
+
+Lemma guarded_transport_steps_are_identical state world input :
+  guarded_transport_step indexed_transport state world input =
+    guarded_transport_step reference_transport state world input.
+Proof.
+  unfold guarded_transport_step. destruct (pending_refusal state world input); auto.
+  now rewrite indexed_and_append_reference_transport_observations_are_identical.
+Qed.
+
+Theorem pending_preflight_refuses_before_state_world_or_consumed_offset_advance
+    state world input error inputs :
+  pending_refusal state world input = Some error ->
+  guarded_transport_step indexed_transport state world input = inr (world, error) /\
+  @ExclusiveCurrentState.exclusive_run State World Input Observation Error
+    (guarded_transport_step indexed_transport) (input :: inputs)
+    (ExclusiveCurrentState.Current state) world =
+  @ExclusiveCurrentState.Result World Input Observation Error
+    (@ExclusiveCurrentState.exclusive State) (ExclusiveCurrentState.Current state)
+    world [] [input] (Some error).
+Proof.
+  intro pending. split.
+  - unfold guarded_transport_step. now rewrite pending.
+  - cbn. unfold guarded_transport_step. now rewrite pending.
+Qed.
+
+Theorem shared_grammar_and_span_correspondence_preserve_full_protocol_observations
+    (arena_step indexed_step : State -> World -> Input ->
+      ((State * World * Observation) + (World * Error))%type) :
+  (forall state world input, arena_step state world input =
+    guarded_transport_step reference_transport state world input) ->
+  (forall state world input, indexed_step state world input =
+    guarded_transport_step indexed_transport state world input) ->
+  forall inputs state world,
+  @ExclusiveCurrentState.exclusive_run State World Input Observation Error
+    arena_step inputs (ExclusiveCurrentState.Current state) world =
+  @ExclusiveCurrentState.exclusive_run State World Input Observation Error
+    indexed_step inputs (ExclusiveCurrentState.Current state) world.
+Proof.
+  intros arena_correspondence indexed_correspondence inputs.
+  induction inputs as [|input rest IH]; intros state world; cbn; auto.
+  rewrite arena_correspondence, indexed_correspondence, guarded_transport_steps_are_identical.
+  destruct (guarded_transport_step reference_transport state world input)
+    as [[[next next_world] observation]|[next_world error]]; cbn; auto.
+  now rewrite IH.
+Qed.
+
+End Protocol.
+
+Definition control_root := Region 7
+  [LocatedByte 10 3 2; LocatedByte 20 9 1; LocatedByte 30 4 8; LocatedByte 40 6 3] 88 501.
+Definition control_view := Window 7 1 1 None.
+Definition control_anchored := anchor_window control_view (9, 1).
+Definition control_heap : backing_heap := fun owner =>
+  if Nat.eq_dec owner 7 then Some (SharedBacking 1 control_root) else None.
+Definition control_cells : frame_windows := fun slot =>
+  if Nat.eq_dec slot 2 then Some control_anchored else None.
+
+Definition wrong_full_input_window limit root (consumed : nat) start stop :=
+  checked_window limit root (length (region_bytes root)) start stop.
+
+Theorem concrete_window_anchor_lifetime_and_ordering_positive_controls :
+  checked_window 16 control_root 2 1 2 = Some control_view /\
+  checked_window 16 control_root 2 2 2 = Some (Window 7 2 0 None) /\
+  completion_anchor control_root 2 = Some (9, 1) /\
+  window_bytes control_root control_anchored = [LocatedByte 20 9 1] /\
+  window_position control_root control_anchored 0 = Some (Position 0 (9, 1) BytePosition) /\
+  window_position control_root control_anchored 1 = Some (Position 1 (9, 1) EndPosition) /\
+  checked_subwindow 16 (Window 7 0 3 (Some (99, 700))) 1 2 = Some (Window 7 1 1 None) /\
+  checked_subwindow 16 (Window 7 0 3 (Some (99, 700))) 1 3 = Some (Window 7 1 2 (Some (99, 700))) /\
+  reported_comparison [LocatedByte 10 99 100; LocatedByte 40 99 101]
+    [LocatedByte 10 3 2; LocatedByte 20 9 1] (77, 900) = (Gt, (9, 1)) /\
+  reported_comparison [LocatedByte 10 99 100; LocatedByte 20 99 101]
+    [LocatedByte 10 3 2] (77, 900) = (Gt, (77, 900)) /\
+  match retain_backing control_heap 7 with
+  | Some retained => observe_window (release_backing retained 7) control_anchored
+  | None => None
+  end = Some ([LocatedByte 20 9 1], Some (9, 1)).
+Proof. repeat split; reflexivity. Qed.
+
+Theorem concrete_transport_causal_controls_reject_future_bytes_wrong_anchors_and_borrowed_frames :
+  checked_window 16 control_root 2 1 3 = None /\
+  wrong_full_input_window 16 control_root 2 1 3 = Some (Window 7 1 2 None) /\
+  checked_window 1 control_root 2 1 2 = None /\
+  window_end control_root control_view <> window_end control_root control_anchored /\
+  window_end control_root (Window 7 2 0 None) <>
+    window_end control_root (anchor_window (Window 7 2 0 None) (9, 1)) /\
+  observe_window (release_backing control_heap 7) control_anchored = None /\
+  observe_window control_heap control_anchored <>
+    observe_frame_window control_heap
+      (recycle_frame_window control_cells 2 (Window 7 2 1 None)) 2.
+Proof. repeat split; discriminate || reflexivity. Qed.
+
+Print Assumptions accumulated_located_prefix_is_exact.
+Print Assumptions checked_window_accepts_exact_consumed_and_integer_bounds.
+Print Assumptions checked_window_has_exact_length_and_representable_absolute_end.
+Print Assumptions indexed_slice_equals_independently_accumulated_prefix.
+Print Assumptions nested_windows_preserve_owner_bounds_and_exact_slice.
+Print Assumptions checked_empty_windows_do_not_read_a_following_byte.
+Print Assumptions explicit_completion_anchor_changes_only_the_end.
+Print Assumptions earlier_and_equal_end_subviews_select_the_correct_boundary.
+Print Assumptions indexed_byte_positions_preserve_exact_physical_provenance.
+Print Assumptions rebased_frozen_and_inline_anchored_windows_have_identical_positions.
+Print Assumptions located_comparison_refines_content_only_lexicographic_order.
+Print Assumptions first_content_mismatch_reports_the_current_physical_byte.
+Print Assumptions equal_and_proper_prefix_comparisons_preserve_endpoint_fallback.
+Print Assumptions completion_anchor_comes_from_the_final_consumed_byte.
+Print Assumptions indexed_and_rebased_windows_preserve_source_refinement.
+Print Assumptions suspended_window_retention_survives_parent_release.
+Print Assumptions captured_descriptor_survives_recycling_its_frame_cell.
+Print Assumptions indexed_and_append_reference_transport_observations_are_identical.
+Print Assumptions pending_preflight_refuses_before_state_world_or_consumed_offset_advance.
+Print Assumptions shared_grammar_and_span_correspondence_preserve_full_protocol_observations.
+Print Assumptions concrete_window_anchor_lifetime_and_ordering_positive_controls.
+Print Assumptions concrete_transport_causal_controls_reject_future_bytes_wrong_anchors_and_borrowed_frames.
+
+End IndexedWindowTransport.

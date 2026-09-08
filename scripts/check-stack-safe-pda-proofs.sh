@@ -290,7 +290,7 @@ epathmap_score_proofs() {
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 40 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 62 \
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
 }
@@ -311,6 +311,7 @@ epathmap_import_runtime() {
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
   rpb3_run_tests 15 --release -j4 --lib standalone_path_admission
   rpb3_run_tests 8 --release -j4 --lib frame_storage_tests
+  rpb3_run_tests 6 --release -j4 --lib indexed_span_transport
 }
 
 if [[ "${1:-}" == "--epathmap-import" ]]; then

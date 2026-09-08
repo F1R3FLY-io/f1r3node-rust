@@ -46,9 +46,15 @@ enum IndexedByteBacking<'a> {
         bytes: &'a [u8],
         source: u32,
         absolute_start: usize,
+        end_override: Option<CanonicalByteProvenance>,
     },
     #[cfg(test)]
-    Contiguous { region: ProtobufRegion, source: u32 },
+    Contiguous {
+        bytes: prost::bytes::Bytes,
+        source: u32,
+        absolute_start: usize,
+        end: CanonicalByteProvenance,
+    },
     #[cfg(test)]
     Arena {
         arena: &'a CanonicalBytesArena,
@@ -101,14 +107,22 @@ impl<'a> IndexedByteRegion<'a> {
                 bytes,
                 source,
                 absolute_start,
+                end_override: None,
             },
         }
     }
 
     #[cfg(test)]
     pub(crate) fn from_protobuf_region(region: ProtobufRegion, source: u32) -> Self {
+        let range = region.absolute_range();
+        let end = CanonicalByteProvenance::new(source, range.end);
         Self {
-            backing: IndexedByteBacking::Contiguous { region, source },
+            backing: IndexedByteBacking::Contiguous {
+                bytes: region.into_bytes(),
+                source,
+                absolute_start: range.start,
+                end,
+            },
         }
     }
 
@@ -136,7 +150,7 @@ impl<'a> IndexedByteRegion<'a> {
         match &self.backing {
             IndexedByteBacking::Borrowed { bytes, .. } => bytes.len(),
             #[cfg(test)]
-            IndexedByteBacking::Contiguous { region, .. } => region.len(),
+            IndexedByteBacking::Contiguous { bytes, .. } => bytes.len(),
             #[cfg(test)]
             IndexedByteBacking::Arena { len, .. } => *len,
             IndexedByteBacking::Frozen { len, .. } => *len,
@@ -155,18 +169,36 @@ impl<'a> IndexedByteRegion<'a> {
                 bytes,
                 source,
                 absolute_start,
+                end_override,
             } => Some(Self {
                 backing: IndexedByteBacking::Borrowed {
                     bytes: bytes.get(range.start..range.end)?,
                     source: *source,
                     absolute_start: absolute_start.checked_add(range.start)?,
+                    end_override: (range.end == bytes.len())
+                        .then_some(*end_override)
+                        .flatten(),
                 },
             }),
             #[cfg(test)]
-            IndexedByteBacking::Contiguous { region, source } => Some(Self {
+            IndexedByteBacking::Contiguous {
+                bytes,
+                source,
+                absolute_start,
+                end,
+            } => Some(Self {
                 backing: IndexedByteBacking::Contiguous {
-                    region: region.subregion(range)?,
+                    bytes: bytes.slice(range.start..range.end),
                     source: *source,
+                    absolute_start: absolute_start.checked_add(range.start)?,
+                    end: if range.end == bytes.len() {
+                        *end
+                    } else {
+                        CanonicalByteProvenance::new(
+                            *source,
+                            absolute_start.checked_add(range.end)?,
+                        )
+                    },
                 },
             }),
             #[cfg(test)]
@@ -201,6 +233,42 @@ impl<'a> IndexedByteRegion<'a> {
         }
     }
 
+    pub(crate) fn subview_with_end(
+        &self,
+        range: CanonicalByteRange,
+        end: CanonicalByteProvenance,
+    ) -> Option<Self> {
+        let mut view = self.subview(range)?;
+        match &mut view.backing {
+            IndexedByteBacking::Borrowed { end_override, .. } => *end_override = Some(end),
+            #[cfg(test)]
+            IndexedByteBacking::Contiguous { end: boundary, .. } => *boundary = end,
+            #[cfg(test)]
+            IndexedByteBacking::Arena {
+                arena,
+                root,
+                start,
+                len,
+                root_end,
+            } => {
+                *root = arena.slice(*root, *start..start.checked_add(*len)?).ok()?;
+                *start = 0;
+                *root_end = end;
+            }
+            IndexedByteBacking::Frozen {
+                root,
+                start,
+                len,
+                root_end,
+            } => {
+                *root = root.subview(*start..start.checked_add(*len)?)?;
+                *start = 0;
+                *root_end = end;
+            }
+        }
+        Some(view)
+    }
+
     pub(crate) fn position_at(&self, logical_offset: usize) -> Option<IndexedBytePosition> {
         let len = self.len();
         if logical_offset > len {
@@ -210,12 +278,37 @@ impl<'a> IndexedByteRegion<'a> {
             IndexedByteBacking::Borrowed {
                 source,
                 absolute_start,
+                end_override,
                 ..
-            } => CanonicalByteProvenance::new(*source, absolute_start.checked_add(logical_offset)?),
+            } => {
+                if logical_offset == len {
+                    match end_override {
+                        Some(end) => *end,
+                        None => CanonicalByteProvenance::new(
+                            *source,
+                            absolute_start.checked_add(logical_offset)?,
+                        ),
+                    }
+                } else {
+                    CanonicalByteProvenance::new(
+                        *source,
+                        absolute_start.checked_add(logical_offset)?,
+                    )
+                }
+            }
             #[cfg(test)]
-            IndexedByteBacking::Contiguous { region, source } => {
-                let absolute = region.absolute_range().start.checked_add(logical_offset)?;
-                CanonicalByteProvenance::new(*source, absolute)
+            IndexedByteBacking::Contiguous {
+                absolute_start,
+                source,
+                end,
+                ..
+            } => {
+                if logical_offset == len {
+                    *end
+                } else {
+                    let absolute = absolute_start.checked_add(logical_offset)?;
+                    CanonicalByteProvenance::new(*source, absolute)
+                }
             }
             #[cfg(test)]
             IndexedByteBacking::Arena {
@@ -272,8 +365,8 @@ impl<'a> IndexedByteRegion<'a> {
                 IndexedByteCursorInner::Borrowed { bytes, at: 0 }
             }
             #[cfg(test)]
-            IndexedByteBacking::Contiguous { region, .. } => IndexedByteCursorInner::Contiguous {
-                region: region.clone(),
+            IndexedByteBacking::Contiguous { bytes, .. } => IndexedByteCursorInner::Contiguous {
+                region: ProtobufRegion::new(bytes.clone()),
                 at: 0,
             },
             #[cfg(test)]
@@ -313,6 +406,7 @@ impl<'a> IndexedByteRegion<'a> {
                 bytes,
                 source,
                 absolute_start,
+                ..
             } => IndexedLocatedByteCursorInner::Borrowed {
                 bytes,
                 source: *source,
@@ -320,14 +414,17 @@ impl<'a> IndexedByteRegion<'a> {
                 at: 0,
             },
             #[cfg(test)]
-            IndexedByteBacking::Contiguous { region, source } => {
-                IndexedLocatedByteCursorInner::Contiguous {
-                    region: region.clone(),
-                    source: *source,
-                    absolute_start: region.absolute_range().start,
-                    at: 0,
-                }
-            }
+            IndexedByteBacking::Contiguous {
+                bytes,
+                source,
+                absolute_start,
+                ..
+            } => IndexedLocatedByteCursorInner::Contiguous {
+                region: ProtobufRegion::new(bytes.clone()),
+                source: *source,
+                absolute_start: *absolute_start,
+                at: 0,
+            },
             #[cfg(test)]
             IndexedByteBacking::Arena {
                 arena,
@@ -375,9 +472,7 @@ impl<'a> IndexedByteRegion<'a> {
         match &self.backing {
             IndexedByteBacking::Borrowed { bytes, .. } => bytes.get(logical_offset).copied(),
             #[cfg(test)]
-            IndexedByteBacking::Contiguous { region, .. } => {
-                region.as_bytes().get(logical_offset).copied()
-            }
+            IndexedByteBacking::Contiguous { bytes, .. } => bytes.get(logical_offset).copied(),
             #[cfg(test)]
             IndexedByteBacking::Arena {
                 arena, root, start, ..
@@ -443,7 +538,7 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
         match &self.backing {
             IndexedByteBacking::Borrowed { bytes, .. } => bytes.get(range),
             #[cfg(test)]
-            IndexedByteBacking::Contiguous { region, .. } => region.as_bytes().get(range),
+            IndexedByteBacking::Contiguous { bytes, .. } => bytes.get(range),
             #[cfg(test)]
             IndexedByteBacking::Arena { .. } => None,
             IndexedByteBacking::Frozen {
@@ -475,8 +570,8 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
                 true
             }
             #[cfg(test)]
-            IndexedByteBacking::Contiguous { region, .. } => {
-                let Some(source) = region.as_bytes().get(start..end) else {
+            IndexedByteBacking::Contiguous { bytes, .. } => {
+                let Some(source) = bytes.get(start..end) else {
                     return false;
                 };
                 output.copy_from_slice(source);
@@ -1423,6 +1518,10 @@ impl<'a> IndexedCanonicalFieldCursor<'a> {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/indexed_span_transport.rs"]
+mod indexed_span_transport;
 
 #[cfg(test)]
 mod tests {

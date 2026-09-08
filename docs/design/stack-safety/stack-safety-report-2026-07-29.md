@@ -10050,6 +10050,28 @@ physical linearity or activate a new importer. See
 [J-092](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-092--2026-09-08-reuse-standalone-grammar-frames-with-exact-owner-journals)
 for methodology, causal controls, failure history and evidence hashes.
 
+#### 5.33.12 Indexed-window proof and completion-anchor helper (2026-09-08, tasks 5976/6018)
+
+The next byte-retention refinement has a verified transport model and an
+implemented anchored-window helper. Twenty-two new closed capstones bring RPB3
+to sixty-two, with independent kernel checking. The model covers the exact
+consumed-prefix and physical-provenance contract; it does not prove allocator
+behavior, bulk skipping or the complete Rust parser correspondence.
+
+The helper shares existing input backing while preserving the child completion
+anchor, including empty payloads. A layout test caught an initial **80-byte**
+indexed region against the **72-byte** baseline. Eliminating the redundant
+test-only contiguous range wrapper restores that baseline. All **366** release
+models tests pass, including six window properties/lifetime/layout controls.
+The combined gate passes 63 focused Rust tests, all expected closed reports and
+three kernel checks; all 23 formal-manifest tests pass separately.
+No native-stack, total-RSS or end-to-end timing improvement is claimed by these
+checks. The standalone reducer still accumulates arena bytes at this checkpoint;
+its indexed transport cutover, payload bulk-consumption and nested Region work
+remain required. See
+[J-093](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-093--2026-09-08-prove-indexed-transport-and-preserve-completion-anchors)
+for the model/test boundaries, negative result, resource caps and evidence hashes.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

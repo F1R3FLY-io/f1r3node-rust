@@ -5034,6 +5034,16 @@ The subsequent 57-test focused proof/runtime gate, 23-test manifest and 36-test
 ParBag integration also pass; the final test-only cleanup retains 360/360 models
 unit passes. These checks preserve the existing depth-4,096 integration case.
 
+The subsequent indexed-transport model adds twenty-two closed capstones and an
+anchored-window helper, with 366/366 models unit passes. Completion anchors are
+kept distinct from following-byte positions so a representation-only change does
+not silently move a child framing error. The six window controls cover shared
+backing, exact physical locations, nested/empty boundaries, owner teardown and
+layout. At this checkpoint no importer or standalone reducer has switched
+transport, and no codec, hash, charge or persistence format changes. Journal
+J-093 and stack-safety §5.33.12 retain the exact evidence boundary; this is not a
+new axis classification, backend activation or campaign-wide consensus verdict.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

@@ -6548,6 +6548,75 @@ Indexed payload lending, bulk physical-byte processing and enclosing-region
 costs remain required work in task 6018. No qualified timing, RSS, allocation-count
 or PathMap/ACT-versus-LMDB conclusion follows from this capacity matrix.
 
+### J-093 — 2026-09-08: prove indexed transport and preserve completion anchors
+
+**QUESTION AND HYPOTHESIS.** Can standalone canonical-key admission replace its
+second byte/provenance arena with windows into its already-owned input, without
+changing child errors or increasing frame size? The byte-window operation is a
+necessary part of that replacement, not the complete transport cutover.
+
+**MODEL BEFORE IMPLEMENTATION.** `RPB3Admission.IndexedWindowTransport` proves
+twenty-two new capstones, sixty-two in the complete module, with independent
+kernel checking. An independently accumulated located-byte prefix agrees with
+checked indexed spans. The laws cover consumed-prefix bounds, integer bounds,
+nested and empty spans, completion anchors, physical provenance, content-only
+ordering, mismatch-source selection, owner retention, frame-slot recycling and
+pending-refusal-before-advance. The exhaustive IST binding catalogue is in the
+[formal README](../../../formal/rocq/stack_safe_pda/README.md#verified-model-and-executable-correspondence).
+Protocol equivalence still requires the Rust implementations to realize the
+shared grammar and byte-policy premises; it is not a proof of parser extraction,
+allocator behavior or end-to-end linear work.
+
+**IMPLEMENTATION.** `IndexedByteRegion::subview_with_end` keeps the exact payload
+window but replaces its end position with the supplied completion anchor. For an
+empty child this can be the length-field byte; for a nonempty child it is the
+last consumed payload byte. Taking an ordinary subview would instead expose the
+following byte's physical location and could alter a framing error. Borrowed
+windows store an optional anchor; frozen windows rebase a shared immutable view.
+Neither decodes values, copies payload/provenance pages nor rebuilds the frozen
+page index. The test-only contiguous backing retains the existing owned `Bytes`
+slice and physical origin, without a redundant range wrapper.
+
+**EXPERIMENT AND NEGATIVE RESULT.** The initial five-test suite passed four cases
+but rejected a layout increase from **72 to 80 bytes**. Removing the redundant
+contiguous wrapper restored the original size and all five passed. An additional
+shifted-origin/owner-teardown control then passed in the full **366/366** release
+models suite (zero ignored; 56.49 seconds test execution). The six new tests cover
+all four test backings, generated nested windows, shared allocations, empty and
+nonterminal anchors, bounds/overflow, discontinuous physical sources and parent
+teardown. Frozen backing sharing is checked through actual `Arc` identity;
+nonempty owned slices through payload addresses. Empty `Bytes` windows need not
+retain an allocation because they contain no payload.
+
+| Artifact | SHA-256 |
+|---|---|
+| RPB3 source, 22 new / 62 total closed reports | `93e3c862abb96eef21e508c04f7865a50c86de229363052390d0d207ab7678bb` |
+| Direct Rocq compilation | `bba832456b0eb9f9501bda5a61d7896f3e0fe4ef20c57281a201b0198f56ec57` |
+| Independent kernel check | `5716f98aa35d5147d4febd570aff02ac75ec34439d54f4aa9c7039110e9f8a7b` |
+| Initial 4/5 layout rejection | `758dbe09dbeb2ddb690f11c051956fc835bd20f6eecbeff4069294ab7d0114c7` |
+| Repaired 5/5 layout run | `4f17b8b414d13bcc809ec0d803f8ca5bb5f791b9fc0af1f40f7ba42cdff9e59a` |
+| Full 366-test models suite | `ba0456d47f206191c758bd3481ced9c4aeed888687d44b6b7519cf6d2b1d0228` |
+| Combined proof/runtime gate | `1c3f51e9eaae54401cdd34200fd42134efb55609170265be830124401b457326` |
+
+The combined gate passes **63** focused Rust tests, 48 import / 17 score / 62
+RPB3 closed reports and three independent kernel checks. Thirty-two prerequisite
+reports are separate from those counts. The formal-manifest suite also passes
+all **23** cases. pgmcp artifact **535** records this checkpoint, including the
+initial failing layout control; it is not a performance experiment.
+
+Rust runs use `systemd-run` with 4/6-GiB high/hard limits, zero swap, four build
+jobs and four test threads; proofs use 1/2-GiB limits and zero swap. Property seed
+is `41315976`. Durations are correctness-run observations, not benchmarks.
+
+**DECISION AND REMAINING WORK.** Adopt the verified helper, retain the existing
+arena transport as the differential reference, then switch only the standalone
+transport to consumed-offset/range storage. The public persistent ACT handles
+and parser grammar remain unchanged. Consumed-prefix policy tests, complete
+byte/resolution trace bindings and transport resource measurements remain
+required. Subsequent bulk payload consumption and Region traversal work also
+remain in task 6018. This checkpoint changes no importer call site or persistent
+backend and supplies no PathMap/ACT-versus-LMDB result.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

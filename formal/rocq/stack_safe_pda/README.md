@@ -566,6 +566,44 @@ The following implementation bindings must follow verified span/anchor laws:
 | IST-07 | Reusable-frame ownership preserves span denotation when slots are retired/reused; no selected span borrows from a retired frame. |
 | IST-08 | Backing identity and actual transport activity demonstrate absence of payload/provenance copies; report view/frame layouts, retained backing and byte visits separately. |
 
+#### Verified model and executable correspondence
+
+`RPB3Admission.IndexedWindowTransport` adds twenty-two closed capstones. The
+complete theory now prints sixty-two closed reports and passes independent
+kernel checking. Its located-byte reference accumulates the consumed prefix
+independently; it does not define correctness by calling the indexed algorithm.
+The following inventory is exhaustive for the new reported capstones. Supporting
+lemmas remain in the same module.
+
+| Contract | Closed capstones | Executable binding and remaining obligation |
+|---|---|---|
+| IST-01 | `accumulated_located_prefix_is_exact`; `indexed_slice_equals_independently_accumulated_prefix`; `indexed_and_append_reference_transport_observations_are_identical` | Full consumed-prefix/arena trace differential must accompany the standalone transport cutover; it is not discharged by subview tests alone. |
+| IST-02 | `checked_window_accepts_exact_consumed_and_integer_bounds`; `checked_window_has_exact_length_and_representable_absolute_end`; `nested_windows_preserve_owner_bounds_and_exact_slice`; `checked_empty_windows_do_not_read_a_following_byte` | Window properties cover nested, reversed, outside-input and offset-overflow ranges. Future-byte refusal against the consumed prefix remains a transport binding. The empty-window theorem proves empty denotation, not measured read count. |
+| IST-03 | `explicit_completion_anchor_changes_only_the_end`; `earlier_and_equal_end_subviews_select_the_correct_boundary`; `indexed_byte_positions_preserve_exact_physical_provenance`; `rebased_frozen_and_inline_anchored_windows_have_identical_positions`; `completion_anchor_comes_from_the_final_consumed_byte`; `indexed_and_rebased_windows_preserve_source_refinement` | Anchored-window tests exercise all four test backings, empty/interior/equal-end windows, discontinuous sources and replacement anchors. Existing payload/empty-obligation controls must also pass through the new child adapter. |
+| IST-04 | `located_comparison_refines_content_only_lexicographic_order`; `first_content_mismatch_reports_the_current_physical_byte`; `equal_and_proper_prefix_comparisons_preserve_endpoint_fallback` | Content equality/order survives anchoring. Exact mismatch and proper-prefix fallback must additionally bind to the new reducer read policy. |
+| IST-05 | `suspended_window_retention_survives_parent_release` | Parent teardown, original arena mutation and shifted contiguous-owner teardown preserve child bytes/locations. Rust ownership and shared backing implement retention; the model is not a proof of `Arc` internals. |
+| IST-06 | `pending_preflight_refuses_before_state_world_or_consumed_offset_advance`; `shared_grammar_and_span_correspondence_preserve_full_protocol_observations` | Existing wrong-ID, pending-child and post-Dead trace controls remain mandatory after cutover. The theorem assumes correspondence to the shared grammar; it is not an extracted-parser equivalence proof. |
+| IST-07 | `captured_descriptor_survives_recycling_its_frame_cell` | New span descriptors must be copied values independent of frame-cell identity. Existing reusable-frame ownership controls remain required with the new span type. |
+| Causal controls | `concrete_window_anchor_lifetime_and_ordering_positive_controls`; `concrete_transport_causal_controls_reject_future_bytes_wrong_anchors_and_borrowed_frames` | Distinguish full-input bounds from consumed-prefix bounds, next-byte positions from completion anchors, retained backing from released backing, and copied spans from recycled-cell lookups. |
+
+Physical source offsets additionally require the separate checked-origin premise
+in `borrowed_physical_offsets_require_a_separate_checked_origin`; logical window
+bounds alone do not establish physical offset representability. IST-08 is an
+executable resource obligation, not an allocation theorem in this model.
+
+The helper binding is
+[`indexed_span_transport.rs`](../../../models/tests/support/indexed_span_transport.rs):
+`anchored_windows_preserve_bytes_locations_bounds_and_shared_backing` (128 generated
+cases); `nonterminal_and_empty_windows_preserve_supplied_completion_anchors`;
+`anchored_windows_reject_bad_ranges_and_checked_offset_overflow`;
+`anchored_children_survive_parent_teardown_and_original_arena_mutation`;
+`anchored_contiguous_children_preserve_shifted_origins_after_owner_drop`; and
+`anchored_metadata_fits_the_original_indexed_region_layout`.
+The gate requires all six, with no ignored tests. Nonempty owned windows share
+their original allocation; an empty `Bytes` slice may use the library's empty
+representation because it has no payload to retain. Frozen windows share the
+immutable backing index, not a newly constructed page index.
+
 #### Baseline and acceptance boundary
 
 The existing flat-key layout probe, extended only with two measurements, passes
