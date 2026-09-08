@@ -7,7 +7,8 @@ handoff_status: ready
 next_steps:
   - User opens the PR against dev and the issue it references; #378 is closed, and this is a distinct defect in the #379 implementation
   - system-integration agent commits and pushes its half (request in ../system-integration/docs/ToDos.md, id SI-TASK-SOAK-DISK-POST-MORTEM-2026-09-07)
-  - Run scripts/repin-system-integration.sh <sha> on this branch once the result file there carries the SHA
+  - "DONE 2026-09-08T06:20Z: repinned SYSTEM_INTEGRATION_REF x3 to SI 7f488f93 (PR #137 head after main 0fb6337 was merged in at 1e411383; descends per merge-base --is-ancestor). The first SI push c32f1f1d was refused because it was cut from dev and lacked #132 and #134"
+  - Re-pin to the merged SHA once SI #137 lands
   - After the next soak with both halves, read the soak-health tag and the pm tags to name the consumer, then prune it
 ---
 

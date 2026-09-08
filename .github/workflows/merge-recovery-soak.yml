@@ -228,7 +228,17 @@ env:
   # commit; the branch pin's content, now immutable on main). Verified:
   # descends from af0ab83 (merge-base --is-ancestor), and this PR's CI ran
   # full green on the af0ab83 content.
-  SYSTEM_INTEGRATION_REF: 0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6
+  # 2026-09-08: 0fb6337 -> 7f488f9 (SI PR #137 branch; main 0fb6337 merged
+  # in at 1e41138, so it descends per the rule above. The first push,
+  # c32f1f1d, was cut from dev, lacked #132/#134, and was refused for
+  # exactly that reason.) The runner exit-path post-mortem now tags a df
+  # line and bounded du lines, the disk twin of its OOM lines, after
+  # weekend runs 33939315110/33978505238/34056342543 died on ENOSPC ~20s
+  # past the disk guardian stamp with no disk number on the instance
+  # record. Verified: descends (merge-base --is-ancestor); 272 SI unit
+  # tests green locally on the content; SI CI pending on 7f488f9 at pin
+  # time. Re-pin to the merged SHA once #137 lands.
+  SYSTEM_INTEGRATION_REF: 7f488f93e4b540ab598a43331ad336c5f6f07a56
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
