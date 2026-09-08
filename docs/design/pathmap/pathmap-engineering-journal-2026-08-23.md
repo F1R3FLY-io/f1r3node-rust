@@ -5705,6 +5705,16 @@ No PathMap fork, new persistence format or reduced-depth replacement gate is pla
 The linked §5.29.9 gives raw observations, commands, digests and qualification limits;
 8341 and parent 5855 remain open.
 
+**BYTE-NATIVE FORMAL CHECKPOINT.** Child 8343's registered gate now passes 21 new
+closed reports, the ten interval prerequisites and both kernel checks under the
+2-GiB zero-swap cap. Review made family tags explicit for identical empty payloads,
+bound endpoint multiplicities to ordered scaled children, and allowed header reads
+to interleave across suspended cursors. The complete PCBN invariant catalogue binds
+those models to future tests; it does not claim to verify the concrete parser,
+PathMap internals or physical allocation. §5.29.9 and the formal README record
+source/log digests and the remaining realization premises. No new runtime code has
+landed, so the resource gap and tasks 8344/8345 remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

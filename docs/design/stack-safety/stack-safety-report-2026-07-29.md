@@ -8837,6 +8837,27 @@ catalogue precede this production change. The depth-4,096 obligation is retained
 and 8341/5855 remain open until this chain and their remaining acceptance evidence
 are satisfied. This is a local count-path refinement, not a PathMap crate change.
 
+**BYTE-NATIVE FORMAL PREREQUISITE PASSED.** Child 8343 now supplies the focused
+`ParCountByteNative.v` refinement and complete PCBN-01 through PCBN-14 executable
+invariant catalogue in the existing formal README. The registered
+`scripts/check-stack-safe-pda-proofs.sh --matcher-count-byte-native-proofs` gate
+passes ten prerequisite and 21 new closed reports plus both whole-module kernel
+checks, exit zero, with every proof command under a 2-GiB cap and zero swap. Source
+SHA-256 is `2d57c973908e3c8f88dcf6e10536a13353c6ad294c2a14817cb2e41f71870c9e`;
+registered log SHA-256 is
+`0990fb97b6545b8fa70ade22acf499ff61d37abb0f1bd572c4a0e154d8adb832`.
+
+The model retains enclosing family context for identical empty bodies, binds
+ordered endpoint assembly to multiplicity scales, proves cursor fold and visit-trace
+refinement, and allows interleaved header cursors in its resource budget. Immutable
+range and copy actions are separate from the semantic count machine. Concrete
+parser/view correspondence, generated-schema coverage, child semantic admission,
+Rust owner/cursor realization and measured header/copy effects remain implementation
+obligations. The live-frame bound is structural potential, not a proof of native
+stack size or a depth-tight physical allocation bound. This formal checkpoint does
+not change the measured runtime ladder above: 8344/8345 still must implement and
+qualify the byte-native route before 8341 and parent 5855 can close.
+
 ---
 
 ### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]

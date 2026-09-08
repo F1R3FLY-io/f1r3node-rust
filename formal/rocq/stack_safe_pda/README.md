@@ -127,6 +127,147 @@ implementation and resource qualification before 8341 can close. The original
 depth-4,096 obligation remains; smaller successful probes do not replace it.
 Stack-safety report §5.29.9 records the raw phase ladder and evidence digests.
 
+## Byte-native matcher count refinement (2026-09-08)
+
+Required task 8343 follows the measured count-path gap in §5.29.9 of the
+stack-safety report. This section specifies the implementation obligations before
+the runtime change in 8344. **The registered formal gate passes; runtime realization
+and resource qualification remain required.**
+The existing `ParCountIntervals` arithmetic proofs and the 92-test qualification
+checkpoint above remain independently applicable; neither proves the new byte
+projection or its resource bounds.
+
+The input authority has two forms. A resident `Par` supplies exact cached family
+totals and distinct canonical PathMap endpoints. Its Expr endpoints can be classified
+from their framing; each Connective endpoint can be copied once into an immutable
+owner before the lending zipper advances. An encoded child `Par` instead supplies
+repeated protobuf occurrences, not resident multiplicity counters. The existing
+`CanonicalParRegionIndex` identifies generated-schema family runs. Its child regions
+retain the same byte owner, and only Connective structure needs recursive semantic
+inspection for counts. A suspended cursor and interval accumulator replace decoded
+child collections. Per-endpoint multiplicity scales the completed interval once.
+The assembly relation must connect those two layers: each resident Connective
+endpoint supplies exactly one child with its own multiplicity scale, in inventory
+order. Merely proving a generic fold and a separate scale law would not rule out
+an assembler that forgets a scale or duplicates a child. Encoded repeated occurrences
+use unit multiplicity at that boundary.
+Projection admission retains the enclosing family tag along with each body: an
+empty Send, Receive, Expr and Connective can all have identical zero-length bodies.
+A payload-only decoder relation would not represent this valid mixed-family input.
+The model therefore needs a concrete mixed-empty-body admission witness as well as
+the conditional projection theorem.
+
+Public owned and borrowed `Connective` inputs remain structural entry points. Their
+child `Par` values may contain compressed maximum multiplicities, so serializing an
+entire public input to select the byte route would defeat the representation. NOT
+returns its interval without descending into its child; scalar predicates contribute
+one expression irrespective of their Boolean payload. Derived `connective_used`
+metadata is not a gate for these count equations.
+
+The current cursors may inspect direct framing twice: once to validate/index a run
+and once to advance it. The intended resource theorem therefore bounds a constant
+number of header inspections per relevant encoded field, not exactly one. It must
+account separately for root endpoint copies, retained owner bytes, continuation
+storage and fallback decoding. It does not prove PathMap topology, the complete
+protobuf parser, Rust memory safety, allocator behavior or unconditional linearity
+for a route whose framing proof fails.
+
+### Pre-implementation invariant and executable-test catalogue
+
+The following identifiers name required bindings, not already-passing new tests.
+Each must be linked to the new theory's capstones before production implementation.
+Tests must use independent expected values or counterexamples; reusing production
+count arithmetic on both sides is insufficient.
+
+| ID | Invariant | Required executable binding and discrimination control |
+|---|---|---|
+| PCBN-01 | Resident exact family projection equals endpoint mass for all eight fields. | Reuse maximum and maximum-plus-one carriers from `matcher_connective_isolation`; compare exact independent sums with the new route, preserving retained CoW roots. |
+| PCBN-02 | Encoded family projection counts repeated occurrences, including equal bytes, exactly and preserves enclosing family context. | Compare every generated Par family with independent repeated-field counts; duplicate fields must count twice rather than disappear through set deduplication. Include empty Par and mixed zero-length Send/Receive/Expr/Connective bodies distinguished only by their source field tags. |
+| PCBN-03 | Only a FreeVar or Wildcard expression removes concrete Expr mass and sets the unbounded upper interval. | Cover every signed `i32` FreeVar boundary, Wildcard, BoundVar, absent Expr oneof, absent EVar child and absent Var oneof. Reject a classifier that conflates unproved framing with concrete. |
+| PCBN-04 | Every admitted current Expr schema alternative receives a proven byte classification. | Derive the coverage inventory from the generated schema; include nested and omitted-field forms. Assert zero whole-expression decoding and zero fallback for the admitted corpus, not just recognized scalar examples. |
+| PCBN-05 | Empty AND, empty OR, NOT, scalar predicates, VarRef and absent Connective preserve structural equations. | Extend the independent `matcher_count_folds` specification for both predicate Boolean payloads and all signed VarRef fields; NOT must not visit its child. |
+| PCBN-06 | Suspended cursor traversal consumes each child in order and preserves its accumulator across nested return. | Independent nested AND/OR/parallel fold corpus, multi-child and deep unary cases, with ordered visit traces and work counters. Reject skip, duplicate, reversal, wrong-seed and lost-accumulator controls: final count equality alone cannot detect duplicate or reversed AND/OR visits because those folds are idempotent and commutative. |
+| PCBN-07 | Exactly one child is assembled per Connective endpoint, with its own scale; evaluation followed by scaling equals occurrence-wise contribution. | Duplicate-coalesced resident Connectives at 1, 1,001 and maximum; independent endpoint-to-child multiplicity trace, forgotten-scale/duplicate-child controls, zero scaling and finite/top overflow; fixed traversal/copy counters while multiplicity varies. |
+| PCBN-08 | Derived metadata does not suppress count traversal. | Identical components with both root and child `connective_used` values and empty/nonempty `locally_free` metadata yield identical count intervals; metadata-gated mutation is rejected. |
+| PCBN-09 | Structural public Connective entries do not serialize child Pars to obtain counts. | Owned/borrowed parity with child family totals maximum and maximum-plus-one, exact independent expected intervals and zero serialization/expansion counters. |
+| PCBN-10 | Unproved framing delegates to the existing decoding authority; refusal is not an invented semantic interval. | Noncanonical/malformed framing controls compare decoder outcome and failure authority. Keep admission assumptions explicit; valid-schema fallback remains forbidden by PCBN-04. |
+| PCBN-11 | Every suspended child range retains its exact immutable byte owner and stays inside its parent range. | Existing owner-bound cursor and `ProtobufRegion` range tests plus nested resume/drop and CoW source-retention cases; mismatched-owner and out-of-range controls must refuse. |
+| PCBN-12 | Header work and copied endpoint bytes do not grow with repeatedly decoded suffixes. | Geometric deep/wide deterministic counters, at most one retained payload copy per visited resident Connective endpoint, borrowed Expr classification with zero retained payload copies, zero nested payload copies and zero whole-suffix decodes; an actual repeated-decoding control must violate the gate. Separate header work from zipper path reconstruction. |
+| PCBN-13 | Count-machine native stack is independent of semantic depth and its live continuations follow the proved machine bound. | Restore the original depth-4,096/128-KiB probe, retain separate construction/count/drop timing, and qualify wide/empty/mixed controls under systemd memory limits. A smaller passing depth does not close this obligation. |
+| PCBN-14 | Integration preserves ordered partition, rollback and matcher behavior after the byte refinement. | Rerun the registered ten-capstone / 92-test gate and new bound tests; preserve independent ordered oracle and actual finite-top/projected-availability/clamping rejection evidence. Full-workspace acceptance remains a separate required gate. |
+
+Resource qualification in 8345 must publish raw observations, command/environment
+pins and the distinction between deterministic work bounds, single diagnostic
+samples and controlled timing populations. Throughput claims require a suitable
+idle-core window. None of these obligations authorizes a PathMap fork, a new codec,
+a parser dependency or a change to the Rholang count semantics.
+
+Test-only counters must distinguish cursor operations from actual low-level header
+reads. Rholang unit tests do not compile their `models` dependency with `cfg(test)`;
+models-local cursor instrumentation therefore qualifies the per-operation header
+bound, while the Rholang machine instrumentation records operation counts, copied
+bytes, decoder calls/input bytes, live frames and ordered visits. Compose those
+observations explicitly rather than relabeling a cursor-call count as a measured
+header count. Private support modules under the respective `tests/` directories
+can hold thread-local measurement scopes without production counters or a new
+runtime dependency. Existing depth histogram hooks do not measure these costs.
+
+### Formal bindings and qualification boundary
+
+`ParCountByteNative.v` imports the existing interval algebra instead of redefining
+finite/top arithmetic. Its projection admission passes the enclosing source field
+to both the semantic decoder and the byte view. Its cursor machine has explicit
+Visit, Scan and Return states, with Resume and Scale continuations; a decreasing
+potential establishes finite termination. The same transitions emit an ordered
+inspection trace, so a value-only equivalence cannot hide duplicate work.
+
+| Capstone | Catalogue bindings |
+|---|---|
+| `encoded_projection_preserves_all_eight_fields_and_hole_mass` | PCBN-01, PCBN-02, PCBN-03: exact projection under source-tagged admission. |
+| `duplicate_occurrences_and_compressed_endpoints_have_equal_projection` | PCBN-01, PCBN-02, PCBN-07: equal counts for repeated unit occurrences and counted endpoints. |
+| `tri_state_refinement_preserves_decoder_results_and_failure_authority` | PCBN-03, PCBN-10: proven classification or exact decoder delegation, including errors. |
+| `admitted_expression_forms_have_complete_zero_fallback_classification` | PCBN-03, PCBN-04: complete classification over abstract expression forms; generated-schema coverage is the concrete binding. |
+| `structural_connective_equations_ignore_metadata_but_not_children` | PCBN-05, PCBN-08: empty/control/scalar equations and metadata independence. |
+| `suspended_cursor_step_preserves_the_structural_fold` | PCBN-06: each transition preserves the denotation of active work and suspended continuations. |
+| `suspended_cursor_terminates_with_exact_all_field_results` | PCBN-06, PCBN-13: every finite modeled input terminates with the structural result. |
+| `suspended_cursor_execution_preserves_exact_ordered_visits` | PCBN-06, PCBN-12: completed traces contain exactly the structural visits in order. |
+| `live_continuations_are_bounded_without_occurrence_expansion` | PCBN-07, PCBN-13: live frames are bounded by structural potential independently of multiplicity. This is not a native-stack or depth-specific allocation theorem. |
+| `compressed_endpoint_scaling_refines_occurrence_fold_and_cap` | PCBN-07: one completed result scales like repeated addition through the checked finite/top quotient. |
+| `ordered_endpoint_assembly_preserves_exact_multiplicity_and_visits` | PCBN-07: ordered child assembly preserves the admitted Connective multiplicity inventory. The byte-to-child semantic correspondence remains an executable admission obligation. |
+| `checked_child_ranges_preserve_retained_owner_and_bounds` | PCBN-11: checked relative ranges preserve owner identity and bounds. |
+| `suspending_and_resuming_preserve_every_retained_range` | PCBN-11: both active child and suspended parent remain within retained owners. |
+| `inspected_headers_have_a_derived_constant_pass_byte_budget` | PCBN-12: header work is bounded under the explicit admitted header catalogs and pass multiplicities; it does not prove the Rust parser's correspondence to those catalogs. |
+| `outer_endpoint_copying_is_exact_and_descents_add_no_payload_copy` | PCBN-12: modeled endpoint-copy and shared-child actions account separately for copied bytes. Concrete copy calls require instrumentation. |
+| `public_connective_entry_remains_structural_for_arbitrary_mass` | PCBN-09: completed structural-entry inspection traces contain no whole-Par serialization effect; runtime effect correspondence must be tested. |
+
+The positive mixed-empty-body witness prevents loss of source-family context from
+making projection admission vacuous. A separate inventory witness admits a scalar
+Connective of multiplicity two and rejects assembly with multiplicity one. The
+other controls distinguish incorrect unproved-to-concrete classification, absent
+options, metadata gating and zero-times-top handling. The registered proof-only
+mode is `scripts/check-stack-safe-pda-proofs.sh --matcher-count-byte-native-proofs`:
+it first rebuilds/checks the ten-capstone interval prerequisite, then requires 21
+closed reports (16 main capstones and five selected examples) and checks the whole
+new module. It shares the same bounded helpers with the full runner.
+
+**FORMAL GATE PASSED — 2026-09-08.** The registered proof-only command completed
+with exit zero, ten prerequisite plus 21 new closed reports, and two successful
+whole-module kernel checks. Every compiler/checker invocation used systemd
+`MemoryHigh=1G`, `MemoryMax=2G`, `MemorySwapMax=0`, `CPUQuota=200%`,
+`TasksMax=128` and a 900-second watchdog. Final source SHA-256:
+`2d57c973908e3c8f88dcf6e10536a13353c6ad294c2a14817cb2e41f71870c9e`.
+Registered log `/tmp/rspace-8343-registered-proof-gate-20260908.log`, SHA-256:
+`0990fb97b6545b8fa70ade22acf499ff61d37abb0f1bd572c4a0e154d8adb832`.
+
+Review corrected source-family context, endpoint-to-scale assembly, and a header
+budget premise that originally required complete catalog passes in order. The
+qualified header model instead allows arbitrary interleaving of consume-next
+cursors and derives the work bound from their remaining slot mass. Those corrections
+precede all new Rust changes. The proof does not discharge the explicit parser,
+child-correspondence, schema-completeness, owner, arithmetic or concrete operation
+bindings listed above. **None of the new runtime bindings is yet implemented or
+passed; tasks 8344 and 8345 remain required before 8341/5855 can close.**
+
 ## Exact scalar projection contract (2026-09-07)
 
 Task 5853 adds the standalone `ScalarProjection.v` admission contract, not a

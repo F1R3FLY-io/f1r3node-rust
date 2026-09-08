@@ -100,6 +100,14 @@ matcher_count_proofs() {
   rocq_check_modules "spatial matcher and exact ParCount intervals" StackSafePDA.SpatialMatcher
 }
 
+matcher_count_byte_native_proofs() {
+  local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  rocq_reject_placeholders theories/ParCountByteNative.v
+  rocq_compile_with_closed_count theories/ParCountByteNative.v 21 \
+    "byte-native ParCount projection, cursor and resource contracts"
+  rocq_check_modules "byte-native ParCount refinements" StackSafePDA.ParCountByteNative
+}
+
 matcher_count_runtime() {
   local PROPTEST_RNG_SEED="${PROPTEST_RNG_SEED:-41315855}"
   export PROPTEST_RNG_SEED
@@ -110,11 +118,16 @@ matcher_count_runtime() {
   rholang_run_tests 57 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
 }
 
-if [[ "${1:-}" == "--matcher-counts" ]]; then
+if [[ "${1:-}" == "--matcher-counts" || "${1:-}" == "--matcher-count-byte-native-proofs" ]]; then
   pushd "$rocq_root" >/dev/null
   TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128 \
     tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
   matcher_count_proofs
+  if [[ "${1:-}" == "--matcher-count-byte-native-proofs" ]]; then
+    matcher_count_byte_native_proofs
+    popd >/dev/null
+    exit 0
+  fi
   popd >/dev/null
   pushd "$repo_root" >/dev/null
   matcher_count_runtime
@@ -303,6 +316,7 @@ if [[ "$rmp2_closed_capstones" != "7" ]]; then
   exit 1
 fi
 matcher_count_proofs
+matcher_count_byte_native_proofs
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceAuthority.v 5 \
   "the exact two-level RSpace logical authority"
