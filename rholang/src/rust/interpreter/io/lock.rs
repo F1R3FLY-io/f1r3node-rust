@@ -251,6 +251,14 @@ pub const MAX_WAITERS_PER_FILE: usize = 1024;
 /// warning before hard failure.
 pub const LOCK_ID_CEILING: u64 = u64::MAX - (1 << 16);
 
+// M-35 (2026-09-08, A4-S-3): register lock.rs consensus constants
+// with the fingerprint fold.  Orders 7, 8, 9 — preserved from the
+// pre-M-35 manual fold order to avoid rolling the fingerprint
+// golden hex.
+crate::register_consensus_constant!(order = 7, name = MAX_RANGES_PER_FILE, u64_be);
+crate::register_consensus_constant!(order = 8, name = MAX_WAITERS_PER_FILE, u64_be);
+crate::register_consensus_constant!(order = 9, name = LOCK_ID_CEILING, u64_be);
+
 /// Errors surfaced through the native handlers as `FSERR_*` codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockError {

@@ -74,6 +74,11 @@ const _: () = assert!(
      on legitimate workloads — a divergent lower cap would fork consensus"
 );
 
+// M-35 (2026-09-08, A4-S-3): register MAX_WAL_ENTRIES with the
+// fingerprint fold.  Order 1 — preserved from the pre-M-35 manual
+// fold order to avoid rolling the fingerprint golden hex.
+crate::register_consensus_constant!(order = 1, name = MAX_WAL_ENTRIES, u64_be);
+
 /// Opaque marker returned by `Wal::begin_deploy` and consumed by
 /// `Wal::take_deploy_entries`.  Records the WAL length at the deploy
 /// boundary so post-deploy drain covers exactly the entries this

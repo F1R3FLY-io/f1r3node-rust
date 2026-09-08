@@ -17,11 +17,14 @@
 // # Middle-option fix
 //
 // At boot, node computes a short hex `fingerprint` from every
-// consensus-observable runtime constant listed in §5.  Post B2
-// expansion (2026-09-03): coverage is 10 constants (MAX_WAL_ENTRIES
-// + 7 byte gates + LOCK_ID_CEILING + SNAPSHOT_FORMAT_VERSION).  New
-// constants MUST be appended (never inserted mid-list) — see
-// `consensus_runtime_fingerprint` docstring.  The fingerprint is
+// consensus-observable runtime constant listed in §5.  Post M-35
+// (2026-09-08): coverage is 11 constants, each registered from its
+// declaration site via `register_consensus_constant!` — `linkme`
+// collects the entries into `CONSENSUS_FOLD` at link time and
+// `consensus_runtime_fingerprint()` sorts by declared `order` and
+// encodes.  New constants MUST claim the next-highest unused order
+// — the runtime contiguity check panics on gaps or duplicates.
+// The fingerprint is
 // appended to the operator's `network_id` as `<network_id>#cf<hex>`
 // before the value is baked into the TLS interceptor.  Peers with
 // different fingerprints see a mismatched `network_id` and get
@@ -48,12 +51,7 @@
 //   provenance, use the Genesis-parameter design instead.
 
 use crypto::rust::hash::blake2b256::Blake2b256;
-
-use super::handlers::{MAX_ENTRIES, MAX_WRITE_BYTES};
-use super::lock::{LOCK_ID_CEILING, MAX_RANGES_PER_FILE, MAX_WAITERS_PER_FILE};
-use super::snapshot::SNAPSHOT_FORMAT_VERSION;
-use super::wal::MAX_WAL_ENTRIES;
-use super::{MAX_CHUNK_ITEMS, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
+use linkme::distributed_slice;
 
 /// Delimiter separating the operator's network_id from the
 /// consensus fingerprint.  `#` chosen because it's URL-safe,
@@ -66,52 +64,97 @@ use super::{MAX_CHUNK_ITEMS, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
 const FINGERPRINT_DELIMITER: &str = "#cf";
 const FINGERPRINT_HEX_LEN: usize = 16; // 8 bytes × 2
 
+/// M-35 (2026-09-08, A4-S-3): a single consensus-observable
+/// constant's contribution to the fingerprint fold.
+///
+/// Every constant enumerated in `docs/consensus-invariants.md § 5`
+/// (byte gates) plus `LOCK_ID_CEILING` and `SNAPSHOT_FORMAT_VERSION`
+/// registers ONE `ConsensusFoldEntry` into the `CONSENSUS_FOLD`
+/// distributed slice at its declaration site.  `consensus_runtime_
+/// fingerprint()` collects the slice, sorts by `order`, and appends
+/// each entry's encoded bytes into the pre-hash buffer.
+///
+/// The `order` field is a hard-fork surface — reordering flips the
+/// fingerprint of an unchanged fleet and force-splits peering.
+/// New consensus-observable constants MUST be appended at the tail
+/// (order = next-highest); the `order_contiguity` compile-time-ish
+/// check in `consensus_runtime_fingerprint` fires at runtime on a
+/// gap or duplicate.
+///
+/// The `encode` field is a plain `fn(&mut Vec<u8>)` (not a
+/// closure) — non-capturing so it coerces from a lambda at the
+/// declaration site.  The two encoding shapes in use today:
+///
+///   `|buf| buf.extend_from_slice(&(CONST as u64).to_be_bytes())`
+///     for u64 / usize constants — 8 BE bytes.
+///   `|buf| buf.push(CONST)`
+///     for the u8 `SNAPSHOT_FORMAT_VERSION` — 1 byte.
+///
+/// A new encoding shape (e.g., u32 BE for a future `Version`
+/// constant) would require adding a helper here — the current
+/// two-shape design is what the fingerprint has ever encoded.
+#[derive(Debug, Clone, Copy)]
+pub struct ConsensusFoldEntry {
+    /// Position in the fold sequence.  Must be contiguous 1..=N
+    /// across all registered entries.
+    pub order: u32,
+    /// Human-readable constant name (for error messages when the
+    /// contiguity check fails).
+    pub name: &'static str,
+    /// Encode this constant's value into the fold buffer.  Called
+    /// once per `consensus_runtime_fingerprint()` invocation.
+    pub encode: fn(&mut Vec<u8>),
+}
+
+/// Distributed slice of every consensus-observable constant's fold
+/// entry.  Contributors register from anywhere in the `rholang`
+/// crate via the `register_consensus_constant!` macro.  The `linkme`
+/// crate collects them into a linker section and exposes the
+/// resulting slice at compile time — no manual list to maintain,
+/// no "did you forget to append?" hazard.
+#[distributed_slice]
+pub static CONSENSUS_FOLD: [ConsensusFoldEntry];
+
 /// Compute the hex fingerprint of all consensus-observable
-/// runtime constants.  Coverage post B2 expansion (2026-09-03) —
-/// every constant enumerated in `docs/consensus-invariants.md § 5`
-/// (byte gates) plus `LOCK_ID_CEILING` and `SNAPSHOT_FORMAT_VERSION`.
+/// runtime constants.  Coverage: every constant registered via
+/// `register_consensus_constant!` (see `docs/consensus-invariants.md
+/// § 5` for the operator-visible catalog).
 ///
-/// The append order is FIXED — reordering flips the fingerprint of
-/// an unchanged fleet and force-splits peering across a benign
-/// refactor.  New consensus-observable constants MUST be appended
-/// at the END of this list (never inserted mid-list); each addition
-/// is a coordinated peer-upgrade event since it flips the
-/// fingerprint.
-///
-/// Current fold order (do not reorder):
-///  1. `MAX_WAL_ENTRIES` (u64 BE)
-///  2. `MAX_WRITE_BYTES` (u64 BE)
-///  3. `MAX_READ_BYTES` (u64 BE)
-///  4. `MAX_TRUNCATE_BYTES` (u64 BE)
-///  5. `MAX_ENTRIES` (u64 BE)
-///  6. `MAX_OPEN_FDS` (u64 BE)
-///  7. `MAX_RANGES_PER_FILE` (u64 BE)
-///  8. `MAX_WAITERS_PER_FILE` (u64 BE)
-///  9. `LOCK_ID_CEILING` (u64 BE)
-/// 10. `SNAPSHOT_FORMAT_VERSION` (u8)
-/// 11. `MAX_CHUNK_ITEMS` (u64 BE) — M-19 review follow-up
-///     (2026-09-04, Gap 2): appended so a per-validator patch of
-///     the `Stream.rho::chunk(@n)` cap doesn't silently peer with
-///     divergent nodes.
+/// M-35 (2026-09-08, A4-S-3): fold order is derived from the
+/// `CONSENSUS_FOLD` distributed slice at runtime — sorted by
+/// declared `order` field, then encoded in sequence.  Adding a
+/// new constant is a single-file change: declare with
+/// `register_consensus_constant!(order = N, ...)` and pick the
+/// next-highest N.  Contiguity is checked on every call; a gap
+/// or duplicate panics with the offending names.
 ///
 /// Returns 16-char lowercase hex (first 8 bytes of Blake2b256).
 pub fn consensus_runtime_fingerprint() -> String {
-    let mut buf = Vec::with_capacity(8 * 10 + 1);
-    // Cast every usize/u8 to u64/u8 explicitly so the encoding is
-    // portable across 32/64-bit builds — a validator with the same
-    // constants but a different pointer width must produce the
-    // same fingerprint.
-    buf.extend_from_slice(&(MAX_WAL_ENTRIES as u64).to_be_bytes());
-    buf.extend_from_slice(&MAX_WRITE_BYTES.to_be_bytes());
-    buf.extend_from_slice(&MAX_READ_BYTES.to_be_bytes());
-    buf.extend_from_slice(&MAX_TRUNCATE_BYTES.to_be_bytes());
-    buf.extend_from_slice(&(MAX_ENTRIES as u64).to_be_bytes());
-    buf.extend_from_slice(&(MAX_OPEN_FDS as u64).to_be_bytes());
-    buf.extend_from_slice(&(MAX_RANGES_PER_FILE as u64).to_be_bytes());
-    buf.extend_from_slice(&(MAX_WAITERS_PER_FILE as u64).to_be_bytes());
-    buf.extend_from_slice(&LOCK_ID_CEILING.to_be_bytes());
-    buf.push(SNAPSHOT_FORMAT_VERSION);
-    buf.extend_from_slice(&MAX_CHUNK_ITEMS.to_be_bytes());
+    let mut entries: Vec<&ConsensusFoldEntry> = CONSENSUS_FOLD.iter().collect();
+    entries.sort_by_key(|e| e.order);
+
+    // Contiguity check: orders must be exactly 1..=entries.len().
+    // A gap or duplicate is a shard-splitting error that shows up
+    // as a wrong fingerprint (peers refuse to peer) — but at that
+    // point the diagnostic is far from the cause.  Catch it here
+    // where the constant list is defined.
+    for (i, e) in entries.iter().enumerate() {
+        let expected = (i as u32) + 1;
+        assert_eq!(
+            e.order, expected,
+            "M-35: CONSENSUS_FOLD orders must be contiguous 1..=N; \
+             expected order {} but entry `{}` has order {}.  Fix: \
+             assign the next-highest available order to the new \
+             `register_consensus_constant!` invocation, or find \
+             the duplicate.",
+            expected, e.name, e.order
+        );
+    }
+
+    let mut buf = Vec::with_capacity(8 * entries.len() + 1);
+    for entry in &entries {
+        (entry.encode)(&mut buf);
+    }
     let hash = Blake2b256::hash(buf);
     let mut hex = String::with_capacity(FINGERPRINT_HEX_LEN);
     for b in hash.iter().take(FINGERPRINT_HEX_LEN / 2) {
@@ -119,6 +162,61 @@ pub fn consensus_runtime_fingerprint() -> String {
         let _ = write!(hex, "{b:02x}");
     }
     hex
+}
+
+/// M-35 (2026-09-08, A4-S-3): register a consensus-observable
+/// constant into `CONSENSUS_FOLD`.  Declare AT the site where the
+/// constant lives (same module) — the macro emits a
+/// `#[distributed_slice(CONSENSUS_FOLD)] static` alongside the
+/// existing `pub const`.
+///
+/// Two encoding shapes:
+///   - `u64_be` — for `u64` / `usize` constants (8 BE bytes).  The
+///     `as u64` cast is emitted by the macro so portability across
+///     32/64-bit builds is automatic.
+///   - `u8_raw` — for the lone `u8` `SNAPSHOT_FORMAT_VERSION`
+///     (single byte push).
+///
+/// Example:
+/// ```ignore
+/// use crate::rust::interpreter::io::consensus_fingerprint::{
+///     ConsensusFoldEntry, CONSENSUS_FOLD,
+/// };
+/// pub const MAX_WAL_ENTRIES: usize = 100_000;
+/// register_consensus_constant!(order = 1, name = MAX_WAL_ENTRIES, u64_be);
+/// ```
+#[macro_export]
+macro_rules! register_consensus_constant {
+    (order = $order:literal, name = $const_name:ident, u64_be) => {
+        paste::paste! {
+            #[linkme::distributed_slice($crate::rust::interpreter::io::consensus_fingerprint::CONSENSUS_FOLD)]
+            #[allow(non_upper_case_globals)]
+            static [<CONSENSUS_FOLD_ $const_name>]:
+                $crate::rust::interpreter::io::consensus_fingerprint::ConsensusFoldEntry =
+                $crate::rust::interpreter::io::consensus_fingerprint::ConsensusFoldEntry {
+                    order: $order,
+                    name: stringify!($const_name),
+                    encode: |buf: &mut Vec<u8>| {
+                        buf.extend_from_slice(&($const_name as u64).to_be_bytes());
+                    },
+                };
+        }
+    };
+    (order = $order:literal, name = $const_name:ident, u8_raw) => {
+        paste::paste! {
+            #[linkme::distributed_slice($crate::rust::interpreter::io::consensus_fingerprint::CONSENSUS_FOLD)]
+            #[allow(non_upper_case_globals)]
+            static [<CONSENSUS_FOLD_ $const_name>]:
+                $crate::rust::interpreter::io::consensus_fingerprint::ConsensusFoldEntry =
+                $crate::rust::interpreter::io::consensus_fingerprint::ConsensusFoldEntry {
+                    order: $order,
+                    name: stringify!($const_name),
+                    encode: |buf: &mut Vec<u8>| {
+                        buf.push($const_name);
+                    },
+                };
+        }
+    };
 }
 
 /// Append the consensus fingerprint to the operator's `network_id`.
@@ -159,10 +257,12 @@ mod tests {
     }
 
     /// Golden-hex pin: current consensus-observable constants yield
-    /// a specific fingerprint.  Post B2 expansion (2026-09-03) this
-    /// covers 10 constants (see `consensus_runtime_fingerprint`
-    /// docstring); if ANY of them changes, this test fires — forcing
-    /// the maintainer to acknowledge the change breaks peering with
+    /// a specific fingerprint.  Post M-35 (2026-09-08) coverage is
+    /// 11 constants collected via `linkme` from their declaration
+    /// sites (see `register_consensus_constant!` invocations across
+    /// `wal.rs`, `handlers.rs`, `mod.rs`, `lock.rs`, `snapshot.rs`).
+    /// If ANY of them changes, this test fires — forcing the
+    /// maintainer to acknowledge the change breaks peering with
     /// un-upgraded peers.
     ///
     /// Prior anchors (each roll = intentional shard-wide constant

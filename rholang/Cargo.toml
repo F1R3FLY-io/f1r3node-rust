@@ -51,6 +51,13 @@ openai-api-rs = "6.0.3"
 # S-2 fix (2026-09-04): declarative-macro identifier concatenation
 # for the `consensus_error_codes!` macro in `interpreter/io/errors.rs`.
 paste = "1.0"
+# M-35 (S-3, 2026-09-08): distributed-slice registration for the
+# `consensus_runtime_fingerprint` fold order.  Each consensus-
+# observable constant registers its encoding via `linkme::
+# distributed_slice(CONSENSUS_FOLD)` at its declaration site;
+# the fingerprint fn sorts by declared `order` and appends the
+# encoded bytes.  Removes the "manually append in order" hazard.
+linkme = "0.3"
 dotenv = "0.15.0"
 indexmap = { workspace = true }
 rayon = { workspace = true }

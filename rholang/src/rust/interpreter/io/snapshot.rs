@@ -221,6 +221,13 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 ///   `f1r3node_no_running_network.md` — the bump is a normal edit.
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 6;
 
+// M-35 (2026-09-08, A4-S-3): register SNAPSHOT_FORMAT_VERSION with
+// the fingerprint fold.  Order 10 — preserved from the pre-M-35
+// manual fold order to avoid rolling the fingerprint golden hex.
+// `u8_raw` shape emits the version byte as a single byte, matching
+// the pre-M-35 encoding.
+crate::register_consensus_constant!(order = 10, name = SNAPSHOT_FORMAT_VERSION, u8_raw);
+
 /// M-1 fix (2026-08-06): manifest.jsonl line-format version.
 /// Distinct from `SNAPSHOT_FORMAT_VERSION` because the two are
 /// independent wire surfaces: the .wal file bytes and the

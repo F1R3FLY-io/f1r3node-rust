@@ -570,6 +570,13 @@ pub const MAX_ENTRIES: usize = 65_536;
 /// Cap on `fs_write` payload — symmetric with `MAX_READ_BYTES`.
 pub const MAX_WRITE_BYTES: u64 = 64 * 1024 * 1024;
 
+// M-35 (2026-09-08, A4-S-3): register handlers.rs consensus constants
+// with the fingerprint fold.  Orders 2 and 5 — preserved from the
+// pre-M-35 manual fold order to avoid rolling the fingerprint golden
+// hex.
+crate::register_consensus_constant!(order = 2, name = MAX_WRITE_BYTES, u64_be);
+crate::register_consensus_constant!(order = 5, name = MAX_ENTRIES, u64_be);
+
 /// Shared per-runtime state for the fs native handlers.  Cloned into
 /// each handler closure via `ProcessContext`.
 ///

@@ -72,13 +72,18 @@ pub const MAX_TRUNCATE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 pub const MAX_OPEN_FDS: usize = 1024;
 
 /// Per-call cap on `Stream.chunk(n)` — spec §chunk method guarantees
-/// a minimum of 1024; we set 65,536 above the floor.  M-19 review
-/// follow-up (2026-09-04, Gap 2): folded into
-/// `consensus_runtime_fingerprint` so a per-validator patch of the
-/// Rholang literal in `Stream.rho::method chunk(@n)` (or of this Rust
-/// constant) surfaces as a fingerprint mismatch rather than a silent
-/// peering with divergent behavior.  Cross-language drift between
-/// this constant and the Rholang literal `65536` is caught by the
-/// source-scan pin `stream_chunk_enforces_max_chunk_items_cap` in
+/// a minimum of 1024; we set 65,536 above the floor.  Cross-language
+/// drift between this constant and the Rholang literal `65536` is
+/// caught by the source-scan pin
+/// `stream_chunk_enforces_max_chunk_items_cap` in
 /// `fileio_cost_spec.rs`.
 pub const MAX_CHUNK_ITEMS: u64 = 65536;
+
+// M-35 (2026-09-08, A4-S-3): register the four mod.rs consensus
+// constants with the fingerprint fold.  Orders 3, 4, 6, 11 —
+// preserved from the pre-M-35 manual fold order to avoid rolling
+// the fingerprint golden hex.
+crate::register_consensus_constant!(order = 3, name = MAX_READ_BYTES, u64_be);
+crate::register_consensus_constant!(order = 4, name = MAX_TRUNCATE_BYTES, u64_be);
+crate::register_consensus_constant!(order = 6, name = MAX_OPEN_FDS, u64_be);
+crate::register_consensus_constant!(order = 11, name = MAX_CHUNK_ITEMS, u64_be);
