@@ -10097,6 +10097,21 @@ the internal standalone entry is not yet the production importer. See
 [J-094](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-094--2026-09-08-replace-standalone-byte-accumulation-with-indexed-spans)
 for exact method, preverified invariants, measurements and qualification boundaries.
 
+#### 5.33.14 Strict opaque-interior proof and baseline (2026-09-08, task 6018)
+
+Fourteen additional closed theorems establish strict batching bounds, scalar
+countdown equivalence, exact next-byte provenance and stale/ineligible refusal.
+The RPB3 theory now has 76 closed reports and passes independent kernel checking.
+No runtime batching is included at this checkpoint. The 32-cell borrowed/frozen
+probe confirms the current parent visits every opaque payload byte; at width
+8,192 it visits 8,242 bytes with no enclosing Region and 8,402 at depth 32.
+Frame capacity depends on depth, not this payload width. This is not a native
+stack growth finding: traversal remains iterative, but repeated owner updates
+still add avoidable work. The planned strict interior leaves every boundary byte
+to the existing scalar grammar. See
+[J-095](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-095--2026-09-08-prove-strict-opaque-interiors-before-batching)
+for method, raw artifacts and the remaining implementation/resource boundaries.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

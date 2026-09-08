@@ -6708,6 +6708,67 @@ physical-linearity claim or PathMap/ACT-versus-LMDB verdict follows from this
 local result. Scoped implementation qualification is complete; whole-workspace
 and remaining campaign release gates are not claimed by this checkpoint.
 
+### J-095 — 2026-09-08: prove strict opaque interiors before batching
+
+**QUESTION AND HYPOTHESIS.** Can the standalone validator avoid traversing an
+opaque payload that its child must subsequently validate, without changing
+completion, truncation or child-error order? The hypothesis is that a strict
+interior batch can decrement all participating lengths once and seek the
+existing indexed cursor, while every boundary byte remains scalar. This targets
+payload-width times enclosing-depth work; it does not yet remove owner-spine
+updates for ordinary grammar bytes.
+
+**PRE-CHANGE METHOD.** The deterministic
+`opaque_payload_cursor_resource_matrix_preserves_completion` test constructs a
+map payload with a byte-array value, wraps its key in 0/1/8/32 Regions, then
+measures only the standalone parent through child dispatch. Borrowed and frozen
+backing use the same bytes; frozen sources deliberately have discontinuous
+physical offsets. Each case checks exact consumed length, last-byte completion
+anchor, unconsumed suffix, and pending-parent refusal before cursor mutation.
+The child is not timed or validated in this probe. Normal semantic integration
+remains a separate gate.
+
+| Byte-array width | Opaque payload bytes | Parent visits at depth 0 | Parent visits at depth 32 |
+|---|---:|---:|---:|
+| 16 | 60 | 62 | 178 |
+| 128 | 175 | 178 | 338 |
+| 1,024 | 1,071 | 1,074 | 1,234 |
+| 8,192 | 8,239 | 8,242 | 8,402 |
+
+Borrowed and frozen results agree in all 32 cells. At every width, retained
+frame/journal capacity is 736 bytes at depths 0/1, 5,504 at depth 8, and 22,016
+at depth 32. These are cursor and vector-capacity observations, not allocator
+counts, isolated RSS, or throughput. The single test passes, zero ignored,
+in 0.04 seconds of test execution. The capped build/test service reports 1.4G
+peak memory, including compilation, and zero swap; that is not validator RSS.
+
+**PROOF-FIRST RESULT.** Fourteen new `StrictOpaqueInterior` capstones compile,
+bringing RPB3 to 76 closed reports; independent kernel checking succeeds.
+The formal README binds every capstone to SOI-01–09. The scalar reference uses
+independent one-byte predecessor/successor updates. Successful batching preserves
+all modeled metadata and positive residuals, exactly matches the checked input
+prefix, and leaves the next located byte unchanged. Only ignored non-final
+payload events are erased. Current ID/origin and all owner/path/payload/input
+bounds are checked. Large declarations are bounded by input before conversion.
+
+| Artifact | SHA-256 |
+|---|---|
+| Pre-change resource probe | `6aa19073c309a18b37fbe282ffa738aa91f532cbef6f4bc331ff79712459f75f` |
+| RPB3 proof source | `4e9b1a3c2f31f4dbcd5b21607a9da863523614614b7cef0c786791cb22edf178` |
+| Capped compiler output | `8263cd4ca30ca3faa93786c7bd1dfef14dfce314382b9a056f8e994c9d0faf95` |
+| Independent kernel output | `e72d5ec4cfcf6d499da6d13cd67a7ef3d3143b18f8d4ce189a8a05cc04d267ac` |
+
+**BOUNDARY AND NEXT ACTION.** This checkpoint contains no runtime batching.
+Concrete grammar/frame equivalence, cursor skip cost, allocator behavior and
+global obligation-clock preservation still require implementation properties.
+Keeping the final byte scalar is essential: a framed child that outlives its
+enclosing Region must truncate there before malformed child dispatch. Merely
+replacing residual lengths with absolute ends is not this solution: embedded
+child states still reconstruct the owner spine, and post-Dead input consumption
+can differ from saved-graph accounting. Those later required refinements remain
+in task 6018. No importer or backend is activated, and no LMDB comparison follows
+from this local proof and baseline.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

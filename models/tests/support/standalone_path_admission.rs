@@ -183,10 +183,12 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
                     .resolve_obligation(&input, right.obligation.id, resolution)
                     .unwrap();
                 successful += 1;
-                assert!(history
-                    .value(pending, true, CanonicalPathSource::new(index))
-                    .unwrap()
-                    .is_err());
+                assert!(
+                    history
+                        .value(pending, true, CanonicalPathSource::new(index))
+                        .unwrap()
+                        .is_err()
+                );
             }
             (None, None) => {}
             _ => panic!("storage modes disagree about child completion at {index}"),
@@ -634,9 +636,11 @@ fn pending_parent_cannot_advance_or_accept_wrong_summary() {
         wrong.step(&mut stats).unwrap(),
         FrameAction::Push(_)
     ));
-    assert!(wrong
-        .accept(FrameSummary::CanonicalPath(summary), &mut stats)
-        .is_err());
+    assert!(
+        wrong
+            .accept(FrameSummary::CanonicalPath(summary), &mut stats)
+            .is_err()
+    );
 }
 
 #[test]
@@ -763,6 +767,58 @@ fn standalone_children_share_borrowed_payloads_and_survive_parent_drop() {
 }
 
 #[test]
+fn opaque_payload_cursor_resource_matrix_preserves_completion() {
+    for width in [16, 128, 1024, 8192] {
+        let map = EPathMap::new_map(
+            [(integer(1), expr(ExprInstance::GByteArray(vec![37; width])))],
+            Vec::new(),
+            false,
+            None,
+        );
+        for depth in [0, 1, 8, 32] {
+            let mut key = payload(0x10, map.trie_snapshot());
+            for _ in 0..depth {
+                let mut region = Vec::new();
+                prost::encoding::encode_varint(key.len() as u64, &mut region);
+                region.extend_from_slice(&key);
+                key = payload(0x0d, &region);
+            }
+            let completed_at = key.len();
+            key.push(0xff);
+            for (backing, input) in [
+                ("borrowed", IndexedByteRegion::from_borrowed(&key, 7, 101)),
+                ("frozen", fragmented(&key)),
+            ] {
+                let expected_anchor = input.position_at(completed_at - 1).unwrap().physical;
+                let mut parent = CanonicalPathFrame::new(input);
+                let mut stats = CanonicalProtobufAdmissionStats::default();
+                let FrameAction::Push(Frame::EPathMap(child)) = parent.step(&mut stats).unwrap()
+                else {
+                    panic!("nested map payload must suspend before the suffix");
+                };
+                assert_eq!(child.snapshot.len(), map.trie_snapshot().len());
+                assert_eq!(child.snapshot.end_position().physical, expected_anchor);
+                assert_eq!(parent.reducer.consumed_len(), completed_at);
+                assert_eq!(parent.cursor.bytes_yielded(), completed_at);
+                assert!(parent.cursor.bytes_traversed() <= completed_at);
+                assert_eq!(stats.canonical_path_obligations, 1);
+                let before = parent.reducer.stats();
+                assert!(parent.step(&mut stats).is_err());
+                assert_eq!(parent.reducer.stats(), before);
+                assert_eq!(parent.cursor.bytes_yielded(), completed_at);
+                println!(
+                    "opaque payload {backing}: width={width}, depth={depth}, payload={}, consumed={}, traversed={}, frame_backing={}",
+                    child.snapshot.len(),
+                    completed_at,
+                    parent.cursor.bytes_traversed(),
+                    parent.reducer.retained_frame_bytes(),
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn flat_key_storage_and_frame_layout_are_observed_directly() {
     #[allow(dead_code)]
     enum ExistingVariantsFrame<'a> {
@@ -830,15 +886,33 @@ fn flat_key_storage_and_frame_layout_are_observed_directly() {
             history.retained_state_bytes()
                 >= history.stats().states * frame.reducer.retained_state_bytes()
         );
-        println!("canonical-key state storage: width={width}, persistent_bytes={}, exclusive_inline_bytes={}",
-            history.retained_state_bytes(), frame.reducer.retained_state_bytes());
-        println!("canonical-key frame storage: width={width}, persistent_bytes={}, exclusive_bytes={}, exclusive_slots={}",
-            history.retained_frame_bytes(), retained, reducer.frames);
-        println!("canonical-key persistent reference: width={width}, bytes={}, states={}, frames={}, byte_pages={}, provenance_pages={}, payload_slots={}",
-            key.len(), history.stats().states, history.stats().frames, arena.byte_pages,
-            arena.provenance_pages, arena.payload_slots);
-        println!("canonical-key indexed transport: width={width}, consumed={}, borrowed_input_bytes={}, bytes_read={}, bytes_traversed={}",
-            frame.reducer.consumed_len(), backing.len(), stats.canonical_path_bytes_read, stats.canonical_path_bytes_traversed);
+        println!(
+            "canonical-key state storage: width={width}, persistent_bytes={}, exclusive_inline_bytes={}",
+            history.retained_state_bytes(),
+            frame.reducer.retained_state_bytes()
+        );
+        println!(
+            "canonical-key frame storage: width={width}, persistent_bytes={}, exclusive_bytes={}, exclusive_slots={}",
+            history.retained_frame_bytes(),
+            retained,
+            reducer.frames
+        );
+        println!(
+            "canonical-key persistent reference: width={width}, bytes={}, states={}, frames={}, byte_pages={}, provenance_pages={}, payload_slots={}",
+            key.len(),
+            history.stats().states,
+            history.stats().frames,
+            arena.byte_pages,
+            arena.provenance_pages,
+            arena.payload_slots
+        );
+        println!(
+            "canonical-key indexed transport: width={width}, consumed={}, borrowed_input_bytes={}, bytes_read={}, bytes_traversed={}",
+            frame.reducer.consumed_len(),
+            backing.len(),
+            stats.canonical_path_bytes_read,
+            stats.canonical_path_bytes_traversed
+        );
     }
 }
 

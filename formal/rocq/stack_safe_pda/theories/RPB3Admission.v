@@ -2679,3 +2679,501 @@ Print Assumptions concrete_window_anchor_lifetime_and_ordering_positive_controls
 Print Assumptions concrete_transport_causal_controls_reject_future_bytes_wrong_anchors_and_borrowed_frames.
 
 End IndexedWindowTransport.
+
+Module StrictOpaqueInterior.
+
+Import CanonicalKeyProtocol.
+Import IndexedWindowTransport.
+
+Inductive opaque_kind := RawParPayload | NestedEpmPayload.
+Inductive path_mode :=
+| LiveOpaque
+| PendingChild
+| DeadPath (code : nat) (source : provenance)
+| NonOpaque (tag : nat).
+
+Record metadata := Metadata {
+  metadata_id : nat;
+  metadata_kind : opaque_kind;
+  metadata_tag_source : provenance;
+  metadata_payload_start : nat;
+  metadata_anchor : option provenance;
+  metadata_stable : bool
+}.
+
+Record owner := Owner {
+  owner_region_remaining : nat;
+  owner_path_remaining : nat;
+  owner_saved_state : list nat;
+  owner_previous : list located_byte;
+  owner_next : option nat
+}.
+
+Record state := State {
+  state_mode : path_mode;
+  state_consumed : nat;
+  state_payload_remaining : nat;
+  state_owners : list owner;
+  state_metadata : metadata
+}.
+
+Fixpoint owner_bounds (owners : list owner) : list nat :=
+  match owners with
+  | [] => []
+  | current :: rest => owner_region_remaining current :: owner_path_remaining current :: owner_bounds rest
+  end.
+
+Definition bounds (current : state) := state_payload_remaining current :: owner_bounds (state_owners current).
+Definition strict_interior (width : nat) (current : state) :=
+  Forall (fun remaining => width < remaining) (bounds current).
+
+Fixpoint bounded_minimum (remaining : list nat) (available : nat) :=
+  match remaining with
+  | [] => available
+  | first :: rest => Nat.min first (bounded_minimum rest available)
+  end.
+
+Lemma below_minimum width remaining available :
+  width < bounded_minimum remaining available <->
+  width < available /\ Forall (fun value => width < value) remaining.
+Proof.
+  induction remaining as [|first rest IH]; cbn.
+  - split; [intro H; split; [exact H|constructor]|tauto].
+  - assert (split_min : width < Nat.min first (bounded_minimum rest available) <->
+      width < first /\ width < bounded_minimum rest available).
+    { destruct (le_dec first (bounded_minimum rest available)).
+      - rewrite Nat.min_l by lia. lia.
+      - rewrite Nat.min_r by lia. lia. }
+    rewrite split_min, IH. split.
+    + intros (head & available_ok & tail). split; [exact available_ok|constructor; assumption].
+    + intros (available_ok & all). inversion all; subst. tauto.
+Qed.
+
+Lemma minimum_at_most_available remaining available : bounded_minimum remaining available <= available.
+Proof.
+  induction remaining as [|first rest IH]; cbn; [lia|].
+  destruct (le_dec first (bounded_minimum rest available)).
+  - rewrite Nat.min_l by lia. lia.
+  - rewrite Nat.min_r by lia. lia.
+Qed.
+
+Definition available_prefix (limit input_length : nat) (current : state) :=
+  Nat.min (input_length - state_consumed current) (limit - state_consumed current).
+
+Definition interior_width (limit input_length : nat) (current : state) :=
+  Nat.pred (bounded_minimum (bounds current) (available_prefix limit input_length current)).
+
+Definition eligible (current : state) :=
+  match state_mode current with LiveOpaque => true | _ => false end.
+
+Record plan := Plan {
+  plan_from : nat;
+  plan_id : nat;
+  plan_width : nat
+}.
+
+Definition plan_interior (limit input_length : nat) (current : state) : option plan :=
+  if eligible current && (state_consumed current <=? input_length) && (state_consumed current <=? limit) then
+    let width := interior_width limit input_length current in
+    if 0 <? width then Some (Plan (state_consumed current) (metadata_id (state_metadata current)) width)
+    else None
+  else None.
+
+Definition decrement_owner (width : nat) (current : owner) :=
+  Owner (owner_region_remaining current - width) (owner_path_remaining current - width)
+    (owner_saved_state current) (owner_previous current) (owner_next current).
+
+Definition bulk_decrement (width : nat) (current : state) :=
+  State (state_mode current) (state_consumed current + width)
+    (state_payload_remaining current - width)
+    (map (decrement_owner width) (state_owners current)) (state_metadata current).
+
+Definition plan_guard (limit input_length : nat) (current : state) (request : plan) :=
+  eligible current && (state_consumed current <=? input_length) && (state_consumed current <=? limit) &&
+  (plan_from request =? state_consumed current) &&
+  (plan_id request =? metadata_id (state_metadata current)) &&
+  (0 <? plan_width request) && (plan_width request <=? interior_width limit input_length current).
+
+Definition try_advance (limit input_length : nat) (current : state) (request : plan) : option state :=
+  if plan_guard limit input_length current request then Some (bulk_decrement (plan_width request) current)
+  else None.
+
+Theorem planner_returns_the_exact_positive_strict_minimum limit input_length current request :
+  plan_interior limit input_length current = Some request ->
+  state_mode current = LiveOpaque /\ state_consumed current <= input_length /\
+  state_consumed current <= limit /\
+  request = Plan (state_consumed current) (metadata_id (state_metadata current))
+    (interior_width limit input_length current) /\
+  0 < plan_width request /\ strict_interior (plan_width request) current /\
+  state_consumed current + plan_width request < input_length /\
+  state_consumed current + plan_width request < limit.
+Proof.
+  unfold plan_interior. destruct (eligible current && (state_consumed current <=? input_length) &&
+    (state_consumed current <=? limit)) eqn:preflight; [|discriminate].
+  destruct (0 <? interior_width limit input_length current) eqn:nonzero; [|discriminate].
+  intro accepted. inversion accepted; subst request; cbn.
+  repeat rewrite andb_true_iff in preflight. destruct preflight as [[live available] fits].
+  apply Nat.leb_le in available. apply Nat.leb_le in fits. apply Nat.ltb_lt in nonzero.
+  assert (mode : state_mode current = LiveOpaque).
+  { unfold eligible in live. destruct (state_mode current); congruence. }
+  assert (strict : interior_width limit input_length current <
+      bounded_minimum (bounds current) (available_prefix limit input_length current)).
+  { unfold interior_width in *. lia. }
+  apply below_minimum in strict. destruct strict as [within all].
+  unfold available_prefix in within.
+  assert (input_bound : interior_width limit input_length current < input_length - state_consumed current).
+  { destruct (le_dec (input_length - state_consumed current) (limit - state_consumed current));
+      [rewrite Nat.min_l in within by lia|rewrite Nat.min_r in within by lia]; lia. }
+  assert (limit_bound : interior_width limit input_length current < limit - state_consumed current).
+  { destruct (le_dec (input_length - state_consumed current) (limit - state_consumed current));
+      [rewrite Nat.min_l in within by lia|rewrite Nat.min_r in within by lia]; lia. }
+  unfold strict_interior. repeat split; auto; lia.
+Qed.
+
+Lemma guarded_request_has_strict_bounds limit input_length current request :
+  plan_guard limit input_length current request = true ->
+  state_mode current = LiveOpaque /\ 0 < plan_width request /\
+  strict_interior (plan_width request) current /\
+  state_consumed current + plan_width request < input_length /\
+  state_consumed current + plan_width request < limit.
+Proof.
+  unfold plan_guard. repeat rewrite andb_true_iff. rewrite Nat.ltb_lt, !Nat.leb_le.
+  intros ((((((live & available) & fits) & from) & id) & positive) & bounded).
+  assert (mode : state_mode current = LiveOpaque).
+  { unfold eligible in live. destruct (state_mode current); congruence. }
+  assert (strict : plan_width request < bounded_minimum (bounds current)
+    (available_prefix limit input_length current)).
+  { unfold interior_width in bounded. lia. }
+  apply below_minimum in strict. destruct strict as [within all].
+  unfold available_prefix in within.
+  destruct (le_dec (input_length - state_consumed current) (limit - state_consumed current));
+    [rewrite Nat.min_l in within by lia|rewrite Nat.min_r in within by lia];
+    unfold strict_interior; repeat split; auto; lia.
+Qed.
+
+Theorem a_fresh_plan_is_accepted_without_rechecking_payload_bytes limit input_length current request :
+  plan_interior limit input_length current = Some request ->
+  try_advance limit input_length current request = Some (bulk_decrement (plan_width request) current).
+Proof.
+  intro accepted.
+  pose proof (@planner_returns_the_exact_positive_strict_minimum limit input_length current request accepted)
+    as (mode & available & fits & shape & positive & rest).
+  subst request. unfold try_advance, plan_guard, eligible. rewrite mode. cbn -[Nat.ltb Nat.leb Nat.eqb].
+  assert (state_consumed current <=? input_length = true) by (apply Nat.leb_le; exact available).
+  assert (state_consumed current <=? limit = true) by (apply Nat.leb_le; exact fits).
+  assert (0 <? interior_width limit input_length current = true) by (apply Nat.ltb_lt; exact positive).
+  now rewrite H, H0, H1, !Nat.eqb_refl, Nat.leb_refl.
+Qed.
+
+Lemma owner_bounds_after_decrement width owners :
+  owner_bounds (map (decrement_owner width) owners) = map (fun value => value - width) (owner_bounds owners).
+Proof. induction owners; cbn; [reflexivity|]. now rewrite IHowners. Qed.
+
+Lemma bounds_after_decrement width current :
+  bounds (bulk_decrement width current) = map (fun value => value - width) (bounds current).
+Proof. unfold bounds, bulk_decrement; cbn. now rewrite owner_bounds_after_decrement. Qed.
+
+Lemma decrement_zero current : bulk_decrement 0 current = current.
+Proof.
+  destruct current as [mode consumed payload owners info]. unfold bulk_decrement; cbn.
+  rewrite ?Nat.add_0_r, ?Nat.sub_0_r. f_equal.
+  induction owners as [|[region path saved previous next] rest IH]; cbn; auto.
+  rewrite IH. f_equal. unfold decrement_owner; cbn. now rewrite !Nat.sub_0_r.
+Qed.
+
+Lemma decrement_composes first second current :
+  bulk_decrement second (bulk_decrement first current) = bulk_decrement (first + second) current.
+Proof.
+  destruct current as [mode consumed payload owners info]. unfold bulk_decrement; cbn.
+  f_equal; try lia. rewrite map_map. apply map_ext.
+  intros [region path saved previous next]. unfold decrement_owner; cbn. f_equal; lia.
+Qed.
+
+Lemma strict_after_decrement first rest current :
+  strict_interior (first + rest) current -> strict_interior rest (bulk_decrement first current).
+Proof.
+  unfold strict_interior. rewrite bounds_after_decrement.
+  intro bounded. apply Forall_map. eapply Forall_impl; [|exact bounded]. cbn. intros; lia.
+Qed.
+
+Lemma strict_smaller small big current :
+  small <= big -> strict_interior big current -> strict_interior small current.
+Proof.
+  unfold strict_interior. intros size bounded. eapply Forall_impl; [|exact bounded]. cbn. intros; lia.
+Qed.
+
+Inductive event :=
+| PayloadByte (id : nat) (byte : located_byte) (last : bool)
+| BoundaryObservation (tag : nat).
+
+Definition scalar_decrement_owner (current : owner) :=
+  Owner (Nat.pred (owner_region_remaining current)) (Nat.pred (owner_path_remaining current))
+    (owner_saved_state current) (owner_previous current) (owner_next current).
+
+Definition scalar_decrement (current : state) :=
+  State (state_mode current) (S (state_consumed current)) (Nat.pred (state_payload_remaining current))
+    (map scalar_decrement_owner (state_owners current)) (state_metadata current).
+
+Lemma scalar_decrement_is_one_bulk_step current : scalar_decrement current = bulk_decrement 1 current.
+Proof.
+  destruct current as [mode consumed payload owners info]. unfold scalar_decrement, bulk_decrement; cbn.
+  f_equal; try lia. apply map_ext.
+  intros [region path saved previous next]. unfold scalar_decrement_owner, decrement_owner; cbn.
+  f_equal; lia.
+Qed.
+
+Definition scalar_payload (current : state) (byte : located_byte) : option (state * event) :=
+  if eligible current && forallb (fun remaining => 0 <? remaining) (bounds current) then
+    Some (scalar_decrement current,
+      PayloadByte (metadata_id (state_metadata current)) byte (state_payload_remaining current =? 1))
+  else None.
+
+Fixpoint scalar_run (input : list located_byte) (current : state) : option (state * list event) :=
+  match input with
+  | [] => Some (current, [])
+  | byte :: rest =>
+      match scalar_payload current byte with
+      | Some (next, observed) =>
+          option_map (fun '(final, observations) => (final, observed :: observations)) (scalar_run rest next)
+      | None => None
+      end
+  end.
+
+Lemma one_strict_scalar_step current byte :
+  state_mode current = LiveOpaque -> strict_interior 1 current ->
+  scalar_payload current byte = Some (bulk_decrement 1 current,
+    PayloadByte (metadata_id (state_metadata current)) byte false).
+Proof.
+  intros mode bounded. unfold scalar_payload, eligible. rewrite mode. cbn -[bounds forallb Nat.ltb Nat.eqb].
+  assert (positive : forallb (fun remaining => 0 <? remaining) (bounds current) = true).
+  { apply forallb_forall. intros remaining present. apply Nat.ltb_lt.
+    unfold strict_interior in bounded. rewrite Forall_forall in bounded.
+    specialize (bounded remaining present). lia. }
+  assert (payload : state_payload_remaining current =? 1 = false).
+  { apply Nat.eqb_neq. unfold strict_interior, bounds in bounded. inversion bounded. lia. }
+  now rewrite positive, payload, scalar_decrement_is_one_bulk_step.
+Qed.
+
+Theorem strict_bulk_equals_repeated_scalar_countdown input current :
+  state_mode current = LiveOpaque -> strict_interior (length input) current ->
+  scalar_run input current = Some (bulk_decrement (length input) current,
+    map (fun byte => PayloadByte (metadata_id (state_metadata current)) byte false) input).
+Proof.
+  revert current. induction input as [|byte rest IH]; intros current mode bounded; cbn.
+  - now rewrite decrement_zero.
+  - assert (one : strict_interior 1 current).
+    { eapply strict_smaller; [|exact bounded]. cbn. lia. }
+    rewrite (@one_strict_scalar_step current byte mode one).
+    rewrite IH.
+    + cbn. rewrite decrement_composes. reflexivity.
+    + exact mode.
+    + apply strict_after_decrement. exact bounded.
+Qed.
+
+Theorem successful_bulk_preserves_all_metadata_and_positive_residuals limit input_length current request next :
+  try_advance limit input_length current request = Some next ->
+  state_mode next = LiveOpaque /\ state_metadata next = state_metadata current /\
+  map owner_saved_state (state_owners next) = map owner_saved_state (state_owners current) /\
+  map owner_previous (state_owners next) = map owner_previous (state_owners current) /\
+  map owner_next (state_owners next) = map owner_next (state_owners current) /\
+  bounds next = map (fun value => value - plan_width request) (bounds current) /\
+  Forall (fun value => 0 < value) (bounds next) /\
+  state_consumed next = state_consumed current + plan_width request.
+Proof.
+  unfold try_advance. destruct (plan_guard limit input_length current request) eqn:guard; [|discriminate].
+  intro accepted. inversion accepted; subst next.
+  pose proof (@guarded_request_has_strict_bounds limit input_length current request guard)
+    as (mode & positive & bounded & rest).
+  split; [exact mode|]. split; [reflexivity|].
+  split; [cbn; rewrite map_map; reflexivity|].
+  split; [cbn; rewrite map_map; reflexivity|].
+  split; [cbn; rewrite map_map; reflexivity|].
+  split; [apply bounds_after_decrement|]. split; [|reflexivity].
+  rewrite bounds_after_decrement. apply Forall_map.
+  unfold strict_interior in bounded. eapply Forall_impl; [|exact bounded]. cbn. intros; lia.
+Qed.
+
+Definition driver_projection (observations : list event) :=
+  filter (fun observed => match observed with PayloadByte _ _ false => false | _ => true end) observations.
+
+Theorem only_ignored_nonfinal_payload_events_are_erased input current :
+  state_mode current = LiveOpaque -> strict_interior (length input) current ->
+  exists next observations,
+    scalar_run input current = Some (next, observations) /\
+    next = bulk_decrement (length input) current /\ driver_projection observations = [].
+Proof.
+  intros mode bounded.
+  exists (bulk_decrement (length input) current),
+    (map (fun byte => PayloadByte (metadata_id (state_metadata current)) byte false) input).
+  split; [now apply strict_bulk_equals_repeated_scalar_countdown|]. split; [reflexivity|].
+  clear mode bounded. unfold driver_projection. induction input; cbn; auto.
+Qed.
+
+Theorem bulk_cursor_consumption_preserves_exact_next_located_byte limit input current request next :
+  try_advance limit (length input) current request = Some next ->
+  let skipped := firstn (plan_width request) (skipn (state_consumed current) input) in
+  length skipped = plan_width request /\
+  skipn (plan_width request) (skipn (state_consumed current) input) = skipn (state_consumed next) input /\
+  exists byte,
+    nth_error input (state_consumed next) = Some byte /\
+    nth_error (skipn (state_consumed current) input) (plan_width request) = Some byte /\
+    option_map byte_provenance (nth_error input (state_consumed next)) = Some (byte_provenance byte).
+Proof.
+  unfold try_advance. destruct (plan_guard limit (length input) current request) eqn:guard; [|discriminate].
+  intro accepted. inversion accepted; subst next. cbn.
+  pose proof (@guarded_request_has_strict_bounds limit (length input) current request guard)
+    as (mode & positive & bounded & available & fits).
+  split.
+  - apply firstn_length_le. rewrite length_skipn. lia.
+  - split.
+    + rewrite skipn_skipn. f_equal. lia.
+    + destruct (nth_error input (state_consumed current + plan_width request)) eqn:found.
+      * exists l. split; [reflexivity|]. split; [|reflexivity].
+        rewrite nth_error_skipn. exact found.
+      * apply nth_error_None in found. lia.
+Qed.
+
+Theorem accepted_bulk_refines_the_actual_checked_input_prefix limit input current request next :
+  try_advance limit (length input) current request = Some next ->
+  let skipped := firstn (plan_width request) (skipn (state_consumed current) input) in
+  scalar_run skipped current = Some (next,
+    map (fun byte => PayloadByte (metadata_id (state_metadata current)) byte false) skipped).
+Proof.
+  unfold try_advance. destruct (plan_guard limit (length input) current request) eqn:guard; [|discriminate].
+  intro accepted. inversion accepted; subst next.
+  pose proof (@guarded_request_has_strict_bounds limit (length input) current request guard)
+    as (mode & positive & bounded & available & fits).
+  assert (width : length (firstn (plan_width request) (skipn (state_consumed current) input)) =
+    plan_width request).
+  { apply firstn_length_le. rewrite length_skipn. lia. }
+  pose proof (@strict_bulk_equals_repeated_scalar_countdown
+    (firstn (plan_width request) (skipn (state_consumed current) input)) current mode) as reference.
+  rewrite width in reference. now apply reference.
+Qed.
+
+Theorem every_intermediate_prefix_stays_before_all_completion_boundaries
+    limit input_length current request next prefix :
+  try_advance limit input_length current request = Some next -> prefix <= plan_width request ->
+  state_mode (bulk_decrement prefix current) = LiveOpaque /\
+  state_metadata (bulk_decrement prefix current) = state_metadata current /\
+  Forall (fun value => 0 < value) (bounds (bulk_decrement prefix current)) /\
+  state_consumed (bulk_decrement prefix current) < input_length /\
+  state_consumed (bulk_decrement prefix current) < limit.
+Proof.
+  unfold try_advance. destruct (plan_guard limit input_length current request) eqn:guard; [|discriminate].
+  intros accepted inside.
+  pose proof (@guarded_request_has_strict_bounds limit input_length current request guard)
+    as (mode & positive & bounded & available & fits).
+  split; [exact mode|]. split; [reflexivity|]. split.
+  - rewrite bounds_after_decrement. apply Forall_map.
+    unfold strict_interior in bounded. eapply Forall_impl; [|exact bounded]. cbn. intros; lia.
+  - cbn. lia.
+Qed.
+
+Theorem the_following_scalar_boundary_uses_the_same_state_and_physical_byte
+    {Observation : Type} (boundary : state -> located_byte -> Observation)
+    input current byte :
+  state_mode current = LiveOpaque -> strict_interior (length input) current ->
+  exists observations,
+    scalar_run input current = Some (bulk_decrement (length input) current, observations) /\
+    option_map (fun '(next, _) => boundary next byte) (scalar_run input current) =
+      Some (boundary (bulk_decrement (length input) current) byte).
+Proof.
+  intros mode bounded. rewrite strict_bulk_equals_repeated_scalar_countdown by assumption.
+  eexists. split; reflexivity.
+Qed.
+
+Theorem pending_dead_and_nonopaque_modes_do_not_plan_or_advance limit input_length current request :
+  state_mode current <> LiveOpaque ->
+  plan_interior limit input_length current = None /\ try_advance limit input_length current request = None.
+Proof.
+  intro ineligible. unfold plan_interior, try_advance, plan_guard, eligible.
+  destruct (state_mode current); cbn; try contradiction; split; reflexivity.
+Qed.
+
+Theorem stale_origin_or_obligation_id_refuses_without_an_updated_state limit input_length current request :
+  plan_from request <> state_consumed current \/ plan_id request <> metadata_id (state_metadata current) ->
+  try_advance limit input_length current request = None.
+Proof.
+  intro stale. unfold try_advance, plan_guard.
+  destruct stale as [origin|id].
+  - apply Nat.eqb_neq in origin. rewrite origin. cbn. now rewrite !andb_false_r.
+  - apply Nat.eqb_neq in id. rewrite id. cbn. now rewrite !andb_false_r.
+Qed.
+
+Theorem declared_lengths_larger_than_the_machine_limit_are_bounded_before_conversion
+    limit consumed available payload info :
+  2 <= available -> consumed + available <= limit -> available <= payload ->
+  plan_interior limit (consumed + available)
+    (State LiveOpaque consumed payload [] info) =
+  Some (Plan consumed (metadata_id info) (available - 1)).
+Proof.
+  intros useful fits declared. unfold plan_interior, eligible, interior_width, bounds,
+    available_prefix; cbn -[Nat.leb Nat.ltb Nat.min].
+  assert (consumed <=? consumed + available = true) by (apply Nat.leb_le; lia).
+  assert (consumed <=? limit = true) by (apply Nat.leb_le; lia).
+  rewrite H, H0. cbn -[Nat.min Nat.ltb].
+  replace (consumed + available - consumed) with available by lia.
+  rewrite (Nat.min_l available (limit - consumed)) by lia.
+  rewrite (Nat.min_r payload available) by lia.
+  replace (Nat.pred available) with (available - 1) by lia.
+  assert (0 <? available - 1 = true) by (apply Nat.ltb_lt; lia). now rewrite H1.
+Qed.
+
+Definition control_metadata := Metadata 17 NestedEpmPayload (4, 91) 3 None true.
+Definition control_state := State LiveOpaque 3 4
+  [Owner 9 8 [31; 32] [LocatedByte 11 6 20] (Some 8); Owner 4 3 [33] [] None]
+  control_metadata.
+Definition control_bytes := [LocatedByte 170 2 31; LocatedByte 187 9 8].
+
+Theorem strict_bulk_positive_boundary_and_projection_controls :
+  plan_interior 32 7 control_state = Some (Plan 3 17 2) /\
+  try_advance 32 7 control_state (Plan 3 17 2) = Some (bulk_decrement 2 control_state) /\
+  bounds (bulk_decrement 2 control_state) = [2; 7; 6; 2; 1] /\
+  scalar_run control_bytes control_state = Some (bulk_decrement 2 control_state,
+    [PayloadByte 17 (LocatedByte 170 2 31) false; PayloadByte 17 (LocatedByte 187 9 8) false]) /\
+  driver_projection [PayloadByte 17 (LocatedByte 170 2 31) false;
+    PayloadByte 17 (LocatedByte 187 9 8) true; BoundaryObservation 91] =
+    [PayloadByte 17 (LocatedByte 187 9 8) true; BoundaryObservation 91] /\
+  plan_interior 32 7 (State LiveOpaque 3 4 [Owner 2 8 [] [] None] control_metadata) =
+    Some (Plan 3 17 1) /\
+  plan_interior 32 7 (State LiveOpaque 3 64 [] control_metadata) = Some (Plan 3 17 3).
+Proof. repeat split; reflexivity. Qed.
+
+Definition omit_owner_bounds (limit input_length : nat) (current : state) :=
+  Nat.pred (Nat.min (state_payload_remaining current) (available_prefix limit input_length current)).
+Definition include_the_boundary (limit input_length : nat) (current : state) :=
+  bounded_minimum (bounds current) (available_prefix limit input_length current).
+
+Theorem strict_bulk_causal_controls_reject_missing_bounds_boundary_crossing_and_stale_requests :
+  omit_owner_bounds 32 7 control_state = 3 /\
+  include_the_boundary 32 7 control_state = 3 /\
+  owner_path_remaining (nth 1 (state_owners (bulk_decrement 3 control_state))
+    (Owner 0 0 [] [] None)) = 0 /\
+  try_advance 32 7 control_state (Plan 3 17 3) = None /\
+  try_advance 32 7 control_state (Plan 4 17 2) = None /\
+  try_advance 32 7 control_state (Plan 3 18 2) = None /\
+  plan_interior 32 4 control_state = None /\
+  plan_interior 32 3 control_state = None /\
+  plan_interior 32 2 control_state = None /\
+  plan_interior 32 7 (State PendingChild 3 4 [] control_metadata) = None /\
+  plan_interior 32 7 (State (DeadPath 41 (7, 9)) 3 4 [] control_metadata) = None /\
+  plan_interior 32 7 (State (NonOpaque 4) 3 4 [] control_metadata) = None.
+Proof. repeat split; reflexivity. Qed.
+
+Print Assumptions planner_returns_the_exact_positive_strict_minimum.
+Print Assumptions a_fresh_plan_is_accepted_without_rechecking_payload_bytes.
+Print Assumptions strict_bulk_equals_repeated_scalar_countdown.
+Print Assumptions successful_bulk_preserves_all_metadata_and_positive_residuals.
+Print Assumptions only_ignored_nonfinal_payload_events_are_erased.
+Print Assumptions bulk_cursor_consumption_preserves_exact_next_located_byte.
+Print Assumptions accepted_bulk_refines_the_actual_checked_input_prefix.
+Print Assumptions every_intermediate_prefix_stays_before_all_completion_boundaries.
+Print Assumptions the_following_scalar_boundary_uses_the_same_state_and_physical_byte.
+Print Assumptions pending_dead_and_nonopaque_modes_do_not_plan_or_advance.
+Print Assumptions stale_origin_or_obligation_id_refuses_without_an_updated_state.
+Print Assumptions declared_lengths_larger_than_the_machine_limit_are_bounded_before_conversion.
+Print Assumptions strict_bulk_positive_boundary_and_projection_controls.
+Print Assumptions strict_bulk_causal_controls_reject_missing_bounds_boundary_crossing_and_stale_requests.
+
+End StrictOpaqueInterior.

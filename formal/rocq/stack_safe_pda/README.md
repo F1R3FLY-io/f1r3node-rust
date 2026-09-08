@@ -673,6 +673,92 @@ frame-storage and six anchored-window tests. These bindings do not remove
 per-byte nested Region reconstruction or duplicate visits by separately required
 child validators; whole-pipeline physical linearity remains an independent gate.
 
+### Strict opaque-payload interiors: next refinement (task 6018)
+
+The private standalone driver ignores non-final `ObligationByte` events but
+currently visits every opaque payload byte before dispatching the authoritative
+child validator. Under a nested Region, each such visit also reconstructs the
+enclosing owner frames. The optimization must preserve the public scalar API:
+batching is an internal driver operation, not an equivalent public event stream.
+
+An interior batch decrements the payload remainder and every enclosing Region
+and framed-path remainder by the same width. Choose that width as one less than
+the minimum of those remainders and available input, saturating at zero. The
+minimum must be bounded by available input before converting a declared `u64`
+length to `usize`; oversized declarations must retain their existing eventual
+truncation behavior. Keeping the last byte outside the batch leaves completion,
+truncation, child dispatch, and exact physical anchors in the scalar grammar.
+
+```text
+Algorithm STRICT-OPAQUE-INTERIOR(input, current)
+1. Refuse batching unless the selected path and all its owners are live,
+   with a nonempty opaque payload rather than a pending child.
+2. Find the minimum payload/owner/path remainder and available input.
+3. Keep its final byte for the scalar grammar; if none remain, do nothing.
+4. Decrement each participating remainder once by the interior width.
+5. Advance the existing indexed cursor and logical consumed count equally.
+6. Process the next byte through the unchanged scalar boundary rules.
+```
+
+The following catalogue records required model and executable obligations
+before any runtime batching change. Model completion is not claimed here.
+
+| ID | Required invariant and distinguishing witness |
+|---|---|
+| SOI-01 | The chosen width is strictly below every participating remainder and available input; zero/one-byte and empty cases do not batch. |
+| SOI-02 | One bulk decrement equals repeated scalar interior decrements for every owner and payload; metadata, IDs, stability and sibling spans remain unchanged. |
+| SOI-03 | No completion/error boundary is crossed. Test a child ending before, at and after its enclosing boundary; the existing scalar boundary transition remains authoritative. |
+| SOI-04 | Cursor position and logical consumption advance equally. The next byte and its discontinuous physical provenance are unchanged across borrowed and frozen backing and checked seeks. |
+| SOI-05 | Only ignored non-final payload events are omitted. The scalar API, final event, child dispatch, exact payload window and last-consumed completion anchor remain unchanged. |
+| SOI-06 | Dead, pending, nonopaque and stale states do not batch or mutate; wrong-ID and post-Dead scalar resolution/consumption behavior remains covered by the existing trace oracle. |
+| SOI-07 | Arithmetic stays bounded by actual input without eagerly adding declared lengths to absolute offsets; test `u64::MAX` declarations against short input. |
+| SOI-08 | Frame retirement preserves the selected owner graph and retained child spans; bulk skips do not introduce payload copies, endpoint replay or stack recursion. |
+| SOI-09 | Record actual byte visits, batch count and owner work separately from consumed bytes, frame capacity, RSS and throughput. Width/depth controls must expose omitted enclosing bounds or batching the boundary byte. |
+
+The pre-change `opaque_payload_cursor_resource_matrix_preserves_completion`
+probe covers borrowed/frozen backing, payload widths 16 through 8,192 and
+enclosing depths 0, 1, 8 and 32. It checks the child boundary and pending-parent
+nonadvance while reporting actual cursor visits and retained frame capacity.
+Fixture construction is outside the measured operation. This is a deterministic
+resource probe, not a timing benchmark or a whole-pipeline linearity claim.
+
+Absolute endpoints are a subsequent, distinct refinement: merely replacing
+countdowns still reconstructs the embedded child/owner spine. Additionally,
+post-Dead input consumption can diverge from saved-graph accounting. A later
+focused-owner design must explicitly model that distinction; this interior
+batch does not silently reinterpret saved remainders as end minus input position.
+
+#### Verified strict-interior model and required bindings
+
+`StrictOpaqueInterior` now has fourteen closed capstones. The complete RPB3
+theory compiles with 76 closed reports and passes independent kernel checking
+before a runtime batching implementation. Its scalar reference independently
+uses predecessor/successor updates; it does not invoke the bulk decrement.
+
+| Capstone | Invariant binding |
+|---|---|
+| `planner_returns_the_exact_positive_strict_minimum` | SOI-01: every owner/path/payload/input bound participates. |
+| `a_fresh_plan_is_accepted_without_rechecking_payload_bytes` | SOI-01/07: a current checked plan needs no byte inspection. |
+| `strict_bulk_equals_repeated_scalar_countdown` | SOI-02: independently repeated scalar steps produce the same residual state. |
+| `successful_bulk_preserves_all_metadata_and_positive_residuals` | SOI-02/03: IDs, kind, source, start, anchor, stability and saved owner values are unchanged. |
+| `only_ignored_nonfinal_payload_events_are_erased` | SOI-05: projection discards interior events, not final events or boundary observations. |
+| `bulk_cursor_consumption_preserves_exact_next_located_byte` | SOI-04: consumed prefix and next physical byte remain exact. |
+| `accepted_bulk_refines_the_actual_checked_input_prefix` | SOI-02/04: the reference runs on the actual selected input bytes. |
+| `every_intermediate_prefix_stays_before_all_completion_boundaries` | SOI-03: every intermediate state, not only the final state, remains strictly interior. |
+| `the_following_scalar_boundary_uses_the_same_state_and_physical_byte` | SOI-03/05: conditional on using the same boundary transition. |
+| `pending_dead_and_nonopaque_modes_do_not_plan_or_advance` | SOI-06: ineligible modes do not produce an updated state. |
+| `stale_origin_or_obligation_id_refuses_without_an_updated_state` | SOI-06: stale origin and ID refuse without mutation. |
+| `declared_lengths_larger_than_the_machine_limit_are_bounded_before_conversion` | SOI-07: available input bounds the batch independently of large declarations. |
+| `strict_bulk_positive_boundary_and_projection_controls` | SOI-01–07: concrete successful controls. |
+| `strict_bulk_causal_controls_reject_missing_bounds_boundary_crossing_and_stale_requests` | SOI-01/03/06: omitted-owner, included-boundary and stale-request controls. |
+
+Actual Rust grammar correspondence, selected frame ownership (SOI-08), allocator
+and global obligation-clock behavior, and measured cursor/owner work (SOI-09)
+remain executable binding obligations. The boundary theorem is conditional, not
+a proof of a different parser. The model does not establish absolute endpoints,
+whole-pipeline linearity or throughput. Journal J-095 records the pre-change
+resource baseline and the independently checked proof artifacts.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to
