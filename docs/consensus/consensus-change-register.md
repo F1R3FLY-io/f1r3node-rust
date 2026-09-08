@@ -5021,6 +5021,19 @@ the RFO-01–19 catalogue state the still-required Rust correspondence, pool
 properties and resource measurements. These results do not establish a new
 consensus-neutrality claim or authorize importer/persistence cutover.
 
+The following Rust storage refinement reuses standalone grammar slots only after
+the current operation selects its complete owner graph. Persistent ACT handles
+retain their compact history store. Internal slot indices are neither serialized
+nor used as obligation IDs. All 360 models unit cases pass, including exact
+persistent-versus-reusable byte/resolution traces, deferred refusal and wrong-ID
+recovery. No importer call site, accepted-byte rule, EPM1/ACT/protobuf/bincode
+encoding, hash or persistence backend is changed. Journal J-092 and stack-safety
+§5.33.11 delimit the measured storage improvement and still-open resource work;
+this local evidence is not a campaign-wide compatibility or activation verdict.
+The subsequent 57-test focused proof/runtime gate, 23-test manifest and 36-test
+ParBag integration also pass; the final test-only cleanup retains 360/360 models
+unit passes. These checks preserve the existing depth-4,096 integration case.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

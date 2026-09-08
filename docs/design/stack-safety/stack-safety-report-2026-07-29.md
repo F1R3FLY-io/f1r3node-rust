@@ -10019,6 +10019,37 @@ and its exhaustive RFO invariant catalogue for the precise boundary.
 The subsequent integrated gate passes all 49 focused Rust tests and its three
 independent kernel checks; no production frame-storage change is included.
 
+#### 5.33.11 Standalone live-frame reuse (2026-09-08, tasks 5976/6018)
+
+The runtime refinement following §5.33.10 now uses reusable slots for standalone
+grammar frames while retaining the compact immutable history policy for ACT
+branch traversal. One statically specialized grammar drives both. Owner journals
+retain original and transient cells until outer operation commit; saved Region
+selection never frees cells still referenced by another held owner. The RFO
+catalogue is bound to eight external storage tests, including two 128-case
+properties, plus the fifteen standalone semantic/storage tests.
+
+All **360** models-library cases pass with four test threads and the fixed seed
+under the 6-GiB memory cap. In the flat payload-width matrix 16/128/1,024/8,192,
+frame backing capacity changes from **5,376/43,008/344,064/2,752,512 bytes** to
+**768 bytes** in every cell, with **two** reusable slots. The 20,000-deep tuple
+case still runs admission and teardown on a **64-KiB** native stack. The outer
+protobuf admission enum remains **1,136 bytes** after correcting an intermediate
+72-byte layout regression in persistent storage.
+
+The focused gate passes **57** Rust tests and all 48 import / 17 score / 40 RPB3
+closed reports with three independent kernel checks. Broader integration passes
+**23** manifest and **36** ParBag tests, including the unchanged depth-4,096 case.
+The final test-source cleanup is covered by another complete 360/360 models run.
+
+These measurements concern frame-cell/journal vector capacities, not total heap,
+RSS or allocator calls. Payload/provenance arena growth remains unchanged; root
+state is still 88 inline bytes. Nested Region updates and payload copies remain
+required optimization work. This checkpoint does not establish whole-pipeline
+physical linearity or activate a new importer. See
+[J-092](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-092--2026-09-08-reuse-standalone-grammar-frames-with-exact-owner-journals)
+for methodology, causal controls, failure history and evidence hashes.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

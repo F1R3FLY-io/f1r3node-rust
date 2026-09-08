@@ -144,11 +144,13 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
         let history_stats = history.stats();
         assert_eq!(history_stats.states, successful + 1);
         assert_eq!(stream.stats().states, 1);
-        assert_eq!(history_stats.frames, stream.stats().frames);
+        assert!(history_stats.frames >= stream.stats().frames);
+        stream.assert_frame_invariants();
         assert_eq!(history_stats.edges, stream.stats().edges);
         assert_eq!(history_arena.stats(), stream_arena.stats());
     }
     let endpoint = CanonicalPathSource::in_source(99, 800);
+    stream.assert_frame_invariants();
     assert_eq!(
         history.value(checkpoint, true, endpoint),
         stream.value(true, endpoint)
@@ -204,6 +206,7 @@ fn assert_resolution_recovery(
         offset += 1;
     }
     let pending = stream.active_obligation().unwrap();
+    stream.assert_frame_invariants();
     assert!(pending.awaiting_resolution);
     assert_ne!(pending.obligation.id, old_id);
     assert_eq!(history.active_obligation(checkpoint), Some(pending));
@@ -244,6 +247,7 @@ fn assert_resolution_recovery(
     assert_eq!(stream.active_obligation(), Some(pending));
     assert_eq!(stream.value(true, endpoint), before);
     assert_eq!(history.value(checkpoint, true, endpoint), before);
+    stream.assert_frame_invariants();
 
     checkpoint = history
         .resolve_obligation(
@@ -266,6 +270,7 @@ fn assert_resolution_recovery(
         assert!(!summary.canonical_path_stable);
         assert_eq!(history.value(next, true, endpoint), Some(Ok(summary)));
         assert_eq!(stream.active_obligation(), None);
+        stream.assert_frame_invariants();
         assert_eq!(history_arena.stats(), stream_arena.stats());
         assert_eq!(
             history_frozen.payload.located_bytes().collect::<Vec<_>>(),
@@ -349,6 +354,7 @@ fn assert_resolution_recovery(
         );
         assert_eq!(history_arena.stats(), stream_arena.stats());
     }
+    stream.assert_frame_invariants();
 }
 
 #[test]
@@ -657,20 +663,21 @@ fn a_previous_obligation_id_cannot_resolve_the_next_child() {
 #[test]
 fn flat_key_storage_and_frame_layout_are_observed_directly() {
     #[allow(dead_code)]
-    enum PreviousFrame<'a> {
+    enum ExistingVariantsFrame<'a> {
         Message(MessageFrame<'a>),
         Map(MapFrame<'a>),
         EPathMap(EPathMapFrame<'a>),
     }
     assert_eq!(
         std::mem::size_of::<Frame>(),
-        std::mem::size_of::<PreviousFrame>()
+        std::mem::size_of::<ExistingVariantsFrame>()
     );
     println!(
-        "canonical-key frame bytes: previous={}, current={}",
-        std::mem::size_of::<PreviousFrame>(),
+        "canonical-key frame bytes: existing_variants={}, including_canonical_path={}",
+        std::mem::size_of::<ExistingVariantsFrame>(),
         std::mem::size_of::<Frame>()
     );
+    let mut exclusive_frame_capacity = None;
     for width in [16, 128, 1024, 8192] {
         let key = payload(6, &vec![b'x'; width]);
         let mut frame = CanonicalPathFrame::new(IndexedByteRegion::from_borrowed(&key, 0, 0));
@@ -702,7 +709,11 @@ fn flat_key_storage_and_frame_layout_are_observed_directly() {
                 .unwrap();
         }
         assert_eq!(history.stats().states, key.len() + 1);
-        assert_eq!(history.stats().frames, reducer.frames);
+        assert_eq!(history.stats().frames, key.len());
+        assert_eq!(reducer.frames, 2);
+        frame.reducer.assert_frame_invariants();
+        let retained = frame.reducer.retained_frame_bytes();
+        assert_eq!(*exclusive_frame_capacity.get_or_insert(retained), retained);
         assert_eq!(history_arena.stats(), arena);
         assert!(
             history.retained_state_bytes()
@@ -710,6 +721,8 @@ fn flat_key_storage_and_frame_layout_are_observed_directly() {
         );
         println!("canonical-key state storage: width={width}, persistent_bytes={}, exclusive_inline_bytes={}",
             history.retained_state_bytes(), frame.reducer.retained_state_bytes());
+        println!("canonical-key frame storage: width={width}, persistent_bytes={}, exclusive_bytes={}, exclusive_slots={}",
+            history.retained_frame_bytes(), retained, reducer.frames);
         println!("canonical-key retained: width={width}, bytes={}, states={}, frames={}, byte_pages={}, provenance_pages={}, payload_slots={}",
             key.len(), reducer.states, reducer.frames, arena.byte_pages,
             arena.provenance_pages, arena.payload_slots);

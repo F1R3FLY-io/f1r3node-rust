@@ -6464,6 +6464,90 @@ checks. The log also contains 32 dependency reports; those are not new ownership
 results. Integrated gate SHA-256:
 `8aee848093fc077677c08313978d97ffec6d358c9e08baca4edac8406f07e582`.
 
+### J-092 — 2026-09-08: reuse standalone grammar frames with exact owner journals
+
+**HYPOTHESIS.** Standalone canonical-key validation can retain frame storage
+according to peak live/in-flight ownership rather than cumulative consumed
+bytes, while persistent ACT branch handles keep their existing history policy.
+
+**IMPLEMENTATION.** The shared grammar is statically specialized over a compact
+`FrameHistory` and a reusable `FrameStorage`. The latter reserves fresh slots,
+records owner-scoped allocation/retirement journals and releases slots only after
+an outer byte or resolution operation selects its final graph. Region rollback
+retains the saved original graph and retires transient child allocations. Root
+identity, not failed status, selects this behavior. Observation methods do not
+mutate storage, and production traversal does not scan the graph to collect
+retirees. Internal slot reuse changes no serialized ID or obligation ID.
+
+**FORMAL-TO-RUST BINDING.** J-091's nineteen kernel-checked laws precede this
+implementation. Eight external tests include two 128-case properties for ordinary
+edits and nested Regions. Exact graph/journal partition checks detect overwritten
+held cells, duplicate retirement, live/free aliasing and omitted consumed frames.
+The fifteen standalone tests preserve the semantic baseline, including the
+private post-refusal behavior documented in J-090. A 20,000-deep tuple validates
+and tears down on the existing 64-KiB native stack.
+
+**MEASURED CAPACITY.** Fixture construction is outside these retained-storage
+observations. Each arm consumes the same complete byte-array key; the persistent
+arm is the pre-existing history-retaining storage control, not LMDB or a different
+PathMap implementation. Frame backing bytes include vector capacities for frame
+cells and all three exclusive journals, excluding struct headers, allocator
+overhead and payload/provenance storage.
+
+| Payload width | Persistent frame backing bytes | Reusable frame backing bytes | Reusable slots |
+|---:|---:|---:|---:|
+| 16 | 5,376 | 768 | 2 |
+| 128 | 43,008 | 768 | 2 |
+| 1,024 | 344,064 | 768 | 2 |
+| 8,192 | 2,752,512 | 768 | 2 |
+
+Root-state storage remains 88 inline bytes, as established in J-089. Arena page
+counts remain 1/3/17/129 and payload slots still follow encoded bytes; this change
+does not close payload-copy or ancestor-rebuilding costs. The generic pool test
+also runs 512 transactions of eight replacements: occupied graph one, slot
+high-water nine, with constant retained backing capacity after warmup. This is a
+bounded live/in-flight test, not a universal parser-depth or timing theorem.
+
+**REPAIRS DURING QUALIFICATION.** The first implementation passed all fifteen
+standalone cases but grew the outer admission enum from 1,136 to 1,208 bytes by
+carrying unused journals in persistent storage. Separate `FrameHistory` removes
+those 72 bytes; a direct test pins its layout to `Vec<Frame>`. The existing
+three-variant-versus-four-variant enum probe alone could not catch this regression
+because both sides use the current EPathMap frame type. The subsequent first
+full build caught a test-only const-accessor mismatch, repaired before execution.
+
+**EVIDENCE.** All **360** models-library tests pass, none ignored, with fixed seed
+`41315976`, four test threads, 4-GiB memory high / 6-GiB hard limit and zero swap.
+The 53.54-second suite duration is not a performance benchmark. Full-run log:
+`67b64acb9fade6390d8b812227a55067491f7e9098bad153c4c0967c7808426b`.
+Initial fifteen-test log:
+`5b699b8d9ef849cd32d60f96595ebf5bc184a74a725c9a411f899acc88c5cf06`.
+Const-accessor compile failure log:
+`ccf98c790a171e193ed45b236d09937dae190e97c78d361117b648c3a34f0dd3`.
+The repeatable proof/runtime gate includes all eight pool tests in addition to
+the fifteen standalone cases: **57** Rust tests pass, with 48 import / 17 score /
+40 RPB3 closed reports and three independent kernel checks. Gate log:
+`c30d6584bfc5568f030dd69f309099b42b9307f77cb9637739856ccd20da1224`.
+Broader integration passes **23** manifest and **36** ParBag tests, with the
+depth-4,096 case unchanged. Integration log:
+`b1e3bdcca694e36b626e198e71c4e509d14f4974f99a285cdb49b74f06ea5e13`.
+
+The final source keeps the graph checker under `tests/` and renames the layout
+probe's labels to distinguish current enum variants from a frozen historical
+baseline. Its complete models rerun passes **360/360**, in 56.75 seconds, log:
+`a31a8ae5090e683c00b855578b8d6b452aa9c14f06bceb68528029abfaf74a4f`.
+These last changes affect test placement/labels and a test-only accessor, not
+the production transitions exercised by the integration run.
+The final-source proof/runtime rerun also exits zero with the same exact counts;
+its log is
+`4a3b6bda253a10d7345c2266415809fb671d8eb4e989d49af30d6c9a7a0194d4`.
+
+**BOUNDARY.** No importer caller, accepted-byte language, serialized format,
+hash, consensus rule, PathMap dependency or persistence backend is switched.
+Indexed payload lending, bulk physical-byte processing and enclosing-region
+costs remain required work in task 6018. No qualified timing, RSS, allocation-count
+or PathMap/ACT-versus-LMDB conclusion follows from this capacity matrix.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

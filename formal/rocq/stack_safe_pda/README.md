@@ -421,10 +421,9 @@ from which final graph realization is derived. The allocation and edit journals
 may enumerate the same slots in different orders; their relationship is a
 permutation, not an accidental list equality.
 
-The following catalogue is the required implementation/test binding, **not a
-claim that reusable Rust frame storage already exists**. Existing standalone
-tests supply the semantic baseline. Direct pool properties and allocation bounds
-must be added with the implementation, before this refinement can be qualified.
+The following catalogue was recorded before the runtime refinement. The binding
+checkpoint below distinguishes the now-executed storage properties from the
+remaining physical-byte and integration obligations.
 
 | ID | Closed report | Required executable invariant/control |
 |---|---|---|
@@ -448,7 +447,7 @@ must be added with the implementation, before this refinement can be qualified.
 | RFO-18 | `reusable_slot_causal_ownership_and_dead_controls` | Detect eager overwrite, aliased child/outer graphs, clearing a failed stack and incorrect saved-owner selection. |
 | RFO-19 | `ordered_multi_edit_region_completion_and_reuse_controls` | Compose multiple allocations with reversed physical journal order; open/complete a Region; reject omitted child retirement and status-based rollback. |
 
-The intended implementation retains separate, fixed persistent and exclusive
+The implementation retains separate, fixed persistent and exclusive
 storage policies behind the shared grammar. Persistent ACT checkpoint handles
 must never reach an exclusive reusable store. The exclusive transaction proceeds
 as follows:
@@ -471,10 +470,54 @@ The pool capacity theorem is conditional on peak occupied slots; its occupancy
 identity counts original live frames plus in-flight replacements. It does not
 prove a parser-specific depth bound, `Vec` byte capacity, allocation timing or
 RSS. Parser-branch-to-edit correspondence, frozen payload/provenance preservation
-in Rust, concrete pool property tests, live-frame bounds and integration remain
-required. The model neither proves the complete parser grammar nor assumes that
-errors are absorbing. Arena payload reclamation and physical-byte traversal work
-remain separate obligations in the existing resource plan.
+in Rust, concrete pool property tests, live-frame bounds and integration require
+the separate executable evidence described below. The model neither proves the
+complete parser grammar nor assumes that errors are absorbing. Arena payload
+reclamation and physical-byte traversal work remain separate obligations in the
+existing resource plan.
+
+#### Rust binding checkpoint (2026-09-08)
+
+`CanonicalPathMachine<FrameHistory>` retains immutable ACT branch checkpoints;
+`CanonicalPathMachine<FrameStorage>` holds only the standalone validator's live
+graph and reusable slots. Static dispatch shares the grammar without storing
+unused reclamation journals in the persistent policy. `feed_frame`, Region
+unwinding and obligation resolution select owner-local journals; `bubble` records
+consumed Kids frames. `advance` and `resolved_state` alone finalize reclamation.
+No nested owner releases physical slots and no production byte step scans the
+complete frame graph.
+
+The external `models/tests/support/canonical_frame_storage.rs` module binds the
+catalogue with eight tests, including two 128-case properties:
+
+| Executable test family | RFO bindings |
+|---|---|
+| All six frame variants and generated ordinary edits | 01, 03–10, 12, 15–17 |
+| Generated nested Region selections | 02–09, 11–14, 16, 19 |
+| Dead-state root selection and explicit Region opening/completion | 02, 06, 10–14, 19 |
+| Rejected eager reuse, aliasing and omitted/duplicate retirement | 03–09, 18–19 |
+| Persistent history and repeated committed reuse | 03–04, 09, 15–17 |
+
+Each transaction checks exact original-plus-allocated occupancy, unchanged held
+cells, disjoint selected/retired sets and complete retirement accounting. Each
+commit checks that occupancy equals the reachable selected graph. The standalone
+semantic suite additionally compares persistent and reusable storage after byte
+and resolution steps, including wrong-ID recovery and deferred refusal. These
+are executable refinement witnesses, not a mechanically extracted Rust parser.
+
+All **360** models unit tests pass with seed `41315976`, four test threads and a
+6-GiB systemd memory limit. In the flat byte-array matrix, frame backing capacity
+is **768 bytes / two slots** at every width from 16 through 8,192. Payload arena
+growth is unchanged. The independent persistent-policy layout assertion requires
+exactly the size of `Vec<Frame>`; the outer protobuf admission enum measures
+1,136 bytes. These are layout/capacity measurements, not allocation counts or RSS.
+See journal J-092 and stack-safety §5.33.11 for raw evidence and remaining limits.
+
+The focused gate additionally passes **57** Rust tests, 48 import / 17 score /
+40 RPB3 closed reports and three independent kernel checks. Broader integration
+passes **23** manifest and **36** ParBag cases, with depth 4,096 unchanged.
+After relocating the graph checker under `tests/` and clarifying the layout
+probe's nonhistorical label, the complete models-library rerun passes 360/360.
 
 ## Exact matcher count intervals (2026-09-07)
 

@@ -434,17 +434,157 @@ impl CanonicalPathReducerHandle {
 
 pub(crate) struct CanonicalPathReducer {
     states: Vec<InnerPath>,
-    machine: CanonicalPathMachine,
+    machine: CanonicalPathMachine<FrameHistory>,
 }
 
 pub(crate) struct CanonicalPathStreamReducer {
     current: InnerPath,
     bytes: CanonicalBytesHandle,
-    machine: CanonicalPathMachine,
+    machine: CanonicalPathMachine<FrameStorage>,
 }
 
-struct CanonicalPathMachine {
-    frames: Vec<Frame>,
+#[derive(Clone, Copy, Default)]
+struct FrameCheckpoint {
+    allocated: usize,
+    retired: usize,
+}
+
+struct FrameStorage {
+    slots: Vec<Frame>,
+    free: Vec<FrameId>,
+    allocated: Vec<FrameId>,
+    retired: Vec<FrameId>,
+}
+
+impl FrameStorage {
+    fn new() -> Self {
+        Self {
+            slots: Vec::new(),
+            free: Vec::new(),
+            allocated: Vec::new(),
+            retired: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    const fn len(&self) -> usize { self.slots.len() }
+
+    fn push(&mut self, frame: Frame) -> FrameId {
+        let id = if let Some(id) = self.free.pop() {
+            self.slots[id.0] = frame;
+            id
+        } else {
+            let id = FrameId(self.slots.len());
+            self.slots.push(frame);
+            id
+        };
+        self.allocated.push(id);
+        id
+    }
+
+    fn checkpoint(&self) -> FrameCheckpoint {
+        FrameCheckpoint {
+            allocated: self.allocated.len(),
+            retired: self.retired.len(),
+        }
+    }
+
+    fn retire(&mut self, id: FrameId) { self.retired.push(id); }
+
+    fn select(
+        &mut self,
+        checkpoint: FrameCheckpoint,
+        previous: Option<FrameId>,
+        selected: Option<FrameId>,
+    ) {
+        if previous == selected {
+            self.retired.truncate(checkpoint.retired);
+            self.retired
+                .extend_from_slice(&self.allocated[checkpoint.allocated..]);
+        } else if let Some(previous) = previous {
+            self.retire(previous);
+        }
+    }
+
+    fn finish(&mut self, restore: bool) {
+        if restore {
+            self.retired.clear();
+            self.retired.extend_from_slice(&self.allocated);
+        }
+        self.free.append(&mut self.retired);
+        self.allocated.clear();
+    }
+
+    #[cfg(test)]
+    fn retained_bytes(&self) -> usize {
+        self.slots.capacity() * std::mem::size_of::<Frame>()
+            + (self.free.capacity() + self.allocated.capacity() + self.retired.capacity())
+                * std::mem::size_of::<FrameId>()
+    }
+}
+
+impl std::ops::Index<usize> for FrameStorage {
+    type Output = Frame;
+    fn index(&self, index: usize) -> &Self::Output { &self.slots[index] }
+}
+
+trait FrameStore: std::ops::Index<usize, Output = Frame> {
+    fn new() -> Self;
+    fn push(&mut self, frame: Frame) -> FrameId;
+    fn checkpoint(&self) -> FrameCheckpoint { FrameCheckpoint::default() }
+    fn retire(&mut self, _id: FrameId) {}
+    fn select(
+        &mut self,
+        _checkpoint: FrameCheckpoint,
+        _previous: Option<FrameId>,
+        _selected: Option<FrameId>,
+    ) {
+    }
+    fn finish(&mut self, _restore: bool) {}
+    #[cfg(test)]
+    fn retained_bytes(&self) -> usize;
+}
+
+struct FrameHistory {
+    slots: Vec<Frame>,
+}
+
+impl std::ops::Index<usize> for FrameHistory {
+    type Output = Frame;
+    fn index(&self, index: usize) -> &Self::Output { &self.slots[index] }
+}
+
+impl FrameStore for FrameHistory {
+    fn new() -> Self { Self { slots: Vec::new() } }
+    fn push(&mut self, frame: Frame) -> FrameId {
+        let id = FrameId(self.slots.len());
+        self.slots.push(frame);
+        id
+    }
+    #[cfg(test)]
+    fn retained_bytes(&self) -> usize { self.slots.capacity() * std::mem::size_of::<Frame>() }
+}
+
+impl FrameStore for FrameStorage {
+    fn new() -> Self { FrameStorage::new() }
+    fn push(&mut self, frame: Frame) -> FrameId { FrameStorage::push(self, frame) }
+    fn checkpoint(&self) -> FrameCheckpoint { FrameStorage::checkpoint(self) }
+    fn retire(&mut self, id: FrameId) { FrameStorage::retire(self, id) }
+    fn select(
+        &mut self,
+        checkpoint: FrameCheckpoint,
+        previous: Option<FrameId>,
+        selected: Option<FrameId>,
+    ) {
+        FrameStorage::select(self, checkpoint, previous, selected)
+    }
+    fn finish(&mut self, restore: bool) { FrameStorage::finish(self, restore) }
+    #[cfg(test)]
+    fn retained_bytes(&self) -> usize { FrameStorage::retained_bytes(self) }
+}
+
+struct CanonicalPathMachine<S: FrameStore> {
+    frames: S,
     next_obligation: u64,
     stats: CanonicalPathAdmissionStats,
 }
@@ -470,10 +610,13 @@ impl CanonicalPathReducer {
     }
 
     #[cfg(test)]
+    pub(crate) fn retained_frame_bytes(&self) -> usize { self.machine.frames.retained_bytes() }
+
+    #[cfg(test)]
     pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats {
         CanonicalPathAdmissionStats {
             states: self.states.len(),
-            frames: self.machine.frames.len(),
+            frames: self.machine.frames.slots.len(),
             ..self.machine.stats
         }
     }
@@ -588,6 +731,9 @@ impl CanonicalPathStreamReducer {
     pub(crate) const fn retained_state_bytes(&self) -> usize { std::mem::size_of::<InnerPath>() }
 
     #[cfg(test)]
+    pub(crate) fn retained_frame_bytes(&self) -> usize { self.machine.frames.retained_bytes() }
+
+    #[cfg(test)]
     pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats {
         CanonicalPathAdmissionStats {
             states: 1,
@@ -642,10 +788,10 @@ impl CanonicalPathStreamReducer {
     }
 }
 
-impl CanonicalPathMachine {
+impl<S: FrameStore> CanonicalPathMachine<S> {
     fn new() -> Self {
         Self {
-            frames: Vec::new(),
+            frames: S::new(),
             next_obligation: 0,
             stats: CanonicalPathAdmissionStats::default(),
         }
@@ -684,6 +830,7 @@ impl CanonicalPathMachine {
         self.stats.max_topology_depth = self.stats.max_topology_depth.max(bytes.len());
         let mut state = current.clone();
         let transition = self.feed_path(arena, bytes, &mut state, byte);
+        self.frames.finish(state.stack == current.stack);
         Ok((state, bytes, transition))
     }
 
@@ -696,7 +843,10 @@ impl CanonicalPathMachine {
         resolution: CanonicalPathObligationResolution,
     ) -> Result<InnerPath, CanonicalPathAdmissionError> {
         let mut state = current.clone();
-        self.resolve_path_obligation(arena, bytes, &mut state, id, resolution)?;
+        let result = self.resolve_path_obligation(arena, bytes, &mut state, id, resolution);
+        self.frames
+            .finish(result.is_err() || state.stack == current.stack);
+        result?;
         Ok(state)
     }
 
@@ -761,11 +911,7 @@ impl CanonicalPathMachine {
 
     fn frame(&self, id: FrameId) -> Frame { self.frames[id.0].clone() }
 
-    fn push_frame(&mut self, frame: Frame) -> FrameId {
-        let id = FrameId(self.frames.len());
-        self.frames.push(frame);
-        id
-    }
+    fn push_frame(&mut self, frame: Frame) -> FrameId { self.frames.push(frame) }
 
     fn push_varint(&mut self, role: VarintRole, next: Option<FrameId>) -> FrameId {
         self.push_frame(Frame::Varint {
@@ -784,6 +930,7 @@ impl CanonicalPathMachine {
     ) -> CanonicalPathTransition {
         struct RegionContext {
             owner: InnerPath,
+            checkpoint: FrameCheckpoint,
             remaining: u64,
             previous: Option<CanonicalBytesHandle>,
             declared_len: u64,
@@ -826,6 +973,7 @@ impl CanonicalPathMachine {
             }
             contexts.push(RegionContext {
                 owner: current,
+                checkpoint: self.frames.checkpoint(),
                 remaining: remaining - 1,
                 previous,
                 declared_len,
@@ -838,8 +986,11 @@ impl CanonicalPathMachine {
 
         while let Some(context) = contexts.pop() {
             let mut owner = context.owner;
+            let previous = owner.stack;
             if let PathStatus::Dead(error) = current.status {
                 owner.kill(error);
+                self.frames
+                    .select(context.checkpoint, previous, owner.stack);
                 current = owner;
                 continue;
             }
@@ -856,6 +1007,8 @@ impl CanonicalPathMachine {
                     next: context.next,
                 });
                 owner.stack = Some(region);
+                self.frames
+                    .select(context.checkpoint, previous, owner.stack);
                 current = owner;
                 continue;
             }
@@ -879,6 +1032,8 @@ impl CanonicalPathMachine {
                     next: context.next,
                 });
                 owner.stack = Some(region);
+                self.frames
+                    .select(context.checkpoint, previous, owner.stack);
                 current = owner;
                 continue;
             }
@@ -896,6 +1051,8 @@ impl CanonicalPathMachine {
                 context.next,
                 endpoint,
             );
+            self.frames
+                .select(context.checkpoint, previous, owner.stack);
             current = owner;
         }
         *root = current;
@@ -938,6 +1095,19 @@ impl CanonicalPathMachine {
     }
 
     fn feed_frame(
+        &mut self,
+        bytes: CanonicalBytesHandle,
+        path: &mut InnerPath,
+        byte: LocatedPathByte,
+    ) -> CanonicalPathTransition {
+        let checkpoint = self.frames.checkpoint();
+        let previous = path.stack;
+        let transition = self.feed_frame_inner(bytes, path, byte);
+        self.frames.select(checkpoint, previous, path.stack);
+        transition
+    }
+
+    fn feed_frame_inner(
         &mut self,
         bytes: CanonicalBytesHandle,
         path: &mut InnerPath,
@@ -1273,6 +1443,7 @@ impl CanonicalPathMachine {
             };
             match self.frame(top) {
                 Frame::Kids { remaining, next } => {
+                    self.frames.retire(top);
                     if remaining == 1 {
                         path.stack = next;
                         continue;
@@ -1386,7 +1557,7 @@ impl CanonicalPathMachine {
         resolution: CanonicalPathObligationResolution,
     ) -> Result<(), CanonicalPathAdmissionError> {
         let mut current = root.clone();
-        let mut owners = Vec::<(InnerPath, Frame)>::new();
+        let mut owners = Vec::<(InnerPath, Frame, FrameCheckpoint)>::new();
         loop {
             let top = current.stack.ok_or_else(|| {
                 CanonicalPathAdmissionError::new(
@@ -1407,7 +1578,7 @@ impl CanonicalPathMachine {
                         unreachable!()
                     };
                     let child = path.clone();
-                    owners.push((current, frame));
+                    owners.push((current, frame, self.frames.checkpoint()));
                     current = child;
                 }
                 Frame::Obligation {
@@ -1416,6 +1587,8 @@ impl CanonicalPathMachine {
                     next,
                     ..
                 } if obligation.id == id => {
+                    let checkpoint = self.frames.checkpoint();
+                    let previous = current.stack;
                     let stable = match (obligation.kind, resolution) {
                         (
                             CanonicalPathObligationKind::RawParEscape,
@@ -1477,6 +1650,7 @@ impl CanonicalPathMachine {
                         current.stack = next;
                         self.bubble(&mut current, stable);
                     }
+                    self.frames.select(checkpoint, previous, current.stack);
                     break;
                 }
                 Frame::Obligation { obligation, .. } => {
@@ -1508,7 +1682,7 @@ impl CanonicalPathMachine {
         source: CanonicalPathSource,
     ) -> Result<(), CanonicalPathAdmissionError> {
         let mut current = root.clone();
-        let mut owners = Vec::<(InnerPath, Frame)>::new();
+        let mut owners = Vec::<(InnerPath, Frame, FrameCheckpoint)>::new();
         loop {
             let top = current.stack.ok_or_else(|| {
                 CanonicalPathAdmissionError::new(
@@ -1529,7 +1703,7 @@ impl CanonicalPathMachine {
                         unreachable!()
                     };
                     let child = path.clone();
-                    owners.push((current, frame));
+                    owners.push((current, frame, self.frames.checkpoint()));
                     current = child;
                 }
                 Frame::Obligation { obligation, .. } if obligation.id == id => {
@@ -1563,9 +1737,10 @@ impl CanonicalPathMachine {
         arena: &CanonicalBytesArena,
         bytes: CanonicalBytesHandle,
         current: &mut InnerPath,
-        mut owners: Vec<(InnerPath, Frame)>,
+        mut owners: Vec<(InnerPath, Frame, FrameCheckpoint)>,
     ) {
-        while let Some((mut owner, frame)) = owners.pop() {
+        while let Some((mut owner, frame, checkpoint)) = owners.pop() {
+            let previous_owner = owner.stack;
             let Frame::Region {
                 remaining,
                 previous,
@@ -1614,6 +1789,7 @@ impl CanonicalPathMachine {
                     next,
                 }));
             }
+            self.frames.select(checkpoint, previous_owner, owner.stack);
             *current = owner;
         }
     }
@@ -1836,6 +2012,10 @@ impl CanonicalPathTopologyAdmission {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/canonical_frame_storage.rs"]
+mod frame_storage_tests;
 
 #[cfg(test)]
 mod tests {
