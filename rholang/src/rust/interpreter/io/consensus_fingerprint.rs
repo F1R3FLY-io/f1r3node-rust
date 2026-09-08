@@ -64,6 +64,24 @@ use linkme::distributed_slice;
 const FINGERPRINT_DELIMITER: &str = "#cf";
 const FINGERPRINT_HEX_LEN: usize = 16; // 8 bytes × 2
 
+/// M-35 review fix (S1/C1, 2026-09-08): expected count of registered
+/// `ConsensusFoldEntry` records.  Guards against silent
+/// `linkme::distributed_slice` truncation under cdylib / LTO /
+/// release builds — the fingerprint function's contiguity check
+/// (a `for` loop over `entries`) is vacuously true on an empty
+/// slice, so without this guard a downstream consumer that links
+/// `rholang` as a cdylib might see zero entries and compute the
+/// hash of an empty buffer as its "fingerprint" — silently
+/// producing a wrong-but-well-formed fingerprint that force-splits
+/// peering.  With this guard, that failure mode panics loudly at
+/// boot.
+///
+/// When adding a consensus constant: register with the next-highest
+/// `order` AND bump this count.  Both must move together; the
+/// golden-hex pin (in `tests` below) already forces a coordinated
+/// change of the encoded fingerprint too.
+const EXPECTED_ENTRY_COUNT: usize = 11;
+
 /// M-35 (2026-09-08, A4-S-3): a single consensus-observable
 /// constant's contribution to the fingerprint fold.
 ///
@@ -132,6 +150,24 @@ pub static CONSENSUS_FOLD: [ConsensusFoldEntry];
 pub fn consensus_runtime_fingerprint() -> String {
     let mut entries: Vec<&ConsensusFoldEntry> = CONSENSUS_FOLD.iter().collect();
     entries.sort_by_key(|e| e.order);
+
+    // M-35 review fix (S1, 2026-09-08): guard against silent
+    // linkme truncation.  An empty `entries` passes the
+    // contiguity loop vacuously and would silently produce
+    // BLAKE2b(""), which is a plausible-looking but wrong
+    // fingerprint.  Panic loud at boot instead.
+    assert_eq!(
+        entries.len(),
+        EXPECTED_ENTRY_COUNT,
+        "M-35: CONSENSUS_FOLD has {} entries but expected {}.  \
+         Either (a) `linkme::distributed_slice` truncation under \
+         cdylib / LTO / release linkage (production bug — expect \
+         shard split), or (b) a `register_consensus_constant!` \
+         invocation was added/removed without updating \
+         EXPECTED_ENTRY_COUNT (developer error — fix the count).",
+        entries.len(),
+        EXPECTED_ENTRY_COUNT
+    );
 
     // Contiguity check: orders must be exactly 1..=entries.len().
     // A gap or duplicate is a shard-splitting error that shows up
@@ -298,6 +334,25 @@ mod tests {
              re-verify every peer in the fleet is rebuilt."
         );
         println!("consensus_runtime_fingerprint = {fp}");
+    }
+
+    /// M-35 review fix (C1, 2026-09-08): explicit assertion that
+    /// `CONSENSUS_FOLD` has exactly `EXPECTED_ENTRY_COUNT` entries.
+    /// Redundant with the golden-hex pin (which would also fire on
+    /// a count mismatch, via a wrong hash), but makes the invariant
+    /// explicit and gives a more actionable panic message when it
+    /// fails.
+    #[test]
+    fn consensus_fold_slice_has_expected_entry_count() {
+        assert_eq!(
+            CONSENSUS_FOLD.len(),
+            EXPECTED_ENTRY_COUNT,
+            "CONSENSUS_FOLD entry count changed — either a new \
+             `register_consensus_constant!` was added (bump \
+             EXPECTED_ENTRY_COUNT + regenerate golden hex), one was \
+             removed (same), or linkme is not populating the slice \
+             (production hazard — investigate before shipping)."
+        );
     }
 
     #[test]
