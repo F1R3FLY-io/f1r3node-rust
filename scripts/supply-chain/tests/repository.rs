@@ -209,14 +209,13 @@ fn scheduled_dispatch_has_no_checkout_or_branch_code_execution() {
     assert!(job.contains("GH_TOKEN: ${{ github.token }}"));
     assert!(!job.contains("uses:"));
     assert!(!job.contains("contents: write"));
-    let commands: Vec<_> = job
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("run: "))
-        .collect();
-    assert_eq!(commands, [
-        "gh workflow run deny-schedule.yml --repo \"$GITHUB_REPOSITORY\" --ref dev"
-    ]);
-    assert_eq!(job.matches("run:").count(), 1);
+    assert!(!job.contains("actions/checkout"));
+    assert_eq!(job.matches("gh workflow run").count(), 1);
+    assert!(
+        job.contains("gh workflow run deny-schedule.yml --repo \"$GITHUB_REPOSITORY\" --ref dev")
+    );
+    assert!(job.contains("gh run watch \"$RUN_ID\" --repo \"$GITHUB_REPOSITORY\" --exit-status"));
+    assert!(job.contains("::error::the dev audit run did not start"));
     assert!(!job.contains("continue-on-error"));
 }
 

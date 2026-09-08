@@ -1,27 +1,69 @@
+# Scheduled supply-chain audit.
+#
+# The main CI `deny` job only runs on push / pull_request, so a newly-published
+# RustSec advisory against an existing dependency goes unnoticed during quiet
+# periods. This weekly cron closes that gap by running cargo-deny against the
+# long-lived branches even when no one has pushed.
+#
+# NOTE: GitHub only fires `schedule` events from the workflow file on the
+# repository's default branch (master). This file must be present on master for
+# the cron to run. The master run audits its own commit and dispatches a
+# separate run of this workflow on dev, so each branch is audited by its own
+# workflow file against its own commit and no branch is checked out under
+# another branch's workflow definition.
 name: Scheduled cargo-deny
 
 on:
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Runs triggered with the workflow token notify nobody, so this job waits
+  # for the dispatched dev run and fails with it. A dev audit failure then
+  # fails this scheduled run and reaches the people who receive its
+  # notifications. Only `schedule` dispatches, so the dev run cannot re-enter.
   dispatch-dev:
     name: Dispatch dev dependency audit
     if: github.event_name == 'schedule' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     permissions:
       actions: write
     steps:
       - name: Dispatch the audit in the dev branch context
+        id: dispatch
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run deny-schedule.yml --repo "$GITHUB_REPOSITORY" --ref dev
+        run: |
+          before="$(date -u +%s)"
+          gh workflow run deny-schedule.yml --repo "$GITHUB_REPOSITORY" --ref dev
+          run_id=""
+          for _ in $(seq 1 12); do
+            sleep 10
+            run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/deny-schedule.yml/runs?branch=dev&event=workflow_dispatch&per_page=10" \
+              | jq -r --argjson before "$before" '
+                [.workflow_runs[]
+                  | select((.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $before)]
+                | sort_by(.run_number) | last | .id // empty')"
+            [ -n "$run_id" ] && break
+          done
+          [ -n "$run_id" ] || { echo "::error::the dev audit run did not start"; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Dispatched dev audit run ${run_id}."
 
+      - name: Wait for the dev audit result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+
+  # Checks out only the commit that carries this workflow file, so the audit
+  # script and the workflow always come from the same commit. A branch that
+  # drops the script while keeping the workflow fails loudly by design.
   deny:
     name: cargo-deny (${{ github.ref_name }})
     if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master'
@@ -29,13 +71,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout the audit event commit
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: nightly-2026-02-09
 
@@ -49,7 +91,7 @@ jobs:
 
       - name: Upload supply-chain evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: supply-chain-${{ github.ref_name }}
           path: target/supply-chain/
