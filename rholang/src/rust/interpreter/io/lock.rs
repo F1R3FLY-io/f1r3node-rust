@@ -1230,6 +1230,28 @@ mod tests {
     fn holder(byte: u8) -> HolderId { HolderId::from_bytes([byte; 32]) }
     fn deploy(byte: u8) -> DeployScope { [byte; 32] }
 
+    /// T-14 review-fix (S2, 2026-09-08): `LockId` MUST carry
+    /// `#[repr(transparent)]` for the same reason as `Fd` — any
+    /// bit-level or FFI code that transmutes between `LockId` and
+    /// `u64` relies on identical size/alignment/ABI.  A refactor
+    /// that removes the attribute (or changes `LockId` to hold a
+    /// non-u64 field) breaks this pin; do not "fix" the pin,
+    /// restore the attribute.  Mirrors `fd_is_repr_transparent_
+    /// over_u64` in `response.rs`.
+    #[test]
+    fn lock_id_is_repr_transparent_over_u64() {
+        assert_eq!(
+            std::mem::size_of::<LockId>(),
+            std::mem::size_of::<u64>(),
+            "LockId must have identical size to u64 (#[repr(transparent)])"
+        );
+        assert_eq!(
+            std::mem::align_of::<LockId>(),
+            std::mem::align_of::<u64>(),
+            "LockId must have identical alignment to u64 (#[repr(transparent)])"
+        );
+    }
+
     // -- ranges_overlap ---------------------------------------------------
 
     #[test]
