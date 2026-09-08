@@ -6943,6 +6943,74 @@ paired comparison. Tasks 6018/5976 remain open. No codec, hash, charge, producti
 admission or persistence authority is changed, so no new consensus-register
 classification is introduced. The same-contract LMDB comparison remains pending.
 
+### J-098 — 2026-09-08: preserve boundary order before focused-owner implementation
+
+**DESIGN CORRECTION.** The concrete source review found that pre-byte bounds and
+post-byte completion use different orders. The original parser checks zero
+Region/path residuals from outer to inner before feeding the leaf, but settles
+completed paths from inner to outer afterward. Checking only the innermost path
+would miss an enclosing path that ends while a deeper path remains unfinished.
+A Region ending without its current path ending is not itself a completion.
+New Region children start at the post-opening-byte stamp, not the previous stamp.
+
+The selected design keeps an all-bound minimum with outermost ties and a separate
+path-only minimum with deepest ties. Ordinary operations read those caches;
+healthy completion pops only due inner owners. If a due path has unfinished
+inner owners, the exact immediate child must be supplied to the unchanged
+`finish_region_path`, which reports truncation. That refusal-only materialization
+must not become an ordinary per-child ancestor walk. A pending obligation at zero
+preserves all owners; a shallow error at the boundary takes precedence.
+
+**FORMAL RESULT.** Ten additional capstones prove the finite deepest-due scheduler
+equivalent to eager inside-out unwinding: exact observation, completion-call
+trace and successful-pop count, plus returned error, event, clock and selected
+world through the existing transaction selector. Stored-cache checks are bounded
+by successful pops plus one. Both cache tie policies, pending-at-zero, unfinished
+gaps, Region-only expiry and two successful pops followed by refusal have causal
+controls. There are now 28 focused-owner capstones and 104 total RPB3 reports;
+compilation and independent kernel checking pass. Valid caches, live owners,
+accurate leaf classification and pointwise shared completion remain explicit
+correspondence premises. The bound does not include Rust allocation or fault
+reification, and it is not a full parser or whole-pipeline proof.
+
+**EXECUTABLE REFERENCE CONTROLS.** Three new tests pass before the shared-helper
+refactor. They cover valid Region entry through depth 32, outer truncation at an
+exact physical byte versus a same-byte reserved-tag error, and duplicate nested
+paths that refuse after several inner completions or real EPM1 child resolution.
+The duplicate case re-resolves the retained obligation after subsequent Dead
+input and observes the error change to `NestedEpmNotMap`; treating Dead as
+absorbing is therefore not equivalent. Borrowed/frozen provenance, persistent
+scalar history and physical frame ownership are checked. All 388 models tests
+also pass before the helper extraction, zero ignored, in 54.48 seconds.
+
+**SHARED IMPLEMENTATION SEAM.** The existing leaf-resolution arm is extracted as
+`resolve_leaf_obligation`. Its ID/phase checks, resolution-kind rules, stable-bit
+propagation, error sources, `bubble` call and frame-selection checkpoint are
+unchanged. The current eager owner traversal already uses this helper; the
+focused traversal will reuse it. This avoids duplicating the grammar during the
+representation change. On the final refactored source, all **388** models tests
+pass in 53.31 seconds, zero ignored. The combined gate passes **85** focused Rust
+checks, 48 import / 17 score / 104 RPB3 closed reports, and three independent
+kernel checks; 32 prerequisite reports are additional unchanged inputs. Every
+process exits zero. Rust runs use 4/6-GiB high/hard limits, zero swap, four build
+jobs and four test threads with seed `41315976`; proofs use 1/2-GiB limits. The
+final models service peaks at 1.4G including compilation, with zero swap. These
+qualification timings are not controlled performance measurements.
+
+| Artifact | SHA-256 |
+|---|---|
+| Three encoded boundary controls before helper extraction | `b0f8f5bcaf5a8981a44f155d8b110e5c34b63cfffce214cdcb23dc701ab84f20` |
+| Scheduler `coqc`, 104 closed reports | `186bdfcfa1ce4ad9169e82eee18ffe86a306e773ffe94d98f5b8006dce694d34` |
+| Independent scheduler `coqchk` | `22148812d34d4a1dfb1915f5b7b94afda3215d537a5e9d586a0e908914d4ed9d` |
+| Full 388-model run before helper extraction | `27cf4204605f75c705d7ca04c7ae7aa2a0788aba5a6140bc0cc9400bd9a7c72a` |
+| Final shared-helper 388-model qualification | `b01ba6b12da23ad00fbd5ebb0092887a8a275e2ac6990ce2c9691818adb416c2` |
+| Final combined scheduler proof/runtime gate | `683cb6c27a0457bc7fc85e2870396bd52e69fdd5cdc4395bf9013dd4eba6543a` |
+
+**BOUNDARY.** The focused representation and its physical slot/transaction binding
+are still to be implemented and measured against J-097. No avoided ancestor work
+is claimed yet. No PathMap crate change, new dependency, importer/backend
+activation, codec/hash/charge change or ACT/LMDB verdict is introduced here.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

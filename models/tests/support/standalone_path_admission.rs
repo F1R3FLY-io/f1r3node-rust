@@ -1066,6 +1066,156 @@ fn flat_key_storage_and_frame_layout_are_observed_directly() {
 }
 
 #[test]
+fn focused_owner_opening_byte_is_not_charged_to_the_new_child() {
+    let mut key = vec![0x03, 0];
+    for depth in 1..=32 {
+        let mut region = Vec::new();
+        prost::encoding::encode_varint(key.len() as u64, &mut region);
+        region.extend_from_slice(&key);
+        key = payload(0x0d, &region);
+        if depth == 1 {
+            assert_eq!(key, [0x0d, 3, 2, 0x03, 0]);
+        }
+        assert!(admit(&key).unwrap().0.canonical_path_stable);
+        assert_differential(&key);
+        assert_storage_trace(&key, false, NestedEpmMode::Map, true);
+    }
+}
+
+#[test]
+fn focused_owner_outer_expiry_keeps_shallow_error_precedence_and_provenance() {
+    for (tag, expected) in [
+        (0x03, CanonicalPathAdmissionErrorKind::Truncated),
+        (0xff, CanonicalPathAdmissionErrorKind::ReservedTag(0xff)),
+    ] {
+        let key = [0x0d, 5, 4, 0x0d, 5, 4, tag, 0, 0xff, 0xff];
+        for input in [
+            IndexedByteRegion::from_borrowed(&key, 7, 101),
+            fragmented(&key),
+        ] {
+            let mut reducer = CanonicalPathStreamReducer::new();
+            let error_source = input.position_at(6).unwrap().physical;
+            for (index, byte) in input.located_bytes().enumerate() {
+                reducer.edge(&input, byte).unwrap();
+                reducer.assert_frame_invariants();
+                if index >= 6 {
+                    let error = reducer
+                        .value(true, CanonicalPathSource::in_source(99, 811))
+                        .unwrap()
+                        .unwrap_err();
+                    assert_eq!(error.kind, expected);
+                    assert_eq!(error.source.source, error_source.source);
+                    assert_eq!(error.source.offset, error_source.offset);
+                    assert!(reducer.active_obligation().is_none());
+                    assert!(reducer.completed_obligation(&input).unwrap().is_none());
+                }
+            }
+            assert_eq!(reducer.consumed_len(), key.len());
+        }
+        assert_storage_trace(&key, false, NestedEpmMode::Map, true);
+    }
+}
+
+#[test]
+fn focused_owner_duplicate_refusal_follows_nested_completion_and_pending_resolution() {
+    let map = EPathMap::new_map([(integer(1), integer(2))], Vec::new(), false, None);
+    for nested_map in [false, true] {
+        for depth in [1, 2, 8, 32] {
+            let mut child = if nested_map {
+                payload(0x10, map.trie_snapshot())
+            } else {
+                vec![0x03, 0]
+            };
+            for _ in 0..depth {
+                let mut region = Vec::new();
+                prost::encoding::encode_varint(child.len() as u64, &mut region);
+                region.extend_from_slice(&child);
+                child = payload(0x0d, &region);
+            }
+            let mut region = Vec::new();
+            for _ in 0..2 {
+                prost::encoding::encode_varint(child.len() as u64, &mut region);
+                region.extend_from_slice(&child);
+            }
+            let mut key = payload(0x0d, &region);
+            let boundary = key.len() - 1;
+            key.extend_from_slice(&[0xff, 0xff]);
+            for input in [
+                IndexedByteRegion::from_borrowed(&key, 7, 101),
+                fragmented(&key),
+            ] {
+                let mut reducer = CanonicalPathStreamReducer::new();
+                let mut resolutions = 0;
+                let mut pending_id = None;
+                for (index, byte) in input.located_bytes().enumerate() {
+                    reducer.edge(&input, byte).unwrap();
+                    if let Some(completed) = reducer.completed_obligation(&input).unwrap() {
+                        let payload = input
+                            .subview_with_end(
+                                completed.payload,
+                                CanonicalByteProvenance::new(
+                                    completed.payload_end.source,
+                                    completed.payload_end.offset,
+                                ),
+                            )
+                            .unwrap();
+                        let (waiting, child) = obligation_region_frame(
+                            completed.obligation,
+                            payload,
+                            &PAR_PROTOBUF_REGION_PROGRAM,
+                            0,
+                            &mut CanonicalProtobufAdmissionStats::default(),
+                        )
+                        .unwrap();
+                        let (summary, _, _) = drive_admission(child, 0).unwrap();
+                        let resolution = waiting.resolution(summary).unwrap();
+                        reducer
+                            .resolve_obligation(&input, completed.obligation.id, resolution)
+                            .unwrap();
+                        resolutions += 1;
+                        pending_id = Some(completed.obligation.id);
+                    }
+                    if index >= boundary {
+                        let error = reducer
+                            .value(true, CanonicalPathSource::new(0))
+                            .unwrap()
+                            .unwrap_err();
+                        assert_eq!(
+                            error.kind,
+                            CanonicalPathAdmissionErrorKind::DuplicatePathInRegion
+                        );
+                        let expected = input.position_at(boundary).unwrap().physical;
+                        assert_eq!(error.source.source, expected.source);
+                        assert_eq!(error.source.offset, expected.offset);
+                    }
+                    reducer.assert_frame_invariants();
+                }
+                assert_eq!(resolutions, if nested_map { 2 } else { 0 });
+                if let Some(id) = pending_id {
+                    reducer
+                        .resolve_obligation(
+                            &input,
+                            id,
+                            CanonicalPathObligationResolution::NestedEpm1 {
+                                mode: NestedEpmMode::Set,
+                                entries_stable: true,
+                            },
+                        )
+                        .unwrap();
+                    let error = reducer
+                        .value(true, CanonicalPathSource::new(0))
+                        .unwrap()
+                        .unwrap_err();
+                    assert_eq!(error.kind, CanonicalPathAdmissionErrorKind::NestedEpmNotMap);
+                    reducer.assert_frame_invariants();
+                }
+            }
+            assert_storage_trace(&key, false, NestedEpmMode::Map, true);
+        }
+    }
+}
+
+#[test]
 fn ordinary_region_work_matrix_tracks_all_owner_walks() {
     let map = EPathMap::new_map([(integer(1), integer(2))], Vec::new(), false, None);
     let map_key = payload(0x10, map.trie_snapshot());

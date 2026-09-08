@@ -3774,4 +3774,452 @@ Print Assumptions reified_fault_operations_use_the_exact_same_shared_protocol_wi
 Print Assumptions focused_representation_accounting_completion_and_selection_positive_controls.
 Print Assumptions focused_causal_controls_reject_wrong_stamps_wrong_boundary_order_and_dead_absorption.
 
+Definition endpoint_cache := option (nat * nat).
+
+Definition extend_endpoint_cache (prefer_inner : bool) (ending : nat) (rest : endpoint_cache) : endpoint_cache :=
+  match rest with
+  | None => Some (ending, 0)
+  | Some (other, index) => Some (Nat.min ending other,
+      if (if prefer_inner then ending <=? other else ending <? other) then 0 else S index)
+  end.
+
+Fixpoint compute_endpoint_cache prefer_inner (endings : list nat) : endpoint_cache :=
+  match endings with
+  | [] => None
+  | first :: rest => extend_endpoint_cache prefer_inner first (compute_endpoint_cache prefer_inner rest)
+  end.
+
+Definition cached_due stamp (cache : endpoint_cache) :=
+  match cache with Some (ending, index) => if ending =? stamp then Some index else None | None => None end.
+
+Fixpoint scan_due (prefer_inner : bool) stamp (endings : list nat) : option nat :=
+  match endings with
+  | [] => None
+  | first :: rest =>
+      if first =? stamp then
+        if prefer_inner then Some 0 else
+          match scan_due prefer_inner stamp rest with Some index => Some (S index) | None => Some 0 end
+      else option_map S (scan_due prefer_inner stamp rest)
+  end.
+
+Lemma computed_cache_has_lower_bound prefer_inner endings stamp ending index :
+  Forall (fun value => stamp <= value) endings ->
+  compute_endpoint_cache prefer_inner endings = Some (ending, index) -> stamp <= ending.
+Proof.
+  revert ending index. induction endings as [|first rest IH]; intros ending index bounds found; cbn in found; [discriminate|].
+  inversion bounds; subst. unfold extend_endpoint_cache in found.
+  destruct (compute_endpoint_cache prefer_inner rest) as [[other position]|] eqn:tail.
+  - inversion found; subst. apply Nat.min_glb; [assumption|]. eapply IH; eauto.
+  - inversion found; subst. assumption.
+Qed.
+
+Lemma cached_due_extends_exact_scan prefer_inner stamp ending rest :
+  stamp <= ending ->
+  (forall other index, rest = Some (other, index) -> stamp <= other) ->
+  cached_due stamp (extend_endpoint_cache prefer_inner ending rest) =
+    if ending =? stamp then
+      if prefer_inner then Some 0 else
+        match cached_due stamp rest with Some index => Some (S index) | None => Some 0 end
+    else option_map S (cached_due stamp rest).
+Proof.
+  intros head_bound tail_bound. destruct rest as [[other index]|]; [|destruct prefer_inner; cbn; now destruct (ending =? stamp)].
+  assert (other_bound : stamp <= other) by (eapply tail_bound; reflexivity).
+  destruct (Nat.eq_dec ending stamp) as [head_equal|head_distinct];
+    destruct (Nat.eq_dec other stamp) as [tail_equal|tail_distinct].
+  - subst ending other. destruct prefer_inner; unfold cached_due, extend_endpoint_cache;
+      rewrite Nat.min_id, ?Nat.leb_refl, ?Nat.ltb_irrefl, ?Nat.eqb_refl; reflexivity.
+  - subst ending. assert (lt : (stamp <? other) = true) by (apply Nat.ltb_lt; lia).
+    assert (le : (stamp <=? other) = true) by (apply Nat.leb_le; lia).
+    assert (neq : (other =? stamp) = false) by (apply Nat.eqb_neq; assumption).
+    destruct prefer_inner; unfold cached_due, extend_endpoint_cache;
+      rewrite Nat.min_l by lia; rewrite ?lt, ?le, ?Nat.eqb_refl, ?neq; reflexivity.
+  - subst other. assert (lt : (ending <? stamp) = false) by (apply Nat.ltb_ge; lia).
+    assert (le : (ending <=? stamp) = false) by (apply Nat.leb_gt; lia).
+    assert (neq : (ending =? stamp) = false) by (apply Nat.eqb_neq; assumption).
+    destruct prefer_inner; unfold cached_due, extend_endpoint_cache;
+      rewrite Nat.min_r by lia; rewrite ?lt, ?le, ?Nat.eqb_refl, ?neq; reflexivity.
+  - assert (head_neq : (ending =? stamp) = false) by (apply Nat.eqb_neq; assumption).
+    assert (tail_neq : (other =? stamp) = false) by (apply Nat.eqb_neq; assumption).
+    assert (minimum_neq : (Nat.min ending other =? stamp) = false).
+    { apply Nat.eqb_neq. destruct (le_dec ending other); [rewrite Nat.min_l by lia|rewrite Nat.min_r by lia]; lia. }
+    destruct prefer_inner; unfold cached_due, extend_endpoint_cache; cbn;
+      rewrite minimum_neq, head_neq, tail_neq; reflexivity.
+Qed.
+
+Lemma computed_cache_selects_exact_scan prefer_inner stamp endings :
+  Forall (fun ending => stamp <= ending) endings ->
+  cached_due stamp (compute_endpoint_cache prefer_inner endings) = scan_due prefer_inner stamp endings.
+Proof.
+  induction endings as [|first rest IH]; intro bounds; cbn; [reflexivity|].
+  inversion bounds; subst. rewrite cached_due_extends_exact_scan; [now rewrite IH|assumption|].
+  intros other index found. eapply computed_cache_has_lower_bound; eauto.
+Qed.
+
+Record owner_caches := OwnerCaches {
+  any_boundary_cache : endpoint_cache;
+  path_boundary_cache : endpoint_cache
+}.
+
+Record scheduled_owner := ScheduledOwner {
+  scheduled_value : cached_owner;
+  scheduled_caches : owner_caches
+}.
+
+Definition top_caches (owners : list scheduled_owner) :=
+  match owners with [] => OwnerCaches None None | first :: _ => scheduled_caches first end.
+
+Definition extend_owner_caches current rest :=
+  OwnerCaches
+    (extend_endpoint_cache false (owner_bound (owner_value current)) (any_boundary_cache rest))
+    (extend_endpoint_cache true (owner_path_end (owner_value current)) (path_boundary_cache rest)).
+
+Definition push_scheduled current owners :=
+  ScheduledOwner current (extend_owner_caches current (top_caches owners)) :: owners.
+
+Fixpoint schedule_owners (owners : list cached_owner) : list scheduled_owner :=
+  match owners with [] => [] | first :: rest => push_scheduled first (schedule_owners rest) end.
+
+Fixpoint scheduled_valid (owners : list scheduled_owner) : Prop :=
+  match owners with
+  | [] => True
+  | first :: rest => scheduled_caches first = extend_owner_caches (scheduled_value first) (top_caches rest) /\
+      scheduled_valid rest
+  end.
+
+Definition scheduled_endpoints owners :=
+  map (fun current => owner_path_end (owner_value (scheduled_value current))) owners.
+Definition scheduled_bounds owners :=
+  map (fun current => owner_bound (owner_value (scheduled_value current))) owners.
+
+Lemma valid_cache_projection owners :
+  scheduled_valid owners ->
+  any_boundary_cache (top_caches owners) = compute_endpoint_cache false (scheduled_bounds owners) /\
+  path_boundary_cache (top_caches owners) = compute_endpoint_cache true (scheduled_endpoints owners).
+Proof.
+  induction owners as [|first rest IH]; intro valid; cbn in *; [auto|].
+  destruct valid as [head tail]. destruct (IH tail) as [any paths]. rewrite head; cbn. now rewrite any, paths.
+Qed.
+
+Theorem both_prefix_caches_preserve_push_pop_and_opposite_tie_rules stamp owners :
+  scheduled_valid owners ->
+  Forall (fun bound => stamp <= bound) (scheduled_bounds owners) ->
+  Forall (fun ending => stamp <= ending) (scheduled_endpoints owners) ->
+  cached_due stamp (any_boundary_cache (top_caches owners)) = scan_due false stamp (scheduled_bounds owners) /\
+  cached_due stamp (path_boundary_cache (top_caches owners)) = scan_due true stamp (scheduled_endpoints owners) /\
+  (forall current, scheduled_valid (push_scheduled current owners) /\ tl (push_scheduled current owners) = owners).
+Proof.
+  intros valid bounds endpoints. destruct (valid_cache_projection owners valid) as [any paths].
+  rewrite any, paths, !computed_cache_selects_exact_scan by assumption. repeat split; auto.
+Qed.
+
+Lemma schedule_owners_valid owners : scheduled_valid (schedule_owners owners).
+Proof. induction owners; cbn; auto. Qed.
+
+Inductive boundary_error := BoundaryTruncated (source offset : nat) | BoundaryRefusal (code source offset : nat).
+Inductive boundary_view :=
+| BoundaryDead (error : boundary_error)
+| BoundaryPending (id : nat)
+| BoundaryUnfinished
+| BoundaryCompleted (current : leaf).
+
+Record boundary_observation := BoundaryObservation {
+  boundary_result : boundary_view;
+  boundary_pops : nat;
+  boundary_calls : list nat
+}.
+
+Definition unchanged_boundary view := BoundaryObservation view 0 [].
+Definition note_call slot popped result :=
+  BoundaryObservation (boundary_result result) (popped + boundary_pops result) (slot :: boundary_calls result).
+
+Definition owner_due stamp current := owner_path_end (owner_value (scheduled_value current)) =? stamp.
+
+Fixpoint eager_unwind
+    (classify : leaf -> boundary_view)
+    (complete : region_metadata -> nat -> leaf -> completion_result)
+    stamp source offset view (owners : list scheduled_owner) : boundary_observation :=
+  match owners with
+  | [] => unchanged_boundary view
+  | first :: rest =>
+      let current := owner_value (scheduled_value first) in
+      match view with
+      | BoundaryDead error => eager_unwind classify complete stamp source offset (BoundaryDead error) rest
+      | BoundaryPending id => eager_unwind classify complete stamp source offset (BoundaryPending id) rest
+      | BoundaryUnfinished => eager_unwind classify complete stamp source offset
+          (if owner_due stamp first then BoundaryDead (BoundaryTruncated source offset) else BoundaryUnfinished) rest
+      | BoundaryCompleted child =>
+          if owner_due stamp first then
+            match complete (owner_metadata current) (owner_region_end current - stamp) child with
+            | CompletedOwner next => note_call (region_slot (owner_metadata current)) 1
+                (eager_unwind classify complete stamp source offset (classify next) rest)
+            | RefusedOwner code at_source at_offset => note_call (region_slot (owner_metadata current)) 0
+                (eager_unwind classify complete stamp source offset
+                  (BoundaryDead (BoundaryRefusal code at_source at_offset)) rest)
+            end
+          else eager_unwind classify complete stamp source offset BoundaryUnfinished rest
+      end
+  end.
+
+Fixpoint deepest_due_settlement
+    (classify : leaf -> boundary_view)
+    (complete : region_metadata -> nat -> leaf -> completion_result)
+    stamp source offset view (owners : list scheduled_owner) : boundary_observation :=
+  match view with
+  | BoundaryDead error => unchanged_boundary (BoundaryDead error)
+  | BoundaryPending id => unchanged_boundary (BoundaryPending id)
+  | _ =>
+      match owners with
+      | [] => unchanged_boundary view
+      | first :: rest =>
+          match cached_due stamp (path_boundary_cache (top_caches owners)) with
+          | None => unchanged_boundary BoundaryUnfinished
+          | Some (S _) => unchanged_boundary (BoundaryDead (BoundaryTruncated source offset))
+          | Some 0 =>
+              match view with
+              | BoundaryCompleted child =>
+                  let current := owner_value (scheduled_value first) in
+                  match complete (owner_metadata current) (owner_region_end current - stamp) child with
+                  | CompletedOwner next => note_call (region_slot (owner_metadata current)) 1
+                      (deepest_due_settlement classify complete stamp source offset (classify next) rest)
+                  | RefusedOwner code at_source at_offset => note_call (region_slot (owner_metadata current)) 0
+                      (unchanged_boundary (BoundaryDead (BoundaryRefusal code at_source at_offset)))
+                  end
+              | _ => unchanged_boundary (BoundaryDead (BoundaryTruncated source offset))
+              end
+          end
+      end
+  end.
+
+Lemma eager_dead_is_exact classify complete stamp source offset error owners :
+  eager_unwind classify complete stamp source offset (BoundaryDead error) owners = unchanged_boundary (BoundaryDead error).
+Proof. induction owners; cbn; auto. Qed.
+
+Lemma eager_pending_is_exact classify complete stamp source offset id owners :
+  eager_unwind classify complete stamp source offset (BoundaryPending id) owners = unchanged_boundary (BoundaryPending id).
+Proof. induction owners; cbn; auto. Qed.
+
+Lemma eager_unfinished_scans_for_outer_boundary classify complete stamp source offset owners :
+  eager_unwind classify complete stamp source offset BoundaryUnfinished owners =
+  unchanged_boundary (match scan_due true stamp (scheduled_endpoints owners) with
+    | Some _ => BoundaryDead (BoundaryTruncated source offset) | None => BoundaryUnfinished end).
+Proof.
+  induction owners as [|first rest IH]; cbn; [reflexivity|].
+  unfold owner_due. destruct (owner_path_end (owner_value (scheduled_value first)) =? stamp).
+  - apply eager_dead_is_exact.
+  - rewrite IH. unfold scheduled_endpoints. destruct (scan_due true stamp
+      (map (fun current => owner_path_end (owner_value (scheduled_value current))) rest)); reflexivity.
+Qed.
+
+Lemma valid_path_cache_due stamp owners :
+  scheduled_valid owners -> Forall (fun ending => stamp <= ending) (scheduled_endpoints owners) ->
+  cached_due stamp (path_boundary_cache (top_caches owners)) = scan_due true stamp (scheduled_endpoints owners).
+Proof.
+  intros valid bounds. destruct (valid_cache_projection owners valid) as [_ paths]. rewrite paths.
+  now apply computed_cache_selects_exact_scan.
+Qed.
+
+Theorem deepest_due_settlement_equals_eager_unwind_under_exact_local_completion
+    classify complete stamp source offset view owners :
+  scheduled_valid owners -> Forall (fun ending => stamp <= ending) (scheduled_endpoints owners) ->
+  deepest_due_settlement classify complete stamp source offset view owners =
+    eager_unwind classify complete stamp source offset view owners.
+Proof.
+  revert view. induction owners as [|first rest IH]; intros view valid bounds.
+  - now destruct view.
+  - destruct valid as [cache valid]. inversion bounds; subst.
+    assert (due : cached_due stamp (path_boundary_cache (top_caches (first :: rest))) =
+      scan_due true stamp (scheduled_endpoints (first :: rest))).
+    { apply valid_path_cache_due; cbn; auto. }
+    destruct view as [error|id| |child].
+    + cbn. symmetry. apply eager_dead_is_exact.
+    + cbn. symmetry. apply eager_pending_is_exact.
+    + rewrite eager_unfinished_scans_for_outer_boundary. cbn [deepest_due_settlement].
+      rewrite due. destruct (scan_due true stamp (scheduled_endpoints (first :: rest))) as [[|index]|]; reflexivity.
+    + cbn [deepest_due_settlement]. rewrite due. unfold scheduled_endpoints. cbn [map scan_due].
+      cbn [eager_unwind]. unfold owner_due.
+      destruct (owner_path_end (owner_value (scheduled_value first)) =? stamp) eqn:boundary.
+      * destruct (complete (owner_metadata (owner_value (scheduled_value first)))
+          (owner_region_end (owner_value (scheduled_value first)) - stamp) child) as [next|code at_source at_offset].
+        -- rewrite IH by assumption. reflexivity.
+        -- rewrite eager_dead_is_exact. reflexivity.
+      * rewrite eager_unfinished_scans_for_outer_boundary.
+        unfold scheduled_endpoints. destruct (scan_due true stamp
+          (map (fun current => owner_path_end (owner_value (scheduled_value current))) rest)); reflexivity.
+Qed.
+
+Definition local_completion_binding
+    (left right : region_metadata -> nat -> leaf -> completion_result) :=
+  forall metadata remaining child, left metadata remaining child = right metadata remaining child.
+
+Lemma eager_local_completion_ext classify left right stamp source offset view owners :
+  local_completion_binding left right ->
+  eager_unwind classify left stamp source offset view owners = eager_unwind classify right stamp source offset view owners.
+Proof.
+  intro binding. revert view. induction owners as [|first rest IH]; intro view; cbn; [reflexivity|].
+  destruct view; try apply IH.
+  destruct (owner_due stamp first); [rewrite binding|apply IH].
+  destruct (right (owner_metadata (owner_value (scheduled_value first)))
+    (owner_region_end (owner_value (scheduled_value first)) - stamp) current); now rewrite IH.
+Qed.
+
+Theorem settlement_refinement_needs_only_pointwise_local_completion_authority
+    classify shared modeled stamp source offset view owners :
+  scheduled_valid owners -> Forall (fun ending => stamp <= ending) (scheduled_endpoints owners) ->
+  local_completion_binding shared modeled ->
+  deepest_due_settlement classify modeled stamp source offset view owners =
+    eager_unwind classify shared stamp source offset view owners.
+Proof.
+  intros valid bounds binding. rewrite deepest_due_settlement_equals_eager_unwind_under_exact_local_completion by assumption.
+  symmetry. now apply eager_local_completion_ext.
+Qed.
+
+Theorem pending_zero_boundaries_and_existing_dead_errors_do_not_invoke_completion
+    classify complete stamp source offset owners id error :
+  deepest_due_settlement classify complete stamp source offset (BoundaryPending id) owners =
+    unchanged_boundary (BoundaryPending id) /\
+  deepest_due_settlement classify complete stamp source offset (BoundaryDead error) owners =
+    unchanged_boundary (BoundaryDead error).
+Proof. destruct owners; split; reflexivity. Qed.
+
+Theorem skipped_unfinished_inner_owners_refuse_at_the_current_endpoint
+    classify complete stamp source offset first rest index child :
+  cached_due stamp (path_boundary_cache (top_caches (first :: rest))) = Some (S index) ->
+  deepest_due_settlement classify complete stamp source offset (BoundaryCompleted child) (first :: rest) =
+    unchanged_boundary (BoundaryDead (BoundaryTruncated source offset)).
+Proof. intro due. cbn [deepest_due_settlement]. now rewrite due. Qed.
+
+Fixpoint settlement_owner_checks classify complete stamp (source offset : nat) view (owners : list scheduled_owner) : nat :=
+  match view with
+  | BoundaryDead _ | BoundaryPending _ => 0
+  | _ => match owners with
+    | [] => 0
+    | first :: rest =>
+      match cached_due stamp (path_boundary_cache (top_caches owners)), view with
+      | Some 0, BoundaryCompleted child =>
+        match complete (owner_metadata (owner_value (scheduled_value first)))
+          (owner_region_end (owner_value (scheduled_value first)) - stamp) child with
+        | CompletedOwner next => S (settlement_owner_checks classify complete stamp source offset (classify next) rest)
+        | RefusedOwner _ _ _ => 1
+        end
+      | _, _ => 1
+      end
+    end
+  end.
+
+Theorem focused_settlement_checks_are_bounded_by_successful_pops_plus_one
+    classify complete stamp source offset view owners :
+  settlement_owner_checks classify complete stamp source offset view owners <=
+    S (boundary_pops (deepest_due_settlement classify complete stamp source offset view owners)).
+Proof.
+  revert view. induction owners as [|first rest IH]; intro view; destruct view; cbn; try lia.
+  - destruct (cached_due stamp (path_boundary_cache (scheduled_caches first))) as [[|index]|]; cbn; lia.
+  - destruct (cached_due stamp (path_boundary_cache (scheduled_caches first))) as [[|index]|]; cbn; try lia.
+    destruct (complete (owner_metadata (owner_value (scheduled_value first)))
+      (owner_region_end (owner_value (scheduled_value first)) - stamp) current); cbn; [specialize (IH (classify current0)); lia|lia].
+Qed.
+
+Definition boundary_error_fields error :=
+  match error with
+  | BoundaryTruncated source offset => (0, source, offset)
+  | BoundaryRefusal code source offset => (S code, source, offset)
+  end.
+
+Inductive boundary_request :=
+| BoundaryReturnedError (error : boundary_error)
+| BoundaryAccepted (view : boundary_view) (event clock : nat).
+
+Definition deliver_boundary
+    (settle : boundary_view -> boundary_observation)
+    before candidate before_consumed after_consumed before_clock request :=
+  match request with
+  | BoundaryReturnedError error =>
+      (Some error, None, World (FocusedRepresentation before) before_consumed before_clock)
+  | BoundaryAccepted view event clock =>
+      let result := settle view in
+      let choice := match boundary_result result with
+        | BoundaryDead error => let '(code, source, offset) := boundary_error_fields error in DeferredRefusal code source offset
+        | _ => AcceptedStep
+        end in
+      (None, Some event, select_transaction choice before candidate before_consumed after_consumed before_clock clock)
+  end.
+
+Theorem settlement_preserves_exact_returned_error_public_event_clock_and_selected_world
+    classify complete stamp source offset owners before candidate before_consumed after_consumed before_clock request :
+  scheduled_valid owners -> Forall (fun ending => stamp <= ending) (scheduled_endpoints owners) ->
+  deliver_boundary (fun view => deepest_due_settlement classify complete stamp source offset view owners)
+    before candidate before_consumed after_consumed before_clock request =
+  deliver_boundary (fun view => eager_unwind classify complete stamp source offset view owners)
+    before candidate before_consumed after_consumed before_clock request.
+Proof.
+  intros valid bounds. destruct request; cbn [deliver_boundary]; [reflexivity|].
+  now rewrite deepest_due_settlement_equals_eager_unwind_under_exact_local_completion by assumption.
+Qed.
+
+Theorem refusal_after_successful_pops_restores_immediate_pre_step_graph_and_keeps_event_clock
+    settle before candidate before_consumed after_consumed before_clock view event clock error first rest popped calls :
+  focused_owners before = first :: rest ->
+  settle view = BoundaryObservation (BoundaryDead error) (S popped) calls ->
+  let '(code, source, offset) := boundary_error_fields error in
+  deliver_boundary settle before candidate before_consumed after_consumed before_clock (BoundaryAccepted view event clock) =
+    (None, Some event, World (ReifiedRepresentation (kill_graph code source offset (focused_graph before))) after_consumed clock).
+Proof.
+  intros owners refused. unfold deliver_boundary. rewrite refused; cbn.
+  destruct error; cbn; now rewrite owners.
+Qed.
+
+Definition settlement_control_owner slot region_end path_end :=
+  CachedOwner (Owner (control_metadata slot) region_end path_end) None.
+Definition completed_control_view (_ : leaf) := BoundaryCompleted control_leaf.
+Definition settlement_control_complete metadata (remaining : nat) (child : leaf) :=
+  if region_slot metadata =? 1 then RefusedOwner 77 8 91 else CompletedOwner control_leaf.
+Definition equal_control_spine := schedule_owners
+  [settlement_control_owner 3 9 9; settlement_control_owner 2 9 9; settlement_control_owner 1 12 9].
+Definition unfinished_control_spine := schedule_owners
+  [settlement_control_owner 2 12 12; settlement_control_owner 1 12 9].
+
+Theorem boundary_scheduler_equal_endpoints_pending_and_rollback_positive_controls :
+  cached_due 9 (any_boundary_cache (top_caches equal_control_spine)) = Some 2 /\
+  cached_due 9 (path_boundary_cache (top_caches equal_control_spine)) = Some 0 /\
+  deepest_due_settlement completed_control_view settlement_control_complete 9 2 31
+    (BoundaryCompleted control_leaf) equal_control_spine =
+    BoundaryObservation (BoundaryDead (BoundaryRefusal 77 8 91)) 2 [3; 2; 1] /\
+  eager_unwind completed_control_view settlement_control_complete 9 2 31
+    (BoundaryCompleted control_leaf) equal_control_spine =
+    BoundaryObservation (BoundaryDead (BoundaryRefusal 77 8 91)) 2 [3; 2; 1] /\
+  deepest_due_settlement completed_control_view settlement_control_complete 9 2 31
+    (BoundaryPending 17) equal_control_spine = unchanged_boundary (BoundaryPending 17) /\
+  deliver_boundary (fun view => deepest_due_settlement completed_control_view settlement_control_complete 9 2 31 view equal_control_spine)
+    control_focused (Focused 4 control_leaf control_owners) 3 4 18
+    (BoundaryAccepted (BoundaryCompleted control_leaf) 71 19) =
+    (None, Some 71, World (ReifiedRepresentation (kill_graph 78 8 91 (focused_graph control_focused))) 4 19).
+Proof. repeat split; reflexivity. Qed.
+
+Theorem boundary_scheduler_causal_controls_reject_wrong_ties_gap_completion_and_region_only_expiry :
+  cached_due 9 (any_boundary_cache (top_caches equal_control_spine)) <>
+    cached_due 9 (path_boundary_cache (top_caches equal_control_spine)) /\
+  cached_due 9 (path_boundary_cache (top_caches unfinished_control_spine)) = Some 1 /\
+  deepest_due_settlement completed_control_view settlement_control_complete 9 2 31
+    (BoundaryCompleted control_leaf) unfinished_control_spine =
+    unchanged_boundary (BoundaryDead (BoundaryTruncated 2 31)) /\
+  deepest_due_settlement completed_control_view settlement_control_complete 9 2 31
+    (BoundaryDead (BoundaryRefusal 255 7 64)) unfinished_control_spine =
+    unchanged_boundary (BoundaryDead (BoundaryRefusal 255 7 64)) /\
+  let region_only := schedule_owners [settlement_control_owner 2 9 11] in
+  cached_due 9 (any_boundary_cache (top_caches region_only)) = Some 0 /\
+  cached_due 9 (path_boundary_cache (top_caches region_only)) = None /\
+  deepest_due_settlement completed_control_view settlement_control_complete 9 2 31
+    (BoundaryCompleted control_leaf) region_only = unchanged_boundary BoundaryUnfinished.
+Proof. repeat split; vm_compute; congruence. Qed.
+
+Print Assumptions both_prefix_caches_preserve_push_pop_and_opposite_tie_rules.
+Print Assumptions deepest_due_settlement_equals_eager_unwind_under_exact_local_completion.
+Print Assumptions settlement_refinement_needs_only_pointwise_local_completion_authority.
+Print Assumptions pending_zero_boundaries_and_existing_dead_errors_do_not_invoke_completion.
+Print Assumptions skipped_unfinished_inner_owners_refuse_at_the_current_endpoint.
+Print Assumptions focused_settlement_checks_are_bounded_by_successful_pops_plus_one.
+Print Assumptions settlement_preserves_exact_returned_error_public_event_clock_and_selected_world.
+Print Assumptions refusal_after_successful_pops_restores_immediate_pre_step_graph_and_keeps_event_clock.
+Print Assumptions boundary_scheduler_equal_endpoints_pending_and_rollback_positive_controls.
+Print Assumptions boundary_scheduler_causal_controls_reject_wrong_ties_gap_completion_and_region_only_expiry.
+
 End FocusedRegionOwners.

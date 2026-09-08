@@ -5073,6 +5073,18 @@ charges, storage metering or persistence format. Journal J-095/J-096 and
 stack-safety §5.33.14–15 delimit the evidence and remaining resource boundaries;
 whole-workspace consensus/replay qualification is not inferred from these tests.
 
+The focused-owner preparation adds a verified representation/accounting and finite
+boundary-scheduler model plus encoded controls for opening-byte accounting,
+outer-truncation versus shallow-error precedence, duplicate-path refusal after
+nested child resolution, and nonabsorbing post-Dead resolution. The original leaf
+resolution rules are extracted into one shared helper without changing IDs,
+error sources, stability propagation or selected-frame behavior. Final qualification
+passes 388 models and 85 focused Rust checks, expected proof reports including
+104 RPB3 reports, and three kernel checks. The focused runtime remains unimplemented
+at this checkpoint; no production importer, accepted encoding, hash, charge,
+metering or persistence authority is changed. Journal J-097/J-098 and stack-safety
+§5.33.16–17 delimit this supporting refinement within CBR-044, not a new axis change.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

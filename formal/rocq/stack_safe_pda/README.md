@@ -840,8 +840,10 @@ Algorithm FOCUSED-REGION-STEP(input, focus, owners, graph_stamp)
 2. Retain the pre-step focus and any owners touched by this transaction.
 3. For an ordinary interior byte, run the existing shallow grammar exactly once;
    advance the graph stamp without rewriting suspended owners.
-4. Detach newly entered owners. Complete only the innermost exhausted suffix,
-   using the existing local Region completion; suspend a pending child at zero.
+4. Settle the deepest due path using the existing local Region completion;
+   suspend a pending child at zero. A due outer path with unfinished inner
+   owners must still report truncation. After successful settlement, detach
+   newly entered owners at the post-byte stamp.
 5. Commit the selected graph and retire only unreachable slots. An outer refusal
    selects the exact pre-step graph, while retaining the grammar's global clock.
 6. Reify a selected fault graph once and continue through the same shared fault
@@ -857,9 +859,9 @@ evidence that the not-yet-implemented focused representation satisfies them.
 | FRO-01 | Decompose/reify preserves every path status, tag/source, stability bit, segment count, Region/path remainder, declared length, start, previous span and continuation. Compare independently allocated normalized graphs, including empty and deep spines. |
 | FRO-02 | Detached owner slots, focused frames and continuation graphs are disjoint; free slots do not overlap any selected root. Check push/pop, local replacement, failed transactions and retained payload spans against the actual slot pool. |
 | FRO-03 | Widened endpoints reconstruct exact residuals at the graph stamp. Advance the stamp only when the selected graph advances; test near machine limits, `u64::MAX` declarations, short input and post-Dead consumption. |
-| FRO-04 | A push stores the exact prefix minimum and a pop restores it in constant time. Every Region and framed-path bound participates; simultaneous expired ancestors retain outer-first refusal precedence. |
+| FRO-04 | A push stores exact prefix caches and a pop restores them in constant time. The all-bound cache includes Region and path endpoints with outermost tie-breaking for pre-byte refusal. A separate path-only cache uses deepest tie-breaking for post-step completion. Test equal endpoints and Region-only expiration. |
 | FRO-05 | The ordinary operation invokes the identical shallow grammar and preserves exact public events, first-tag effects and the global obligation clock. Prove pointwise action correspondence and compare scalar traces; assert zero owner rewrites on strict ordinary interiors. |
-| FRO-06 | Successful equal-boundary completion removes only the consumed innermost suffix. Pending children at zero preserve all owners. Bind actual sibling ordering, child-before-owner errors, malformed ancestors and completion provenance to `finish_region_path`, not only to suffix arithmetic. |
+| FRO-06 | Successful equal-boundary completion removes only the consumed innermost suffix. Pending children at zero preserve all owners. A due outer path with unfinished inner owners truncates at the current byte; a shallow error at that byte takes precedence. New owners are charged only after their opening length byte. Bind actual sibling ordering, malformed ancestors and completion provenance to `finish_region_path`, not only to suffix arithmetic. |
 | FRO-07 | Wrong-ID, wrong-phase and pending-edge refusal preserve parser state and selected physical slots. Compare exact snapshots and subsequent valid operations. |
 | FRO-08 | Returned errors preserve the old state; outer deferred refusals select the immediately preceding graph, not the graph at focus entry, while preserving permitted global-clock advancement. Shallow fresh-frame failure retains its distinct selection rule. |
 | FRO-09 | Reified faults use the existing shared protocol. Later scalar consumption and private resolution retain nonabsorbing Dead behavior, with no second grammar and no repeated healthy-prefix reification. |
@@ -868,11 +870,13 @@ evidence that the not-yet-implemented focused representation satisfies them.
 | FRO-12 | Public persistent ACT forks and the scalar event protocol remain unchanged. Retain independent fork/restore witnesses and tiny-stack admission plus teardown, without depth limits or new byte arenas. |
 
 The model's ordinary-action equivalence is conditional on the shared shallow
-operation. Its suffix theorem proves exactly which owners are removed and the
-pending suspension rule, not the full malformed-ancestor scheduler. Physical
-slot mutation, Rust-width arithmetic, the real grammar binding and whole-pipeline
-resource slopes remain explicit implementation obligations. No full focused
-parser correctness or production activation follows from this model alone.
+operation. The initial suffix theorem proves exactly which owners are removed
+and the pending suspension rule. The subsequent finite scheduler refinement
+below covers deepest-due settlement and malformed-ancestor observations.
+Physical slot mutation, Rust-width arithmetic, the real grammar binding and
+whole-pipeline resource slopes remain explicit implementation obligations. No
+full focused parser correctness or production activation follows from this
+model alone.
 
 #### Pre-change all-owner-work baseline
 
@@ -914,6 +918,51 @@ It adds the planner, query, resolution and rebuild walks omitted from the earlie
 feed-descent-only counter. The probe counts the parent, not fixture construction
 or independent child-validator work, and is not a timing benchmark. J-097 records
 the observations and final qualification artifacts.
+
+#### Verified deepest-due scheduler and encoded reference controls
+
+Ten further capstones complete the finite scheduler refinement inside
+`FocusedRegionOwners`: 28 capstones in that module and 104 reports in the full
+RPB3 theory. Both compilation and independent kernel checking pass before the
+focused runtime changes. The eager reference examines owners inside-out;
+the optimized model reads stored prefix caches and visits only successful
+completions plus at most one stopping owner. Both return the same finite
+Dead/Pending/Unfinished/Completed observation, completion-call trace and pop count.
+
+| Capstone | Binding |
+|---|---|
+| `both_prefix_caches_preserve_push_pop_and_opposite_tie_rules` | FRO-04: exact cached selection with outermost all-bound ties and deepest path-bound ties. |
+| `deepest_due_settlement_equals_eager_unwind_under_exact_local_completion` | FRO-06: equality of finite observations, local call order and pop count. |
+| `settlement_refinement_needs_only_pointwise_local_completion_authority` | FRO-05/06: local completion agreement transfers to the entire owner fold. |
+| `pending_zero_boundaries_and_existing_dead_errors_do_not_invoke_completion` | FRO-06/09: preserve pending and prior errors before boundary handling. |
+| `skipped_unfinished_inner_owners_refuse_at_the_current_endpoint` | FRO-06: an outer due path cannot be missed behind unfinished inner owners. |
+| `focused_settlement_checks_are_bounded_by_successful_pops_plus_one` | FRO-11: finite scheduler-check bound, not an allocation or whole-pipeline bound. |
+| `settlement_preserves_exact_returned_error_public_event_clock_and_selected_world` | FRO-07/08: scheduler equivalence transfers through the shared transaction selector. |
+| `refusal_after_successful_pops_restores_immediate_pre_step_graph_and_keeps_event_clock` | FRO-08: failed completion after one or more pops retains the correct pre-step graph. |
+| `boundary_scheduler_equal_endpoints_pending_and_rollback_positive_controls` | FRO-04/06/08: two inner successes followed by an outer refusal, and pending-at-zero. |
+| `boundary_scheduler_causal_controls_reject_wrong_ties_gap_completion_and_region_only_expiry` | FRO-04/06: distinguish opposite ties, unfinished gaps, shallow-error precedence and Region-only expiration. |
+
+The correspondence premises are valid stored caches, non-overdue path endpoints,
+live owner representation, accurate leaf classification, pointwise agreement
+with the existing completion helper, and correct candidate-graph/transaction
+construction. The model does not prove physical slot materialization or hide
+fault reification inside its finite scheduler-work bound.
+
+Three executable reference controls were added before changing leaf resolution:
+
+| Test | Discriminating observations |
+|---|---|
+| `focused_owner_opening_byte_is_not_charged_to_the_new_child` | Valid `[0x0d,3,2,0x03,0]`, then every wrapping depth through 32, against scalar history and the independent canonical validator. |
+| `focused_owner_outer_expiry_keeps_shallow_error_precedence_and_provenance` | `[0x0d,5,4,0x0d,5,4,0x03,0]` truncates at index 6; replacing that index with `0xff` produces `ReservedTag(255)`, with exact borrowed/frozen provenance and unchanged error through later input. |
+| `focused_owner_duplicate_refusal_follows_nested_completion_and_pending_resolution` | Duplicate nested paths at depths 1/2/8/32 fail after inner completion; actual nested-map child admission/resolution is exercised. Post-Dead re-resolution changes the error to `NestedEpmNotMap`, distinguishing a wrongly absorbing fault. |
+
+`resolve_leaf_obligation` now owns the original matched leaf rules, wrong-ID and
+wrong-phase checks, stability propagation and frame-selection checkpoint. The
+existing owner traversal delegates to it without changing input consumption,
+obligation IDs or owner unwinding. The planned focused traversal will call this
+same helper. No second resolution grammar or focused runtime activation is
+introduced by extracting the helper. The combined runner requires 24 standalone
+tests alongside the existing groups. J-098 records exact qualification artifacts.
 
 ## Exact matcher count intervals (2026-09-07)
 

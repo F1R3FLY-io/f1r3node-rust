@@ -10160,6 +10160,23 @@ The strengthened baseline and all **385** models tests pass, zero ignored. The
 combined gate passes **82** focused Rust checks, its expected closed reports and
 three independent kernel checks. No production runtime behavior changes here.
 
+#### 5.33.17 Boundary scheduler refinement (2026-09-08, task 6018)
+
+Ten further closed capstones establish finite deepest-due settlement equivalence
+to the eager owner unwind, including opposite cache tie rules, pending-at-zero,
+unfinished inner owners and rollback after successful pops. The full theory has
+104 closed reports and passes independent kernel checking. Three new encoded
+reference tests exercise actual boundary/error ordering, physical provenance,
+nested duplicate refusal and nonabsorbing post-Dead resolution. All 388 models
+tests pass before extracting the existing leaf-resolution arm into a shared
+helper. Final refactored-source qualification also passes all **388** models
+tests and **85** focused checks, the expected proof reports and three independent
+kernel checks. Exact artifacts and correspondence boundaries are recorded in
+[J-098](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-098--2026-09-08-preserve-boundary-order-before-focused-owner-implementation).
+This completes the finite scheduler model, not the focused runtime or its measured
+resource improvement. Actual slot materialization and transaction binding remain
+required. The persistent backend comparison is unaffected.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

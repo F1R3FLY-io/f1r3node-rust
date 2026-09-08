@@ -1915,94 +1915,108 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                     owners.push((current, frame, self.frames.checkpoint()));
                     current = child;
                 }
-                Frame::Obligation {
-                    obligation,
-                    status: ObligationStatus::AwaitingResolution { .. },
-                    next,
-                    ..
-                } if obligation.id == id => {
-                    let checkpoint = self.frames.checkpoint();
-                    let previous = current.stack;
-                    let stable = match (obligation.kind, resolution) {
-                        (
-                            CanonicalPathObligationKind::RawParEscape,
-                            CanonicalPathObligationResolution::RawPar {
-                                canonical_path_stable: false,
-                            },
-                        ) => false,
-                        (
-                            CanonicalPathObligationKind::RawParEscape,
-                            CanonicalPathObligationResolution::RawPar {
-                                canonical_path_stable: true,
-                            },
-                        ) => {
-                            current.kill(CanonicalPathAdmissionError::new(
-                                CanonicalPathAdmissionErrorKind::EscapeOfStablePar,
-                                obligation.tag_source,
-                            ));
-                            false
-                        }
-                        (
-                            CanonicalPathObligationKind::NestedEpm1,
-                            CanonicalPathObligationResolution::NestedEpm1 {
-                                mode: NestedEpmMode::Map,
-                                entries_stable: true,
-                            },
-                        ) => true,
-                        (
-                            CanonicalPathObligationKind::NestedEpm1,
-                            CanonicalPathObligationResolution::NestedEpm1 { mode, .. },
-                        ) if mode != NestedEpmMode::Map => {
-                            current.kill(CanonicalPathAdmissionError::new(
-                                CanonicalPathAdmissionErrorKind::NestedEpmNotMap,
-                                obligation.tag_source,
-                            ));
-                            false
-                        }
-                        (
-                            CanonicalPathObligationKind::NestedEpm1,
-                            CanonicalPathObligationResolution::NestedEpm1 {
-                                mode: NestedEpmMode::Map,
-                                entries_stable: false,
-                            },
-                        ) => {
-                            current.kill(CanonicalPathAdmissionError::new(
-                                CanonicalPathAdmissionErrorKind::NestedEpmNotStable,
-                                obligation.tag_source,
-                            ));
-                            false
-                        }
-                        _ => {
-                            current.kill(CanonicalPathAdmissionError::new(
-                                CanonicalPathAdmissionErrorKind::RejectedObligation,
-                                obligation.tag_source,
-                            ));
-                            false
-                        }
-                    };
-                    if matches!(current.status, PathStatus::Open) {
-                        current.stack = next;
-                        self.bubble(&mut current, stable);
-                    }
-                    self.frames.select(checkpoint, previous, current.stack);
+                frame => {
+                    self.resolve_leaf_obligation(&mut current, frame, id, resolution)?;
                     break;
-                }
-                Frame::Obligation { obligation, .. } => {
-                    return Err(CanonicalPathAdmissionError::new(
-                        CanonicalPathAdmissionErrorKind::UnresolvedObligation,
-                        obligation.tag_source,
-                    ));
-                }
-                _ => {
-                    return Err(CanonicalPathAdmissionError::new(
-                        CanonicalPathAdmissionErrorKind::UnresolvedObligation,
-                        CanonicalPathSource::new(0),
-                    ));
                 }
             }
         }
         self.rebuild_region_owners(bytes, &mut current, owners);
         *root = current;
+        Ok(())
+    }
+
+    fn resolve_leaf_obligation(
+        &mut self,
+        current: &mut InnerPath,
+        frame: Frame<S::Span>,
+        id: CanonicalPathObligationId,
+        resolution: CanonicalPathObligationResolution,
+    ) -> Result<(), CanonicalPathAdmissionError> {
+        let (obligation, next) = match frame {
+            Frame::Obligation {
+                obligation,
+                status: ObligationStatus::AwaitingResolution { .. },
+                next,
+                ..
+            } if obligation.id == id => (obligation, next),
+            Frame::Obligation { obligation, .. } => {
+                return Err(CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::UnresolvedObligation,
+                    obligation.tag_source,
+                ));
+            }
+            _ => {
+                return Err(CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::UnresolvedObligation,
+                    CanonicalPathSource::new(0),
+                ));
+            }
+        };
+        let checkpoint = self.frames.checkpoint();
+        let previous = current.stack;
+        let stable = match (obligation.kind, resolution) {
+            (
+                CanonicalPathObligationKind::RawParEscape,
+                CanonicalPathObligationResolution::RawPar {
+                    canonical_path_stable: false,
+                },
+            ) => false,
+            (
+                CanonicalPathObligationKind::RawParEscape,
+                CanonicalPathObligationResolution::RawPar {
+                    canonical_path_stable: true,
+                },
+            ) => {
+                current.kill(CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::EscapeOfStablePar,
+                    obligation.tag_source,
+                ));
+                false
+            }
+            (
+                CanonicalPathObligationKind::NestedEpm1,
+                CanonicalPathObligationResolution::NestedEpm1 {
+                    mode: NestedEpmMode::Map,
+                    entries_stable: true,
+                },
+            ) => true,
+            (
+                CanonicalPathObligationKind::NestedEpm1,
+                CanonicalPathObligationResolution::NestedEpm1 { mode, .. },
+            ) if mode != NestedEpmMode::Map => {
+                current.kill(CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::NestedEpmNotMap,
+                    obligation.tag_source,
+                ));
+                false
+            }
+            (
+                CanonicalPathObligationKind::NestedEpm1,
+                CanonicalPathObligationResolution::NestedEpm1 {
+                    mode: NestedEpmMode::Map,
+                    entries_stable: false,
+                },
+            ) => {
+                current.kill(CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::NestedEpmNotStable,
+                    obligation.tag_source,
+                ));
+                false
+            }
+            _ => {
+                current.kill(CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::RejectedObligation,
+                    obligation.tag_source,
+                ));
+                false
+            }
+        };
+        if matches!(current.status, PathStatus::Open) {
+            current.stack = next;
+            self.bubble(current, stable);
+        }
+        self.frames.select(checkpoint, previous, current.stack);
         Ok(())
     }
 
