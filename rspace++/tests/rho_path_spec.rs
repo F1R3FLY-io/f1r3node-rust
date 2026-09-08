@@ -19,6 +19,40 @@ fn datum_paths_round_trip_all_byte_values() {
     assert_eq!(view.datum_identity(), identity);
 }
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+
+    #[test]
+    fn datum_offsets_refine_exact_prefix_and_raw_identity_suffix(
+        channel in proptest::collection::vec(proptest::num::u8::ANY, 0..64),
+        structure in proptest::collection::vec(proptest::num::u8::ANY, 0..64),
+        identity in proptest::collection::vec(proptest::num::u8::ANY, 0..64),
+    ) {
+        let path = RhoPathV1::datum_key(&channel, &structure, &identity);
+        let view = RhoPathV1::parse_datum(&path).unwrap();
+        let marker = RhoPathV1::datum_prefix(&channel);
+        let relative = RhoPathV1::relative_datum_key(&structure, &identity);
+        let relative_offset = view.channel_prefix_len();
+        proptest::prop_assert_eq!(relative_offset, marker.len());
+        proptest::prop_assert!(relative_offset <= path.len());
+        proptest::prop_assert_eq!(&path[..relative_offset], marker.as_slice());
+        proptest::prop_assert_eq!(
+            &path[relative_offset..], relative.as_slice(), "TLRS-ADDR-01",
+        );
+        proptest::prop_assert!(identity.len() <= path.len());
+        let identity_offset = path.len() - identity.len();
+        proptest::prop_assert_eq!(
+            &path[identity_offset..], identity.as_slice(), "TLRS-ADDR-02",
+        );
+        proptest::prop_assert_eq!(view.datum_identity(), &path[identity_offset..]);
+        proptest::prop_assert!(relative_offset < path.len());
+        proptest::prop_assert_ne!(&path[relative_offset + 1..], relative.as_slice());
+        if !identity.is_empty() {
+            proptest::prop_assert_ne!(&path[identity_offset + 1..], identity.as_slice());
+        }
+    }
+}
+
 #[test]
 fn v2_datum_uses_three_framed_canonical_fields() {
     let path = RhoPathV2::datum_key(b"channel\0image", b"shape", b"identity\0tail");

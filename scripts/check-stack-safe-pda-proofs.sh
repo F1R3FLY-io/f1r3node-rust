@@ -511,7 +511,7 @@ rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceContinuationAuthorityMutants.v 33 \
   "the continuation and join authority causal controls"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceMatchPreparation.v 24 \
+  theories/TwoLevelRSpaceMatchPreparation.v 29 \
   "the constructive two-level RSpace match PREPARE authority"
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceMatchTransaction.v 15 \

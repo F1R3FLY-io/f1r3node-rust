@@ -5789,6 +5789,29 @@ and pgmcp artifact 516. Required release task 7962 owns the separate policy
 failure; focused journal acceptance does not imply complete campaign acceptance.
 CBR-065's retired classification is unchanged.
 
+### J-083 — 2026-09-08: distinguish datum byte slices from catalog positions
+
+**DERIVED.** A stored candidate's absolute RhoPath is its authority. Its channel
+prefix and raw-identity suffix offsets select byte slices; a Fresh entry's shift
+of catalog ordinals is only navigation metadata. Neither ordinal changes nor
+reservation filtering may replace or rebase the stored absolute address.
+
+**PROVED AND MEASURED.** Task 6588 adds five closed capstones for exact bounded
+byte offsets, symmetric removal cancellation, and off-key count preservation.
+The amended preparation theory has 29 closed reports and passes kernel checking
+after rebuilding its imports. The complete RhoPath target passes 22 tests,
+including a 128-case offset property with causal shifted-offset controls.
+The [invariant catalog](two-level-rspace-authority-invariant-catalog-2026-09-02.md#absolute-datum-address-and-flat-delta-refinement-task-6588)
+records the theorem/property correspondence and log digests. No runtime PathMap
+layout or codec changes.
+
+**REMAINING.** The current partition capstone restates its computation rather
+than establishing independent grouped-count equality. Normalized support
+closure, separate addition/removal grouped observations and independent
+record-operation traces remain task-6588 requirements. Private parse/group
+interleaving may differ between model and production; public success/refusal
+observations are the required refinement. This foundation is not task completion.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

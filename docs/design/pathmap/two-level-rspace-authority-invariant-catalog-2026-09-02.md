@@ -306,6 +306,58 @@ The committed formal family is ahead of `RSpaceDataIndex` in four material respe
 
 The private exact `u128` aggregate is exercised from the crate-private child property module so the saturated `u64` API cannot conceal the boundary case.
 
+## Absolute datum address and flat-delta refinement (task 6588)
+
+**2026-09-08, formal foundation; task still open.** The preparation model already
+constructs exact Stored/Fresh addresses and parses absolute keys. Its existing
+`fully_parsed_partition_is_exact_flat_partition` theorem restates the recorded
+computation; it does not independently prove that grouped channel counts equal
+flat absolute-key counts. This distinction is a remaining proof obligation, not
+evidence of a runtime defect.
+
+The following new invariants extend, rather than replace, the existing 24 closed
+preparation capstones. Each theorem is in `TwoLevelRSpaceMatchPreparation.v`.
+
+| ID | Formal statement | Executable owner and status |
+|---|---|---|
+| TLRS-ADDR-01 | `parsed_relative_offset_is_exact`: the marker length is in bounds and skipping that prefix yields exactly the channel-relative key | `rho_path_spec::datum_offsets_refine_exact_prefix_and_raw_identity_suffix`; 128 generated cases and shifted-offset control pass |
+| TLRS-ADDR-02 | `parsed_identity_offset_is_exact`: raw identity length is bounded by absolute length and the end-relative slice is exactly the raw identity, without a second unescape | The same passing property, with empty/nonempty identity handling and an independent shifted identity-offset control |
+| TLRS-DELTA-01 | `flat_record_removal_is_exact_opposite_cancellation`: removal cancels existing additions before extending removals | Planned independent BagDelta record-operation trace property; executable binding not yet complete |
+| TLRS-DELTA-02 | `flat_record_addition_preserves_other`: addition preserves both counts at every other absolute key | The same planned record-operation trace property; executable binding not yet complete |
+| TLRS-DELTA-03 | `flat_record_removal_preserves_other`: removal preserves both counts at every other absolute key | The same planned record-operation trace property; executable binding not yet complete |
+
+The amended theory compiles with **29 closed reports** and passes independent
+kernel checking after rebuilding its exact imports. Proof runs use a 2-GiB hard
+memory cap, zero swap and a two-core quota. The compile log has SHA-256
+`40fa88cdd153b800cde0c1d021c121a576e24c207b8203edad96e6afc3cd16b0`; the fresh-import
+and kernel-check log has SHA-256
+`801f8db3bb64797c1fb70cb2253c37c36da0fc285758085f255a6cba5d03c7b4`.
+The existing four DataIndex delta tests also pass, but are not substitutes for
+the independent trace property.
+
+The final `rho_path_spec` release target passes all **22 tests**, including the
+128-case offset property with seed `41316588`, under a 6-GiB hard memory cap and
+zero swap. Its log has SHA-256
+`13e5dad11ec12323ce72eccb38e9d99ef02b1b50331be9f582c5fab60ff687e1`.
+These are current byte-boundary checks, not a new latency/RSS benchmark or
+complete accepted-match transaction verification.
+
+Remaining task-6588 obligations are preservation of unique, positive, bounded,
+disjoint supports; separate addition/removal grouped-lookup equality over valid
+marker/relative decompositions; unique groups and no extra endpoints; finite
+record-trace composition; and the independent executable oracle with channel,
+offset, polarity, cancellation, omission, overflow and malformed-path controls.
+Equality of net signed counts alone is insufficient because erroneous equal
+entries on both sides could cancel observationally.
+
+Production `apply_delta` parses and groups privately in one pass, whereas the
+model parses every path before grouping. The required refinement is equal
+successful results and unchanged published state on refusal, not identical
+private allocation or phase order. Fresh-induced catalog ordinal shifts are
+navigation metadata, distinct from both byte offsets above; original Stored
+addresses must remain unchanged by reservations or exclusions. No runtime
+algorithm, parser, dependency or byte format is modified in this foundation.
+
 ## Minimum gate before the in-memory two-level checkpoint
 
 The in-memory production checkpoint requires all of the following additions:

@@ -137,6 +137,43 @@ Definition decoded_view_relative (view : DatumPathView) : Path :=
     (datum_view_datum_structure view)
     (datum_view_datum_identity view).
 
+Theorem parsed_relative_offset_is_exact : forall absolute view,
+  parse_absolute_datum absolute = Some view ->
+  (length (decoded_view_marker view) <= length absolute)%nat /\
+  skipn (length (decoded_view_marker view)) absolute = decoded_view_relative view.
+Proof.
+  intros absolute view Hparse.
+  destruct (@parse_absolute_datum_sound absolute view Hparse) as [_ Hreconstruct].
+  change (absolute = decoded_view_marker view ++ decoded_view_relative view)
+    in Hreconstruct.
+  rewrite Hreconstruct. split.
+  - rewrite app_length. lia.
+  - rewrite skipn_app, skipn_all, Nat.sub_diag. reflexivity.
+Qed.
+
+Lemma exact_suffix_offset : forall (prefix suffix : Path),
+  skipn (length (prefix ++ suffix) - length suffix) (prefix ++ suffix) = suffix.
+Proof.
+  intros prefix suffix. rewrite app_length.
+  replace (length prefix + length suffix - length suffix)%nat
+    with (length prefix) by lia.
+  rewrite skipn_app, skipn_all, Nat.sub_diag. reflexivity.
+Qed.
+
+Theorem parsed_identity_offset_is_exact : forall absolute view,
+  parse_absolute_datum absolute = Some view ->
+  (length (datum_view_datum_identity view) <= length absolute)%nat /\
+  skipn (length absolute - length (datum_view_datum_identity view)) absolute =
+    datum_view_datum_identity view.
+Proof.
+  intros absolute view Hparse.
+  destruct (@parse_absolute_datum_sound absolute view Hparse) as [_ Hreconstruct].
+  rewrite Hreconstruct. unfold absolute_datum_key, relative_datum_key.
+  rewrite app_assoc. split.
+  - rewrite app_length. lia.
+  - apply exact_suffix_offset.
+Qed.
+
 Definition construct_candidate_at
     (codec : CanonicalDatumCodec) (address : CandidateAddress)
     (absolute_path : Path) (multiplicity : Multiplicity)
@@ -818,6 +855,21 @@ Definition checked_flat_add
   then Some (flat_set_count path after bag)
   else None.
 
+Lemma flat_set_count_other : forall bag path count other,
+  path <> other ->
+  flat_lookup other (flat_set_count path count bag) = flat_lookup other bag.
+Proof.
+  intros bag. induction bag as [|[current value] tail IH];
+    intros path count other Hdifferent; simpl.
+  - destruct (N.eqb count 0); simpl; [reflexivity|].
+    destruct (path_eq_dec other path); congruence.
+  - destruct (path_eq_dec path current) as [Hequal|Hnot_current].
+    + subst current. destruct (N.eqb count 0); simpl;
+        destruct (path_eq_dec other path); congruence.
+    + simpl. destruct (path_eq_dec other current); [reflexivity|].
+      now apply IH.
+Qed.
+
 Definition flat_subtract
     (path : Path) (amount : Multiplicity) (bag : FlatBag) : FlatBag :=
   flat_set_count path (flat_lookup path bag - amount) bag.
@@ -914,6 +966,85 @@ Proof.
     now apply flat_paths_unique_implies_nodup.
   - unfold cancelled.
     now apply successful_checked_flat_add_target in Hadd.
+Qed.
+
+Theorem flat_record_removal_is_exact_opposite_cancellation : forall
+    delta path amount additions removals,
+  flat_paths_unique_from [] (flat_delta_additions delta) = true ->
+  flat_paths_unique_from [] (flat_delta_removals delta) = true ->
+  flat_record_removal delta path amount =
+      Some (FlatBagDeltaState additions removals) ->
+  let cancelled := N.min (flat_lookup path (flat_delta_additions delta)) amount in
+  flat_lookup path additions =
+      flat_lookup path (flat_delta_additions delta) - cancelled /\
+  flat_lookup path removals =
+      flat_lookup path (flat_delta_removals delta) + (amount - cancelled).
+Proof.
+  intros [before_additions before_removals] path amount additions removals
+    Hadd_unique Hremove_unique Hrecord.
+  apply (@flat_record_addition_is_exact_opposite_cancellation
+    (FlatBagDeltaState before_removals before_additions)
+    path amount removals additions Hremove_unique Hadd_unique).
+  unfold flat_record_addition, flat_record_removal in *. simpl in *.
+  destruct (flat_record_change before_removals before_additions path amount)
+    as [[after_removals after_additions]|]; inversion Hrecord; reflexivity.
+Qed.
+
+Lemma flat_record_change_preserves_other : forall
+    destination cancellation path amount after_destination after_cancellation other,
+  path <> other ->
+  flat_record_change destination cancellation path amount =
+    Some (after_destination, after_cancellation) ->
+  flat_lookup other after_destination = flat_lookup other destination /\
+  flat_lookup other after_cancellation = flat_lookup other cancellation.
+Proof.
+  intros destination cancellation path amount after_destination after_cancellation
+    other Hdifferent Hrecord.
+  unfold flat_record_change, checked_flat_add in Hrecord.
+  destruct (path_valid path && multiplicity_valid amount); [|discriminate].
+  destruct (N.leb
+    (flat_lookup path destination + (amount - N.min (flat_lookup path cancellation) amount))
+    multiplicity_max); inversion Hrecord; subst.
+  unfold flat_subtract. split; now apply flat_set_count_other.
+Qed.
+
+Theorem flat_record_addition_preserves_other : forall delta path amount after other,
+  path <> other ->
+  flat_record_addition delta path amount = Some after ->
+  flat_lookup other (flat_delta_additions after) =
+    flat_lookup other (flat_delta_additions delta) /\
+  flat_lookup other (flat_delta_removals after) =
+    flat_lookup other (flat_delta_removals delta).
+Proof.
+  intros delta path amount after other Hdifferent Hrecord.
+  unfold flat_record_addition in Hrecord.
+  destruct (flat_record_change (flat_delta_additions delta)
+    (flat_delta_removals delta) path amount) as [[additions removals]|]
+    eqn:Hchange; [|discriminate].
+  inversion Hrecord; subst after; simpl.
+  now apply (@flat_record_change_preserves_other
+    (flat_delta_additions delta) (flat_delta_removals delta)
+    path amount additions removals other Hdifferent Hchange).
+Qed.
+
+Theorem flat_record_removal_preserves_other : forall delta path amount after other,
+  path <> other ->
+  flat_record_removal delta path amount = Some after ->
+  flat_lookup other (flat_delta_additions after) =
+    flat_lookup other (flat_delta_additions delta) /\
+  flat_lookup other (flat_delta_removals after) =
+    flat_lookup other (flat_delta_removals delta).
+Proof.
+  intros delta path amount after other Hdifferent Hrecord.
+  unfold flat_record_removal in Hrecord.
+  destruct (flat_record_change (flat_delta_removals delta)
+    (flat_delta_additions delta) path amount) as [[removals additions]|]
+    eqn:Hchange; [|discriminate].
+  inversion Hrecord; subst after; simpl.
+  pose proof (@flat_record_change_preserves_other
+    (flat_delta_removals delta) (flat_delta_additions delta)
+    path amount removals additions other Hdifferent Hchange) as [Hremove Hadd].
+  now split.
 Qed.
 
 (** Candidate-pool authority ------------------------------------------ *)
@@ -1993,6 +2124,11 @@ Qed.
 
 (** Closed capstones used by the proof gate. *)
 Print Assumptions constructed_candidate_is_codec_exact.
+Print Assumptions parsed_relative_offset_is_exact.
+Print Assumptions parsed_identity_offset_is_exact.
+Print Assumptions flat_record_removal_is_exact_opposite_cancellation.
+Print Assumptions flat_record_addition_preserves_other.
+Print Assumptions flat_record_removal_preserves_other.
 Print Assumptions constructed_stored_address_is_absolute.
 Print Assumptions built_catalog_set_is_requested_local.
 Print Assumptions requested_missing_or_loaded_empty_channel_has_explicit_empty_catalog.
