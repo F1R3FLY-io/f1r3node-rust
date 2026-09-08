@@ -59,7 +59,7 @@ acceptance:
   - Observer and receiver callbacks run outside the authority guard
   - Existing producer behavior and caller random state are retained
 next_steps:
-  - Finish host and MeTTaIL wrapper correspondence checks
+  - Integrate the verified owned producer and retained authorization context
   - Connect the installed-language reduce and observe wire service
 ```
 

@@ -237,6 +237,33 @@ not when that future is created. Receiver callbacks can revoke the authority
 after commit; such later revocation does not undo the reply. Both paths retain
 the incoming random state and existing dispatch behavior.
 
+`unapply_owned` separates extraction from final guard selection. It accepts
+exactly one outer message and moves its payload and random state, along with
+the previous-output roster, without cloning those values. Its `OwnedProducer`
+accepts owned reply values, an owned channel, and the final optional guard;
+it moves them into the same existing produce/dispatch future. This lets the
+language service supply its complete authorization context after preparation.
+The ordinary host API can pass no guard; the installed semantic caller must
+supply its retained installed-authority guard before publishing any semantic
+reply. An optional argument is not permission for that caller to bypass
+authorization.
+
+The borrowed APIs keep their signatures and wrap this owned path, retaining
+their reply/channel cloning behavior. The owned glue adds no corresponding
+reply, channel or random-state copies. This is not a claim that the complete
+backend and dispatcher are clone-free. Nonpersistent production, space-derived
+replay state, event-derived previous output, both output-decoding boundaries
+and every dispatch/error branch remain shared. In particular the incoming
+replay flag is returned unchanged by extraction but does not replace the
+space's actual replay state during dispatch.
+
+The upstream `OwnedContractCall` model proves the exact accepted split and
+value/capture correspondence, reusing the checked guarded publication machine.
+Its eight closed theorems were compiled and independently kernel-checked before
+the Rust extraction. It treats terms and random states as opaque values;
+allocation-identity tests establish request/previous buffer transfer rather
+than deducing physical ownership from that abstract model.
+
 The MeTTaIL `GuardedReplyPublication` Rocq module checks the finite publication
 phase machine, concrete installed-authority decision, at-most-once mutation,
 refusal preservation and pending-counter equivalence. Its mutation function

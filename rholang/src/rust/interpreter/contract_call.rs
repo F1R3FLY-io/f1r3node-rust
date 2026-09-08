@@ -42,6 +42,16 @@ pub type Producer = Box<
         + Send,
 >;
 
+pub type OwnedProducer = Box<
+    dyn FnOnce(
+            Vec<Par>,
+            Par,
+            Option<Arc<dyn ProduceCommitGuard>>,
+        )
+            -> Pin<Box<dyn futures::Future<Output = Result<Vec<Par>, InterpreterError>> + Send>>
+        + Send,
+>;
+
 impl ContractCall {
     pub fn unapply(
         &self,
@@ -63,35 +73,38 @@ impl ContractCall {
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
         guard: Option<Arc<dyn ProduceCommitGuard>>,
     ) -> Option<(Producer, bool, Vec<Par>, Vec<Par>)> {
-        if contract_args.0.len() == 1 {
-            let (args, rand, is_replay, previous) = (
-                contract_args.0[0].pars.clone(),
-                contract_args.0[0].random_state.clone(),
-                contract_args.1,
-                contract_args.2,
-            );
+        let (produce, is_replay, previous, args) = self.unapply_owned(contract_args)?;
+        let borrowed: Producer =
+            Box::new(move |values, channel| produce(values.to_vec(), channel.clone(), guard));
+        Some((borrowed, is_replay, previous, args))
+    }
+
+    pub fn unapply_owned(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Option<(OwnedProducer, bool, Vec<Par>, Vec<Par>)> {
+        let (mut messages, is_replay, previous) = contract_args;
+        if messages.len() == 1 {
+            let ListParWithRandom {
+                pars: args,
+                random_state: rand,
+            } = messages.pop()?;
 
             let space = self.space.clone();
             let dispatcher = self.dispatcher.clone();
-            let produce = Box::new(move |values: &[Par], ch: &Par| {
-                let space = space.clone();
-                let rand = rand.clone();
-                let guard = guard.clone();
-                // clone inputs locally to satisfy ownership of underlying APIs
-                let values_vec: Vec<Par> = values.to_vec();
-                let ch_cloned: Par = ch.clone();
+            let produce: OwnedProducer = Box::new(move |values, channel, guard| {
                 Box::pin(async move {
                     let payload = ListParWithRandom {
-                        pars: values_vec,
+                        pars: values,
                         random_state: rand,
                     };
                     let produce_result = match guard.as_deref() {
                         Some(guard) => {
                             space
-                                .produce_guarded(ch_cloned, payload, false, guard)
+                                .produce_guarded(channel, payload, false, guard)
                                 .await?
                         }
-                        None => space.produce(ch_cloned, payload, false).await?,
+                        None => space.produce(channel, payload, false).await?,
                     };
 
                     let is_replay = space.is_replay().await;
@@ -187,12 +200,13 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::dispatch::RholangAndScalaDispatcher;
     use crate::rust::interpreter::matcher::r#match::Matcher;
-    use crate::rust::interpreter::system_processes::RhoDispatchMap;
+    use crate::rust::interpreter::system_processes::{BodyRefs, RhoDispatchMap};
 
-    struct Authority(Arc<RwLock<bool>>);
+    struct Authority(Arc<RwLock<bool>>, Arc<AtomicUsize>);
 
     impl ProduceCommitGuard for Authority {
         fn with_commit(&self, commit: Box<dyn FnOnce() + '_>) -> Result<(), RSpaceError> {
+            self.1.fetch_add(1, Ordering::SeqCst);
             let live = self.0.read().expect("authority read");
             if !*live {
                 return Err(RSpaceError::ProduceCommitDenied);
@@ -223,10 +237,20 @@ mod tests {
 
     #[tokio::test]
     async fn guarded_producer_checks_at_await_and_dispatches_without_authority_lock() {
+        check_guarded_producer(false).await;
+    }
+
+    #[tokio::test]
+    async fn owned_guarded_producer_checks_at_await_and_dispatches_without_authority_lock() {
+        check_guarded_producer(true).await;
+    }
+
+    async fn check_guarded_producer(owned: bool) {
         for matched in [false, true] {
             let call = fixture().await;
             let live = Arc::new(RwLock::new(true));
-            let guard = Arc::new(Authority(live.clone()));
+            let invocations = Arc::new(AtomicUsize::new(0));
+            let guard = Arc::new(Authority(live.clone(), invocations.clone()));
             let received = Arc::new(AtomicUsize::new(0));
             let channel = new_gstring_par("guarded-reply".to_owned(), Vec::new(), false);
             let value = new_gint_par(42, Vec::new(), false);
@@ -283,10 +307,24 @@ mod tests {
                 false,
                 Vec::new(),
             );
-            let (producer, _, _, _) = call
-                .unapply_guarded(input.clone(), guard.clone())
-                .expect("producer");
-            let future = producer(std::slice::from_ref(&value), &channel);
+            let prepare = || {
+                if owned {
+                    let (producer, _, _, _) =
+                        call.unapply_owned(input.clone()).expect("owned producer");
+                    producer(vec![value.clone()], channel.clone(), Some(guard.clone()))
+                } else {
+                    let (producer, _, _, _) = call
+                        .unapply_guarded(input.clone(), guard.clone())
+                        .expect("producer");
+                    producer(std::slice::from_ref(&value), &channel)
+                }
+            };
+            let unpolled = prepare();
+            assert_eq!(invocations.load(Ordering::SeqCst), 0);
+            drop(unpolled);
+            assert_eq!(invocations.load(Ordering::SeqCst), 0);
+            assert!(call.space.get_data(&channel).await.is_empty());
+            let future = prepare();
             *live.write().expect("revoke after future creation") = false;
             assert!(matches!(
                 future.await,
@@ -294,6 +332,7 @@ mod tests {
                     RSpaceError::ProduceCommitDenied
                 ))
             ));
+            assert_eq!(invocations.load(Ordering::SeqCst), 1);
             assert_eq!(received.load(Ordering::SeqCst), 0);
             assert!(call.space.get_data(&channel).await.is_empty());
             assert_eq!(
@@ -305,11 +344,8 @@ mod tests {
             );
 
             *live.write().expect("restore authority") = true;
-            let (producer, _, _, _) = call.unapply_guarded(input, guard).expect("producer");
-            assert!(producer(std::slice::from_ref(&value), &channel)
-                .await
-                .expect("authorized reply")
-                .is_empty());
+            assert!(prepare().await.expect("authorized reply").is_empty());
+            assert_eq!(invocations.load(Ordering::SeqCst), 2);
             assert_eq!(received.load(Ordering::SeqCst), usize::from(matched));
             let stored = call.space.get_data(&channel).await;
             if matched {
@@ -319,6 +355,187 @@ mod tests {
                 assert_eq!(stored.len(), 1);
                 assert_eq!(stored[0].a.pars, vec![value]);
                 assert_eq!(stored[0].a.random_state, random_state);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_split_moves_complete_arguments_and_rejects_only_outer_arity() {
+        let call = fixture().await;
+        for length in [0, 1, 3] {
+            let args = vec![new_gint_par(17, Vec::new(), false); length];
+            let previous = vec![new_gint_par(23, Vec::new(), false); 2];
+            let args_pointer = args.as_ptr();
+            let previous_pointer = previous.as_ptr();
+            let expected_args = args.clone();
+            let expected_previous = previous.clone();
+            let (producer, replay, previous, args) = call
+                .unapply_owned((
+                    vec![ListParWithRandom {
+                        pars: args,
+                        random_state: vec![3; 32],
+                    }],
+                    true,
+                    previous,
+                ))
+                .expect("one message");
+            assert!(replay);
+            assert_eq!(args, expected_args);
+            assert_eq!(previous, expected_previous);
+            assert_eq!(args.as_ptr(), args_pointer);
+            assert_eq!(previous.as_ptr(), previous_pointer);
+            drop(producer);
+        }
+        for length in [0, 2] {
+            let messages = vec![
+                ListParWithRandom {
+                    pars: Vec::new(),
+                    random_state: vec![3; 32]
+                };
+                length
+            ];
+            assert!(call.unapply_owned((messages, false, Vec::new())).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_and_borrowed_ordinary_producers_preserve_payload_and_random_state() {
+        for owned in [false, true] {
+            let call = fixture().await;
+            let values = vec![
+                new_gint_par(8, Vec::new(), false),
+                new_gint_par(7, Vec::new(), false),
+                new_gint_par(8, Vec::new(), false),
+            ];
+            let expected = values.clone();
+            let channel = new_gstring_par("owned-ordinary".into(), Vec::new(), false);
+            let query = channel.clone();
+            let random_state: Vec<u8> = (0..32).collect();
+            let args = (
+                vec![ListParWithRandom {
+                    pars: Vec::new(),
+                    random_state: random_state.clone(),
+                }],
+                true,
+                Vec::new(),
+            );
+            let output = if owned {
+                let (produce, replay, _, _) = call.unapply_owned(args).unwrap();
+                assert!(replay);
+                produce(values, channel, None).await.unwrap()
+            } else {
+                let (produce, replay, _, _) = call.unapply(args).unwrap();
+                assert!(replay);
+                produce(&values, &channel).await.unwrap()
+            };
+            assert!(output.is_empty());
+            let stored = call.space.get_data(&query).await;
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].a.pars, expected);
+            assert_eq!(stored[0].a.random_state, random_state);
+            assert!(!stored[0].persist);
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_and_borrowed_dispatch_preserve_replay_and_all_result_arms() {
+        for owned in [false, true] {
+            for nondeterministic in [false, true] {
+                for fails in [false, true] {
+                    let call = fixture().await;
+                    let channel = new_gstring_par("owned-callback".into(), Vec::new(), false);
+                    let body_ref = if nondeterministic {
+                        BodyRefs::GPT4
+                    } else {
+                        777
+                    };
+                    let value = new_gint_par(42, Vec::new(), false);
+                    let values = vec![
+                        value.clone(),
+                        value.clone(),
+                        new_gint_par(91, Vec::new(), false),
+                    ];
+                    let returned = values.clone();
+                    let random = vec![9; 32];
+                    let callback_random = random.clone();
+                    let callback_value = value.clone();
+                    let invocations = Arc::new(AtomicUsize::new(0));
+                    let callback_count = invocations.clone();
+                    call.dispatcher._dispatch_table.write().await.insert(
+                        body_ref,
+                        Box::new(move |args| {
+                            assert!(!args.1, "dispatch uses the space's replay state");
+                            assert!(
+                                args.2.is_empty(),
+                                "previous output comes from the actual produce event"
+                            );
+                            assert_eq!(args.0.len(), 1);
+                            assert_eq!(args.0[0].pars, vec![callback_value.clone()]);
+                            assert_eq!(args.0[0].random_state, callback_random);
+                            callback_count.fetch_add(1, Ordering::SeqCst);
+                            let values = returned.clone();
+                            Box::pin(async move {
+                                if fails {
+                                    Err(InterpreterError::IllegalArgumentError(
+                                        "callback failure".into(),
+                                    ))
+                                } else {
+                                    Ok(values)
+                                }
+                            })
+                        }),
+                    );
+                    call.space
+                        .consume(
+                            vec![channel.clone()],
+                            vec![BindPattern {
+                                patterns: vec![new_freevar_par(0, Vec::new())],
+                                remainder: None,
+                                free_count: 1,
+                            }],
+                            TaggedContinuation {
+                                tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
+                                guard: None,
+                            },
+                            false,
+                            BTreeSet::new(),
+                        )
+                        .await
+                        .unwrap();
+                    let previous = vec![new_gint_par(99, Vec::new(), false)];
+                    let args = (
+                        vec![ListParWithRandom {
+                            pars: Vec::new(),
+                            random_state: random,
+                        }],
+                        true,
+                        previous.clone(),
+                    );
+                    let result = if owned {
+                        let (produce, replay, actual_previous, _) =
+                            call.unapply_owned(args).unwrap();
+                        assert!(replay);
+                        assert_eq!(actual_previous, previous);
+                        produce(vec![value], channel, None).await
+                    } else {
+                        let (produce, replay, actual_previous, _) = call.unapply(args).unwrap();
+                        assert!(replay);
+                        assert_eq!(actual_previous, previous);
+                        produce(&[value], &channel).await
+                    };
+                    assert_eq!(invocations.load(Ordering::SeqCst), 1);
+                    match result {
+                        Err(InterpreterError::IllegalArgumentError(ref message)) => {
+                            assert!(fails);
+                            assert_eq!(message, "callback failure");
+                        }
+                        Ok(output) => {
+                            assert!(!fails);
+                            assert_eq!(output, if nondeterministic { values } else { Vec::new() });
+                        }
+                        other => panic!("unexpected dispatch outcome {other:?}"),
+                    }
+                }
             }
         }
     }

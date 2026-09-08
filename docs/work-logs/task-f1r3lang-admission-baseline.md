@@ -125,6 +125,41 @@ or independently verified release readiness.
 
 ## Next implementation boundary
 
+### Owned contract-call handoff
+
+The owned contract-call entry now moves the singleton request payload, previous
+output roster and caller random state. Its producer accepts an owned reply and
+channel with a late-bound optional guard and uses the existing asynchronous
+produce/dispatch body. The borrowed APIs retain their signatures and delegate
+to it. The installed semantic service must supply its complete retained guard;
+the ordinary unguarded host API does not confer that authority.
+
+Before the Rust extraction, the upstream `OwnedContractCall.v` model passed
+compilation with eight closed theorem contexts and a separate kernel check,
+both capped at 1 GiB. Its source SHA-256 is
+`4a241df44997de3ae59702d908b4a1fb41b69a8f85d746cd16e73d3ef3a1f4fa`.
+It establishes the exact accepted split, preserved values/random state and
+reuse of the publication machine, not physical clone freedom throughout RSpace.
+
+| Owned transport check | Local result | Log under `target/verification/` |
+|---|---|---|
+| Initial focused test build | Rejected a new test moving text out of the custom-drop error type | `owned-contract-call-tests-1.log` |
+| Corrected focused suite | Passed, five tests | `owned-contract-call-tests-2.log` |
+| Node library Clippy, dependency linting disabled | Passed with warnings denied | `owned-contract-call-clippy-1.log` |
+
+The test correction borrows the error text; production behavior was unchanged.
+Tests cover allocation identity for request/previous vectors, ordered repeated
+reply values, random bytes, outer arity, matched/unmatched guarded publication,
+unpolled future disposal, revocation before polling, and callback access after
+guard release. Both APIs exercise deterministic and nondeterministic success
+and failure branches. The incoming replay flag is returned unchanged while
+callbacks receive the actual space replay state and event-derived prior output.
+Read-only source review found no blocking deviation from the shared future.
+Rust checks used one job, an 8 GiB cap and no swap. This remains a transport
+checkpoint, not a runnable installed-language application or public cutover.
+
+### Remaining frontend integration
+
 The existing MeTTaIL lowerer, neutral frontend extraction, shared language-service
 provider and actual public-route activation remain distinct follow-on work.
 This baseline does not finish them or the Regex application.
