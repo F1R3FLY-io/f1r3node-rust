@@ -202,6 +202,65 @@ impl GenesisValidatorSpec {
         );
     }
 
+    /// The pull must be a SINGLE send attempt: the casper loop awaits the
+    /// tick inline, so a retrying send against an unreachable bootstrap
+    /// stalls the loop — and the retriever maintenance riding it. The 10s
+    /// throttle owns the retry cadence; a failed attempt just waits for it.
+    async fn a_failed_pull_returns_immediately_instead_of_retrying_inline() {
+        let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
+
+        let fixture = TestFixture::new().await;
+        fixture.transport_layer.set_responses(|_, _| {
+            Err(comm::rust::errors::CommError::ProtocolException(
+                "connection refused".to_string(),
+            ))
+        });
+
+        let genesis_validator = GenesisValidator::new(
+            fixture.block_processing_queue_tx.clone(),
+            fixture.blocks_in_processing.clone(),
+            fixture.casper_shard_conf.clone(),
+            fixture.validator_id.clone(),
+            fixture.bap.clone(),
+            fixture.transport_layer.clone(),
+            fixture.rp_conf_ask.clone(),
+            fixture.connections_cell.clone(),
+            fixture.last_approved_block.clone(),
+            fixture.event_publisher.clone(),
+            fixture.block_retriever.clone(),
+            fixture.engine_cell.clone(),
+            fixture.block_store.clone(),
+            fixture.block_dag_storage.clone(),
+            fixture.deploy_storage.clone(),
+            fixture.rejected_deploy_buffer.clone(),
+            fixture.casper_buffer_storage.clone(),
+            fixture.rspace_state_manager.clone(),
+            fixture.runtime_manager.clone(),
+            fixture.estimator.clone(),
+            casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+            None,
+        );
+        fixture.engine_cell.set(Arc::new(genesis_validator)).await;
+        let engine = fixture.engine_cell.get().await;
+
+        let ticked = tokio::time::timeout(Duration::from_secs(2), engine.on_no_casper_tick()).await;
+
+        assert!(
+            ticked.is_ok(),
+            "the tick must return promptly when bootstrap is unreachable; \
+             an inline retry loop stalls the casper loop"
+        );
+        ticked
+            .unwrap()
+            .expect("a failed pull must not error the tick");
+        assert_eq!(
+            fixture.transport_layer.request_count(),
+            1,
+            "exactly one send attempt per tick; the throttle owns the retry cadence"
+        );
+        fixture.transport_layer.reset();
+    }
+
     /// Regression test for the late-joiner race fixed in PR #489.
     ///
     /// A genesis validator that joins boot's connections AFTER all
@@ -440,4 +499,10 @@ async fn transitions_to_initializing_on_late_approved_block() {
 async fn a_validator_that_missed_the_whole_ceremony_pulls_the_approved_block() {
     GenesisValidatorSpec::a_validator_that_missed_the_whole_ceremony_pulls_the_approved_block()
         .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_failed_pull_returns_immediately_instead_of_retrying_inline() {
+    GenesisValidatorSpec::a_failed_pull_returns_immediately_instead_of_retrying_inline().await;
 }

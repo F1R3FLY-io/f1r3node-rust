@@ -22,6 +22,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockRequest, BlockMessage, CasperMessage, NoApprovedBlockAvailable,
     UnapprovedBlock,
 };
+use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
@@ -67,8 +68,6 @@ pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Bounded set of seen UnapprovedBlock candidates to avoid unbounded memory growth.
     seen_candidates: Arc<Mutex<SeenCandidates>>,
-    /// Last ApprovedBlock pull, throttling `on_no_casper_tick`'s recovery
-    /// request to one per interval rather than one per loop tick.
     approved_block_pull_last: Arc<Mutex<Option<std::time::Instant>>>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
@@ -322,14 +321,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValidator<T> {
     async fn init(&self) -> Result<(), CasperError> { Ok(()) }
 
-    /// A genesis validator whose first bootstrap dial lost the
-    /// container-start race misses both the UnapprovedBlock broadcast and
-    /// the one-shot ApprovedBlock send, and the signing flow gives it no
-    /// way out — no push ever comes again. Pull instead: ask bootstrap for
-    /// the ApprovedBlock; the response lands in `handle` and takes the
-    /// existing `handle_approved_block_late` recovery. Throttled so the
-    /// loop's tick cadence does not become the request cadence; a send
-    /// failure only warns — the next interval retries.
+    /// A validator that missed the ceremony's pushed messages pulls the
+    /// ApprovedBlock from bootstrap; the response takes the existing
+    /// `handle_approved_block_late` recovery. One send per throttle
+    /// interval — the casper loop awaits this tick inline, so a retrying
+    /// send against an unreachable bootstrap would stall the loop.
     async fn on_no_casper_tick(&self) -> Result<(), CasperError> {
         const APPROVED_BLOCK_PULL_INTERVAL: std::time::Duration =
             std::time::Duration::from_secs(10);
@@ -342,15 +338,24 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValida
             }
             *last = Some(std::time::Instant::now());
         }
+        let Some(bootstrap) = self.rp_conf_ask.bootstrap.clone() else {
+            return Ok(());
+        };
         tracing::info!(
             "Genesis validator has seen no ceremony message; pulling the \
              ApprovedBlock from bootstrap"
         );
-        if let Err(err) = self
-            .transport_layer
-            .request_approved_block(&self.rp_conf_ask, None)
-            .await
-        {
+        let packet = models::casper::ApprovedBlockRequestProto {
+            identifier: "".to_string(),
+            trim_state: true,
+        }
+        .mk_packet();
+        let msg = comm::rust::rp::protocol_helper::packet(
+            &self.rp_conf_ask.local,
+            &self.rp_conf_ask.network_id,
+            packet,
+        );
+        if let Err(err) = self.transport_layer.send(&bootstrap, &msg).await {
             tracing::warn!("ApprovedBlock pull from bootstrap failed: {}", err);
         }
         Ok(())
