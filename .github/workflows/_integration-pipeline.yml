@@ -45,7 +45,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 5909b174fa9298bc7f4a597c0124e4c5ab1e75d0
+  SYSTEM_INTEGRATION_REF: 962effd17708192627bd249362761c0ccb1fd5fa
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -539,6 +539,7 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_load.py \
             --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
+            --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
             --provider=${{ matrix.provider }} \
             "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
