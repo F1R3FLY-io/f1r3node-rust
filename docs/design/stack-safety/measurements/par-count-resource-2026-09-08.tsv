@@ -1,0 +1,14 @@
+shape	size	encoded_input_bytes	allocation_calls	cumulative_requested_bytes
+alternating_spine	128	1365	24	353032
+alternating_spine	512	5589	30	1414024
+alternating_spine	2048	24148	36	5659654
+one_encoded_body	32	200	14	14715
+one_encoded_body	128	840	18	46075
+one_encoded_body	512	3528	22	171643
+distinct_resident_endpoints	32	322	163	164800
+distinct_resident_endpoints	128	1346	643	656384
+distinct_resident_endpoints	512	5570	2563	2622848
+actual_repeated_suffix_control	16	not_recorded	40900	6402400
+actual_repeated_suffix_control	64	not_recorded	2188675	244821600
+native_control_pair	16	not_recorded	14	42040
+native_control_pair	64	not_recorded	21	176200

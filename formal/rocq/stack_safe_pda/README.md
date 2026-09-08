@@ -96,10 +96,11 @@ in the task and stack-safety report §5.29.9; no current full-workspace pass fol
 
 `scripts/check-stack-safe-pda-proofs.sh --matcher-counts` executes the prerequisite
 model, ten interval and 21 byte-native closed-report guards and both whole-module
-kernel checks. It requires exactly 8, 3, 16, 8 and 57 nonignored tests in the
+kernel checks. It requires exactly 13, 3, 16, 8 and 57 nonignored tests in the
 count-interval, count-fold, connective-isolation, conditional-family and
 PDA-equivalence suites, then 11 byte-native count tests, three generated Expr
-classifier tests and four models-local physical byte-read tests (110 total).
+classifier tests and four models-local physical byte-read tests, followed by the
+explicitly selected original depth-4,096/128-KiB probe (116 total).
 The focused mode and full runner share the same runtime functions. The historical
 September 7–8 run passed the original 92 selected Rust tests; that result does not
 establish the subsequently extended gate or include unrelated workspace tests.
@@ -110,6 +111,15 @@ The subsequent byte-native implementation run passes the extended 110-test gate,
 the stack-safety report §5.29.9 records the command, bounds and remaining resource
 qualification. Private test support resides in the respective `tests/support`
 directories; production builds contain no measurement counters.
+
+Resource qualification subsequently adds five allocation/fixture/stack tests to
+the count-interval suite and registers the original probe without reducing its
+depth. The full 116-test gate passes with the same 31 closed reports and both kernel
+checks; log SHA-256 is
+`2287e52514951bff979ff20aad156acc3c7c96afcf0d5515f2b9093e5f11657b`.
+The actual repeated-suffix decoder control violates both allocation-growth bounds
+while the native route preserves the same interval and passes. This is the executable
+resource binding, not a proof of the allocator, PathMap internals or whole-workspace CI.
 
 | Invariant group | Executed implementation binding |
 |---|---|

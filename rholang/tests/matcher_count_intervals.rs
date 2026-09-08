@@ -10,6 +10,9 @@ use rholang::rust::interpreter::matcher::sub_pars::sub_pars;
 #[path = "support/counting_alloc.rs"]
 mod counting_alloc;
 
+#[path = "support/par_count_resources.rs"]
+mod par_count_resources;
+
 #[global_allocator]
 static ALLOCATOR: counting_alloc::Counting = counting_alloc::Counting;
 

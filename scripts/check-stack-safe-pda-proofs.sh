@@ -111,7 +111,7 @@ matcher_count_byte_native_proofs() {
 matcher_count_runtime() {
   local PROPTEST_RNG_SEED="${PROPTEST_RNG_SEED:-41315855}"
   export PROPTEST_RNG_SEED
-  rholang_run_tests 8 --test matcher_count_intervals
+  rholang_run_tests 13 --test matcher_count_intervals
   rholang_run_tests 3 --test matcher_count_folds
   rholang_run_tests 16 --test matcher_connective_isolation
   rholang_run_tests 8 --test matcher_if_family
@@ -121,6 +121,24 @@ matcher_count_runtime() {
     rpb3_run_tests 3 --release -j4 --test par_bag canonical_count_expr_is_hole
   TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
     rpb3_run_tests 4 --release -j4 --lib par_count_header_
+  matcher_count_original_stack_probe
+}
+
+matcher_count_original_stack_probe() {
+  local output
+  if ! output="$(TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+      tlc_bounded env PROBE_WHAT=min_max_par PROBE_DEPTH=4096 PROBE_STACK=131072 \
+      cargo test --release -j4 -p rholang --test stack_depth_probe \
+      -- --ignored --exact probe --nocapture --test-threads=1 2>&1)"; then
+    printf '%s\n' "$output"
+    return 1
+  fi
+  printf '%s\n' "$output"
+  if ! grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored;' <<<"$output" \
+      || ! grep -q '^PROBE OK depth=4096 stack=131072$' <<<"$output"; then
+    echo "stack-safe-pda: the original depth-4096 ParCount probe did not complete" >&2
+    return 1
+  fi
 }
 
 if [[ "${1:-}" == "--matcher-counts" || "${1:-}" == "--matcher-count-byte-native-proofs" ]]; then

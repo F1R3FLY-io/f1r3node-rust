@@ -5742,6 +5742,24 @@ coverage. §5.29.9 records its immutable log digest, and pgmcp artifact 513 pres
 the depth and physical-read diagnostic excerpts. Allocation/resource qualification
 remains task 8345; these passing focused tests are not full-workspace acceptance.
 
+**MEASURED RESOURCE BINDING.** Task 8345's additional five tests pass count-only
+allocation growth checks for alternating depth, one wide encoded body and many
+distinct resident endpoints. The actual repeated-suffix decoder control returns the
+same interval but violates both allocation-growth bounds; the byte route passes.
+At depth 64 the control requests 244,821,600 cumulative bytes in 2,188,675 calls,
+versus 176,200 bytes in 21 calls for the native route. These are allocation-request
+counters, not peak RSS. Planned fixtures are byte-identical to original small
+fixtures, and deep/wide 4,096 cases pass a 128-KiB stack. §5.29.9 links the raw matrix
+and records exact measurement boundaries. This isolates a local decoding cost; it
+does not show that the underlying PathMap lookup implementation became faster.
+
+**RESOURCE GATE PASSED.** The final registered gate passes 116 tests, 31 closed
+reports and both kernel checks. It explicitly reruns the original depth-4,096
+probe, which completes with 6.312 ms counting on 128 KiB; §5.29.9 records its digest
+and separate construction/drop costs. The scoped repeated-decoding resource gap
+is closed by task 8345. Parent acceptance submission remains 8341, and no
+whole-workspace, persistence or overall campaign completion follows.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

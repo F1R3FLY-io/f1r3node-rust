@@ -8913,6 +8913,55 @@ are included. The earlier 10-test guard correctly rejected the newly expanded
 This establishes the implementation checkpoint, not the separate allocation/resource
 qualification, a timing benchmark distribution or the full-workspace release gate.
 
+**COUNT-ONLY RESOURCE QUALIFICATION — 2026-09-08.** Five additional tests in
+`tests/support/par_count_resources.rs`, included by `matcher_count_intervals`, pass
+under the same 6-GiB zero-swap envelope. Construction and encoded-size calculation
+occur before the allocation window. The shared counting allocator records allocation
+calls and cumulative requested bytes on the counting thread, not peak live bytes,
+RSS or bytes retained after return. All measurements also assert the exact expected
+interval and retained source CoW sharing. Raw observations are in
+[the resource matrix](measurements/par-count-resource-2026-09-08.tsv); log
+`/tmp/rspace-8345-alloc-first-20260908.log` has SHA-256
+`043f8b719650c2a5e3561d4c8f463c28d22eb1c9bffd30a6d3448eba8a77dab1`.
+
+| Counted shape | Geometric sizes | Allocation calls | Cumulative requested bytes |
+|---|---|---|---|
+| Alternating unary AND/OR | depth 128 / 512 / 2,048 | 24 / 30 / 36 | 353,032 / 1,414,024 / 5,659,654 |
+| One encoded AND body | width 32 / 128 / 512 | 14 / 18 / 22 | 14,715 / 46,075 / 171,643 |
+| Distinct resident Connective endpoints | width 32 / 128 / 512 | 163 / 643 / 2,563 | 164,800 / 656,384 / 2,622,848 |
+
+Every adjacent pair passes the existing 1.5-times-linear growth envelope. This is
+a deterministic tested resource bound over the specified ladders, not an asymptotic
+proof from timing samples. The structural model, exact ordered-work tests and physical
+header-read bounds supply the separate algorithmic argument. Planned spine fixtures
+match both the original small constructor's `Par` and protobuf bytes at depths 0–15;
+the original non-planned depth-4,096 probe remains independently registered. Planned
+depth 4,096, one encoded width-4,096 body and 4,096 distinct endpoints also complete
+on a 128-KiB stack.
+
+The negative control executes actual `Par::first::<Connective>()` decodes while
+walking successively shorter unary suffixes. It returns the same independently
+specified interval. At depths 16 and 64 it performs 40,900 and 2,188,675 allocation
+calls, requesting 6,402,400 and 244,821,600 bytes; both growth checks reject it.
+The paired native route performs 14 and 21 calls, requesting 42,040 and 176,200
+bytes, and passes those same bounds. This is not a fabricated growth sequence or
+a wall-clock timeout used as the sole regression detector. No CPU sampler or GUI
+was needed to resolve this deterministic allocation mechanism; no application-level
+throughput, peak-memory or persistence claim follows.
+
+**RESOURCE GATE PASSED.** The final registered `--matcher-counts` gate now includes
+the original non-planned probe and exits zero: 31 closed reports, both kernel checks,
+and 116 tests (13 + 3 + 16 + 8 + 57 + 11 + 3 + 4 + 1), all with zero failures and
+zero ignored tests. The explicit `--ignored --exact probe` selection runs the
+otherwise opt-in probe; it is not silently skipped. This repetition measures
+109,733,418 µs construction, 6,312 µs count and 50,992 µs drop at depth 4,096 on
+128 KiB. Full log `rspace-8345-registered-resource-20260908.log` has SHA-256
+`2287e52514951bff979ff20aad156acc3c7c96afcf0d5515f2b9093e5f11657b`.
+Together with the recorded actual decoding and cursor-restart controls, this closes
+8345's scoped count-resource qualification. Parent 5855 still requires 8341's
+acceptance submission; unrelated full-workspace, persistence and campaign work are
+not represented as complete by this gate.
+
 ---
 
 ### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]
