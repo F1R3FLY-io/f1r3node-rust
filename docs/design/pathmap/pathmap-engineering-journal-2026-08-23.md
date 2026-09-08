@@ -6356,6 +6356,58 @@ The final manifest/ParBag integration log is
 The [storage invariant catalogue](../../../formal/rocq/stack_safe_pda/README.md#exclusive-current-state-storage-refinement-tasks-59766018)
 binds ECS-01–09 to the implementation and controls.
 
+### J-090 — 2026-09-08: qualify failure-state ownership before reusing frames
+
+**QUESTION.** Which continuation graphs must survive a refused operation when
+the standalone reducer replaces persistent frame history with reusable slots?
+
+**SOURCE-DERIVED DESIGN.** A settled standalone root has separate child and outer
+continuation chains, but active Region owner contexts retain original stack IDs.
+Therefore a destructive replacement of every frame inspection is not justified.
+A shallow refusal may retain a newly created Tag; a Region child refusal may
+select its saved owner graph. Neither clearing every failed stack nor discarding
+every newly allocated frame preserves the existing private protocol. The bounded
+plan review calls for explicit owner selections and retirement of only proven
+unreachable slots. The formal refinement must establish this before production
+storage changes; it is not established by the current-state proof in J-089.
+
+**BASELINE EXPERIMENT.** The external standalone corpus adds one test with sixteen
+cases: owner nesting depths 0, 1, 2 and 8, each with a successful resolution and
+three deferred refusal types. A previously valid obligation ID is reused while a
+different child is pending. The refusal must preserve the pending child, state
+observations and storage counters; the current ID must still work afterward.
+The deferred cases then attempt old/current IDs and extra edges after failure,
+comparing exact persistent/standalone errors and provenance. Frozen child payloads
+are held on both sides and must survive unchanged throughout.
+
+**NEGATIVE RESULTS AND REPAIRS.** The first fixture froze only the standalone
+payload. Both arenas stored 48 payload bytes, but that retained snapshot correctly
+forced an extra copy-on-write page only on that side. Requiring equal allocations
+under unequal ownership was invalid; both controls now hold equivalent snapshots.
+The second fixture incorrectly required the initial error to remain unchanged
+after every private operation. In the existing reducer, an explicit resolution
+after a refused nested child and an extra edge can replace `NestedEpmNotMap` with
+`RegionFrameOverrun` at the extra edge's provenance. The outer admission driver
+already terminates at its first failure; this probe concerns private continuation
+equivalence, not a changed public acceptance rule. The corrected control compares
+the exact observations at every step without inventing an error-absorption law.
+
+**VERIFIED RESULT.** All **15** standalone tests pass, with 337 other models tests
+filtered by this focused command. The command exits zero under the 4-GiB high /
+6-GiB hard memory limits, zero swap and four workers. The integrated gate's expected
+standalone count is updated to fifteen; this entry does not claim a new full gate
+or workspace run. Production Rust storage is unchanged. Frame reuse and its
+formal ownership proof remain required work.
+
+**EVIDENCE.** The first fixture-failure log has SHA-256
+`22374eaee6e33f67d750f323c5f6a7f413805934e12462d1ba3859d3d2bedbcb`;
+the error-absorption fixture failure is
+`708feac1d66a02b456f4f334b396497cfece172615a6cd9fa4a2b82ff4ecb462`;
+the final fifteen-test success is
+`53d240fd8ae46e67e704507d1ccbf149258135dc01c00bb15b6b3778e9d0660a`.
+These are correctness and experimental-control findings, not latency or total
+memory measurements. They require no upstream PathMap modification.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -6,7 +6,9 @@ use crate::rhoapi::{Expr, Par, Send};
 use crate::rust::canonical_path::{encode_trie_path, validate_canonical_path};
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::canonical_bytes_arena::CanonicalLocatedByte;
-use crate::rust::rholang::canonical_path_admission::CanonicalPathReducer;
+use crate::rust::rholang::canonical_path_admission::{
+    CanonicalPathAdmissionErrorKind, CanonicalPathReducer,
+};
 use crate::rust::rholang::protobuf_encoder;
 
 fn expr(value: ExprInstance) -> Par {
@@ -151,6 +153,231 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
         history.value(checkpoint, true, endpoint),
         stream.value(true, endpoint)
     );
+}
+
+fn assert_resolution_recovery(
+    depth: usize,
+    resolution: CanonicalPathObligationResolution,
+    refusal: bool,
+) {
+    let mut history_arena = CanonicalBytesArena::new();
+    let mut stream_arena = CanonicalBytesArena::new();
+    let mut history = CanonicalPathReducer::new();
+    let mut checkpoint = history.root(&history_arena);
+    let mut stream = CanonicalPathStreamReducer::new(&stream_arena);
+    let mut offset = 0;
+    for byte in [0x0f, 0] {
+        let located = CanonicalLocatedByte::new(byte, origin(offset));
+        let (next, transition) = history
+            .edge(&mut history_arena, checkpoint, located)
+            .unwrap();
+        assert_eq!(stream.edge(&mut stream_arena, located).unwrap(), transition);
+        checkpoint = next;
+        offset += 1;
+    }
+    let old_id = stream.active_obligation().unwrap().obligation.id;
+    let unstable = CanonicalPathObligationResolution::RawPar {
+        canonical_path_stable: false,
+    };
+    checkpoint = history
+        .resolve_obligation(&history_arena, checkpoint, old_id, unstable)
+        .unwrap();
+    stream
+        .resolve_obligation(&stream_arena, old_id, unstable)
+        .unwrap();
+
+    let map = EPathMap::new_map([(integer(1), integer(2))], Vec::new(), false, None);
+    let mut key = payload(0x10, map.trie_snapshot());
+    for _ in 0..depth {
+        let mut region = Vec::new();
+        prost::encoding::encode_varint(key.len() as u64, &mut region);
+        region.extend_from_slice(&key);
+        key = payload(0x0d, &region);
+    }
+    for byte in key {
+        let located = CanonicalLocatedByte::new(byte, origin(offset));
+        let (next, transition) = history
+            .edge(&mut history_arena, checkpoint, located)
+            .unwrap();
+        assert_eq!(stream.edge(&mut stream_arena, located).unwrap(), transition);
+        checkpoint = next;
+        offset += 1;
+    }
+    let pending = stream.active_obligation().unwrap();
+    assert!(pending.awaiting_resolution);
+    assert_ne!(pending.obligation.id, old_id);
+    assert_eq!(history.active_obligation(checkpoint), Some(pending));
+    let frozen = stream
+        .freeze_completed_obligation(&stream_arena)
+        .unwrap()
+        .unwrap();
+    let history_frozen = history
+        .freeze_completed_obligation(&history_arena, checkpoint)
+        .unwrap()
+        .unwrap();
+    let frozen_bytes = frozen.payload.located_bytes().collect::<Vec<_>>();
+    assert_eq!(
+        history_frozen.payload.located_bytes().collect::<Vec<_>>(),
+        frozen_bytes
+    );
+    assert_eq!(history_frozen.payload_end, frozen.payload_end);
+    let endpoint = CanonicalPathSource::in_source(99, offset);
+    let before = stream.value(true, endpoint);
+    let history_stats = history.stats();
+    let stream_stats = stream.stats();
+    let wrong = history
+        .resolve_obligation(&history_arena, checkpoint, old_id, resolution)
+        .unwrap_err();
+    assert_eq!(
+        stream
+            .resolve_obligation(&stream_arena, old_id, resolution)
+            .unwrap_err(),
+        wrong
+    );
+    assert_eq!(
+        wrong.kind,
+        CanonicalPathAdmissionErrorKind::UnresolvedObligation
+    );
+    assert_eq!(wrong.source, pending.obligation.tag_source);
+    assert_eq!(history.stats(), history_stats);
+    assert_eq!(stream.stats(), stream_stats);
+    assert_eq!(stream.active_obligation(), Some(pending));
+    assert_eq!(stream.value(true, endpoint), before);
+    assert_eq!(history.value(checkpoint, true, endpoint), before);
+
+    checkpoint = history
+        .resolve_obligation(
+            &history_arena,
+            checkpoint,
+            pending.obligation.id,
+            resolution,
+        )
+        .unwrap();
+    stream
+        .resolve_obligation(&stream_arena, pending.obligation.id, resolution)
+        .unwrap();
+    if !refusal {
+        let located = CanonicalLocatedByte::new(0, origin(offset));
+        let (next, transition) = history
+            .edge(&mut history_arena, checkpoint, located)
+            .unwrap();
+        assert_eq!(stream.edge(&mut stream_arena, located).unwrap(), transition);
+        let summary = stream.value(true, endpoint).unwrap().unwrap();
+        assert!(!summary.canonical_path_stable);
+        assert_eq!(history.value(next, true, endpoint), Some(Ok(summary)));
+        assert_eq!(stream.active_obligation(), None);
+        assert_eq!(history_arena.stats(), stream_arena.stats());
+        assert_eq!(
+            history_frozen.payload.located_bytes().collect::<Vec<_>>(),
+            frozen_bytes
+        );
+        assert_eq!(
+            frozen.payload.located_bytes().collect::<Vec<_>>(),
+            frozen_bytes
+        );
+        return;
+    }
+    let original_error = stream.value(true, endpoint).unwrap().unwrap_err();
+    assert_eq!(original_error.kind, match resolution {
+        CanonicalPathObligationResolution::NestedEpm1 {
+            mode: NestedEpmMode::Set,
+            ..
+        } => CanonicalPathAdmissionErrorKind::NestedEpmNotMap,
+        CanonicalPathObligationResolution::NestedEpm1 {
+            mode: NestedEpmMode::Map,
+            entries_stable: false,
+        } => CanonicalPathAdmissionErrorKind::NestedEpmNotStable,
+        CanonicalPathObligationResolution::RawPar { .. } =>
+            CanonicalPathAdmissionErrorKind::RejectedObligation,
+        _ => panic!("expected refusal control"),
+    });
+    assert_eq!(original_error.source, pending.obligation.tag_source);
+    assert_eq!(
+        history.value(checkpoint, true, endpoint),
+        Some(Err(original_error))
+    );
+    assert_eq!(stream.active_obligation(), None);
+    assert!(stream
+        .freeze_completed_obligation(&stream_arena)
+        .unwrap()
+        .is_none());
+    let accepted = CanonicalPathObligationResolution::NestedEpm1 {
+        mode: NestedEpmMode::Map,
+        entries_stable: true,
+    };
+    for (id, resolution) in [
+        (old_id, accepted),
+        (pending.obligation.id, accepted),
+        (pending.obligation.id, resolution),
+    ] {
+        let left = history.resolve_obligation(&history_arena, checkpoint, id, resolution);
+        let right = stream.resolve_obligation(&stream_arena, id, resolution);
+        match (left, right) {
+            (Ok(next), Ok(())) => checkpoint = next,
+            (Err(left), Err(right)) => assert_eq!(left, right),
+            other => panic!("post-refusal resolution diverged at depth {depth}: {other:?}"),
+        }
+        let observed_error = history
+            .value(checkpoint, true, endpoint)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(stream.value(true, endpoint), Some(Err(observed_error)));
+        assert_eq!(
+            history.active_obligation(checkpoint),
+            stream.active_obligation()
+        );
+        assert_eq!(stream.active_obligation(), None);
+        let located = CanonicalLocatedByte::new(0xff, origin(offset));
+        let (next, transition) = history
+            .edge(&mut history_arena, checkpoint, located)
+            .unwrap();
+        assert_eq!(stream.edge(&mut stream_arena, located).unwrap(), transition);
+        checkpoint = next;
+        offset += 1;
+        assert_eq!(stream.value(true, endpoint), Some(Err(observed_error)));
+        assert_eq!(
+            history.value(checkpoint, true, endpoint),
+            Some(Err(observed_error))
+        );
+        assert_eq!(
+            frozen.payload.located_bytes().collect::<Vec<_>>(),
+            frozen_bytes
+        );
+        assert_eq!(
+            history_frozen.payload.located_bytes().collect::<Vec<_>>(),
+            frozen_bytes
+        );
+        assert_eq!(history_arena.stats(), stream_arena.stats());
+    }
+}
+
+#[test]
+fn wrong_id_recovery_and_deferred_refusal_preserve_nested_owners() {
+    for depth in [0, 1, 2, 8] {
+        assert_resolution_recovery(
+            depth,
+            CanonicalPathObligationResolution::NestedEpm1 {
+                mode: NestedEpmMode::Map,
+                entries_stable: true,
+            },
+            false,
+        );
+        for resolution in [
+            CanonicalPathObligationResolution::NestedEpm1 {
+                mode: NestedEpmMode::Set,
+                entries_stable: true,
+            },
+            CanonicalPathObligationResolution::NestedEpm1 {
+                mode: NestedEpmMode::Map,
+                entries_stable: false,
+            },
+            CanonicalPathObligationResolution::RawPar {
+                canonical_path_stable: false,
+            },
+        ] {
+            assert_resolution_recovery(depth, resolution, true);
+        }
+    }
 }
 
 proptest! {

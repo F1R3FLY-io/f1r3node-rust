@@ -9992,6 +9992,19 @@ required 6018 refinements. See
 [J-089](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-089--2026-09-08-separate-live-key-state-from-persistent-topology-history)
 for the precise model/implementation boundary and evidence.
 
+#### 5.33.9 Failure-state baseline for frame reclamation (2026-09-08, tasks 5976/6018)
+
+Before changing frame storage, the standalone corpus now passes fifteen tests,
+including sixteen stale-ID/recovery/refusal cases across four Region depths.
+The controls compare exact continuation observations and retain equivalent frozen
+payloads on both sides. Unequal frozen ownership was found to bias copy-on-write
+page counts; explicit private operations after failure were also found not to
+obey an error-absorption law. Neither finding changes production behavior.
+The existing outer driver stops at the first admission failure. See
+[J-090](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-090--2026-09-08-qualify-failure-state-ownership-before-reusing-frames)
+for failed-fixture evidence, repairs and the formal-first ownership requirements.
+This adds verification coverage, not a frame-memory or backend performance result.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
