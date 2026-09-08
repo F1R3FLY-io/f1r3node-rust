@@ -5676,6 +5676,35 @@ lossy aggregate accessor, not PathMap itself. The cursor algorithm is retained;
 child 8341 still must independently qualify its complete ordered output and resource
 behavior. No benchmark improvement is inferred from passing tests.
 
+**QUALIFICATION AND REMAINING RESOURCE GAP — 2026-09-08.** The independent ordered
+oracle now passes 7,461 interval cases / 3,532 candidates plus 256 generated cases;
+the registered formal/runtime gate passes ten closed capstones, the kernel check
+and 92 selected Rust tests. All three actual finite-top, projected-availability and
+lower-top-clamping mutations fail the intended assertions, and production is
+restored before the final green gate. Fixed two-endpoint partition scratch is
+unchanged across multiplicities 1, 1,001 and maximum: 380 allocation calls and
+96,957 cumulative allocated bytes. This supports counted partitioning, not a claim
+that every matcher traversal is resource-qualified.
+
+The original depth-4,096 count probe times out at 300 seconds. Separating its
+construction, borrowed count and root drop shows the count phase itself takes
+38.323 seconds at depth 256, compared with 0.444 seconds of construction and
+0.0034 seconds of drop. Three diagnostic depths show roughly eightfold count-time
+growth per doubling; these are not controlled benchmark populations or a formal
+complexity result. Repeated decoding of nested Connective suffixes in the count
+PDA remains a concrete integration cost. A trie-backed carrier and explicit stack
+alone do not remove that cost.
+
+The reviewed next refinement reuses admitted canonical byte regions and suspended
+cursors, counts each distinct resident endpoint once and applies its multiplicity
+to the resulting interval algebraically. It preserves structural public Connective
+inputs, so a maximum-count child is never expanded through serialization just to
+enter the byte route. Required tasks 8343–8345 under 8342 bind formal projection,
+fold, ownership and work-budget obligations to implementation and measured closure.
+No PathMap fork, new persistence format or reduced-depth replacement gate is planned.
+The linked §5.29.9 gives raw observations, commands, digests and qualification limits;
+8341 and parent 5855 remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

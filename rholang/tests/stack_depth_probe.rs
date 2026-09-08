@@ -907,11 +907,29 @@ fn run_probe(what: &str, depth: usize) {
         }
         "min_max_par" => {
             // Recursion here follows `connectives`, never `exprs`.
+            let started = std::time::Instant::now();
             let t = nested_conn_and(depth);
+            eprintln!(
+                "PARCOUNT_STAGE construction depth={depth} elapsed_us={}",
+                started.elapsed().as_micros()
+            );
             let pc = ParCount::new(&Par::default());
-            let (lo, hi) = pc.min_max_par(t);
-            std::mem::forget(lo);
-            std::mem::forget(hi);
+            let started = std::time::Instant::now();
+            let (lo, hi) = pc.min_max_par_ref(&t);
+            let mut expected = ParCount::zero();
+            expected.exprs = CountBound::Finite(1);
+            assert_eq!(lo, expected);
+            assert_eq!(hi, expected);
+            eprintln!(
+                "PARCOUNT_STAGE borrowed_count depth={depth} elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+            let started = std::time::Instant::now();
+            drop(t);
+            eprintln!(
+                "PARCOUNT_STAGE root_drop depth={depth} elapsed_us={}",
+                started.elapsed().as_micros()
+            );
         }
         "sub_pars_width" => {
             // Force the old `worker` down one call per sibling while keeping

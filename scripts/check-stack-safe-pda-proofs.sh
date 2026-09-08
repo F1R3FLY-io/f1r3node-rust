@@ -75,7 +75,7 @@ rpb3_run_tests() {
   fi
 }
 
-scalar_projection_run_tests() {
+rholang_run_tests() {
   local expected="$1" output
   shift
   if ! output="$(TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
@@ -85,10 +85,42 @@ scalar_projection_run_tests() {
   fi
   printf '%s\n' "$output"
   if ! grep -Eq "^test result: ok\\. $expected passed; 0 failed; 0 ignored;" <<<"$output"; then
-    echo "stack-safe-pda: expected $expected nonignored scalar-projection tests for $*" >&2
+    echo "stack-safe-pda: expected $expected nonignored Rholang tests for $*" >&2
     return 1
   fi
 }
+
+matcher_count_proofs() {
+  local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  rocq_reject_placeholders <(
+    sed -n '/^Module ParCountIntervals\.$/,/^End ParCountIntervals\.$/p' theories/SpatialMatcher.v
+  )
+  rocq_compile_with_closed_count theories/SpatialMatcher.v 10 \
+    "exact ParCount interval and partition contracts"
+  rocq_check_modules "spatial matcher and exact ParCount intervals" StackSafePDA.SpatialMatcher
+}
+
+matcher_count_runtime() {
+  local PROPTEST_RNG_SEED="${PROPTEST_RNG_SEED:-41315855}"
+  export PROPTEST_RNG_SEED
+  rholang_run_tests 8 --test matcher_count_intervals
+  rholang_run_tests 3 --test matcher_count_folds
+  rholang_run_tests 16 --test matcher_connective_isolation
+  rholang_run_tests 8 --test matcher_if_family
+  rholang_run_tests 57 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
+}
+
+if [[ "${1:-}" == "--matcher-counts" ]]; then
+  pushd "$rocq_root" >/dev/null
+  TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128 \
+    tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
+  matcher_count_proofs
+  popd >/dev/null
+  pushd "$repo_root" >/dev/null
+  matcher_count_runtime
+  popd >/dev/null
+  exit 0
+fi
 
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
@@ -270,12 +302,7 @@ if [[ "$rmp2_closed_capstones" != "7" ]]; then
   echo "stack-safe-pda: expected all seven RMP2 Rocq capstones to be closed; got $rmp2_closed_capstones" >&2
   exit 1
 fi
-rocq_reject_placeholders <(
-  sed -n '/^Module ParCountIntervals\.$/,/^End ParCountIntervals\.$/p' theories/SpatialMatcher.v
-)
-rocq_compile_with_closed_count theories/SpatialMatcher.v 10 \
-  "exact ParCount interval and partition contracts"
-rocq_check_modules "spatial matcher and exact ParCount intervals" StackSafePDA.SpatialMatcher
+matcher_count_proofs
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceAuthority.v 5 \
   "the exact two-level RSpace logical authority"
@@ -470,10 +497,11 @@ rpb3_run_tests 22 --lib protobuf_admission::tests
 rpb3_run_tests 1 --lib \
   production_component_admission_is_differentially_equivalent_for_all_nine_families
 rpb3_run_tests 3 --test par_bag admitted_
-scalar_projection_run_tests 4 --lib scalar_projection
-scalar_projection_run_tests 1 --features epathmap-fusion-differential \
+rholang_run_tests 4 --lib scalar_projection
+rholang_run_tests 1 --features epathmap-fusion-differential \
   --test epathmap_fusion_equivalence_spec \
   fused_differentials::scalar_projection_fused_unfused_carriers_preserve_observations
+matcher_count_runtime
 popd >/dev/null
 
 # Bind the RhoPath V2 lifecycle refinement to the end-to-end Rust differential

@@ -8763,6 +8763,80 @@ and resource-gate observations, not timing benchmarks. Wider matcher-bound value
 do not widen serialized endpoint multiplicities. Concrete ordered-reference and
 allocation qualification remain child 8341's required work; parent 5855 stays open.
 
+**QUALIFICATION CHECKPOINT — 2026-09-08; NOT CLOSURE.** The shared focused gate
+`env ALLOW_UNBOUNDED_TLC=0 RUST_BACKTRACE=1 PROPTEST_RNG_SEED=41315855 bash
+scripts/check-stack-safe-pda-proofs.sh --matcher-counts` now requires ten
+closed-capstone reports, the whole-module kernel check, and exactly 8 count-interval,
+3 independent count-fold, 16 connective-isolation, 8 conditional-family and
+57 PDA-equivalence tests. All 92 selected Rust tests pass with zero ignored tests;
+343 unrelated library tests are intentionally filtered, and no current workspace
+pass follows. Proof commands retain the 2-GiB cap; Rust commands retain the 6-GiB
+cap, four jobs/test threads and zero swap. The final restored run is
+`/tmp/rspace-8341-restored-gate-20260908.log`, SHA-256
+`d55c4dc36e9b99574198eddd2d91fee576ae4117f00113e60a3464081e3cd442`.
+
+The independent positional oracle checks 7,461 small interval configurations and
+3,532 complete ordered candidates using first-occurrence deduplication. A further
+256 generated partition cases cover up to three distinct endpoints. Independent
+count-fold trees cover all eight fields, empty AND/OR, NOT, scalar predicates,
+free/wildcard expressions, duplicate scaling, owned/borrowed entry points and CoW
+preservation. For two fixed endpoints, multiplicities 1, 1,001 and maximum each
+take 380 allocation calls and 96,957 cumulative allocated bytes. Increasing distinct
+width from 32 to 128 changes those observations from 1,298 calls / 156,805 bytes to
+4,313 calls / 356,047 bytes and passes the registered growth envelope. Cumulative
+allocation is not live heap or peak RSS.
+
+Three actual temporary production mutations were rejected for the intended reason,
+then reverted exactly before the final registered gate. Each run failed one test
+with zero ignored tests; these are discrimination controls, not unresolved failures.
+
+| Reintroduced defect | Observed rejecting assertion | Log SHA-256 |
+|---|---|---|
+| Logical top becomes finite 1,000 | Complete Send target of 1,001 is omitted | `8dc4deb9e42b413f390d0c1343c96ff5858c4a7082eff5c38f70418a3e28cf31` |
+| Exact availability becomes saturated `u64` availability | Required-zero complement is nonempty | `7cb4ac5fbc39930e5802b6794652cb4257dbd15d71cb3ec66210c981dfe063c3` |
+| Unbounded lower limit is clamped to target size | Impossible lower bound invents a partition | `b9d6f12342102d4b89dbcc14ba99365abad5a9cd0b3cb76de293bb6684761a59` |
+
+**RESOURCE GAP AND ATTRIBUTION.** The additional original `min_max_par` probe at
+depth 4,096 on a 128-KiB stack hit its 300-second scope watchdog (exit 143,
+`Result=timeout`). Its scope recorded peak memory 386,441,216 bytes and CPU use
+300,992,358,000 ns under the 6-GiB, zero-swap cap. Neither stack overflow nor OOM
+was reported; absence of either is not a completed stack/resource gate. Log
+`/tmp/rspace-8341-min-max-stack-20260908.log` has SHA-256
+`fb2f0ec014a0849e5a783b40fca05a05c831bec35f621b415aebdfcbf852e9fd`.
+
+The same fixture now reports construction, borrowed `min_max_par_ref` and final
+root drop separately. Each smaller diagnostic completed on a 128-KiB stack and
+asserted exact bounds (one Expr, zero other counted families).
+
+| Depth | Construction (µs) | Borrowed count (µs) | Root drop (µs) |
+|---:|---:|---:|---:|
+| 64 | 27,971 | 602,571 | 855 |
+| 128 | 110,835 | 4,826,811 | 1,804 |
+| 256 | 444,290 | 38,322,556 | 3,399 |
+
+These single observations show approximately eightfold count-time growth for each
+doubling in this ladder. They are diagnostic samples taken without an idle-machine
+benchmark protocol, not a statistically supported speed comparison or a proved
+complexity law. Source inspection identifies repeated full Connective decoding
+inside the explicit count worklist. The count phase dominates at depth 256, so
+fixture construction alone does not explain the gap. The 64/128 log has SHA-256
+`c693d87783e4ebe618f403a82188b95c18348026855c4014e7a374e8dab6166a`;
+the 256 log has SHA-256
+`19196c3943634e9edd54178eeefa8ea8ace3bf94cca8f95c810aacc674cdf81d`.
+
+Required container 8342, under the existing parent 5855, preserves the remaining
+resource obligation through formal contract 8343, byte-native implementation 8344
+and resource qualification 8345. The reviewed design reuses retained protobuf
+regions, existing schema cursors and exact resident metrics, traverses each distinct
+resident connective endpoint once, then scales its result algebraically. Public
+structural Connective inputs must not be serialized merely to count them: their
+child Pars can contain compressed maximum multiplicities. Classification must
+distinguish proven holes, proven concrete expressions and unproved forms without
+turning decoder uncertainty into a semantic answer. Proofs and a complete invariant
+catalogue precede this production change. The depth-4,096 obligation is retained,
+and 8341/5855 remain open until this chain and their remaining acceptance evidence
+are satisfied. This is a local count-path refinement, not a PathMap crate change.
+
 ---
 
 ### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]

@@ -59,9 +59,9 @@ u=\min(c_N(U_s),N-L_r).
 
 The range is empty if $`\ell>u`$. Otherwise membership is equivalent to satisfying
 both selection and complement constraints, not just the selected cardinality.
-The complete ten-capstone invariant catalogue below precedes Rust changes in child
-8340. Child 8341 owns final execution and independent qualification; these rows are
-test obligations, not claims that the new tests have already passed.
+The complete ten-capstone invariant catalogue below was recorded before Rust changes
+in child 8340. Child 8341 owns execution and independent qualification. The binding
+checkpoint following the table distinguishes executed checks from remaining work.
 
 | Capstone | Implementation invariant | Required executable binding |
 |---|---|---|
@@ -91,6 +91,41 @@ against the recursive matcher cannot close these gaps because that oracle import
 the same `ParCount` and `sub_pars`. The independent properties above bind the
 implementation to the model. Formal-check status and immutable evidence are recorded
 in the task and stack-safety report §5.29.9; no current full-workspace pass follows.
+
+### Executable binding checkpoint
+
+`scripts/check-stack-safe-pda-proofs.sh --matcher-counts` executes the prerequisite
+model, ten closed-capstone guards and whole-module kernel check, then requires
+exactly 8, 3, 16, 8 and 57 nonignored tests in the count-interval, count-fold,
+connective-isolation, conditional-family and PDA-equivalence suites respectively.
+The focused mode and full runner share the same functions. The September 7–8 run
+passed all 92 selected Rust tests; unrelated workspace tests are not included.
+
+| Invariant group | Executed implementation binding |
+|---|---|
+| Exact family totals; zero complement; counted conservation | `every_partitioned_par_family_admits_compressed_multiplicity_above_the_legacy_ceiling` now covers all eight families at 1,001, maximum and two-endpoint maximum-plus-one, with independent endpoint sums, per-key conservation and retained CoW roots; both `parcount_saturated_target_respects_*_complement` tests cover the complementary constraints. |
+| Finite cap quotient; impossible lower bounds | `finite_maximum_is_distinct_from_top_and_zero_annihilates_top`, `overflowing_or_impossible_lower_bounds_never_invent_a_partition` and `finite_count_arithmetic_matches_unbounded_integer_reference` cover explicit top, finite maximum, overflow and 256 arbitrary-precision arithmetic cases. The actual lower-top-clamping mutation fails the impossible-lower-bound assertion. |
+| Interval fold equations | All three `matcher_count_folds` tests compare the actual owned/borrowed PDA entries and all eight fields with an independently evaluated specification tree: direct/empty connective equations, six composed fixtures and 64 bounded generated trees. |
+| Concrete expression minimum | `parcount_saturated_free_mass_preserves_concrete_expression_minimum` covers both free-variable and wildcard maximum mass plus one concrete sibling. |
+| Exact feasible intervals; ordered filtering; uniqueness | `complete_small_partition_sequences_match_independent_positional_reference` covers 7,461 interval cases and 3,532 ordered candidates; the generated companion adds 256 cases with up to three distinct endpoints. Expected sequences use lawful positional masks and first-occurrence deduplication, not production interval normalization or a sorted-set comparison. |
+| Multiplicity-independent scratch | `fixed_endpoint_partition_scratch_does_not_grow_with_multiplicity` observes equal allocation calls/bytes for fixed endpoint count at multiplicities 1, 1,001 and maximum; `partition_allocations_scale_with_distinct_endpoints` checks the 32-to-128-endpoint growth envelope. These measure cumulative allocations, not peak RSS. |
+
+Actual temporary source mutations restoring top 1,000, projected availability and
+lower-top clamping were rejected by the expected assertions. The production files
+were restored exactly to `5ff659702c` before the registered gate passed again.
+The final gate log SHA-256 is
+`d55c4dc36e9b99574198eddd2d91fee576ae4117f00113e60a3464081e3cd442`.
+
+The supplementary depth-4,096 count probe did not pass: its 300-second scope
+expired. Stage attribution then separated construction, borrowed count and root
+drop on the same fixture. At depth 256 those phases took 0.444 s, 38.323 s and
+0.0034 s respectively on a 128-KiB stack. This identifies a count-path resource
+gap, not merely fixture setup. These are individual diagnostic observations, not
+powered benchmarks or a proof of asymptotic complexity. Required tasks 8343–8345
+under 8342 specify formal-first byte-region projection/fold refinement, runtime
+implementation and resource qualification before 8341 can close. The original
+depth-4,096 obligation remains; smaller successful probes do not replace it.
+Stack-safety report §5.29.9 records the raw phase ladder and evidence digests.
 
 ## Exact scalar projection contract (2026-09-07)
 
