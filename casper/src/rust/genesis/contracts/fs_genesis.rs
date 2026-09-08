@@ -2356,6 +2356,88 @@ mod tests {
         println!("compose_fs_genesis_source (non-empty bundle) hash = {hex}");
     }
 
+    /// M-40 review-fix (2026-09-08, S4): second non-empty-bundle
+    /// golden with sort-tie neighbors and mixed modes.  The 4-entry
+    /// golden above covers the Kind × ConsensusMode product but
+    /// gives only trivial sort inputs (all distinct first
+    /// characters).  This golden uses 6 entries with common
+    /// prefixes (`app.cfg`, `app.log/`, `app.state.bin`) so a
+    /// bundle-formatter drift that changes sort key derivation or
+    /// tie-breaking (e.g., sort by canon_path length instead of
+    /// logical_name) trips.  Also mixes read-only and read-write
+    /// modes across Consensus + Oracular.
+    #[test]
+    fn compose_fs_genesis_source_golden_hex_with_sort_tie_bundle() {
+        use crypto::rust::hash::blake2b256::Blake2b256;
+        let bundle = [
+            BundleEntry {
+                logical_name: "app.cfg".into(),
+                canon_path: PathBuf::from("/etc/app/cfg"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "app.log/".into(),
+                canon_path: PathBuf::from("/var/log/app"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "app.state.bin".into(),
+                canon_path: PathBuf::from("/@bundle/consensus/app.state.bin"),
+                kind: BundleEntryKind::File,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+            BundleEntry {
+                logical_name: "app.state.dir/".into(),
+                canon_path: PathBuf::from("/@bundle/consensus/app.state.dir"),
+                kind: BundleEntryKind::Dir,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+            BundleEntry {
+                logical_name: "zdata.bin".into(),
+                canon_path: PathBuf::from("/opt/rnode/zdata.bin"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "zdata.dir/".into(),
+                canon_path: PathBuf::from("/opt/rnode/zdata.dir"),
+                kind: BundleEntryKind::Dir,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+        ];
+        let src = compose_fs_genesis_source("00", "00", &bundle, None);
+        let h = Blake2b256::hash(src.into_bytes());
+        let hex: String = h.iter().fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        });
+        // Regenerate via
+        //   cargo test --package casper --lib -- \
+        //     compose_fs_genesis_source_golden_hex_with_sort_tie_bundle \
+        //     --nocapture
+        // ONLY when intentionally hard-forking Genesis composition
+        // OR bundle format.
+        // Pinned 2026-09-08 (M-40 S4 review-fix landing).
+        const EXPECTED: &str = "05d2b1eb036805c3eac7aa1d6dc315535bbd04801f31480bca5fe233fb26f0a2";
+        assert_eq!(
+            hex, EXPECTED,
+            "M-40 review-fix (S4): compose_fs_genesis_source() hash for \
+             sort-tie bundle changed.  Either a Genesis hard fork OR a \
+             bundle-format drift (sort key / tie-breaking / tuple field \
+             reorder).  Rerun with --nocapture and update EXPECTED."
+        );
+        println!("compose_fs_genesis_source (sort-tie bundle) hash = {hex}");
+    }
+
     /// M-4 fix (2026-08-06): cross-language drift pin for
     /// consensus-mode string literals.  The Rust constants
     /// `CMODE_ORACULAR_STR` / `CMODE_CONSENSUS_STR` in

@@ -1160,35 +1160,50 @@ fn fixed_channels_byte_54_stays_reserved_after_a8_m1_retirement() {
 /// handler + URN binding + dispatch registration + cost helper),
 /// then remove the byte from `RESERVED_GAPS`.  The pin fires until
 /// both sides agree.
-#[test]
-fn fixed_channels_assigned_set_pinned_and_gaps_reserved() {
-    let src = include_str!("../src/rust/interpreter/system_processes.rs");
-
-    // Isolate `impl FixedChannels { ... }` block so we do not
-    // catch stray `byte_name(N)` calls elsewhere (there are none
-    // today, but the guard makes the scan future-proof).
-    let impl_start = src
-        .find("impl FixedChannels {")
-        .expect("impl FixedChannels { block must exist");
+/// Scanner used by `fixed_channels_assigned_set_pinned_and_gaps_reserved`
+/// (and its sanity-check companions).  Extracted so the scan
+/// itself is testable against synthetic sources.
+///
+/// M-39 review-fix (2026-09-08): filters `//` line comments FIRST,
+/// then strips `/* ... */` block comments.  Order matters: a `/*`
+/// sequence inside a `//` line comment (e.g., the URN glob
+/// `rho:io:fs:native:1.0.0/*` on line 284 of the real source)
+/// would otherwise fool the block-comment stripper into eating
+/// everything up to the next actual `*/`, which sits well
+/// downstream and truncates the scan.  The impl-block boundary is
+/// anchored on `impl BodyRefs {` if present, then `pub struct
+/// BodyRefs`, then any next impl / pub struct.
+fn extract_fixed_channels_assigned_bytes(src: &str) -> Vec<u32> {
+    let impl_start = match src.find("impl FixedChannels {") {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
     let after = &src[impl_start..];
-    // Bound scan at the next top-level `impl` OR `pub struct`
-    // declaration to avoid straying into `BodyRefs`.
     let end_rel = after[1..]
-        .find("\npub struct ")
+        .find("\nimpl BodyRefs")
+        .or_else(|| after[1..].find("\npub struct BodyRefs"))
+        .or_else(|| after[1..].find("\npub struct "))
         .or_else(|| after[1..].find("\nimpl "))
         .map(|i| i + 1)
         .unwrap_or(after.len());
     let block = &after[..end_rel];
 
-    // Extract every `byte_name(N)` occurrence (comments already
-    // filtered by requiring the exact `byte_name(N)` call form).
+    // Filter line comments FIRST, then strip block comments.
+    // A `/*` inside a `//` line comment is not a real block
+    // comment; if we ran block-comment stripping first, the URN
+    // glob `rho:io:fs:native:1.0.0/*` (inside a `//` line comment
+    // in the real source) would trigger the stripper to eat
+    // everything up to the next `*/` and truncate the scan.
+    let non_line_comments: String = block
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let clean = strip_block_comments(&non_line_comments);
+
     let mut assigned: Vec<u32> = Vec::new();
-    for line in block.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-        let mut rest = trimmed;
+    for line in clean.lines() {
+        let mut rest = line;
         while let Some(idx) = rest.find("byte_name(") {
             let tail = &rest[idx + "byte_name(".len()..];
             let close = tail.find(')').unwrap_or(0);
@@ -1200,6 +1215,141 @@ fn fixed_channels_assigned_set_pinned_and_gaps_reserved() {
         }
     }
     assigned.sort_unstable();
+    assigned
+}
+
+/// Strip `/* ... */` block comments from `src`.  Non-nesting;
+/// works over a single pass.  Used by the M-39 scanner so a
+/// `/* byte_name(9) */` inside `impl FixedChannels` doesn't
+/// silently register byte 9 as assigned.
+fn strip_block_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            // Find the matching */.
+            let start = i + 2;
+            let mut j = start;
+            while j + 1 < bytes.len() && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
+                j += 1;
+            }
+            i = if j + 1 < bytes.len() {
+                j + 2
+            } else {
+                bytes.len()
+            };
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// M-39 review-fix (2026-09-08, S2): scanner block-comment sanity
+/// pin.  Proves that a `/* byte_name(9) */` inside a synthetic
+/// `impl FixedChannels` is NOT registered as an assignment.
+/// Pre-fix, the scanner filtered only `//` line comments; a
+/// block-commented byte_name call would have silently registered.
+#[test]
+fn extract_fixed_channels_scanner_strips_block_comments() {
+    let synthetic = "\
+impl FixedChannels {
+    /* byte_name(9) */
+    pub fn foo() -> Par { byte_name(42) }
+}
+impl BodyRefs {
+    pub const FOO: i64 = 0;
+}
+";
+    let bytes = extract_fixed_channels_assigned_bytes(synthetic);
+    assert_eq!(
+        bytes,
+        vec![42],
+        "block-commented byte_name(9) must not register; scanner \
+         returned {bytes:?}"
+    );
+}
+
+/// M-39 review-fix (2026-09-08, C4): scanner boundary sanity pin.
+/// Proves that a `byte_name(N)` inside `impl BodyRefs` (a
+/// downstream sibling block) is NOT picked up by the
+/// FixedChannels scanner.  Pre-fix, the boundary was
+/// `\npub struct ` OR `\nimpl `; if BodyRefs were declared with
+/// leading whitespace (say inside a mod block), the scanner
+/// would stray.  Post-fix, the boundary explicitly prefers
+/// `\nimpl BodyRefs`.
+#[test]
+fn extract_fixed_channels_scanner_stops_at_body_refs_impl() {
+    let synthetic = "\
+impl FixedChannels {
+    pub fn foo() -> Par { byte_name(42) }
+}
+impl BodyRefs {
+    pub const BAR: i64 = 100;
+    // A hypothetical `byte_name(99)` inside BodyRefs — the scanner
+    // must NOT pick this up.
+    pub fn should_not_leak() -> Par { byte_name(99) }
+}
+";
+    let bytes = extract_fixed_channels_assigned_bytes(synthetic);
+    assert_eq!(
+        bytes,
+        vec![42],
+        "byte_name(99) inside impl BodyRefs must NOT leak into the \
+         FixedChannels assigned set; scanner returned {bytes:?}"
+    );
+}
+
+/// M-39 review-fix (2026-09-08, S2 regression pin): a `/*` glob
+/// character inside a `//` line comment must NOT trigger the
+/// block-comment stripper to eat downstream lines.  This
+/// pattern actually occurs in the real source at line 284
+/// (`rho:io:fs:native:1.0.0/*`), and an earlier revision of the
+/// scanner truncated bytes 40-68 because of this exact
+/// confusion.
+#[test]
+fn extract_fixed_channels_scanner_ignores_glob_in_line_comment() {
+    let synthetic = "\
+impl FixedChannels {
+    pub fn foo() -> Par { byte_name(1) }
+    // URN prefix: rho:io:fs:native:1.0.0/*   <-- glob, not a real /* */ block
+    pub fn bar() -> Par { byte_name(40) }
+    pub fn baz() -> Par { byte_name(41) }
+}
+impl BodyRefs {
+    pub const X: i64 = 0;
+}
+";
+    let bytes = extract_fixed_channels_assigned_bytes(synthetic);
+    assert_eq!(
+        bytes,
+        vec![1, 40, 41],
+        "regression: /* inside a // comment must not truncate the scan; \
+         got {bytes:?}"
+    );
+}
+
+/// M-39 review-fix (2026-09-08, C4): scanner picks up multiple
+/// byte_name calls per line.  Real source has one per line today,
+/// but the scanner's inner `while` loop must handle multi-hit.
+#[test]
+fn extract_fixed_channels_scanner_handles_multiple_calls_per_line() {
+    let synthetic = "\
+impl FixedChannels {
+    pub fn foo() -> Par { byte_name(1) }
+    pub fn bar() -> Par { byte_name(2) }
+}
+";
+    let bytes = extract_fixed_channels_assigned_bytes(synthetic);
+    assert_eq!(bytes, vec![1, 2]);
+}
+
+#[test]
+fn fixed_channels_assigned_set_pinned_and_gaps_reserved() {
+    let src = include_str!("../src/rust/interpreter/system_processes.rs");
+    let assigned = extract_fixed_channels_assigned_bytes(src);
 
     // Expected assigned set (M-39 canonical, 2026-09-08).  Adding
     // a new native means adding its byte here AND at its

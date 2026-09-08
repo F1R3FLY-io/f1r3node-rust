@@ -2363,6 +2363,27 @@ mod tests {
         );
     }
 
+    /// M-37 review-fix (2026-09-08, C2): should-panic sanity pin
+    /// for the WalOp count check.  Proves the assertion actually
+    /// fires on a wrong-count synthetic input rather than being
+    /// silently no-op.  Uses a helper to isolate the assertion
+    /// from the real pin slice.
+    #[test]
+    #[should_panic(expected = "pin count drifted")]
+    fn wal_op_count_check_fires_on_wrong_count() {
+        fn check(pins: &[(WalOp, u8)], expected: usize) {
+            assert_eq!(
+                pins.len(),
+                expected,
+                "M-37: pin count drifted — either add a pin entry \
+                 for a new WalOp variant OR bump EXPECTED_WAL_OP_COUNT \
+                 (hard-fork surface either way)"
+            );
+        }
+        // Synthetic: only 1 pin but "expected" 16 → must panic.
+        check(&[(WalOp::Write, 1)], 16);
+    }
+
     // ------------------------------------------------------------------
     // Round-2 review-fix tests (H-30-4 / H-30-5 / H-30-7 / coverage M1/M2)
     // ------------------------------------------------------------------

@@ -438,6 +438,87 @@ mod tests {
         );
     }
 
+    /// M-38 review-fix (2026-09-08, C3): env-colocation pin for
+    /// every core DB.  Pre-fix, only `payload-source-index` had an
+    /// env-colocation pin (the T-3 canary): a future entry that
+    /// landed in the wrong env (say, `parents-map` moved to
+    /// `dagstorage` from `casperbuffer`) would pass the presence
+    /// pin above but split atomicity across store envs at runtime.
+    ///
+    /// This test walks every core DB and asserts its env matches
+    /// the expected sub-folder name — same class of check as the
+    /// payload-source-index pin, generalized.
+    #[test]
+    fn rnode_db_mapping_pins_env_colocation_for_all_core_dbs() {
+        let mapping = rnode_db_mapping(None);
+        let by_name: std::collections::HashMap<&str, &str> = mapping
+            .iter()
+            .map(|(db, cfg)| (db.id(), cfg.name.as_str()))
+            .collect();
+
+        // Expected (db_name, env_sub_folder) pairs.  Env sub-folder
+        // names come from the `*_env_config` fns above.
+        let expected_env_by_db: &[(&str, &str)] = &[
+            // Block storage
+            ("blocks", "blockstorage"),
+            // DAG storage
+            ("blocks-approved", "dagstorage"),
+            ("finalization-certificates", "dagstorage"),
+            ("block-metadata", "dagstorage"),
+            ("dag-admission-schema", "dagstorage"),
+            ("equivocation-tracker-v5", "dagstorage"),
+            ("equivocation-evidence-v5", "dagstorage"),
+            ("latest-messages", "dagstorage"),
+            ("invalid-blocks", "dagstorage"),
+            ("deploy-index", "dagstorage"),
+            ("deploy-occurrence-index", "dagstorage"),
+            ("payload-source-index", "dagstorage"),
+            ("floor-index", "dagstorage"),
+            ("frontier-index", "dagstorage"),
+            ("deploy-lifecycle-events", "dagstorage"),
+            ("carrier-index", "dagstorage"),
+            ("carrier-index-meta", "dagstorage"),
+            ("deploy-lifecycle-terminal", "dagstorage"),
+            ("last-finalized-block", "dagstorage"),
+            ("genesis-hash", "dagstorage"),
+            (FinalizationLedger::STORE_NAME, "dagstorage"),
+            ("mergeable-channel-cache", "dagstorage"),
+            // Deploy storage
+            ("deploy_storage", "deploystorage"),
+            ("deploy_envelope_storage_v6", "deploystorage"),
+            ("rejected_deploy_buffer", "deploystorage"),
+            // Reporting
+            ("reporting-cache", "reporting"),
+            // CasperBuffer
+            ("parents-map", "casperbuffer"),
+            // Rholang evaluator
+            ("eval-history", "eval/history"),
+            ("eval-roots", "eval/history"),
+            ("eval-cold", "eval/cold"),
+            // Transaction
+            ("transaction", "transaction"),
+            // Non-legacy rspace
+            ("rspace-history", "rspace/history"),
+            ("rspace-roots", "rspace/history"),
+            ("rspace-cold", "rspace/cold"),
+        ];
+
+        for (db_name, expected_env) in expected_env_by_db {
+            let actual_env = by_name.get(db_name).unwrap_or_else(|| {
+                panic!(
+                    "M-38 env-colocation pin: DB `{db_name}` is missing from \
+                     rnode_db_mapping.  Fix the mapping OR remove this expected entry."
+                )
+            });
+            assert_eq!(
+                actual_env, expected_env,
+                "M-38: DB `{db_name}` is in env `{actual_env}` but expected `{expected_env}`. \
+                 Splitting a DB into a different env silently breaks atomic writes across \
+                 related indices (same class as the payload-source-index T-3 canary saga)."
+            );
+        }
+    }
+
     /// M-38 companion (2026-09-08, A8-F5): legacy-rspace branch pin.
     /// Independent of the non-legacy pin because the two branches
     /// diverge in the rspace-* group (legacy has 4: history, roots,

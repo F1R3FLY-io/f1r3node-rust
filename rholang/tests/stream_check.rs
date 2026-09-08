@@ -336,6 +336,70 @@ async fn chunk_non_int_returns_fserr_bad_arg() {
     assert_eq!(code, "FSERR_BAD_ARG");
 }
 
+/// M-36 review fix (2026-09-08): runtime coverage for the
+/// `MAX_CHUNK_ITEMS` cap.  The M-36 refactor moved the guard from
+/// a bare `i > 65536` to `match 65536 { MAX_CHUNK_ITEMS => match i
+/// > MAX_CHUNK_ITEMS { ... } }` — a Rholang match-as-binding that
+/// depends on `MAX_CHUNK_ITEMS` being interpreted as an unbound
+/// pattern variable (which then binds to 65536).  The source-scan
+/// pin `stream_chunk_enforces_max_chunk_items_cap` and the
+/// fingerprint slot 11 catch value drift + cross-language drift,
+/// but they do not catch a runtime-semantics regression (e.g., if
+/// the match were to shadow a builtin or evaluate to a different
+/// scrutinee).  This test asserts the cap fires on n > 65536
+/// with `FSERR_QUOTA_EXCEEDED` — closing the S1/C1 coverage gap
+/// from the M-36..M-40 review.
+///
+/// Uses 65537 (cap + 1) as the test input.  The gathering path
+/// is short-circuited by the guard before ever touching state, so
+/// this test does not require a 65537-element producer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chunk_over_cap_returns_fserr_quota_exceeded() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = test_over_stream(
+        r#"["a"]"#,
+        r#"for (@r <- @stream!?("chunk", 65537)) { @"out"!(r) }"#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "chunk with n > MAX_CHUNK_ITEMS must fail");
+    assert_eq!(
+        code, "FSERR_QUOTA_EXCEEDED",
+        "chunk(65537) must return FSERR_QUOTA_EXCEEDED (M-36 cap \
+         semantics regression — verify the `match 65536 {{ \
+         MAX_CHUNK_ITEMS => match i > MAX_CHUNK_ITEMS ... }}` \
+         binding still evaluates as expected)"
+    );
+}
+
+/// M-36 review companion (2026-09-08): the exact cap value (n =
+/// MAX_CHUNK_ITEMS = 65536) is the largest allowed input.  Pin
+/// that the boundary is `>` (strict) not `>=` — a subtle change
+/// to the guard direction would silently reject one valid input
+/// value but pass all other tests.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chunk_at_cap_boundary_is_allowed() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // At-cap is allowed; the producer only has 1 element so the
+    // gathered result is short — but the guard must have passed
+    // (no FSERR_QUOTA_EXCEEDED).
+    let src = test_over_stream(
+        r#"["a"]"#,
+        r#"for (@r <- @stream!?("chunk", 65536)) { @"out"!(r) }"#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(
+        ok || code != "FSERR_QUOTA_EXCEEDED",
+        "chunk(65536) MUST NOT trip the MAX_CHUNK_ITEMS cap; the \
+         boundary is `>` not `>=`.  Got ok={ok}, code={code}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fold_counts_stream_length() {
     let (space, reducer) =
