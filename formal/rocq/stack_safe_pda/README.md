@@ -35,6 +35,39 @@ The theorem kernel is schema-parametric. The generated Rust equivalence manifest
 
 The development contains no axioms, admitted goals, opaque assumptions, Verus `assume`, or external proof bodies.
 
+## Singleton EPathMap import prefilter (2026-09-08)
+
+`CanonicalEPathMapImport.v` refines the existing singleton import admission
+decision with a negative EPM1 mode/count hint. It does not replace ACT validation
+or the importer. The hint reads only framing; every hinted singleton still passes
+through the original inspector. The proof's named `inspector_refines_epm1_framing`
+premise requires a successful inspection to agree with a complete EPM1 parse.
+Twelve closed reports cover six general contracts and six synthetic controls.
+
+| Formal contract | Executable correspondence in `models/tests/support/epathmap_fast_import.rs` |
+|---|---|
+| `decoded_epm1_prefix_determines_route_hint` | `singleton_prefilter_full_inspection_refines_hint_for_generated_and_mutated_images`: 128 generated snapshots, each with a replacement/truncation/append variant; full inspection implies the same hint mode and value count. Neutral empty inputs remain covered. |
+| `singleton_prefilter_preserves_result` and `singleton_prefilter_preserves_fallback_observation` | Positive singleton, forged-count and same-hint-corruption controls; the focused gate also reruns seven existing Var, metadata, import and owned-component witnesses. This is not exhaustive Rust equivalence. |
+| `prefilter_machine_has_exact_execution` | Positive and negative examples exercise both phases, rather than only proving properties of an unreachable machine. |
+| `width_rejection_never_invokes_full_inspection` | Wide-map tests require zero inspector entries and zero expanded-key copies; an actual unfiltered-inspector control must copy shared prefixes. The nested case requires three, not four, inspections. |
+| `hinted_singleton_still_invokes_full_inspection` | Forged count and corrupted ACT retain one inspector entry and are rejected. A hint-only admission implementation fails these controls. |
+
+The Rust counters are test-only and thread-local. Their scope is inspector calls
+and owned endpoint-key copying, not total allocation, memory residency or runtime.
+The formal controls use synthetic topology and do not establish actual ACT parser
+correctness. CEI-01–06/08 (the remaining canonical EPathMap import grammar,
+metadata/stability and importer correspondence obligations) and the shared
+byte-native key-validation replacement in task 6018 remain required.
+
+Run `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import` from the
+repository root. It rebuilds the imports, requires twelve closed reports and
+successful kernel checking, and runs twelve Rust tests with property seed
+`41315976` by default. Proof/Rust cgroup ceilings are 2/6 GiB with swap disabled.
+Both stages are also registered in the aggregate gate; this is an internal
+admission optimization, not a new generated schema traversal/manifest entry.
+The [journal](../../../docs/design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-084--2026-09-08-reject-ineligible-singleton-imports-before-expanded-key-inspection)
+retains causal evidence and the distinction between formal premises and runtime tests.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

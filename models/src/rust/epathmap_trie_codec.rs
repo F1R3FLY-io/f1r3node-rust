@@ -1853,7 +1853,13 @@ fn collect_canonical_keys(
                 Some(range) => CanonicalSnapshotKey::Relative(
                     arena_start + range.start..arena_start + range.end,
                 ),
-                None => CanonicalSnapshotKey::Owned(endpoint.path.to_vec()),
+                None => {
+                    #[cfg(test)]
+                    crate::rust::par_bag::epathmap_fast_import_tests::record_key_copy(
+                        endpoint.path.len(),
+                    );
+                    CanonicalSnapshotKey::Owned(endpoint.path.to_vec())
+                }
             });
         }
     }
@@ -2071,6 +2077,8 @@ pub(crate) fn visit_canonical_snapshot_topology(
 pub(crate) fn inspect_canonical_map_snapshot(
     bytes: &[u8],
 ) -> Result<CanonicalSnapshotInspection, TrieCodecError> {
+    #[cfg(test)]
+    crate::rust::par_bag::epathmap_fast_import_tests::record_inspection();
     let inspection = inspect_canonical_snapshot(bytes)?;
     if inspection.mode != EPathMapMode::Map {
         return Err(TrieCodecError::new(

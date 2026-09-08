@@ -271,6 +271,40 @@ rspace_preparation_run_tests() {
   fi
 }
 
+epathmap_import_proofs() {
+  local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  rocq_reject_placeholders theories/CanonicalEPathMapImport.v
+  rocq_compile_with_closed_count theories/CanonicalEPathMapImport.v 12 \
+    "singleton EPathMap prefilter refinement and controls"
+  rocq_check_modules "singleton EPathMap prefilter" StackSafePDA.CanonicalEPathMapImport
+}
+
+epathmap_import_runtime() {
+  local TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512
+  local -x RUST_TEST_THREADS=4
+  local -x PROPTEST_RNG_SEED="${PROPTEST_RNG_SEED:-41315976}"
+  rpb3_run_tests 5 --release -j4 --lib singleton_prefilter
+  rpb3_run_tests 1 --release -j4 --lib canonical_var_cursor_accepts_exact_encoder_images_only
+  rpb3_run_tests 5 --release -j4 --lib singleton_epathmap
+  rpb3_run_tests 1 --release -j4 --lib \
+    owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
+}
+
+if [[ "${1:-}" == "--epathmap-import" ]]; then
+  export TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  pushd "$rocq_root" >/dev/null
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
+  epathmap_import_proofs
+  popd >/dev/null
+  pushd "$repo_root" >/dev/null
+  epathmap_import_runtime
+  popd >/dev/null
+  echo "stack-safe-pda: focused EPathMap prefilter proof and 12-test gate passed"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--match-preparation" ]]; then
   export PROPTEST_RNG_SEED="${PROPTEST_RNG_SEED:-41316588}"
   export TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
@@ -499,6 +533,7 @@ if [[ "$streaming_codec_closed_capstones" != "20" ]]; then
   exit 1
 fi
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
+epathmap_import_proofs
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
 )"
@@ -694,6 +729,7 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
 # green formal run cannot silently omit the Rust oracle comparison.
 pushd "$repo_root" >/dev/null
 rpb3_run_tests 22 --lib protobuf_admission::tests
+epathmap_import_runtime
 rpb3_run_tests 1 --lib \
   production_component_admission_is_differentially_equivalent_for_all_nine_families
 rpb3_run_tests 3 --test par_bag admitted_

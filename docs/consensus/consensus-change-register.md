@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-07 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-09-08 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -4962,6 +4962,24 @@ PathMap state, normalized `Par`, error boundary, hashes, COMM schedule, charge, 
 order remain unchanged. The work is classified as shadow implementation and executable evidence;
 no consensus-neutrality or production-performance verdict is inferred before the named cutover and
 equivalence gates close.
+
+**CBR-044 admission-boundary clarification (2026-09-08, task 5976).** The singleton
+EPathMap fast importer now consults the existing EPM1 mode/count hint before full
+ACT inspection. A non-singleton or invalid hint declines this optimization; it
+does not itself reject the public protobuf input. The existing decoder fallback
+remains authoritative, and a positive hint still requires the unchanged full
+inspector, key validation and metadata checks. No EPM1/ACT version, value ordinal,
+protobuf/bincode representation, hash rule or language surface is changed by this
+guard. This is an implementation-boundary clarification within the existing
+entry, not a new consensus-changing surface or retirement of CBR-044.
+
+The prefilter model proves identical singleton import and fallback observations
+under its explicit inspector-framing premise. Real ACT controls retain rejection
+of forged counts and same-hint corruption; the generated/mutated framing property
+exercises that premise against Rust. The complete Var/stability refinement and
+shared byte-native key-admission obligations remain open. This evidence must not
+be promoted to a verdict for the entire admission or persistence campaign. See
+the stack-safety report §5.33.6 and PathMap journal J-084 for the exact scope.
 
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that

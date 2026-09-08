@@ -9866,6 +9866,42 @@ and
 [`measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json`](measurements/protobuf-region-width-experiments-306-309-analysis-2026-08-23.json).
 CBR-067 and CBR-068 record the measured-neutral consensus disposition.
 
+#### 5.33.6 Singleton import rejection before expanded-key inspection (2026-09-08, task 5976)
+
+This is a separate admission-path refinement, not a revision of experiment 309's
+matcher-endpoint measurement. The singleton importer previously inspected an
+entire EPM1/ACT snapshot before discovering that it was a wide map. Noncontiguous
+ACT endpoint paths could therefore be copied even though the fast path declined.
+The existing shallow mode/count hint now rejects such inputs before inspection
+at every nested level. Eligible singleton candidates retain full ACT, value-count,
+key and metadata validation. A hint never establishes admission.
+
+The model-derived work controls distinguish the previous implementation:
+
+| Witness | Previous work | Treatment requirement, passing |
+|---|---|---|
+| Two keys sharing 4,096 string bytes | One inspection; two key copies; 8,216 copied bytes | No inspection or expanded-key copy |
+| Widths 2, 16, 64 | Unfiltered inspector copies at least 4,096 bytes per endpoint | No inspection or expanded-key copy on singleton decline |
+| Wide map beneath three singleton wrappers | Four inspections | Three inspections; reject at the wide child |
+| Declared singleton count with wider ACT topology | Full inspection rejects | Still rejects; hint is not admission |
+| Corrupted ACT with unchanged mode/count hint | Full inspection rejects | Still rejects; hint is not admission |
+
+The red run fails three of four work-control tests; the corrected run passes all
+four. The focused `--epathmap-import` gate additionally binds twelve closed Rocq
+reports to a 128-case generated/mutated framing property and seven existing
+Var/admission/stability tests. Formal equivalence is conditional on the named
+inspector-framing refinement; the Rust property exercises that premise. Synthetic
+formal topology controls are not presented as complete ACT verification.
+The [PathMap journal J-084](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-084--2026-09-08-reject-ineligible-singleton-imports-before-expanded-key-inspection)
+records commands, causal controls and evidence digests.
+
+This eliminates the measured ineligible-width copying branch. It does not prove
+all admitted inputs decode-free or linear in physical bytes: accepted key
+validation still constructs typed results, and its shared byte-native replacement
+remains assigned to 6018. A shrinking nested value suffix proves termination, not
+the total key-validation cost. No new latency, allocation-count, RSS, native-stack
+slope or PathMap/ACT-versus-LMDB performance result is claimed here.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

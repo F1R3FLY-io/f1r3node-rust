@@ -3541,9 +3541,7 @@ fn canonical_singleton_gint_par(protobuf: &[u8]) -> bool {
 }
 
 /// Prove an exact one-entry map chain directly in its nested EPM1/protobuf
-/// image. Every loop iteration consumes one strictly smaller value body, so
-/// work and auxiliary state are linear in the final byte string rather than in
-/// the sum of all decoded suffix graphs.
+/// image.
 struct CanonicalSingletonEPathMapChainProof<'a> {
     depth: usize,
     terminal: &'a [u8],
@@ -3558,6 +3556,10 @@ fn canonical_singleton_epathmap_chain_proof(
     let mut depth = 0usize;
     let mut nested_values_stable = true;
     loop {
+        let hint = crate::rust::epathmap_trie_codec::snapshot_route_hint(snapshot).ok()?;
+        if hint.mode() != EPathMapMode::Map || hint.map_value_count() != 1 {
+            return None;
+        }
         let inspection =
             crate::rust::epathmap_trie_codec::inspect_canonical_map_snapshot(snapshot).ok()?;
         if inspection.mode != EPathMapMode::Map
@@ -5549,6 +5551,10 @@ impl<'de> Deserialize<'de> for ParBag {
 #[cfg(test)]
 #[path = "../../tests/support/resident_send_projection.rs"]
 mod resident_send_projection_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/epathmap_fast_import.rs"]
+pub(crate) mod epathmap_fast_import_tests;
 
 #[cfg(test)]
 mod fast_key_tests {

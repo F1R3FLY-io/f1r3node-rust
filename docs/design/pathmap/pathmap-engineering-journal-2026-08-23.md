@@ -5832,6 +5832,106 @@ observations are the required refinement. This completes the local task-6588
 proof/test slice, not daemon verification, backend qualification, or the
 PathMap/ACT-versus-LMDB comparison.
 
+### J-084 — 2026-09-08: reject ineligible singleton imports before expanded-key inspection
+
+**QUESTION.** Does the existing singleton EPathMap fast importer justify a
+blanket decode-free, linear-in-encoded-bytes claim for accepted and declined inputs?
+
+**OBSERVED CORRECTNESS FOUNDATION.** The runtime repair already landed in
+`a6b3ad090`: exact canonical Var recognition, validation of each outer/nested
+remainder, and the component-stability fold retain root and map metadata at their
+proper boundaries. Re-running the existing focused release witnesses at
+`a7e4113e7` passes seven tests: the Var image matrix, five singleton import/stability
+cases, and the owned-component admission-lane witness. The 6-GiB, zero-swap run log
+has SHA-256 `3b12a6092b29c35333fb974189b3fc4c7d52c952e402c9d015a43988f2cb1d2d`.
+No semantic mismatch was demonstrated by this audit; these tests do not prove
+universal resource bounds.
+
+**DERIVED RESOURCE GAPS.** Before this treatment, `canonical_singleton_epathmap_chain_proof`
+called full snapshot inspection before testing singleton width. The inspector's
+`collect_canonical_keys` can copy noncontiguous expanded endpoint paths before a
+valid wide map is declined. Accepted ACT keys also call `validate_canonical_path`,
+which constructs semantic `Par` results and can decode/re-encode nested map-key
+values. A shrinking outer value suffix establishes termination; it does not by
+itself bound all key-validation or expanded-prefix work by physical input bytes.
+
+**DECISION, TASK 5976.** Reuse `snapshot_route_hint` as a negative Map/count-one
+prefilter, followed by the unchanged complete inspector for every surviving
+candidate. A hint is never admission authority. The inspector already checks ACT
+summary/value-count agreement before copying endpoints, so forging a singleton
+declaration does not bypass that validation. The focused formal model must prove
+the prefix/count relation and unchanged successful imports; executable controls
+must observe real inspection and endpoint-copy events, including a positive
+unfiltered-inspector control. This change requires no PathMap fork or new parser.
+
+**EXISTING SHARED OWNER, TASK 6018.** Exact byte-native ACT-key admission and
+stability must reuse the persistent region/reducer/obligation driver already
+being implemented under 6018/6014. Its narrow key-summary entry and qualification
+remain required. Do not duplicate that driver in the singleton importer or mark
+5976's universal resource obligation complete while typed key validation remains.
+The prefilter proof/implementation and the remaining Var, metadata-fold and
+import-correspondence proof obligations can proceed without waiting for this
+shared adapter. No new speedup, allocation slope, consensus-neutrality result,
+or campaign-completion claim is inferred from the seven passing tests.
+
+**FORMAL-FIRST TREATMENT.** `CanonicalEPathMapImport.v` has twelve closed reports
+and passes kernel checking. Its framing theorem links a successful EPM1 parse to
+the hint's mode and declared value count. Under the named
+`inspector_refines_epm1_framing` premise, prefiltering preserves the original
+singleton import result and arbitrary downstream fallback observations. The
+explicit two-phase machine proves that a rejected hint never invokes full
+inspection, while a positive hint still does. Six synthetic topology controls
+are formal controls, not proofs of the Rust ACT implementation. The executable
+framing property checks the premise against that implementation on 128 generated
+snapshots and their byte-replacement, truncation or appended-byte variants.
+
+**CAUSAL RED/GREEN RESULT.** Before the four-line production guard, three of the
+four new work-control tests failed. A two-entry map with a 4,096-byte shared string
+prefix caused one full inspection and two expanded-key copies totaling 8,216
+bytes before declining. After the guard, all four pass: widths 2, 16 and 64
+decline with zero inspections and zero copied endpoint bytes. Their unfiltered
+full-inspector controls still copy at least 4,096 bytes per endpoint. A wide map
+under three eligible singleton wrappers incurs three inspections, not four.
+Forged singleton counts and corrupted ACT bytes retain full inspection and reject.
+The counters observe actual inspector entry and `Owned` key-copy branches; they
+are thread-local and compiled only for tests. They do not measure total allocator
+traffic, wall time, RSS or all decoder work.
+
+The failing run has SHA-256
+`286ef7e95ee045ab465bae04ca5f3c06ff5a27d0ea49a57424a1cf2cf6157785`;
+the four-test passing run has SHA-256
+`76f17997627643ac29cfc646127ca5fbb7c9d627ac65fb4f1b9af2df6f6bfb36`.
+Both use release builds under a 6-GiB cgroup ceiling with swap disabled.
+`bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import` rebuilds the
+formal imports, checks twelve closed reports and their kernel validity, and runs
+the five prefilter tests plus seven existing admission/stability witnesses.
+Proof processes are capped at 2 GiB; Rust processes at 6 GiB; both disable swap.
+This same proof/runtime pair is registered in the full verification script.
+
+**TEST-HARNESS CORRECTION.** The first framing-property run shrank to width zero:
+an empty map constructor produces neutral Empty storage, which the map-only
+inspector correctly declines. The property now uses the general snapshot
+inspector, retaining rather than filtering out empty inputs. This was an invalid
+test non-vacuity assumption, not a production admission counterexample. The
+failed expanded-gate log has SHA-256
+`66ab88ff15ee4c1c93ad518538cb0062987d18385d602491ab52de054cddbe8a`.
+
+**LIMIT OF THIS CHECKPOINT.** The remaining Var, metadata-fold and importer
+correspondence proofs are not discharged by the prefilter theorem. The accepted
+key validator remains the existing typed implementation owned by the shared
+6018 replacement. Removing an unsupported linear-work source comment corrects
+the claim; it does not close that implementation obligation or the LMDB comparison.
+
+**QUALIFIED CHECKPOINT.** The final focused run, with the retained regression
+seed beside its test source under `models/tests/support/`, passes all twelve
+runtime tests and kernel checking. Its log SHA-256 is
+`abe302c947536100bc7827c9de4e4056d5286e63007b1084661f4427686ee417`.
+The formal source SHA-256 is
+`e8e5029cb66f9bd301f19ee670936ebf24375e9be2a2da9fa96ecff5c9fd29fd`.
+The independent plan-agent review found no correctness/counter-vacuity blocker;
+its packaging observation was addressed by registering the theory in
+`_CoqProject` and documenting the proof-to-test correspondence in the formal README.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
