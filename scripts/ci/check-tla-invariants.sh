@@ -102,6 +102,7 @@ POST_FIX_CONFIGS=(
     recovery_leader/MC_RecoveryLeader
     replay_liveness/MC_ReplayHotLoop
     carrier_index/MC_CarrierIndex
+    soak_disk/MC_SoakDisk
 )
 
 TLC_WORKERS=auto
@@ -109,6 +110,7 @@ if [[ "$SOAK_PR" == true ]]; then
     POST_FIX_CONFIGS=(
         replay_liveness/MC_ReplayHotLoop
         carrier_index/MC_CarrierIndex
+        soak_disk/MC_SoakDisk
     )
     TLC_WORKERS=2
 fi
@@ -147,6 +149,7 @@ fi
 NEGATIVE_CONTROLS=(
     carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
     carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
+    soak_disk/MC_SoakDisk_floor_only_pre_fix:AdmissionRequiresBand
 )
 
 failed=0

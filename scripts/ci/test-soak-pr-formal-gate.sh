@@ -45,6 +45,7 @@ fi
 case "$config" in
     MC_CarrierIndex_dag_first_pre_fix.cfg) invariant=IndexCompleteForWindow ;;
     MC_CarrierIndex_read_failure_pre_fix.cfg) invariant=AbsenceProofSound ;;
+    MC_SoakDisk_floor_only_pre_fix.cfg) invariant=AdmissionRequiresBand ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -55,6 +56,8 @@ chmod +x "$WORK/bin/tlc"
 pr_configs=(
     replay_liveness/MC_ReplayHotLoop
     carrier_index/MC_CarrierIndex
+    soak_disk/MC_SoakDisk
+    soak_disk/MC_SoakDisk_floor_only_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

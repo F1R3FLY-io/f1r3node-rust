@@ -5,10 +5,10 @@ claimed_by: claude-session-74f6ecbb
 claimed_at: 2026-09-08T01:30:00Z
 handoff_status: ready
 next_steps:
-  - Confirm hosted inventory execution for pushed G0/B3 commit 9310ae2ce.
+  - "DONE: hosted inventory execution is recorded for 9310ae2ce and d6aaba962 in commit bc1e16380."
   - Confirm required-check enforcement with a maintainer who can inspect classic protection.
   - Use the retained run 34180346282 inspection to prepare the remaining diagnostic work.
-  - Run D1 historical disk RED in a disposable container without host cleanup mounts.
+  - "DONE: local D1 production and formal RED/GREEN matched in disposable isolation. Confirm hosted checks and maintainer review."
   - "DONE 2026-09-08T06:20Z: repinned SYSTEM_INTEGRATION_REF x3 to SI 7f488f93 (PR #137 head after main 0fb6337 was merged in at 1e411383; descends per merge-base --is-ancestor). The first SI push c32f1f1d was refused because it was cut from dev and lacked #132 and #134"
   - "DONE 2026-09-08T06:40Z: repinned again to SI 022ae6d3, the #137 head that bounds the post-mortem du walks at 10s in aggregate and covers them in tests; descends from 7f488f93 and 0fb6337"
   - "DONE 2026-09-08: verified PR stack #139 → #138 and repinned all three sites to merged main revision 962effd1."
@@ -120,4 +120,20 @@ Pin, collector, release, and formal-routing regression checks passed. The collec
 
 The workload file and both collectors are unchanged across the repin. The finalization wait remains 45 seconds. The failed-run evidence remains separate from future acceptance evidence.
 
-No new soak, production correction, formal discharge, commit, or push followed the repin.
+No new soak, production correction, formal discharge, commit, or push followed the repin during that inspection.
+
+## D1 admission verification
+
+The [D1 record](../cbc-evidence/scripts-run-merge-recovery-soak-sh.md) retains the historical production failure, matching formal counterexample, and GREEN results.
+
+The pre-fix driver at `0f5d2b74` admitted one iteration after zero reclamation at 7,000 MiB. The corrected driver at `ca85cfe3e` refused admission and recorded failure.
+
+The current driver has the same bytes as that correction. No production change was needed. The corrected model completed with 54 distinct states.
+
+The tests used disposable containers without host mounts or network access. The first fixture attempt failed on file permissions before driver execution and is not RED evidence.
+
+The final fixture includes the required metric and summary helpers. The existing three-scenario driver suite also passed inside a disposable container.
+
+The bounded formal tier now runs three positive configurations and three expected-failure controls. All six passed local classification and actual TLC verification.
+
+The inventory retains pending candidate status. Hosted D1 execution, model review, mandatory-scope ratification, G0 enforcement, and the remaining repair gates stay open.

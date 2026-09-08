@@ -27,7 +27,10 @@ MARKER="${1:?marker file (iteration .started) is required}"
 LOG_ROOT="${2:?log root directory is required}"
 REGISTRY="${3:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/soak-metrics.json}"
 
-emit_empty() { printf '{}\n'; exit 0; }
+emit_empty() {
+  printf '{}\n'
+  exit 0
+}
 
 command -v jq >/dev/null 2>&1 || emit_empty
 [ -r "$REGISTRY" ] || emit_empty
@@ -67,21 +70,21 @@ dedup_files_by_content() {
 # One pass over the logs; keep only metric lines so the per-key greps below
 # scan a small buffer rather than the full log set again.
 lines="$(find "${LOG_ROOTS[@]}" -type f \( -name '*.log' -o -name '*.txt' \) \
-  -newer "$MARKER" 2>/dev/null \
-  | dedup_files_by_content \
-  | xargs -r grep -h -o 'SOAK_METRIC [^"]*' 2>/dev/null)" || true
+  -newer "$MARKER" 2>/dev/null |
+  dedup_files_by_content |
+  xargs -r grep -h -o 'SOAK_METRIC [^"]*' 2>/dev/null)" || true
 [ -n "${lines:-}" ] || emit_empty
 
 out='{}'
 while IFS= read -r key; do
   [ -n "$key" ] || continue
   # value= may be integer or float, optionally negative.
-  stats="$(printf '%s\n' "$lines" \
-    | grep -E "(^|[[:space:]])name=${key}([[:space:]]|$)" 2>/dev/null \
-    | grep -oE 'value=-?[0-9]+(\.[0-9]+)?' \
-    | cut -d= -f2 \
-    | sort -g \
-    | awk '{ a[NR] = $1 }
+  stats="$(printf '%s\n' "$lines" |
+    grep -E "(^|[[:space:]])name=${key}([[:space:]]|$)" 2>/dev/null |
+    grep -oE 'value=-?[0-9]+(\.[0-9]+)?' |
+    cut -d= -f2 |
+    sort -g |
+    awk '{ a[NR] = $1 }
            END { if (NR == 0) exit
                  p50 = a[int((NR + 1) * 0.5)]
                  p95 = a[int((NR + 1) * 0.95)]

@@ -9,6 +9,10 @@ system_boundaries:
   - verifier-process
   - filesystem
   - github-actions
+  - disk-probe
+  - container-engine
+  - workload-process
+  - clock
 behaviors:
   - id: B1
     statement: The formal gate accepts a carrier negative control only when TLC reports its expected invariant violation.
@@ -44,11 +48,27 @@ behaviors:
         red_exit: 1
         green_exit: 0
         required_check_enforcement: pending
+  - id: B4
+    statement: Disk admission refuses a new iteration when cleanup leaves the valid sample below floor plus band.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md
+        test: scripts/bench/test-soak-disk-admission.sh
+        red_revision: 0f5d2b7414786cd27b8a686ca636485c35a5edce
+        corrected_revision: ca85cfe3ecf73123b044b188b0c363fdbdff1e33
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
 
-The user approved the [prevention plan](../plans/soak-recurrence-prevention-2026-09-08.md). This checklist starts Gate G0 without changing consensus behavior or soak workloads.
+The user approved the [prevention plan](../plans/soak-recurrence-prevention-2026-09-08.md). This checklist covers G0 and the local D1 cycle without changing consensus behavior or soak workloads.
 
 ## Boundaries
 
@@ -61,6 +81,7 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B1: The gate rejects clean negative controls, incorrect invariant violations, tool failures, timeouts, and missing configurations.
 - [x] B2: Local tests and hosted bounded verification pass. Required-check enforcement remains pending.
 - [x] B3: The claim inventory binds source digests and distinguishes baseline evidence from pending obligations.
+- [x] B4: Historical production and formal counterexamples match. The existing admission correction passes both local checks.
 
 ## Cycle evidence
 
@@ -76,4 +97,10 @@ The hosted formal job passed on PR head `43af06da` with synthetic checkout `bad7
 
 Required-check enforcement and complete acceptance identity remain open. `CLAIM-SOAK-GATE-001` and `CLAIM-FINALITY-002` remain pending.
 
-The checklist is locally complete, but Gate G0 is not complete. Inventory validity does not discharge a claim or authorize a soak.
+B4 completes the local D1 cycle. Its container fixture replaces external disk, Docker, and workload commands, not the driver's admission logic.
+
+The first fixture attempt failed before driver execution because of file permissions. That attempt is not RED evidence. The final fixture preserves the complete required helper set.
+
+The model checks one admission decision with four possible free-space values. It permits zero reclamation and checks both sufficient-reclamation admission and recorded refusal.
+
+Hosted D1 execution and maintainer review remain pending. G0 is not complete. Inventory validity does not discharge a claim or authorize a soak.

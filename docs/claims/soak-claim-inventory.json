@@ -2,12 +2,26 @@
   "schema_version": 1,
   "scope": "soak-recurrence-prevention",
   "candidate": {
-    "base_commit": "9310ae2ceda65d1944e1235336fd12df489e4197",
+    "base_commit": "bc1e1638068708f90f4b65574bc2b6b762bff73f",
     "binding": "source-sha256",
     "inputs_sha256": {
+      "docs/Glossary.md": "999a3b92700428364a82abbf9d2089eda4a3708b8762cfc7510f16de54fd69ec",
+      "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md": "d1beaad52820cd00d45751153d48d346c83e0ad5a3144753bd6c3796427760f2",
+      "docs/tdd-plans/soak-gates-2026-09-08.md": "5e1703f412781f06a5335475bc3daf6235840880b42617d476f412fe4e5db7fb",
+      "formal/tlaplus/soak_disk/MC_SoakDisk.cfg": "baa1c4153fc8c485d6d15ce267adb601f1585a4e24f0686ff07f3bec8b9894f4",
+      "formal/tlaplus/soak_disk/MC_SoakDisk.tla": "3f1c1f5589f430a424efe8c8916f7b725b1bc33bd39e49959ffd3c63d11ab039",
+      "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg": "0ee62f80739ff4f03d47555b4cb4550738d909f6a247a66fd62b73ac30051132",
+      "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.tla": "e15a4a65454687dffb48356319845bb0a16db5e53e6f05542784e655ca307890",
+      "formal/tlaplus/soak_disk/README.md": "0aaa8efde8a8d0c1ba9ff2b48db538f6c809de77bd637f887b746579b29996fd",
+      "formal/tlaplus/soak_disk/SoakDisk.tla": "17219df7246a0e349fcb9072590a2576fa568f38755364c7f637f0227bede942",
+      "scripts/bench/collect-soak-metrics.sh": "6a04b8aa2b3335012eba6b66793b784c28fbedfd5160844c27e0d8abf01e7554",
+      "scripts/bench/soak-disk-test.Dockerfile": "85340de51da31c1ea8ded3c4a20a8e0cf8f85a26b0cfc13ab4b29768d5048aa9",
+      "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7",
+      "scripts/bench/test-soak-disk-admission.sh": "c80222f3455d9f0f3374486a911d1c8a2310063479967fcd42a3f8f2b94dfe08",
+      "scripts/bench/write-soak-summary.sh": "d1dbbceea1fd6e250f6f36289ed0cfae07b4c9e9e985afd3568f1d276e9bd4c0",
       ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
       ".github/workflows/_integration-pipeline.yml": "2931f47de27ec73093e3a03a3bb91473203e1e7b7759450b4ebbd71e0098f11d",
-      ".github/workflows/ci.yml": "5e73cf64ac529828ca1871959e60f644118766d4493b3c59647f4c24b053588c",
+      ".github/workflows/ci.yml": "c578fb6f1595378a729fe523dcc210ac18bdc281b9097ae86c1c0e99bc1bd925",
       ".github/workflows/merge-recovery-soak.yml": "8e113745d06684ac9bd096f7d0ad52275777bc5df987316e2bd8be7f97891a7d",
       ".github/workflows/slashing-tests.yml": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
       "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "39382399fd484b5d9b670d3ad35af642659df61c6475497a90f5af7dc645f711",
@@ -52,8 +66,8 @@
       "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-replay_liveness-MC_ReplayHotLoop.log": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
       "docs/claims/repeat-deploy-carrier-index-equivalence.md": "16f110d8ebf50d2f39a3fbb45364019684a5118b0a65db106c6d9f5b810230ba",
       "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
-      "docs/claims/soak-formal-gate.md": "6356b7f25fcfec4050f1637b9fad6380ce410a7587fd7a55400c2a73119ab9f1",
-      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "26a5f966baa060be79899e51b6c2762c799264e7c82adb813d940d6a9ca6de0c",
+      "docs/claims/soak-formal-gate.md": "f0595ac8da3fd8e79302327fbb2c1d2af723397811c44c7ef0919e531efa5488",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "72c40218f09fa25ae441be8877f43ecc8b44f295f49b25d60e69a099970503c3",
       "docs/soak-evidence/34180346282/README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
       "docs/soak-evidence/34180346282/archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
       "docs/soak-evidence/34180346282/inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
@@ -78,7 +92,7 @@
       "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "5cb2c75eb62af1e041e49497e96bd7c74381097b507f41098a4bba07ec1b580a",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "e352c21b2e101ad00a556d3a5274d8c2636a96ee01b64f9f9156fea77ea9f844",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -126,10 +140,10 @@
       "scripts/bench/test-run-merge-recovery-soak.sh": "2d0bc41e2945203ea2c75659f9a8f9ee6b6f6538f645945b6247322d2ba4c4b3",
       "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
       "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
-      "scripts/ci/check-tla-invariants.sh": "0b03474948e8738539515d15f734cfd47e0201045a0f8fd5648bdcd929c61b27",
-      "scripts/ci/test-check-tla-invariants.sh": "31291fc837b98385f5c7d3497ee20bb152b3d62e4b6e889ba94a4e74c8f1c46b",
+      "scripts/ci/check-tla-invariants.sh": "f347dab7818a92c1e46cace6dc13b08a1df4025a496558a7150ada86318978a3",
+      "scripts/ci/test-check-tla-invariants.sh": "94e0375147320a29930f97497bc789bef4841924d5c8eced49a7630c6b5054a3",
       "scripts/ci/test-soak-claim-inventory.sh": "dbd16e78ab45353585a3beff0942141fd9c6ce9a1f45dccc9392e790b0fb165e",
-      "scripts/ci/test-soak-pr-formal-gate.sh": "5e349346e03a2b534b35c6c30e152152f8c3bceb32d2982a00217b442eb71756",
+      "scripts/ci/test-soak-pr-formal-gate.sh": "0f1099900d0b9538f2e7344f25fca35949b0d7ac877715ec33a09a490cd7b8af",
       "scripts/run-merge-recovery-soak.sh": "2107899197cc3b676dd01a458c3b67c79708445277d371f7e4ccb45f4cdd4abb"
     }
   },
@@ -271,12 +285,13 @@
         }
       ],
       "checks": [
-        "DISK-ADMISSION"
+        "DISK-ADMISSION",
+        "BOUNDED-TLA"
       ],
       "pending_obligations": [
         "The maintainer must ratify the resource claim and any new mandatory CbC attributes.",
-        "Run the pre-ca85cfe3e disk RED in a disposable container without host cleanup mounts.",
-        "Create formal/tlaplus/soak_disk/SoakDisk.tla and matching admission controls during D1.",
+        "Retain the completed local D1 production and formal RED/GREEN pair without treating it as full resource discharge.",
+        "Confirm hosted D1 execution and obtain maintainer review of the model-to-code correspondence.",
         "Prove aggregate response time, confirmed writer termination, and durable minimal evidence during D2.",
         "Identify every writer and justify the common-unit reserve inequality R + G*T + J + M.",
         "Identify and correct the growing consumer during D3.",
@@ -336,7 +351,9 @@
         "formal/tlaplus/replay_liveness/MC_ReplayHotLoop.cfg",
         "formal/tlaplus/carrier_index/MC_CarrierIndex.cfg",
         "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.cfg",
-        "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.cfg"
+        "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_SoakDisk.cfg",
+        "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg"
       ],
       "verifier": {
         "name": "TLC",
@@ -347,11 +364,13 @@
       "assumptions": [
         "Carrier Crash leaves all modeled variables unchanged and does not model durable flush or restart.",
         "Replay completion assumes scheduler fairness.",
-        "The existing production property uses in-memory operation traces."
+        "The existing production property uses in-memory operation traces.",
+        "Disk admission assumes valid samples, completing commands, and no external writes during the modeled decision."
       ],
       "bounds": [
         "Carrier: two signatures, three blocks, watermark zero, and scan start at most two.",
         "Replay: eight events, indexed replay, inline singleton, and yield interval four.",
+        "Disk: initial free space 7000 MiB, floor 4096 MiB, band 4096 MiB, and samples 7000, 8191, 8192, 8193 MiB.",
         "Execution: two workers, 120-second configuration timeout, and 60-second kill grace."
       ],
       "expected_results": [
@@ -372,6 +391,15 @@
           "configuration": "MC_CarrierIndex_read_failure_pre_fix",
           "exit_code": 12,
           "invariant": "AbsenceProofSound"
+        },
+        {
+          "configuration": "MC_SoakDisk",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_SoakDisk_floor_only_pre_fix",
+          "exit_code": 12,
+          "invariant": "AdmissionRequiresBand"
         }
       ],
       "production_tests": [
@@ -389,11 +417,12 @@
       "ci": {
         "workflow": ".github/workflows/slashing-tests.yml",
         "job": "tla-model-check",
-        "enforcement": "Hosted execution is confirmed. Required-check enforcement remains unconfirmed."
+        "enforcement": "Hosted execution covers earlier carrier and replay inputs. Hosted D1 execution and required-check enforcement remain unconfirmed."
       },
       "evidence_refs": [
         "B2-LOCAL",
-        "B2-HOSTED"
+        "B2-HOSTED",
+        "D1-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -417,7 +446,7 @@
         "Workflow parsing and local command execution do not establish GitHub required-check enforcement."
       ],
       "bounds": [
-        "B1 covers 14 classifier cases. B2 covers six event and failure scenarios."
+        "B1 originally covered 14 classifier cases. D1 extends the classifier to 21 cases. Routing still covers six event and failure scenarios."
       ],
       "production_tests": [
         {
@@ -438,7 +467,8 @@
       },
       "evidence_refs": [
         "B1-LOCAL",
-        "B2-LOCAL"
+        "B2-LOCAL",
+        "D1-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -447,15 +477,18 @@
     },
     {
       "id": "DISK-ADMISSION",
-      "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+      "command": "bash scripts/bench/test-soak-disk-admission.sh",
       "configurations": [
         "scripts/run-merge-recovery-soak.sh",
         ".github/workflows/merge-recovery-soak.yml",
-        ".github/oci-validation.env"
+        ".github/oci-validation.env",
+        "scripts/bench/soak-disk-test.Dockerfile",
+        "formal/tlaplus/soak_disk/MC_SoakDisk.cfg",
+        "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg"
       ],
       "verifier": {
-        "name": "Bash driver regression tests",
-        "version": "The historical record does not retain the runtime version. The resource model does not exist yet."
+        "name": "Bash production-boundary regressions and bounded TLC",
+        "version": "The D1 record retains the fixture image, package versions, TLC 2.19, Java version, and verifier digest."
       },
       "assumptions": [
         "Historical pre-fix execution requires a disposable container without host cleanup mounts.",
@@ -463,28 +496,34 @@
         "The harness pin identifies merged main revision 962effd17708192627bd249362761c0ccb1fd5fa. Local repin checks are not full-duration candidate acceptance."
       ],
       "bounds": [
-        "The known admission scenario holds free space at 7000 MB with no-op cleanup.",
+        "The known admission scenario holds free space at 7000 MiB with no-op cleanup.",
         "The driver must refuse admission below floor plus band. This does not bound all writers."
       ],
       "production_tests": [
         {
           "path": "scripts/bench/test-run-merge-recovery-soak.sh",
           "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
-          "result": "not-run-in-this-cycle"
+          "result": "local-baseline-in-disposable-container"
+        },
+        {
+          "path": "scripts/bench/test-soak-disk-admission.sh",
+          "command": "bash scripts/bench/test-soak-disk-admission.sh",
+          "result": "local-historical-red-corrected-green-current-green"
         }
       ],
       "ci": {
         "workflow": ".github/workflows/ci.yml",
         "job": "lint",
-        "enforcement": "The driver regression is separate from the missing formal resource and full-duration acceptance checks."
+        "enforcement": "Lint includes the isolated regression. The formal job includes both disk configurations. Hosted D1 execution and enforcement remain pending."
       },
       "evidence_refs": [
         "DISK-INCIDENT",
-        "PENDING-PLAN"
+        "PENDING-PLAN",
+        "D1-LOCAL"
       ],
-      "result": "not-run",
+      "result": "historical-baseline",
       "pending_obligations": [
-        "D1 requires historical production RED and the matching model counterexample.",
+        "D1 has paired local evidence. Hosted execution and maintainer review remain pending.",
         "D2 and D3 require aggregate response and all-writer resource bounds, not just a safe stop."
       ]
     }
@@ -541,6 +580,16 @@
         "The inspection does not establish the dominant finalization work bound or discharge a claim."
       ]
     },
+    "D1-LOCAL": {
+      "path": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "role": "historical-baseline",
+      "identity": "Historical RED at 0f5d2b74, correction at ca85cfe3e, and source-bound local revalidation from bc1e16380.",
+      "limitations": [
+        "The embedded manifest binds exact tested inputs and local raw evidence, not a full-duration acceptance candidate.",
+        "The finite model covers admission only. Bash refinement, emergency response, all-writer bounds, and claim ratification remain open.",
+        "The local evidence backup is not off-host."
+      ]
+    },
     "PENDING-PLAN": {
       "path": "docs/plans/soak-recurrence-prevention-2026-09-08.md",
       "role": "pending-plan",
@@ -566,10 +615,12 @@
       "id": "D1",
       "status": "pending",
       "checks": [
-        "DISK-ADMISSION"
+        "DISK-ADMISSION",
+        "BOUNDED-TLA"
       ],
       "pending_obligations": [
-        "Retain paired historical production and formal RED/GREEN evidence in disposable isolation."
+        "Confirm hosted execution of the locally verified D1 regression and model configurations.",
+        "Obtain maintainer review of the model-to-code correspondence and proposed mandatory scope."
       ]
     },
     {

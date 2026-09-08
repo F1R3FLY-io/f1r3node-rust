@@ -8,7 +8,7 @@ TARGET_SHA="${SOAK_TARGET_SHA:-unknown}"
 TRIGGER_SOURCE="${SOAK_TRIGGER_SOURCE:-manual}"
 SLOT_DELAY_SECONDS="${SOAK_SLOT_DELAY_SECONDS:-0}"
 if ! [[ "$SLOT_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
-	SLOT_DELAY_SECONDS=0
+  SLOT_DELAY_SECONDS=0
 fi
 VERSION="${SOAK_VERSION:-unknown}"
 STARTED_AT="${SOAK_STARTED_AT:?SOAK_STARTED_AT is required}"
@@ -21,26 +21,26 @@ BENCH_FAILURES="${SOAK_BENCH_FAILURES:?SOAK_BENCH_FAILURES is required}"
 
 ITERATIONS_JSON="$OUTPUT_DIR/iterations.json"
 while IFS= read -r -d '' metrics; do
-	jq -e 'select(type == "object")' "$metrics" 2>/dev/null || true
+  jq -e 'select(type == "object")' "$metrics" 2>/dev/null || true
 done < <(find "$OUTPUT_DIR" -path '*iteration-*/metrics.json' -print0 | sort -z) |
-	jq -s 'sort_by(.iteration // 0)' >"$ITERATIONS_JSON"
+  jq -s 'sort_by(.iteration // 0)' >"$ITERATIONS_JSON"
 
 jq -n \
-	--slurpfile iters "$ITERATIONS_JSON" \
-	--slurpfile registry "$REGISTRY" \
-	--arg target_ref "$TARGET_REF" \
-	--arg target_sha "$TARGET_SHA" \
-	--arg trigger_source "$TRIGGER_SOURCE" \
-	--argjson slot_delay "${SLOT_DELAY_SECONDS:-0}" \
-	--arg version "$VERSION" \
-	--argjson started "$STARTED_AT" \
-	--argjson finished "$FINISHED_AT" \
-	--argjson requested "$DURATION_SECONDS" \
-	--argjson iterations "$ITERATIONS" \
-	--argjson failures "$FAILURES" \
-	--argjson bench_segments "$BENCH_SEGMENTS" \
-	--argjson bench_failures "$BENCH_FAILURES" \
-	'
+  --slurpfile iters "$ITERATIONS_JSON" \
+  --slurpfile registry "$REGISTRY" \
+  --arg target_ref "$TARGET_REF" \
+  --arg target_sha "$TARGET_SHA" \
+  --arg trigger_source "$TRIGGER_SOURCE" \
+  --argjson slot_delay "${SLOT_DELAY_SECONDS:-0}" \
+  --arg version "$VERSION" \
+  --argjson started "$STARTED_AT" \
+  --argjson finished "$FINISHED_AT" \
+  --argjson requested "$DURATION_SECONDS" \
+  --argjson iterations "$ITERATIONS" \
+  --argjson failures "$FAILURES" \
+  --argjson bench_segments "$BENCH_SEGMENTS" \
+  --argjson bench_failures "$BENCH_FAILURES" \
+  '
     def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
     def max_or_null: if length == 0 then null else max end;
     ($iters[0] | map(select(type == "object"))) as $all

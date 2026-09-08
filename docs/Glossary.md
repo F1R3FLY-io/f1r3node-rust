@@ -170,6 +170,12 @@ Disk hygiene removes eligible inactive files and caches between soak iterations.
 
 **Preferred usage.** Use this term for preventive cleanup. Distinguish disk hygiene from emergency writer termination by the disk guardian.
 
+### Disk admission
+
+Disk admission decides whether a soak iteration can start from the latest free-space sample. With protection enabled, the post-hygiene sample must reach floor plus band.
+
+**Preferred usage.** Use this term for the iteration-boundary decision. Distinguish it from mid-iteration protection and full-duration disk safety.
+
 ### Disk guardian
 
 The disk guardian monitors free disk during a soak iteration. The disk guardian triggers protection when the configured disk conditions require a stop.

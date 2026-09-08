@@ -108,7 +108,9 @@ The old post-hygiene check admitted another iteration above the 4096 MB floor, e
 
 Stopping node writers did not establish a bound on all remaining disk consumption. The consumer outside the cleanup paths remained unidentified in the retained evidence.
 
-No disk or soak model appears in the inspected formal tree or the default TLA+ gate. `scripts/run-merge-recovery-soak.sh` also has no mandatory CbC attribute at the reviewed revision.
+At the inspected revision, the formal tree had no disk or soak model. The driver also had no mandatory CbC attribute.
+
+D1 now adds a bounded admission model. The emergency-response and all-writer resource arguments remain open. Mandatory scope still requires maintainer ratification.
 
 [The current driver test](../../scripts/bench/test-run-merge-recovery-soak.sh) now covers a constant 7000 MB reading and no-op cleanup. It does not establish safety against continued external writes, probe failure, or slow diagnostics.
 
@@ -202,6 +204,12 @@ The model must not assume that cleanup always succeeds.
 **Exit evidence:** The same behavioral counterexample fails the old driver and the old model configuration. The corrected driver and configuration pass.
 
 This gate establishes controlled refusal, not complete soak duration or bounded disk growth.
+
+The [local D1 record](../cbc-evidence/scripts-run-merge-recovery-soak-sh.md) retains the historical admission failure and matching `AdmissionRequiresBand` counterexample. The existing correction passes both local checks.
+
+The corrected model completed with 54 distinct states. Its coverage includes admission after sufficient reclamation and refusal publication. No production driver change was needed.
+
+The new container regression and both model configurations are registered in CI. Hosted execution and maintainer review remain pending. This result does not discharge `CLAIM-SOAK-001`.
 
 ### Gate D2: Bound emergency response and retain evidence
 
