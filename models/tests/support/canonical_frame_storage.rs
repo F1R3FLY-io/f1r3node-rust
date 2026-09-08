@@ -33,7 +33,7 @@ impl CanonicalPathStreamReducer {
     }
 }
 
-fn next(frame: &Frame) -> Option<FrameId> {
+fn next<Span>(frame: &Frame<Span>) -> Option<FrameId> {
     match frame {
         Frame::Tag { next, .. }
         | Frame::Varint { next, .. }
@@ -44,7 +44,7 @@ fn next(frame: &Frame) -> Option<FrameId> {
     }
 }
 
-fn child(frame: &Frame) -> Option<FrameId> {
+fn child<Span>(frame: &Frame<Span>) -> Option<FrameId> {
     match frame {
         Frame::Region {
             phase: RegionPhase::Path { path, .. },

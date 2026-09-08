@@ -309,9 +309,10 @@ epathmap_import_runtime() {
   rpb3_run_tests 5 --release -j4 --lib singleton_epathmap
   rpb3_run_tests 1 --release -j4 --lib \
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
-  rpb3_run_tests 15 --release -j4 --lib standalone_path_admission
+  rpb3_run_tests 16 --release -j4 --lib standalone_path_admission
   rpb3_run_tests 8 --release -j4 --lib frame_storage_tests
   rpb3_run_tests 6 --release -j4 --lib indexed_span_transport
+  rpb3_run_tests 5 --release -j4 --lib byte_policy_tests
 }
 
 if [[ "${1:-}" == "--epathmap-import" ]]; then

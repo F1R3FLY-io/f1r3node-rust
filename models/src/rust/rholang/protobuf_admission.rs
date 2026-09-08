@@ -16,11 +16,14 @@ use std::fmt;
 
 use pathmap::PathMap;
 
-use super::canonical_bytes_arena::{CanonicalByteProvenance, CanonicalBytesArena};
+use super::canonical_bytes_arena::CanonicalByteProvenance;
+#[cfg(test)]
+use super::canonical_bytes_arena::CanonicalBytesArena;
 use super::canonical_path_admission::{
-    CanonicalPathObligationId, CanonicalPathObligationKind, CanonicalPathObligationResolution,
-    CanonicalPathSource, CanonicalPathStreamReducer, CanonicalPathSummary,
-    CanonicalPathTopologyAdmission, FrozenCanonicalPathObligation, LocatedPathByte, NestedEpmMode,
+    CanonicalPathObligation, CanonicalPathObligationId, CanonicalPathObligationKind,
+    CanonicalPathObligationResolution, CanonicalPathSource, CanonicalPathStreamReducer,
+    CanonicalPathSummary, CanonicalPathTopologyAdmission, FrozenCanonicalPathObligation,
+    LocatedPathByte, NestedEpmMode,
 };
 use super::canonical_score_bytes::{
     CanonicalScoreArena, CanonicalScoreArenaError, CanonicalScoreHandle,
@@ -2191,10 +2194,20 @@ fn obligation_frame<'src>(
     field: u32,
     stats: &mut CanonicalProtobufAdmissionStats,
 ) -> Result<(PathObligationWait, Frame<'src>), CanonicalProtobufAdmissionError> {
-    let payload_len = completed.payload.len();
     let end =
         CanonicalByteProvenance::new(completed.payload_end.source, completed.payload_end.offset);
     let body = shorten_frozen_region(OwnedIndexedByteRegion::from_frozen(completed.payload, end));
+    obligation_region_frame(completed.obligation, body, owner, field, stats)
+}
+
+fn obligation_region_frame<'src>(
+    obligation: CanonicalPathObligation,
+    body: AdmissionRegion<'src>,
+    owner: &'static RhoMatchProgram,
+    field: u32,
+    stats: &mut CanonicalProtobufAdmissionStats,
+) -> Result<(PathObligationWait, Frame<'src>), CanonicalProtobufAdmissionError> {
+    let payload_len = body.len();
     stats.canonical_path_obligations = stats
         .canonical_path_obligations
         .checked_add(1)
@@ -2204,8 +2217,8 @@ fn obligation_frame<'src>(
         .checked_add(payload_len)
         .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
     let waiting = PathObligationWait {
-        id: completed.obligation.id,
-        kind: completed.obligation.kind,
+        id: obligation.id,
+        kind: obligation.kind,
     };
     let frame = match waiting.kind {
         CanonicalPathObligationKind::RawParEscape => Frame::Message(
@@ -2221,19 +2234,16 @@ fn obligation_frame<'src>(
 struct CanonicalPathFrame<'src> {
     input: AdmissionRegion<'src>,
     cursor: IndexedLocatedByteCursor<'src>,
-    arena: CanonicalBytesArena,
     reducer: CanonicalPathStreamReducer,
     waiting: Option<PathObligationWait>,
 }
 
 impl<'src> CanonicalPathFrame<'src> {
     fn new(input: AdmissionRegion<'src>) -> Self {
-        let arena = CanonicalBytesArena::new();
-        let reducer = CanonicalPathStreamReducer::new(&arena);
+        let reducer = CanonicalPathStreamReducer::new();
         Self {
             cursor: input.located_bytes(),
             input,
-            arena,
             reducer,
             waiting: None,
         }
@@ -2271,7 +2281,7 @@ impl<'src> CanonicalPathFrame<'src> {
             self.protocol_error("canonical path child returned the wrong summary kind")
         })?;
         self.reducer
-            .resolve_obligation(&self.arena, waiting.id, resolution)
+            .resolve_obligation(&self.input, waiting.id, resolution)
             .map_err(Self::path_error)?;
         stats.canonical_path_resolutions = stats
             .canonical_path_resolutions
@@ -2289,15 +2299,30 @@ impl<'src> CanonicalPathFrame<'src> {
         }
         for byte in self.cursor.by_ref() {
             self.reducer
-                .edge(&mut self.arena, byte)
+                .edge(&self.input, byte)
                 .map_err(Self::path_error)?;
             if let Some(completed) = self
                 .reducer
-                .freeze_completed_obligation(&self.arena)
+                .completed_obligation(&self.input)
                 .map_err(Self::path_error)?
             {
-                let (waiting, frame) =
-                    obligation_frame(completed, &PAR_PROTOBUF_REGION_PROGRAM, 0, stats)?;
+                let body = self
+                    .input
+                    .subview_with_end(
+                        completed.payload,
+                        CanonicalByteProvenance::new(
+                            completed.payload_end.source,
+                            completed.payload_end.offset,
+                        ),
+                    )
+                    .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+                let (waiting, frame) = obligation_region_frame(
+                    completed.obligation,
+                    body,
+                    &PAR_PROTOBUF_REGION_PROGRAM,
+                    0,
+                    stats,
+                )?;
                 self.waiting = Some(waiting);
                 return Ok(FrameAction::Push(frame));
             }

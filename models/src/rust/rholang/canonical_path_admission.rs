@@ -17,6 +17,8 @@ use crate::rust::rholang::canonical_bytes_arena::{
     CanonicalByteProvenance, CanonicalBytesArena, CanonicalBytesHandle, CanonicalLocatedByte,
     FrozenCanonicalBytes,
 };
+use crate::rust::rholang::indexed_protobuf::IndexedByteRegion;
+use crate::rust::rholang::protobuf_cursor::CanonicalByteRange;
 
 const TERM: u8 = 0x00;
 const GBOOL_FALSE: u8 = 0x01;
@@ -149,9 +151,9 @@ pub(crate) struct CanonicalPathObligationProgress {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CanonicalPathCompletedObligation {
+pub(crate) struct CanonicalPathCompletedObligation<Span = CanonicalBytesHandle> {
     pub(crate) obligation: CanonicalPathObligation,
-    pub(crate) payload: CanonicalBytesHandle,
+    pub(crate) payload: Span,
     /// Exact physical anchor at which the opaque payload became complete.
     ///
     /// Provenance can be discontinuous, so consumers must not synthesize this
@@ -356,7 +358,7 @@ enum ObligationStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Frame {
+enum Frame<Span = CanonicalBytesHandle> {
     Tag {
         escape_allowed: bool,
         next: Option<FrameId>,
@@ -377,7 +379,7 @@ enum Frame {
     },
     Region {
         remaining: u64,
-        previous: Option<CanonicalBytesHandle>,
+        previous: Option<Span>,
         phase: RegionPhase,
         next: Option<FrameId>,
     },
@@ -439,8 +441,104 @@ pub(crate) struct CanonicalPathReducer {
 
 pub(crate) struct CanonicalPathStreamReducer {
     current: InnerPath,
+    consumed: usize,
+    machine: CanonicalPathMachine<FrameStorage<CanonicalByteRange>>,
+}
+
+trait PathByteView {
+    type Span: Copy + std::fmt::Debug + Eq;
+
+    fn consumed_len(&self) -> usize;
+    fn slice(&self, range: std::ops::Range<usize>) -> Option<Self::Span>;
+    fn span_len(&self, span: Self::Span) -> usize;
+    fn compare(&self, left: Self::Span, right: Self::Span) -> std::cmp::Ordering;
+    fn first_mismatch_source(
+        &self,
+        left: Self::Span,
+        right: Self::Span,
+    ) -> Option<CanonicalByteProvenance>;
+    fn provenance_at(&self, index: usize) -> Option<CanonicalByteProvenance>;
+}
+
+struct ArenaPathBytes<'a> {
+    arena: &'a CanonicalBytesArena,
     bytes: CanonicalBytesHandle,
-    machine: CanonicalPathMachine<FrameStorage>,
+}
+
+impl PathByteView for ArenaPathBytes<'_> {
+    type Span = CanonicalBytesHandle;
+
+    fn consumed_len(&self) -> usize { self.bytes.len() }
+    fn slice(&self, range: std::ops::Range<usize>) -> Option<Self::Span> {
+        self.arena.slice(self.bytes, range).ok()
+    }
+    fn span_len(&self, span: Self::Span) -> usize { span.len() }
+    fn compare(&self, left: Self::Span, right: Self::Span) -> std::cmp::Ordering {
+        self.arena.compare(left, right)
+    }
+    fn first_mismatch_source(
+        &self,
+        left: Self::Span,
+        right: Self::Span,
+    ) -> Option<CanonicalByteProvenance> {
+        self.arena
+            .bytes(left)
+            .zip(self.arena.located_bytes(right))
+            .find_map(|(left, right)| (left != right.byte).then_some(right.provenance))
+    }
+    fn provenance_at(&self, index: usize) -> Option<CanonicalByteProvenance> {
+        self.arena.provenance_at(self.bytes, index)
+    }
+}
+
+struct IndexedPathBytes<'a, 'src> {
+    input: &'a IndexedByteRegion<'src>,
+    consumed: usize,
+}
+
+impl<'src> IndexedPathBytes<'_, 'src> {
+    fn view(&self, span: CanonicalByteRange) -> IndexedByteRegion<'src> {
+        self.input
+            .subview(span)
+            .expect("a checked path span stays inside its source")
+    }
+}
+
+impl PathByteView for IndexedPathBytes<'_, '_> {
+    type Span = CanonicalByteRange;
+
+    fn consumed_len(&self) -> usize { self.consumed }
+    fn slice(&self, range: std::ops::Range<usize>) -> Option<Self::Span> {
+        (range.start <= range.end
+            && range.end <= self.consumed
+            && self.consumed <= self.input.len())
+        .then_some(CanonicalByteRange {
+            start: range.start,
+            end: range.end,
+        })
+    }
+    fn span_len(&self, span: Self::Span) -> usize { span.end - span.start }
+    fn compare(&self, left: Self::Span, right: Self::Span) -> std::cmp::Ordering {
+        self.view(left).compare(&self.view(right))
+    }
+    fn first_mismatch_source(
+        &self,
+        left: Self::Span,
+        right: Self::Span,
+    ) -> Option<CanonicalByteProvenance> {
+        self.view(left)
+            .bytes()
+            .zip(self.view(right).located_bytes())
+            .find_map(|(left, right)| (left != right.byte).then_some(right.provenance))
+    }
+    fn provenance_at(&self, index: usize) -> Option<CanonicalByteProvenance> {
+        if self.consumed > self.input.len() || index >= self.consumed {
+            return None;
+        }
+        self.input
+            .position_at(index)
+            .map(|position| position.physical)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -449,14 +547,14 @@ struct FrameCheckpoint {
     retired: usize,
 }
 
-struct FrameStorage {
-    slots: Vec<Frame>,
+struct FrameStorage<Span = CanonicalBytesHandle> {
+    slots: Vec<Frame<Span>>,
     free: Vec<FrameId>,
     allocated: Vec<FrameId>,
     retired: Vec<FrameId>,
 }
 
-impl FrameStorage {
+impl<Span> FrameStorage<Span> {
     fn new() -> Self {
         Self {
             slots: Vec::new(),
@@ -469,7 +567,7 @@ impl FrameStorage {
     #[cfg(test)]
     const fn len(&self) -> usize { self.slots.len() }
 
-    fn push(&mut self, frame: Frame) -> FrameId {
+    fn push(&mut self, frame: Frame<Span>) -> FrameId {
         let id = if let Some(id) = self.free.pop() {
             self.slots[id.0] = frame;
             id
@@ -517,20 +615,22 @@ impl FrameStorage {
 
     #[cfg(test)]
     fn retained_bytes(&self) -> usize {
-        self.slots.capacity() * std::mem::size_of::<Frame>()
+        self.slots.capacity() * std::mem::size_of::<Frame<Span>>()
             + (self.free.capacity() + self.allocated.capacity() + self.retired.capacity())
                 * std::mem::size_of::<FrameId>()
     }
 }
 
-impl std::ops::Index<usize> for FrameStorage {
-    type Output = Frame;
+impl<Span> std::ops::Index<usize> for FrameStorage<Span> {
+    type Output = Frame<Span>;
     fn index(&self, index: usize) -> &Self::Output { &self.slots[index] }
 }
 
-trait FrameStore: std::ops::Index<usize, Output = Frame> {
+trait FrameStore: std::ops::Index<usize, Output = Frame<Self::Span>> {
+    type Span: Copy + std::fmt::Debug + Eq;
+
     fn new() -> Self;
-    fn push(&mut self, frame: Frame) -> FrameId;
+    fn push(&mut self, frame: Frame<Self::Span>) -> FrameId;
     fn checkpoint(&self) -> FrameCheckpoint { FrameCheckpoint::default() }
     fn retire(&mut self, _id: FrameId) {}
     fn select(
@@ -555,6 +655,8 @@ impl std::ops::Index<usize> for FrameHistory {
 }
 
 impl FrameStore for FrameHistory {
+    type Span = CanonicalBytesHandle;
+
     fn new() -> Self { Self { slots: Vec::new() } }
     fn push(&mut self, frame: Frame) -> FrameId {
         let id = FrameId(self.slots.len());
@@ -565,9 +667,11 @@ impl FrameStore for FrameHistory {
     fn retained_bytes(&self) -> usize { self.slots.capacity() * std::mem::size_of::<Frame>() }
 }
 
-impl FrameStore for FrameStorage {
+impl<Span: Copy + std::fmt::Debug + Eq> FrameStore for FrameStorage<Span> {
+    type Span = Span;
+
     fn new() -> Self { FrameStorage::new() }
-    fn push(&mut self, frame: Frame) -> FrameId { FrameStorage::push(self, frame) }
+    fn push(&mut self, frame: Frame<Span>) -> FrameId { FrameStorage::push(self, frame) }
     fn checkpoint(&self) -> FrameCheckpoint { FrameStorage::checkpoint(self) }
     fn retire(&mut self, id: FrameId) { FrameStorage::retire(self, id) }
     fn select(
@@ -635,7 +739,7 @@ impl CanonicalPathReducer {
         handle: CanonicalPathReducerHandle,
     ) -> Result<Option<CanonicalPathCompletedObligation>, CanonicalPathAdmissionError> {
         self.machine
-            .completed_obligation(arena, &self.states[handle.state.0], handle.bytes)
+            .completed_obligation(&ArenaPathBytes { arena, bytes: handle.bytes }, &self.states[handle.state.0])
     }
 
     /// Freeze a completed opaque payload so a child PDA can own its indexed
@@ -645,8 +749,13 @@ impl CanonicalPathReducer {
         arena: &CanonicalBytesArena,
         handle: CanonicalPathReducerHandle,
     ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
-        self.machine
-            .freeze_completed_obligation(arena, &self.states[handle.state.0], handle.bytes)
+        Ok(self.completed_obligation(arena, handle)?.map(|completed| {
+            FrozenCanonicalPathObligation {
+                obligation: completed.obligation,
+                payload: arena.freeze(completed.payload),
+                payload_end: completed.payload_end,
+            }
+        }))
     }
 
     pub(crate) fn edge(
@@ -656,9 +765,17 @@ impl CanonicalPathReducer {
         located: CanonicalLocatedByte,
     ) -> Result<(CanonicalPathReducerHandle, CanonicalPathTransition), CanonicalPathAdmissionError>
     {
-        let (state, bytes, transition) =
+        let current = &self.states[handle.state.0];
+        let byte = self.machine.prepare_edge(current, located)?;
+        let bytes = arena.append(handle.bytes, located).map_err(|_| {
+            CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::SizeOverflow,
+                byte.source,
+            )
+        })?;
+        let (state, transition) =
             self.machine
-                .advance(arena, &self.states[handle.state.0], handle.bytes, located)?;
+                .advance(&ArenaPathBytes { arena, bytes }, current, byte);
         let id = PathStateId(self.states.len());
         self.states.push(state);
         Ok((CanonicalPathReducerHandle { state: id, bytes }, transition))
@@ -684,9 +801,8 @@ impl CanonicalPathReducer {
         resolution: CanonicalPathObligationResolution,
     ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
         let state = self.machine.resolved_state(
-            arena,
+            &ArenaPathBytes { arena, bytes: handle.bytes },
             &self.states[handle.state.0],
-            handle.bytes,
             id,
             resolution,
         )?;
@@ -708,7 +824,7 @@ impl CanonicalPathReducer {
     ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
         let mut state = self.states[handle.state.0].clone();
         self.machine
-            .reject_path_obligation(arena, handle.bytes, &mut state, id, source)?;
+            .reject_path_obligation(&ArenaPathBytes { arena, bytes: handle.bytes }, &mut state, id, source)?;
         let next = PathStateId(self.states.len());
         self.states.push(state);
         Ok(CanonicalPathReducerHandle {
@@ -719,13 +835,16 @@ impl CanonicalPathReducer {
 }
 
 impl CanonicalPathStreamReducer {
-    pub(crate) fn new(arena: &CanonicalBytesArena) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             current: InnerPath::new(true),
-            bytes: arena.empty(),
+            consumed: 0,
             machine: CanonicalPathMachine::new(),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) const fn consumed_len(&self) -> usize { self.consumed }
 
     #[cfg(test)]
     pub(crate) const fn retained_state_bytes(&self) -> usize { std::mem::size_of::<InnerPath>() }
@@ -746,24 +865,38 @@ impl CanonicalPathStreamReducer {
         self.machine.active_obligation_in(&self.current)
     }
 
-    pub(crate) fn freeze_completed_obligation(
+    pub(crate) fn completed_obligation(
         &self,
-        arena: &CanonicalBytesArena,
-    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
+        input: &IndexedByteRegion<'_>,
+    ) -> Result<
+        Option<CanonicalPathCompletedObligation<CanonicalByteRange>>,
+        CanonicalPathAdmissionError,
+    > {
         self.machine
-            .freeze_completed_obligation(arena, &self.current, self.bytes)
+            .completed_obligation(&IndexedPathBytes { input, consumed: self.consumed }, &self.current)
     }
 
     pub(crate) fn edge(
         &mut self,
-        arena: &mut CanonicalBytesArena,
+        input: &IndexedByteRegion<'_>,
         located: CanonicalLocatedByte,
     ) -> Result<CanonicalPathTransition, CanonicalPathAdmissionError> {
-        let (current, bytes, transition) =
+        let byte = self.machine.prepare_edge(&self.current, located)?;
+        let consumed = self
+            .consumed
+            .checked_add(1)
+            .filter(|next| *next <= input.len())
+            .ok_or_else(|| {
+                CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::SizeOverflow,
+                    byte.source,
+                )
+            })?;
+        let (current, transition) =
             self.machine
-                .advance(arena, &self.current, self.bytes, located)?;
+                .advance(&IndexedPathBytes { input, consumed }, &self.current, byte);
         self.current = current;
-        self.bytes = bytes;
+        self.consumed = consumed;
         Ok(transition)
     }
 
@@ -777,13 +910,13 @@ impl CanonicalPathStreamReducer {
 
     pub(crate) fn resolve_obligation(
         &mut self,
-        arena: &CanonicalBytesArena,
+        input: &IndexedByteRegion<'_>,
         id: CanonicalPathObligationId,
         resolution: CanonicalPathObligationResolution,
     ) -> Result<(), CanonicalPathAdmissionError> {
         self.current =
             self.machine
-                .resolved_state(arena, &self.current, self.bytes, id, resolution)?;
+                .resolved_state(&IndexedPathBytes { input, consumed: self.consumed }, &self.current, id, resolution)?;
         Ok(())
     }
 }
@@ -797,16 +930,11 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         }
     }
 
-    fn advance(
-        &mut self,
-        arena: &mut CanonicalBytesArena,
+    fn prepare_edge(
+        &self,
         current: &InnerPath,
-        previous_bytes: CanonicalBytesHandle,
         located: CanonicalLocatedByte,
-    ) -> Result<
-        (InnerPath, CanonicalBytesHandle, CanonicalPathTransition),
-        CanonicalPathAdmissionError,
-    > {
+    ) -> Result<LocatedPathByte, CanonicalPathAdmissionError> {
         let byte = LocatedPathByte {
             byte: located.byte,
             source: CanonicalPathSource::from_provenance(located.provenance),
@@ -820,42 +948,44 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 byte.source,
             ));
         }
-        let bytes = arena.append(previous_bytes, located).map_err(|_| {
-            CanonicalPathAdmissionError::new(
-                CanonicalPathAdmissionErrorKind::SizeOverflow,
-                byte.source,
-            )
-        })?;
-        self.stats.edges += 1;
-        self.stats.max_topology_depth = self.stats.max_topology_depth.max(bytes.len());
-        let mut state = current.clone();
-        let transition = self.feed_path(arena, bytes, &mut state, byte);
-        self.frames.finish(state.stack == current.stack);
-        Ok((state, bytes, transition))
+        Ok(byte)
     }
 
-    fn resolved_state(
+    fn advance<B: PathByteView<Span = S::Span>>(
         &mut self,
-        arena: &CanonicalBytesArena,
+        bytes: &B,
         current: &InnerPath,
-        bytes: CanonicalBytesHandle,
+        byte: LocatedPathByte,
+    ) -> (InnerPath, CanonicalPathTransition) {
+        self.stats.edges += 1;
+        self.stats.max_topology_depth = self.stats.max_topology_depth.max(bytes.consumed_len());
+        let mut state = current.clone();
+        let transition = self.feed_path(bytes, &mut state, byte);
+        self.frames.finish(state.stack == current.stack);
+        (state, transition)
+    }
+
+    fn resolved_state<B: PathByteView<Span = S::Span>>(
+        &mut self,
+        bytes: &B,
+        current: &InnerPath,
         id: CanonicalPathObligationId,
         resolution: CanonicalPathObligationResolution,
     ) -> Result<InnerPath, CanonicalPathAdmissionError> {
         let mut state = current.clone();
-        let result = self.resolve_path_obligation(arena, bytes, &mut state, id, resolution);
+        let result = self.resolve_path_obligation(bytes, &mut state, id, resolution);
         self.frames
             .finish(result.is_err() || state.stack == current.stack);
         result?;
         Ok(state)
     }
 
-    fn completed_obligation<'a>(
+    fn completed_obligation<'a, B: PathByteView<Span = S::Span>>(
         &'a self,
-        arena: &CanonicalBytesArena,
+        bytes: &B,
         mut path: &'a InnerPath,
-        bytes: CanonicalBytesHandle,
-    ) -> Result<Option<CanonicalPathCompletedObligation>, CanonicalPathAdmissionError> {
+    ) -> Result<Option<CanonicalPathCompletedObligation<S::Span>>, CanonicalPathAdmissionError>
+    {
         loop {
             if matches!(path.status, PathStatus::Dead(_)) {
                 return Ok(None);
@@ -871,9 +1001,9 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                     ..
                 } => {
                     let payload =
-                        arena
-                            .slice(bytes, *payload_start..bytes.len())
-                            .map_err(|_| {
+                        bytes
+                            .slice(*payload_start..bytes.consumed_len())
+                            .ok_or_else(|| {
                                 CanonicalPathAdmissionError::new(
                                     CanonicalPathAdmissionErrorKind::SizeOverflow,
                                     obligation.tag_source,
@@ -894,24 +1024,9 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         }
     }
 
-    fn freeze_completed_obligation(
-        &self,
-        arena: &CanonicalBytesArena,
-        current: &InnerPath,
-        bytes: CanonicalBytesHandle,
-    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
-        Ok(self
-            .completed_obligation(arena, current, bytes)?
-            .map(|completed| FrozenCanonicalPathObligation {
-                obligation: completed.obligation,
-                payload: arena.freeze(completed.payload),
-                payload_end: completed.payload_end,
-            }))
-    }
+    fn frame(&self, id: FrameId) -> Frame<S::Span> { self.frames[id.0].clone() }
 
-    fn frame(&self, id: FrameId) -> Frame { self.frames[id.0].clone() }
-
-    fn push_frame(&mut self, frame: Frame) -> FrameId { self.frames.push(frame) }
+    fn push_frame(&mut self, frame: Frame<S::Span>) -> FrameId { self.frames.push(frame) }
 
     fn push_varint(&mut self, role: VarintRole, next: Option<FrameId>) -> FrameId {
         self.push_frame(Frame::Varint {
@@ -921,18 +1036,17 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         })
     }
 
-    fn feed_path(
+    fn feed_path<B: PathByteView<Span = S::Span>>(
         &mut self,
-        arena: &CanonicalBytesArena,
-        bytes: CanonicalBytesHandle,
+        bytes: &B,
         root: &mut InnerPath,
         byte: LocatedPathByte,
     ) -> CanonicalPathTransition {
-        struct RegionContext {
+        struct RegionContext<Span> {
             owner: InnerPath,
             checkpoint: FrameCheckpoint,
             remaining: u64,
-            previous: Option<CanonicalBytesHandle>,
+            previous: Option<Span>,
             declared_len: u64,
             path_remaining: u64,
             start_depth: usize,
@@ -940,13 +1054,13 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         }
 
         let mut current = root.clone();
-        let mut contexts = Vec::<RegionContext>::new();
+        let mut contexts = Vec::<RegionContext<S::Span>>::new();
         let transition = loop {
             if matches!(current.status, PathStatus::Dead(_)) {
                 break CanonicalPathTransition::Continue;
             }
             let Some(top) = current.stack else {
-                break self.feed_path_shallow(bytes, &mut current, byte);
+                break self.feed_path_shallow(bytes.consumed_len(), &mut current, byte);
             };
             let Frame::Region {
                 remaining,
@@ -961,7 +1075,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 next,
             } = self.frame(top)
             else {
-                break self.feed_path_shallow(bytes, &mut current, byte);
+                break self.feed_path_shallow(bytes.consumed_len(), &mut current, byte);
             };
 
             if remaining == 0 || path_remaining == 0 {
@@ -1040,7 +1154,6 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
 
             let endpoint = byte.source;
             self.finish_region_path(
-                arena,
                 bytes,
                 &mut owner,
                 &current,
@@ -1061,7 +1174,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
 
     fn feed_path_shallow(
         &mut self,
-        bytes: CanonicalBytesHandle,
+        path_len: usize,
         path: &mut InnerPath,
         byte: LocatedPathByte,
     ) -> CanonicalPathTransition {
@@ -1091,25 +1204,25 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
             });
             path.stack = Some(tag);
         }
-        self.feed_frame(bytes, path, byte)
+        self.feed_frame(path_len, path, byte)
     }
 
     fn feed_frame(
         &mut self,
-        bytes: CanonicalBytesHandle,
+        path_len: usize,
         path: &mut InnerPath,
         byte: LocatedPathByte,
     ) -> CanonicalPathTransition {
         let checkpoint = self.frames.checkpoint();
         let previous = path.stack;
-        let transition = self.feed_frame_inner(bytes, path, byte);
+        let transition = self.feed_frame_inner(path_len, path, byte);
         self.frames.select(checkpoint, previous, path.stack);
         transition
     }
 
     fn feed_frame_inner(
         &mut self,
-        bytes: CanonicalBytesHandle,
+        path_len: usize,
         path: &mut InnerPath,
         byte: LocatedPathByte,
     ) -> CanonicalPathTransition {
@@ -1129,7 +1242,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                     CanonicalPathTransition::Continue
                 }
                 Ok(VarintFeed::Complete(value)) => {
-                    self.finish_varint(path, role, value, next, byte.source, bytes.len())
+                    self.finish_varint(path, role, value, next, byte.source, path_len)
                 }
             },
             Frame::Bytes {
@@ -1224,7 +1337,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                                 phase: RegionPhase::Path {
                                     declared_len: length,
                                     remaining: length,
-                                    start_depth: bytes.len(),
+                                    start_depth: path_len,
                                     path: InnerPath::new(false),
                                 },
                                 next,
@@ -1548,16 +1661,15 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         }
     }
 
-    fn resolve_path_obligation(
+    fn resolve_path_obligation<B: PathByteView<Span = S::Span>>(
         &mut self,
-        arena: &CanonicalBytesArena,
-        bytes: CanonicalBytesHandle,
+        bytes: &B,
         root: &mut InnerPath,
         id: CanonicalPathObligationId,
         resolution: CanonicalPathObligationResolution,
     ) -> Result<(), CanonicalPathAdmissionError> {
         let mut current = root.clone();
-        let mut owners = Vec::<(InnerPath, Frame, FrameCheckpoint)>::new();
+        let mut owners = Vec::<(InnerPath, Frame<S::Span>, FrameCheckpoint)>::new();
         loop {
             let top = current.stack.ok_or_else(|| {
                 CanonicalPathAdmissionError::new(
@@ -1667,22 +1779,21 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 }
             }
         }
-        self.rebuild_region_owners(arena, bytes, &mut current, owners);
+        self.rebuild_region_owners(bytes, &mut current, owners);
         *root = current;
         Ok(())
     }
 
     #[cfg(test)]
-    fn reject_path_obligation(
+    fn reject_path_obligation<B: PathByteView<Span = S::Span>>(
         &mut self,
-        arena: &CanonicalBytesArena,
-        bytes: CanonicalBytesHandle,
+        bytes: &B,
         root: &mut InnerPath,
         id: CanonicalPathObligationId,
         source: CanonicalPathSource,
     ) -> Result<(), CanonicalPathAdmissionError> {
         let mut current = root.clone();
-        let mut owners = Vec::<(InnerPath, Frame, FrameCheckpoint)>::new();
+        let mut owners = Vec::<(InnerPath, Frame<S::Span>, FrameCheckpoint)>::new();
         loop {
             let top = current.stack.ok_or_else(|| {
                 CanonicalPathAdmissionError::new(
@@ -1727,17 +1838,16 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 }
             }
         }
-        self.rebuild_region_owners(arena, bytes, &mut current, owners);
+        self.rebuild_region_owners(bytes, &mut current, owners);
         *root = current;
         Ok(())
     }
 
-    fn rebuild_region_owners(
+    fn rebuild_region_owners<B: PathByteView<Span = S::Span>>(
         &mut self,
-        arena: &CanonicalBytesArena,
-        bytes: CanonicalBytesHandle,
+        bytes: &B,
         current: &mut InnerPath,
-        mut owners: Vec<(InnerPath, Frame, FrameCheckpoint)>,
+        mut owners: Vec<(InnerPath, Frame<S::Span>, FrameCheckpoint)>,
     ) {
         while let Some((mut owner, frame, checkpoint)) = owners.pop() {
             let previous_owner = owner.stack;
@@ -1760,12 +1870,11 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 owner.kill(error);
             } else if path_remaining == 0 {
                 let endpoint = CanonicalPathSource::from_provenance(
-                    arena
-                        .provenance_at(bytes, bytes.len() - 1)
+                    bytes
+                        .provenance_at(bytes.consumed_len() - 1)
                         .expect("a suspended region path consumed a final edge"),
                 );
                 self.finish_region_path(
-                    arena,
                     bytes,
                     &mut owner,
                     current,
@@ -1795,16 +1904,15 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn finish_region_path(
+    fn finish_region_path<B: PathByteView<Span = S::Span>>(
         &mut self,
-        arena: &CanonicalBytesArena,
-        bytes: CanonicalBytesHandle,
+        bytes: &B,
         owner: &mut InnerPath,
         child: &InnerPath,
         remaining: u64,
         declared_len: u64,
         start_depth: usize,
-        previous: Option<CanonicalBytesHandle>,
+        previous: Option<S::Span>,
         next: Option<FrameId>,
         endpoint: CanonicalPathSource,
     ) {
@@ -1819,9 +1927,9 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
             ));
             return;
         }
-        let completed = match arena.slice(bytes, start_depth..bytes.len()) {
-            Ok(completed) => completed,
-            Err(_) => {
+        let completed = match bytes.slice(start_depth..bytes.consumed_len()) {
+            Some(completed) => completed,
+            None => {
                 owner.kill(CanonicalPathAdmissionError::new(
                     CanonicalPathAdmissionErrorKind::SizeOverflow,
                     endpoint,
@@ -1829,7 +1937,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 return;
             }
         };
-        if u64::try_from(completed.len()).ok() != Some(declared_len) {
+        if u64::try_from(bytes.span_len(completed)).ok() != Some(declared_len) {
             owner.kill(CanonicalPathAdmissionError::new(
                 CanonicalPathAdmissionErrorKind::RegionFrameOverrun,
                 endpoint,
@@ -1837,15 +1945,10 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
             return;
         }
         if let Some(previous) = previous {
-            let order = arena.compare(previous, completed);
+            let order = bytes.compare(previous, completed);
             if order != std::cmp::Ordering::Less {
-                let mut source = endpoint;
-                for (left, right) in arena.bytes(previous).zip(arena.located_bytes(completed)) {
-                    if left != right.byte {
-                        source = CanonicalPathSource::from_provenance(right.provenance);
-                        break;
-                    }
-                }
+                let source = bytes.first_mismatch_source(previous, completed)
+                    .map(CanonicalPathSource::from_provenance).unwrap_or(endpoint);
                 owner.kill(CanonicalPathAdmissionError::new(
                     if order == std::cmp::Ordering::Equal {
                         CanonicalPathAdmissionErrorKind::DuplicatePathInRegion
@@ -2016,6 +2119,10 @@ impl CanonicalPathTopologyAdmission {
 #[cfg(test)]
 #[path = "../../../tests/support/canonical_frame_storage.rs"]
 mod frame_storage_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/support/canonical_path_byte_policy.rs"]
+mod byte_policy_tests;
 
 #[cfg(test)]
 mod tests {

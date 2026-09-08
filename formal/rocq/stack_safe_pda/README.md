@@ -264,9 +264,12 @@ success remain separate implementation obligations.
 ### Standalone canonical-key root: implementation contract (tasks 5976/6018)
 
 The internal standalone admission entry reuses the existing protobuf admission worklist and
-`CanonicalPathReducer`. It is not a second key parser or a fabricated EPM1
-snapshot. A standalone path frame owns an indexed region, located cursor,
-reducer handle, existing page-backed arena and optional pending obligation.
+shared canonical-path grammar. It is not a second key parser or a fabricated EPM1
+snapshot. Initially its frame used the persistent reducer handle and page-backed
+arena. The refinements below replace those with `CanonicalPathStreamReducer`,
+reusable grammar frames and checked indexed spans. The current standalone frame
+retains its indexed region, located cursor, stream reducer and optional pending
+obligation; the persistent ACT facade still owns its original arena policy.
 Raw-Par escapes dispatch the existing Message frame; nested EPM1 dispatches
 the existing EPathMap frame. The parent remains suspended on the same explicit
 heap stack. The Message-root wrapper retains its current postchecks and error
@@ -337,7 +340,7 @@ standalone root, alongside the existing persistent storage for ACT forks.
 needed by standalone region-key and child-payload spans. Child-region adaptation
 must preserve the reducer's supplied completion anchor exactly.
 
-Before that storage change, its separate formal refinement must establish:
+The storage sequence's pre-implementation formal obligations are:
 
 1. Exclusive state cannot export or restore historical reducer handles.
 2. Persistent and exclusive paths have identical validity, stability, error,
@@ -398,11 +401,13 @@ standalone admission frame. Both delegate to the same core. The existing
 explicit ascending/duplicate/reversed region-key controls. This is not a second
 parser or a new input grammar.
 
-This checkpoint removes historical **root-state** retention only. Historical
+The initial ECS checkpoint removes historical **root-state** retention only. Historical
 parser frames, arena payload copies, enclosing-region rebuilding and repeated
 nested visits remain required work. The resource controls intentionally verify
 that these costs have not disappeared merely because the state count is one.
-Importer activation remains gated on their full qualification.
+Importer activation remains gated on their full qualification. The later reusable
+frame and indexed-span sections record the subsequent removals; their tests
+replace the obsolete arena-work equality with exact consumed-prefix correspondence.
 
 ### Reusable frame ownership (tasks 5976/6018)
 
@@ -629,6 +634,44 @@ Region reconstruction. Checked opaque-payload bulk consumption and absolute
 region endpoints remain subsequent required steps. Their proofs must preserve
 enclosing bounds and child-first error order, and may not skip local UTF-8 or
 grammar validation. No importer or persistence backend is activated by this plan.
+
+#### Indexed read-policy runtime binding
+
+The standalone reducer now specializes the shared grammar with
+`FrameStorage<CanonicalByteRange>` and retains a checked `consumed: usize`.
+`ArenaPathBytes` preserves persistent ACT handles, append and freeze behavior;
+`IndexedPathBytes` borrows the already-retained input during each operation.
+Neither policy owns another parser. `InnerPath` and frame IDs remain independent
+of byte-buffer lifetimes, and a completed child receives an anchored input
+subview through the same region-taking constructor as the frozen ACT adapter.
+
+The new executable bindings in
+[`canonical_path_byte_policy.rs`](../../../models/tests/support/canonical_path_byte_policy.rs)
+are:
+
+| Tests | Model obligations exercised |
+|---|---|
+| `indexed_byte_policy_matches_accumulated_consumed_prefix` | IST-01/02/03: 128 generated prefix/range cases against an independently built arena prefix; future-but-present input is rejected, and byte provenance cannot substitute the consumed end boundary. |
+| `indexed_byte_policy_rejects_invalid_bounds_without_endpoint_substitution` | IST-02: reversed, future, maximum-offset and over-consumed spans; physical-origin overflow; checked consumed-increment failure leaves counters unchanged. |
+| `indexed_byte_policy_orders_content_and_reports_current_mismatch_or_endpoint` | IST-04: both strict orders, equality and both proper-prefix directions; current-key mismatch source and endpoint fallback agree with the arena reference. |
+| `indexed_byte_policy_captured_range_survives_source_owner_and_frame_replacement` | IST-05/07: the actual reusable frame slot is replaced while a retained anchored child keeps its bytes and provenance after source-owner teardown. |
+| `indexed_byte_policy_pending_preflight_preserves_consumption_but_dead_edges_advance` | IST-06: pending refusal precedes consumption/statistics changes; accepted post-Dead edges consume input; exceeding input refuses without advancement. |
+
+The existing fifteen standalone tests retain their semantic witnesses. Their
+byte/resolution trace adapters prebuild immutable input, including post-Dead
+suffixes, and compare consumed prefixes and completed payload locations with the
+persistent arena reference. Wrong-ID/pending attempts additionally assert no
+consumed-offset change. A sixteenth test,
+`standalone_children_share_borrowed_payloads_and_survive_parent_drop`, checks the
+actual RawPar and nested-EPM child constructor for direct payload-pointer
+identity, completion anchors, unconsumed suffix and parent teardown. The layout
+probe checks the original borrowed input's pointer and actual cursor counts,
+rather than reporting a constant zero-copy counter.
+
+The focused runner requires sixteen standalone, five byte-policy, eight
+frame-storage and six anchored-window tests. These bindings do not remove
+per-byte nested Region reconstruction or duplicate visits by separately required
+child validators; whole-pipeline physical linearity remains an independent gate.
 
 ## Exact matcher count intervals (2026-09-07)
 

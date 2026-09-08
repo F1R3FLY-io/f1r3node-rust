@@ -10072,6 +10072,31 @@ remain required. See
 [J-093](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-093--2026-09-08-prove-indexed-transport-and-preserve-completion-anchors)
 for the model/test boundaries, negative result, resource caps and evidence hashes.
 
+#### 5.33.13 Standalone indexed byte transport (2026-09-08, tasks 5976/6018)
+
+The standalone driver now consumes its retained indexed input without copying
+each edge into a second byte/provenance arena. Its reusable grammar specializes
+previous-key and child-payload spans to checked ranges; the persistent ACT facade
+keeps its existing arena handles. One shared parser grammar and child constructor
+preserve pending/refusal order, exact physical provenance and completion anchors.
+
+All **372** release models tests pass, including five read-policy controls and
+sixteen standalone tests. The depth-20,000 tuple case retains its 64-KiB native
+stack and includes teardown. `CanonicalPathFrame` falls from **664 to 440 bytes**;
+the indexed region remains **72 bytes**, and the outer admission enum **1,136
+bytes**. Exclusive grammar-frame/journal capacity is **736 bytes** in each of the
+four flat-width cells, down from 768, with two reusable slots. The direct-input
+pointer and cursor counters establish one borrowed input and one cursor visit per
+byte for that flat workload, not a whole-pipeline allocation or timing bound.
+The final combined gate passes **69** focused Rust tests and its expected proof
+reports with three kernel checks. Broader integration passes all **23** manifest
+and **36** ParBag tests, including the unchanged depth-4,096 import/ACT case.
+
+Nested payload visits and enclosing Region updates remain required resource work;
+the internal standalone entry is not yet the production importer. See
+[J-094](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-094--2026-09-08-replace-standalone-byte-accumulation-with-indexed-spans)
+for exact method, preverified invariants, measurements and qualification boundaries.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

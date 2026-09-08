@@ -5044,6 +5044,21 @@ transport, and no codec, hash, charge or persistence format changes. Journal
 J-093 and stack-safety §5.33.12 retain the exact evidence boundary; this is not a
 new axis classification, backend activation or campaign-wide consensus verdict.
 
+The following standalone transport replacement uses checked ranges into retained
+input instead of a second byte/provenance arena. The persistent ACT facade keeps
+its original handles and freeze behavior. One shared grammar and child-region
+constructor retain validation order, consumed-prefix bounds, exact child error
+anchors and current-key mismatch provenance. All 372 models tests pass, including
+persistent-versus-indexed byte/resolution traces and actual child payload sharing.
+The standalone entry remains internal: this is not importer activation, a codec
+or hash transition, or persistence cutover. Journal J-094 and stack-safety
+§5.33.13 distinguish local storage measurements from remaining resource and
+campaign-wide consensus qualification.
+The final scoped gate also passes 69 focused Rust tests, its proof/kernel checks,
+23 manifest tests and 36 ParBag integration tests, with no ignored cases. This
+includes the unchanged depth-4,096 import/ACT test and does not substitute for
+whole-workspace replay or release qualification.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

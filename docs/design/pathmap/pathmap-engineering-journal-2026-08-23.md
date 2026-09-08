@@ -6617,6 +6617,97 @@ required. Subsequent bulk payload consumption and Region traversal work also
 remain in task 6018. This checkpoint changes no importer call site or persistent
 backend and supplies no PathMap/ACT-versus-LMDB result.
 
+### J-094 — 2026-09-08: replace standalone byte accumulation with indexed spans
+
+**OBJECTIVE.** Complete the read-policy replacement proved in J-093: eliminate
+the standalone validator's second payload/provenance arena without changing the
+canonical grammar, persistent ACT branch handles or child-error protocol.
+
+**DESIGN AND IMPLEMENTATION.** One statically specialized grammar uses
+`PathByteView`. The persistent policy retains arena handles and its existing
+append/freeze facade. The standalone policy stores a checked consumed offset,
+uses `CanonicalByteRange` for previous keys and child payloads, and borrows its
+existing indexed input only for the duration of an operation. Grammar frames
+contain no borrowed payload references. The shared child constructor receives an
+anchored indexed region from either the frozen ACT adapter or the standalone
+input. Frame ownership and retirement use J-092's existing journals.
+
+```text
+Algorithm INDEXED-EDGE(input, current, consumed, located-byte)
+1. Apply the existing pending-obligation refusal before any mutation.
+2. Check consumed + 1 for integer overflow and against input length.
+3. Run the shared grammar over the checked consumed prefix.
+4. Commit selected frame ownership, current state and consumed offset.
+5. If a child payload completes, retain its checked input window with
+   the exact completion anchor, then suspend for the shared child driver.
+```
+
+`Dead` state does not invent an early-return consumption rule: the pre-existing
+private successful post-refusal edges still advance. Wrong-ID and pending-child
+failures preserve consumption and statistics. Region order compares byte values;
+the first differing current-key byte supplies mismatch provenance, while equal
+and proper-prefix failures retain their endpoint fallback. No per-edge indexed
+byte/provenance lookup is added merely to recheck the located cursor's own output.
+
+**FORMAL AND EXECUTABLE BINDING.** The twenty-two indexed transport capstones
+were already compiled and independently kernel-checked before this replacement.
+Five new byte-policy tests were written before the reducer edit. They cover an
+independently accumulated prefix, future-but-present bytes, integer and physical
+offset boundaries, ordering/mismatch provenance, retained payloads across actual
+frame reuse, and pending versus post-Dead consumption. The original fifteen
+standalone tests retain their semantic observations and compare consumed located
+prefixes with the persistent arena reference. A sixteenth test checks actual
+RawPar/nested-EPM child payload pointer identity, unconsumed suffixes, completion
+anchors and parent teardown. Full release models qualification passes
+**372/372**, zero ignored, on the first combined run (54.17 seconds test execution).
+
+**MEASURED RESOURCE RESULT.** These are layout, vector-capacity and cursor-count
+measurements on this toolchain, not allocator/RSS or throughput benchmarks.
+
+| Measurement | Before indexed transport | Indexed transport |
+|---|---:|---:|
+| Standalone `CanonicalPathFrame` | 664 bytes | 440 bytes |
+| `IndexedByteRegion` | 72 bytes | 72 bytes |
+| Outer admission `Frame` | 1,136 bytes | 1,136 bytes |
+| Exclusive grammar-frame/journal backing, each flat-width cell | 768 bytes | 736 bytes |
+| Reusable frame slots, each flat-width cell | 2 | 2 |
+| Standalone second byte/provenance arena | Retained alongside input | Removed; original input is borrowed directly |
+
+Widths 16/128/1,024/8,192 encode to 18/131/1,027/8,195 input bytes. Each indexed
+run reports exactly that many consumed, yielded and traversed bytes, and its
+borrowed input address equals the fixture's address. The independent persistent
+reference retains 1/3/17/129 byte pages and the same number of provenance pages;
+these are reference measurements, not newly allocated indexed pages. Fixture
+construction is outside the measured operation. The deep tuple control still
+checks admission and teardown at depth 20,000 on a 64-KiB native stack.
+
+| Artifact | SHA-256 |
+|---|---|
+| Full 372-test models suite | `a64c93d8f881aea65797482fc0b5f9f5d36d2ae10dad884a14c3d8f04079c23a` |
+| Direct layout/cursor matrix | `df857c8ac64eef765dc813d095bc6dd402233df6796a950cf3ad7209f4b39ff1` |
+| Final combined proof/runtime gate | `c60f49bcc312e79ac4799a86a23fbf7d5dadf82143dd548d59d5a6bf642fdcab` |
+| Manifest and ParBag integration | `43eabca7389473b2be0dd79ea1a196a7b28d2a665a877de7de57e1975a7cdac3` |
+
+The final combined gate passes **69** focused Rust tests and the expected
+48 import / 17 score / 62 RPB3 closed reports with three independent kernel
+checks. Its 32 prerequisite reports are not additional transport capstones.
+Broader release integration passes **23** formal-manifest and **36** ParBag tests,
+zero ignored, including the unchanged depth-4,096 component import/ACT case.
+The ParBag suite takes 296.63 seconds; it ran under the same memory cap, without
+restarting the long test. Artifacts 536 and 537 retain the detailed evidence.
+
+Rust qualification uses 4/6-GiB high/hard memory limits, zero swap, four build
+jobs and four test threads under `systemd-run`; properties use seed `41315976`.
+
+**BOUNDARY.** This removes duplicate standalone accumulation and narrows its
+spans. It does not eliminate repeated payload visits in nested validation or
+per-byte enclosing Region reconstruction. Those resource obligations remain in
+task 6018 before importer activation. Persistent ACT admission still requires its
+forkable arena policy. No backend cutover, consensus byte change, whole-pipeline
+physical-linearity claim or PathMap/ACT-versus-LMDB verdict follows from this
+local result. Scoped implementation qualification is complete; whole-workspace
+and remaining campaign release gates are not claimed by this checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
