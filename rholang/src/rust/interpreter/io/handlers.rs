@@ -141,11 +141,39 @@ fn per_entry_ack_seed(ack: &Par, path: &std::path::Path) -> [u8; 32] {
 /// dispatches on both variants stay inline — the extraction would
 /// force awkward generic-over-Result-arm parameterization for
 /// negligible LOC savings.
+///
+/// T-17 (2026-09-08): callers whose JoinError fallback is a custom
+/// Par (e.g., `err_with_count(FSERR_IO, ..., 0)` or an
+/// `early_err_for_remove_dir(...)` per DD-RemoveDirReplyShape) use
+/// `spawn_blocking_par_with_fallback` instead — same shape, custom
+/// fallback closure.
 async fn spawn_blocking_par<F>(f: F) -> Par
 where F: FnOnce() -> Par + Send + 'static {
     spawn_blocking(f)
         .await
         .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
+}
+
+/// T-17 (2026-09-08, Mi-3 fix): companion to `spawn_blocking_par`
+/// for sites whose JoinError arm isn't the plain
+/// `err(FSERR_IO, "spawn_blocking task failed")` — e.g., the
+/// DD-RemoveDirReplyShape sites that need `err_with_count` or
+/// `early_err_for_remove_dir` with the recursive/cmode-picked
+/// reply shape.
+///
+/// The fallback closure runs synchronously on the awaiting task
+/// (no spawn_blocking hop), so it's the right place for cheap
+/// computations that use captured state (cmode / recursive /
+/// ack context).
+async fn spawn_blocking_par_with_fallback<F, G>(f: F, on_join_err: G) -> Par
+where
+    F: FnOnce() -> Par + Send + 'static,
+    G: FnOnce() -> Par,
+{
+    match spawn_blocking(f).await {
+        Ok(par) => par,
+        Err(_je) => on_join_err(),
+    }
 }
 
 /// RQ-2 (2026-09-04) centralized builder for the Consensus-mode
@@ -4127,49 +4155,49 @@ impl FsProcesses {
                         self.handles.root_registry.resolve_or_identity(&raw_root_pb);
                     let rel_owned = rel.to_string();
                     let lock_registry = self.handles.lock_registry.clone();
-                    let fresh_reply = spawn_blocking(move || -> Par {
-                        let parent = match safe_descend_verified(
-                            &on_disk_root_pb,
-                            &rel_owned,
-                            expected_root_id,
-                        ) {
-                            Ok(p) => p,
-                            Err(qe) => {
-                                let (c, m) = quarantine_err_reply(&qe);
-                                // DD-RemoveDirReplyShape: quarantine
-                                // failure in follower non-recursive
-                                // Consensus branch.
-                                return err_with_count(c, m, 0);
+                    let fresh_reply = spawn_blocking_par_with_fallback(
+                        move || -> Par {
+                            let parent = match safe_descend_verified(
+                                &on_disk_root_pb,
+                                &rel_owned,
+                                expected_root_id,
+                            ) {
+                                Ok(p) => p,
+                                Err(qe) => {
+                                    let (c, m) = quarantine_err_reply(&qe);
+                                    // DD-RemoveDirReplyShape: quarantine
+                                    // failure in follower non-recursive
+                                    // Consensus branch.
+                                    return err_with_count(c, m, 0);
+                                }
+                            };
+                            let target_dev_inode = target_dev_inode_at(&parent);
+                            let target_is_locked = target_dev_inode
+                                .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
+                                .unwrap_or(false);
+                            // Consensus + locked → FSERR_BUSY (symmetric
+                            // with leader; shared LockRegistry across
+                            // spawned runtimes means both sides observe
+                            // the same lock state).
+                            if target_is_locked {
+                                return err_with_count(
+                                    FSERR_BUSY,
+                                    "cannot remove: lock held on target (dev, inode)",
+                                    0,
+                                );
                             }
-                        };
-                        let target_dev_inode = target_dev_inode_at(&parent);
-                        let target_is_locked = target_dev_inode
-                            .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
-                            .unwrap_or(false);
-                        // Consensus + locked → FSERR_BUSY (symmetric
-                        // with leader; shared LockRegistry across
-                        // spawned runtimes means both sides observe
-                        // the same lock state).
-                        if target_is_locked {
-                            return err_with_count(
-                                FSERR_BUSY,
-                                "cannot remove: lock held on target (dev, inode)",
-                                0,
-                            );
-                        }
-                        match unlink_leaf_via_dirfd(&parent, RemoveKind::Dir) {
-                            // DD-RemoveDirReplyShape: non-recursive success
-                            // deletes exactly one entry (the target itself).
-                            Ok(()) => ok_with_count(1),
-                            // DD-RemoveDirReplyShape: non-recursive failure
-                            // → 0 entries deleted before the error.
-                            Err(e) => err_with_count(io_err_code(&e), io_msg_scrub(&e), 0),
-                        }
-                    })
-                    .await
-                    .unwrap_or_else(|_je| {
-                        err_with_count(FSERR_IO, "spawn_blocking task failed", 0)
-                    });
+                            match unlink_leaf_via_dirfd(&parent, RemoveKind::Dir) {
+                                // DD-RemoveDirReplyShape: non-recursive success
+                                // deletes exactly one entry (the target itself).
+                                Ok(()) => ok_with_count(1),
+                                // DD-RemoveDirReplyShape: non-recursive failure
+                                // → 0 entries deleted before the error.
+                                Err(e) => err_with_count(io_err_code(&e), io_msg_scrub(&e), 0),
+                            }
+                        },
+                        || err_with_count(FSERR_IO, "spawn_blocking task failed", 0),
+                    )
+                    .await;
                     // Verify + finalize.
                     let supp_n =
                         fs_remove_dir_supplement_count_from_previous(&parsed, cmode, &previous);
@@ -4253,54 +4281,54 @@ impl FsProcesses {
                     let lock_registry = self.handles.lock_registry.clone();
                     let wal_handle = self.handles.wal.clone();
                     let ack_clone = ack.clone();
-                    let fresh_reply = spawn_blocking(move || -> Par {
-                        let parent = match safe_descend_verified(
-                            &on_disk_root_pb,
-                            &rel_owned,
-                            expected_root_id,
-                        ) {
-                            Ok(p) => p,
-                            Err(qe) => {
-                                let (c, m) = quarantine_err_reply(&qe);
-                                // DD-RemoveDirReplyShape: recursive Consensus
-                                // quarantine failure — 5-element with empty
-                                // manifest (walk didn't start).
-                                return err_with_manifest(c, m, &[]);
+                    let fresh_reply = spawn_blocking_par_with_fallback(
+                        move || -> Par {
+                            let parent = match safe_descend_verified(
+                                &on_disk_root_pb,
+                                &rel_owned,
+                                expected_root_id,
+                            ) {
+                                Ok(p) => p,
+                                Err(qe) => {
+                                    let (c, m) = quarantine_err_reply(&qe);
+                                    // DD-RemoveDirReplyShape: recursive Consensus
+                                    // quarantine failure — 5-element with empty
+                                    // manifest (walk didn't start).
+                                    return err_with_manifest(c, m, &[]);
+                                }
+                            };
+                            let target_dev_inode = target_dev_inode_at(&parent);
+                            let target_is_locked = target_dev_inode
+                                .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
+                                .unwrap_or(false);
+                            if target_is_locked {
+                                return err_with_manifest(
+                                    FSERR_BUSY,
+                                    "cannot remove: lock held on target (dev, inode)",
+                                    &[],
+                                );
                             }
-                        };
-                        let target_dev_inode = target_dev_inode_at(&parent);
-                        let target_is_locked = target_dev_inode
-                            .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
-                            .unwrap_or(false);
-                        if target_is_locked {
-                            return err_with_manifest(
-                                FSERR_BUSY,
-                                "cannot remove: lock held on target (dev, inode)",
-                                &[],
-                            );
-                        }
-                        // S-2 (2026-09-03): symlink-safe walker via
-                        // parent-dirfd + O_NOFOLLOW; canon_target is no
-                        // longer used to enumerate children.
-                        // RQ-1 (2026-09-03): walk + per-entry journal +
-                        // per-entry unlink loop extracted to
-                        // `walk_and_unlink_recursive_with_journal`
-                        // — identical code to the leader-branch call
-                        // below (line ~4300).
-                        walk_and_unlink_recursive_with_journal(
-                            &parent,
-                            &canon_wal_target,
-                            &ack_clone,
-                            &wal_handle,
-                        )
-                    })
-                    .await
-                    .unwrap_or_else(|_je| {
+                            // S-2 (2026-09-03): symlink-safe walker via
+                            // parent-dirfd + O_NOFOLLOW; canon_target is no
+                            // longer used to enumerate children.
+                            // RQ-1 (2026-09-03): walk + per-entry journal +
+                            // per-entry unlink loop extracted to
+                            // `walk_and_unlink_recursive_with_journal`
+                            // — identical code to the leader-branch call
+                            // below (line ~4300).
+                            walk_and_unlink_recursive_with_journal(
+                                &parent,
+                                &canon_wal_target,
+                                &ack_clone,
+                                &wal_handle,
+                            )
+                        },
                         // DD-RemoveDirReplyShape: spawn_blocking task
                         // failure on recursive Consensus path — 5-element
                         // with empty manifest.
-                        err_with_manifest(FSERR_IO, "spawn_blocking task failed", &[])
-                    });
+                        || err_with_manifest(FSERR_IO, "spawn_blocking task failed", &[]),
+                    )
+                    .await;
                     let supp_n = fs_remove_dir_supplement_count(&parsed, cmode, &fresh_reply);
                     self.metering.reserve_incremental_primitive(
                         costs::fs_remove_dir_per_entry_supplement_cost(supp_n),
@@ -4376,166 +4404,172 @@ impl FsProcesses {
                 let lock_registry = self.handles.lock_registry.clone();
                 let ack_clone = ack.clone();
                 let wal = self.handles.wal.clone();
-                spawn_blocking(move || -> Par {
-                    let parent =
-                        match safe_descend_verified(&on_disk_root_pb, &rel, expected_root_id) {
-                            Ok(p) => p,
-                            Err(qe) => {
-                                let (c, m) = quarantine_err_reply(&qe);
-                                // DD-RemoveDirReplyShape: pre-walk quarantine
-                                // failure — shape picker picks 4- vs 5-element
-                                // based on (recursive, cmode).
-                                return early_err_for_remove_dir(recursive, cmode, c, m);
-                            }
-                        };
-                    let target_dev_inode = target_dev_inode_at(&parent);
-                    let target_is_locked = target_dev_inode
-                        .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
-                        .unwrap_or(false);
-                    // Consensus + locked → FSERR_BUSY (unchanged from
-                    // slice 1 removeFile pattern).  Oracular + locked
-                    // proceeds with a log-warn.
-                    if cmode == ConsensusMode::Consensus && target_is_locked {
-                        return early_err_for_remove_dir(
-                            recursive,
-                            cmode,
-                            FSERR_BUSY,
-                            "cannot remove: lock held on target (dev, inode)",
-                        );
-                    }
-                    if cmode == ConsensusMode::Oracular && target_is_locked {
-                        if let Some((dev, ino)) = target_dev_inode {
-                            let n_holders = lock_registry.count_locks((dev, ino));
-                            tracing::warn!(
-                                target: "f1r3fly.fs.oracular",
-                                dev = dev,
-                                ino = ino,
-                                n_holders = n_holders,
-                                "oracular removeDir of locked directory (dev={}, ino={}) \
-                                 — {} holder(s) will observe subsequent errors on \
-                                 path-based calls; fd-based calls remain valid until close",
-                                dev,
-                                ino,
-                                n_holders
+                spawn_blocking_par_with_fallback(
+                    move || -> Par {
+                        let parent =
+                            match safe_descend_verified(&on_disk_root_pb, &rel, expected_root_id) {
+                                Ok(p) => p,
+                                Err(qe) => {
+                                    let (c, m) = quarantine_err_reply(&qe);
+                                    // DD-RemoveDirReplyShape: pre-walk quarantine
+                                    // failure — shape picker picks 4- vs 5-element
+                                    // based on (recursive, cmode).
+                                    return early_err_for_remove_dir(recursive, cmode, c, m);
+                                }
+                            };
+                        let target_dev_inode = target_dev_inode_at(&parent);
+                        let target_is_locked = target_dev_inode
+                            .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
+                            .unwrap_or(false);
+                        // Consensus + locked → FSERR_BUSY (unchanged from
+                        // slice 1 removeFile pattern).  Oracular + locked
+                        // proceeds with a log-warn.
+                        if cmode == ConsensusMode::Consensus && target_is_locked {
+                            return early_err_for_remove_dir(
+                                recursive,
+                                cmode,
+                                FSERR_BUSY,
+                                "cannot remove: lock held on target (dev, inode)",
                             );
                         }
-                    }
-                    // Task 0.4 / Shape A + R5(b) (2026-09-02):
-                    // recursive manifest emission below walks the
-                    // on-disk tree via
-                    // `collect_recursive_manifest(&canon_target)`
-                    // where canon_target is the on-disk absolute
-                    // path.  The walker returns RELATIVE paths
-                    // (relative to canon_target); callers apply
-                    // `canon_wal_target.join(rel)` for bundle-
-                    // relative WAL entries and `canon_target.join(rel)`
-                    // for on-disk syscalls.  This closes the pre-
-                    // R5(b) Shape A gap where absolute per-validator
-                    // paths in the recursive manifest wouldn't
-                    // resolve on a joiner via the registry.
-                    // S-2 (2026-09-03): canon_target removed — the
-                    // recursive Consensus walker now uses parent's dirfd
-                    // + openat(O_NOFOLLOW) instead of a canonical path
-                    // enumeration.
-                    if !recursive {
-                        // Non-recursive: single unlinkat(AT_REMOVEDIR).
-                        if cmode == ConsensusMode::Consensus {
-                            let e = wal.append_with_ack(
-                                WalEntry {
-                                    op: WalOp::RemoveDir,
-                                    // Shape A: WAL records the raw
-                                    // bundle-relative path so leader
-                                    // and follower append identical
-                                    // bytes; syscall below uses
-                                    // canon_target (on-disk absolute).
-                                    path: canon_wal_target.clone(),
-                                    extra_path: None,
-                                    offset: None,
-                                    length: None,
-                                    payload_ref: None,
-                                    mode_bits: None,
-                                    owner: None,
-                                    group: None,
-                                    outcome: WalOutcome::Success,
-                                },
-                                ack_channel_hash(&ack_clone),
-                            );
-                            if e.is_err() {
-                                // Non-recursive Consensus WAL cap.
-                                return err_with_count(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded", 0);
+                        if cmode == ConsensusMode::Oracular && target_is_locked {
+                            if let Some((dev, ino)) = target_dev_inode {
+                                let n_holders = lock_registry.count_locks((dev, ino));
+                                tracing::warn!(
+                                    target: "f1r3fly.fs.oracular",
+                                    dev = dev,
+                                    ino = ino,
+                                    n_holders = n_holders,
+                                    "oracular removeDir of locked directory (dev={}, ino={}) \
+                                     — {} holder(s) will observe subsequent errors on \
+                                     path-based calls; fd-based calls remain valid until close",
+                                    dev,
+                                    ino,
+                                    n_holders
+                                );
                             }
                         }
-                        match unlink_leaf_via_dirfd(&parent, RemoveKind::Dir) {
-                            // DD-RemoveDirReplyShape: non-recursive success
-                            // deletes exactly one entry (the target itself).
-                            Ok(()) => return ok_with_count(1),
-                            Err(e) => {
-                                if cmode == ConsensusMode::Consensus {
-                                    let _ = wal.update_outcome_by_ack_hash(
-                                        ack_channel_hash(&ack_clone),
-                                        WalOutcome::Failure {
-                                            code: io_err_code_u32(&e),
-                                        },
+                        // Task 0.4 / Shape A + R5(b) (2026-09-02):
+                        // recursive manifest emission below walks the
+                        // on-disk tree via
+                        // `collect_recursive_manifest(&canon_target)`
+                        // where canon_target is the on-disk absolute
+                        // path.  The walker returns RELATIVE paths
+                        // (relative to canon_target); callers apply
+                        // `canon_wal_target.join(rel)` for bundle-
+                        // relative WAL entries and `canon_target.join(rel)`
+                        // for on-disk syscalls.  This closes the pre-
+                        // R5(b) Shape A gap where absolute per-validator
+                        // paths in the recursive manifest wouldn't
+                        // resolve on a joiner via the registry.
+                        // S-2 (2026-09-03): canon_target removed — the
+                        // recursive Consensus walker now uses parent's dirfd
+                        // + openat(O_NOFOLLOW) instead of a canonical path
+                        // enumeration.
+                        if !recursive {
+                            // Non-recursive: single unlinkat(AT_REMOVEDIR).
+                            if cmode == ConsensusMode::Consensus {
+                                let e = wal.append_with_ack(
+                                    WalEntry {
+                                        op: WalOp::RemoveDir,
+                                        // Shape A: WAL records the raw
+                                        // bundle-relative path so leader
+                                        // and follower append identical
+                                        // bytes; syscall below uses
+                                        // canon_target (on-disk absolute).
+                                        path: canon_wal_target.clone(),
+                                        extra_path: None,
+                                        offset: None,
+                                        length: None,
+                                        payload_ref: None,
+                                        mode_bits: None,
+                                        owner: None,
+                                        group: None,
+                                        outcome: WalOutcome::Success,
+                                    },
+                                    ack_channel_hash(&ack_clone),
+                                );
+                                if e.is_err() {
+                                    // Non-recursive Consensus WAL cap.
+                                    return err_with_count(
+                                        FSERR_QUOTA_EXCEEDED,
+                                        "WAL cap exceeded",
+                                        0,
                                     );
                                 }
-                                return err_with_count(io_err_code(&e), io_msg_scrub(&e), 0);
+                            }
+                            match unlink_leaf_via_dirfd(&parent, RemoveKind::Dir) {
+                                // DD-RemoveDirReplyShape: non-recursive success
+                                // deletes exactly one entry (the target itself).
+                                Ok(()) => return ok_with_count(1),
+                                Err(e) => {
+                                    if cmode == ConsensusMode::Consensus {
+                                        let _ = wal.update_outcome_by_ack_hash(
+                                            ack_channel_hash(&ack_clone),
+                                            WalOutcome::Failure {
+                                                code: io_err_code_u32(&e),
+                                            },
+                                        );
+                                    }
+                                    return err_with_count(io_err_code(&e), io_msg_scrub(&e), 0);
+                                }
                             }
                         }
-                    }
-                    // Recursive path.
-                    if cmode == ConsensusMode::Oracular {
-                        // Oracular: existing readdir-loop unlinker, no
-                        // WAL, count-carrying reply per
-                        // DD-RemoveDirReplyShape (2026-09-03).  The
-                        // walker now returns (n_deleted) on success
-                        // and (n_before_error, io_error) on partial
-                        // failure so we can bill per-entry cost
-                        // symmetrically with Consensus recursive.
-                        match remove_dir_recursive(parent.as_raw_fd(), parent.leaf_ptr()) {
-                            Ok(n) => ok_with_count(n),
-                            Err((n_before, e)) => {
-                                err_with_count(io_err_code(&e), io_msg_scrub(&e), n_before)
+                        // Recursive path.
+                        if cmode == ConsensusMode::Oracular {
+                            // Oracular: existing readdir-loop unlinker, no
+                            // WAL, count-carrying reply per
+                            // DD-RemoveDirReplyShape (2026-09-03).  The
+                            // walker now returns (n_deleted) on success
+                            // and (n_before_error, io_error) on partial
+                            // failure so we can bill per-entry cost
+                            // symmetrically with Consensus recursive.
+                            match remove_dir_recursive(parent.as_raw_fd(), parent.leaf_ptr()) {
+                                Ok(n) => ok_with_count(n),
+                                Err((n_before, e)) => {
+                                    err_with_count(io_err_code(&e), io_msg_scrub(&e), n_before)
+                                }
                             }
+                        } else {
+                            // Consensus + recursive: sorted-post-order walk
+                            // yielding RELATIVE paths (R5(b), 2026-09-02),
+                            // per-entry journal + unlink, reply carries
+                            // manifest of successfully-deleted entries as
+                            // relative paths.  Under Shape A, both leader
+                            // and follower walk their OWN per-validator
+                            // subdir → byte-identical relative manifests
+                            // → byte-identical WAL (via canon_wal_target
+                            // .join(rel)) → byte-identical replies.
+                            //
+                            // S-2 (2026-09-03): symlink-safe walker via
+                            // parent-dirfd + O_NOFOLLOW; canon_target is no
+                            // longer used to enumerate children.
+                            // RQ-1 (2026-09-03): walk + per-entry journal +
+                            // per-entry unlink loop extracted to
+                            // `walk_and_unlink_recursive_with_journal` —
+                            // identical code to the follower-branch call
+                            // above (line ~4080).
+                            walk_and_unlink_recursive_with_journal(
+                                &parent,
+                                &canon_wal_target,
+                                &ack_clone,
+                                &wal,
+                            )
                         }
-                    } else {
-                        // Consensus + recursive: sorted-post-order walk
-                        // yielding RELATIVE paths (R5(b), 2026-09-02),
-                        // per-entry journal + unlink, reply carries
-                        // manifest of successfully-deleted entries as
-                        // relative paths.  Under Shape A, both leader
-                        // and follower walk their OWN per-validator
-                        // subdir → byte-identical relative manifests
-                        // → byte-identical WAL (via canon_wal_target
-                        // .join(rel)) → byte-identical replies.
-                        //
-                        // S-2 (2026-09-03): symlink-safe walker via
-                        // parent-dirfd + O_NOFOLLOW; canon_target is no
-                        // longer used to enumerate children.
-                        // RQ-1 (2026-09-03): walk + per-entry journal +
-                        // per-entry unlink loop extracted to
-                        // `walk_and_unlink_recursive_with_journal` —
-                        // identical code to the follower-branch call
-                        // above (line ~4080).
-                        walk_and_unlink_recursive_with_journal(
-                            &parent,
-                            &canon_wal_target,
-                            &ack_clone,
-                            &wal,
-                        )
-                    }
-                })
-                .await
-                .unwrap_or_else(|_je| {
+                    },
                     // DD-RemoveDirReplyShape: shape picker based on
                     // (recursive, cmode) so the reply-hash verify path
                     // stays symmetric with the follower.
-                    early_err_for_remove_dir(
-                        recursive,
-                        cmode,
-                        FSERR_IO,
-                        "spawn_blocking task failed",
-                    )
-                })
+                    || {
+                        early_err_for_remove_dir(
+                            recursive,
+                            cmode,
+                            FSERR_IO,
+                            "spawn_blocking task failed",
+                        )
+                    },
+                )
+                .await
             }
             None => {
                 // DD-RemoveDirReplyShape: parsed=None means args are
