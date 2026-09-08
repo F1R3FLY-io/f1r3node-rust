@@ -274,8 +274,8 @@ rspace_preparation_run_tests() {
 epathmap_import_proofs() {
   local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/CanonicalEPathMapImport.v
-  rocq_compile_with_closed_count theories/CanonicalEPathMapImport.v 19 \
-    "canonical Var image and singleton EPathMap prefilter contracts"
+  rocq_compile_with_closed_count theories/CanonicalEPathMapImport.v 29 \
+    "canonical Var, EPathMap envelope and singleton prefilter contracts"
   rocq_check_modules "singleton EPathMap prefilter" StackSafePDA.CanonicalEPathMapImport
 }
 
@@ -286,6 +286,7 @@ epathmap_import_runtime() {
   rpb3_run_tests 5 --release -j4 --lib singleton_prefilter
   rpb3_run_tests 1 --release -j4 --lib canonical_var_cursor_accepts_exact_encoder_images_only
   rpb3_run_tests 3 --release -j4 --lib canonical_var_proof_
+  rpb3_run_tests 5 --release -j4 --lib canonical_epathmap_envelope_proof_
   rpb3_run_tests 5 --release -j4 --lib singleton_epathmap
   rpb3_run_tests 1 --release -j4 --lib \
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
@@ -302,7 +303,7 @@ if [[ "${1:-}" == "--epathmap-import" ]]; then
   pushd "$repo_root" >/dev/null
   epathmap_import_runtime
   popd >/dev/null
-  echo "stack-safe-pda: focused Var/EPathMap proof and 15-test gate passed"
+  echo "stack-safe-pda: focused Var/EPathMap proof and 20-test gate passed"
   exit 0
 fi
 

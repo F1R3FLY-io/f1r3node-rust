@@ -741,3 +741,461 @@ Print Assumptions canonical_var_scalar_refusal_controls.
 Print Assumptions canonical_var_presence_and_wildcard_controls.
 
 End BinaryVar.
+
+Module Envelope.
+
+Lemma encode_varint_fuel_step :
+  forall fuel value,
+    encode_varint_fuel (S fuel) value =
+      if value <? 128 then [value]
+      else (128 + value mod 128) :: encode_varint_fuel fuel (value / 128).
+Proof. reflexivity. Qed.
+
+Lemma decoded_varint_reconstructs_fuel :
+  forall fuel input value rest,
+    value < fuel -> decode_varint input = Some (value, rest) ->
+    input = encode_varint_fuel fuel value ++ rest.
+Proof.
+  induction fuel as [|fuel induction]; intros input value rest bounded parsed; [lia|].
+  destruct input as [|head tail]; [rewrite decode_varint_nil in parsed; discriminate|].
+  rewrite decode_varint_cons in parsed.
+  destruct (head <? 128) eqn:small.
+  - inversion parsed; subst. now rewrite encode_varint_fuel_step, small.
+  - destruct (head <? 256) eqn:byte_bound; try discriminate.
+    destruct (decode_varint tail) as [[quotient suffix]|] eqn:child; try discriminate.
+    destruct (quotient =? 0) eqn:nonzero; try discriminate.
+    inversion parsed; subst.
+    apply Nat.ltb_ge in small. apply Nat.ltb_lt in byte_bound.
+    apply Nat.eqb_neq in nonzero.
+    assert (quotient_bounded : quotient < fuel) by nia.
+    specialize (induction _ _ _ quotient_bounded child).
+    assert (large : ((head - 128 + 128 * quotient) <? 128) = false)
+      by (apply Nat.ltb_ge; nia).
+    assert (low_bound : head - 128 < 128) by lia.
+    assert (exact_div : (head - 128 + 128 * quotient) / 128 = quotient).
+    { symmetry. apply Nat.div_unique with (r := head - 128); [exact low_bound|lia]. }
+    assert (exact_mod : (head - 128 + 128 * quotient) mod 128 = head - 128).
+    { symmetry. apply Nat.mod_unique with (q := quotient); [exact low_bound|lia]. }
+    change (head :: tail = encode_varint_fuel (S fuel) (head - 128 + 128 * quotient) ++ rest).
+    rewrite encode_varint_fuel_step, large, exact_div, exact_mod.
+    replace (128 + (head - 128)) with head by lia.
+    cbn [app]. now rewrite <- induction.
+Qed.
+
+Lemma decoded_varint_reconstructs_bytes :
+  forall input value rest,
+    decode_varint input = Some (value, rest) ->
+    input = encode_varint value ++ rest.
+Proof.
+  intros. unfold encode_varint. eapply decoded_varint_reconstructs_fuel; [lia|eassumption].
+Qed.
+
+Theorem envelope_frame_exact_bytes :
+  forall input body rest,
+    decode_frame input = Some (body, rest) <-> input = encode_frame body ++ rest.
+Proof.
+  intros input body rest. split.
+  - unfold decode_frame.
+    destruct (decode_varint input) as [[size suffix]|] eqn:header; try discriminate.
+    destruct (size <=? length suffix) eqn:bounded; try discriminate.
+    intro same. inversion same; subst. apply Nat.leb_le in bounded.
+    apply decoded_varint_reconstructs_bytes in header. rewrite header.
+    unfold encode_frame. rewrite length_firstn, Nat.min_l by exact bounded.
+    rewrite <- app_assoc, firstn_skipn. reflexivity.
+  - intro same. subst. apply canonical_frame_round_trip.
+Qed.
+
+Definition strip_key (key : nat) (input : bytes) : option bytes :=
+  match input with
+  | head :: rest => if head =? key then Some rest else None
+  | [] => None
+  end.
+
+Lemma strip_key_exact :
+  forall key input rest, strip_key key input = Some rest <-> input = key :: rest.
+Proof.
+  intros key input rest. destruct input as [|head tail]; cbn [strip_key].
+  - split; discriminate.
+  - destruct (head =? key) eqn:same.
+    + apply Nat.eqb_eq in same. subst. split; intro equal; inversion equal; reflexivity.
+    + apply Nat.eqb_neq in same. split; intro equal; [discriminate|inversion equal; contradiction].
+Qed.
+
+Lemma strip_key_here : forall key rest, strip_key key (key :: rest) = Some rest.
+Proof. intros. apply strip_key_exact. reflexivity. Qed.
+
+Lemma strip_key_refines_canonical_field_cursor :
+  forall key input rest,
+    key < 128 ->
+    (strip_key key input = Some rest <-> decode_varint input = Some (key, rest)).
+Proof.
+  intros key input rest bounded. assert (small : (key <? 128) = true) by now apply Nat.ltb_lt.
+  split.
+  - intro parsed. apply strip_key_exact in parsed. subst.
+    now rewrite decode_varint_cons, small.
+  - intro parsed. apply decoded_varint_reconstructs_bytes in parsed.
+    unfold encode_varint in parsed. rewrite encode_varint_fuel_step, small in parsed.
+    apply strip_key_exact. exact parsed.
+Qed.
+
+Definition snapshot_bytes (snapshot : bytes) : bytes := 74 :: encode_frame snapshot.
+Definition remainder_bytes (remainder : option bytes) : bytes :=
+  match remainder with None => [] | Some body => 42 :: encode_frame body end.
+Definition connective_bytes (connective : bool) : bytes :=
+  if connective then [32; 1] else [].
+Definition locally_free_bytes (locally_free : option bytes) : bytes :=
+  match locally_free with None => [] | Some body => 26 :: encode_frame body end.
+
+Definition valid_remainder (remainder : option bytes) : Prop :=
+  match remainder with
+  | None => True
+  | Some body => exists value, BinaryVar.parse_var body = Some value
+  end.
+
+Definition valid_locally_free (locally_free : option bytes) : Prop :=
+  match locally_free with None => True | Some body => body <> [] end.
+
+Definition snapshot_cursor (input : bytes) : option bytes :=
+  match strip_key 74 input with
+  | Some payload =>
+      match decode_frame payload with Some (snapshot, []) => Some snapshot | _ => None end
+  | None => None
+  end.
+
+Definition remainder_cursor (input : bytes) : option (option bytes * bytes) :=
+  match strip_key 42 input with
+  | Some payload =>
+      match decode_frame payload with
+      | Some (body, rest) =>
+          match BinaryVar.parse_var body with
+          | Some _ => option_map (fun snapshot => (Some body, snapshot)) (snapshot_cursor rest)
+          | None => None
+          end
+      | None => None
+      end
+  | None => option_map (fun snapshot => (None, snapshot)) (snapshot_cursor input)
+  end.
+
+Definition connective_cursor (input : bytes) : option (bool * (option bytes * bytes)) :=
+  match strip_key 32 input with
+  | Some payload =>
+      match decode_varint payload with
+      | Some (1, rest) => option_map (fun parts => (true, parts)) (remainder_cursor rest)
+      | _ => None
+      end
+  | None => option_map (fun parts => (false, parts)) (remainder_cursor input)
+  end.
+
+Record protobuf_envelope : Type := ProtobufEnvelope {
+  protobuf_locally_free : option bytes;
+  protobuf_connective : bool;
+  protobuf_remainder : option bytes;
+  protobuf_snapshot : bytes
+}.
+
+Definition protobuf_bytes (envelope_input : protobuf_envelope) : bytes :=
+  locally_free_bytes (protobuf_locally_free envelope_input) ++
+  connective_bytes (protobuf_connective envelope_input) ++
+  remainder_bytes (protobuf_remainder envelope_input) ++ snapshot_bytes (protobuf_snapshot envelope_input).
+
+Definition valid_protobuf (envelope_input : protobuf_envelope) : Prop :=
+  valid_locally_free (protobuf_locally_free envelope_input) /\ valid_remainder (protobuf_remainder envelope_input).
+
+Definition protobuf_cursor (input : bytes) : option protobuf_envelope :=
+  match strip_key 26 input with
+  | Some payload =>
+      match decode_frame payload with
+      | Some (head :: tail, rest) =>
+          option_map
+            (fun parts => ProtobufEnvelope (Some (head :: tail)) (fst parts)
+              (fst (snd parts)) (snd (snd parts))) (connective_cursor rest)
+      | _ => None
+      end
+  | None =>
+      option_map
+        (fun parts => ProtobufEnvelope None (fst parts) (fst (snd parts)) (snd (snd parts)))
+        (connective_cursor input)
+  end.
+
+Lemma snapshot_cursor_exact :
+  forall input snapshot,
+    snapshot_cursor input = Some snapshot <-> input = snapshot_bytes snapshot.
+Proof.
+  intros input snapshot. split.
+  - unfold snapshot_cursor.
+    destruct (strip_key 74 input) as [payload|] eqn:key; try discriminate.
+    destruct (decode_frame payload) as [[body rest]|] eqn:frame; try discriminate.
+    destruct rest; try discriminate. intro same. inversion same; subst.
+    apply strip_key_exact in key. apply envelope_frame_exact_bytes in frame.
+    rewrite app_nil_r in frame. subst. reflexivity.
+  - intro same. subst. unfold snapshot_cursor, snapshot_bytes. rewrite strip_key_here.
+    pose proof (canonical_frame_round_trip snapshot []) as frame.
+    rewrite app_nil_r in frame. now rewrite frame.
+Qed.
+
+Lemma remainder_cursor_sound :
+  forall input remainder snapshot,
+    remainder_cursor input = Some (remainder, snapshot) ->
+    valid_remainder remainder /\
+    input = remainder_bytes remainder ++ snapshot_bytes snapshot.
+Proof.
+  intros input remainder snapshot. unfold remainder_cursor.
+  destruct (strip_key 42 input) as [payload|] eqn:key.
+  - destruct (decode_frame payload) as [[body rest]|] eqn:frame; try discriminate.
+    destruct (BinaryVar.parse_var body) as [value|] eqn:var; try discriminate.
+    destruct (snapshot_cursor rest) as [observed|] eqn:terminal; cbn [option_map]; try discriminate.
+    intro same. inversion same; subst.
+    split; [now exists value|].
+    apply strip_key_exact in key. apply envelope_frame_exact_bytes in frame.
+    apply snapshot_cursor_exact in terminal. subst. reflexivity.
+  - destruct (snapshot_cursor input) as [observed|] eqn:terminal; cbn [option_map]; try discriminate.
+    intro same. inversion same; subst. split; [exact I|].
+    now apply snapshot_cursor_exact in terminal.
+Qed.
+
+Lemma remainder_cursor_complete :
+  forall remainder snapshot,
+    valid_remainder remainder ->
+    remainder_cursor (remainder_bytes remainder ++ snapshot_bytes snapshot) =
+      Some (remainder, snapshot).
+Proof.
+  intros [body|] snapshot valid.
+  - destruct valid as [value var]. unfold remainder_bytes, remainder_cursor.
+    cbn [app]. rewrite strip_key_here, canonical_frame_round_trip, var.
+    rewrite (proj2 (snapshot_cursor_exact _ _) eq_refl). reflexivity.
+  - unfold remainder_bytes, remainder_cursor. cbn [app snapshot_bytes strip_key].
+    rewrite (proj2 (snapshot_cursor_exact _ _) eq_refl). reflexivity.
+Qed.
+
+Lemma connective_cursor_sound :
+  forall input connective remainder snapshot,
+    connective_cursor input = Some (connective, (remainder, snapshot)) ->
+    valid_remainder remainder /\
+    input = connective_bytes connective ++ remainder_bytes remainder ++ snapshot_bytes snapshot.
+Proof.
+  intros input connective remainder snapshot. unfold connective_cursor.
+  destruct (strip_key 32 input) as [payload|] eqn:key.
+  - destruct (decode_varint payload) as [[value rest]|] eqn:scalar; try discriminate.
+    destruct value as [|[|value]]; try discriminate.
+    destruct (remainder_cursor rest) as [[observed body]|] eqn:child;
+      cbn [option_map]; try discriminate.
+    intro same. inversion same; subst.
+    apply remainder_cursor_sound in child. destruct child as [valid exact_bytes].
+    split; [exact valid|].
+    apply strip_key_exact in key. apply decoded_varint_reconstructs_bytes in scalar.
+    cbn [encode_varint encode_varint_fuel] in scalar. subst. reflexivity.
+  - destruct (remainder_cursor input) as [[observed body]|] eqn:child;
+      cbn [option_map]; try discriminate.
+    intro same. inversion same; subst. now apply remainder_cursor_sound in child.
+Qed.
+
+Lemma connective_cursor_complete :
+  forall connective remainder snapshot,
+    valid_remainder remainder ->
+    connective_cursor
+      (connective_bytes connective ++ remainder_bytes remainder ++ snapshot_bytes snapshot) =
+      Some (connective, (remainder, snapshot)).
+Proof.
+  intros connective remainder snapshot valid. destruct connective.
+  - unfold connective_bytes, connective_cursor. cbn [app]. rewrite strip_key_here.
+    rewrite decode_varint_cons. cbn.
+    now rewrite remainder_cursor_complete by exact valid.
+  - assert (absent : strip_key 32 (remainder_bytes remainder ++ snapshot_bytes snapshot) = None)
+      by (destruct remainder; reflexivity).
+    unfold connective_bytes, connective_cursor. cbn [app]. rewrite absent.
+    now rewrite remainder_cursor_complete by exact valid.
+Qed.
+
+Lemma protobuf_cursor_sound :
+  forall input envelope_input, protobuf_cursor input = Some envelope_input ->
+    valid_protobuf envelope_input /\ input = protobuf_bytes envelope_input.
+Proof.
+  intros input envelope_input. unfold protobuf_cursor.
+  destruct (strip_key 26 input) as [payload|] eqn:key.
+  - destruct (decode_frame payload) as [[body rest]|] eqn:frame; try discriminate.
+    destruct body as [|head tail]; try discriminate.
+    destruct (connective_cursor rest) as [[connective [remainder snapshot]]|] eqn:child;
+      cbn [option_map fst snd]; try discriminate.
+    intro same. inversion same; subst.
+    apply connective_cursor_sound in child. destruct child as [valid exact_bytes].
+    split; [split; [discriminate|exact valid]|].
+    apply strip_key_exact in key. apply envelope_frame_exact_bytes in frame. subst. reflexivity.
+  - destruct (connective_cursor input) as [[connective [remainder snapshot]]|] eqn:child;
+      cbn [option_map fst snd]; try discriminate.
+    intro same. inversion same; subst.
+    apply connective_cursor_sound in child. destruct child as [valid exact_bytes].
+    split; [split; [exact I|exact valid]|exact exact_bytes].
+Qed.
+
+Lemma protobuf_cursor_complete :
+  forall envelope_input, valid_protobuf envelope_input ->
+    protobuf_cursor (protobuf_bytes envelope_input) = Some envelope_input.
+Proof.
+  intros [locally_free connective remainder snapshot] [valid_lf valid_rem].
+  destruct locally_free as [body|].
+  - destruct body as [|head tail]; [contradiction|].
+    unfold protobuf_cursor, protobuf_bytes. cbn [protobuf_locally_free protobuf_connective protobuf_remainder protobuf_snapshot locally_free_bytes app].
+    rewrite strip_key_here, canonical_frame_round_trip.
+    rewrite connective_cursor_complete by exact valid_rem. reflexivity.
+  - assert (absent : strip_key 26
+        (connective_bytes connective ++ remainder_bytes remainder ++ snapshot_bytes snapshot) = None)
+      by (destruct connective, remainder; reflexivity).
+    unfold protobuf_cursor, protobuf_bytes.
+    cbn [protobuf_locally_free protobuf_connective protobuf_remainder protobuf_snapshot locally_free_bytes app].
+    rewrite absent, connective_cursor_complete by exact valid_rem. reflexivity.
+Qed.
+
+Theorem ordered_envelope_cursor_exact_grammar :
+  forall input envelope_input,
+    protobuf_cursor input = Some envelope_input <->
+    valid_protobuf envelope_input /\ input = protobuf_bytes envelope_input.
+Proof.
+  intros input envelope_input. split; [apply protobuf_cursor_sound|].
+  intros [valid ->]. now apply protobuf_cursor_complete.
+Qed.
+
+Record envelope : Type := Envelope {
+  snapshot : bytes;
+  connective_used : bool;
+  locally_free_is_empty : bool;
+  remainder : option bytes
+}.
+
+Definition observe (envelope_input : protobuf_envelope) : envelope :=
+  Envelope (protobuf_snapshot envelope_input) (protobuf_connective envelope_input)
+    (match protobuf_locally_free envelope_input with None => true | Some _ => false end)
+    (protobuf_remainder envelope_input).
+
+Definition envelope_cursor (input : bytes) : option envelope := option_map observe (protobuf_cursor input).
+
+Theorem envelope_observation_exact :
+  forall input observed,
+    envelope_cursor input = Some observed <->
+    exists envelope_input, valid_protobuf envelope_input /\
+      input = protobuf_bytes envelope_input /\ observed = observe envelope_input.
+Proof.
+  intros input observed. unfold envelope_cursor. split.
+  - destruct (protobuf_cursor input) as [envelope_input|] eqn:parsed; cbn [option_map]; try discriminate.
+    intro same. inversion same; subst. apply protobuf_cursor_sound in parsed.
+    exists envelope_input. tauto.
+  - intros [envelope_input [valid [same observed_same]]]. subst.
+    rewrite protobuf_cursor_complete by exact valid. reflexivity.
+Qed.
+
+Theorem successful_envelope_remainder_is_canonical :
+  forall input observed body,
+    envelope_cursor input = Some observed -> remainder observed = Some body ->
+    exists value, BinaryVar.valid_var value /\ body = BinaryVar.encode_var value.
+Proof.
+  intros input observed body parsed present.
+  apply envelope_observation_exact in parsed.
+  destruct parsed as [envelope_input [[valid_lf valid_rem] [same ->]]].
+  cbn [observe remainder] in present. rewrite present in valid_rem.
+  destruct valid_rem as [value parsed]. exists value.
+  now apply BinaryVar.canonical_var_exact_encoder_image in parsed.
+Qed.
+
+Lemma rejected_remainder_cursor :
+  forall body suffix,
+    BinaryVar.parse_var body = None ->
+    remainder_cursor ((42 :: encode_frame body) ++ suffix) = None.
+Proof.
+  intros body suffix rejected. unfold remainder_cursor. cbn [app].
+  now rewrite strip_key_here, canonical_frame_round_trip, rejected.
+Qed.
+
+Lemma rejected_connective_cursor :
+  forall connective body suffix,
+    BinaryVar.parse_var body = None ->
+    connective_cursor
+      (connective_bytes connective ++ (42 :: encode_frame body) ++ suffix) = None.
+Proof.
+  intros connective body suffix rejected. destruct connective;
+    unfold connective_bytes, connective_cursor; cbn [app strip_key].
+  - change (option_map (fun parts => (true, parts))
+      (remainder_cursor ((42 :: encode_frame body) ++ suffix)) = None).
+    now rewrite rejected_remainder_cursor by exact rejected.
+  - change (option_map (fun parts => (false, parts))
+      (remainder_cursor ((42 :: encode_frame body) ++ suffix)) = None).
+    now rewrite rejected_remainder_cursor by exact rejected.
+Qed.
+
+Theorem later_bad_remainder_rejects_independently :
+  forall locally_free connective body suffix,
+    valid_locally_free locally_free -> BinaryVar.parse_var body = None ->
+    envelope_cursor
+      (locally_free_bytes locally_free ++ connective_bytes connective ++
+        (42 :: encode_frame body) ++ suffix) = None.
+Proof.
+  intros locally_free connective body suffix valid_lf rejected.
+  pose proof (@rejected_connective_cursor connective body suffix rejected) as child.
+  cbn [app] in child.
+  destruct locally_free as [lf|]; unfold envelope_cursor, protobuf_cursor, locally_free_bytes.
+  - destruct lf as [|head tail]; [contradiction|].
+    cbn [app]. rewrite strip_key_here, canonical_frame_round_trip.
+    now rewrite child.
+  - assert (absent : strip_key 26
+    (connective_bytes connective ++ (42 :: encode_frame body) ++ suffix) = None)
+      by (destruct connective; reflexivity).
+    cbn [app] in absent |- *. rewrite absent.
+    now rewrite child.
+Qed.
+
+Theorem envelope_remainder_presence_is_distinct :
+  envelope_cursor [74; 0] = Some (Envelope [] false true None) /\
+  envelope_cursor [42; 0; 74; 0] = Some (Envelope [] false true (Some [])) /\
+  Envelope [] false true None <> Envelope [] false true (Some []).
+Proof. vm_compute. intuition discriminate. Qed.
+
+Theorem envelope_positive_metadata_controls :
+  envelope_cursor [26; 1; 7; 32; 1; 42; 2; 8; 0; 74; 1; 255] =
+    Some (Envelope [255] true false (Some [8; 0])) /\
+  envelope_cursor [42; 2; 16; 1; 74; 0] =
+    Some (Envelope [] false true (Some [16; 1])) /\
+  envelope_cursor [42; 2; 26; 0; 74; 0] =
+    Some (Envelope [] false true (Some [26; 0])).
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Theorem envelope_order_and_duplicate_controls :
+  envelope_cursor [32; 1; 26; 1; 7; 74; 0] = None /\
+  envelope_cursor [26; 1; 7; 26; 1; 8; 74; 0] = None /\
+  envelope_cursor [32; 1; 32; 1; 74; 0] = None /\
+  envelope_cursor [42; 0; 42; 0; 74; 0] = None /\
+  envelope_cursor [74; 0; 74; 0] = None /\
+  envelope_cursor [74; 0; 32; 1] = None.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Theorem envelope_framing_and_scalar_refusal_controls :
+  envelope_cursor [] = None /\
+  envelope_cursor [26; 0; 74; 0] = None /\
+  envelope_cursor [32; 0; 74; 0] = None /\
+  envelope_cursor [32; 129; 0; 74; 0] = None /\
+  envelope_cursor [24; 1; 74; 0] = None /\
+  envelope_cursor [8; 0; 74; 0] = None /\
+  envelope_cursor [202; 0; 0] = None /\
+  envelope_cursor [74; 128; 0] = None /\
+  envelope_cursor [74; 2; 0] = None /\
+  envelope_cursor [26; 1; 7; 32; 1; 42; 1; 8; 74; 0] = None.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Theorem snapshot_bytes_remain_opaque :
+  forall body,
+    envelope_cursor (snapshot_bytes body) = Some (Envelope body false true None).
+Proof.
+  intro body. change (envelope_cursor (protobuf_bytes (ProtobufEnvelope None false None body)) =
+    Some (Envelope body false true None)).
+  unfold envelope_cursor. rewrite protobuf_cursor_complete; [reflexivity|split; exact I].
+Qed.
+
+Print Assumptions envelope_frame_exact_bytes.
+Print Assumptions ordered_envelope_cursor_exact_grammar.
+Print Assumptions envelope_observation_exact.
+Print Assumptions successful_envelope_remainder_is_canonical.
+Print Assumptions later_bad_remainder_rejects_independently.
+Print Assumptions envelope_remainder_presence_is_distinct.
+Print Assumptions envelope_positive_metadata_controls.
+Print Assumptions envelope_order_and_duplicate_controls.
+Print Assumptions envelope_framing_and_scalar_refusal_controls.
+Print Assumptions snapshot_bytes_remain_opaque.
+
+End Envelope.

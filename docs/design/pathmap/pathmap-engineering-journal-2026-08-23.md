@@ -6007,6 +6007,67 @@ a snapshot around a standalone key. No new runtime decoder, dependency,
 consensus rule, performance result or campaign-completion claim follows from
 this proof-only extension.
 
+### J-086 — 2026-09-08: exact EPathMap envelope observations without ACT promotion
+
+**QUESTION.** Can the import envelope's remainder presence, metadata flags and
+borrowed snapshot be checked exactly without decoding or trusting the snapshot?
+
+**FORMAL-FIRST RESULT.** Ten new closed capstones in the existing
+`CanonicalEPathMapImport.v` prove exact framing, ordered envelope reconstruction,
+observable fields, canonical remainder images, absence versus present-empty,
+late malformed-remainder refusal and positive/negative controls. The snapshot
+remains arbitrary bytes; the theorem is deliberately not full ACT admission or
+the complete generated EPathMap writer image. The normalized cursor is connected
+to the existing canonical key/length reader and checked Var grammar. No assumed
+recognizer, new dependency or production parser is introduced.
+
+The source SHA-256 after the protobuf naming correction is
+`82549618dab5c1a4fefaba874ec605f59e85e73cf719218f66de352cf7bc6f6b`.
+Compilation emitted twenty-nine closed reports; the kernel check passed before
+the invariant-derived Rust tests were added. Compiler/kernel log SHA-256 values:
+`ba74d87bdc752506b156b72c39d1477c6855fec794563be530a1ec572b40032a` and
+`4376cf0fd46e38c25d8b838aa131083eaca0faf35ccbc3a4280b82df00e02b29`.
+Both commands ran under a 2-GiB ceiling with swap disabled.
+
+**EXECUTABLE BINDING.** Five tests pass, including four 1,024-case properties.
+They compare the production guarded loop against an independently structured
+ordered cursor, exercise all twenty optional metadata/remainder combinations,
+require rejection after earlier instability, retain the sixteen formal refusal
+examples and check exact borrowed pointers. Empty and invalid snapshot payloads
+are positive envelope controls but negative root-route controls. Tests live under
+`models/tests/support/`; the only production-source edit registers a test module.
+The focused test log SHA-256 is
+`260990683b2ea15d4d832e7ec685d17b8038297a5f1203c9b9eb327e527bf8f4`.
+Rust tests ran under a 6-GiB ceiling with swap disabled and fixed seed `41315976`.
+
+The combined `--epathmap-import` gate also passed all twenty Rust tests and
+kernel checking with twenty-nine closed reports. Its log SHA-256 is
+`ede3ed9dfa4a2c2237a4b2ed5a31c7cd59cd02f1d064ded1519488082fbfd034`.
+That run's final informational banner still said fifteen tests; the six
+enforced groups sum to twenty: 5, 1, 3, 5, 5 and 1.
+The banner is corrected to twenty without changing any command or count guard.
+The complete models library suite then passed all 323 tests under the same
+6-GiB, zero-swap limits. Its log SHA-256 is
+`386bc46357dd86b79c35c751056da23a71a85155b76af4d7e1c7d94115a23581`.
+This broader correctness run includes the new properties; its runtime is not a
+benchmark sample or an end-to-end release qualification.
+
+**REVIEW CONTROL.** Independent review found that an arbitrary trailing suffix
+could cause rejection without exercising the malformed remainder itself. Each
+generated case now requires refusal before adding that suffix, then repeats the
+check with the suffix. This establishes causal refusal for all four malformed
+families and all four preceding metadata states. The reviewed source passes
+the complete 323-test library suite again; log SHA-256:
+`114d28f0b28bd7c1294cf32bdb32d7df252a9f1a0b69ef615910afeb0f0882f4`.
+
+**REMAINING BOUNDARY.** Outer Par framing, nested-chain composition, the exact
+stability fold and complete import observations remain open in task 5976.
+The reviewed RPB3 score authority is the snapshot-based semantic score, not the
+generic expression-sort route. The existing proof README records exact trailer,
+size and terminal obligations. Shared byte-native key admission remains task
+6018. This checkpoint changes no admission semantics, persistence format or
+consensus behavior and supplies no new performance or LMDB comparison result.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

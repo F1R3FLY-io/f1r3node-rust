@@ -9900,6 +9900,11 @@ The [PathMap journal J-084](../pathmap/pathmap-engineering-journal-2026-08-23.md
 records commands, causal controls and evidence digests.
 Journal J-085 records the Var proof-to-property binding and remaining import
 obligations. Both the initial and expanded gates passed under zero-swap limits.
+The subsequent local CEI-02–03 envelope proof adds ten kernel-checked reports
+and five passing Rust bindings (four with 1,024 generated cases each), retaining
+opaque snapshot bytes and exact remainder presence without decoding. Journal
+J-086 records the evidence and the remaining carrier/chain/import boundaries.
+These are correctness results, not additional memory-slope measurements.
 
 This eliminates the measured ineligible-width copying branch. It does not prove
 all admitted inputs decode-free or linear in physical bytes: accepted key

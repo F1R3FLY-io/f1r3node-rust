@@ -43,7 +43,8 @@ or the importer. The hint reads only framing; every hinted singleton still passe
 through the original inspector. The proof's named `inspector_refines_epm1_framing`
 premise requires a successful inspection to agree with a complete EPM1 parse.
 The prefilter section's twelve closed reports cover six general contracts and
-six synthetic controls. The binary Var section below adds seven closed reports.
+six synthetic controls. The binary Var section below adds seven closed reports,
+and the concrete envelope section adds ten.
 
 | Formal contract | Executable correspondence in `models/tests/support/epathmap_fast_import.rs` |
 |---|---|
@@ -56,13 +57,13 @@ six synthetic controls. The binary Var section below adds seven closed reports.
 The Rust counters are test-only and thread-local. Their scope is inspector calls
 and owned endpoint-key copying, not total allocation, memory residency or runtime.
 The formal controls use synthetic topology and do not establish actual ACT parser
-correctness. CEI-02–06/08 (the remaining envelope, metadata/stability and importer
-correspondence obligations) and the shared
+correctness. Outer Par metadata, CEI-04–06/08 (the chain, stability and importer
+correspondence obligations), nested composition of CEI-02–03 and the shared
 byte-native key-validation replacement in task 6018 remain required.
 
 Run `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import` from the
-repository root. It rebuilds the imports, requires nineteen closed reports and
-successful kernel checking, and runs fifteen Rust tests with property seed
+repository root. It rebuilds the imports, requires twenty-nine closed reports and
+successful kernel checking, and runs twenty Rust tests with property seed
 `41315976` by default. Proof/Rust cgroup ceilings are 2/6 GiB with swap disabled.
 Both stages are also registered in the aggregate gate; this is an internal
 admission optimization, not a new generated schema traversal/manifest entry.
@@ -98,11 +99,42 @@ Wildcard witnesses. These are executable implementation correspondences, not a
 claim that Rocq has verified the Rust compiler or generated machine code. No
 production Var encoding, admission rule or dependency changes.
 
+### Concrete protobuf envelope grammar (CEI-02–03 local boundary)
+
+The `Envelope` module proves its normalized four-phase cursor accepts exactly
+the modeled ordered protobuf grammar: optional nonempty locally-free field 3,
+optional true connective field 4, optional canonical Var field 5, and mandatory
+snapshot field 9. The snapshot is opaque and may be empty or invalid ACT at this
+stage. This is not the complete generated EPathMap writer image. Literal keys
+are related to the existing canonical EPM1 varint reader; frame reconstruction
+and the checked Var image theorem supply concrete byte correspondence without
+assuming an envelope recognizer.
+
+Rocq compilation and kernel checking preceded the Rust properties in
+`models/tests/support/epathmap_envelope_admission.rs`. The test reference uses
+four ordered phases, prost framing and generated Var decoding plus
+exact re-encoding. It does not call the production guarded-loop parser.
+
+| Checked capstone | Executable binding |
+|---|---|
+| `envelope_frame_exact_bytes`, `ordered_envelope_cursor_exact_grammar` | `canonical_epathmap_envelope_proof_ordered_cursor_correspondence`: independent normalized cursor versus production loop on arbitrary bytes, a guaranteed canonical input and generated duplicate/order/nonminimal-key/truncation mutations. |
+| `envelope_observation_exact`, `successful_envelope_remainder_is_canonical`, `envelope_remainder_presence_is_distinct`, `envelope_positive_metadata_controls` | `canonical_epathmap_envelope_proof_images_and_presence`: all twenty locally-free/connective/remainder-presence combinations per case, including default/Bound/Free/Wildcard Var images and full-domain signed values. |
+| `later_bad_remainder_rejects_independently` | `canonical_epathmap_envelope_proof_late_remainder_refusal`: all four preceding metadata combinations with malformed remainder families and generated suffixes. |
+| `snapshot_bytes_remain_opaque` | `canonical_epathmap_envelope_proof_opaque_snapshot_and_borrowing`: exact snapshot/remainder bytes and pointers into the original input; no snapshot interpretation. |
+| `envelope_order_and_duplicate_controls`, `envelope_framing_and_scalar_refusal_controls` | `canonical_epathmap_envelope_proof_refusal_controls`: all sixteen formal refusal examples, absence versus present-empty, and opaque inputs accepted locally but refused by root-route inspection. |
+
+The four generated properties run 1,024 cases each. These bounded executable
+bindings do not prove Rust or allocator correctness. Outer Expr/Par framing,
+nested-chain composition, ACT admission, checked-size arithmetic and full-import
+observations remain separate obligations. The local envelope cursor does not
+expose locally-free payload bytes; only its nonempty/presence flag is observed.
+
 ### Import contract coverage (task 5976)
 
 The prefilter result must not be mistaken for the complete fast-import proof.
-The following contracts are requirements; only CEI-01 and CEI-07 have the checked
-model sections described above. The other rows remain unproved.
+The following contracts are requirements. CEI-01 and CEI-07 and the local
+CEI-02–03 envelope boundary have the checked model sections described above.
+The remaining carrier/nested composition and CEI-04–06/08 remain unproved.
 They keep the proof boundary aligned with the current implementation and its
 independent canonical encoder/semantic references.
 

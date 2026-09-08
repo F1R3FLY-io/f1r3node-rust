@@ -4978,8 +4978,10 @@ under its explicit inspector-framing premise. Real ACT controls retain rejection
 of forged counts and same-hint corruption; the generated/mutated framing property
 exercises that premise against Rust. The subsequent CEI-01 checkpoint proves the
 concrete Var encoder-image grammar and binds it to generated-encoder/cursor
-properties, without changing that grammar or the production decoder. The complete
-envelope/chain/stability/import refinement and shared byte-native key-admission
+properties, without changing that grammar or the production decoder. The local
+CEI-02–03 extension proves the concrete envelope grammar and binds it to five
+passing Rust tests, without promoting opaque snapshot bytes to ACT admission.
+The complete carrier/chain/stability/import refinement and shared byte-native key-admission
 obligations remain open. This evidence must not
 be promoted to a verdict for the entire admission or persistence campaign. See
 the stack-safety report §5.33.6 and PathMap journal J-084 for the exact scope.

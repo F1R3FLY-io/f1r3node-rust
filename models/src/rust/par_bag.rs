@@ -5561,6 +5561,10 @@ pub(crate) mod epathmap_fast_import_tests;
 mod canonical_var_admission_tests;
 
 #[cfg(test)]
+#[path = "../../tests/support/epathmap_envelope_admission.rs"]
+mod epathmap_envelope_admission_tests;
+
+#[cfg(test)]
 mod fast_key_tests {
     use super::*;
     use crate::rhoapi::{
