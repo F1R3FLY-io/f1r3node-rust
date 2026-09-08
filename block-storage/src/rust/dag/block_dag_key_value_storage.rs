@@ -1196,9 +1196,7 @@ impl BlockDagKeyValueStorage {
 
         // Latest-message updates are NOT gated on `invalid`. Equivocation blocks
         // (and other invalid blocks) advance the sender's latest message and
-        // register newly-bonded validators just like valid blocks. This matches
-        // the Scala source-of-truth (`BlockDagKeyValueStorage.scala`, where
-        // `newLatestMessages` and `shouldAddAsLatest` never reference `invalid`).
+        // register newly-bonded validators just like valid blocks.
         //
         // Safety argument:
         //   - Fork choice and finalization are unaffected. Parent selection filters
@@ -1211,9 +1209,9 @@ impl BlockDagKeyValueStorage {
         //     or finalization depth.
         //   - Slashing requires invalid blocks to BE in the LMM. The equivocation
         //     detector reads `invalid_latest_messages` and feeds it to
-        //     `prepare_slashing_deploys`. The pre-fix `if invalid { return empty }`
-        //     guard had no Scala counterpart and silently disabled the slashing
-        //     pipeline (no slashes ever issued, equivocators never punished).
+        //     `prepare_slashing_deploys`. Gating the LMM on `invalid` would leave
+        //     the slashing pipeline with nothing to act on — no slashes issued,
+        //     equivocators never punished.
         //   - `justification_follows` validation requires every bonded validator
         //     to appear in a new block's justifications. Without the LMM advancing
         //     on invalid blocks, validators whose latest is invalid would be
