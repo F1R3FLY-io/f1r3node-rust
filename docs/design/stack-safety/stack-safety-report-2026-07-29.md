@@ -10005,6 +10005,20 @@ The existing outer driver stops at the first admission failure. See
 for failed-fixture evidence, repairs and the formal-first ownership requirements.
 This adds verification coverage, not a frame-memory or backend performance result.
 
+#### 5.33.10 Formal owner-scoped frame retirement (2026-09-08, tasks 5976/6018)
+
+Nineteen new frame-ownership capstones compile and pass independent kernel
+checking before the planned Rust reclamation change. They bind concrete cell
+contents, exact retirement journals, saved-owner selection and a slot-capacity
+high-water bound. The complete RPB3 theory has forty closed reports. This is a
+storage-protocol proof, not evidence that runtime frame retention has already
+fallen. Parser-specific live/in-flight bounds, vector bytes, property tests and
+integration remain implementation obligations; no RSS or timing advantage is
+inferred. See [J-091](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-091--2026-09-08-prove-owner-scoped-frame-retirement-before-implementation)
+and its exhaustive RFO invariant catalogue for the precise boundary.
+The subsequent integrated gate passes all 49 focused Rust tests and its three
+independent kernel checks; no production frame-storage change is included.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

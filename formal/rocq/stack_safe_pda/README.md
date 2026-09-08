@@ -404,6 +404,78 @@ nested visits remain required work. The resource controls intentionally verify
 that these costs have not disappeared merely because the state count is one.
 Importer activation remains gated on their full qualification.
 
+### Reusable frame ownership (tasks 5976/6018)
+
+`ReusableFrameOwnership` in `RPB3Admission.v` adds nineteen closed reports after
+the twenty-one prior reports. The complete theory compiles and passes independent
+kernel checking before production frame storage changes. A slot is an internal
+frame index, not a serialized identifier. The concrete pool partitions all slots
+into occupied cells and a free list. Cells record their frame kind, grammar and
+obligation metadata, outer continuation and optional Region child. A Region with
+an empty child remains distinct from an ordinary frame.
+
+The edit algebra covers keeping, pushing, popping and replacing ordinary frames;
+opening, rebuilding and completing Regions; selecting saved Region owners;
+returned errors; and composition. Concrete edits require the exact stored cells,
+from which final graph realization is derived. The allocation and edit journals
+may enumerate the same slots in different orders; their relationship is a
+permutation, not an accidental list equality.
+
+The following catalogue is the required implementation/test binding, **not a
+claim that reusable Rust frame storage already exists**. Existing standalone
+tests supply the semantic baseline. Direct pool properties and allocation bounds
+must be added with the implementation, before this refinement can be qualified.
+
+| ID | Closed report | Required executable invariant/control |
+|---|---|---|
+| RFO-01 | `link_construction_refines_concrete_slot_contents` | A fresh ordinary frame contains exactly the selected metadata and continuation. |
+| RFO-02 | `region_construction_preserves_disjoint_child_and_outer` | Region child and outer continuation own disjoint slots, including empty-child creation. |
+| RFO-03 | `reservation_journal_retains_original_cells` | In-flight allocation never overwrites any saved owner cell. |
+| RFO-04 | `reserved_slots_are_neither_live_nor_in_flight` | Every reserved slot is absent from both original live cells and earlier reservations. |
+| RFO-05 | `local_owner_journals_have_exact_slot_conservation` | Original plus allocated slots equal selected graph plus retirees, with multiplicity preserved. |
+| RFO-06 | `concrete_edit_derives_both_realization_and_exact_local_journal` | Each grammar storage action binds an actual frame cell to the corresponding edit constructor; include Region opening/completion. |
+| RFO-07 | `local_commit_journal_is_exact_and_never_retires_a_live_frame` | No duplicate retirements, omitted consumed slots or live-frame retirement. |
+| RFO-08 | `physical_reservation_freshness_discharges_edit_ownership` | Fresh allocation maintains unique ownership across the original graph and new slots. |
+| RFO-09 | `commit_preserves_the_new_concrete_graph_and_removes_exact_consumed_slots` | After commit, occupied slots are exactly the selected graph and all its metadata/links are readable. |
+| RFO-10 | `returned_error_restores_exact_owner_and_original_obligation_cells` | Wrong-ID and other returned errors preserve the current owner and original cells; semantic core effects are not assumed rolled back. |
+| RFO-11 | `held_root_identity_selects_exact_graph_independently_of_dead_status` | Compare retained root IDs while original cells remain immutable; never select rollback from `Dead` status alone. |
+| RFO-12 | `fresh_rebuild_and_owned_pop_cannot_alias_the_held_parent_root` | A fresh replacement or owned tail cannot equal the consumed ancestor's root. |
+| RFO-13 | `deferred_dead_retains_the_selected_local_graph_and_metadata` | Shallow refusal may retain a new Tag; a saved Region owner may retain its old graph; preserve source, stability and obligation-clock metadata. |
+| RFO-14 | `region_dead_discards_child_replacements_without_retiring_original_children` | Saved-owner selection cancels child retirement choices and retires child allocations instead. |
+| RFO-15 | `physical_capacity_is_bounded_by_peak_live_plus_in_flight_not_transition_count` | Slot high-water follows peak occupancy, not cumulative bytes; measure actual vector capacity separately. |
+| RFO-16 | `reservation_occupancy_is_exact_live_originals_plus_in_flight_replacements` | During a transaction, count retained originals and all fresh replacements, including ones awaiting retirement. |
+| RFO-17 | `reusable_slot_positive_transaction_controls` | Allocate, commit and reuse a freed slot without increasing slot capacity. |
+| RFO-18 | `reusable_slot_causal_ownership_and_dead_controls` | Detect eager overwrite, aliased child/outer graphs, clearing a failed stack and incorrect saved-owner selection. |
+| RFO-19 | `ordered_multi_edit_region_completion_and_reuse_controls` | Compose multiple allocations with reversed physical journal order; open/complete a Region; reject omitted child retirement and status-based rollback. |
+
+The intended implementation retains separate, fixed persistent and exclusive
+storage policies behind the shared grammar. Persistent ACT checkpoint handles
+must never reach an exclusive reusable store. The exclusive transaction proceeds
+as follows:
+
+1. Reserve new slots without releasing original or in-flight cells.
+2. Record allocation/retirement lengths at each owner scope.
+3. If the selected owner root is unchanged, restore that scope's retirement
+   prefix and append its allocations as retirees. Keep the allocation journal.
+4. Otherwise retain the child edit journal and retire the replaced owner.
+5. At outer commit only, release the final retirement journal and clear the
+   transaction journals. A returned error selects the original root graph.
+
+Observation methods only inspect frames. Root identity is usable because both
+graphs are realized by the same immutable in-flight cells. No per-byte scan of
+all reachable frames is needed to derive the retirement set. Physical release
+inside a nested scope would invalidate the reserve-only transaction argument
+and is therefore not the implementation described by these proofs.
+
+The pool capacity theorem is conditional on peak occupied slots; its occupancy
+identity counts original live frames plus in-flight replacements. It does not
+prove a parser-specific depth bound, `Vec` byte capacity, allocation timing or
+RSS. Parser-branch-to-edit correspondence, frozen payload/provenance preservation
+in Rust, concrete pool property tests, live-frame bounds and integration remain
+required. The model neither proves the complete parser grammar nor assumes that
+errors are absorbing. Arena payload reclamation and physical-byte traversal work
+remain separate obligations in the existing resource plan.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

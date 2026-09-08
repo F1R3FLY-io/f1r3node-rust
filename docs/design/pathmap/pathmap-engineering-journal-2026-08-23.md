@@ -6408,6 +6408,62 @@ the final fifteen-test success is
 These are correctness and experimental-control findings, not latency or total
 memory measurements. They require no upstream PathMap modification.
 
+### J-091 — 2026-09-08: prove owner-scoped frame retirement before implementation
+
+**OBJECTIVE.** Remove cumulative standalone frame history while preserving the
+exact continuation graphs exercised by J-090, without changing persistent ACT
+checkpoints or adding a per-byte reachable-graph scan.
+
+**FORMAL RESULT.** `ReusableFrameOwnership` extends `RPB3Admission.v` with nineteen
+closed reports, bringing the complete theory to forty. Compilation and independent
+kernel checking pass under the 1-GiB high / 2-GiB hard limit and zero swap before
+production frame-storage changes. The model represents concrete frame cells,
+ordinary and Region graphs, a free-slot pool, reservations and local edit journals.
+It derives the final graph from exact cell bindings, proves conservation of
+original/allocated/retired slots, preserves saved owners, and prevents release of
+live frames. Explicit controls distinguish eager reuse, aliased Region branches,
+omitted retirement, incorrect failed-state handling and journal-order mistakes.
+
+**REVIEW REFINEMENTS.** Physical reservations are newest-first while composed
+edit journals may be chronological; an explicit permutation connects them.
+Region opening and completion need their own constructors rather than being
+silently treated as ordinary frame push/pop. Frame kind is explicit, including
+empty-child Regions. While original cells remain immutable, equal root IDs select
+the exact same graph independently of `Open`/`Dead` status. This preserves J-090's
+private post-refusal behavior instead of imposing a new error-absorption rule.
+
+**IMPLEMENTATION CONTRACT.** A nested owner scope records journal lengths. When
+its saved graph is selected, it cancels the child retirement choices and marks
+all child allocations for retirement; it does not physically release them yet.
+Only outer edge/resolution commit releases slots. This permits reuse between
+operations without invalidating any still-held owner. The
+[RFO-01–19 invariant catalogue](../../../formal/rocq/stack_safe_pda/README.md#reusable-frame-ownership-tasks-59766018)
+enumerates every new capstone and its required executable binding.
+
+**RESOURCE BOUNDARY.** Logical slot capacity is bounded by peak occupancy;
+in-flight occupancy is exactly retained originals plus fresh replacements. A
+parser-specific depth bound, actual vector capacity/bytes, allocation timing and
+RSS still require implementation evidence. This model does not prove complete
+parser semantics, byte/provenance arena reclamation or Rust branch correspondence.
+Production frame storage is unchanged at this formal-first checkpoint, and the
+required implementation and property tests remain open in task 6018. There is no
+importer activation, persistence cutover or LMDB comparison result.
+
+**EVIDENCE.** Theory SHA-256:
+`7e7ee83abb924ec945b548125e5f0f4183c7c74e1ec85a04af659ef7a6add21c`.
+Final compiler log:
+`7365c0679fcf6b348ed7c4c79c704ccd3ec571124b7773996b24f3d56f622732`.
+Independent kernel log:
+`a8886c95d3e4bc9f7729f296ca1d231d86fd5513f7e9eb9459863e85774e443a`.
+The compilation required 3.29 seconds; that is proof-check duration, not runtime
+performance evidence. J-090 supplies the verified pre-reclamation Rust baseline.
+
+The updated integrated gate subsequently exits zero: **49** Rust tests pass,
+with 48 import, 17 score and 40 RPB3 proof reports and three independent kernel
+checks. The log also contains 32 dependency reports; those are not new ownership
+results. Integrated gate SHA-256:
+`8aee848093fc077677c08313978d97ffec6d358c9e08baca4edac8406f07e582`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

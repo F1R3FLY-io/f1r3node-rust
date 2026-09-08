@@ -5013,6 +5013,14 @@ hash, protobuf/bincode, ACT or persistence contract is changed. This removes
 historical root-state retention only; the remaining resource obligations are
 explicit in journal J-089 and stack-safety §5.33.8.
 
+The subsequent pre-reclamation checkpoint adds a concrete owner/slot model,
+not a runtime change. Nineteen new capstones bring the RPB3 theory to forty;
+independent kernel checking and the 49-test focused integration gate pass.
+Journal J-090 records private failure-recovery baseline observations; J-091 and
+the RFO-01–19 catalogue state the still-required Rust correspondence, pool
+properties and resource measurements. These results do not establish a new
+consensus-neutrality claim or authorize importer/persistence cutover.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

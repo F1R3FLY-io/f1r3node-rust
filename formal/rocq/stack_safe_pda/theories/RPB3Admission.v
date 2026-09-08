@@ -1142,3 +1142,856 @@ Print Assumptions exclusive_storage_positive_controls.
 Print Assumptions exclusive_storage_causal_refusal_controls.
 
 End ExclusiveCurrentState.
+
+From Stdlib Require Import Sorting.Permutation.
+
+Module ReusableFrameOwnership.
+
+Record obligation_metadata := ObligationMetadata {
+  obligation_number : nat;
+  obligation_kind : nat;
+  obligation_payload_start : nat;
+  obligation_source : nat;
+  obligation_offset : nat;
+  obligation_status : nat
+}.
+
+Record frame_metadata := FrameMetadata {
+  grammar_fields : list nat;
+  frame_obligation : option obligation_metadata
+}.
+
+Record cell := Cell {
+  cell_metadata : frame_metadata;
+  cell_next : option nat;
+  cell_region_child : option nat;
+  cell_is_region : bool
+}.
+
+Inductive graph :=
+| EmptyGraph
+| LinkGraph (slot : nat) (metadata : frame_metadata) (next : graph)
+| RegionGraph (slot : nat) (metadata : frame_metadata) (child next : graph).
+
+Definition graph_root (value : graph) : option nat :=
+  match value with
+  | EmptyGraph => None
+  | LinkGraph slot _ _ | RegionGraph slot _ _ _ => Some slot
+  end.
+
+Fixpoint graph_slots (value : graph) : list nat :=
+  match value with
+  | EmptyGraph => []
+  | LinkGraph slot _ next => slot :: graph_slots next
+  | RegionGraph slot _ child next => slot :: graph_slots child ++ graph_slots next
+  end.
+
+Fixpoint lookup (slot : nat) (cells : list (nat * cell)) : option cell :=
+  match cells with
+  | [] => None
+  | (index, value) :: rest =>
+      if Nat.eq_dec slot index then Some value else lookup slot rest
+  end.
+
+Fixpoint realizes (cells : list (nat * cell)) (value : graph) : Prop :=
+  match value with
+  | EmptyGraph => True
+  | LinkGraph slot metadata next =>
+      lookup slot cells = Some (Cell metadata (graph_root next) None false) /\
+      realizes cells next
+  | RegionGraph slot metadata child next =>
+      lookup slot cells = Some (Cell metadata (graph_root next) (graph_root child) true) /\
+      realizes cells child /\ realizes cells next
+  end.
+
+Record pool := Pool {
+  pool_capacity : nat;
+  pool_cells : list (nat * cell);
+  pool_free : list nat
+}.
+
+Definition pool_ids (value : pool) := map fst (pool_cells value).
+
+Definition pool_valid (value : pool) : Prop :=
+  NoDup (pool_ids value ++ pool_free value) /\
+  (forall slot, In slot (pool_ids value ++ pool_free value) ->
+    slot < pool_capacity value) /\
+  length (pool_cells value) + length (pool_free value) = pool_capacity value.
+
+Definition reserve (value : pool) (contents : cell) : nat * pool :=
+  match pool_free value with
+  | slot :: rest =>
+      (slot, Pool (pool_capacity value)
+        ((slot, contents) :: pool_cells value) rest)
+  | [] =>
+      (pool_capacity value, Pool (S (pool_capacity value))
+        ((pool_capacity value, contents) :: pool_cells value) [])
+  end.
+
+Lemma lookup_some_is_occupied slot cells contents :
+  lookup slot cells = Some contents -> In slot (map fst cells).
+Proof.
+  induction cells as [|[index value] rest IH]; cbn; intro found; try discriminate.
+  destruct (Nat.eq_dec slot index); [now left|right; now apply IH].
+Qed.
+
+Lemma absent_lookup slot cells :
+  ~ In slot (map fst cells) -> lookup slot cells = None.
+Proof.
+  induction cells as [|[index value] rest IH]; cbn; intro absent; auto.
+  destruct (Nat.eq_dec slot index); [subst; exfalso; apply absent; now left|].
+  apply IH. intro inside. apply absent. now right.
+Qed.
+
+Lemma nodup_append_disjoint {A : Type} (left right : list A) :
+  NoDup (left ++ right) -> forall value, In value left -> ~ In value right.
+Proof.
+  induction left as [|head tail IH]; cbn; intros distinct value inside; try contradiction.
+  inversion distinct as [|? ? absent rest]; subst.
+  destruct inside as [<-|inside].
+  - intro found. apply absent. apply in_or_app. now right.
+  - now apply (IH rest value inside).
+Qed.
+
+Arguments nodup_append_disjoint {A left right} _ value _ _.
+
+Lemma allocation_returns_fresh_cell value contents slot after :
+  pool_valid value -> reserve value contents = (slot, after) ->
+  ~ In slot (pool_ids value) /\
+  pool_cells after = (slot, contents) :: pool_cells value /\
+  pool_valid after.
+Proof.
+  destruct value as [capacity cells free].
+  unfold pool_valid, pool_ids, reserve; cbn.
+  intros (distinct & bounded & size) allocated.
+  destruct free as [|head tail].
+  - inversion allocated; subst slot after; clear allocated. cbn in *.
+    rewrite app_nil_r in *.
+    assert (fresh : ~ In capacity (map fst cells)).
+    { intro inside. specialize (bounded capacity inside). lia. }
+    split; [exact fresh|]. split; [reflexivity|]. split.
+    + constructor; assumption.
+    + split.
+      * intros index [<-|inside]; [lia|specialize (bounded index inside); lia].
+      * lia.
+  - inversion allocated; subst slot after; clear allocated. cbn in *.
+    assert (fresh : ~ In head (map fst cells ++ tail)).
+    { exact (NoDup_remove_2 _ _ _ distinct). }
+    split.
+    + intro inside. apply fresh. apply in_or_app. now left.
+    + split; [reflexivity|]. split.
+      * constructor; [exact fresh|exact (NoDup_remove_1 _ _ _ distinct)].
+      * split.
+        -- intros index [<-|inside].
+           ++ apply bounded. apply in_or_app. right. now left.
+           ++ apply bounded. apply in_app_or in inside. apply in_or_app.
+              destruct inside; [now left|right; now right].
+        -- lia.
+Qed.
+
+Lemma allocation_preserves_every_original_cell value contents slot after :
+  pool_valid value -> reserve value contents = (slot, after) ->
+  forall index old, lookup index (pool_cells value) = Some old ->
+    lookup index (pool_cells after) = Some old.
+Proof.
+  intros valid allocated index old found.
+  destruct (allocation_returns_fresh_cell contents valid allocated) as (fresh & cells & _).
+  rewrite cells. cbn. destruct (Nat.eq_dec index slot); [|exact found].
+  subst. exfalso. apply fresh. now apply lookup_some_is_occupied in found.
+Qed.
+
+Lemma realizes_uses_only_occupied cells value :
+  realizes cells value -> forall slot, In slot (graph_slots value) ->
+    In slot (map fst cells).
+Proof.
+  induction value as [|index metadata next IH|index metadata child IHchild next IHnext];
+    cbn; intros valid slot inside; try contradiction.
+  - destruct valid as [found rest]. destruct inside as [<-|inside].
+    + now apply lookup_some_is_occupied in found.
+    + now apply IH.
+  - destruct valid as [found [left right]]. destruct inside as [<-|inside].
+    + now apply lookup_some_is_occupied in found.
+    + apply in_app_or in inside. destruct inside.
+      * now apply IHchild.
+      * now apply IHnext.
+Qed.
+
+Arguments realizes_uses_only_occupied {cells value} _ slot _.
+
+Lemma realizes_transfers_on_its_exact_cells before after value :
+  realizes before value ->
+  (forall slot, In slot (graph_slots value) -> lookup slot after = lookup slot before) ->
+  realizes after value.
+Proof.
+  induction value as [|slot metadata next IH|slot metadata child IHchild next IHnext];
+    cbn; intros valid same; auto.
+  - destruct valid as [found rest]. split.
+    + rewrite same; [exact found|now left].
+    + apply IH; [exact rest|]. intros index inside. apply same. now right.
+  - destruct valid as [found [left right]]. split.
+    + rewrite same; [exact found|now left].
+    + split.
+      * apply IHchild; [exact left|]. intros index inside. apply same.
+        right. apply in_or_app. now left.
+      * apply IHnext; [exact right|]. intros index inside. apply same.
+        right. apply in_or_app. now right.
+Qed.
+
+Arguments realizes_transfers_on_its_exact_cells {before after value} _ _.
+
+Lemma allocation_preserves_graph value contents slot after root :
+  pool_valid value -> reserve value contents = (slot, after) ->
+  realizes (pool_cells value) root -> realizes (pool_cells after) root.
+Proof.
+  intros valid allocated represented. apply (realizes_transfers_on_its_exact_cells represented).
+  intros index inside.
+  destruct (allocation_returns_fresh_cell contents valid allocated) as (fresh & cells & _).
+  rewrite cells. cbn. destruct (Nat.eq_dec index slot); auto.
+  subst. exfalso. apply fresh. now apply (realizes_uses_only_occupied represented).
+Qed.
+
+Arguments allocation_preserves_graph {value contents slot after root} _ _ _.
+
+Lemma realized_graph_is_unique_at_its_root cells original revised :
+  realizes cells original -> realizes cells revised ->
+  graph_root original = graph_root revised -> original = revised.
+Proof.
+  revert revised.
+  induction original as [|slot metadata next IHnext|slot metadata child IHchild next IHnext];
+    intros revised old_real new_real same; destruct revised; cbn in *; try discriminate; auto.
+  - inversion same; subst slot0.
+    destruct old_real as [old_head old_next], new_real as [new_head new_next].
+    rewrite old_head in new_head. inversion new_head; subst metadata0.
+    f_equal. now apply IHnext.
+  - inversion same; subst slot0.
+    destruct old_real as [old_head _], new_real as [new_head _].
+    rewrite old_head in new_head. discriminate.
+  - inversion same; subst slot0.
+    destruct old_real as [old_head _], new_real as [new_head _].
+    rewrite old_head in new_head. discriminate.
+  - inversion same; subst slot0.
+    destruct old_real as [old_head [old_child old_next]],
+      new_real as [new_head [new_child new_next]].
+    rewrite old_head in new_head. inversion new_head; subst metadata0.
+    f_equal; [now apply IHchild|now apply IHnext].
+Qed.
+
+Arguments realized_graph_is_unique_at_its_root {cells original revised} _ _ _.
+
+Lemma realizes_transfers_preserved_cells before after root :
+  realizes before root ->
+  (forall slot contents, lookup slot before = Some contents -> lookup slot after = Some contents) ->
+  realizes after root.
+Proof.
+  intro represented. induction root; cbn in *; intro retained; auto.
+  - destruct represented as [found next_real]. split; [now apply retained|now apply IHroot].
+  - destruct represented as [found [child_real next_real]]. split; [now apply retained|].
+    split; [now apply IHroot1|now apply IHroot2].
+Qed.
+
+Theorem link_construction_refines_concrete_slot_contents value next metadata slot after :
+  pool_valid value -> realizes (pool_cells value) next -> NoDup (graph_slots next) ->
+  reserve value (Cell metadata (graph_root next) None false) = (slot, after) ->
+  realizes (pool_cells after) (LinkGraph slot metadata next) /\
+  NoDup (graph_slots (LinkGraph slot metadata next)).
+Proof.
+  intros valid represented owned allocated.
+  destruct (allocation_returns_fresh_cell _ valid allocated) as (fresh & cells & _).
+  split; cbn.
+  - split.
+    + rewrite cells. cbn. destruct (Nat.eq_dec slot slot); congruence.
+    + exact (allocation_preserves_graph valid allocated represented).
+  - constructor; [|exact owned]. intro inside. apply fresh.
+    now apply (realizes_uses_only_occupied represented).
+Qed.
+
+Theorem region_construction_preserves_disjoint_child_and_outer value child next metadata slot after :
+  pool_valid value -> realizes (pool_cells value) child ->
+  realizes (pool_cells value) next ->
+  NoDup (graph_slots child ++ graph_slots next) ->
+  reserve value (Cell metadata (graph_root next) (graph_root child) true) = (slot, after) ->
+  realizes (pool_cells after) (RegionGraph slot metadata child next) /\
+  NoDup (graph_slots (RegionGraph slot metadata child next)) /\
+  (forall index, In index (graph_slots child) -> ~ In index (graph_slots next)).
+Proof.
+  intros valid left right owned allocated.
+  destruct (allocation_returns_fresh_cell _ valid allocated) as (fresh & cells & _).
+  split; cbn.
+  - split.
+    + rewrite cells. cbn. destruct (Nat.eq_dec slot slot); congruence.
+    + split; eapply allocation_preserves_graph; eauto.
+  - split.
+    + constructor; [|exact owned]. intro inside. apply fresh.
+      apply in_app_or in inside. destruct inside.
+      * now apply (realizes_uses_only_occupied left).
+      * now apply (realizes_uses_only_occupied right).
+    + exact (nodup_append_disjoint owned).
+Qed.
+
+Inductive reservations : pool -> pool -> list (nat * cell) -> Prop :=
+| ReservationsEmpty value : reservations value value []
+| ReservationsStep initial before made contents slot after :
+    reservations initial before made ->
+    reserve before contents = (slot, after) ->
+    reservations initial after ((slot, contents) :: made).
+
+Theorem reservation_journal_retains_original_cells initial after made :
+  pool_valid initial -> reservations initial after made ->
+  pool_valid after /\ pool_cells after = made ++ pool_cells initial /\
+  (forall slot contents, lookup slot (pool_cells initial) = Some contents ->
+    lookup slot (pool_cells after) = Some contents).
+Proof.
+  intros valid trace. induction trace.
+  - split; [exact valid|]. split; [reflexivity|auto].
+  - destruct (IHtrace valid) as [before_valid [cells retained]].
+    destruct (allocation_returns_fresh_cell contents before_valid H) as (_ & after_cells & after_valid).
+    split; [exact after_valid|]. split.
+    + rewrite after_cells, cells. reflexivity.
+    + intros index old found.
+      eapply allocation_preserves_every_original_cell.
+      * exact before_valid.
+      * exact H.
+      * exact (retained index old found).
+Qed.
+
+Theorem reserved_slots_are_neither_live_nor_in_flight initial before made contents slot after :
+  pool_valid initial -> reservations initial before made ->
+  reserve before contents = (slot, after) ->
+  ~ In slot (pool_ids initial) /\ ~ In slot (map fst made).
+Proof.
+  intros valid trace allocated.
+  destruct (reservation_journal_retains_original_cells valid trace) as [before_valid [cells _]].
+  destruct (allocation_returns_fresh_cell contents before_valid allocated) as [fresh _].
+  unfold pool_ids in fresh. rewrite cells, map_app in fresh.
+  split; intro inside; apply fresh; apply in_or_app; [now right|now left].
+Qed.
+
+Inductive local_edit : graph -> graph -> list nat -> list nat -> Prop :=
+| EditKeep value : local_edit value value [] []
+| EditPush value slot metadata :
+    local_edit value (LinkGraph slot metadata value) [slot] []
+| EditPushRegion value slot metadata :
+    local_edit value (RegionGraph slot metadata EmptyGraph value) [slot] []
+| EditPop slot metadata next :
+    local_edit (LinkGraph slot metadata next) next [] [slot]
+| EditReplace slot replacement metadata next new_metadata :
+    local_edit (LinkGraph slot metadata next)
+      (LinkGraph replacement new_metadata next) [replacement] [slot]
+| EditRegion slot replacement metadata child next revised new_metadata made retired :
+    local_edit child revised made retired ->
+    local_edit (RegionGraph slot metadata child next)
+      (RegionGraph replacement new_metadata revised next)
+      (replacement :: made) (slot :: retired)
+| EditRegionComplete slot metadata child next made retired :
+    local_edit child EmptyGraph made retired ->
+    local_edit (RegionGraph slot metadata child next) next made (slot :: retired)
+| EditRegionDead slot metadata child next revised made retired :
+    local_edit child revised made retired ->
+    local_edit (RegionGraph slot metadata child next)
+      (RegionGraph slot metadata child next) made made
+| EditReturnedError original revised made retired :
+    local_edit original revised made retired -> local_edit original original made made
+| EditSequence original middle final made_left retired_left made_right retired_right :
+    local_edit original middle made_left retired_left ->
+    local_edit middle final made_right retired_right ->
+    local_edit original final (made_left ++ made_right) (retired_left ++ retired_right).
+
+Inductive concrete_edit (cells : list (nat * cell)) :
+    graph -> graph -> list nat -> list nat -> Prop :=
+| ConcreteKeep value : concrete_edit cells value value [] []
+| ConcretePush value slot metadata :
+    lookup slot cells = Some (Cell metadata (graph_root value) None false) ->
+    concrete_edit cells value (LinkGraph slot metadata value) [slot] []
+| ConcretePushRegion value slot metadata :
+    lookup slot cells = Some (Cell metadata (graph_root value) None true) ->
+    concrete_edit cells value (RegionGraph slot metadata EmptyGraph value) [slot] []
+| ConcretePop slot metadata next :
+    concrete_edit cells (LinkGraph slot metadata next) next [] [slot]
+| ConcreteReplace slot replacement metadata next new_metadata :
+    lookup replacement cells = Some (Cell new_metadata (graph_root next) None false) ->
+    concrete_edit cells (LinkGraph slot metadata next)
+      (LinkGraph replacement new_metadata next) [replacement] [slot]
+| ConcreteRegion slot replacement metadata child next revised new_metadata made retired :
+    concrete_edit cells child revised made retired ->
+    lookup replacement cells = Some (Cell new_metadata (graph_root next) (graph_root revised) true) ->
+    concrete_edit cells (RegionGraph slot metadata child next)
+      (RegionGraph replacement new_metadata revised next)
+      (replacement :: made) (slot :: retired)
+| ConcreteRegionComplete slot metadata child next made retired :
+    concrete_edit cells child EmptyGraph made retired ->
+    concrete_edit cells (RegionGraph slot metadata child next) next made (slot :: retired)
+| ConcreteRegionSaved slot metadata child next revised made retired :
+    concrete_edit cells child revised made retired ->
+    concrete_edit cells (RegionGraph slot metadata child next)
+      (RegionGraph slot metadata child next) made made
+| ConcreteReturnedError original revised made retired :
+    concrete_edit cells original revised made retired ->
+    concrete_edit cells original original made made
+| ConcreteSequence original middle final made_left retired_left made_right retired_right :
+    concrete_edit cells original middle made_left retired_left ->
+    concrete_edit cells middle final made_right retired_right ->
+    concrete_edit cells original final (made_left ++ made_right) (retired_left ++ retired_right).
+
+Theorem concrete_edit_derives_both_realization_and_exact_local_journal
+    cells original final made retired :
+  concrete_edit cells original final made retired ->
+  local_edit original final made retired /\
+  (realizes cells original -> realizes cells final).
+Proof.
+  intro edited. induction edited.
+  - split; [apply EditKeep|auto].
+  - split; [apply EditPush|]. cbn. auto.
+  - split; [apply EditPushRegion|]. cbn. auto.
+  - split; [apply EditPop|]. cbn. tauto.
+  - split; [apply EditReplace|]. cbn. tauto.
+  - destruct IHedited as [journal represented]. split.
+    + now apply EditRegion.
+    + cbn. tauto.
+  - destruct IHedited as [journal represented]. split.
+    + now apply EditRegionComplete.
+    + cbn. tauto.
+  - destruct IHedited as [journal represented]. split.
+    + now apply EditRegionDead with revised retired.
+    + auto.
+  - destruct IHedited as [journal represented]. split.
+    + now apply EditReturnedError with revised retired.
+    + auto.
+  - destruct IHedited1 as [left_journal left_real], IHedited2 as [right_journal right_real].
+    split; [eapply EditSequence; eauto|auto].
+Qed.
+
+Theorem local_owner_journals_have_exact_slot_conservation original final made retired :
+  local_edit original final made retired ->
+  Permutation (graph_slots original ++ made) (graph_slots final ++ retired).
+Proof.
+  intro edited. apply (proj2 (Permutation_count_occ Nat.eq_dec _ _)).
+  intro index. induction edited; cbn;
+    repeat rewrite count_occ_app in *; cbn in *;
+    repeat match goal with
+    | |- context [if Nat.eq_dec ?left ?right then _ else _] =>
+        destruct (Nat.eq_dec left right)
+    end; lia.
+Qed.
+
+Theorem local_commit_journal_is_exact_and_never_retires_a_live_frame original final made retired :
+  local_edit original final made retired ->
+  NoDup (graph_slots original ++ made) ->
+  NoDup (graph_slots final) /\ NoDup retired /\
+  (forall slot, In slot retired -> ~ In slot (graph_slots final)) /\
+  (forall slot, In slot (graph_slots original ++ made) <->
+    In slot (graph_slots final) \/ In slot retired).
+Proof.
+  intros edited owned.
+  pose proof (local_owner_journals_have_exact_slot_conservation edited) as balance.
+  pose proof (Permutation_NoDup balance owned) as result_owned.
+  split; [exact (NoDup_app_remove_r _ _ result_owned)|].
+  split; [exact (NoDup_app_remove_l _ _ result_owned)|]. split.
+  - intros slot retired_here live_here.
+    exact (nodup_append_disjoint result_owned slot live_here retired_here).
+  - intro slot. rewrite <- in_app_iff.
+    split; intro inside.
+    + exact (Permutation_in slot balance inside).
+    + exact (Permutation_in slot (Permutation_sym balance) inside).
+Qed.
+
+Theorem physical_reservation_freshness_discharges_edit_ownership initial after drafts original :
+  pool_valid initial -> reservations initial after drafts ->
+  realizes (pool_cells initial) original -> NoDup (graph_slots original) ->
+  NoDup (graph_slots original ++ map fst drafts).
+Proof.
+  intros valid trace represented owned.
+  destruct (reservation_journal_retains_original_cells valid trace) as [[distinct _] [cells _]].
+  unfold pool_ids in distinct. rewrite cells, map_app in distinct.
+  assert (all_owned : NoDup (map fst drafts ++ map fst (pool_cells initial))).
+  { exact (NoDup_app_remove_r _ _ distinct). }
+  apply NoDup_app; [exact owned|exact (NoDup_app_remove_r _ _ all_owned)|].
+  intros slot in_original in_drafts.
+  apply (nodup_append_disjoint all_owned slot in_drafts).
+  exact (realizes_uses_only_occupied represented slot in_original).
+Qed.
+
+Arguments physical_reservation_freshness_discharges_edit_ownership
+  {initial after drafts original} _ _ _ _.
+
+Inductive release : pool -> nat -> pool -> Prop :=
+| ReleaseSlot capacity prefix slot contents suffix free :
+    release (Pool capacity (prefix ++ (slot, contents) :: suffix) free) slot
+      (Pool capacity (prefix ++ suffix) (slot :: free)).
+
+Lemma release_preserves_pool_validity before slot after :
+  pool_valid before -> release before slot after -> pool_valid after.
+Proof.
+  intros valid released. destruct released.
+  unfold pool_valid, pool_ids in *; cbn in *.
+  repeat rewrite map_app in *; cbn in *.
+  destruct valid as [distinct [bounded size]].
+  assert (order : Permutation
+    ((map fst prefix ++ slot :: map fst suffix) ++ free)
+    ((map fst prefix ++ map fst suffix) ++ slot :: free)).
+  { repeat rewrite <- app_assoc. apply Permutation_app_head. apply Permutation_middle. }
+  split; [exact (Permutation_NoDup order distinct)|]. split.
+  - intros index inside. apply bounded. eapply Permutation_in; [apply Permutation_sym; exact order|exact inside].
+  - repeat rewrite length_app in *; cbn in *; lia.
+Qed.
+
+Lemma release_preserves_other_lookups before released after slot :
+  release before released after -> slot <> released ->
+  lookup slot (pool_cells after) = lookup slot (pool_cells before).
+Proof.
+  intros step different. destruct step as [capacity prefix removed contents suffix free]. cbn.
+  induction prefix as [|[index contents'] rest IH]; cbn.
+  - destruct (Nat.eq_dec slot removed); congruence.
+  - destruct (Nat.eq_dec slot index); auto.
+Qed.
+
+Inductive releases : pool -> list nat -> pool -> Prop :=
+| ReleasesEmpty value : releases value [] value
+| ReleasesStep before slot middle rest after :
+    release before slot middle -> releases middle rest after ->
+    releases before (slot :: rest) after.
+
+Lemma release_journal_preserves_other_lookups before retired after slot :
+  releases before retired after -> ~ In slot retired ->
+  lookup slot (pool_cells after) = lookup slot (pool_cells before).
+Proof.
+  intros steps. induction steps; intro absent; auto.
+  rewrite IHsteps; [|intro inside; apply absent; now right].
+  apply (release_preserves_other_lookups H). intro same. apply absent. now left.
+Qed.
+
+Arguments release_journal_preserves_other_lookups {before retired after slot} _ _.
+
+Lemma release_journal_preserves_validity before retired after :
+  pool_valid before -> releases before retired after -> pool_valid after.
+Proof.
+  intros valid steps. induction steps; auto.
+  apply IHsteps. now apply (release_preserves_pool_validity valid H).
+Qed.
+
+Lemma release_journal_accounts_for_exact_cells before retired after :
+  releases before retired after ->
+  Permutation (pool_ids before) (pool_ids after ++ retired).
+Proof.
+  intro steps. apply (proj2 (Permutation_count_occ Nat.eq_dec _ _)).
+  intro index. induction steps; [now rewrite app_nil_r|].
+  destruct H. unfold pool_ids in *; cbn in *.
+  repeat rewrite map_app in *; repeat rewrite count_occ_app in *; cbn in *.
+  repeat match goal with
+  | |- context [if ?decision then _ else _] => destruct decision
+  end; congruence || lia.
+Qed.
+
+Theorem commit_preserves_the_new_concrete_graph_and_removes_exact_consumed_slots
+    initial work committed original final drafts made retired :
+  pool_valid initial -> reservations initial work drafts ->
+  realizes (pool_cells initial) original -> NoDup (graph_slots original) ->
+  Permutation (pool_ids initial) (graph_slots original) ->
+  Permutation made (map fst drafts) ->
+  concrete_edit (pool_cells work) original final made retired ->
+  releases work retired committed ->
+  pool_valid committed /\ realizes (pool_cells committed) final /\
+  Permutation (pool_ids committed) (graph_slots final).
+Proof.
+  intros valid reserved old_real old_owned complete journal_order concrete freed.
+  destruct (reservation_journal_retains_original_cells valid reserved) as [work_valid [cells retained]].
+  destruct (concrete_edit_derives_both_realization_and_exact_local_journal concrete)
+    as [edited materialized].
+  assert (new_real : realizes (pool_cells work) final).
+  { apply materialized. eapply realizes_transfers_preserved_cells; eauto. }
+  pose proof (physical_reservation_freshness_discharges_edit_ownership
+    valid reserved old_real old_owned) as all_owned.
+  assert (edit_owned : NoDup (graph_slots original ++ made)).
+  { eapply Permutation_NoDup; [apply Permutation_app_head; apply Permutation_sym; exact journal_order|exact all_owned]. }
+  destruct (local_commit_journal_is_exact_and_never_retires_a_live_frame edited edit_owned)
+    as (_ & _ & no_live & _).
+  split; [exact (release_journal_preserves_validity work_valid freed)|]. split.
+  - apply (realizes_transfers_on_its_exact_cells new_real). intros slot inside.
+    apply (release_journal_preserves_other_lookups freed).
+    intro retired_here. exact (no_live slot retired_here inside).
+  - apply (proj2 (Permutation_count_occ Nat.eq_dec _ _)). intro index.
+    pose proof (proj1 (Permutation_count_occ Nat.eq_dec _ _)
+      (release_journal_accounts_for_exact_cells freed) index) as released_count.
+    pose proof (proj1 (Permutation_count_occ Nat.eq_dec _ _)
+      (local_owner_journals_have_exact_slot_conservation edited) index) as edit_count.
+    pose proof (proj1 (Permutation_count_occ Nat.eq_dec _ _) complete index) as initial_count.
+    pose proof (proj1 (Permutation_count_occ Nat.eq_dec _ _) journal_order index) as made_count.
+    unfold pool_ids in released_count. rewrite cells, map_app in released_count.
+    repeat rewrite count_occ_app in *. unfold pool_ids in *. lia.
+Qed.
+
+Inductive owner_status := OwnerOpen | OwnerDead (error : nat).
+
+Record owner := Owner {
+  owner_graph : graph;
+  owner_state : owner_status;
+  owner_first_source : option (nat * nat);
+  owner_stable : bool;
+  owner_obligation_clock : nat
+}.
+
+Definition kill (value : owner) (error : nat) :=
+  Owner (owner_graph value) (OwnerDead error) (owner_first_source value)
+    (owner_stable value) (owner_obligation_clock value).
+
+Definition install_graph (value : owner) (root : graph) :=
+  Owner root (owner_state value) (owner_first_source value)
+    (owner_stable value) (owner_obligation_clock value).
+
+Definition selects_saved_graph (saved candidate : owner) : bool :=
+  match graph_root (owner_graph saved), graph_root (owner_graph candidate) with
+  | None, None => true
+  | Some saved_slot, Some candidate_slot => Nat.eqb saved_slot candidate_slot
+  | _, _ => false
+  end.
+
+Theorem held_root_identity_selects_exact_graph_independently_of_dead_status
+    cells saved candidate :
+  realizes cells (owner_graph saved) -> realizes cells (owner_graph candidate) ->
+  selects_saved_graph saved candidate = true <-> owner_graph saved = owner_graph candidate.
+Proof.
+  intros old_real new_real. unfold selects_saved_graph. split.
+  - intro selected. apply (realized_graph_is_unique_at_its_root old_real new_real).
+    destruct (graph_root (owner_graph saved)), (graph_root (owner_graph candidate));
+      try discriminate; auto. apply Nat.eqb_eq in selected. now subst.
+  - intro same. rewrite same. destruct (graph_root (owner_graph candidate)); auto.
+    apply Nat.eqb_refl.
+Qed.
+
+Theorem fresh_rebuild_and_owned_pop_cannot_alias_the_held_parent_root
+    slot replacement metadata next :
+  ~ In replacement (graph_slots (LinkGraph slot metadata next)) ->
+  NoDup (graph_slots (LinkGraph slot metadata next)) ->
+  Some replacement <> Some slot /\ graph_root next <> Some slot.
+Proof.
+  cbn. intros fresh owned. split.
+  - intro same. inversion same. apply fresh. now left.
+  - intro same. inversion owned as [|? ? absent _]. apply absent.
+    destruct next; cbn in *; try discriminate; inversion same; now left.
+Qed.
+
+Inductive local_result :=
+| ReturnedError (error : nat)
+| RegionChildDead (error : nat)
+| ShallowDead (root : graph) (error : nat)
+| Successful (root : graph).
+
+Definition selected_owner (saved : owner) (result : local_result) :=
+  match result with
+  | ReturnedError _ => saved
+  | RegionChildDead error => kill saved error
+  | ShallowDead root error => kill (install_graph saved root) error
+  | Successful root => install_graph saved root
+  end.
+
+Theorem returned_error_restores_exact_owner_and_original_obligation_cells
+    initial work aborted drafts saved error :
+  pool_valid initial -> reservations initial work drafts ->
+  realizes (pool_cells initial) (owner_graph saved) ->
+  releases work (map fst drafts) aborted ->
+  selected_owner saved (ReturnedError error) = saved /\
+  realizes (pool_cells aborted) (owner_graph saved) /\
+  (forall slot contents, lookup slot (pool_cells initial) = Some contents ->
+    lookup slot (pool_cells aborted) = Some contents).
+Proof.
+  intros valid reserved represented freed.
+  destruct (reservation_journal_retains_original_cells valid reserved) as [[distinct _] [cells retained]].
+  unfold pool_ids in distinct. rewrite cells, map_app in distinct.
+  assert (separate : forall slot, In slot (map fst (pool_cells initial)) ->
+      ~ In slot (map fst drafts)).
+  { intros slot old new.
+    exact (nodup_append_disjoint (NoDup_app_remove_r _ _ distinct) slot new old).
+  }
+  assert (restored : forall slot contents, lookup slot (pool_cells initial) = Some contents ->
+    lookup slot (pool_cells aborted) = Some contents).
+  { intros slot contents found.
+    rewrite (release_journal_preserves_other_lookups freed).
+    - now apply retained.
+    - apply separate. now apply lookup_some_is_occupied in found.
+  }
+  split; [reflexivity|]. split; [|exact restored].
+  eapply realizes_transfers_preserved_cells; eauto.
+Qed.
+
+Theorem deferred_dead_retains_the_selected_local_graph_and_metadata saved root error :
+  owner_graph (selected_owner saved (RegionChildDead error)) = owner_graph saved /\
+  owner_graph (selected_owner saved (ShallowDead root error)) = root /\
+  owner_state (selected_owner saved (ShallowDead root error)) = OwnerDead error /\
+  owner_first_source (kill saved error) = owner_first_source saved /\
+  owner_stable (kill saved error) = owner_stable saved /\
+  owner_obligation_clock (kill saved error) = owner_obligation_clock saved.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem region_dead_discards_child_replacements_without_retiring_original_children
+    slot metadata child next revised made retired :
+  local_edit child revised made retired ->
+  local_edit (RegionGraph slot metadata child next)
+    (RegionGraph slot metadata child next) made made /\
+  Permutation (graph_slots (RegionGraph slot metadata child next) ++ made)
+    (graph_slots (RegionGraph slot metadata child next) ++ made).
+Proof. intro edited. split; [now apply EditRegionDead with revised retired|reflexivity]. Qed.
+
+Inductive pool_event : pool -> pool -> Prop :=
+| AllocateEvent before contents slot after :
+    reserve before contents = (slot, after) -> pool_event before after
+| RetireEvent before slot after : release before slot after -> pool_event before after.
+
+Lemma allocation_capacity_grows_only_at_full_occupancy before contents slot after :
+  pool_valid before -> reserve before contents = (slot, after) ->
+  pool_capacity after <= Nat.max (pool_capacity before) (length (pool_cells after)).
+Proof.
+  destruct before as [capacity cells free].
+  unfold reserve, pool_valid; cbn. intros (_ & _ & size) allocated.
+  destruct free; inversion allocated; subst slot after; cbn in *.
+  - rewrite Nat.add_0_r in size. subst capacity. apply Nat.le_max_r.
+  - apply Nat.le_max_l.
+Qed.
+
+Inductive bounded_pool_run (limit : nat) : pool -> pool -> nat -> Prop :=
+| BoundedPoolEmpty value : bounded_pool_run limit value value 0
+| BoundedPoolStep initial before after count :
+    bounded_pool_run limit initial before count ->
+    pool_valid before -> pool_event before after ->
+    length (pool_cells after) <= limit ->
+    bounded_pool_run limit initial after (S count).
+
+Theorem physical_capacity_is_bounded_by_peak_live_plus_in_flight_not_transition_count
+    limit initial after count :
+  pool_capacity initial <= limit -> bounded_pool_run limit initial after count ->
+  pool_capacity after <= limit.
+Proof.
+  intros initial_bound steps. induction steps; auto.
+  specialize (IHsteps initial_bound).
+  destruct H0.
+  - pose proof (allocation_capacity_grows_only_at_full_occupancy _ H H0). lia.
+  - destruct H0. cbn in *. exact IHsteps.
+Qed.
+
+Theorem reservation_occupancy_is_exact_live_originals_plus_in_flight_replacements
+    initial after drafts :
+  pool_valid initial -> reservations initial after drafts ->
+  length (pool_cells after) = length (pool_cells initial) + length drafts.
+Proof.
+  intros valid trace.
+  destruct (reservation_journal_retains_original_cells valid trace) as [_ [cells _]].
+  rewrite cells, length_app. lia.
+Qed.
+
+Definition control_metadata := FrameMetadata [7; 3] (Some (ObligationMetadata 11 2 4 9 6 1)).
+Definition control_cell := Cell control_metadata None None false.
+Definition control_graph := LinkGraph 0 control_metadata EmptyGraph.
+Definition control_pool := Pool 1 [(0, control_cell)] [].
+Definition control_owner := Owner control_graph OwnerOpen (Some (9, 6)) false 12.
+Definition control_reserved := Pool 2 [(1, control_cell); (0, control_cell)] [].
+Definition control_committed := Pool 2 [(1, control_cell)] [0].
+Definition control_reused := Pool 2 [(0, control_cell); (1, control_cell)] [].
+
+Theorem reusable_slot_positive_transaction_controls :
+  reserve control_pool control_cell = (1, control_reserved) /\
+  release control_reserved 0 control_committed /\
+  reserve control_committed control_cell = (0, control_reused) /\
+  pool_capacity control_reused = 2 /\
+  local_edit control_graph (LinkGraph 1 control_metadata EmptyGraph) [1] [0] /\
+  local_edit (RegionGraph 2 control_metadata control_graph EmptyGraph)
+    (RegionGraph 2 control_metadata control_graph EmptyGraph) [1] [1].
+Proof.
+  repeat split; try reflexivity.
+  - exact (ReleaseSlot 2 [(1, control_cell)] 0 control_cell [] []).
+  - apply EditReplace.
+  - apply EditRegionDead with (revised := LinkGraph 1 control_metadata EmptyGraph) (retired := [0]).
+    apply EditReplace.
+Qed.
+
+Definition wrong_eager_reuse := Pool 1 [(0, Cell (FrameMetadata [99] None) None None false)] [].
+Definition wrong_clear_dead value error :=
+  Owner EmptyGraph (OwnerDead error) (owner_first_source value)
+    (owner_stable value) (owner_obligation_clock value).
+
+Theorem reusable_slot_causal_ownership_and_dead_controls :
+  lookup 0 (pool_cells wrong_eager_reuse) <> lookup 0 (pool_cells control_pool) /\
+  ~ realizes (pool_cells wrong_eager_reuse) control_graph /\
+  ~ NoDup (graph_slots (RegionGraph 2 control_metadata control_graph control_graph)) /\
+  owner_graph (wrong_clear_dead control_owner 4) <>
+    owner_graph (selected_owner control_owner (RegionChildDead 4)) /\
+  owner_graph (selected_owner (install_graph control_owner EmptyGraph)
+    (ShallowDead control_graph 4)) <>
+    owner_graph (selected_owner (install_graph control_owner EmptyGraph) (RegionChildDead 4)) /\
+  owner_graph (selected_owner control_owner (ReturnedError 4)) = control_graph /\
+  lookup 0 (pool_cells control_committed) <> lookup 0 (pool_cells control_pool).
+Proof.
+  repeat split; try discriminate; try reflexivity.
+  - cbn. intros [bad _]. discriminate.
+  - cbn. intro duplicate. inversion duplicate as [|? ? _ tail].
+    inversion tail as [|? ? absent _]. apply absent. now left.
+Qed.
+
+Definition control_multi_reserved :=
+  Pool 3 [(2, control_cell); (1, control_cell); (0, control_cell)] [].
+Definition control_multi_committed := Pool 3 [(2, control_cell)] [1; 0].
+Definition control_region_cells :=
+  [(2, Cell control_metadata (Some 3) (Some 0) true);
+   (3, control_cell); (0, control_cell)].
+
+Theorem ordered_multi_edit_region_completion_and_reuse_controls :
+  reservations control_pool control_multi_reserved [(2, control_cell); (1, control_cell)] /\
+  concrete_edit (pool_cells control_multi_reserved) control_graph
+    (LinkGraph 2 control_metadata EmptyGraph) [1; 2] [0; 1] /\
+  Permutation [1; 2] (map fst [(2, control_cell); (1, control_cell)]) /\
+  releases control_multi_reserved [0; 1] control_multi_committed /\
+  reserve control_multi_committed control_cell =
+    (1, Pool 3 [(1, control_cell); (2, control_cell)] [0]) /\
+  concrete_edit [(2, Cell control_metadata (Some 0) None true); (0, control_cell)]
+    control_graph (RegionGraph 2 control_metadata EmptyGraph control_graph) [2] [] /\
+  concrete_edit control_region_cells
+    (RegionGraph 2 control_metadata control_graph (LinkGraph 3 control_metadata EmptyGraph))
+    (LinkGraph 3 control_metadata EmptyGraph) [] [2; 0] /\
+  ~ local_edit
+    (RegionGraph 2 control_metadata control_graph (LinkGraph 3 control_metadata EmptyGraph))
+    (LinkGraph 3 control_metadata EmptyGraph) [] [2] /\
+  selects_saved_graph control_owner
+    (kill (install_graph control_owner (LinkGraph 2 control_metadata EmptyGraph)) 4) = false.
+Proof.
+  repeat split; try reflexivity.
+  - eapply ReservationsStep with (before := control_reserved).
+    + eapply ReservationsStep with (before := control_pool).
+      * apply ReservationsEmpty.
+      * reflexivity.
+    + reflexivity.
+  - change (concrete_edit (pool_cells control_multi_reserved) control_graph
+      (LinkGraph 2 control_metadata EmptyGraph) ([1] ++ [2]) ([0] ++ [1])).
+    eapply ConcreteSequence with (middle := LinkGraph 1 control_metadata EmptyGraph).
+    + apply ConcreteReplace. reflexivity.
+    + apply ConcreteReplace. reflexivity.
+  - apply perm_swap.
+  - eapply ReleasesStep with (middle := Pool 3 [(2, control_cell); (1, control_cell)] [0]).
+    + exact (ReleaseSlot 3 [(2, control_cell); (1, control_cell)] 0 control_cell [] []).
+    + eapply ReleasesStep.
+      * exact (ReleaseSlot 3 [(2, control_cell)] 1 control_cell [] [0]).
+      * apply ReleasesEmpty.
+  - apply ConcretePushRegion. reflexivity.
+  - apply ConcreteRegionComplete. apply ConcretePop.
+  - intro omitted.
+    pose proof (Permutation_length (local_owner_journals_have_exact_slot_conservation omitted)) as count.
+    discriminate count.
+Qed.
+
+Print Assumptions link_construction_refines_concrete_slot_contents.
+Print Assumptions region_construction_preserves_disjoint_child_and_outer.
+Print Assumptions reservation_journal_retains_original_cells.
+Print Assumptions reserved_slots_are_neither_live_nor_in_flight.
+Print Assumptions local_owner_journals_have_exact_slot_conservation.
+Print Assumptions concrete_edit_derives_both_realization_and_exact_local_journal.
+Print Assumptions local_commit_journal_is_exact_and_never_retires_a_live_frame.
+Print Assumptions physical_reservation_freshness_discharges_edit_ownership.
+Print Assumptions commit_preserves_the_new_concrete_graph_and_removes_exact_consumed_slots.
+Print Assumptions returned_error_restores_exact_owner_and_original_obligation_cells.
+Print Assumptions held_root_identity_selects_exact_graph_independently_of_dead_status.
+Print Assumptions fresh_rebuild_and_owned_pop_cannot_alias_the_held_parent_root.
+Print Assumptions deferred_dead_retains_the_selected_local_graph_and_metadata.
+Print Assumptions region_dead_discards_child_replacements_without_retiring_original_children.
+Print Assumptions physical_capacity_is_bounded_by_peak_live_plus_in_flight_not_transition_count.
+Print Assumptions reservation_occupancy_is_exact_live_originals_plus_in_flight_replacements.
+Print Assumptions reusable_slot_positive_transaction_controls.
+Print Assumptions reusable_slot_causal_ownership_and_dead_controls.
+Print Assumptions ordered_multi_edit_region_completion_and_reuse_controls.
+
+End ReusableFrameOwnership.
