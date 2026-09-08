@@ -238,7 +238,15 @@ env:
   # record. Verified: descends (merge-base --is-ancestor); 272 SI unit
   # tests green locally on the content; SI CI pending on 7f488f9 at pin
   # time. Re-pin to the merged SHA once #137 lands.
-  SYSTEM_INTEGRATION_REF: 7f488f93e4b540ab598a43331ad336c5f6f07a56
+  # 2026-09-08: 7f488f9 -> 022ae6d (same SI PR #137 branch, one commit on;
+  # descends per the rule above): the four post-mortem du walks now run
+  # concurrently under one shared 10s ceiling, so a slow /var/lib/docker
+  # walk delays the stamp by at most 10s in aggregate instead of 40s
+  # serially, and the unit tests cover the walks. Verified: descends
+  # (merge-base --is-ancestor); the 10 post-mortem unit tests green on
+  # the extracted 022ae6d content; template parses; SI CI pending on
+  # 022ae6d at pin time. Re-pin to the merged SHA once #137 lands.
+  SYSTEM_INTEGRATION_REF: 022ae6d304ff47a112d7db76be956736cf056e0b
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
