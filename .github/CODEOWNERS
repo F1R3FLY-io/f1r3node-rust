@@ -20,3 +20,4 @@ Dockerfile          @F1R3FLY-io/ci-maintainers
 /Cross.toml         @F1R3FLY-io/ci-maintainers
 /rust-toolchain.toml @F1R3FLY-io/ci-maintainers
 /scripts/ci/        @F1R3FLY-io/ci-maintainers
+/scripts/supply-chain/ @F1R3FLY-io/ci-maintainers

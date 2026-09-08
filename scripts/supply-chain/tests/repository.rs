@@ -169,6 +169,76 @@ fn deny_workflows_use_the_rust_launcher_and_keep_evidence() {
     assert!(launcher.contains("-p supply-chain"));
 }
 
+fn scheduled_job(name: &str) -> String {
+    let workflow = fs::read_to_string(root().join(".github/workflows/deny-schedule.yml")).unwrap();
+    let marker = format!("\n  {name}:\n");
+    workflow
+        .split_once(&marker)
+        .unwrap_or_else(|| panic!("Missing scheduled audit job: {name}"))
+        .1
+        .lines()
+        .take_while(|line| line.trim().is_empty() || line.starts_with("    "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn scheduled_audit_executes_only_the_event_commit() {
+    let job = scheduled_job("deny");
+    assert_eq!(job.matches("uses: actions/checkout@").count(), 1);
+    assert!(job.contains("ref: ${{ github.sha }}"));
+    assert!(job.contains("persist-credentials: false"));
+    assert!(!job.contains("matrix."));
+    assert!(!job.contains("actions: write"));
+    assert!(!job.contains("GH_TOKEN:"));
+    assert!(job.contains("if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master'"));
+    assert!(job.contains("check-supply-chain.sh install"));
+    assert!(job.contains("check-supply-chain.sh check"));
+    assert!(job.contains("if: always()"));
+    assert!(job.contains("if-no-files-found: error"));
+    assert!(!job.contains("tooling.outputs.present"));
+}
+
+#[test]
+fn scheduled_dispatch_has_no_checkout_or_branch_code_execution() {
+    let job = scheduled_job("dispatch-dev");
+    assert!(
+        job.contains("if: github.event_name == 'schedule' && github.ref == 'refs/heads/master'")
+    );
+    assert!(job.contains("actions: write"));
+    assert!(job.contains("GH_TOKEN: ${{ github.token }}"));
+    assert!(!job.contains("uses:"));
+    assert!(!job.contains("contents: write"));
+    assert!(!job.contains("actions/checkout"));
+    assert_eq!(job.matches("gh workflow run").count(), 1);
+    assert!(
+        job.contains("gh workflow run deny-schedule.yml --repo \"$GITHUB_REPOSITORY\" --ref dev")
+    );
+    assert!(job.contains("gh run watch \"$RUN_ID\" --repo \"$GITHUB_REPOSITORY\" --exit-status"));
+    assert!(job.contains("::error::the dev audit run did not start"));
+    assert!(!job.contains("continue-on-error"));
+}
+
+#[test]
+fn manual_audits_do_not_accept_an_independent_checkout_reference() {
+    let workflow = fs::read_to_string(root().join(".github/workflows/deny-schedule.yml")).unwrap();
+    assert!(workflow.contains("  workflow_dispatch:\n"));
+    assert!(workflow.contains("  schedule:\n"));
+    assert!(!workflow.contains("inputs:"));
+    assert!(!workflow.contains("workflow_call:"));
+    assert!(workflow.contains("permissions:\n  contents: read\n"));
+    assert_eq!(workflow.matches("actions: write").count(), 1);
+}
+
+#[test]
+fn rust_supply_chain_sources_require_ci_owner_review() {
+    let owners = fs::read_to_string(root().join(".github/CODEOWNERS")).unwrap();
+    assert!(owners.lines().any(|line| {
+        line.split_whitespace().collect::<Vec<_>>()
+            == ["/scripts/supply-chain/", "@F1R3FLY-io/ci-maintainers"]
+    }));
+}
+
 #[test]
 fn docker_build_remains_frozen_offline_and_contains_the_workspace_tool() {
     let text = fs::read_to_string(root().join("node/Dockerfile")).unwrap();
