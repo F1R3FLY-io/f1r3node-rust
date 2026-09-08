@@ -412,4 +412,104 @@ mod tests {
             .await
             .unwrap();
     }
+
+    /// T-21 (2026-09-08): handler-boundary MAX_OPEN_FDS pin for the
+    /// dir handle table.  The unit-level pin
+    /// `insert_at_cap_returns_err_and_recovers_on_remove` in
+    /// `dir_handle_table.rs` covers `.insert()` returning `Err(())`
+    /// past cap; this test drives the same cap through the
+    /// `entriesStreamOpen` handler and asserts the reply is
+    /// `[false, "FSERR_QUOTA_EXCEEDED", _]`.
+    ///
+    /// Companion to the file-side `fs_close_replay_releases_shadow_
+    /// fd` test in `fs_wal_spec.rs` which touches the file-handle
+    /// leak-detection story; T-21 is the symmetric handler-boundary
+    /// coverage for dirs.
+    ///
+    /// Prefills the `DirHandleTable` with `MAX_OPEN_FDS` shadow
+    /// handles (no real `DIR*` needed for cap arithmetic — the
+    /// shadow constructor exists for the follower's replay branch
+    /// and works here as a cheap cap-filler).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dir_handle_table_cap_surfaces_fserr_quota_exceeded_at_handler_boundary() {
+        use rholang::rust::interpreter::io::dir_handle_table::DirHandle;
+        use rholang::rust::interpreter::io::{ConsensusMode, MAX_OPEN_FDS};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("child")).unwrap();
+
+        let runtime = create_runtime().await;
+
+        // Fill the DirHandleTable to cap via shadow handles.  The
+        // handler's own inserts will then fail with `Err(())` →
+        // FSERR_QUOTA_EXCEEDED.
+        for _ in 0..MAX_OPEN_FDS {
+            let h = DirHandle::shadow(dir.path().to_path_buf(), ConsensusMode::Oracular, [0u8; 32]);
+            runtime
+                .fs_handles
+                .dir_handles
+                .insert(h)
+                .await
+                .expect("prefill under cap should succeed");
+        }
+
+        // Invoke entriesStreamOpen on a valid dir; the handler will
+        // attempt to insert and fail past-cap.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
+              fsOpen!("{root}", "child", "oracular", *o) |
+              for (@reply <- o) {{ @"out"!(reply) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+
+        // Read reply.
+        let map = runtime.reducer.space.to_map().await;
+        let chan = models::rust::utils::new_gstring_par("out".to_string(), Vec::new(), false);
+        let row = map
+            .get(&vec![chan])
+            .expect("out channel must have the cap-tripping reply");
+        let reply = &row.data[0].a.pars[0];
+        let list = match models::rust::rholang::implicits::single_expr(reply)
+            .unwrap()
+            .expr_instance
+        {
+            Some(models::rhoapi::expr::ExprInstance::EListBody(l)) => l,
+            other => panic!("expected list reply, got {other:?}"),
+        };
+        // Shape: [false, "FSERR_QUOTA_EXCEEDED", msg].
+        let ok = match models::rust::rholang::implicits::single_expr(&list.ps[0])
+            .unwrap()
+            .expr_instance
+        {
+            Some(models::rhoapi::expr::ExprInstance::GBool(b)) => b,
+            other => panic!("expected bool head, got {other:?}"),
+        };
+        let code = match models::rust::rholang::implicits::single_expr(&list.ps[1])
+            .unwrap()
+            .expr_instance
+        {
+            Some(models::rhoapi::expr::ExprInstance::GString(s)) => s,
+            other => panic!("expected string code, got {other:?}"),
+        };
+        assert!(
+            !ok,
+            "handler must reply with error when dir table is at cap"
+        );
+        assert_eq!(
+            code, "FSERR_QUOTA_EXCEEDED",
+            "T-21: entriesStreamOpen at MAX_OPEN_FDS must reply FSERR_QUOTA_EXCEEDED"
+        );
+    }
 }

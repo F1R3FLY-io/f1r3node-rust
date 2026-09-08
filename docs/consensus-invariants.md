@@ -209,6 +209,50 @@ deploy's own holds — same-deploy holds cannot form a cross-deploy
 cycle by definition; they are covered by the pre-existing
 same-holder skip in `range_conflicts`.
 
+### 8a. Range-lock replay semantics (T-18 hoist, 2026-09-08)
+
+The 4 range-lock natives (`fs_lock_range`, `fs_lock_sequential`,
+`fs_release_lock`, `fs_release_all_for_holder`) share a replay
+discipline that lives across the natives themselves, the
+`LockRegistry` (X-1 design memo, RuntimeManager-broadcast), and
+the deploy-scope RAII sweep in `casper::rholang::runtime::
+WalDeployScope`.
+
+Table:
+- `(dev, inode)` keys collapse cross-cap coordination on the same
+  physical file to one entry, regardless of which fresh-mint
+  `File` cap (slice 27) holds it.
+- wait:false: non-blocking acquires reply `[true, lock_id]` or
+  `[false, FSERR_BUSY, ...]`.
+- wait:true: parks via the Rig-protocol; reply is either
+  `[true, lock_id]` (post-wake), `FSERR_CANCELLED`, or
+  `FSERR_DEADLOCK` (NB-7 cross-deploy cycle detection).
+- Deploy-end auto-release (MUST per X-4 / spec §Explicit locks):
+  the RAII guard at deploy-entry sets
+  `handles.current_deploy_scope` to a Blake2b256-derived scope; on
+  Drop, it calls `lock_registry.release_all_for_deploy(&scope)`
+  before clearing back to the `[0; 32]` sentinel.  Leaked locks
+  are swept transparently.
+- WAL journaling of `LockAcquire` / `LockRelease` entries is
+  step 4 of slice 8a — still deferred; under consensus mode the
+  natives will need to journal (per X-1 § 4); under oracular they
+  will not (per § Mode-differentiated invariants — oracular locks
+  are in-process hints, not consensus state).
+- Replay semantics: on `is_replay = true` these natives echo
+  `previous` and do NOT touch `LockRegistry`.  Follower registry
+  state diverges from the leader's, but that divergence is never
+  consensus-observable because every reply is captured — no
+  consensus-observable code path consults `LockRegistry` outside
+  the replay-cached natives.  When step 4 adds WAL journaling,
+  the follower's state MUST be reconstituted from the WAL during
+  replay (mirror slice 29's `journal_write` /
+  `finalize_write_journal` pattern) so that the consensus-mode
+  unlink gate (`is_locked` in `fs_remove_file` / `fs_remove_dir`,
+  live today) sees the same state on leader and follower.  Under
+  oracular mode the LockRegistry is best-effort per § Mode-
+  differentiated invariants, so follower state doesn't matter
+  there either way.
+
 ### 9a. Composition-time constants
 
 The following constants shape the composed FsGenesis source or the

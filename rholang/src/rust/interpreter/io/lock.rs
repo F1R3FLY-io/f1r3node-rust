@@ -114,8 +114,35 @@ pub type DeployScope = [u8; 32];
 /// per-runtime; validators do not compare these across the wire.  The
 /// Rig-protocol layer above (slice 8b) ensures deterministic outcomes;
 /// LockIds are ephemeral labels.
+///
+/// T-14 (2026-09-08): field is now private to match `Fd`'s newtype
+/// discipline.  Call sites lift a raw `u64` via `LockId::from(n)`
+/// (typically at the Rholang-boundary reply / release path) and
+/// unwrap via `.as_u64()` for the fd-table layer.  The pre-fix
+/// `LockId(pub u64)` shape let handlers mix a lock id with a
+/// quantity value at the emission site.
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LockId(pub u64);
+pub struct LockId(u64);
+
+impl LockId {
+    /// Unwrap into the raw `u64` for handoff to the Rholang-side
+    /// reply / release path.  The newtype's job is to keep call
+    /// sites from mixing a lock id with a byte-count / offset /
+    /// fd value; once the id reaches the reply boundary it
+    /// becomes just a u64 again.
+    #[inline]
+    pub fn as_u64(self) -> u64 { self.0 }
+}
+
+impl From<u64> for LockId {
+    /// Lift a raw `u64` (typically extracted from a Rholang
+    /// `release(@lockId)` call) into a `LockId`.  The u64 is
+    /// treated as an opaque identifier; validity is checked by
+    /// `LockRegistry::release`, not here.
+    #[inline]
+    fn from(raw: u64) -> Self { LockId(raw) }
+}
 
 /// Cap-scoped identity for `release_all_for_holder` cleanup on
 /// `File.close`.  Derived from the File agent's per-instance `this`

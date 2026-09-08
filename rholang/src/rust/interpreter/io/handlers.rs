@@ -197,11 +197,45 @@ fn consensus_divergence_reply(handler_name: &str, reason: impl std::fmt::Display
 ///
 /// Each intermediate `OwnedFd` closes on scope exit via Drop.
 ///
-/// # Safety
-/// Uses libc directly.  Caller supplies a `SafeParent` obtained
-/// via `safe_descend_verified` and a `rel_path` derived from a
-/// `collect_recursive_manifest` walk of the target subtree.
-unsafe fn unlink_manifest_entry(
+/// T-10 (Mi-9, 2026-09-08): shared leaf-unlink helper used by
+/// `fs_remove_file`, non-recursive `fs_remove_dir` (oracular +
+/// consensus), and the empty-rel branch of `unlink_manifest_entry`.
+///
+/// Pre-fix, three call sites open-coded the same pattern:
+///     let rc = unsafe { libc::unlinkat(parent.as_raw_fd(),
+///                                       parent.leaf_ptr(), flags) };
+///     if rc == 0 { Ok(()) } else { Err(last_os_error()) }
+/// with a hand-picked `flags` argument.  Extracting the helper
+/// documents the SAFETY invariant once and lets callers pass a
+/// `RemoveKind` rather than a raw libc flag.
+///
+/// See `unlink_manifest_entry` for the multi-component variant.
+fn unlink_leaf_via_dirfd(parent: &SafeParent, kind: RemoveKind) -> std::io::Result<()> {
+    let flags = match kind {
+        RemoveKind::File => 0,
+        RemoveKind::Dir => libc::AT_REMOVEDIR,
+    };
+    // SAFETY: `parent.as_raw_fd()` is an open dirfd owned by the
+    // caller's `SafeParent`; `parent.leaf_ptr()` is a NUL-
+    // terminated CString buffer owned by the same `SafeParent`
+    // and outlives this call.  `unlinkat` reads both and does not
+    // retain either past return.
+    let rc = unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), flags) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// T-09 (Mi-1, 2026-09-08): converted from `unsafe fn` to safe fn
+/// with narrow `unsafe { libc::* }` blocks at each FFI call.  Every
+/// unsafe block has an inline SAFETY comment stating the caller-
+/// side precondition and the FFI post-condition.  Caller supplies
+/// a `SafeParent` obtained via `safe_descend_verified` and a
+/// `rel_path` derived from a `collect_recursive_manifest` walk of
+/// the target subtree.
+fn unlink_manifest_entry(
     parent: &SafeParent,
     rel_path: &std::path::Path,
     kind: RemoveKind,
@@ -213,12 +247,7 @@ unsafe fn unlink_manifest_entry(
         RemoveKind::Dir => libc::AT_REMOVEDIR,
     };
     if rel_path.as_os_str().is_empty() {
-        let rc = libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), flags);
-        return if rc == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        };
+        return unlink_leaf_via_dirfd(parent, kind);
     }
     // Only accept Normal components — reject `.`, `..`, absolute
     // roots, and Windows prefixes.  Defense-in-depth: the walker
@@ -245,35 +274,61 @@ unsafe fn unlink_manifest_entry(
         ));
     }
     // Pin the target dirfd.
-    let target_fd = libc::openat(
-        parent.as_raw_fd(),
-        parent.leaf_ptr(),
-        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-    );
+    // SAFETY: `parent.as_raw_fd()` is an open dirfd; `parent.leaf_
+    // ptr()` is a NUL-terminated CString owned by `parent`.  Flags
+    // are libc constants.  `openat` returns a fresh fd on success
+    // (>= 0) or -1 on error; we check the sign and wrap in
+    // `OwnedFd` on success so Drop closes it on any exit path.
+    let target_fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            parent.leaf_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
     if target_fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let mut cur_fd = OwnedFd::from_raw_fd(target_fd);
+    // SAFETY: `target_fd` was just returned by `openat` above and
+    // is a fresh, unshared fd; we transfer ownership to `OwnedFd`
+    // which will close it on Drop.  No other reference to
+    // `target_fd` exists in this scope.
+    let mut cur_fd = unsafe { OwnedFd::from_raw_fd(target_fd) };
     // Descend through intermediate components.
     for intermediate in &components[..components.len() - 1] {
         let cname = std::ffi::CString::new(intermediate.as_bytes()).map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul in path component")
         })?;
-        let next_fd = libc::openat(
-            cur_fd.as_raw_fd(),
-            cname.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        );
+        // SAFETY: `cur_fd.as_raw_fd()` is an open dirfd owned by
+        // this scope's `OwnedFd`.  `cname.as_ptr()` is a NUL-
+        // terminated CString owned by this scope's `cname` and
+        // outlives the call.  `openat` returns a fresh fd or -1;
+        // we check and re-wrap in `OwnedFd`.
+        let next_fd = unsafe {
+            libc::openat(
+                cur_fd.as_raw_fd(),
+                cname.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
         if next_fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        cur_fd = OwnedFd::from_raw_fd(next_fd);
+        // SAFETY: `next_fd` was just returned by `openat` and is a
+        // fresh, unshared fd; ownership transfers to the new
+        // `OwnedFd`, replacing `cur_fd` which drops (closes the
+        // previous dirfd).
+        cur_fd = unsafe { OwnedFd::from_raw_fd(next_fd) };
     }
     // Final unlink of the leaf from the pinned parent dirfd.
     let leaf_name = components.last().expect("components non-empty");
     let leaf_c = std::ffi::CString::new(leaf_name.as_bytes())
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul in leaf"))?;
-    let rc = libc::unlinkat(cur_fd.as_raw_fd(), leaf_c.as_ptr(), flags);
+    // SAFETY: `cur_fd.as_raw_fd()` is the pinned final-parent
+    // dirfd from the openat chain above; `leaf_c.as_ptr()` is a
+    // NUL-terminated CString outliving the call.  `unlinkat`
+    // removes the named entry from the dirfd.
+    let rc = unsafe { libc::unlinkat(cur_fd.as_raw_fd(), leaf_c.as_ptr(), flags) };
     if rc == 0 {
         Ok(())
     } else {
@@ -3931,12 +3986,9 @@ impl FsProcesses {
                             );
                         }
                     }
-                    let rc = unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), 0) };
-                    if rc == 0 {
-                        ok_bare()
-                    } else {
-                        let e = std::io::Error::last_os_error();
-                        err(io_err_code(&e), io_msg_scrub(&e))
+                    match unlink_leaf_via_dirfd(&parent, RemoveKind::File) {
+                        Ok(()) => ok_bare(),
+                        Err(e) => err(io_err_code(&e), io_msg_scrub(&e)),
                     }
                 })
                 .await
@@ -4105,22 +4157,13 @@ impl FsProcesses {
                                 0,
                             );
                         }
-                        let rc = unsafe {
-                            libc::unlinkat(
-                                parent.as_raw_fd(),
-                                parent.leaf_ptr(),
-                                libc::AT_REMOVEDIR,
-                            )
-                        };
-                        if rc == 0 {
+                        match unlink_leaf_via_dirfd(&parent, RemoveKind::Dir) {
                             // DD-RemoveDirReplyShape: non-recursive success
                             // deletes exactly one entry (the target itself).
-                            ok_with_count(1)
-                        } else {
-                            let e = std::io::Error::last_os_error();
+                            Ok(()) => ok_with_count(1),
                             // DD-RemoveDirReplyShape: non-recursive failure
                             // → 0 entries deleted before the error.
-                            err_with_count(io_err_code(&e), io_msg_scrub(&e), 0)
+                            Err(e) => err_with_count(io_err_code(&e), io_msg_scrub(&e), 0),
                         }
                     })
                     .await
@@ -4422,28 +4465,22 @@ impl FsProcesses {
                                 return err_with_count(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded", 0);
                             }
                         }
-                        let rc = unsafe {
-                            libc::unlinkat(
-                                parent.as_raw_fd(),
-                                parent.leaf_ptr(),
-                                libc::AT_REMOVEDIR,
-                            )
-                        };
-                        if rc == 0 {
+                        match unlink_leaf_via_dirfd(&parent, RemoveKind::Dir) {
                             // DD-RemoveDirReplyShape: non-recursive success
                             // deletes exactly one entry (the target itself).
-                            return ok_with_count(1);
+                            Ok(()) => return ok_with_count(1),
+                            Err(e) => {
+                                if cmode == ConsensusMode::Consensus {
+                                    let _ = wal.update_outcome_by_ack_hash(
+                                        ack_channel_hash(&ack_clone),
+                                        WalOutcome::Failure {
+                                            code: io_err_code_u32(&e),
+                                        },
+                                    );
+                                }
+                                return err_with_count(io_err_code(&e), io_msg_scrub(&e), 0);
+                            }
                         }
-                        let e = std::io::Error::last_os_error();
-                        if cmode == ConsensusMode::Consensus {
-                            let _ = wal.update_outcome_by_ack_hash(
-                                ack_channel_hash(&ack_clone),
-                                WalOutcome::Failure {
-                                    code: io_err_code_u32(&e),
-                                },
-                            );
-                        }
-                        return err_with_count(io_err_code(&e), io_msg_scrub(&e), 0);
                     }
                     // Recursive path.
                     if cmode == ConsensusMode::Oracular {
@@ -5322,54 +5359,12 @@ impl FsProcesses {
         Ok(out)
     }
 
-    // -------------------------------------------------------------------
     // Phase 8 slice 8a — range-lock natives.
-    //
-    // These acquire and release entries in `self.handles.lock_registry`,
-    // the RuntimeManager-broadcast `LockRegistry` (X-1 design memo).
-    // The lock table is keyed on `(dev, inode)` so cross-cap
-    // coordination on the same physical file collapses to one entry
-    // regardless of which fresh-mint `File` cap holds it (slice 27).
-    //
-    // wait:false and wait:true both live (slice 8b landed 2026-08-12):
-    // non-blocking acquires return immediately with either
-    // `[true, lock_id]` or `[false, FSERR_BUSY, ...]`; wait:true
-    // acquires park via the Rig-protocol and either succeed with a
-    // fresh `[true, lock_id]` reply or return `FSERR_CANCELLED` /
-    // `FSERR_DEADLOCK` (NB-7 cross-deploy cycle detection).
-    //
-    // WAL journaling of `LockAcquire` / `LockRelease` entries is step
-    // 4 of slice 8a — still deferred here.  Under consensus mode
-    // the natives will need to journal (per X-1 §4); under oracular
-    // they will not (per §Mode-differentiated invariants — oracular
-    // locks are in-process hints, not consensus state).
-    //
-    // Deploy-end auto-release (MUST per X-4 / spec §Explicit locks)
-    // is wired at `casper::rholang::runtime::WalDeployScope`'s Drop
-    // in the casper crate (step 5, 2026-08-13).  The RAII guard
-    // constructed at deploy-entry sets `handles.current_deploy_scope`
-    // to a Blake2b256-derived scope; on Drop, the guard calls
-    // `lock_registry.release_all_for_deploy(&scope)` before clearing
-    // the scope cell back to the `[0; 32]` sentinel.  These handlers
-    // read the scope from `handles.current_deploy_scope` at acquire
-    // time, so a leaked lock (caller neither released nor closed
-    // File before deploy end) gets swept transparently at deploy end.
-    //
-    // Replay semantics: on `is_replay = true` these natives echo
-    // `previous` and do NOT touch `LockRegistry`.  Follower registry
-    // state diverges from the leader's, but that divergence is never
-    // consensus-observable because every reply is captured — no
-    // consensus-observable code path consults `LockRegistry` outside
-    // the replay-cached natives.  When step 4 adds WAL journaling of
-    // `LockAcquire` / `LockRelease` entries, the follower's state
-    // MUST be reconstituted from the WAL during replay (mirror slice
-    // 29's `journal_write` / `finalize_write_journal` pattern) so
-    // that the consensus-mode unlink gate (`is_locked` in
-    // `fs_remove_file` / `fs_remove_dir`, live today) sees the same
-    // state on leader and follower.  Under oracular mode the
-    // LockRegistry is best-effort per §Mode-differentiated
-    // invariants, so follower state doesn't matter there either way.
-    // -------------------------------------------------------------------
+    // Family-level invariants (LockRegistry keying, wait:true/false
+    // reply shapes, deploy-end sweep via WalDeployScope, replay
+    // discipline, WAL-journaling deferral) documented in
+    // `docs/consensus-invariants.md § 8a. Range-lock replay
+    // semantics` — T-18 hoist (2026-09-08).
 
     /// Acquire a positional range lock on the file behind `fd`.
     ///
@@ -5487,7 +5482,7 @@ impl FsProcesses {
                         match self.handles.lock_registry.try_acquire_range_wait(
                             dev_inode, off as u64, len as u64, lm, holder, deploy, policy,
                         ) {
-                            Ok(AcquireOutcome::Immediate(id)) => ok_u64(id.0),
+                            Ok(AcquireOutcome::Immediate(id)) => ok_u64(id.as_u64()),
                             Ok(AcquireOutcome::Parked { admit, .. }) => {
                                 // Await admission (release-triggered
                                 // wake) or cancellation (deploy-end
@@ -5504,7 +5499,7 @@ impl FsProcesses {
                                 // leaked past deploy boundary — see
                                 // that commit for the full lifecycle.
                                 match admit.await {
-                                    Ok(Ok(id)) => ok_u64(id.0),
+                                    Ok(Ok(id)) => ok_u64(id.as_u64()),
                                     Ok(Err(le)) => lock_err_reply(le),
                                     // Sender dropped without a signal
                                     // (registry drop or unusual state
@@ -5611,9 +5606,9 @@ impl FsProcesses {
                         .lock_registry
                         .try_acquire_sequential_wait(dev_inode, holder, deploy, policy)
                     {
-                        Ok(AcquireOutcome::Immediate(id)) => ok_u64(id.0),
+                        Ok(AcquireOutcome::Immediate(id)) => ok_u64(id.as_u64()),
                         Ok(AcquireOutcome::Parked { admit, .. }) => match admit.await {
-                            Ok(Ok(id)) => ok_u64(id.0),
+                            Ok(Ok(id)) => ok_u64(id.as_u64()),
                             Ok(Err(le)) => lock_err_reply(le),
                             Err(_recv_error) => lock_err_reply(LockError::Cancelled),
                         },
@@ -5719,7 +5714,7 @@ impl FsProcesses {
             return Ok(previous);
         }
         let reply = match RhoNumber::unapply(id_par) {
-            Some(n) if n >= 0 => match self.handles.lock_registry.release(LockId(n as u64)) {
+            Some(n) if n >= 0 => match self.handles.lock_registry.release(LockId::from(n as u64)) {
                 Ok(()) => ok_bare(),
                 Err(le) => lock_err_reply(le),
             },
@@ -6222,7 +6217,7 @@ fn walk_and_unlink_recursive_with_journal(
         }
         // TOCTOU-immune unlink via pinned dirfd chain from
         // `parent` (post-security-review S-1, 2026-09-02).
-        let unlink_rc = unsafe { unlink_manifest_entry(parent, &rel_path, kind) };
+        let unlink_rc = unlink_manifest_entry(parent, &rel_path, kind);
         match unlink_rc {
             Ok(()) => {
                 deleted.push((rel_path, kind));
