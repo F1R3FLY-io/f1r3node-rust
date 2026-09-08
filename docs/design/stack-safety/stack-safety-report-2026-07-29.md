@@ -9965,6 +9965,33 @@ repeated nested-payload work and earlier ACT endpoint copies remain required
 controls, corrected test assumptions and evidence digests are recorded in
 [J-088](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-088--2026-09-08-share-canonical-key-admission-without-hiding-retained-work).
 
+#### 5.33.8 Exclusive root-state retention (2026-09-08, tasks 5976/6018)
+
+The standalone validator now retains one current `InnerPath` rather than all
+successful historical root states. ACT topology retains its persistent
+checkpoint API. Both policies call the same extracted grammar core; parser
+frames, arena payload/provenance and obligation-ID behavior are unchanged.
+Seven formal storage laws and two controls bring the RPB3 model to twenty-one
+closed reports, with independent kernel checking before the Rust change.
+The failure model retains the updated core world, not an assumed rollback.
+
+Fourteen standalone tests, the complete 48-test focused proof/runtime gate and
+all 351 models library tests pass. The flat-key
+state count changes from 19/132/1,028/8,196 to one at each tested width; parser
+frames and payload slots still grow with the 18/131/1,027/8,195 encoded bytes.
+At fixture width 8,192, the persistent state vector's payload capacity is
+1,441,792 bytes versus 88 bytes for the exclusive inline state. This component
+measurement excludes parser frames, arena pages and allocation overhead.
+The subsequent integration run passes all 23 formal-manifest and 36 ParBag
+tests, including the unchanged depth-4,096 import/ACT/protobuf case; the ParBag
+suite takes 296.25 seconds under the 6-GiB cap, not as a timing benchmark.
+This removes one storage slope, not all slopes. No production importer cutover,
+native-stack slope, RSS peak, latency or backend-comparison result is inferred.
+Live frame reclamation, input-range payloads and total physical-byte work remain
+required 6018 refinements. See
+[J-089](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-089--2026-09-08-separate-live-key-state-from-persistent-topology-history)
+for the precise model/implementation boundary and evidence.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

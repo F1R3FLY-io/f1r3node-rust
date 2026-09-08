@@ -434,6 +434,16 @@ impl CanonicalPathReducerHandle {
 
 pub(crate) struct CanonicalPathReducer {
     states: Vec<InnerPath>,
+    machine: CanonicalPathMachine,
+}
+
+pub(crate) struct CanonicalPathStreamReducer {
+    current: InnerPath,
+    bytes: CanonicalBytesHandle,
+    machine: CanonicalPathMachine,
+}
+
+struct CanonicalPathMachine {
     frames: Vec<Frame>,
     next_obligation: u64,
     stats: CanonicalPathAdmissionStats,
@@ -443,12 +453,7 @@ impl CanonicalPathReducer {
     pub(crate) fn new() -> Self {
         Self {
             states: vec![InnerPath::new(true)],
-            frames: Vec::new(),
-            next_obligation: 0,
-            stats: CanonicalPathAdmissionStats {
-                states: 1,
-                ..CanonicalPathAdmissionStats::default()
-            },
+            machine: CanonicalPathMachine::new(),
         }
     }
 
@@ -460,13 +465,25 @@ impl CanonicalPathReducer {
     }
 
     #[cfg(test)]
-    pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats { self.stats }
+    pub(crate) fn retained_state_bytes(&self) -> usize {
+        self.states.capacity() * std::mem::size_of::<InnerPath>()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats {
+        CanonicalPathAdmissionStats {
+            states: self.states.len(),
+            frames: self.machine.frames.len(),
+            ..self.machine.stats
+        }
+    }
 
     pub(crate) fn active_obligation(
         &self,
         handle: CanonicalPathReducerHandle,
     ) -> Option<CanonicalPathObligationProgress> {
-        self.active_obligation_in(&self.states[handle.state.0])
+        self.machine
+            .active_obligation_in(&self.states[handle.state.0])
     }
 
     pub(crate) fn completed_obligation(
@@ -474,42 +491,8 @@ impl CanonicalPathReducer {
         arena: &CanonicalBytesArena,
         handle: CanonicalPathReducerHandle,
     ) -> Result<Option<CanonicalPathCompletedObligation>, CanonicalPathAdmissionError> {
-        let mut path = &self.states[handle.state.0];
-        loop {
-            if matches!(path.status, PathStatus::Dead(_)) {
-                return Ok(None);
-            }
-            let Some(top) = path.stack else {
-                return Ok(None);
-            };
-            match &self.frames[top.0] {
-                Frame::Obligation {
-                    obligation,
-                    status: ObligationStatus::AwaitingResolution { payload_end },
-                    payload_start,
-                    ..
-                } => {
-                    let payload = arena
-                        .slice(handle.bytes, *payload_start..handle.bytes.len())
-                        .map_err(|_| {
-                            CanonicalPathAdmissionError::new(
-                                CanonicalPathAdmissionErrorKind::SizeOverflow,
-                                obligation.tag_source,
-                            )
-                        })?;
-                    return Ok(Some(CanonicalPathCompletedObligation {
-                        obligation: *obligation,
-                        payload,
-                        payload_end: *payload_end,
-                    }));
-                }
-                Frame::Region {
-                    phase: RegionPhase::Path { path: child, .. },
-                    ..
-                } => path = child,
-                _ => return Ok(None),
-            }
-        }
+        self.machine
+            .completed_obligation(arena, &self.states[handle.state.0], handle.bytes)
     }
 
     /// Freeze a completed opaque payload so a child PDA can own its indexed
@@ -519,13 +502,8 @@ impl CanonicalPathReducer {
         arena: &CanonicalBytesArena,
         handle: CanonicalPathReducerHandle,
     ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
-        Ok(self.completed_obligation(arena, handle)?.map(|completed| {
-            FrozenCanonicalPathObligation {
-                obligation: completed.obligation,
-                payload: arena.freeze(completed.payload),
-                payload_end: completed.payload_end,
-            }
-        }))
+        self.machine
+            .freeze_completed_obligation(arena, &self.states[handle.state.0], handle.bytes)
     }
 
     pub(crate) fn edge(
@@ -535,35 +513,11 @@ impl CanonicalPathReducer {
         located: CanonicalLocatedByte,
     ) -> Result<(CanonicalPathReducerHandle, CanonicalPathTransition), CanonicalPathAdmissionError>
     {
-        let byte = LocatedPathByte {
-            byte: located.byte,
-            source: CanonicalPathSource::from_provenance(located.provenance),
-        };
-        if self
-            .active_obligation(handle)
-            .is_some_and(|obligation| obligation.awaiting_resolution)
-        {
-            return Err(CanonicalPathAdmissionError::new(
-                CanonicalPathAdmissionErrorKind::UnresolvedObligation,
-                byte.source,
-            ));
-        }
-
-        let bytes = arena.append(handle.bytes, located).map_err(|_| {
-            CanonicalPathAdmissionError::new(
-                CanonicalPathAdmissionErrorKind::SizeOverflow,
-                byte.source,
-            )
-        })?;
-        self.stats.edges += 1;
-        self.stats.max_topology_depth = self.stats.max_topology_depth.max(bytes.len());
-
-        let mut state = self.states[handle.state.0].clone();
-        let transition = self.feed_path(arena, bytes, &mut state, byte);
+        let (state, bytes, transition) =
+            self.machine
+                .advance(arena, &self.states[handle.state.0], handle.bytes, located)?;
         let id = PathStateId(self.states.len());
         self.states.push(state);
-        self.stats.states = self.states.len();
-        self.stats.frames = self.frames.len();
         Ok((CanonicalPathReducerHandle { state: id, bytes }, transition))
     }
 
@@ -573,7 +527,10 @@ impl CanonicalPathReducer {
         has_value: bool,
         source: CanonicalPathSource,
     ) -> Option<Result<CanonicalPathSummary, CanonicalPathAdmissionError>> {
-        has_value.then(|| self.finish_path(&self.states[handle.state.0], source))
+        has_value.then(|| {
+            self.machine
+                .finish_path(&self.states[handle.state.0], source)
+        })
     }
 
     pub(crate) fn resolve_obligation(
@@ -583,12 +540,15 @@ impl CanonicalPathReducer {
         id: CanonicalPathObligationId,
         resolution: CanonicalPathObligationResolution,
     ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
-        let mut state = self.states[handle.state.0].clone();
-        self.resolve_path_obligation(arena, handle.bytes, &mut state, id, resolution)?;
+        let state = self.machine.resolved_state(
+            arena,
+            &self.states[handle.state.0],
+            handle.bytes,
+            id,
+            resolution,
+        )?;
         let next = PathStateId(self.states.len());
         self.states.push(state);
-        self.stats.states = self.states.len();
-        self.stats.frames = self.frames.len();
         Ok(CanonicalPathReducerHandle {
             state: next,
             bytes: handle.bytes,
@@ -604,15 +564,199 @@ impl CanonicalPathReducer {
         source: CanonicalPathSource,
     ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
         let mut state = self.states[handle.state.0].clone();
-        self.reject_path_obligation(arena, handle.bytes, &mut state, id, source)?;
+        self.machine
+            .reject_path_obligation(arena, handle.bytes, &mut state, id, source)?;
         let next = PathStateId(self.states.len());
         self.states.push(state);
-        self.stats.states = self.states.len();
-        self.stats.frames = self.frames.len();
         Ok(CanonicalPathReducerHandle {
             state: next,
             bytes: handle.bytes,
         })
+    }
+}
+
+impl CanonicalPathStreamReducer {
+    pub(crate) fn new(arena: &CanonicalBytesArena) -> Self {
+        Self {
+            current: InnerPath::new(true),
+            bytes: arena.empty(),
+            machine: CanonicalPathMachine::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn retained_state_bytes(&self) -> usize { std::mem::size_of::<InnerPath>() }
+
+    #[cfg(test)]
+    pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats {
+        CanonicalPathAdmissionStats {
+            states: 1,
+            frames: self.machine.frames.len(),
+            ..self.machine.stats
+        }
+    }
+
+    pub(crate) fn active_obligation(&self) -> Option<CanonicalPathObligationProgress> {
+        self.machine.active_obligation_in(&self.current)
+    }
+
+    pub(crate) fn freeze_completed_obligation(
+        &self,
+        arena: &CanonicalBytesArena,
+    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
+        self.machine
+            .freeze_completed_obligation(arena, &self.current, self.bytes)
+    }
+
+    pub(crate) fn edge(
+        &mut self,
+        arena: &mut CanonicalBytesArena,
+        located: CanonicalLocatedByte,
+    ) -> Result<CanonicalPathTransition, CanonicalPathAdmissionError> {
+        let (current, bytes, transition) =
+            self.machine
+                .advance(arena, &self.current, self.bytes, located)?;
+        self.current = current;
+        self.bytes = bytes;
+        Ok(transition)
+    }
+
+    pub(crate) fn value(
+        &self,
+        has_value: bool,
+        source: CanonicalPathSource,
+    ) -> Option<Result<CanonicalPathSummary, CanonicalPathAdmissionError>> {
+        has_value.then(|| self.machine.finish_path(&self.current, source))
+    }
+
+    pub(crate) fn resolve_obligation(
+        &mut self,
+        arena: &CanonicalBytesArena,
+        id: CanonicalPathObligationId,
+        resolution: CanonicalPathObligationResolution,
+    ) -> Result<(), CanonicalPathAdmissionError> {
+        self.current =
+            self.machine
+                .resolved_state(arena, &self.current, self.bytes, id, resolution)?;
+        Ok(())
+    }
+}
+
+impl CanonicalPathMachine {
+    fn new() -> Self {
+        Self {
+            frames: Vec::new(),
+            next_obligation: 0,
+            stats: CanonicalPathAdmissionStats::default(),
+        }
+    }
+
+    fn advance(
+        &mut self,
+        arena: &mut CanonicalBytesArena,
+        current: &InnerPath,
+        previous_bytes: CanonicalBytesHandle,
+        located: CanonicalLocatedByte,
+    ) -> Result<
+        (InnerPath, CanonicalBytesHandle, CanonicalPathTransition),
+        CanonicalPathAdmissionError,
+    > {
+        let byte = LocatedPathByte {
+            byte: located.byte,
+            source: CanonicalPathSource::from_provenance(located.provenance),
+        };
+        if self
+            .active_obligation_in(current)
+            .is_some_and(|obligation| obligation.awaiting_resolution)
+        {
+            return Err(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::UnresolvedObligation,
+                byte.source,
+            ));
+        }
+        let bytes = arena.append(previous_bytes, located).map_err(|_| {
+            CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::SizeOverflow,
+                byte.source,
+            )
+        })?;
+        self.stats.edges += 1;
+        self.stats.max_topology_depth = self.stats.max_topology_depth.max(bytes.len());
+        let mut state = current.clone();
+        let transition = self.feed_path(arena, bytes, &mut state, byte);
+        Ok((state, bytes, transition))
+    }
+
+    fn resolved_state(
+        &mut self,
+        arena: &CanonicalBytesArena,
+        current: &InnerPath,
+        bytes: CanonicalBytesHandle,
+        id: CanonicalPathObligationId,
+        resolution: CanonicalPathObligationResolution,
+    ) -> Result<InnerPath, CanonicalPathAdmissionError> {
+        let mut state = current.clone();
+        self.resolve_path_obligation(arena, bytes, &mut state, id, resolution)?;
+        Ok(state)
+    }
+
+    fn completed_obligation<'a>(
+        &'a self,
+        arena: &CanonicalBytesArena,
+        mut path: &'a InnerPath,
+        bytes: CanonicalBytesHandle,
+    ) -> Result<Option<CanonicalPathCompletedObligation>, CanonicalPathAdmissionError> {
+        loop {
+            if matches!(path.status, PathStatus::Dead(_)) {
+                return Ok(None);
+            }
+            let Some(top) = path.stack else {
+                return Ok(None);
+            };
+            match &self.frames[top.0] {
+                Frame::Obligation {
+                    obligation,
+                    status: ObligationStatus::AwaitingResolution { payload_end },
+                    payload_start,
+                    ..
+                } => {
+                    let payload =
+                        arena
+                            .slice(bytes, *payload_start..bytes.len())
+                            .map_err(|_| {
+                                CanonicalPathAdmissionError::new(
+                                    CanonicalPathAdmissionErrorKind::SizeOverflow,
+                                    obligation.tag_source,
+                                )
+                            })?;
+                    return Ok(Some(CanonicalPathCompletedObligation {
+                        obligation: *obligation,
+                        payload,
+                        payload_end: *payload_end,
+                    }));
+                }
+                Frame::Region {
+                    phase: RegionPhase::Path { path: child, .. },
+                    ..
+                } => path = child,
+                _ => return Ok(None),
+            }
+        }
+    }
+
+    fn freeze_completed_obligation(
+        &self,
+        arena: &CanonicalBytesArena,
+        current: &InnerPath,
+        bytes: CanonicalBytesHandle,
+    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
+        Ok(self
+            .completed_obligation(arena, current, bytes)?
+            .map(|completed| FrozenCanonicalPathObligation {
+                obligation: completed.obligation,
+                payload: arena.freeze(completed.payload),
+                payload_end: completed.payload_end,
+            }))
     }
 
     fn frame(&self, id: FrameId) -> Frame { self.frames[id.0].clone() }

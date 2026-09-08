@@ -6263,6 +6263,99 @@ logs are retained respectively as
 `8dd629760bdfe0b0275ab21df06fc16ff9c97fe4080ea1eeb22b9f847a8b122f`,
 and `b9541bf25b1ce41cb4466e0335db67ce4c8ecbfe7082b300b498c9b91c1b9418`.
 
+### J-089 — 2026-09-08: separate live key state from persistent topology history
+
+**QUESTION.** Which part of J-088's per-byte retention is required by a
+standalone input that never restores a trie checkpoint?
+
+**DERIVED / FORMAL-FIRST.** `ExclusiveCurrentState` extends the existing
+`RPB3Admission.v` with seven storage laws and two control reports. The complete
+module prints twenty-one closed reports and passes independent kernel checking
+before implementation. Both storage policies invoke the same checked transition
+over current state and semantic core world. Successful transitions append to
+history or replace the current state; failed transitions preserve the prior
+current state and retain the returned world. The model explicitly permits
+changes to the world before failure and does not assume rollback. It proves
+identical current state, attempted-input trace, observations, final world and
+refusal, plus the one-state bound and exact historical success-count growth.
+Concrete grammar and world-invariant preservation remain named premises;
+allocator capacity is not part of this semantic-world proof.
+
+**IMPLEMENTATION.** The persistent `CanonicalPathReducer` retains its checkpoint
+API for ACT forks. The standalone frame uses `CanonicalPathStreamReducer`, which
+owns one private `InnerPath`, one byte handle and the shared `CanonicalPathMachine`.
+It has no historical restore handle or history vector. Both facades call the
+same core edge and resolution methods. The grammar methods from `frame` through
+the end of the core have identical whitespace-normalized SHA-256
+`435e71fee33a89b906e38947fcefc22383ad4ac8087db30fa39bd0ce67e9389f`
+before and after extraction. This is a source correspondence check, not a
+machine-code or parser-proof claim. The first Rust build identified a necessary
+shared borrow lifetime for nested obligation inspection; the explicit lifetime
+repair uses no unsafe operation.
+
+**MEASURED / CORRECTNESS.** Fourteen focused tests pass, including a new 96-case
+byte/resolution trace differential, exact frozen payload/provenance comparison,
+pending-child refusal and explicit ascending/duplicate/reversed region cases.
+After every successful transition, the persistent state count equals one plus
+the successful edge/resolution count while exclusive storage remains one.
+The prior pending checkpoint remains unresolved after its successor resolves.
+Both modes retain identical parser-frame and arena counters. The complete models
+library passes **351/351**, with no ignored or filtered tests, in 55.81 seconds.
+All Rust verification uses the 6-GiB hard cap, 4-GiB high threshold, zero swap and
+four workers; proofs use 2-GiB/1-GiB caps and zero swap. These are limits, not
+measured RSS peaks; correctness-run durations are not paired timing results.
+
+**RESOURCE INTERPRETATION.** J-088's tested encoded key lengths 18, 131, 1,027 and
+8,195 previously retained 19, 132, 1,028 and 8,196 root states respectively. Each
+now retains one. Historical parser-frame counts and arena payload slots remain
+18, 131, 1,027 and 8,195. The resource controls deliberately compare those
+unchanged costs with the persistent control, rather than interpreting a one-state
+result as complete memory optimization.
+
+The direct storage probe distinguishes retained state payload from total memory:
+
+| Fixture width | Encoded bytes | Persistent state-vector capacity (bytes) | Exclusive inline state (bytes) |
+|---:|---:|---:|---:|
+| 16 | 18 | 2,816 | 88 |
+| 128 | 131 | 22,528 | 88 |
+| 1,024 | 1,027 | 180,224 | 88 |
+| 8,192 | 8,195 | 1,441,792 | 88 |
+
+The persistent column is allocated vector capacity times `size_of::<InnerPath>()`;
+the exclusive column is its one inline state. Neither includes vector metadata,
+byte handles, parser frames, arena pages, allocation headers or the outer driver.
+The focused integrated gate also passes all **48** Rust tests and its three
+independent kernel checks. Its proof reports comprise 48 import, 17 score and 21
+RPB3 reports; dependency proofs are not counted as new storage laws.
+
+The broader release integration then passes all **23** formal-manifest tests
+and all **36** ParBag tests. The latter includes the unchanged depth-4,096
+component import, ACT validation and protobuf round-trip case and completes in
+296.25 seconds. The scope exits successfully under the same 6-GiB cap. This is
+correctness coverage, not an uncontended performance experiment.
+
+**DECISION.** This is the first storage-policy refinement of the existing 6018
+plan. Live parser-frame storage, indexed spans instead of arena copies, checked
+opaque-payload skipping and physical region/nested-visit work remain required.
+The importer is still not switched. There is no new PathMap dependency, public
+encoding, persistent-store cutover or PathMap/ACT-versus-LMDB result.
+
+**EVIDENCE.** The theory source digest is
+`9a4d661919418bca5546507dccbb2060815a87e9d90bdbce7f73c053d51e4f34`;
+compiler and kernel logs are
+`c7b36b03059ae8103bb351268c6c0f3282dd29306afd85465f265ddc77801fa1`
+and `7b37cb7494eddc48608348afbc273b61a2a554327bd2c34a3b541c31a86fa935`.
+The initial fourteen-test success log is
+`5c28aaa7370080d0b0b4a933c9256ff35da9c7a04dc1939a09aadcbb342c2ec3`;
+the full models log is
+`649f78978319b921f95ac536688d7831a495180e6ba30abe6ea351412538d646`.
+The integrated gate log is
+`51559662db74ed240dc26549544e1b38d57626d1fe36c1bed25aa0f4ba4ed134`.
+The final manifest/ParBag integration log is
+`c399a1c93816e9ae0fd88dd2f2621274d101bd2ec8150621015e90665562916a`.
+The [storage invariant catalogue](../../../formal/rocq/stack_safe_pda/README.md#exclusive-current-state-storage-refinement-tasks-59766018)
+binds ECS-01–09 to the implementation and controls.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

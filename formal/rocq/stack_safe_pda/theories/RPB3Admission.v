@@ -778,3 +778,367 @@ Print Assumptions standalone_protocol_positive_controls.
 Print Assumptions standalone_protocol_causal_refusal_controls.
 
 End CanonicalKeyProtocol.
+
+Module ExclusiveCurrentState.
+
+Section Storage.
+
+Context {State World Input Observation Error : Type}.
+
+Definition transition_result := ((State * World * Observation) + (World * Error))%type.
+
+Variable checked_transition : State -> World -> Input -> transition_result.
+
+Record history := History {
+  history_current : State;
+  history_previous : list State
+}.
+
+Inductive exclusive := Current (value : State).
+
+Definition exclusive_current (store : exclusive) : State :=
+  match store with Current value => value end.
+
+Definition history_entries (store : history) : list State :=
+  rev (history_previous store) ++ [history_current store].
+
+Definition exclusive_entries (store : exclusive) : list State :=
+  match store with Current value => [value] end.
+
+Definition append_history (store : history) (next : State) : history :=
+  History next (history_current store :: history_previous store).
+
+Record result (Storage : Type) := Result {
+  result_store : Storage;
+  result_world : World;
+  result_observations : list Observation;
+  result_attempted : list Input;
+  result_error : option Error
+}.
+
+Arguments Result {Storage}.
+
+Definition add_observation {Storage : Type} (input : Input) (observation : Observation)
+    (rest : result Storage) : result Storage :=
+  Result (result_store rest) (result_world rest)
+    (observation :: result_observations rest) (input :: result_attempted rest)
+    (result_error rest).
+
+Fixpoint historical_run (inputs : list Input) (store : history) (world : World)
+    : result history :=
+  match inputs with
+  | [] => Result store world [] [] None
+  | input :: rest =>
+      match checked_transition (history_current store) world input with
+      | inl (next, next_world, observation) =>
+          add_observation input observation
+            (historical_run rest (append_history store next) next_world)
+      | inr (next_world, error) => Result store next_world [] [input] (Some error)
+      end
+  end.
+
+Fixpoint exclusive_run (inputs : list Input) (store : exclusive) (world : World)
+    : result exclusive :=
+  match inputs with
+  | [] => Result store world [] [] None
+  | input :: rest =>
+      match checked_transition (exclusive_current store) world input with
+      | inl (next, next_world, observation) =>
+          add_observation input observation
+            (exclusive_run rest (Current next) next_world)
+      | inr (next_world, error) => Result store next_world [] [input] (Some error)
+      end
+  end.
+
+Record observation_view := ObservationView {
+  view_current : State;
+  view_world : World;
+  view_observations : list Observation;
+  view_attempted : list Input;
+  view_error : option Error
+}.
+
+Definition historical_view (output : result history) : observation_view :=
+  ObservationView (history_current (result_store output)) (result_world output)
+    (result_observations output) (result_attempted output) (result_error output).
+
+Definition exclusive_view (output : result exclusive) : observation_view :=
+  ObservationView (exclusive_current (result_store output)) (result_world output)
+    (result_observations output) (result_attempted output) (result_error output).
+
+Lemma add_observation_preserves_view : forall input observation historical exclusive_result,
+  historical_view historical = exclusive_view exclusive_result ->
+  historical_view (add_observation input observation historical) =
+    exclusive_view (add_observation input observation exclusive_result).
+Proof.
+  intros input observation [hs hw ho hi he] [es ew eo ei ee].
+  unfold historical_view, exclusive_view, add_observation; simpl.
+  intro E. inversion E; subst; reflexivity.
+Qed.
+
+Theorem historical_storage_has_exact_nonempty_latest_projection : forall store,
+  history_entries store <> [] /\
+  hd_error (rev (history_entries store)) = Some (history_current store) /\
+  length (history_entries store) = S (length (history_previous store)).
+Proof.
+  intros [current previous]. unfold history_entries; simpl.
+  repeat apply conj.
+  - intro E. apply (f_equal (@length State)) in E.
+    rewrite length_app, length_rev in E. simpl in E. lia.
+  - rewrite rev_app_distr. simpl. reflexivity.
+  - rewrite length_app, length_rev. simpl. lia.
+Qed.
+
+Theorem exclusive_and_history_have_identical_full_observations : forall inputs store world,
+  historical_view (historical_run inputs store world) =
+  exclusive_view (exclusive_run inputs (Current (history_current store)) world).
+Proof.
+  induction inputs as [|input rest IH]; intros store world; simpl.
+  - reflexivity.
+  - destruct (checked_transition (history_current store) world input)
+      as [[[next next_world] observation]|[next_world error]] eqn:E; simpl.
+    + apply add_observation_preserves_view. apply IH.
+    + reflexivity.
+Qed.
+
+Theorem checked_failure_stops_both_drivers_at_the_same_state :
+  forall input rest store world next_world error,
+  checked_transition (history_current store) world input = inr (next_world, error) ->
+  historical_run (input :: rest) store world =
+    Result store next_world [] [input] (Some error) /\
+  exclusive_run (input :: rest) (Current (history_current store)) world =
+    Result (Current (history_current store)) next_world [] [input] (Some error).
+Proof. intros input rest store world next_world error E. simpl. rewrite E. split; reflexivity. Qed.
+
+Inductive grammar_execution
+    (grammar : State -> World -> Input -> transition_result -> Prop)
+    : list Input -> State -> World -> observation_view -> Prop :=
+| GrammarDone : forall state world,
+    grammar_execution grammar [] state world
+      (ObservationView state world [] [] None)
+| GrammarRejected : forall input rest state world next_world error,
+    grammar state world input (inr (next_world, error)) ->
+    grammar_execution grammar (input :: rest) state world
+      (ObservationView state next_world [] [input] (Some error))
+| GrammarAccepted : forall input rest state world next next_world observation output,
+    grammar state world input (inl (next, next_world, observation)) ->
+    grammar_execution grammar rest next next_world output ->
+    grammar_execution grammar (input :: rest) state world
+      (ObservationView (view_current output) (view_world output)
+        (observation :: view_observations output) (input :: view_attempted output)
+        (view_error output)).
+
+Lemma exclusive_run_inherits_grammar : forall grammar,
+  (forall state world input,
+    grammar state world input (checked_transition state world input)) ->
+  forall inputs current world,
+  grammar_execution grammar inputs current world
+    (exclusive_view (exclusive_run inputs (Current current) world)).
+Proof.
+  intros grammar G inputs. induction inputs as [|input rest IH]; intros current world; simpl.
+  - constructor.
+  - destruct (checked_transition current world input)
+      as [[[next next_world] observation]|[next_world error]] eqn:E.
+    + unfold exclusive_view, add_observation; simpl.
+      apply GrammarAccepted with (next := next) (next_world := next_world)
+        (output := exclusive_view (exclusive_run rest (Current next) next_world)).
+      * specialize (G current world input). rewrite E in G. exact G.
+      * exact (IH next next_world).
+    + apply GrammarRejected. specialize (G current world input). rewrite E in G. exact G.
+Qed.
+
+Theorem both_storage_policies_inherit_the_explicit_grammar_premise : forall grammar,
+  (forall state world input,
+    grammar state world input (checked_transition state world input)) ->
+  forall inputs store world,
+  grammar_execution grammar inputs (history_current store) world
+    (historical_view (historical_run inputs store world)) /\
+  grammar_execution grammar inputs (history_current store) world
+    (exclusive_view (exclusive_run inputs (Current (history_current store)) world)).
+Proof.
+  intros grammar G inputs store world.
+  rewrite exclusive_and_history_have_identical_full_observations.
+  split; apply exclusive_run_inherits_grammar; exact G.
+Qed.
+
+Theorem exclusive_storage_retains_exactly_one_state : forall inputs current world,
+  length (exclusive_entries (result_store (exclusive_run inputs (Current current) world))) = 1.
+Proof.
+  intros inputs current world.
+  destruct (result_store (exclusive_run inputs (Current current) world)); reflexivity.
+Qed.
+
+Lemma append_history_length : forall store next,
+  length (history_entries (append_history store next)) = S (length (history_entries store)).
+Proof.
+  intros [current previous] next. unfold history_entries, append_history; simpl.
+  repeat rewrite length_app. simpl. lia.
+Qed.
+
+Theorem historical_growth_counts_only_successful_transitions : forall inputs store world,
+  length (history_entries (result_store (historical_run inputs store world))) =
+    length (history_entries store) +
+      length (result_observations (historical_run inputs store world)).
+Proof.
+  induction inputs as [|input rest IH]; intros store world; simpl.
+  - lia.
+  - destruct (checked_transition (history_current store) world input)
+      as [[[next next_world] observation]|[next_world error]] eqn:E; simpl.
+    + specialize (IH (append_history store next) next_world).
+      rewrite append_history_length in IH. simpl. lia.
+    + lia.
+Qed.
+
+Lemma exclusive_world_invariant : forall invariant : World -> Prop,
+  (forall state world input next next_world observation,
+    invariant world ->
+    checked_transition state world input = inl (next, next_world, observation) ->
+    invariant next_world) ->
+  (forall state world input next_world error,
+    invariant world -> checked_transition state world input = inr (next_world, error) ->
+    invariant next_world) ->
+  forall inputs current world,
+  invariant world -> invariant (result_world (exclusive_run inputs (Current current) world)).
+Proof.
+  intros invariant P Q inputs. induction inputs as [|input rest IH]; intros current world W; simpl.
+  - exact W.
+  - destruct (checked_transition current world input)
+      as [[[next next_world] observation]|[next_world error]] eqn:E; simpl.
+    + apply IH. eapply P; [exact W|exact E].
+    + eapply Q; [exact W|exact E].
+Qed.
+
+Theorem shared_world_effects_and_invariants_are_preserved :
+  (forall inputs store world,
+    result_world (historical_run inputs store world) =
+    result_world (exclusive_run inputs (Current (history_current store)) world)) /\
+  (forall invariant : World -> Prop,
+    (forall state world input next next_world observation,
+      invariant world ->
+      checked_transition state world input = inl (next, next_world, observation) ->
+      invariant next_world) ->
+    (forall state world input next_world error,
+      invariant world -> checked_transition state world input = inr (next_world, error) ->
+      invariant next_world) ->
+    forall inputs store world, invariant world ->
+    invariant (result_world (historical_run inputs store world)) /\
+    invariant (result_world (exclusive_run inputs (Current (history_current store)) world))).
+Proof.
+  assert (W : forall inputs store world,
+    result_world (historical_run inputs store world) =
+    result_world (exclusive_run inputs (Current (history_current store)) world)).
+  { intros inputs store world.
+    pose proof (exclusive_and_history_have_identical_full_observations inputs store world) as E.
+    exact (f_equal view_world E). }
+  split; [exact W|].
+  intros invariant P Q inputs store world I. rewrite W.
+  split; apply exclusive_world_invariant; assumption.
+Qed.
+
+End Storage.
+
+Record control_state := ControlState {
+  control_value : nat;
+  control_stable : bool
+}.
+
+Record control_world := ControlWorld {
+  control_frames : nat;
+  control_payload_slots : nat;
+  control_next_id : nat
+}.
+
+Inductive control_input := Advance | BecomeUnstable | Resolve | RefuseInput.
+
+Definition control_transition (state : control_state) (world : control_world)
+    (input : control_input) : ((control_state * control_world * bool) + (control_world * nat))%type :=
+  match input with
+  | Advance => inl
+      (ControlState (S (control_value state)) (control_stable state),
+       ControlWorld (S (control_frames world)) (control_payload_slots world + 2)
+         (control_next_id world), control_stable state)
+  | BecomeUnstable => inl
+      (ControlState (control_value state) false,
+       ControlWorld (control_frames world) (control_payload_slots world)
+         (S (control_next_id world)), false)
+  | Resolve => inl
+      (ControlState (control_value state + control_next_id world) (control_stable state),
+       ControlWorld (S (control_frames world)) (control_payload_slots world)
+         (control_next_id world), control_stable state)
+  | RefuseInput => inr
+      (ControlWorld (S (control_frames world)) (control_payload_slots world + 3)
+        (control_next_id world), 42)
+  end.
+
+Definition initial_control_state := ControlState 0 true.
+Definition initial_control_world := ControlWorld 3 7 11.
+Definition control_history := History initial_control_state [].
+Definition control_exclusive := Current initial_control_state.
+
+Theorem exclusive_storage_positive_controls :
+  historical_view (historical_run control_transition
+    [Advance; BecomeUnstable; Resolve] control_history initial_control_world) =
+    ObservationView (ControlState 13 false) (ControlWorld 5 9 12)
+      [true; false; false] [Advance; BecomeUnstable; Resolve] None /\
+  exclusive_view (exclusive_run control_transition
+    [Advance; BecomeUnstable; Resolve] control_exclusive initial_control_world) =
+    ObservationView (ControlState 13 false) (ControlWorld 5 9 12)
+      [true; false; false] [Advance; BecomeUnstable; Resolve] None /\
+  length (history_entries (result_store (historical_run control_transition
+    [Advance; BecomeUnstable; Resolve] control_history initial_control_world))) = 4 /\
+  length (exclusive_entries (result_store (exclusive_run control_transition
+    [Advance; BecomeUnstable; Resolve] control_exclusive initial_control_world))) = 1.
+Proof. repeat split; reflexivity. Qed.
+
+Definition wrong_oldest_current (store : @history control_state) : control_state :=
+  hd (history_current store) (rev (history_previous store)).
+
+Definition wrong_reset_world_transition (state : control_state) (_ : control_world)
+    (input : control_input) := control_transition state initial_control_world input.
+
+Definition wrong_refusal_transition (state : control_state) (world : control_world)
+    (input : control_input) : ((control_state * control_world * bool) + (control_world * nat))%type :=
+  match input with
+  | RefuseInput => inl (state, world, control_stable state)
+  | _ => control_transition state world input
+  end.
+
+Definition wrong_error_rollback_transition (state : control_state) (world : control_world)
+    (input : control_input) :=
+  match control_transition state world input with
+  | inl success => inl success
+  | inr (_, error) => inr (world, error)
+  end.
+
+Theorem exclusive_storage_causal_refusal_controls :
+  wrong_oldest_current (append_history control_history (ControlState 1 true)) <>
+    history_current (append_history control_history (ControlState 1 true)) /\
+  exclusive_view (exclusive_run wrong_reset_world_transition [Advance; Resolve]
+    control_exclusive initial_control_world) <>
+    exclusive_view (exclusive_run control_transition [Advance; Resolve]
+      control_exclusive initial_control_world) /\
+  exclusive_view (exclusive_run control_transition
+    [BecomeUnstable; RefuseInput; Advance] control_exclusive initial_control_world) =
+    ObservationView (ControlState 0 false) (ControlWorld 4 10 12)
+      [false] [BecomeUnstable; RefuseInput] (Some 42) /\
+  exclusive_view (exclusive_run wrong_refusal_transition
+    [BecomeUnstable; RefuseInput; Advance] control_exclusive initial_control_world) <>
+    exclusive_view (exclusive_run control_transition
+      [BecomeUnstable; RefuseInput; Advance] control_exclusive initial_control_world) /\
+  exclusive_view (exclusive_run wrong_error_rollback_transition
+    [BecomeUnstable; RefuseInput; Advance] control_exclusive initial_control_world) <>
+    exclusive_view (exclusive_run control_transition
+      [BecomeUnstable; RefuseInput; Advance] control_exclusive initial_control_world).
+Proof. repeat split; discriminate || reflexivity. Qed.
+
+Print Assumptions historical_storage_has_exact_nonempty_latest_projection.
+Print Assumptions exclusive_and_history_have_identical_full_observations.
+Print Assumptions checked_failure_stops_both_drivers_at_the_same_state.
+Print Assumptions both_storage_policies_inherit_the_explicit_grammar_premise.
+Print Assumptions exclusive_storage_retains_exactly_one_state.
+Print Assumptions historical_growth_counts_only_successful_transitions.
+Print Assumptions shared_world_effects_and_invariants_are_preserved.
+Print Assumptions exclusive_storage_positive_controls.
+Print Assumptions exclusive_storage_causal_refusal_controls.
+
+End ExclusiveCurrentState.

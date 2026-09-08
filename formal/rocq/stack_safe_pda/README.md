@@ -363,6 +363,47 @@ and per-origin work observations must exclude fixture construction and report
 teardown separately. These are planned storage refinements, not claims proved
 by `CanonicalKeyProtocol`.
 
+### Exclusive current-state storage refinement (tasks 5976/6018)
+
+`ExclusiveCurrentState` in `RPB3Admission.v` proves the first storage refinement,
+not the entire resource plan above. A shared checked transition consumes the
+current parser state, semantic core world and next input. Both success and
+failure return their resulting world; failure retains the previous current
+state and terminates the input trace. This explicitly avoids assuming rollback
+of frame/arena effects. Allocator capacity is outside the semantic-world model.
+
+The persistent storage policy retains successful states as history; the
+exclusive policy has exactly one current state and no historical restore
+operation. The full observation includes current state, final world, attempted
+inputs, successful observations and the optional error. Nine closed reports
+are added after the twelve prior reports, and independent kernel checking
+passes before the Rust storage change.
+
+| ID | Closed report | Executable binding |
+|---|---|---|
+| ECS-01 | `historical_storage_has_exact_nonempty_latest_projection` | Persistent root/checkpoint API retains prior handles; a pending old handle remains unresolved after its successor resolves. |
+| ECS-02 | `exclusive_and_history_have_identical_full_observations` | Byte-by-byte and obligation-resolution differential; compare transitions, endpoint/stability verdicts and exact errors. |
+| ECS-03 | `checked_failure_stops_both_drivers_at_the_same_state` | Pending-child edge refusal, stale ID, malformed grammar and terminal child failure; no swallowed error. |
+| ECS-04 | `both_storage_policies_inherit_the_explicit_grammar_premise` | Both facades invoke the same extracted `CanonicalPathMachine`; grammar methods are unchanged apart from formatting. |
+| ECS-05 | `exclusive_storage_retains_exactly_one_state` | One private `InnerPath`, no history vector or exported checkpoint handle; flat/deep standalone tests and direct retained-state bytes. |
+| ECS-06 | `historical_growth_counts_only_successful_transitions` | Count successful edges/resolutions against persistent retained states after every step. |
+| ECS-07 | `shared_world_effects_and_invariants_are_preserved` | Equal obligation IDs, payload bytes/provenance, frame counts and arena work; concrete invariant preservation remains an explicit premise. |
+| ECS-08 | `exclusive_storage_positive_controls` | Stable, unstable and resolved sequences; persistent growth versus exclusive one-state storage. |
+| ECS-09 | `exclusive_storage_causal_refusal_controls` | Wrong oldest-state selection, reset core world, swallowed refusal and erroneous failure-world rollback differ from the reference. |
+
+`CanonicalPathReducer` remains the persistent facade for ACT topology;
+`CanonicalPathStreamReducer` supplies the exclusive facade to the private
+standalone admission frame. Both delegate to the same core. The existing
+`standalone_path_admission.rs` corpus adds a 96-case storage-trace property and
+explicit ascending/duplicate/reversed region-key controls. This is not a second
+parser or a new input grammar.
+
+This checkpoint removes historical **root-state** retention only. Historical
+parser frames, arena payload copies, enclosing-region rebuilding and repeated
+nested visits remain required work. The resource controls intentionally verify
+that these costs have not disappeared merely because the state count is one.
+Importer activation remains gated on their full qualification.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

@@ -6,6 +6,7 @@ use crate::rhoapi::{Expr, Par, Send};
 use crate::rust::canonical_path::{encode_trie_path, validate_canonical_path};
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::canonical_bytes_arena::CanonicalLocatedByte;
+use crate::rust::rholang::canonical_path_admission::CanonicalPathReducer;
 use crate::rust::rholang::protobuf_encoder;
 
 fn expr(value: ExprInstance) -> Par {
@@ -57,6 +58,99 @@ fn assert_differential(bytes: &[u8]) {
         .ok();
     assert_eq!(borrowed, reference, "borrowed {bytes:?}");
     assert_eq!(frozen, reference, "frozen {bytes:?}");
+}
+
+fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, entries_stable: bool) {
+    let mut history_arena = CanonicalBytesArena::new();
+    let mut stream_arena = CanonicalBytesArena::new();
+    let mut history = CanonicalPathReducer::new();
+    let mut checkpoint = history.root(&history_arena);
+    let mut stream = CanonicalPathStreamReducer::new(&stream_arena);
+    let mut successful = 0;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        let located = CanonicalLocatedByte::new(byte, origin(index));
+        let left = history.edge(&mut history_arena, checkpoint, located);
+        let right = stream.edge(&mut stream_arena, located);
+        match (left, right) {
+            (Ok((next, left)), Ok(right)) => {
+                assert_eq!(left, right);
+                checkpoint = next;
+                successful += 1;
+            }
+            (Err(left), Err(right)) => {
+                assert_eq!(left, right);
+                break;
+            }
+            _ => panic!("storage modes differ at edge {index}"),
+        }
+        assert_eq!(
+            history.active_obligation(checkpoint),
+            stream.active_obligation()
+        );
+        let left = history
+            .freeze_completed_obligation(&history_arena, checkpoint)
+            .unwrap();
+        let right = stream.freeze_completed_obligation(&stream_arena).unwrap();
+        match (left, right) {
+            (Some(left), Some(right)) => {
+                assert_eq!(left.obligation, right.obligation);
+                assert_eq!(left.payload_end, right.payload_end);
+                assert_eq!(
+                    left.payload.located_bytes().collect::<Vec<_>>(),
+                    right.payload.located_bytes().collect::<Vec<_>>()
+                );
+                let pending = checkpoint;
+                assert_eq!(
+                    history
+                        .edge(&mut history_arena, checkpoint, located)
+                        .unwrap_err(),
+                    stream.edge(&mut stream_arena, located).unwrap_err()
+                );
+                let resolution = match left.obligation.kind {
+                    CanonicalPathObligationKind::RawParEscape => {
+                        CanonicalPathObligationResolution::RawPar {
+                            canonical_path_stable: raw_stable,
+                        }
+                    }
+                    CanonicalPathObligationKind::NestedEpm1 => {
+                        CanonicalPathObligationResolution::NestedEpm1 {
+                            mode,
+                            entries_stable,
+                        }
+                    }
+                };
+                checkpoint = history
+                    .resolve_obligation(&history_arena, checkpoint, left.obligation.id, resolution)
+                    .unwrap();
+                stream
+                    .resolve_obligation(&stream_arena, right.obligation.id, resolution)
+                    .unwrap();
+                successful += 1;
+                assert!(history
+                    .value(pending, true, CanonicalPathSource::new(index))
+                    .unwrap()
+                    .is_err());
+            }
+            (None, None) => {}
+            _ => panic!("storage modes disagree about child completion at {index}"),
+        }
+        let endpoint = CanonicalPathSource::in_source(99, index);
+        assert_eq!(
+            history.value(checkpoint, true, endpoint),
+            stream.value(true, endpoint)
+        );
+        let history_stats = history.stats();
+        assert_eq!(history_stats.states, successful + 1);
+        assert_eq!(stream.stats().states, 1);
+        assert_eq!(history_stats.frames, stream.stats().frames);
+        assert_eq!(history_stats.edges, stream.stats().edges);
+        assert_eq!(history_arena.stats(), stream_arena.stats());
+    }
+    let endpoint = CanonicalPathSource::in_source(99, 800);
+    assert_eq!(
+        history.value(checkpoint, true, endpoint),
+        stream.value(true, endpoint)
+    );
 }
 
 proptest! {
@@ -118,6 +212,39 @@ proptest! {
         prop_assert_eq!(stats.typed_decodes, 0);
         prop_assert_eq!(stats.legacy_endpoint_replays, 0);
         prop_assert_eq!(stats.reconstructed_key_bytes, 0);
+    }
+
+    #[test]
+    fn stream_storage_matches_persistent_byte_and_resolution_traces(
+        n in any::<i64>(), raw_stable in any::<bool>(), entries_stable in any::<bool>(),
+    ) {
+        let map = EPathMap::new_map([(integer(n), integer(3))], Vec::new(), false, None);
+        let mut key = vec![0x0f, 0];
+        key.extend(encode_trie_path(&integer(n)));
+        key.extend(payload(0x10, map.trie_snapshot()));
+        key.push(0);
+        for mode in [NestedEpmMode::Empty, NestedEpmMode::Set, NestedEpmMode::Map] {
+            assert_storage_trace(&key, raw_stable, mode, entries_stable);
+        }
+    }
+}
+
+#[test]
+fn stream_region_order_and_malformed_traces_match_persistent_storage() {
+    for key in [
+        vec![],
+        vec![3],
+        vec![0x0d, 4, 1, 1, 1, 2],
+        vec![0x0d, 4, 1, 2, 1, 1],
+        vec![0x0d, 4, 1, 1, 1, 1],
+        vec![0x0d, 3, 3, 1],
+        vec![4, 1, 0xff],
+        vec![0x0c, 2, 1, 2],
+        vec![0x0c, 1, 0x0d, 4, 1, 1, 1, 2],
+        vec![0x0f, 0, 0x0f, 0, 0],
+    ] {
+        assert_storage_trace(&key, false, NestedEpmMode::Map, true);
+        assert_differential(&key);
     }
 }
 
@@ -199,14 +326,16 @@ fn pending_parent_cannot_advance_or_accept_wrong_summary() {
     assert!(frame.step(&mut stats).is_err());
     assert_eq!(frame.cursor.bytes_yielded(), cursor);
     let (summary, _, _) = drive_admission(child, 0).unwrap();
-    let unresolved = frame.current;
+    assert!(
+        frame
+            .reducer
+            .active_obligation()
+            .unwrap()
+            .awaiting_resolution
+    );
     frame.accept(summary, &mut stats).unwrap();
-    assert_ne!(frame.current, unresolved);
-    assert!(frame
-        .reducer
-        .value(unresolved, true, CanonicalPathSource::new(2))
-        .unwrap()
-        .is_err());
+    assert!(frame.reducer.active_obligation().is_none());
+    assert_eq!(frame.reducer.stats().states, 1);
     let FrameAction::Complete(FrameSummary::CanonicalPath(summary)) =
         frame.step(&mut stats).unwrap()
     else {
@@ -225,17 +354,23 @@ fn pending_parent_cannot_advance_or_accept_wrong_summary() {
 }
 
 #[test]
-fn stable_escape_installs_deferred_refusal_in_new_handle() {
+fn stable_escape_installs_deferred_refusal_in_current_state() {
     let key = payload(0x0f, &protobuf_encoder::encode_to_vec(&integer(7)));
     let mut frame = CanonicalPathFrame::new(IndexedByteRegion::from_borrowed(&key, 0, 0));
     let mut stats = CanonicalProtobufAdmissionStats::default();
     let FrameAction::Push(child) = frame.step(&mut stats).unwrap() else {
         panic!("escape child")
     };
-    let old = frame.current;
+    assert!(
+        frame
+            .reducer
+            .active_obligation()
+            .unwrap()
+            .awaiting_resolution
+    );
     let (summary, _, _) = drive_admission(child, 0).unwrap();
     frame.accept(summary, &mut stats).unwrap();
-    assert_ne!(frame.current, old);
+    assert_eq!(frame.reducer.stats().states, 1);
     let error = frame
         .step(&mut stats)
         .err()
@@ -320,13 +455,34 @@ fn flat_key_storage_and_frame_layout_are_observed_directly() {
         let reducer = frame.reducer.stats();
         let arena = frame.arena.stats();
         assert_eq!(reducer.edges, key.len());
-        assert_eq!(reducer.states, key.len() + 1);
+        assert_eq!(reducer.states, 1);
         assert_eq!(arena.payload_slots, key.len());
         assert_eq!(arena.divergent_segments, arena.page_rollovers);
         assert_eq!(arena.byte_pages, arena.page_rollovers + 1);
         assert_eq!(arena.concats, 0);
         assert!(arena.byte_pages <= key.len());
         assert_eq!(arena.byte_pages, arena.provenance_pages);
+        let mut history_arena = CanonicalBytesArena::new();
+        let mut history = CanonicalPathReducer::new();
+        let mut current = history.root(&history_arena);
+        for (index, byte) in key.iter().copied().enumerate() {
+            (current, _) = history
+                .edge(
+                    &mut history_arena,
+                    current,
+                    CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(0, index)),
+                )
+                .unwrap();
+        }
+        assert_eq!(history.stats().states, key.len() + 1);
+        assert_eq!(history.stats().frames, reducer.frames);
+        assert_eq!(history_arena.stats(), arena);
+        assert!(
+            history.retained_state_bytes()
+                >= history.stats().states * frame.reducer.retained_state_bytes()
+        );
+        println!("canonical-key state storage: width={width}, persistent_bytes={}, exclusive_inline_bytes={}",
+            history.retained_state_bytes(), frame.reducer.retained_state_bytes());
         println!("canonical-key retained: width={width}, bytes={}, states={}, frames={}, byte_pages={}, provenance_pages={}, payload_slots={}",
             key.len(), reducer.states, reducer.frames, arena.byte_pages,
             arena.provenance_pages, arena.payload_slots);

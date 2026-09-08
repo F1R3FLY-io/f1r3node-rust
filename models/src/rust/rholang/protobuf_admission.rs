@@ -19,7 +19,7 @@ use pathmap::PathMap;
 use super::canonical_bytes_arena::{CanonicalByteProvenance, CanonicalBytesArena};
 use super::canonical_path_admission::{
     CanonicalPathObligationId, CanonicalPathObligationKind, CanonicalPathObligationResolution,
-    CanonicalPathReducer, CanonicalPathReducerHandle, CanonicalPathSource, CanonicalPathSummary,
+    CanonicalPathSource, CanonicalPathStreamReducer, CanonicalPathSummary,
     CanonicalPathTopologyAdmission, FrozenCanonicalPathObligation, LocatedPathByte, NestedEpmMode,
 };
 use super::canonical_score_bytes::{
@@ -2222,22 +2222,19 @@ struct CanonicalPathFrame<'src> {
     input: AdmissionRegion<'src>,
     cursor: IndexedLocatedByteCursor<'src>,
     arena: CanonicalBytesArena,
-    reducer: CanonicalPathReducer,
-    current: CanonicalPathReducerHandle,
+    reducer: CanonicalPathStreamReducer,
     waiting: Option<PathObligationWait>,
 }
 
 impl<'src> CanonicalPathFrame<'src> {
     fn new(input: AdmissionRegion<'src>) -> Self {
         let arena = CanonicalBytesArena::new();
-        let reducer = CanonicalPathReducer::new();
-        let current = reducer.root(&arena);
+        let reducer = CanonicalPathStreamReducer::new(&arena);
         Self {
             cursor: input.located_bytes(),
             input,
             arena,
             reducer,
-            current,
             waiting: None,
         }
     }
@@ -2273,9 +2270,8 @@ impl<'src> CanonicalPathFrame<'src> {
         let resolution = waiting.resolution(summary).ok_or_else(|| {
             self.protocol_error("canonical path child returned the wrong summary kind")
         })?;
-        self.current = self
-            .reducer
-            .resolve_obligation(&self.arena, self.current, waiting.id, resolution)
+        self.reducer
+            .resolve_obligation(&self.arena, waiting.id, resolution)
             .map_err(Self::path_error)?;
         stats.canonical_path_resolutions = stats
             .canonical_path_resolutions
@@ -2292,13 +2288,12 @@ impl<'src> CanonicalPathFrame<'src> {
             return Err(self.protocol_error("canonical path resumed before its child returned"));
         }
         for byte in self.cursor.by_ref() {
-            (self.current, _) = self
-                .reducer
-                .edge(&mut self.arena, self.current, byte)
+            self.reducer
+                .edge(&mut self.arena, byte)
                 .map_err(Self::path_error)?;
             if let Some(completed) = self
                 .reducer
-                .freeze_completed_obligation(&self.arena, self.current)
+                .freeze_completed_obligation(&self.arena)
                 .map_err(Self::path_error)?
             {
                 let (waiting, frame) =
@@ -2310,11 +2305,7 @@ impl<'src> CanonicalPathFrame<'src> {
         let end = self.input.end_position().physical;
         let summary = self
             .reducer
-            .value(
-                self.current,
-                true,
-                CanonicalPathSource::in_source(end.source, end.offset),
-            )
+            .value(true, CanonicalPathSource::in_source(end.source, end.offset))
             .expect("standalone canonical path owns one endpoint")
             .map_err(Self::path_error)?;
         stats.canonical_path_bytes_read = stats

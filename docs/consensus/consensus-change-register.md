@@ -5003,6 +5003,16 @@ Concrete parser refinement and resource qualification remain explicit open
 boundaries. See stack-safety §5.33.7 and journal J-088; local equivalence evidence
 does not authorize a broader consensus-neutrality conclusion.
 
+The ECS-01–09 refinement then separates persistent ACT checkpoints from the
+standalone validator's one-state policy using the same grammar core. Twenty-one
+model reports, independent kernel checking, fourteen focused tests and the
+351-test models library pass. The complete 48-test focused gate and subsequent
+23-manifest/36-ParBag integration also pass, with the depth-4,096 case unchanged.
+No importer caller is switched and no accepted-byte,
+hash, protobuf/bincode, ACT or persistence contract is changed. This removes
+historical root-state retention only; the remaining resource obligations are
+explicit in journal J-089 and stack-safety §5.33.8.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

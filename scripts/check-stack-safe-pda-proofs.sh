@@ -290,7 +290,7 @@ epathmap_score_proofs() {
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 12 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 21 \
     "RPB3 fold and standalone canonical-key transport contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
 }
@@ -309,7 +309,7 @@ epathmap_import_runtime() {
   rpb3_run_tests 5 --release -j4 --lib singleton_epathmap
   rpb3_run_tests 1 --release -j4 --lib \
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
-  rpb3_run_tests 12 --release -j4 --lib standalone_path_admission
+  rpb3_run_tests 14 --release -j4 --lib standalone_path_admission
 }
 
 if [[ "${1:-}" == "--epathmap-import" ]]; then
@@ -501,8 +501,8 @@ printf '%s\n' "$rpb3_admission_rocq_output"
 rpb3_admission_closed_capstones="$({
   printf '%s\n' "$rpb3_admission_rocq_output" | grep -c '^Closed under the global context$'
 } || true)"
-if [[ "$rpb3_admission_closed_capstones" != "12" ]]; then
-  echo "stack-safe-pda: expected twelve RPB3 fold/key protocol reports to be closed; got $rpb3_admission_closed_capstones" >&2
+if [[ "$rpb3_admission_closed_capstones" != "21" ]]; then
+  echo "stack-safe-pda: expected twenty-one RPB3 fold/key/storage reports to be closed; got $rpb3_admission_closed_capstones" >&2
   exit 1
 fi
 rpb3_admission_mutants_rocq_output="$(
