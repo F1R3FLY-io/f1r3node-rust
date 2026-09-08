@@ -125,6 +125,39 @@ resource qualification. Its existing worklist already handles message, EPM1 and
 opaque nested-path obligations; a shared entry must preserve rejected-key versus
 admitted-stability distinctions without wrapping keys in fabricated snapshots.
 
+### Composed import refinement boundaries (2026-09-08)
+
+The task 5976 source review fixes the following proof and executable-oracle
+interfaces. These are remaining obligations, not additional completed proofs.
+The implementation under review is
+[`par_bag.rs`](../../../models/src/rust/par_bag.rs), specifically
+`canonical_singleton_epathmap_chain_proof` composed with
+`import_canonical_singleton_epathmap_par`.
+
+| Stage | Observable contract | Discriminating witness |
+|---|---|---|
+| EPathMap envelope | Required field 9 retains its exact borrowed bytes, even when empty or not a valid ACT image. Field 5 distinguishes absence from a present empty Var. Locally-free bytes are a reconstruction witness; the helper exposes only whether that field is absent. | Helper acceptance of an opaque snapshot must not imply root-route or full-import acceptance. Late malformed Var bytes must fail even after locally-free/connective metadata makes the component unstable. |
+| Chain transition | State consists of the current snapshot, depth and accumulated stability. Every descent still performs snapshot inspection and key admission; a false stability accumulator does not terminate validation. | Compare depth, terminal bytes and each metadata axis against a recursive reference over the same inspected slices. Keep ACT/key-parser correspondence as explicit premises. |
+| Opaque terminal | A nested-envelope decline returns a terminal from the chain helper. The composed importer subsequently requires an exact metadata-free singleton GInt image. | Construct a malformed nested EPathMap for which the helper returns a terminal but full import declines. Prove this shape cannot satisfy the GInt grammar. GInt uses int64/u64 varint interpretation, not Var's sint32 zigzag; include minimum, maximum, minus one and zero. |
+| Stability | Invalid or unstable keys decline the specialization. Valid unstable value metadata instead yields an admitted component with false stability. Component stability excludes the outermost Par metadata; whole-Par stability includes it. | Use explicit independent expected booleans for every metadata axis. Comparing two cached stability values alone is insufficient. |
+| Imported endpoint | Preserve the RPB3 score, exact Expr payload, big-endian u64 score-length trailer, multiplicity one and outer Par metadata. | Independently encode the semantic score tree and inspect the complete endpoint key, in addition to term/protobuf/hash comparisons. |
+
+The score authority for this importer is
+[`canonical_semantics::rpb3_pathmap_score`](../../../models/src/rust/rholang/canonical_semantics.rs):
+`Node(EPATHMAP, Bytes(snapshot), Int(map_connective))`. Bind it through the
+independent tree encoder in
+[`score_tree.rs`](../../../models/src/rust/rholang/sorter/score_tree.rs).
+The generic expression sorter uses a different collection-score route and is
+not the oracle for this RPB3 endpoint. There is not yet a concrete score-byte
+Rocq theorem in this import development; a semantic fold does not establish one.
+
+Completeness claims must include the implementation's checked size arithmetic
+and depth representability premises. Successful-import soundness alone does not
+prove acceptance for every structurally eligible input. A strictly shrinking
+nested snapshot proves termination, not linear work in the original physical
+input size. Allocation failure, the full ACT/key validator and fallback decoder
+correspondence remain explicit boundaries until their own evidence is supplied.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to
