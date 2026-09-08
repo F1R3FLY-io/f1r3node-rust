@@ -2115,7 +2115,10 @@ pub async fn compute_parents_post_state(
                             }
                         }
                     }
-                    out
+                    // `by_block` iteration order is non-deterministic;
+                    // `sorted_for_body` makes the cached list a function of
+                    // the merge inputs alone.
+                    crate::rust::merging::rejected_slash::sorted_for_body(out)
                 };
 
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
