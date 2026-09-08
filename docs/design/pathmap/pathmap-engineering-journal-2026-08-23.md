@@ -5760,6 +5760,13 @@ and separate construction/drop costs. The scoped repeated-decoding resource gap
 is closed by task 8345. Parent acceptance submission remains 8341, and no
 whole-workspace, persistence or overall campaign completion follows.
 
+**FINAL LOCAL ACCEPTANCE.** Task 8341 repeats the complete 116-test, 31-report,
+two-kernel-check criterion against committed `3035fb970`; all pass. Its log digest
+and unchanged mutation-control evidence are retained in §5.29.9, and the formal
+README freezes the parent reproduction command. The exact-count and repeated-suffix
+chain is ready for agent-grade submission, not independent CI verification or
+whole-campaign completion.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -121,6 +121,30 @@ The actual repeated-suffix decoder control violates both allocation-growth bound
 while the native route preserves the same interval and passes. This is the executable
 resource binding, not a proof of the allocator, PathMap internals or whole-workspace CI.
 
+The frozen local reproduction/acceptance criterion for pgmcp bug 5855 is run from
+the repository root:
+
+```sh
+env ALLOW_UNBOUNDED_TLC=0 RUST_BACKTRACE=1 PROPTEST_RNG_SEED=41315855 \
+  bash scripts/check-stack-safe-pda-proofs.sh --matcher-counts
+```
+
+Success requires exit zero, 31 closed reports, both kernel checks and the exact
+116-test inventory, including `PROBE OK depth=4096 stack=131072`. The three
+historical source-mutation controls reject finite-top 1,000, saturated complementary
+availability and lower-top clamping for their intended assertions; their restored
+source and log digests are preserved in report §5.29.9. This criterion makes the
+local repair reproducible. An agent's `claimed_done` submission is not independent
+CI verification, and the campaign's current full-workspace release gate remains
+required separately.
+
+The final local acceptance repetition against committed `3035fb970` passes this
+criterion in full. Log SHA-256:
+`3cbbe9e1f3a95fae7b87703fa2a4e2b5f8e4b1046c0405d2f7dd819686aba3a8`.
+Task 8341's acceptance boundary links the independent ordered-reference controls,
+formal contracts, byte-native implementation and resource qualification; it does
+not widen the verification claim to unexecuted workspace tests.
+
 | Invariant group | Executed implementation binding |
 |---|---|
 | Exact family totals; zero complement; counted conservation | `every_partitioned_par_family_admits_compressed_multiplicity_above_the_legacy_ceiling` now covers all eight families at 1,001, maximum and two-endpoint maximum-plus-one, with independent endpoint sums, per-key conservation and retained CoW roots; both `parcount_saturated_target_respects_*_complement` tests cover the complementary constraints. |

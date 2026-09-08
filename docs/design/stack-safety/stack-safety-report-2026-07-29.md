@@ -8962,6 +8962,20 @@ Together with the recorded actual decoding and cursor-restart controls, this clo
 acceptance submission; unrelated full-workspace, persistence and campaign work are
 not represented as complete by this gate.
 
+**FINAL LOCAL COUNT-DOMAIN ACCEPTANCE.** Task 8341 repeats the complete registered
+criterion against committed resource-qualified source `3035fb970`: exit zero,
+31 closed reports, both kernel checks and all 116 tests passing with no ignored
+tests. Log `rspace-8341-final-acceptance-20260908.log` has SHA-256
+`3cbbe9e1f3a95fae7b87703fa2a4e2b5f8e4b1046c0405d2f7dd819686aba3a8`.
+The original probe again completes, with 108,972,601 µs construction, 6,292 µs count
+and 52,634 µs drop on its fixed 128-KiB stack. The earlier three source-mutation
+logs and restored-source gate digests were rechecked; no mutant remains installed.
+The formal README freezes the runnable local reproduction criterion for parent
+5855's agent-grade submission. This closes the scoped exact-count/ordered-partition
+and repeated-decoding acceptance chain locally. Trusted CI verification and the
+current full-workspace release gate remain required campaign work; no historical
+workspace test total substitutes for those results.
+
 ---
 
 ### 5.30 General recursive-family byte cursor and unordered-collection closure [SS-A15, SS-Y10]
