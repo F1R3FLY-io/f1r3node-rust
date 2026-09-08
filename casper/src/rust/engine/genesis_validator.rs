@@ -67,6 +67,9 @@ pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Bounded set of seen UnapprovedBlock candidates to avoid unbounded memory growth.
     seen_candidates: Arc<Mutex<SeenCandidates>>,
+    /// Last ApprovedBlock pull, throttling `on_no_casper_tick`'s recovery
+    /// request to one per interval rather than one per loop tick.
+    approved_block_pull_last: Arc<Mutex<Option<std::time::Instant>>>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Handed through to Initializing on late-joiner recovery: a genesis
@@ -174,6 +177,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             seen_candidates: Arc::new(Mutex::new(SeenCandidates::new(
                 genesis_seen_candidates_max_entries(),
             ))),
+            approved_block_pull_last: Arc::new(Mutex::new(None)),
             heartbeat_signal_ref,
             state_items_tx,
         }
@@ -317,6 +321,40 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisValidator<T> {
     async fn init(&self) -> Result<(), CasperError> { Ok(()) }
+
+    /// A genesis validator whose first bootstrap dial lost the
+    /// container-start race misses both the UnapprovedBlock broadcast and
+    /// the one-shot ApprovedBlock send, and the signing flow gives it no
+    /// way out — no push ever comes again. Pull instead: ask bootstrap for
+    /// the ApprovedBlock; the response lands in `handle` and takes the
+    /// existing `handle_approved_block_late` recovery. Throttled so the
+    /// loop's tick cadence does not become the request cadence; a send
+    /// failure only warns — the next interval retries.
+    async fn on_no_casper_tick(&self) -> Result<(), CasperError> {
+        const APPROVED_BLOCK_PULL_INTERVAL: std::time::Duration =
+            std::time::Duration::from_secs(10);
+        {
+            let mut last = self.approved_block_pull_last.lock().unwrap();
+            if let Some(at) = *last {
+                if at.elapsed() < APPROVED_BLOCK_PULL_INTERVAL {
+                    return Ok(());
+                }
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        tracing::info!(
+            "Genesis validator has seen no ceremony message; pulling the \
+             ApprovedBlock from bootstrap"
+        );
+        if let Err(err) = self
+            .transport_layer
+            .request_approved_block(&self.rp_conf_ask, None)
+            .await
+        {
+            tracing::warn!("ApprovedBlock pull from bootstrap failed: {}", err);
+        }
+        Ok(())
+    }
 
     /// Scala equivalent: `override def handle(peer: PeerNode, msg: CasperMessage): F[Unit]`
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {

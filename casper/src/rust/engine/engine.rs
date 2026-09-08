@@ -57,6 +57,14 @@ pub trait Engine: Send + Sync {
         Ok(false)
     }
 
+    /// Called by the casper loop on each tick while this engine has no
+    /// Casper instance. Default: nothing. Pre-genesis engines that wait on
+    /// PUSHED ceremony messages override this to PULL: a genesis validator
+    /// whose first bootstrap dial lost the container-start race misses both
+    /// the UnapprovedBlock broadcast and the ApprovedBlock send, and no
+    /// further push ever comes — without a pull it waits forever.
+    async fn on_no_casper_tick(&self) -> Result<(), CasperError> { Ok(()) }
+
     /// Returns the casper instance as an Arc if this engine wraps one.
     /// Returns None for engines that don't have casper (NoopEngine, Initializing, etc.)
     /// The Arc allows ownership transfer and use across async boundaries.

@@ -129,6 +129,79 @@ impl GenesisValidatorSpec {
         test.await;
     }
 
+    /// The CI-observed shape (run 34153662463, shard b78263a0-s5): the
+    /// validator's first bootstrap dial loses the container-start race, so
+    /// it misses the UnapprovedBlock broadcast AND the one-shot
+    /// ApprovedBlock send, then connects and receives NOTHING — no push
+    /// ever comes again. The casper loop's no-casper tick must make the
+    /// engine PULL the approved block from bootstrap; the pull is
+    /// throttled, so rapid ticks send one request, not one per tick.
+    async fn a_validator_that_missed_the_whole_ceremony_pulls_the_approved_block() {
+        let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
+
+        let fixture = TestFixture::new().await;
+
+        let genesis_validator = GenesisValidator::new(
+            fixture.block_processing_queue_tx.clone(),
+            fixture.blocks_in_processing.clone(),
+            fixture.casper_shard_conf.clone(),
+            fixture.validator_id.clone(),
+            fixture.bap.clone(),
+            fixture.transport_layer.clone(),
+            fixture.rp_conf_ask.clone(),
+            fixture.connections_cell.clone(),
+            fixture.last_approved_block.clone(),
+            fixture.event_publisher.clone(),
+            fixture.block_retriever.clone(),
+            fixture.engine_cell.clone(),
+            fixture.block_store.clone(),
+            fixture.block_dag_storage.clone(),
+            fixture.deploy_storage.clone(),
+            fixture.rejected_deploy_buffer.clone(),
+            fixture.casper_buffer_storage.clone(),
+            fixture.rspace_state_manager.clone(),
+            fixture.runtime_manager.clone(),
+            fixture.estimator.clone(),
+            casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+            None,
+        );
+        fixture.engine_cell.set(Arc::new(genesis_validator)).await;
+        let engine = fixture.engine_cell.get().await;
+
+        // The exact CI sequence: no UnapprovedBlock, no ApprovedBlock —
+        // only the loop ticking against an engine with no casper.
+        for _ in 0..3 {
+            engine
+                .on_no_casper_tick()
+                .await
+                .expect("no-casper tick must not error");
+        }
+
+        let pull_requests: Vec<_> = fixture
+            .transport_layer
+            .get_all_requests()
+            .into_iter()
+            .filter(|request| {
+                matches!(
+                    request.msg.message.as_ref(),
+                    Some(models::routing::protocol::Message::Packet(packet))
+                        if packet.type_id == "ApprovedBlockRequest"
+                )
+            })
+            .collect();
+
+        assert!(
+            !pull_requests.is_empty(),
+            "a genesis validator that missed the ceremony must pull the \
+             approved block from bootstrap instead of waiting forever"
+        );
+        assert_eq!(
+            pull_requests.len(),
+            1,
+            "rapid ticks inside the throttle window must send one pull"
+        );
+    }
+
     /// Regression test for the late-joiner race fixed in PR #489.
     ///
     /// A genesis validator that joins boot's connections AFTER all
@@ -360,4 +433,11 @@ async fn should_not_respond_to_any_other_message() {
 #[serial]
 async fn transitions_to_initializing_on_late_approved_block() {
     GenesisValidatorSpec::transitions_to_initializing_on_late_approved_block().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_validator_that_missed_the_whole_ceremony_pulls_the_approved_block() {
+    GenesisValidatorSpec::a_validator_that_missed_the_whole_ceremony_pulls_the_approved_block()
+        .await;
 }

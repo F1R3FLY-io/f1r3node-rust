@@ -744,6 +744,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                     }
                 } else {
                     warn!("Casper engine present but Casper not initialized yet");
+                    // Pre-genesis engines wait on pushed ceremony messages; the
+                    // tick lets them PULL when the push window was missed.
+                    if let Err(err) = engine.on_no_casper_tick().await {
+                        warn!("no-casper tick failed: {}", err);
+                    }
                 }
 
                 // Maintain RequestedBlocks for Casper
