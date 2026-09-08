@@ -180,6 +180,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             } else {
                 conf.deploy_play_budget
             }),
+            // A derived budget is provisional: hash_set_casper recomputes it
+            // from the ADOPTED max-parent-depth.
+            deploy_play_budget_is_derived: conf.deploy_play_budget.is_zero(),
+            heartbeat_check_interval: conf.heartbeat_conf.check_interval,
             casper_version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
             bond_minimum: conf.genesis_block_data.bond_minimum,
             bond_maximum: conf.genesis_block_data.bond_maximum,
@@ -344,6 +348,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                     if blocks_in_processing.len() > max_in_flight {
                         blocks_in_processing.remove(&block_hash);
+                        block_retriever.note_local_backpressure_drop(&block_hash, "launch-pendant");
                         tracing::warn!(
                             "Skipping pendant {} enqueue because in-flight block cap {} is reached",
                             PrettyPrinter::build_string_bytes(&block_hash),

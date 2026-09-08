@@ -383,7 +383,7 @@ named constant with a single definition. Current values:
 | `heartbeat.advanced.frontier-chase-max-lag` | 20 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB (0 stops validators contributing under load) |
 | `heartbeat.advanced.pending-deploy-max-lag` | 20 | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
 | `heartbeat.advanced.deploy-recovery-max-lag` | 64 | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window. Must be >= `pending-deploy-max-lag` to take effect (else collapses to that floor). |
-| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 12 | Width cap on empty (no-deploy) proposals: above this many unfinalized blocks, empty proposals stop — except one per validator per stale-recovery interval when temporally idle (the consensus-deadlock escape). Must satisfy hard finality-lag backpressure (8) < cap <= max-parent-depth (validated at startup). |
+| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 12 | Width cap on empty (no-deploy) proposals: above this many unfinalized blocks, empty proposals stop — except one per validator per stale-recovery interval when temporally idle (the consensus-deadlock escape). Must satisfy hard finality-lag backpressure (8) < cap <= max-parent-depth (warned at startup on the local depth; re-judged against the chain-adopted depth at runtime). |
 
 **Deploy grace window**: When a deploy is proposed or finalization-critical parents observed, a grace window opens (default 25s) that allows proposals which would normally be blocked by cooldown/interval constraints.
 

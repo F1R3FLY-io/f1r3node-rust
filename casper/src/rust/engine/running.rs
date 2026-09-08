@@ -186,6 +186,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                     if self.blocks_in_processing.len() > max_in_flight {
                         self.blocks_in_processing.remove(&block_hash);
+                        self.block_retriever
+                            .note_local_backpressure_drop(&block_hash, "running-receipt");
                         tracing::warn!(
                             "Dropping BlockMessage {} because in-flight block cap {} is reached",
                             PrettyPrinter::build_string_bytes(&block_hash),

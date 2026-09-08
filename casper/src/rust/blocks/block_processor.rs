@@ -567,6 +567,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         self.dependencies.ack_processed(block).await
     }
 
+    /// See [`BlockRetriever::note_local_backpressure_drop`].
+    pub fn note_local_backpressure_drop(&self, hash: &BlockHash, site: &'static str) {
+        self.dependencies
+            .block_retriever
+            .note_local_backpressure_drop(hash, site);
+    }
+
     /// See [`BlockProcessorDependencies::try_admit_settled`].
     pub async fn try_admit_settled(
         &self,

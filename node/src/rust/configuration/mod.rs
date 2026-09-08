@@ -313,21 +313,22 @@ pub mod builder {
         }
 
         // I3: the width cap only bounds validity-window burn during a stall
-        // if it sits at or below the citability depth.
+        // if it sits at or below the citability depth. A warning, not an
+        // error: the depth this cap runs against is the chain-adopted one,
+        // which can legitimately exceed the local value judged here (the
+        // authoritative re-judgement runs against the adopted depth).
         let width_cap = node_conf
             .casper
             .heartbeat_conf
             .advanced
             .empty_frontier_max_unfinalized_blocks;
         if max_parent_depth != i32::MAX && width_cap > max_parent_depth as i64 {
-            return Err(eyre::eyre!(
+            warnings.push(format!(
                 "casper.heartbeat.advanced.empty-frontier-max-unfinalized-blocks ({}) \
-                exceeds casper.max-parent-depth ({}): a width cap above the citability \
-                depth cannot stop validity-window burn during a stall, which is its only \
-                job. Set the cap at or below max-parent-depth (with margin for proposals \
-                already in flight)",
-                width_cap,
-                max_parent_depth,
+                exceeds casper.max-parent-depth ({}): unless the chain-adopted depth is \
+                higher, a width cap above the citability depth cannot stop \
+                validity-window burn during a stall",
+                width_cap, max_parent_depth,
             ));
         }
         // I4: a cap at or below the hard finality-lag tier inverts the
@@ -777,8 +778,28 @@ mod embedded_defaults_tests {
         );
     }
 
-    /// I3/I4 width-cap geometry: shipped values pass silently, a cap above
-    /// max-parent-depth fails startup, a cap at or below the hard tier warns.
+    /// The shipped default and the serde fallback must agree, or a sparse
+    /// operator conf that omits the key silently disables GC (the drift the
+    /// heartbeat pinned/fallback test exists to catch, same class).
+    #[test]
+    fn mergeable_gc_fallback_matches_shipped_default() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        assert!(cfg.casper.enable_mergeable_channel_gc, "shipped default");
+        assert_eq!(
+            cfg.casper.enable_mergeable_channel_gc,
+            casper::rust::casper_conf::default_enable_mergeable_channel_gc(),
+            "serde fallback must match the shipped default"
+        );
+    }
+
+    /// I3/I4 width-cap geometry: shipped values pass silently; a cap above
+    /// the local max-parent-depth warns (the authoritative judgement runs
+    /// against the chain-adopted depth); a cap at or below the hard tier
+    /// warns.
     #[test]
     fn width_cap_geometry_is_validated_at_startup() {
         let base: NodeConf = hocon::HoconLoader::new()
@@ -801,29 +822,35 @@ mod embedded_defaults_tests {
             .heartbeat_conf
             .advanced
             .empty_frontier_max_unfinalized_blocks = 64;
+        let warnings = builder::validate_config(&cfg).expect("validate");
         assert!(
-            builder::validate_config(&cfg).is_err(),
-            "a width cap above max-parent-depth must fail startup"
+            warnings
+                .iter()
+                .any(|w| w.contains("empty-frontier-max-unfinalized-blocks")
+                    && w.contains("exceeds")),
+            "a width cap above the local max-parent-depth must warn, got {warnings:?}"
         );
 
-        // The boundary itself: cap == mpd is the largest legal cap.
+        // The boundary itself: cap == mpd is the largest silent cap.
         let mut cfg = base.clone();
         cfg.casper
             .heartbeat_conf
             .advanced
             .empty_frontier_max_unfinalized_blocks = cfg.casper.max_parent_depth as i64;
+        let warnings = builder::validate_config(&cfg).expect("validate");
         assert!(
-            builder::validate_config(&cfg).is_ok(),
-            "a width cap equal to max-parent-depth must pass"
+            !warnings.iter().any(|w| w.contains("exceeds")),
+            "a width cap equal to max-parent-depth must not warn, got {warnings:?}"
         );
         let mut cfg = base.clone();
         cfg.casper
             .heartbeat_conf
             .advanced
             .empty_frontier_max_unfinalized_blocks = cfg.casper.max_parent_depth as i64 + 1;
+        let warnings = builder::validate_config(&cfg).expect("validate");
         assert!(
-            builder::validate_config(&cfg).is_err(),
-            "a width cap one above max-parent-depth must fail startup"
+            warnings.iter().any(|w| w.contains("exceeds")),
+            "a width cap one above max-parent-depth must warn, got {warnings:?}"
         );
 
         let mut cfg = base.clone();

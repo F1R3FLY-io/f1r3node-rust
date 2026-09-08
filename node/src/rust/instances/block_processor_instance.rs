@@ -149,6 +149,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                             // Ensure in-flight marker is always cleared, even when ack cleanup
                             // fails.
                             blocks_in_processing.remove(&block.block_hash);
+                            block_processor
+                                .note_local_backpressure_drop(&block.block_hash, "instance-legacy");
                             if let Err(err) = block_processor.ack_processed(&block).await {
                                 tracing::warn!(
                                     "Dropping block {} and cleanup failed: {}",
@@ -275,6 +277,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                                     if blocks_in_processing.len() > max_in_flight {
                                         blocks_in_processing.remove(&pendant_hash);
+                                        block_processor.note_local_backpressure_drop(
+                                            &pendant_hash,
+                                            "instance-pendant",
+                                        );
                                         tracing::warn!(
                                             "Skipping dependency-free pendant {} enqueue because \
                                              in-flight block cap {} is reached",

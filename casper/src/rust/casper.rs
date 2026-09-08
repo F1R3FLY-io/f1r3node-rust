@@ -301,8 +301,17 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     casper_shard_conf.deploy_lifespan = onchain_lifespan;
     casper_shard_conf.min_phlo_price = onchain_min_phlo;
 
-    // Startup validation ran on the LOCAL values; re-judge the inequalities
-    // the adopted values actually run under.
+    // Startup validation ran on the LOCAL values; everything derived from or
+    // judged against max-parent-depth is finished HERE, on the adopted one.
+    if casper_shard_conf.deploy_play_budget_is_derived
+        && !casper_shard_conf.heartbeat_check_interval.is_zero()
+    {
+        casper_shard_conf.deploy_play_budget = Some(std::time::Duration::from_millis(
+            ((casper_shard_conf.max_parent_depth as i64).max(1)
+                * (casper_shard_conf.heartbeat_check_interval.as_millis() as i64)
+                / 5) as u64,
+        ));
+    }
     if casper_shard_conf.max_parent_depth != i32::MAX
         && casper_shard_conf.deploy_lifespan <= casper_shard_conf.max_parent_depth as i64
     {
@@ -312,6 +321,36 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             "adopted deploy-lifespan is at or below the adopted max-parent-depth: \
              deploys can expire inside the citability window"
         );
+    }
+    if casper_shard_conf.max_parent_depth != i32::MAX
+        && !casper_shard_conf.heartbeat_check_interval.is_zero()
+    {
+        let citability_window = casper_shard_conf
+            .heartbeat_check_interval
+            .saturating_mul(casper_shard_conf.max_parent_depth as u32);
+        if let Some(budget) = casper_shard_conf.deploy_play_budget {
+            if budget > citability_window / 3 {
+                tracing::warn!(
+                    ?budget,
+                    ?citability_window,
+                    "deploy-play-budget exceeds a third of the ADOPTED citability \
+                     window: a carrier built for that long risks being born below \
+                     the parent-depth horizon"
+                );
+            }
+        }
+        let recovery_span = std::time::Duration::from_millis(
+            crate::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+        );
+        if citability_window < recovery_span {
+            tracing::warn!(
+                ?citability_window,
+                ?recovery_span,
+                "the ADOPTED citability window is smaller than the full \
+                 dependency-recovery re-request span: a lost delivery cannot \
+                 finish recovering before its blocks fall below the horizon"
+            );
+        }
     }
 
     Ok(MultiParentCasperImpl {
@@ -445,6 +484,14 @@ pub struct CasperShardConf {
     /// (`casper_launch`), so a construction that bypasses launch is
     /// explicitly unbounded, never a misread sentinel.
     pub deploy_play_budget: Option<std::time::Duration>,
+    /// Whether `deploy_play_budget` came from the operator conf's derive
+    /// sentinel. A derived budget is recomputed from the ADOPTED
+    /// max-parent-depth at the adoption point; an explicit budget is kept.
+    pub deploy_play_budget_is_derived: bool,
+    /// The heartbeat cadence the citability window is a multiple of.
+    /// `ZERO` (test constructions) skips the adoption-point geometry
+    /// re-judgements.
+    pub heartbeat_check_interval: std::time::Duration,
     pub casper_version: i64,
     pub bond_minimum: i64,
     pub bond_maximum: i64,
@@ -499,6 +546,8 @@ impl CasperShardConf {
             height_constraint_threshold: 0,
             deploy_lifespan: 0,
             deploy_play_budget: None,
+            deploy_play_budget_is_derived: false,
+            heartbeat_check_interval: Duration::ZERO,
             casper_version: 0,
             bond_minimum: 0,
             bond_maximum: 0,

@@ -153,7 +153,10 @@ fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 
 fn default_max_user_deploys_per_block() -> u32 { 128 }
 
-fn default_enable_mergeable_channel_gc() -> bool { false }
+/// Matches the shipped defaults.conf value: a sparse operator conf that omits
+/// the key must not silently disable GC. Public so the node's config tests
+/// pin shipped-vs-fallback agreement.
+pub fn default_enable_mergeable_channel_gc() -> bool { true }
 
 fn default_mergeable_channels_gc_interval() -> Duration {
     Duration::from_secs(5 * 60) // 5 minutes
