@@ -2299,7 +2299,7 @@ mod tests {
         //   snapshot.rs / wal.rs don't affect the composed source;
         //   Rholang-side edits roll the composed hash.  Hard-fork-
         //   free per the f1r3node_no_running_network invariant.
-        const EXPECTED: &str = "be834c75034a8fe1b89cb74088bd0d62c64bdea943d7647eac9fe07d419caadd";
+        const EXPECTED: &str = "854a5ef79f872f892a8cc2f739a05557d64697783f8436ebb28d8972c26e2bf5";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -2383,7 +2383,7 @@ mod tests {
         // Pinned 2026-09-08 (M-40 landing).
         // Rolled 2026-09-08 by M-13 composed-scope fix (see the
         //   `compose_fs_genesis_source_golden_hex` docstring).
-        const EXPECTED: &str = "edcf6728b37c1d314eecc745b31e9f076c0ebf3f1038c0c0f45bb6445d1da01e";
+        const EXPECTED: &str = "8fd88246c29be2e772b41363ca56759de64a3436b26591a12463a60b78c02080";
         assert_eq!(
             hex, EXPECTED,
             "M-40: compose_fs_genesis_source() hash for non-empty bundle \
@@ -2468,7 +2468,7 @@ mod tests {
         // Pinned 2026-09-08 (M-40 S4 review-fix landing).
         // Rolled 2026-09-08 by M-13 composed-scope fix (see the
         //   `compose_fs_genesis_source_golden_hex` docstring).
-        const EXPECTED: &str = "c99328d07c38749eff58e19602e878151c15ffa67f6cdfd426922c9d34875698";
+        const EXPECTED: &str = "f016d1dc40c039bc39411e748e594f420f85d7db00ba22ee5c0325518ba1f7f5";
         assert_eq!(
             hex, EXPECTED,
             "M-40 review-fix (S4): compose_fs_genesis_source() hash for \

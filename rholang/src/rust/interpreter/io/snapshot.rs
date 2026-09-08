@@ -38,10 +38,11 @@
 //     comparable to the total on-disk footprint);
 //   * lets the joining protocol be a plain byte-stream fetch.
 //
-// A future slice may add a materialized-state snapshot alongside
-// the log-structured one for operators who want a faster join
-// path; the on-disk format is versioned via the WAL root prefix so
-// both can coexist.
+// Per the F-30-2 review decision (2026-08-26), the log-structured
+// shape is the final design for this FIP; materialized-state
+// snapshots are not planned as a companion.  A future FIP could
+// introduce one, and the on-disk format is versioned via the WAL
+// root prefix so both would coexist without a hard fork.
 //
 // # Canonical encoding
 //

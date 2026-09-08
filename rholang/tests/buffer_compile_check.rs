@@ -45,7 +45,8 @@ fn with_lib(test_snippet: &str) -> String {
         "new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP, \
          gatherChunks, drainChunks, \
          allocInnersLoop, parkInnersLoop, \
-         clearInnersLoop, closeInnersLoop in {{\n{}|\n{}\n}}",
+         clearInnersLoop, closeInnersLoop, \
+         hexDigit, intToOneByte in {{\n{}|\n{}\n}}",
         buffer_lib_body(),
         test_snippet
     )
@@ -199,6 +200,55 @@ async fn write_then_read_roundtrips_bytes() {
     };
     assert_eq!(k, 6);
     assert_eq!(bytes, b"hello!".to_vec());
+}
+
+/// RH-A5-21 pin (2026-09-08): Buffer.writeBytes on a zero-length
+/// ByteArray must short-circuit — reply `[true, 0]`, no state
+/// mutation.  The Buffer.rho method has an explicit `xsLen == 0`
+/// arm that skips both the chunk append and the meta advance;
+/// pre-fix, no test covered the zero-length branch so a refactor
+/// dropping the guard would silently allow a phantom-chunk
+/// insertion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_write_bytes_zero_length_short_circuits() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_lib(
+        r#"
+        for (@alloc <- Allocator!?()) {
+          for (@[true, buf] <- @alloc!?("allocBytes", 16)) {
+            for (@r <- @buf!?("writeBytes", "".toUtf8Bytes())) {
+              @"out"!(r)
+            }
+          }
+        }
+        "#,
+    );
+    let par = ParBuilderUtil::mk_term(&src).expect("compile");
+    reducer
+        .eval(par, &Env::new(), rand().split_byte(0))
+        .await
+        .expect("eval");
+    let map = space.to_map().await;
+    let chan = new_gstring_par("out".to_string(), Vec::new(), false);
+    let row = map.get(&vec![chan]).expect("out channel has data");
+    let reply = &row.data[0].a.pars[0];
+    let list = match single_expr(reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        other => panic!("expected list reply, got {other:?}"),
+    };
+    assert_eq!(list.ps.len(), 2, "reply must be [true, 0]");
+    let ok = match single_expr(&list.ps[0]).unwrap().expr_instance {
+        Some(ExprInstance::GBool(b)) => b,
+        other => panic!("expected bool, got {other:?}"),
+    };
+    let n = match single_expr(&list.ps[1]).unwrap().expr_instance {
+        Some(ExprInstance::GInt(v)) => v,
+        other => panic!("expected int, got {other:?}"),
+    };
+    assert!(ok, "zero-length writeBytes must succeed");
+    assert_eq!(n, 0, "zero-length writeBytes must report 0 bytes");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

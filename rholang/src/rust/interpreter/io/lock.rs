@@ -44,7 +44,7 @@
 //! 2. **Rig-protocol synthesis (slice 8b sub-2, native handler layer)**
 //!    — cancelled waiters emit a synthesized error Produce via
 //!    `Produce::with_error()` + `update_produce`, mirroring
-//!    `reduce.rs::produce_inner` line 369 (the OpenAI/Ollama pathway).
+//!    `reduce.rs::produce_inner` (the OpenAI/Ollama pathway).
 //!    That's a native-handler concern; `LockRegistry` itself only
 //!    signals `Err(LockError::Cancelled)` through the oneshot and lets
 //!    the native perform the Produce synthesis.

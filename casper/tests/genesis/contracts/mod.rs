@@ -17,7 +17,7 @@ pub mod fileio_examples_spec;
 pub mod fileio_file_spec;
 pub mod fileio_fs_spec;
 pub mod fileio_stream_argvalidation_spec;
-pub mod fileio_stream_spec;
+pub mod fileio_stream_genesis_spec;
 pub mod fs_generator_spec;
 pub mod list_ops_spec;
 pub mod make_mint_spec;

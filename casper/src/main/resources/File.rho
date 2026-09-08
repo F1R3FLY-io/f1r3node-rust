@@ -555,7 +555,12 @@ in {
                   // locks MUST) sweeps.  Sweeping here closes the gap.
                   new sweepCh in {
                     fsReleaseAllForHolder!(*this, *sweepCh) |
-                    for (@_sweepReply <- sweepCh) {  // reply is [true, N] — count discarded (see LockToken §Release-reply discards)
+                    // reply is `[true, N]` — count intentionally
+                    // discarded here.  The N is exposed via the
+                    // native handler's WAL entry (surfaced to observers
+                    // via `journal_write`); Rholang callers only need
+                    // the "close succeeded" signal.
+                    for (@_sweepReply <- sweepCh) {
                       new retCh in {
                         fsClose!(fd, *retCh) |
                         for (@reply <- retCh) {
@@ -586,7 +591,13 @@ in {
 
     // -- truncate(n) ------------------------------------------------
     //
-    // Spec §File.truncate: requires write-capable mode.
+    // Spec §File.truncate: requires write-capable mode.  Unlike path-
+    // based mutation methods (removeFile, chmod, etc.), truncate is
+    // fd-based, so no `cmode` is threaded to the native — the native
+    // resolves the file via the fd table and applies the (already-
+    // baked-into-the-fd) cmode at open time.  Rholang readers
+    // comparing this method to path-based mutations will notice the
+    // divergence; it is intentional.
     method truncate(@n) {
       match n {
         i /\ Int => {
@@ -642,7 +653,7 @@ in {
 
     // -- chmod(mode) ------------------------------------------------
     //
-    // Spec §File > Permissions (line 1005): "Available only if the file
+    // Spec §File > Permissions: "Available only if the file
     // was opened in a write-capable mode; FSERR_UNSUPPORTED otherwise."
     // Read-only Files reject chmod (M-1 fix).
     //
@@ -718,7 +729,7 @@ in {
 
     // -- chown(owner, group) ---------------------------------------
     //
-    // Spec §File > Permissions (line 1005): write-capable mode only.
+    // Spec §File > Permissions: write-capable mode only.
     // Uses stored `rel` (B-3 fix); gated on write-mode (M-1 fix).
     method chown(@owner, @group) {
       new ownerOk, groupOk in {
@@ -7718,6 +7729,17 @@ in {
   //
   // Both helpers accept `wait: Bool` and pass it to the arity-8/5
   // native calls (fsLockRange arity-8, fsLockSequential arity-5).
+  //
+  // ## Inner-action reply protocol (RH-A5-18)
+  //
+  // The `innerCh` contract MUST reply exactly ONCE on its callback
+  // channel: zero replies leaves the lock held (the helper's
+  // `for (@innerReply <- innerCallback)` blocks forever); more than
+  // one reply races with the release path and produces undefined
+  // ordering.  These helpers do NOT validate the reply shape or
+  // count — a misbehaving inner action strands the lock until deploy
+  // end (the auto-release sweep at `WalDeployScope::Drop` catches
+  // it, but only after the deploy terminates).
   // ---------------------------------------------------------------
 
   contract withSequentialLock(@fd, holder, @cmode, @wait, innerCh, retCh) = {

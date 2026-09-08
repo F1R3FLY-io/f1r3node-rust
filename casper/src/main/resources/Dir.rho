@@ -2,8 +2,8 @@
 //
 // The Dir agent wraps a canonical filesystem root path plus an
 // accumulated relative sub-path with a Rholang-side interface for
-// listing / metadata / composition.  Users receive Dir handles from the
-// Fs agent (Phase 6).
+// listing / metadata / composition.  Users receive Dir handles from
+// the shipped `Fs` agent (`Fs.rho`) via `Fs.openDir` / bundle lookup.
 //
 // ## Delivered methods
 //
@@ -348,10 +348,9 @@ new Dir, rootP, cmodeP in {
     // -- openDir(rel, options) --------------------------------------
     //
     // B4 (2026-09-03): options-map signature per spec §Dir >
-    // Composition line 1097 — supports `mode` and `path` (path: true
-    // enables `mkdir -p`-style ancestor creation per spec §Options
-    // line 863, requires "rw" Dir mode).  Prior shape took bare
-    // `@mode` positional.
+    // Composition — supports `mode` and `path` (path: true enables
+    // `mkdir -p`-style ancestor creation per spec §Options, requires
+    // "rw" Dir mode).  Prior shape took bare `@mode` positional.
     //
     // Mints a nested Dir sharing this Dir's immutable canonRoot, with
     // subPath extended by `rel`.  Validated at mint time via fsStat
@@ -461,8 +460,8 @@ new Dir, rootP, cmodeP in {
     // -- removeDir(rel, options) ------------------------------------
     //
     // B4 (2026-09-03): options-map signature per spec §Dir >
-    // Mutation line 1106 — supports `recursive: Bool` (default
-    // `false`).  Prior shape took bare `@recursive` positional.
+    // Mutation — supports `recursive: Bool` (default `false`).  Prior
+    // shape took bare `@recursive` positional.
     method removeDir(@rel, @options) {
       match rel {
         r /\ String => {
@@ -803,7 +802,8 @@ new Dir, rootP, cmodeP in {
         //
         // Racy against a directory being created between stat and open;
         // the alternative (bind fd first, fstat inode) requires a
-        // native we don't have.  Phase 6+ can add fs_openIfNotDir.
+        // native we don't have.  A future slice could add a
+        // `fs_open_if_not_dir` primitive to close the race.
         //
         // Slice 26: the mint-time `fsStat` uses the CAP's `cmode` so
         // the record shape is consistent — a consensus cap's mint

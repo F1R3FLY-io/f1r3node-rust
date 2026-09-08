@@ -19,9 +19,10 @@
 //   default(...@args)                           — mandatory catch-all
 //
 // Constructor arity/order is a coordination contract with the genesis
-// wiring slice (19); do not change without updating StandardDeploys.
+// wiring in `casper::genesis::contracts::fs_genesis`; do not change
+// without updating StandardDeploys.
 //
-// ## Publication (slice 19)
+// ## Publication
 //
 // A single Fs instance is composed with the other library agents into
 // FsGenesis (`casper/src/rust/genesis/contracts/fs_genesis.rs`), which
@@ -61,10 +62,10 @@
 // candidate rather than a scheduled slice.
 //
 // Ambient-authority note: Stdin and Stdout are module-level agents.
-// The genesis wiring slice (19) MUST NOT export `Stdin` / `Stdout`
-// to deploy scope — only `Fs` and its bundle+ interface.  Otherwise
-// a deploy could bypass Fs.stdin() with a raw `Stdin!?(0)`.  See
-// slice-19 acceptance criteria.
+// The genesis wiring (see `casper::genesis::contracts::fs_genesis`)
+// MUST NOT export `Stdin` / `Stdout` to deploy scope — only `Fs` and
+// its bundle+ interface.  Otherwise a deploy could bypass
+// `Fs.stdin()` with a raw `Stdin!?(0)`.
 //
 // Trust boundary: the constructor accepts fds as unchecked Pars.
 // Genesis is responsible for supplying Int fds and a Map bMap; Fs
@@ -211,6 +212,13 @@
 new Fs, fsBundleP,
     fsStdinFdP, fsStdoutFdP, fsStderrFdP, fsRevokedP in {
 
+  // Composition-time init (RH-A5-11 note): this send lands
+  // synchronously with the rest of the outer `new` body during
+  // genesis composition — no deploy can reach `Fs.revoke()` /
+  // any method before genesis commits, and all peek-reads
+  // (`<<-`) block naturally until the value is present.  There
+  // is no cross-deploy window during which `fsRevokedP` could
+  // observe as empty.
   @[*fsRevokedP]!(false) |
 
   agent Fs {

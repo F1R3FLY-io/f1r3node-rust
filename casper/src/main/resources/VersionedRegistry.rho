@@ -117,8 +117,9 @@ in {
     // Namespace policy: `serve` accepts registration; `lib` does not.
     //
     // The FIP promises importers of a `lib` process that it "is only
-    // permitted to create temporary names" (FIP §lib, line 25) --
-    // meaning it may not leave persistent artifacts in the tuplespace.
+    // permitted to create temporary names" (FIP §Namespace policy for
+    // `lib`) -- meaning it may not leave persistent artifacts in the
+    // tuplespace.
     // Enforcing that requires either static AST scanning of the
     // submitted `code` for persistent sends / receives / contracts,
     // or a runtime name-lifetime mechanism (reified rspaces) that

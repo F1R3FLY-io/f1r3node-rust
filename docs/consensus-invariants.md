@@ -209,6 +209,32 @@ deploy's own holds — same-deploy holds cannot form a cross-deploy
 cycle by definition; they are covered by the pre-existing
 same-holder skip in `range_conflicts`.
 
+### 9a. Composition-time constants
+
+The following constants shape the composed FsGenesis source or the
+peer-fingerprint handshake and are consensus-observable but not
+enumerated in the byte-gate table:
+
+- `BUNDLE_ROOT_PREFIX = "/@bundle"` (fs_genesis.rs).  The Shape-A
+  bundle-relative-path prefix.  Every Consensus bundle entry emits
+  its root slot as `"/@bundle/" ++ logical_name` in the composed
+  source; each validator's runtime resolver rewrites that prefix
+  to the local staging directory at syscall time.  Changing the
+  literal flips every Consensus-bundle root string in the composed
+  source and rolls the FsGenesis golden hex.
+- `FS_NONCE` (fs_genesis.rs).  Domain-separator constant folded
+  into the fs_genesis deploy so a repeated-composition attack
+  cannot replay a prior genesis-deploy signature.  Consensus-
+  observable via the composed source bytes.
+- `FS_GENERATOR_TIMESTAMP` (fs_genesis.rs).  Fixed timestamp
+  literal in the composed source; a per-validator patch would
+  fingerprint-diverge via the source hash.
+- Fingerprint delimiter `#cf` and hex length 16
+  (`consensus_fingerprint.rs`).  Every validator appends
+  `<network_id>#cf<hex>` at boot; peers with a mismatched
+  delimiter shape reject the peering handshake.  Any change is a
+  coordinated network hard fork.
+
 ### 9. Fs.revoke() ambient-authority off-switch
 
 The Rholang `Fs` agent's `revoke()` method (spec §Revocation, added

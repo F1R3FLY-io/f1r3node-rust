@@ -27,8 +27,9 @@
 //
 // This MVP uses `PayloadRef::Hash([u8; 32])` (Blake2b256) for every
 // write.  The `DeployRef` optimization (block-hash + deploy-index +
-// arg-index) requires plumbing the deploy context down through
-// `fs_write`, which is a bigger change deferred to a future slice.
+// arg-index) would require plumbing the deploy context down through
+// `fs_write` — not scheduled; would land as a follow-up FIP if the
+// hash-per-write cost profile becomes a real bottleneck.
 //
 // # Determinism
 //

@@ -284,33 +284,14 @@ pub struct FileHandleTable {
     pub current_deploy_sig: Arc<std::sync::RwLock<Vec<u8>>>,
 }
 
-// Item d-3 (2026-08-28): per-fd Notify barrier machinery removed
-// 2026-08-30 after the PB-M-14 canary root cause was traced to a
-// signedness bug in `extract_ok_u64` (see
-// `response.rs::extract_ok_fd` docstring and commits `02b4c2efe` +
-// `e88550ded`).  Pre-fix, the follower's `fs_open` replay branch
-// silently skipped `insert_at` for state-hashes whose top byte's
-// high bit was set — the `wait_for_replay_shadow` timeout at 500ms
-// papered over the failure as a "reducer race."  Post-fix, the fd
-// table is always populated before any mutating handler reads it,
-// so the barrier + timeout are dead code.  Removed:
-//   * `fd_notifiers` field.
-//   * `SHADOW_WAIT_TIMEOUT` const.
-//   * `contains_fd`, `wait_for_replay_shadow`, `notify_fd_ready`
-//     methods.
-//   * All 6 wait-call sites in mutating fs handlers.
-//   * The 2 notify sites in fs_open + fs_entries_stream_open.
-//   * 5 barrier unit tests.
-//   * The `every_mutating_replay_branch_calls_wait_for_replay_shadow`
-//     pattern-scan pin.
-// 18/18 PB-M-14 canary runs post-signedness-fix across three
-// invocation modes (--test-threads=1, #[serial] alone, batch
-// filter) confirmed no genuine race remains at the layer the
-// barrier addressed.  If a future refactor reintroduces the
-// signedness bug or a genuinely new fs_open/fs_write ordering
-// hazard, the failure signature would resurface as the follower's
-// WAL Write entry going missing — the same signature the barrier
-// papered over.
+// Item d-3 (2026-08-28): the per-fd Notify barrier machinery was
+// removed 2026-08-30 after the PB-M-14 canary root cause was traced
+// to a signedness bug in `extract_ok_u64` (see
+// `response.rs::extract_ok_fd` docstring).  If a future refactor
+// reintroduces that bug or a genuinely new fs_open/fs_write
+// ordering hazard, the failure signature would resurface as a
+// follower's WAL Write entry going missing.  Full postmortem
+// in the auto-memory `fileio_d3_reducer_race_finding.md`.
 
 #[derive(Debug)]
 struct Inner {

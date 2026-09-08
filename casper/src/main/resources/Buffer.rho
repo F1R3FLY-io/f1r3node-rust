@@ -354,13 +354,12 @@ new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
     // read(n) — consume up to n bytes from position rho, advancing rho.
     // Refused with "BUFERR_FILLING" while a lease is held.
     //
-    // MVP implementation: gathers chunks via a helper that reads each
-    // chunk's segment linearly and re-sends it (storage-neutral).
-    // Uses `gatherChunks` module-level helper that takes the
-    // (privateName, chunkPName, lo, hi) so it can descend into the
-    // instance's chunks.  See §Cost accounting > Buffers — MVP is
-    // linear-fold; follow-up commit substitutes the balanced
-    // pairwise merge.
+    // Gathers chunks via a helper that reads each chunk's segment
+    // linearly and re-sends it (storage-neutral).  Uses `gatherChunks`
+    // module-level helper that takes the (privateName, chunkPName,
+    // lo, hi) so it can descend into the instance's chunks.  Balanced
+    // pairwise `mergePairs` landed 2026-09-02 (PB-B-5) — the cost
+    // profile matches spec §Cost accounting > Buffers.
     // read(n) — type-guarded per spec §Buffers.  Without the guard,
     // `n <= 0` on a non-Int caller-supplied `n` raises MethodNotDefined
     // inside the critical section, orphaning the token.

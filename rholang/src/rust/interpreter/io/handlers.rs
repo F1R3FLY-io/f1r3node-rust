@@ -303,7 +303,7 @@ unsafe fn unlink_manifest_entry(
 /// an implementation-side channel; keeping this parser lets
 /// diagnostics + future consumers extract it without re-walking.
 #[allow(dead_code)]
-fn extract_removedir_manifest(previous: &[Par]) -> Vec<(std::path::PathBuf, RemoveKind)> {
+fn extract_removedir_manifest(previous: &[Par]) -> Vec<(PathBuf, RemoveKind)> {
     let head = match previous.first() {
         Some(h) => h,
         None => return Vec::new(),
@@ -360,7 +360,7 @@ fn extract_removedir_manifest(previous: &[Par]) -> Vec<(std::path::PathBuf, Remo
             None => continue,
         };
         let path = match RhoString::unapply(path_par) {
-            Some(s) => std::path::PathBuf::from(s),
+            Some(s) => PathBuf::from(s),
             None => continue,
         };
         let kind = match RhoString::unapply(kind_par).as_deref() {
@@ -402,7 +402,7 @@ fn err_with_count(code: &str, msg: impl Into<String>, n_deleted: u64) -> Par {
 /// the manifest at position 2 is the implementation-side channel
 /// for R5(b) follower re-execution.  Dir.rho unwraps to
 /// `[true, nDeleted]` at the Rholang boundary.
-fn ok_recursive_manifest(deleted: &[(std::path::PathBuf, RemoveKind)]) -> Par {
+fn ok_recursive_manifest(deleted: &[(PathBuf, RemoveKind)]) -> Par {
     let inner: Vec<Par> = deleted
         .iter()
         .map(|(path, kind)| {
@@ -447,11 +447,7 @@ fn early_err_for_remove_dir(
 /// `nDeletedBeforeError` at position 3; manifest at position 4.
 /// Dir.rho unwraps to `[false, code, msg, nDeletedBeforeError]`
 /// at the Rholang boundary.
-fn err_with_manifest(
-    code: &str,
-    msg: impl Into<String>,
-    deleted: &[(std::path::PathBuf, RemoveKind)],
-) -> Par {
+fn err_with_manifest(code: &str, msg: impl Into<String>, deleted: &[(PathBuf, RemoveKind)]) -> Par {
     let inner: Vec<Par> = deleted
         .iter()
         .map(|(path, kind)| {
@@ -1207,7 +1203,7 @@ impl FsProcesses {
         &self,
         cmode: ConsensusMode,
         op: WalOp,
-        path: std::path::PathBuf,
+        path: PathBuf,
         reply: &Par,
         ack: &Par,
         length: Option<u64>,
@@ -3311,8 +3307,9 @@ impl FsProcesses {
             // (empty directory).  Pre-fix, an empty-dir fs_entries
             // populated `EvaluateResult.errors` and skipped the WAL
             // journal that fires below.  Companion to the
-            // streaming-slice Step 3 fix at handlers.rs:2786 which
-            // dodges the same hazard for `fs_entries_stream_next`.
+            // streaming-slice Step 3 fix inside
+            // `handlers.rs::fs_entries_stream_next` which dodges
+            // the same hazard.
             self.metering.reserve_incremental_primitive(
                 costs::fs_entries_per_entry_supplement_cost(n_entries),
             )?;
@@ -5446,7 +5443,7 @@ impl FsProcesses {
         // outcome doesn't currently branch on it — step 4 (WAL) and
         // step 7 (unlink gate) will.  Fail-closed matches the pattern
         // of every other cmode-taking native.
-        let _cmode = match resolve_cmode(cmode_par) {
+        let _ = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
                 let out = vec![err(
@@ -5579,7 +5576,7 @@ impl FsProcesses {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let _cmode = match resolve_cmode(cmode_par) {
+        let _ = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
                 let out = vec![err(
@@ -6095,7 +6092,7 @@ impl RemoveKind {
 fn collect_recursive_manifest(
     parent_fd: libc::c_int,
     leaf: *const libc::c_char,
-) -> std::io::Result<Vec<(std::path::PathBuf, RemoveKind)>> {
+) -> std::io::Result<Vec<(PathBuf, RemoveKind)>> {
     // Open the target dir with O_NOFOLLOW so a symlinked `leaf`
     // fails ELOOP rather than escaping.
     let target_fd = unsafe {
@@ -6117,7 +6114,7 @@ fn collect_recursive_manifest(
     // Final entry: target_root itself, represented by an empty
     // relative path.  Callers do canon_wal_target.join(rel) which
     // returns canon_wal_target unchanged for an empty rel.
-    out.push((std::path::PathBuf::new(), RemoveKind::Dir));
+    out.push((PathBuf::new(), RemoveKind::Dir));
     Ok(out)
 }
 
@@ -6177,7 +6174,7 @@ fn walk_and_unlink_recursive_with_journal(
             return err_with_manifest(io_err_code(&e), io_msg_scrub(&e), &[]);
         }
     };
-    let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
+    let mut deleted: Vec<(PathBuf, RemoveKind)> = Vec::new();
     for (rel_path, kind) in manifest {
         // Empty rel_path marks the target root itself (final
         // post-order entry).  `Path::join("")` appends a trailing
@@ -6259,7 +6256,7 @@ fn walk_and_unlink_recursive_with_journal(
 fn walk_dirfd_recursive(
     dir_fd: libc::c_int,
     rel_base: &std::path::Path,
-    out: &mut Vec<(std::path::PathBuf, RemoveKind)>,
+    out: &mut Vec<(PathBuf, RemoveKind)>,
 ) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
 

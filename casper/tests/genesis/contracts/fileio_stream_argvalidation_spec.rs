@@ -4,7 +4,7 @@
 //! Complements the sunny-path tests in `fileio_examples_spec.rs`
 //! (`fileio_parallel_byte_sum_foldconcurrent`,
 //! `fileio_parallel_byte_sum_of_squares_via_mapreduce`) and the
-//! LineStream refusal test in `fileio_stream_spec.rs`.  Each test
+//! LineStream refusal test in `fileio_stream_genesis_spec.rs`.  Each test
 //! pins one of the impl's declared error paths or spec-mandated
 //! boundary behaviors so a refactor that silently drops a guard is
 //! caught here rather than at runtime by a user deploy.
