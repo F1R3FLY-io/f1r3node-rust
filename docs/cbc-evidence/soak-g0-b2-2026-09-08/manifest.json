@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-SOAK-GATE-001",
+  "claim_status": "pending",
+  "cycle": "G0/B2",
+  "base_commit": "7034e21683044fb1525d213d5a1ae2e16bbb57c0",
+  "recorded_at": "2026-09-08T12:37:02Z",
+  "candidate_identity": "working-tree-content-digests",
+  "source_sha256": {
+    ".github/workflows/slashing-tests.yml": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
+    ".github/workflows/ci.yml": "c4d00763de0d186b18da281c73d181fff10ddc78e20291ba1f1212c70a073eb1",
+    "scripts/ci/check-tla-invariants.sh": "0b03474948e8738539515d15f734cfd47e0201045a0f8fd5648bdcd929c61b27",
+    "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
+    "scripts/ci/test-soak-pr-formal-gate.sh": "5e349346e03a2b534b35c6c30e152152f8c3bceb32d2982a00217b442eb71756",
+    "scripts/ci/test-check-tla-invariants.sh": "31291fc837b98385f5c7d3497ee20bb152b3d62e4b6e889ba94a4e74c8f1c46b",
+    "formal/tlaplus/carrier_index/CarrierIndex.tla": "5aae4327a4aca056d571d56d778dfe82684165fb4faa7123f480b8afd4d67575",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex.cfg": "4c5dc2805bb8ca65e1e4ff2fa9059efb30aef0b9caf71d7317d837d9c4249cd2",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex.tla": "2018d282687b9489c801c5f279be34fe680e896fb2a60b0c42936fa2f47db0cb",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.cfg": "ca704ce77b04c0aba4b0d6e3879ccc785b826dc166446b4ad634d6b0c480d9e1",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.tla": "186e6f96007d49f027d12c5a21e1e0c3c9e07f8fa1a948a05665b03842cc0f08",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.cfg": "2957030a60ce09a49d49ff2251cd100170e01e727c944d51aaab08e130b10dee",
+    "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.tla": "9316c773d6b2a7a6842382662fe737be9a25398b3fe559e89ebabc3221443a55",
+    "formal/tlaplus/replay_liveness/ReplayHotLoop.tla": "460651b3d5ac5b58d43fb89bdfeba2d3dd2cab71897de88e8185298e4f4cf2b4",
+    "formal/tlaplus/replay_liveness/MC_ReplayHotLoop.tla": "36ce516043089ae4e672c2c0ec5fd89f3a115c2bd9c3606a5f30503de2c9d25f",
+    "formal/tlaplus/replay_liveness/MC_ReplayHotLoop.cfg": "cf88ab98868e7135b5c43a56e4310db087ecf9d5c2bff36359e0e7959920749b"
+  },
+  "claim": {
+    "path": "docs/claims/soak-formal-gate.md",
+    "sha256": "4f21af4b0acb5410032f9edc1a045f58fd7fe5c817df79547584fb5c123066e6"
+  },
+  "red": {
+    "workflow_commit": "7034e21683044fb1525d213d5a1ae2e16bbb57c0",
+    "command": "bash scripts/ci/test-soak-pr-formal-gate.sh",
+    "exit_code": 1,
+    "log": "red.log"
+  },
+  "green": {
+    "command": "bash scripts/ci/test-soak-pr-formal-gate.sh",
+    "exit_code": 0,
+    "verifier_process": "fixture",
+    "scenarios": [
+      "pull_request",
+      "push",
+      "schedule",
+      "dispatch",
+      "exhaustive",
+      "failure"
+    ],
+    "log": "green.log"
+  },
+  "real_formal_gate": {
+    "command": "RUN_EXHAUSTIVE_TLA=0 TLA_TOOLS_JAR=\"$TLA_TOOLS_JAR\" bash scripts/ci/check-tla-invariants.sh --soak-pr",
+    "tool": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+    "release": "v1.7.4",
+    "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "workers": 2,
+    "per_config_timeout_seconds": 120,
+    "timeout_kill_after_seconds": 60,
+    "exit_code": 0,
+    "log": "real-gate.log",
+    "results": [
+      {
+        "configuration": "replay_liveness/MC_ReplayHotLoop",
+        "result": "passed",
+        "distinct_states": 9,
+        "log": "replay_liveness-MC_ReplayHotLoop.log"
+      },
+      {
+        "configuration": "carrier_index/MC_CarrierIndex",
+        "result": "passed",
+        "distinct_states": 222,
+        "log": "carrier_index-MC_CarrierIndex.log"
+      },
+      {
+        "configuration": "carrier_index/MC_CarrierIndex_dag_first_pre_fix",
+        "result": "expected-violation",
+        "expected_invariant": "IndexCompleteForWindow",
+        "log": "carrier_index-MC_CarrierIndex_dag_first_pre_fix.log"
+      },
+      {
+        "configuration": "carrier_index/MC_CarrierIndex_read_failure_pre_fix",
+        "result": "expected-violation",
+        "expected_invariant": "AbsenceProofSound",
+        "log": "carrier_index-MC_CarrierIndex_read_failure_pre_fix.log"
+      }
+    ]
+  },
+  "log_sha256": {
+    "b1-regression.log": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+    "carrier_index-MC_CarrierIndex.log": "f6abbcec51fa06fb03f9bdc6a89582dc0c7e723f3a1d8b03915b97b397e0ecf5",
+    "carrier_index-MC_CarrierIndex_dag_first_pre_fix.log": "344949da03e216b4e852be5fb5f6dccf46736ef8fc111c8548fd10190a8645bb",
+    "carrier_index-MC_CarrierIndex_read_failure_pre_fix.log": "3aa870af96411d35f6d6314094aae4a2d5d186a9ff4a4e5bbd62b4935dab9f26",
+    "forbidden-exhaustive.log": "a493c0b027d3ab657896d93433fade6f93c1634ce47d693d17dd407bbf4349b6",
+    "green.log": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+    "real-gate.log": "2e5a94583adfe5b8081631e554c29ae7437b3c4b9e1be35025b14d677be65d6d",
+    "red.log": "e1fd6c977271e23832e45f5717aea6a0b31ba3cff6af6c4addd18721b04743e5",
+    "release-gates.log": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+    "release-workflows.log": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+    "replay_liveness-MC_ReplayHotLoop.log": "b64524e0d14b287a1d7d938e2cc8cb7bb59175d018d027ebb8d16c047186438c",
+    "workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab"
+  },
+  "revalidation": {
+    "recorded_at": "2026-09-08T12:47:38Z",
+    "reason": "The B2 regression test changed formatting after the initial GREEN run.",
+    "previous_test_sha256": "629295130edc128804717f273eb2778ccf49e3776e9317fe228227d9337b935b",
+    "command": "bash scripts/ci/test-soak-pr-formal-gate.sh",
+    "exit_code": 0,
+    "b1_regression_exit_code": 0,
+    "shell_syntax_exit_code": 0
+  },
+  "open_obligations": [
+    "Hosted pull-request execution of this candidate is not yet confirmed.",
+    "Required-check enforcement and the full claim inventory remain open.",
+    "The shell and workflow implementation have no formal discharge.",
+    "The nightly and Rocq suites were not rerun with real verifiers in this cycle.",
+    "The existing bounded models do not establish a finalization deadline or disk reserve."
+  ]
+}

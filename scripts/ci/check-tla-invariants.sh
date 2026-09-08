@@ -34,6 +34,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TLA_ROOT="$REPO_ROOT/formal/tlaplus"
+SOAK_PR=false
+if (($#)); then
+    if (($# != 1)) || [[ "$1" != --soak-pr ]]; then
+        echo "Usage: scripts/ci/check-tla-invariants.sh [--soak-pr]" >&2
+        exit 2
+    fi
+    SOAK_PR=true
+    if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == 1 ]]; then
+        echo "ERROR: The soak PR tier cannot include exhaustive configurations." >&2
+        exit 2
+    fi
+fi
 
 if [[ ! -d "$TLA_ROOT/slashing" ]]; then
     echo "ERROR: TLA+ slashing directory not found at $TLA_ROOT/slashing" >&2
@@ -92,6 +104,15 @@ POST_FIX_CONFIGS=(
     carrier_index/MC_CarrierIndex
 )
 
+TLC_WORKERS=auto
+if [[ "$SOAK_PR" == true ]]; then
+    POST_FIX_CONFIGS=(
+        replay_liveness/MC_ReplayHotLoop
+        carrier_index/MC_CarrierIndex
+    )
+    TLC_WORKERS=2
+fi
+
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
     POST_FIX_CONFIGS+=(
         slashing/MC_EquivocationDetector
@@ -106,11 +127,18 @@ fi
 # invariant violations. Override via TLC_PER_CONFIG_TIMEOUT (GNU timeout
 # duration syntax); the cap is skipped when `timeout` is unavailable.
 TLC_PER_CONFIG_TIMEOUT="${TLC_PER_CONFIG_TIMEOUT:-45m}"
+if [[ "$SOAK_PR" == true ]]; then
+    TLC_PER_CONFIG_TIMEOUT=2m
+fi
 TIMEOUT_CMD=""
 if command -v timeout >/dev/null 2>&1; then
     TIMEOUT_CMD="timeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
 elif command -v gtimeout >/dev/null 2>&1; then
     TIMEOUT_CMD="gtimeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
+fi
+if [[ "$SOAK_PR" == true && -z "$TIMEOUT_CMD" ]]; then
+    echo "ERROR: The soak PR tier requires timeout or gtimeout." >&2
+    exit 3
 fi
 
 # Registered entries are hand-maintained above: a malformed entry or a
@@ -146,7 +174,7 @@ for check in "${POST_FIX_CONFIGS[@]}" "${NEGATIVE_CONTROLS[@]}"; do
     started_epoch="$(date +%s)"
     echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
     set +e
-    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
+    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers "$TLC_WORKERS" -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
     status=$?
     set -e
     elapsed="$(($(date +%s) - started_epoch))s"

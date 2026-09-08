@@ -25,7 +25,13 @@ behaviors:
     statement: Pull requests run bounded finalization baseline checks and carrier negative controls without the exhaustive tier.
     priority: must
     deep_module: false
-    done: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/github-workflows-slashing-tests-yml.md
+        test: scripts/ci/test-soak-pr-formal-gate.sh
+        red_exit: 1
+        green_exit: 0
+        hosted_confirmation: pending
   - id: B3
     statement: Every required claim identifies its implementation, verification command, evidence identity, and pending obligations.
     priority: must
@@ -46,7 +52,7 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 ## Behavior checklist
 
 - [x] B1: The gate rejects clean negative controls, incorrect invariant violations, tool failures, timeouts, and missing configurations.
-- [ ] B2: Pull requests execute the bounded baseline and negative controls.
+- [x] B2: The local workflow test and real bounded gate pass. Hosted pull-request confirmation remains pending.
 - [ ] B3: The claim inventory distinguishes completed checks from pending obligations.
 
 ## Cycle evidence
@@ -55,4 +61,6 @@ B1 completed one RED/GREEN cycle. The [evidence record](../cbc-evidence/scripts-
 
 The correction changes result classification only. It does not change the model, production consensus behavior, or soak workload.
 
-B2 and B3 remain open. `CLAIM-SOAK-GATE-001` and `CLAIM-FINALITY-002` remain pending.
+B2 completed its local RED/GREEN cycle. The [B2 evidence](../cbc-evidence/github-workflows-slashing-tests-yml.md) retains the workflow failure and the real bounded gate results.
+
+B3, hosted workflow confirmation, and required-check enforcement remain open. `CLAIM-SOAK-GATE-001` and `CLAIM-FINALITY-002` remain pending.

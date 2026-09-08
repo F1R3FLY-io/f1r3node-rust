@@ -10,12 +10,9 @@ model-specific; the process lives here.
 
 Two rules distinguish this repo's practice from decorative verification:
 
-1. **Specs discover, they don't assume.** Every model is written to exhibit
-   the defect class it guards against, not to flatter the implementation. A
-   verified area therefore ships *violation configurations* alongside its
-   gating configuration: the pre-fix configs reproduce the bug formally and
-   are kept forever as counter-examples (run manually, excluded from CI),
-   while the post-fix configs must stay clean in CI.
+1. **Specifications must expose defects.** Each model must expose the defect class it protects against.
+   A verified area retains pre-fix violation configurations alongside its post-fix configuration.
+   Post-fix configurations must pass. Registered negative controls must produce their specified counterexamples.
 
 2. **Proof↔code divergence is a bug in the code, not the proof.** When the
    mechanization and the implementation disagree, the implementation moves
@@ -51,9 +48,9 @@ and reused by every verified area:
 3. **pre-fix regressions** — one deterministic counter-example test per
    historical bug, failing on the pre-fix code (PR-gate)
 4. **loom interleavings** — exhaustive 2-thread model checks (PR-gate)
-5. **TLA+ model check** — TLC over every gating `MC_*.cfg` via
-   [`scripts/ci/check-tla-invariants.sh`](../scripts/ci/check-tla-invariants.sh)
-   (nightly/dispatch: hosted-runner budgets, see the workflow header)
+5. **TLA+ model check.** Pull requests and pushes run the bounded carrier and replay baselines plus both carrier negative controls.
+   Scheduled and manual runs retain the full default configuration list in
+   [`scripts/ci/check-tla-invariants.sh`](../scripts/ci/check-tla-invariants.sh).
 6. **Rocq build** — the mechanization must re-verify, axiom-free (PR-gate)
 7. **mutation / extended fuzz** — nightly budgets
 
@@ -64,8 +61,8 @@ and reused by every verified area:
   constant* per defect class distinguishing the fix from the regression.
 - `MC_<Area>.cfg` — gating config, must stay clean; registered in
   `check-tla-invariants.sh` as `<area>/MC_<Area>`.
-- `MC_<Area>_*_pre_fix.cfg` — expected-violation configs; excluded from CI,
-  documented in the area README with the property they violate.
+- `MC_<Area>_*_pre_fix.cfg` identifies an expected-violation configuration. The area README specifies its expected invariant.
+  Registered carrier controls run in CI. Other negative controls require manual verification until registered.
 - `formal/<tool>/<area>/README.md` — model↔code table and config table only.
 - Deep treatments (threat models, proofs of the design, test plans) go under
   `docs/casper/theory/<area>/` — the slashing series
@@ -181,6 +178,19 @@ PROPTEST_CASES=10000 cargo test -p casper --lib replay_cache
 cargo kani -p casper --harness <harness_name>
 ```
 
+Run the bounded pull-request tier with this command:
+
+```bash
+TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
+  bash scripts/ci/check-tla-invariants.sh --soak-pr
+```
+
+This tier uses two TLC workers and a fixed two-minute limit per configuration. It requires `timeout` or `gtimeout` and rejects exhaustive mode.
+
+The workflow allows 15 minutes for pull-request and push jobs. Scheduled and manual jobs retain 240 minutes and the existing 45-minute per-configuration default.
+
+The workflow uploads TLC logs under a name that identifies the run and attempt. A successful bounded check does not discharge finalization or disk resource claims.
+
 The exhaustive TLA+ tier uses the same 45-minute per-configuration limit as CI.
 
 On macOS, install GNU core utilities to provide `gtimeout` for that limit:
@@ -189,4 +199,4 @@ On macOS, install GNU core utilities to provide `gtimeout` for that limit:
 brew install coreutils
 ```
 
-Expected-violation configurations remain outside the gating list. Run those configurations manually to confirm their counterexamples.
+The gate checks the two registered carrier negative controls automatically. Run other expected-violation configurations manually to confirm their counterexamples.

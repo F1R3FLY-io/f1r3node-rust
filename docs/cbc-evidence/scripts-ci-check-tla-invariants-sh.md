@@ -6,7 +6,9 @@
 
 **Base revision:** `599513d4af1382e87787c2b2c746d0c887d3b738`
 
-**Candidate identity:** The [manifest](soak-g0-2026-09-08/manifest.json) records working-tree content digests. The candidate implementation is not yet committed.
+**Historical candidate:** The [B1 manifest](soak-g0-2026-09-08/manifest.json) records the content later committed as `7034e21683044fb1525d213d5a1ae2e16bbb57c0`.
+
+B1 evidence applies to that source and claim revision, not to subsequent changes. [Cycle B2](github-workflows-slashing-tests-yml.md) records later workflow and gate verification.
 
 ## RED
 
@@ -53,7 +55,7 @@ The shell syntax checks, workflow security checks, and release workflow tests pa
 
 The gate regression test and workflow checks passed again after shell formatting changed. The manifest records the updated source digest and revalidation time.
 
-The full 17-configuration suite and Rocq suite were not rerun with real verifiers in this cycle. The actual TLA+ workflow still skips pull requests.
+The full 17-configuration suite and Rocq suite were not rerun with real verifiers in B1. At the B1 checkpoint, the TLA+ workflow still skipped pull requests.
 
 ## Ledger record
 

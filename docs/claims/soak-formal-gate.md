@@ -35,11 +35,16 @@ Each required check must identify its candidate, specification, configuration, v
 
 The test uses a verifier-process fixture. Real TLC runs separately confirm the carrier baseline and both existing counterexamples.
 
-Neither result formally proves the shell implementation. Neither result establishes a residual finalization repair or a disk resource bound.
+[Cycle B2](../cbc-evidence/github-workflows-slashing-tests-yml.md) enables the bounded formal tier for pull requests and pushes. Local workflow tests preserve the nightly and exhaustive configuration inventories.
+
+The real bounded gate passed both baseline models and recognized both expected counterexamples. Hosted confirmation of the changed workflow remains pending.
+
+Neither cycle formally proves the shell implementation. Neither cycle establishes a residual finalization repair or a disk resource bound.
 
 ## Open obligations
 
-- The bounded formal job must execute on pull requests.
+- A hosted pull-request run must confirm the new bounded route.
+- Required-check enforcement must reject missing or skipped formal results.
 - The claim inventory must identify every required check and pending obligation.
 - Required-check results must bind to the tested candidate and attempt.
 - The complete gate requires formal discharge or explicit reviewed treatment of its trusted implementation.

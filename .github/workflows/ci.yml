@@ -343,6 +343,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash scripts/ci/test-check-tla-invariants.sh
 
+      - name: Verify bounded PR formal gate
+        shell: bash -euo pipefail {0}
+        run: bash scripts/ci/test-soak-pr-formal-gate.sh
+
       - name: Verify coverage summary aggregation
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-coverage-summary.sh

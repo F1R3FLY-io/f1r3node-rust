@@ -2,9 +2,9 @@
 
 **Status:** Implementation started. The repair and acceptance gates below remain open.
 
-**Progress:** [Gate G0, cycle B1](../tdd-plans/soak-gates-2026-09-08.md) now rejects carrier negative controls that do not produce the expected invariant violation.
+**Progress:** [Gate G0, cycles B1 and B2](../tdd-plans/soak-gates-2026-09-08.md) pass local verification. The gate rejects incorrect control outcomes, and pull requests now select bounded formal checks.
 
-The bounded pull-request formal job remains open. This cycle does not discharge finalization or disk claims.
+Hosted workflow confirmation, required-check enforcement, and the claim inventory remain open. Neither cycle discharges finalization or disk claims.
 
 **Branch:** `fix/soak-disk-hygiene-stop`
 

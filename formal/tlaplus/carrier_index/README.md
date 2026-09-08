@@ -24,4 +24,8 @@ Each negative control must exit with TLC code 12 and report its expected invaria
 
 `scripts/ci/test-check-tla-invariants.sh` tests result classification through the real gate with a verifier-process fixture. That fixture is not formal proof evidence.
 
-The actual TLA+ workflow still runs only on schedule and manual dispatch. The bounded pull-request formal job remains a separate open obligation.
+Pull requests and pushes run the carrier baseline, both carrier negative controls, and the replay baseline through `check-tla-invariants.sh --soak-pr`.
+
+This tier uses two workers and a fixed two-minute limit per configuration. The workflow allows 15 minutes for the complete job.
+
+Scheduled and manual runs retain the existing full configuration list. Hosted confirmation of the new pull-request route remains pending.

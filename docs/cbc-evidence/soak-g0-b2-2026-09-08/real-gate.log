@@ -1,0 +1,10 @@
+CHECK  replay_liveness/MC_ReplayHotLoop (started 12:30:03Z, cap 2m)
+OK     replay_liveness/MC_ReplayHotLoop (4s)
+CHECK  carrier_index/MC_CarrierIndex (started 12:30:07Z, cap 2m)
+OK     carrier_index/MC_CarrierIndex (4s)
+CHECK  carrier_index/MC_CarrierIndex_dag_first_pre_fix (started 12:30:11Z, cap 2m)
+EXPECTED-FAIL carrier_index/MC_CarrierIndex_dag_first_pre_fix (IndexCompleteForWindow, 4s)
+CHECK  carrier_index/MC_CarrierIndex_read_failure_pre_fix (started 12:30:15Z, cap 2m)
+EXPECTED-FAIL carrier_index/MC_CarrierIndex_read_failure_pre_fix (AbsenceProofSound, 2s)
+All 2 post-fix TLA+ configurations clean.
+All 2 negative controls violated their expected invariants.
