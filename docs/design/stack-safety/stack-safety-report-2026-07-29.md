@@ -9931,6 +9931,40 @@ remains assigned to 6018. A shrinking nested value suffix proves termination, no
 the total key-validation cost. No new latency, allocation-count, RSS, native-stack
 slope or PathMap/ACT-versus-LMDB performance result is claimed here.
 
+#### 5.33.7 Standalone canonical-key protocol qualification (2026-09-08, tasks 5976/6018)
+
+The shared protobuf/EPM1 admission worklist now has a private standalone
+canonical-key root. A formal-first protocol extension supplies nine transport
+capstones and two controls, preserving the prior RPB3 fold theorem and its
+explicit parser-refinement boundary. Twelve closed reports and independent
+kernel checking pass. Twelve new Rust tests bind exact completion, stability,
+child resolution, cursor suspension and physical byte origins to the existing
+typed validator. All **349 models library tests pass**, none ignored or filtered.
+The expanded integrated import gate also passes 46 focused tests and all three
+registered proof/kernel groups (48 import, 17 score and 12 protocol reports).
+The post-refactor release integration run passes all 23 equivalence-manifest and
+36 ParBag tests, including depth-4,096 compact import/ACT validation; no tests are
+ignored or filtered. Its 294.90-second ParBag duration is not a paired benchmark.
+
+The depth-20,000 tuple test includes admission and teardown on a 64-KiB thread
+stack. A sixteen-level mixed protobuf/EPM chain exercises the shared driver.
+The previous and new frame variants occupy 1,136 bytes in the test build.
+These are bounded correctness/layout witnesses, not a native-stack slope study
+or a production ABI claim. Rust verification retains the 6-GiB zero-swap cap.
+
+The flat byte-array controls also expose retained work: $`n`$ input bytes retain
+$`n+1`$ reducer states and $`n`$ arena payload slots. Existing page rollover is
+included in the arena's `divergent_segments` counter, so nonzero values do not
+alone demonstrate forks. Driver capacity bytes describe only the frame vector,
+not its owned arenas or total heap. Neither borrowed input nor frozen-page
+sharing establishes zero-copy admission or physical-byte-linear nested work.
+
+The importer still uses its existing validator. Standalone resource optimization,
+repeated nested-payload work and earlier ACT endpoint copies remain required
+6018 work; no performance cutover or backend comparison is claimed. The complete
+controls, corrected test assumptions and evidence digests are recorded in
+[J-088](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-088--2026-09-08-share-canonical-key-admission-without-hiding-retained-work).
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

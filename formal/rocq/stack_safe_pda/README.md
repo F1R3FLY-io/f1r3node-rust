@@ -261,6 +261,108 @@ The proof retains the ACT/key implementation premises rather than replacing them
 with a claim about a synthetic inspector. Platform representability and allocator
 success remain separate implementation obligations.
 
+### Standalone canonical-key root: implementation contract (tasks 5976/6018)
+
+The internal standalone admission entry reuses the existing protobuf admission worklist and
+`CanonicalPathReducer`. It is not a second key parser or a fabricated EPM1
+snapshot. A standalone path frame owns an indexed region, located cursor,
+reducer handle, existing page-backed arena and optional pending obligation.
+Raw-Par escapes dispatch the existing Message frame; nested EPM1 dispatches
+the existing EPathMap frame. The parent remains suspended on the same explicit
+heap stack. The Message-root wrapper retains its current postchecks and error
+precedence. The broader typed metadata API is not replaced by this narrower
+validity/stability result.
+
+The following matrix is the required formal-to-executable contract. The entry
+is implemented but not activated in the importer. `CanonicalKeyProtocol` in
+`RPB3Admission.v` proves nine protocol capstones and two controls before the Rust
+change; the preserved generic fold supplies the twelfth closed report. Independent
+kernel checking passes. The concrete read, payload-extraction and terminal-semantic
+premises remain explicit in `parser_refinement`; neither that interface nor the
+generic Boolean fold is a proof of the concrete byte parser.
+
+| Invariant | Required discriminating executable witness |
+|---|---|
+| Exact root completion | Empty, truncated, complete and trailing paths; no success with a pending child or unconsumed suffix. |
+| Three distinct verdicts | Guaranteed stable keys, valid unstable escapes and malformed keys; errors must not become valid instability. |
+| Correct child routing | Raw-Par versus nested-EPM obligations, mismatched summary kinds and pending IDs; zero-length obligations dispatch immediately. |
+| Canonical resolution | An escape containing a stable Par refuses; nested EPM requires Map mode and stable entries. Installing a returned handle is mandatory even when it carries deferred rejection. |
+| Suspension and resumption | A mixed split key has an obligation followed by a discriminating suffix; no skipped, duplicated or prematurely consumed bytes. |
+| Child failure authority | Malformed child plus malformed suffix retains child-first refusal and cannot authorize the parent endpoint. |
+| Exact byte ownership and origin | Borrowed and frozen fragmented inputs agree; discontinuous byte origins and empty-payload EOF retain their supplied anchors. |
+| Importer selection | New stable-key success agrees with the existing typed validator over generated valid keys and causal mutations; invalid and valid-unstable keys both decline only at the importer. |
+| Actual operation accounting | Observe cursor reads, reducer states/frames, arena payload/provenance/pages, driver capacity and child dispatch/resolution; do not mistake zero-initialized legacy counters for allocation measurements. |
+
+`models/tests/support/standalone_path_admission.rs` binds the catalogue to the
+existing typed validator and to causal controls. CKP-01 is
+`standalone_acceptance_inherits_explicit_parser_authority`; CKP-02 is
+`completion_requires_full_consumption_without_pending_child`; CKP-03 is
+`saved_parent_id_kind_and_resolution_are_exact`; CKP-04 is
+`canonical_resolution_rules_preserve_valid_unstable`; CKP-05 is
+`suspended_cursor_and_ordered_read_are_preserved`; CKP-06 is
+`child_failure_is_terminal`; CKP-07 is
+`child_payload_retains_owner_bytes_and_provenance`; CKP-08 is
+`stable_only_caller_preserves_three_outcomes`; CKP-09 is
+`shared_loop_has_no_forbidden_transport_effect`.
+
+The tests include a stale ID taken from a previous child, a returned handle
+carrying deferred semantic rejection, an empty EPM child whose error must retain
+the length-byte anchor, a sixteen-level protobuf/EPM chain, and depth-20,000 tuple
+admission and teardown on a 64-KiB stack. Located-cursor and arena counters are
+actual implementation observations, but the transport effect theorem does not
+prove allocator costs or child-parser work. The previous and extended driver
+enum layouts are compared directly in the test build; this is not a portable
+ABI promise or a substitute for measuring production allocations.
+
+The standalone entry must remain internal until flat string/byte-array and
+nested-obligation qualification justifies caller activation. The existing
+reducer retains state and byte/provenance storage per edge and has no no-fork
+mode. A standalone contiguous key does not need topology restoration history;
+reusing the grammar does not imply that retaining its trie-walk history is
+efficient. No advantage is inferred merely from avoiding AST decoding.
+
+Task 6018 also retains the pipeline-wide requirements: avoid repeated traversal
+of nested opaque payloads, repeated active-region rebuilding and keys already
+reconstructed by the local ACT inspector. Page-backed ownership already exists
+and is not a missing implementation to recreate. The new root protocol alone
+cannot prove linear work in physical input bytes or close these requirements.
+
+The source-backed resource plan separates exclusive standalone storage from
+persistent ACT topology history while retaining the same grammar. A non-forkable
+current-state facade can remove historical `InnerPath` slots, but that alone
+does not remove historical parser frames or copied arena payloads. The required
+endpoint is a live exclusive continuation stack and indexed input spans for the
+standalone root, alongside the existing persistent storage for ACT forks.
+`IndexedByteRegion` already provides the subviews, comparison and located access
+needed by standalone region-key and child-payload spans. Child-region adaptation
+must preserve the reducer's supplied completion anchor exactly.
+
+Before that storage change, its separate formal refinement must establish:
+
+1. Exclusive state cannot export or restore historical reducer handles.
+2. Persistent and exclusive paths have identical validity, stability, error,
+   provenance and child-obligation observations.
+3. Replacing/reclaiming frames preserves all reachable continuations and
+   previous-key spans without changing retained topology checkpoints.
+4. Indexed spans equal arena slices, including comparison and EOF anchors.
+5. Suspended child spans survive parent advancement and teardown.
+6. Checked bulk consumption of opaque payloads equals repeated feeding,
+   including enclosing bounds, pending IDs and child-first error order.
+7. Retained states, live/allocated frames, copied payload/provenance and physical
+   byte visits have separately stated bounds.
+8. The CKP completion, resolution, failure and three-outcome contracts remain
+   unchanged.
+
+Opaque payload skipping cannot skip local UTF-8 or grammar checks. Replacing
+ancestor-by-ancestor region updates with checked absolute endpoints, and removing
+repeated work inside nested ACT traversal, remain part of the complete physical
+work requirement. The current-state-only step must not be mistaken for that
+endpoint. The existing flat-width, deep-tuple, region-key ordering, mixed-child
+and fragmented-source corpora are the executable qualification basis; allocator
+and per-origin work observations must exclude fixture construction and report
+teardown separately. These are planned storage refinements, not claims proved
+by `CanonicalKeyProtocol`.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

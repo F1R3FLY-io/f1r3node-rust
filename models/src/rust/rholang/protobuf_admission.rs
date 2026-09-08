@@ -16,10 +16,11 @@ use std::fmt;
 
 use pathmap::PathMap;
 
-use super::canonical_bytes_arena::CanonicalByteProvenance;
+use super::canonical_bytes_arena::{CanonicalByteProvenance, CanonicalBytesArena};
 use super::canonical_path_admission::{
     CanonicalPathObligationId, CanonicalPathObligationKind, CanonicalPathObligationResolution,
-    CanonicalPathSource, CanonicalPathTopologyAdmission, LocatedPathByte, NestedEpmMode,
+    CanonicalPathReducer, CanonicalPathReducerHandle, CanonicalPathSource, CanonicalPathSummary,
+    CanonicalPathTopologyAdmission, FrozenCanonicalPathObligation, LocatedPathByte, NestedEpmMode,
 };
 use super::canonical_score_bytes::{
     CanonicalScoreArena, CanonicalScoreArenaError, CanonicalScoreHandle,
@@ -30,7 +31,8 @@ use super::canonical_semantics::{
 };
 use super::indexed_protobuf::{
     IndexedBytePosition, IndexedByteRegion, IndexedCanonicalField, IndexedCanonicalFieldCursor,
-    IndexedCanonicalFieldValue, LocatedCanonicalProtobufError, OwnedIndexedByteRegion,
+    IndexedCanonicalFieldValue, IndexedLocatedByteCursor, LocatedCanonicalProtobufError,
+    OwnedIndexedByteRegion,
 };
 use super::match_schema::{
     resolve_protobuf_field, wire_program_by_type_id, ResolvedProtobufField,
@@ -59,9 +61,13 @@ pub(crate) struct CanonicalProtobufAdmissionStats {
     pub(crate) epathmap_events: usize,
     pub(crate) canonical_path_obligations: usize,
     pub(crate) canonical_path_payload_bytes: usize,
+    pub(crate) canonical_path_bytes_read: usize,
+    pub(crate) canonical_path_bytes_traversed: usize,
+    pub(crate) canonical_path_resolutions: usize,
     pub(crate) max_frames: usize,
     pub(crate) frame_variant_bytes: usize,
     pub(crate) max_frame_storage_bytes: usize,
+    pub(crate) max_frame_capacity_bytes: usize,
     pub(crate) reconstructed_key_bytes: usize,
     pub(crate) legacy_endpoint_replays: usize,
     pub(crate) typed_decodes: usize,
@@ -2145,10 +2151,182 @@ struct EPathMapFrame<'src> {
 
 enum EPathMapWait {
     MapValue,
-    Obligation {
-        id: CanonicalPathObligationId,
-        kind: CanonicalPathObligationKind,
-    },
+    Obligation(PathObligationWait),
+}
+
+struct PathObligationWait {
+    id: CanonicalPathObligationId,
+    kind: CanonicalPathObligationKind,
+}
+
+impl PathObligationWait {
+    fn resolution(&self, summary: FrameSummary<'_>) -> Option<CanonicalPathObligationResolution> {
+        match (self.kind, summary) {
+            (
+                CanonicalPathObligationKind::RawParEscape,
+                FrameSummary::Message(MessageSummary {
+                    semantic: SemanticSummary::Par(par),
+                }),
+            ) => Some(CanonicalPathObligationResolution::RawPar {
+                canonical_path_stable: par.canonical_path_stable,
+            }),
+            (CanonicalPathObligationKind::NestedEpm1, FrameSummary::EPathMap(epm)) => {
+                Some(CanonicalPathObligationResolution::NestedEpm1 {
+                    mode: match epm.mode {
+                        EPathMapMode::Empty => NestedEpmMode::Empty,
+                        EPathMapMode::Set => NestedEpmMode::Set,
+                        EPathMapMode::Map => NestedEpmMode::Map,
+                    },
+                    entries_stable: epm.entries_canonical_path_stable,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+fn obligation_frame<'src>(
+    completed: FrozenCanonicalPathObligation,
+    owner: &'static RhoMatchProgram,
+    field: u32,
+    stats: &mut CanonicalProtobufAdmissionStats,
+) -> Result<(PathObligationWait, Frame<'src>), CanonicalProtobufAdmissionError> {
+    let payload_len = completed.payload.len();
+    let end =
+        CanonicalByteProvenance::new(completed.payload_end.source, completed.payload_end.offset);
+    let body = shorten_frozen_region(OwnedIndexedByteRegion::from_frozen(completed.payload, end));
+    stats.canonical_path_obligations = stats
+        .canonical_path_obligations
+        .checked_add(1)
+        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+    stats.canonical_path_payload_bytes = stats
+        .canonical_path_payload_bytes
+        .checked_add(payload_len)
+        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+    let waiting = PathObligationWait {
+        id: completed.obligation.id,
+        kind: completed.obligation.kind,
+    };
+    let frame = match waiting.kind {
+        CanonicalPathObligationKind::RawParEscape => Frame::Message(
+            MessageFrame::from_message_region(body, &PAR_PROTOBUF_REGION_PROGRAM)?,
+        ),
+        CanonicalPathObligationKind::NestedEpm1 => {
+            Frame::EPathMap(EPathMapFrame::from_epm1_region(owner, field, body)?)
+        }
+    };
+    Ok((waiting, frame))
+}
+
+struct CanonicalPathFrame<'src> {
+    input: AdmissionRegion<'src>,
+    cursor: IndexedLocatedByteCursor<'src>,
+    arena: CanonicalBytesArena,
+    reducer: CanonicalPathReducer,
+    current: CanonicalPathReducerHandle,
+    waiting: Option<PathObligationWait>,
+}
+
+impl<'src> CanonicalPathFrame<'src> {
+    fn new(input: AdmissionRegion<'src>) -> Self {
+        let arena = CanonicalBytesArena::new();
+        let reducer = CanonicalPathReducer::new();
+        let current = reducer.root(&arena);
+        Self {
+            cursor: input.located_bytes(),
+            input,
+            arena,
+            reducer,
+            current,
+            waiting: None,
+        }
+    }
+
+    fn path_error(
+        source: super::canonical_path_admission::CanonicalPathAdmissionError,
+    ) -> CanonicalProtobufAdmissionError {
+        CanonicalProtobufAdmissionError::CanonicalPath {
+            type_name: "CanonicalPath",
+            field: 0,
+            position: source.source,
+            detail: source.to_string(),
+        }
+    }
+
+    fn protocol_error(&self, detail: &'static str) -> CanonicalProtobufAdmissionError {
+        CanonicalProtobufAdmissionError::Schema {
+            type_name: "CanonicalPath",
+            field: 0,
+            position: self.input.end_position().physical,
+            detail,
+        }
+    }
+
+    fn accept(
+        &mut self,
+        summary: FrameSummary<'src>,
+        stats: &mut CanonicalProtobufAdmissionStats,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        let waiting = self.waiting.take().ok_or_else(|| {
+            self.protocol_error("canonical path child returned without a continuation")
+        })?;
+        let resolution = waiting.resolution(summary).ok_or_else(|| {
+            self.protocol_error("canonical path child returned the wrong summary kind")
+        })?;
+        self.current = self
+            .reducer
+            .resolve_obligation(&self.arena, self.current, waiting.id, resolution)
+            .map_err(Self::path_error)?;
+        stats.canonical_path_resolutions = stats
+            .canonical_path_resolutions
+            .checked_add(1)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+        Ok(())
+    }
+
+    fn step(
+        &mut self,
+        stats: &mut CanonicalProtobufAdmissionStats,
+    ) -> Result<FrameAction<'src>, CanonicalProtobufAdmissionError> {
+        if self.waiting.is_some() {
+            return Err(self.protocol_error("canonical path resumed before its child returned"));
+        }
+        for byte in self.cursor.by_ref() {
+            (self.current, _) = self
+                .reducer
+                .edge(&mut self.arena, self.current, byte)
+                .map_err(Self::path_error)?;
+            if let Some(completed) = self
+                .reducer
+                .freeze_completed_obligation(&self.arena, self.current)
+                .map_err(Self::path_error)?
+            {
+                let (waiting, frame) =
+                    obligation_frame(completed, &PAR_PROTOBUF_REGION_PROGRAM, 0, stats)?;
+                self.waiting = Some(waiting);
+                return Ok(FrameAction::Push(frame));
+            }
+        }
+        let end = self.input.end_position().physical;
+        let summary = self
+            .reducer
+            .value(
+                self.current,
+                true,
+                CanonicalPathSource::in_source(end.source, end.offset),
+            )
+            .expect("standalone canonical path owns one endpoint")
+            .map_err(Self::path_error)?;
+        stats.canonical_path_bytes_read = stats
+            .canonical_path_bytes_read
+            .checked_add(self.cursor.bytes_yielded())
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+        stats.canonical_path_bytes_traversed = stats
+            .canonical_path_bytes_traversed
+            .checked_add(self.cursor.bytes_traversed())
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+        Ok(FrameAction::Complete(FrameSummary::CanonicalPath(summary)))
+    }
 }
 
 impl<'src> EPathMapFrame<'src> {
@@ -2205,6 +2383,7 @@ impl<'src> EPathMapFrame<'src> {
     fn accept(
         &mut self,
         summary: FrameSummary<'src>,
+        stats: &mut CanonicalProtobufAdmissionStats,
     ) -> Result<(), CanonicalProtobufAdmissionError> {
         let Some(waiting) = self.waiting.take() else {
             return Err(CanonicalProtobufAdmissionError::Schema {
@@ -2224,37 +2403,25 @@ impl<'src> EPathMapFrame<'src> {
                 self.entries_canonical_path_stable &= par.canonical_path_stable;
                 Ok(())
             }
-            (
-                EPathMapWait::Obligation {
-                    id,
-                    kind: CanonicalPathObligationKind::RawParEscape,
-                },
-                FrameSummary::Message(MessageSummary {
-                    semantic: SemanticSummary::Par(par),
-                }),
-            ) => self
-                .path
-                .resolve_obligation(id, CanonicalPathObligationResolution::RawPar {
-                    canonical_path_stable: par.canonical_path_stable,
-                })
-                .map_err(|source| self.path_error(source)),
-            (
-                EPathMapWait::Obligation {
-                    id,
-                    kind: CanonicalPathObligationKind::NestedEpm1,
-                },
-                FrameSummary::EPathMap(epm),
-            ) => self
-                .path
-                .resolve_obligation(id, CanonicalPathObligationResolution::NestedEpm1 {
-                    mode: match epm.mode {
-                        EPathMapMode::Empty => NestedEpmMode::Empty,
-                        EPathMapMode::Set => NestedEpmMode::Set,
-                        EPathMapMode::Map => NestedEpmMode::Map,
-                    },
-                    entries_stable: epm.entries_canonical_path_stable,
-                })
-                .map_err(|source| self.path_error(source)),
+            (EPathMapWait::Obligation(waiting), summary) => {
+                let resolution =
+                    waiting
+                        .resolution(summary)
+                        .ok_or(CanonicalProtobufAdmissionError::Schema {
+                            type_name: self.owner.type_name,
+                            field: self.field,
+                            position: self.region_start,
+                            detail: "EPM1 child returned the wrong summary for its continuation",
+                        })?;
+                self.path
+                    .resolve_obligation(waiting.id, resolution)
+                    .map_err(|source| self.path_error(source))?;
+                stats.canonical_path_resolutions = stats
+                    .canonical_path_resolutions
+                    .checked_add(1)
+                    .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+                Ok(())
+            }
             _ => Err(CanonicalProtobufAdmissionError::Schema {
                 type_name: self.owner.type_name,
                 field: self.field,
@@ -2269,6 +2436,7 @@ enum Frame<'src> {
     Message(MessageFrame<'src>),
     Map(MapFrame<'src>),
     EPathMap(EPathMapFrame<'src>),
+    CanonicalPath(CanonicalPathFrame<'src>),
 }
 
 #[derive(Clone)]
@@ -2287,6 +2455,7 @@ enum FrameSummary<'src> {
     Message(MessageSummary<'src>),
     Map(MapSummary<'src>),
     EPathMap(EPathMapSummary<'src>),
+    CanonicalPath(CanonicalPathSummary),
 }
 
 enum FrameAction<'src> {
@@ -2900,40 +3069,10 @@ fn epathmap_step<'src>(
                     .freeze_completed_obligation()
                     .map_err(|source| frame.path_error(source))?
                 {
-                    let payload_len = completed.payload.len();
-                    let end = CanonicalByteProvenance::new(
-                        completed.payload_end.source,
-                        completed.payload_end.offset,
-                    );
-                    let body = shorten_frozen_region(OwnedIndexedByteRegion::from_frozen(
-                        completed.payload,
-                        end,
-                    ));
-                    stats.canonical_path_obligations = stats
-                        .canonical_path_obligations
-                        .checked_add(1)
-                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-                    stats.canonical_path_payload_bytes = stats
-                        .canonical_path_payload_bytes
-                        .checked_add(payload_len)
-                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-                    frame.waiting = Some(EPathMapWait::Obligation {
-                        id: completed.obligation.id,
-                        kind: completed.obligation.kind,
-                    });
-                    return match completed.obligation.kind {
-                        CanonicalPathObligationKind::RawParEscape => Ok(FrameAction::Push(
-                            Frame::Message(MessageFrame::from_message_region(
-                                body,
-                                &PAR_PROTOBUF_REGION_PROGRAM,
-                            )?),
-                        )),
-                        CanonicalPathObligationKind::NestedEpm1 => {
-                            Ok(FrameAction::Push(Frame::EPathMap(
-                                EPathMapFrame::from_epm1_region(frame.owner, frame.field, body)?,
-                            )))
-                        }
-                    };
+                    let (waiting, child) =
+                        obligation_frame(completed, frame.owner, frame.field, stats)?;
+                    frame.waiting = Some(EPathMapWait::Obligation(waiting));
+                    return Ok(FrameAction::Push(child));
                 }
             }
             IndexedCanonicalEpm1TopologyEvent::Leave { provenance } => {
@@ -2986,30 +3125,32 @@ fn first_score_difference<'src>(
     }
 }
 
-fn validate_canonical_protobuf_inner<'src>(
-    input: AdmissionRegion<'src>,
-    root: &'static RhoMatchProgram,
-    claimed_component: Option<(ParComponentTag, &[u8])>,
-) -> Result<CanonicalProtobufAdmission, CanonicalProtobufAdmissionError> {
-    let input_bytes = input.len();
-    let root_start = input
-        .position_at(0)
-        .expect("indexed protobuf roots own their start")
-        .physical;
+fn drive_admission<'src>(
+    initial: Frame<'src>,
+    input_bytes: usize,
+) -> Result<
+    (
+        FrameSummary<'src>,
+        CanonicalScoreArena<'src>,
+        CanonicalProtobufAdmissionStats,
+    ),
+    CanonicalProtobufAdmissionError,
+> {
     let frame_variant_bytes = std::mem::size_of::<Frame>();
     let mut scores: CanonicalScoreArena<'src> = CanonicalScoreArena::new();
     let mut stats = CanonicalProtobufAdmissionStats {
         input_bytes,
-        messages: 1,
+        messages: usize::from(matches!(&initial, Frame::Message(_))),
+        map_entries: usize::from(matches!(&initial, Frame::Map(_))),
+        epathmaps: usize::from(matches!(&initial, Frame::EPathMap(_))),
         max_frames: 1,
         frame_variant_bytes,
         max_frame_storage_bytes: frame_variant_bytes,
+        max_frame_capacity_bytes: frame_variant_bytes,
         byte_native_validations: 1,
         ..CanonicalProtobufAdmissionStats::default()
     };
-    let mut frames: Vec<Frame<'src>> = vec![Frame::Message(MessageFrame::from_message_region(
-        input, root,
-    )?)];
+    let mut frames: Vec<Frame<'src>> = vec![initial];
     loop {
         let action = match frames
             .last_mut()
@@ -3018,6 +3159,7 @@ fn validate_canonical_protobuf_inner<'src>(
             Frame::Message(frame) => message_step(frame, &mut stats, &mut scores)?,
             Frame::Map(frame) => map_step(frame, &mut stats)?,
             Frame::EPathMap(frame) => epathmap_step(frame, &mut stats)?,
+            Frame::CanonicalPath(frame) => frame.step(&mut stats)?,
         };
         match action {
             FrameAction::Continue => {}
@@ -3041,12 +3183,19 @@ fn validate_canonical_protobuf_inner<'src>(
                             .checked_add(1)
                             .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?
                     }
+                    Frame::CanonicalPath(_) => {}
                 }
                 frames.push(frame);
                 stats.max_frames = stats.max_frames.max(frames.len());
                 stats.max_frame_storage_bytes = stats.max_frame_storage_bytes.max(
                     frames
                         .len()
+                        .checked_mul(frame_variant_bytes)
+                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?,
+                );
+                stats.max_frame_capacity_bytes = stats.max_frame_capacity_bytes.max(
+                    frames
+                        .capacity()
                         .checked_mul(frame_variant_bytes)
                         .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?,
                 );
@@ -3057,96 +3206,137 @@ fn validate_canonical_protobuf_inner<'src>(
                     match parent {
                         Frame::Message(frame) => frame.accept(summary, &scores)?,
                         Frame::Map(frame) => frame.accept(summary)?,
-                        Frame::EPathMap(frame) => frame.accept(summary)?,
+                        Frame::EPathMap(frame) => frame.accept(summary, &mut stats)?,
+                        Frame::CanonicalPath(frame) => frame.accept(summary, &mut stats)?,
                     }
                 } else {
-                    let FrameSummary::Message(summary) = summary else {
-                        return Err(CanonicalProtobufAdmissionError::Schema {
-                            type_name: root.type_name,
-                            field: 0,
-                            position: root_start,
-                            detail: "canonical protobuf root returned the wrong summary kind",
-                        });
-                    };
-                    let semantic_default_par = match &summary.semantic {
-                        SemanticSummary::Par(par) => Some(par.semantic_default),
-                        _ => None,
-                    };
-                    let canonical_path_stable_par = match &summary.semantic {
-                        SemanticSummary::Par(par) => Some(par.canonical_path_stable),
-                        _ => None,
-                    };
-                    let component = match &summary.semantic {
-                        SemanticSummary::Component(component) => {
-                            Some(CanonicalComponentAdmission {
-                                family: component.family,
-                                canonical_path_stable: component.canonical_path_stable,
-                                complete: component.complete,
-                            })
-                        }
-                        _ => None,
-                    };
-                    #[cfg(test)]
-                    let score_bytes = {
-                        let score = match &summary.semantic {
-                            SemanticSummary::Par(par) => Some(par.score),
-                            SemanticSummary::Component(component) => Some(component.score),
-                            SemanticSummary::Var(score) => Some(*score),
-                            SemanticSummary::ReceiveBind { score, .. }
-                            | SemanticSummary::MatchCase { score, .. } => *score,
-                            SemanticSummary::ExprPayload(payload) => payload.score,
-                            _ => None,
-                        };
-                        score.map(|score| {
-                            let mut cursor = scores.cursor(score);
-                            std::iter::from_fn(|| cursor.next()).collect()
-                        })
-                    };
-                    stats.protobuf_bytes_fast_forwarded = stats
-                        .protobuf_bytes_read
-                        .checked_sub(stats.protobuf_bytes_traversed)
-                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-                    validate_cutover_stats(&stats)?;
-                    if let Some((family, claimed_score)) = claimed_component {
-                        let SemanticSummary::Component(root_component) = &summary.semantic else {
-                            return Err(CanonicalProtobufAdmissionError::Schema {
-                                type_name: root.type_name,
-                                field: 0,
-                                position: root_start,
-                                detail:
-                                    "claimed component score was supplied for a non-component root",
-                            });
-                        };
-                        if root_component.family != family {
-                            return Err(CanonicalProtobufAdmissionError::Schema {
-                                type_name: root.type_name,
-                                field: u32::from(family.byte()),
-                                position: root_start,
-                                detail: "claimed component family disagrees with the schema root",
-                            });
-                        }
-                        if let Some(first_difference) =
-                            first_score_difference(&scores, root_component.score, claimed_score)
-                        {
-                            return Err(CanonicalProtobufAdmissionError::ScoreMismatch {
-                                type_name: root.type_name,
-                                region_start: root_start,
-                                first_difference,
-                            });
-                        }
-                    }
-                    return Ok(CanonicalProtobufAdmission {
-                        stats,
-                        semantic_default_par,
-                        canonical_path_stable_par,
-                        component,
-                        #[cfg(test)]
-                        score_bytes,
-                    });
+                    return Ok((summary, scores, stats));
                 }
             }
         }
     }
+}
+
+fn validate_canonical_path_indexed(
+    input: AdmissionRegion<'_>,
+) -> Result<(CanonicalPathSummary, CanonicalProtobufAdmissionStats), CanonicalProtobufAdmissionError>
+{
+    let input_bytes = input.len();
+    let root_end = input.end_position().physical;
+    let (summary, _, mut stats) = drive_admission(
+        Frame::CanonicalPath(CanonicalPathFrame::new(input)),
+        input_bytes,
+    )?;
+    let FrameSummary::CanonicalPath(summary) = summary else {
+        return Err(CanonicalProtobufAdmissionError::Schema {
+            type_name: "CanonicalPath",
+            field: 0,
+            position: root_end,
+            detail: "canonical path root returned the wrong summary kind",
+        });
+    };
+    stats.protobuf_bytes_fast_forwarded = stats
+        .protobuf_bytes_read
+        .checked_sub(stats.protobuf_bytes_traversed)
+        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+    validate_cutover_stats(&stats)?;
+    Ok((summary, stats))
+}
+
+fn validate_canonical_protobuf_inner<'src>(
+    input: AdmissionRegion<'src>,
+    root: &'static RhoMatchProgram,
+    claimed_component: Option<(ParComponentTag, &[u8])>,
+) -> Result<CanonicalProtobufAdmission, CanonicalProtobufAdmissionError> {
+    let input_bytes = input.len();
+    let root_start = input
+        .position_at(0)
+        .expect("indexed protobuf roots own their start")
+        .physical;
+    let (summary, scores, mut stats) = drive_admission(
+        Frame::Message(MessageFrame::from_message_region(input, root)?),
+        input_bytes,
+    )?;
+    let FrameSummary::Message(summary) = summary else {
+        return Err(CanonicalProtobufAdmissionError::Schema {
+            type_name: root.type_name,
+            field: 0,
+            position: root_start,
+            detail: "canonical protobuf root returned the wrong summary kind",
+        });
+    };
+    let semantic_default_par = match &summary.semantic {
+        SemanticSummary::Par(par) => Some(par.semantic_default),
+        _ => None,
+    };
+    let canonical_path_stable_par = match &summary.semantic {
+        SemanticSummary::Par(par) => Some(par.canonical_path_stable),
+        _ => None,
+    };
+    let component = match &summary.semantic {
+        SemanticSummary::Component(component) => Some(CanonicalComponentAdmission {
+            family: component.family,
+            canonical_path_stable: component.canonical_path_stable,
+            complete: component.complete,
+        }),
+        _ => None,
+    };
+    #[cfg(test)]
+    let score_bytes = {
+        let score = match &summary.semantic {
+            SemanticSummary::Par(par) => Some(par.score),
+            SemanticSummary::Component(component) => Some(component.score),
+            SemanticSummary::Var(score) => Some(*score),
+            SemanticSummary::ReceiveBind { score, .. }
+            | SemanticSummary::MatchCase { score, .. } => *score,
+            SemanticSummary::ExprPayload(payload) => payload.score,
+            _ => None,
+        };
+        score.map(|score| {
+            let mut cursor = scores.cursor(score);
+            std::iter::from_fn(|| cursor.next()).collect()
+        })
+    };
+    stats.protobuf_bytes_fast_forwarded = stats
+        .protobuf_bytes_read
+        .checked_sub(stats.protobuf_bytes_traversed)
+        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+    validate_cutover_stats(&stats)?;
+    if let Some((family, claimed_score)) = claimed_component {
+        let SemanticSummary::Component(root_component) = &summary.semantic else {
+            return Err(CanonicalProtobufAdmissionError::Schema {
+                type_name: root.type_name,
+                field: 0,
+                position: root_start,
+                detail: "claimed component score was supplied for a non-component root",
+            });
+        };
+        if root_component.family != family {
+            return Err(CanonicalProtobufAdmissionError::Schema {
+                type_name: root.type_name,
+                field: u32::from(family.byte()),
+                position: root_start,
+                detail: "claimed component family disagrees with the schema root",
+            });
+        }
+        if let Some(first_difference) =
+            first_score_difference(&scores, root_component.score, claimed_score)
+        {
+            return Err(CanonicalProtobufAdmissionError::ScoreMismatch {
+                type_name: root.type_name,
+                region_start: root_start,
+                first_difference,
+            });
+        }
+    }
+    Ok(CanonicalProtobufAdmission {
+        stats,
+        semantic_default_par,
+        canonical_path_stable_par,
+        component,
+        #[cfg(test)]
+        score_bytes,
+    })
 }
 
 /// The executable no-fallback verdict shared by production completion and its
@@ -3235,6 +3425,10 @@ pub(crate) fn validate_canonical_par_protobuf_indexed(
 }
 
 #[cfg(test)]
+#[path = "../../../tests/support/standalone_path_admission.rs"]
+mod standalone_path_admission;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
@@ -3254,7 +3448,7 @@ mod tests {
         BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
         GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM, MATCH_RHO_MATCH_PROGRAM,
         NEW_RHO_MATCH_PROGRAM, PAR_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM,
-        SEND_RHO_MATCH_PROGRAM, RHO_MATCH_REGISTRY,
+        RHO_MATCH_REGISTRY, SEND_RHO_MATCH_PROGRAM,
     };
     use crate::rust::rholang::protobuf_schema::ProtobufField;
     use crate::rust::rholang::schema_test_adapters::{
@@ -3489,7 +3683,9 @@ mod tests {
             let (_, registered) = RHO_MATCH_REGISTRY
                 .iter()
                 .find(|(name, _)| *name == fixture.message_name)
-                .unwrap_or_else(|| panic!("{} has no generated registry row", fixture.message_name));
+                .unwrap_or_else(|| {
+                    panic!("{} has no generated registry row", fixture.message_name)
+                });
             assert!(
                 std::ptr::eq(*registered, fixture.program),
                 "{}.{} is not bound to its generated registry program",
@@ -3498,20 +3694,32 @@ mod tests {
             );
 
             let machine = (fixture.machine_round_trip)(&fixture.bytes).unwrap_or_else(|error| {
-                panic!("{}.{} generated PDA rejected fixture: {error}", fixture.message_name, fixture.fixture_name)
+                panic!(
+                    "{}.{} generated PDA rejected fixture: {error}",
+                    fixture.message_name, fixture.fixture_name
+                )
             });
             let oracle = (fixture.oracle_round_trip)(&fixture.bytes).unwrap_or_else(|error| {
-                panic!("{}.{} recursive Prost rejected fixture: {error}", fixture.message_name, fixture.fixture_name)
+                panic!(
+                    "{}.{} recursive Prost rejected fixture: {error}",
+                    fixture.message_name, fixture.fixture_name
+                )
             });
             assert_eq!(machine, oracle, "generated PDA/oracle disagreement");
-            assert_eq!(machine, fixture.bytes, "fixture is not a protobuf fixed point");
+            assert_eq!(
+                machine, fixture.bytes,
+                "fixture is not a protobuf fixed point"
+            );
 
             let admission = validate_canonical_protobuf(
                 ProtobufRegion::copy_from_slice(&fixture.bytes),
                 fixture.program,
             )
             .unwrap_or_else(|error| {
-                panic!("{}.{} canonical admission failed: {error}", fixture.message_name, fixture.fixture_name)
+                panic!(
+                    "{}.{} canonical admission failed: {error}",
+                    fixture.message_name, fixture.fixture_name
+                )
             });
             assert_eq!(admission.stats().typed_decodes, 0);
             assert_eq!(admission.stats().legacy_endpoint_replays, 0);

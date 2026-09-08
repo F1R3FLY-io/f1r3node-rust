@@ -4992,6 +4992,17 @@ open. This evidence must not
 be promoted to a verdict for the entire admission or persistence campaign. See
 the stack-safety report §5.33.6 and PathMap journal J-084 through J-087 for the exact scope.
 
+The subsequent CKP-01–09 checkpoint adds a private standalone canonical-key root
+to the existing protobuf/EPM1 heap driver after protocol kernel verification.
+The protobuf wrapper retains its postcheck/error ordering; frozen obligation
+preparation and child-summary resolution are shared with ACT key traversal.
+The complete models library passes 349/349, including twelve new protocol and
+resource-observation tests. The importer remains on its existing validator:
+this is not a new accepted-byte language, encoding or persistence cutover.
+Concrete parser refinement and resource qualification remain explicit open
+boundaries. See stack-safety §5.33.7 and journal J-088; local equivalence evidence
+does not authorize a broader consensus-neutrality conclusion.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all

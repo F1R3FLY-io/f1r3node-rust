@@ -6,7 +6,7 @@ Campaign: `campaign-root-4131`
 
 Started: 2026-08-23
 
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
 ## Purpose
 
@@ -6161,6 +6161,107 @@ real ACT/key validators while independently descending and folding metadata.
 Standalone byte-native key admission and its resource qualification remain owned
 by task 6018. This entry neither declares task 5976 complete nor supplies a new
 performance, memory-slope, consensus-transition or LMDB-comparison result.
+
+### J-088 — 2026-09-08: share canonical-key admission without hiding retained work
+
+**QUESTION.** Can standalone canonical PathMap keys use the existing protobuf/EPM1
+admission machine without typed AST reconstruction, a synthetic ACT wrapper, or a
+second mutually recursive driver? Tasks 5976 and 6018 share this prerequisite.
+
+**DERIVED / FORMAL-FIRST.** Before the Rust change, `CanonicalKeyProtocol` was
+added to the existing `RPB3Admission.v`. The four prior theorem statements are
+unchanged. Nine protocol capstones and two causal-control reports supplement its
+one previously printed fold theorem: twelve closed reports, independently kernel
+checked. The named `parser_refinement` interface exposes concrete read validity,
+payload extraction and terminal semantics as premises. The model proves the
+transport of that authority through suspended parents; it does not prove the
+concrete parser or infer physical linearity from an abstract effect trace.
+The [proof catalogue](../../../formal/rocq/stack_safe_pda/README.md#standalone-canonical-key-root-implementation-contract-tasks-59766018)
+maps CKP-01–09 to the executable controls.
+
+**IMPLEMENTATION.** `protobuf_admission.rs` factors one existing heap-stack loop
+into `drive_admission`. Its new private key frame owns a located cursor, the
+existing canonical-path reducer and page-backed arena, and a pending child
+receipt. Escapes dispatch the existing Par-protobuf frame; nested maps dispatch
+the existing EPM1 frame. Both use the same frozen-payload preparation and summary
+resolution helpers as ACT key traversal. No child invokes a recursive validator.
+The returned reducer handle is always installed, including deferred refusals.
+The protobuf-root wrapper retains its previous postcheck and error ordering.
+No importer caller has been switched to the private entry.
+
+**MEASURED / CORRECTNESS.** Twelve new Rust tests include three 96-case property
+families, borrowed/frozen differentials against the existing typed key validator,
+stable versus valid-unstable versus rejected outcomes, zero-length dispatch,
+stale ID and wrong-summary controls, child-error precedence, discontinuous EOF
+origins, and a sixteen-level mixed protobuf/EPM chain. A depth-20,000 tuple is
+admitted and dropped on a 64-KiB thread stack. The complete models library passes
+**349/349**, with no ignored or filtered tests, in 56.18 seconds. This duration is
+a correctness-run wall time, not a latency benchmark. Rust commands use a 6-GiB
+hard cap, 4-GiB high threshold, zero swap and four workers; proof commands use
+2-GiB/1-GiB limits and zero swap. Limits are not measured RSS peaks.
+
+**NEGATIVE CONTROLS AND CORRECTIONS.** The first focused run passed eight of nine
+tests; a case-sensitive test assertion expected lowercase `stable` while the
+correct rejection was `EscapeOfStablePar`. A later test fixture misspelled the
+existing `EPathmapBody` variant and failed compilation. The next complete suite
+passed 348 of 349 tests: its new storage assertion incorrectly interpreted
+`divergent_segments` as counting only forks. Source inspection and an isolated
+run show that ordinary full-page rollover also takes `push_segment(..., true)`.
+The corrected no-fork control requires that counter to equal page rollovers.
+None of these corrections relaxes parser admission or changes encoding.
+
+**MEASURED / RESOURCE BOUNDARY.** The old three-variant and extended driver enums
+are both 1,136 bytes in this test build. The flat byte-array ladder observes
+actual cursor reads, reducer states/frames, arena payload slots/pages and driver
+capacity. It does not rely on zero-initialized forbidden-route counters to claim
+zero allocation. For a complete key of length $`n`$, this implementation still
+retains $`n+1`$ reducer states and $`n`$ payload slots. Borrowing the input and
+sharing frozen child pages does **not** make the whole validator zero-copy.
+
+**DECISION.** Keep this entry private until resource qualification establishes
+the appropriate standalone, non-forking implementation and removes unnecessary
+retention. Reuse the existing grammar and shared child driver. Task 6018 still
+owns repeated opaque-payload traversal, active-region rebuilding and endpoint
+copies made earlier by the local ACT inspector. This checkpoint changes no
+PathMap dependency, public byte format, persistent-store authority or Rholang
+semantics. It is not evidence of a PathMap/ACT-versus-LMDB win or campaign closure.
+
+**EVIDENCE DIGESTS.** The verified theory source is
+`adb7aea6ed44828cc009cd8a0fb2e598a4771aec9dadbb07c99256e3ef0f9166`;
+the compiler log is
+`c04113218e61621e6ae288bbc2211491308d8d99c572c277b4f50e50d1801713`;
+the kernel log is
+`7c9e556a7cc0cb99de1f637f4c673478f3cde7ec8270790409065b397b5f0441`.
+The final models log is
+`be930c64a4c7f7aba660825e073f32ba77324c2c944a40692c2c589115a9ec23`.
+The integrated `scripts/check-stack-safe-pda-proofs.sh --epathmap-import`
+run subsequently passes 48 import, 17 score and 12 protocol reports, three
+independent kernel checks, and **46 focused Rust tests**. Its log digest is
+`de5e6f3f406d8691f0ac2e10f115aca182ed6663297d0090f320c30c1722e6cc`.
+The post-refactor release integration command
+`cargo test --release -j4 -p models --test formal_equivalence_manifest --test par_bag -- --test-threads=4`
+also exits zero under the 6-GiB cap: **23/23 manifest and 36/36 ParBag tests**,
+none ignored or filtered. The ParBag suite takes 294.90 seconds and includes the
+depth-4,096 compact import/ACT case. Its log digest is
+`5c20f6254d1afe6977e956a8ff96eb41a231befa3b613c7b64437e90129e2d11`.
+No speedup is inferred from comparing this correctness-run duration with prior
+runs. pgmcp artifact 524 preserves the protocol, focused/full-library results
+and resource observations; the integration result is recorded separately.
+The observed flat byte-array rows are:
+
+| Payload width | Encoded key bytes | Retained states | Retained parser frames | Byte/provenance pages, each | Payload slots |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 18 | 19 | 18 | 1 | 18 |
+| 128 | 131 | 132 | 131 | 3 | 131 |
+| 1,024 | 1,027 | 1,028 | 1,027 | 17 | 1,027 |
+| 8,192 | 8,195 | 8,196 | 8,195 | 129 | 8,195 |
+
+The initial assertion, fixture-compilation, storage-assertion and isolated-layout
+logs are retained respectively as
+`dcb1052e517a48922211b5006b0c286dc14348f63e8bd796c68fa7053a91f9ce`,
+`78bed81ed398404b8053f09516dc298920e30306728926e199bd131033afa7cc`,
+`8dd629760bdfe0b0275ab21df06fc16ff9c97fe4080ea1eeb22b9f847a8b122f`,
+and `b9541bf25b1ce41cb4466e0335db67ce4c8ecbfe7082b300b498c9b91c1b9418`.
 
 ## Upstream PathMap integration request register
 
