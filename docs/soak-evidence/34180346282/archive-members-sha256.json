@@ -1,0 +1,2610 @@
+{
+  "checkpoint/weekly-summary.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "early-exit.txt": {
+    "bytes": 91,
+    "sha256": "a78ebac429c34c2f7f4062510a982b3238d02ec6007f39dc9bb5b58876a028b9"
+  },
+  "iteration-00001-docker/metrics.json": {
+    "bytes": 4245,
+    "sha256": "5c291a6b670d4298f9ccff17a467dadcfca4be775ce0849ee60ede0b47b283a6"
+  },
+  "iteration-00001-docker/node-memory-timeseries.tsv": {
+    "bytes": 77968,
+    "sha256": "0e6ab5eb28581aa9d821499d60d6242c9aa7661416d35023ca5e4fb2b1a0ecb2"
+  },
+  "iteration-00001-docker/node-metrics-timeseries.csv": {
+    "bytes": 33102801,
+    "sha256": "c5e855f5ad4a64938eb7231017e1f1793a9455683e34bcaa6a60cfbc7a092cd7"
+  },
+  "iteration-00001-docker/pytest.log": {
+    "bytes": 119710,
+    "sha256": "06a0c25de7e2f70a5f04967f1fb99a98c29b58fce5151f1bdc0fc3412fe2b849"
+  },
+  "iteration-00001-docker/resource-percore-timeseries.csv": {
+    "bytes": 276970,
+    "sha256": "8fedc751ec0e20e6f66f57b3e3a1594a7c69e2166bcb09028bd635e6825bcea1"
+  },
+  "iteration-00001-docker/resource-timeseries.csv": {
+    "bytes": 13546,
+    "sha256": "41ba8ba46dead6282b54ed57059032826970752ee369d25746fa2aa5017421f1"
+  },
+  "iteration-00002-subprocess/metrics.json": {
+    "bytes": 784,
+    "sha256": "132847a15e2f2a898c6ce2b35a81b056a5d9f6b2b2da4834b058e2b603272284"
+  },
+  "iteration-00002-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 170649927,
+    "sha256": "39463704453094e8b604c507436f14fd60f2030db46aa20916b83a1242092fa4"
+  },
+  "iteration-00002-subprocess/pytest.log": {
+    "bytes": 119610,
+    "sha256": "9d06ef4da4a969042e69c95461b6bdb02aad3f14ce11faddd111d66153723f75"
+  },
+  "iteration-00002-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00002-subprocess/resource-timeseries.csv": {
+    "bytes": 58922,
+    "sha256": "1162dc7ad19d8b2db544f5439fe1206aefe0fd87bd555cda6af24530b38b3e7d"
+  },
+  "iteration-00003-docker/metrics.json": {
+    "bytes": 4253,
+    "sha256": "cb674f986d9a513bb78702fee2a3f879db94f9f771ca2ca89b0b9bd63155a998"
+  },
+  "iteration-00003-docker/node-memory-timeseries.tsv": {
+    "bytes": 75691,
+    "sha256": "0bd8e0b509c009943c4267ee99a0e5af54bd57bac2762d99a78df49ca8a2d381"
+  },
+  "iteration-00003-docker/node-metrics-timeseries.csv": {
+    "bytes": 32098591,
+    "sha256": "0733cf0226e941710139e9bc709c382acf73150bf07e60d7c791aa24b1651e8f"
+  },
+  "iteration-00003-docker/pytest.log": {
+    "bytes": 119509,
+    "sha256": "bc0a66ea13dd130bfc7fa784ddd4f673db6105d25b6b9a8dab330fb0fd8951b9"
+  },
+  "iteration-00003-docker/resource-percore-timeseries.csv": {
+    "bytes": 265914,
+    "sha256": "f894fb178117b267da745c50297a7e8b412e13fb7f9e563ff144d3c216eb8220"
+  },
+  "iteration-00003-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "34d472964fe8e426a08003d3b7aab1e9b2bafab2e886e0b0bbcd4f71894afa59"
+  },
+  "iteration-00004-subprocess/metrics.json": {
+    "bytes": 780,
+    "sha256": "2f8cd43f1496767477271178c85d313acf68db0763e4463e8d58165ad966cf13"
+  },
+  "iteration-00003-docker/resource-timeseries.csv": {
+    "bytes": 13240,
+    "sha256": "67799e9e1df051b3f0f63de1c872f3883752a86c5f794bedd2eb05f2072407da"
+  },
+  "iteration-00004-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 177445342,
+    "sha256": "6461fa9ea9911d12a7716fa4bfc1de593656b4b0d31f3c236cc7146a4d4643ac"
+  },
+  "iteration-00004-subprocess/pytest.log": {
+    "bytes": 119490,
+    "sha256": "a54cc3564b1a06c7029d415197fa2222d4ec699322b76c6ac7ce1d2d8cde3ca7"
+  },
+  "iteration-00004-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00004-subprocess/resource-timeseries.csv": {
+    "bytes": 60989,
+    "sha256": "0cbd7a53291c030fde672ee44be4c0186b3b6d6f4aa7c8371954d2e097db6762"
+  },
+  "iteration-00005-docker/metrics.json": {
+    "bytes": 4239,
+    "sha256": "7b1c684c1e59271faaaf680d0e97be2623114fd5245d2c070bc79ebfc9aeaa45"
+  },
+  "iteration-00005-docker/node-metrics-timeseries.csv": {
+    "bytes": 33108515,
+    "sha256": "d2481048a038a1e89b77ef3a51ab35e5bd8a9e96ab9f55b27c613f04856a4223"
+  },
+  "iteration-00005-docker/node-memory-timeseries.tsv": {
+    "bytes": 77590,
+    "sha256": "c3b630e5a0d713b61aa19eb9b3dcbeda86cb1e86c7a18ef559a7cc83fdd3a68e"
+  },
+  "iteration-00005-docker/pytest.log": {
+    "bytes": 119630,
+    "sha256": "080f3b7b5d029314a235806a87c56ad05458a5b01463a1fc2e2834444b24f2d0"
+  },
+  "iteration-00005-docker/resource-percore-timeseries.csv": {
+    "bytes": 277409,
+    "sha256": "66e5fe7c6464da94259466ac95496a79812d833ce6cf5551dc8047cf1c448efb"
+  },
+  "iteration-00005-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "340e8657c844e1d9265e27f497e1a5a746adc5ec9bd316c89d53fe38f0e46141"
+  },
+  "iteration-00005-docker/resource-timeseries.csv": {
+    "bytes": 13610,
+    "sha256": "b98397f344910f79f265df3ea747475606f6405b2804c787b2817c97dfdd28bb"
+  },
+  "iteration-00006-subprocess/metrics.json": {
+    "bytes": 782,
+    "sha256": "5f7e11aebd45a099564e8b7af26adccc9f58ee62110b4045f49ab26a277c41d4"
+  },
+  "iteration-00006-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 176491702,
+    "sha256": "689cb5d4790b61599a48741baf7d4ddee3ce9057fc8efe6a41c193bde480092d"
+  },
+  "iteration-00006-subprocess/pytest.log": {
+    "bytes": 119593,
+    "sha256": "cae3af2848bf0ab14b8beecad85d2c812be1bdbb451bde062976414f28914671"
+  },
+  "iteration-00006-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00006-subprocess/resource-timeseries.csv": {
+    "bytes": 60794,
+    "sha256": "20cd94486592e77cc1d33e63ee1bffa121b233f300d444eabdec86cfcb3bbb20"
+  },
+  "iteration-00007-docker/metrics.json": {
+    "bytes": 4255,
+    "sha256": "a3e307f605470a1d0ca1987584f24f59853989f897cf54cfa07423c6576042b0"
+  },
+  "iteration-00007-docker/node-memory-timeseries.tsv": {
+    "bytes": 77121,
+    "sha256": "bcf9bf1309e285f0090f8dd6a9c9f354e12e47befaabf6a8cd0617b2a30ca472"
+  },
+  "iteration-00007-docker/node-metrics-timeseries.csv": {
+    "bytes": 32792485,
+    "sha256": "65ac6be5064befaba24d887a549e7d59acf97dafd14ed3984ac35be100bf22bf"
+  },
+  "iteration-00007-docker/pytest.log": {
+    "bytes": 119592,
+    "sha256": "a67d1800def47ef401e1ad22a448cfe651d87c5b4d291180cd0f3fffebd1c6e3"
+  },
+  "iteration-00007-docker/resource-percore-timeseries.csv": {
+    "bytes": 274887,
+    "sha256": "171d88df174509d3531749d7cf1c82d135b4f3a6455b325967886c098c7e9870"
+  },
+  "iteration-00007-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "4ed4adf6ec894ddc910b8722bab66fc0bcb22969a2a7eb5b0178764550916ceb"
+  },
+  "iteration-00007-docker/resource-timeseries.csv": {
+    "bytes": 13515,
+    "sha256": "4f4a4c3c9052cdd37d3d31fa87ec75d8a795057e7aa0e6fbd73543295495d140"
+  },
+  "iteration-00008-subprocess/metrics.json": {
+    "bytes": 778,
+    "sha256": "af62e64a640b45f1a5d507e5dcbc5f789d010a504649bb228cd2a4339ca1d282"
+  },
+  "iteration-00008-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 165525525,
+    "sha256": "a768950b84d731730d572536d31cf662e1d3dab578d1091fc4bc95a5b95d4ec9"
+  },
+  "iteration-00008-subprocess/pytest.log": {
+    "bytes": 119576,
+    "sha256": "e2fcd19bde9f2d317a611182b781337980ec9670356444873953be83e467ce75"
+  },
+  "iteration-00008-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00008-subprocess/resource-timeseries.csv": {
+    "bytes": 57095,
+    "sha256": "fca3a7d20b508197fa940948f12ef43f73bb164fea0799d53bbb4fbaa467fd52"
+  },
+  "iteration-00009-docker/metrics.json": {
+    "bytes": 4251,
+    "sha256": "69a8e15fadfb5f377d4b63744785f101129cfb4c56d40e62266040ffe5aedb96"
+  },
+  "iteration-00009-docker/node-memory-timeseries.tsv": {
+    "bytes": 76605,
+    "sha256": "d27a73ba510789741ab04d03866ecc4cebb2632cf43752b93ab6ca812bb43e75"
+  },
+  "iteration-00009-docker/pytest.log": {
+    "bytes": 119684,
+    "sha256": "8424b8fd6f8e8a9bde0f7564343ee2d20801e2dc4530cbb317ea19af2fb8413e"
+  },
+  "iteration-00009-docker/node-metrics-timeseries.csv": {
+    "bytes": 32610422,
+    "sha256": "d938c1509bc2ab2f2d93c463d1cb4ff8912f13190a978b84c77f95305a12b012"
+  },
+  "iteration-00009-docker/resource-percore-timeseries.csv": {
+    "bytes": 272000,
+    "sha256": "c7ca0653c2e0dddddc29040cf96f97835948eecdca1f8b4135c7fe8b3efcdaab"
+  },
+  "iteration-00009-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "a2695f500d5631ceed5066d0a5d7ffed9b13715a3c100969b423fb126b79c587"
+  },
+  "iteration-00009-docker/resource-timeseries.csv": {
+    "bytes": 13542,
+    "sha256": "05e4a24df1bd2c6daa98e1b1250f90da8698f23291c9fa08ab78c330fc4e2944"
+  },
+  "iteration-00010-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "03c79d20c7bfbb05feeef117f7ee007b7cb165228d42b7ce796d7c70a00f786c"
+  },
+  "iteration-00010-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 170602552,
+    "sha256": "948d32810be4cd36e05441584f9e6336e2c4140eeccd70a9adb659d8f65ffa96"
+  },
+  "iteration-00010-subprocess/pytest.log": {
+    "bytes": 119565,
+    "sha256": "72dd2b3047f5cb4212deef26e83c0c924db7e1213bb41303fdcababe9c9f5f66"
+  },
+  "iteration-00010-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00010-subprocess/resource-timeseries.csv": {
+    "bytes": 58770,
+    "sha256": "f5e1e302acbce436c9b336ca026e0bdafc229d2539656a1c873f753bb8f01996"
+  },
+  "iteration-00011-docker/metrics.json": {
+    "bytes": 4229,
+    "sha256": "bc9fa7809796e47721a84a30ed3d42cb195abf5b5202c024b59d6c18cd837c5f"
+  },
+  "iteration-00011-docker/node-memory-timeseries.tsv": {
+    "bytes": 77557,
+    "sha256": "e6fbe6a27686cfefca88e0c43983d8fab487a16da54275fd88f355e25117cd76"
+  },
+  "iteration-00011-docker/pytest.log": {
+    "bytes": 119580,
+    "sha256": "1c2cacadb763ab9b98e3c763607c63e791a7d5a502e1a7b8cc1894d445e98802"
+  },
+  "iteration-00011-docker/node-metrics-timeseries.csv": {
+    "bytes": 32954375,
+    "sha256": "33b63fe148693cd8b1498fd34bcc184f4f7738e6c3a477d147e5833f0cd1d7d1"
+  },
+  "iteration-00011-docker/resource-percore-timeseries.csv": {
+    "bytes": 275105,
+    "sha256": "274b117181884db20f7afcf818b232d391a951cb26a7e38ae9face920cc80fa1"
+  },
+  "iteration-00011-docker/resource-timeseries.csv": {
+    "bytes": 13520,
+    "sha256": "d134a52299f7eeca979e3cb43c1aeb18c53a47cd33971dd5c6acebf0eb88b7a9"
+  },
+  "iteration-00012-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "05ee45f9841220ae1085def89260c5930077dc6e8e81ae06eb70fea6d03ccad4"
+  },
+  "iteration-00012-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 182621799,
+    "sha256": "ea0de8c1f0f392a7c27097648a3845b02b489ac33b0f641021fe23e2c50e26af"
+  },
+  "iteration-00012-subprocess/pytest.log": {
+    "bytes": 119645,
+    "sha256": "091d6ecc3bd0935773f280e68ab5d5b7e6fa50d6e962cb775564467e49cb95b0"
+  },
+  "iteration-00012-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00012-subprocess/resource-timeseries.csv": {
+    "bytes": 62832,
+    "sha256": "931ca3654a3393b82973d24663135c4c210ea9d11d95395b2d55ee120bf6272e"
+  },
+  "iteration-00013-docker/metrics.json": {
+    "bytes": 4248,
+    "sha256": "398624247e977fa4f319d8444619091b57e482c34c8e914bb933cefe077e55c8"
+  },
+  "iteration-00013-docker/node-memory-timeseries.tsv": {
+    "bytes": 77430,
+    "sha256": "127d15de3c171cba6ec1a595378eb7980160026a0b04abf70c2061d9c475ef03"
+  },
+  "iteration-00013-docker/node-metrics-timeseries.csv": {
+    "bytes": 33096716,
+    "sha256": "c39aae2754290f610000469205e17705791d4fa3ebd385f81e7de2668bc94c21"
+  },
+  "iteration-00013-docker/resource-percore-timeseries.csv": {
+    "bytes": 277671,
+    "sha256": "95ff6841de26f8b144a4830f9e9ddd407207f33134924aa5ead407ee138ddce3"
+  },
+  "iteration-00013-docker/pytest.log": {
+    "bytes": 119552,
+    "sha256": "890d5bb41c14f41987c0d7b7f6abc98d9a65108ec4267b7eadef6226d28fa713"
+  },
+  "iteration-00013-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "22e2252fc7ba87d09ae846c9bcba7a88d0d0ad6d8dc0b679d0b0099ba59504ab"
+  },
+  "iteration-00013-docker/resource-timeseries.csv": {
+    "bytes": 13600,
+    "sha256": "6a715a3b6f5e3c10ed08ba697584a3cb1ef512b2885ec556819bbcc8c191d121"
+  },
+  "iteration-00014-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "a3dc070755f55a846805225821be2241b5997495bbd76facf86e69ea898fb5f8"
+  },
+  "iteration-00014-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 172963057,
+    "sha256": "13df65b5007099f8e0c3d73614635f39b426a9602fe8709166851cb3a51fe5b5"
+  },
+  "iteration-00014-subprocess/pytest.log": {
+    "bytes": 119604,
+    "sha256": "bf4c6c3264c5283a38c601a523414b4745a9115d3cebb026c49052eb58a50a40"
+  },
+  "iteration-00014-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00014-subprocess/resource-timeseries.csv": {
+    "bytes": 59576,
+    "sha256": "940ecd4e16d10c38c4154cfdc8631e4d36abb746e9331c854d0e538b480511a6"
+  },
+  "iteration-00015-docker/metrics.json": {
+    "bytes": 4231,
+    "sha256": "e1c73970399551d3b3f2f0024513829fb9435abb87661aceed64bfb00a6dcdc5"
+  },
+  "iteration-00015-docker/node-memory-timeseries.tsv": {
+    "bytes": 76187,
+    "sha256": "b070a8afdb54226057ccad7beaeedb6ab2ecfa3a84f7efcf9e7ceda5a63d61ec"
+  },
+  "iteration-00015-docker/node-metrics-timeseries.csv": {
+    "bytes": 32424920,
+    "sha256": "d00c1987e945297897fb15febe24d493dc39579288bf788029c168022442052f"
+  },
+  "iteration-00015-docker/pytest.log": {
+    "bytes": 119616,
+    "sha256": "47f2cfadd1c88bf9aa5e79e99bfb084068daefa62f5ca10b7ce62fe08fe16e62"
+  },
+  "iteration-00015-docker/resource-percore-timeseries.csv": {
+    "bytes": 268818,
+    "sha256": "fb9436f2efb839df4bb5699090e01c2a08c1b5e4c6cd8db0fb14fe3e76fe638a"
+  },
+  "iteration-00015-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "077da8db217984bb81ba4ffdc1b6217d3d05732ba951a213acf1f6f8a963e9e9"
+  },
+  "iteration-00015-docker/resource-timeseries.csv": {
+    "bytes": 13504,
+    "sha256": "f4dc103015b7b4206ceb25ad27371bf08f24792571fa50a2dbf7a03c045cc5ab"
+  },
+  "iteration-00016-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "4a731a3a27542f8f1a56d8fec32c3c959f76b7e9128147e6975155ffac6701b8"
+  },
+  "iteration-00016-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 166032999,
+    "sha256": "25eff8aa8b02f91c0060d26c0f035a1da20d33f4ae168b1241564152a076aa75"
+  },
+  "iteration-00016-subprocess/pytest.log": {
+    "bytes": 119601,
+    "sha256": "d8c54804ab032fa53f548973e75c161e403c7c8ef9669bf0701bcca73192b173"
+  },
+  "iteration-00016-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00016-subprocess/resource-timeseries.csv": {
+    "bytes": 57284,
+    "sha256": "6deaf1464e5d57e5de3417ac7610215cf4a6d0b039327be17e2f6b3f255f84c9"
+  },
+  "iteration-00017-docker/metrics.json": {
+    "bytes": 4243,
+    "sha256": "d5e8086df44aa1d7769b6690d4d10e6bccfcc6cf6d1ac0514934bf7a464f8f7b"
+  },
+  "iteration-00017-docker/node-memory-timeseries.tsv": {
+    "bytes": 76835,
+    "sha256": "f604205c56bf2763686478682162fc9b55064b8c0546922ea38df844022fb24d"
+  },
+  "iteration-00017-docker/node-metrics-timeseries.csv": {
+    "bytes": 32717517,
+    "sha256": "e2703b0178a61132f4e3ff94dc9d5ca8382ec3ee3d469a4097a969351ccdb0ce"
+  },
+  "iteration-00017-docker/pytest.log": {
+    "bytes": 119590,
+    "sha256": "10e8465519540ad4d01fa3e5370fb8c2518c944b7aaa7f8776349a7de899751c"
+  },
+  "iteration-00017-docker/resource-percore-timeseries.csv": {
+    "bytes": 272886,
+    "sha256": "bbb06e33e9ce9ca83ebe339e8c16c7a286789b81a896ea24bc21cb2b209296bd"
+  },
+  "iteration-00017-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "0df8f354ad65e477ae4aea1c3cab57a2f0979297bca30ce76be0b5dac0aabfcc"
+  },
+  "iteration-00017-docker/resource-timeseries.csv": {
+    "bytes": 13519,
+    "sha256": "5a0c89b6a8e525a5f6fb7ecfe9c4d2fb9f311aa6318d8c40dedb411fdc3ad378"
+  },
+  "iteration-00018-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "5fea736cc52ce45e482ef7fec6583c21c7f135d8b11e690391c8b463609f8bc0"
+  },
+  "iteration-00018-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 192727366,
+    "sha256": "13c47fd9edcad86a0ab18cab96aeecf4ffbcd021300cd6b06db56ea1b8982e03"
+  },
+  "iteration-00018-subprocess/pytest.log": {
+    "bytes": 119656,
+    "sha256": "e42b943e755073ebb84671abd4c48b26c74375b8d16cf7c22dfb5bd901d9cbb1"
+  },
+  "iteration-00018-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00018-subprocess/resource-timeseries.csv": {
+    "bytes": 66060,
+    "sha256": "a8c0ca3c5997a4d0f7eeba2baee4604fce2af635e1e2fe737cab7692c4b4c5ad"
+  },
+  "iteration-00019-docker/metrics.json": {
+    "bytes": 4224,
+    "sha256": "7e4d07ee13ceaa09c326dfa5a67d49525b3c6b54ccd0717786b060be7366a1a6"
+  },
+  "iteration-00019-docker/node-memory-timeseries.tsv": {
+    "bytes": 78713,
+    "sha256": "bb40869028624146be123399c31ede48144638d7d92bb941ae0b6e30328a6b0e"
+  },
+  "iteration-00019-docker/node-metrics-timeseries.csv": {
+    "bytes": 33601183,
+    "sha256": "e143306e63febda12530bdc8052a0b90bed483b847657bcdb9a6f7db8959d201"
+  },
+  "iteration-00019-docker/pytest.log": {
+    "bytes": 119626,
+    "sha256": "375ac839040ff2c58270e56b8cb80f97d4381f8bd8e58d008b67136b6bce4c13"
+  },
+  "iteration-00019-docker/resource-percore-timeseries.csv": {
+    "bytes": 280637,
+    "sha256": "862b11e38df25dc6ae27204650a89c24c6d4cfe4c8c38e235754338c754083ea"
+  },
+  "iteration-00019-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "e0655cabc909c6e7bbb5484da4d5cc2d61058f66f5f7f01b2eb0afd16f234349"
+  },
+  "iteration-00020-subprocess/metrics.json": {
+    "bytes": 777,
+    "sha256": "e94cf6096145346b3cf5db02062bc9d770e251cbfa4b1812c92a861a9e721905"
+  },
+  "iteration-00019-docker/resource-timeseries.csv": {
+    "bytes": 13911,
+    "sha256": "207bc637018964e56e49a3713a2f969e8d00c086d54a77f5f72b2394b2cb4851"
+  },
+  "iteration-00020-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 175468912,
+    "sha256": "3453d9d83d01afb7b6e07d58668ec5c5e64867ca10bd69fafe7663451fb34c1a"
+  },
+  "iteration-00020-subprocess/pytest.log": {
+    "bytes": 119622,
+    "sha256": "c42411950c2e3a78c94d6f22a28604583bd187b3f59cfefc243b76cbf08a8833"
+  },
+  "iteration-00020-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00020-subprocess/resource-timeseries.csv": {
+    "bytes": 60631,
+    "sha256": "de50281b4d4b5d38b88f19043ab134fba2f28b7f412c959139f769c1349d3666"
+  },
+  "iteration-00021-docker/metrics.json": {
+    "bytes": 4246,
+    "sha256": "54971d17e3b1a8758ab9ea117138fd77cb99f9b13ca585fba3919631361aa897"
+  },
+  "iteration-00021-docker/node-metrics-timeseries.csv": {
+    "bytes": 32096220,
+    "sha256": "9633c950c4526bc3dd381734eae933b74c47b18741fe4afb4d65def2991acd91"
+  },
+  "iteration-00021-docker/node-memory-timeseries.tsv": {
+    "bytes": 75397,
+    "sha256": "13d86e9c7ff15fb32bc2264ebaf6779fe82a27974e81952eb11ad6f4b8cd7b39"
+  },
+  "iteration-00021-docker/pytest.log": {
+    "bytes": 119631,
+    "sha256": "9bec2b394ea28d293887c9641a871dff2f84693446f1819c32ebf22d1828127d"
+  },
+  "iteration-00021-docker/resource-percore-timeseries.csv": {
+    "bytes": 266431,
+    "sha256": "48db9ad6ee7238136b0f0f4e9e8dc898404a0cfa889088fa3ec3deddaeddaa36"
+  },
+  "iteration-00021-docker/resource-timeseries.csv": {
+    "bytes": 13180,
+    "sha256": "75c3e2554741b99f752b9257dbd5f64c5d65ad88f4c0c615d3dd39d98c1d3d18"
+  },
+  "iteration-00022-subprocess/metrics.json": {
+    "bytes": 783,
+    "sha256": "7afa67d3c3d39ac94ab9c31916b38507c8bd75d1c34531e2c357f01b4284b39f"
+  },
+  "iteration-00022-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 179014039,
+    "sha256": "8c681c81f122363b492b828b9cb8103340def1b9dbda5000068003c5b7bba2f7"
+  },
+  "iteration-00022-subprocess/pytest.log": {
+    "bytes": 119596,
+    "sha256": "46f273aef922efa1f74173e6141e19a53eab1aa491781e57f5c8c9312a2a5d8e"
+  },
+  "iteration-00022-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00022-subprocess/resource-timeseries.csv": {
+    "bytes": 61528,
+    "sha256": "bb37b58d119794f6b055bac0b168884cdd8d7fa0e01fb90ac7569eed0160ca6a"
+  },
+  "iteration-00023-docker/metrics.json": {
+    "bytes": 4225,
+    "sha256": "481ba4378701e5389d316c82f4632fe27f16c3c082c49e650a1ce56eaba40af7"
+  },
+  "iteration-00023-docker/node-memory-timeseries.tsv": {
+    "bytes": 77233,
+    "sha256": "b4e4f14a449faf62c18da708ed17842abe53244e80194d05e9a39e7c93caaa7d"
+  },
+  "iteration-00023-docker/node-metrics-timeseries.csv": {
+    "bytes": 32945730,
+    "sha256": "1fc7e4a2e90c685e06f1b32f76d7b6c838a15820926ae2121663f7765a0e7577"
+  },
+  "iteration-00023-docker/pytest.log": {
+    "bytes": 119617,
+    "sha256": "b0a571815488a5984f9fb57a2694ea077a2a3a51326acc47a401fba3008e7e8f"
+  },
+  "iteration-00023-docker/resource-percore-timeseries.csv": {
+    "bytes": 274951,
+    "sha256": "e7dc9d42a72ea437d053f122d2965693e17708d377d94842ce79c6308456066c"
+  },
+  "iteration-00023-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "a4e3caf1e846ee43c2835fd23dcd7090820ef9704979ce7b022def8f8afabefc"
+  },
+  "iteration-00023-docker/resource-timeseries.csv": {
+    "bytes": 13549,
+    "sha256": "2ece15a50f0b20c8d57f7890e8952d3265a1b71f4cb289bc4e8ffe8ef43c3ee5"
+  },
+  "iteration-00024-subprocess/metrics.json": {
+    "bytes": 783,
+    "sha256": "1dcd4916dcc06107ad3472be83bdb5479610b832dca2c69fc3054efe8626c029"
+  },
+  "iteration-00024-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 177876874,
+    "sha256": "14e3272de35d16611192b3fd24c04e6a2e8fb1898afc023511b8166b59c73558"
+  },
+  "iteration-00024-subprocess/pytest.log": {
+    "bytes": 119547,
+    "sha256": "ef1d81b3ef673cb4eb7b9d5719f35f3b6f7896a2360156d23bad86234e9f6037"
+  },
+  "iteration-00024-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00024-subprocess/resource-timeseries.csv": {
+    "bytes": 61196,
+    "sha256": "a418651aa78d25dc8d5be1f16f1c2aebfb7cf96999992dad24b419c98692d99b"
+  },
+  "iteration-00025-docker/node-memory-timeseries.tsv": {
+    "bytes": 76691,
+    "sha256": "45a3c28d38d7fada1cd58f2464ef0a1e1453d605283f5d3674a88bac5e1ab90a"
+  },
+  "iteration-00025-docker/metrics.json": {
+    "bytes": 4238,
+    "sha256": "8e8c11f44c40b406aa99a40747e7c764eece828732a203fb2489eebaa1606687"
+  },
+  "iteration-00025-docker/node-metrics-timeseries.csv": {
+    "bytes": 32842611,
+    "sha256": "93067e5c8605e9b727215cd9c049c2b379c35e2fd8e44917a0df4db2573f6044"
+  },
+  "iteration-00025-docker/pytest.log": {
+    "bytes": 119744,
+    "sha256": "83959673a857d6f7e07b4a93afe8c06d53aaed2cf559229cc4dc436c8a68d325"
+  },
+  "iteration-00025-docker/resource-percore-timeseries.csv": {
+    "bytes": 274695,
+    "sha256": "f14d8b414bd85680c95d830dea7c894dbf084d6bfd19cc7d22a0b4f61a790c3e"
+  },
+  "iteration-00025-docker/resource-timeseries.csv": {
+    "bytes": 13563,
+    "sha256": "0f140001d09905691359c685ff4f2bb2b8f6522beba624930bce6fc6e92dfbbd"
+  },
+  "iteration-00026-subprocess/metrics.json": {
+    "bytes": 781,
+    "sha256": "5225e40722adff03b6917f53aa0688367229b17e7a362609e2cf704651ff165f"
+  },
+  "iteration-00026-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 184283633,
+    "sha256": "1ed21c8df017e0809b1dff5ee9fb336c612bfff080ecbe06de2aeacc9e7317ed"
+  },
+  "iteration-00026-subprocess/pytest.log": {
+    "bytes": 119678,
+    "sha256": "5518f44af7a29c76a7f994b2335a9c5017cc5759bb8b556d95e1302b4f44e83a"
+  },
+  "iteration-00026-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00026-subprocess/resource-timeseries.csv": {
+    "bytes": 63359,
+    "sha256": "593232b309b73c5d1d9d5b0a7337f6676d0102a21f481c2387caad15b5571eb7"
+  },
+  "iteration-00027-docker/metrics.json": {
+    "bytes": 4239,
+    "sha256": "75d0eb50ff95d3b9b45f99ccbfbc99d694b873e5690f350ac64a640403b3d92b"
+  },
+  "iteration-00027-docker/node-memory-timeseries.tsv": {
+    "bytes": 76485,
+    "sha256": "4a2fcde0cf12174e73d9a198428d1697601931f374846d92a873a23c5cc6730a"
+  },
+  "iteration-00027-docker/node-metrics-timeseries.csv": {
+    "bytes": 32605611,
+    "sha256": "6cfb26c78854947d70cd66f0044326ecc5e944ac4cd852924a43174d31a4b631"
+  },
+  "iteration-00027-docker/resource-percore-timeseries.csv": {
+    "bytes": 272272,
+    "sha256": "b967be2fed538120cdc323bcc2fddb0bc47b1c31366c91006e289cb694b34537"
+  },
+  "iteration-00027-docker/pytest.log": {
+    "bytes": 119656,
+    "sha256": "347942558b6f6e00222be069565cfd1c3aca8f59b0f2125eefc8fa2492408922"
+  },
+  "iteration-00027-docker/resource-timeseries.csv": {
+    "bytes": 13528,
+    "sha256": "69c448f76ca1cac682c247fc237725ff168b4bf0c0a728e0a1c019baa022acb6"
+  },
+  "iteration-00028-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 183935758,
+    "sha256": "66d5f74c860db7d7e1521924176fc32bc6e94f19ce053931b7ef3715b3cbfa43"
+  },
+  "iteration-00028-subprocess/metrics.json": {
+    "bytes": 783,
+    "sha256": "14845151ba6293000e8004fde2495518c7145d2446272b2aa590e53e0020f0f3"
+  },
+  "iteration-00028-subprocess/pytest.log": {
+    "bytes": 119568,
+    "sha256": "3a3a8f12c1cc50a01f93503b38f0d47cab6a969bec3802b4f0217f59a932d694"
+  },
+  "iteration-00028-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00028-subprocess/resource-timeseries.csv": {
+    "bytes": 63188,
+    "sha256": "f55273ef7323b544fc8d809ab7b34c3fe41f3b355c02b82e13d4b0987f35d84d"
+  },
+  "iteration-00029-docker/metrics.json": {
+    "bytes": 4225,
+    "sha256": "65fa97abca6fb7ee01de5d549bb0e08326d4ef9b857a8bbe7a6dc2301b8eccd0"
+  },
+  "iteration-00029-docker/node-memory-timeseries.tsv": {
+    "bytes": 78868,
+    "sha256": "b88da45ed30ded638f8026d39cdea6f6a33e196cc0da7da20e4434a458682c4d"
+  },
+  "iteration-00029-docker/node-metrics-timeseries.csv": {
+    "bytes": 33787916,
+    "sha256": "bb2b6229e0b08d912c4dbd864b05cb3b58c609505728680e9df0bcde28df18c7"
+  },
+  "iteration-00029-docker/pytest.log": {
+    "bytes": 119613,
+    "sha256": "2857897319f1d71973f221aeb9d39084fcce6802d98bbeeb71521b80daa36ce2"
+  },
+  "iteration-00029-docker/resource-percore-timeseries.csv": {
+    "bytes": 281526,
+    "sha256": "863d5b8a547cc3d29fe50eab4e5b54c78db22f2420251a8edc5cecc961da72a5"
+  },
+  "iteration-00029-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "84ec8f98a801ceb7ff272eb7ef4f1e491e20dd5d9dc4bb57e02713d46dee5d0c"
+  },
+  "iteration-00029-docker/resource-timeseries.csv": {
+    "bytes": 13890,
+    "sha256": "a7da5816116b1778fbfcb1f2af6a565436c4bfc41cdd619b93311a4c6b6921a4"
+  },
+  "iteration-00030-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "1a59be43595644fde90411592f4c0316d3d1a1158eac344afb08957c55bdd87c"
+  },
+  "iteration-00030-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 176543720,
+    "sha256": "8aeb1bde8f0df1d2a56af7ee815fe66569c273dc171f85043ae6598d54f378eb"
+  },
+  "iteration-00030-subprocess/pytest.log": {
+    "bytes": 119677,
+    "sha256": "6f6288430e7b21573f71b6a3f09cbf39f7a16a7a2f670448d0510f0d2de83d18"
+  },
+  "iteration-00030-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00030-subprocess/resource-timeseries.csv": {
+    "bytes": 60851,
+    "sha256": "6c8c3d591775f0a04ba7792cc81b937344a45dc657ca6e4e8d0feb58a3b1b111"
+  },
+  "iteration-00031-docker/metrics.json": {
+    "bytes": 4223,
+    "sha256": "f9b9b34a0dd1a27166e7817c5d501ebd176506fa872f1392e6f0f4b84dab5329"
+  },
+  "iteration-00031-docker/node-memory-timeseries.tsv": {
+    "bytes": 78036,
+    "sha256": "f006488e17fa8422dbc5fdd56b9834677291af998f0521a37388a8ad1cb1c641"
+  },
+  "iteration-00031-docker/node-metrics-timeseries.csv": {
+    "bytes": 33107156,
+    "sha256": "b62ccd5e24ecc150acfd6e5a8c9d82a5e0396d8cf6241aebe5e70838be0be23a"
+  },
+  "iteration-00031-docker/pytest.log": {
+    "bytes": 119541,
+    "sha256": "606a9abcc4ccbe96e9ed9e781976489310e852972f3c3b5bc7d9d12a7622fe68"
+  },
+  "iteration-00031-docker/resource-percore-timeseries.csv": {
+    "bytes": 274847,
+    "sha256": "40c2ad6ab6b1ee01c0db7a9436e5698ae88f8c220e6f46e672e232324b7568a5"
+  },
+  "iteration-00031-docker/resource-timeseries.csv": {
+    "bytes": 13593,
+    "sha256": "ab6442df40125796b063925c9632501a8b28beaeba1ca42eb1d5e876bec51c6e"
+  },
+  "iteration-00032-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "63859c517a013517d1af3190d69468bdc08bc62fc34c839f01506f8643e813d5"
+  },
+  "iteration-00032-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 172971127,
+    "sha256": "c33bede67e968e7ee9e20964973a6e47bc942394c2e0630ca26833c76ee9f265"
+  },
+  "iteration-00032-subprocess/pytest.log": {
+    "bytes": 119621,
+    "sha256": "abe7c8ccbf4c91d9ccf7bf8747cef934bf150d3d568dee13fb94ef5b79c7cbcc"
+  },
+  "iteration-00032-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00032-subprocess/resource-timeseries.csv": {
+    "bytes": 59608,
+    "sha256": "752f261f77820280d8f5379f514d08a5179e7a120bab4d4e0c52fa7d2c742f8a"
+  },
+  "iteration-00033-docker/metrics.json": {
+    "bytes": 4231,
+    "sha256": "1f005c4416f70722008bc17266b448d386372f39bb2573e303308d32e6a774ba"
+  },
+  "iteration-00033-docker/node-memory-timeseries.tsv": {
+    "bytes": 79110,
+    "sha256": "ff28b00fbf5d9425de70011fd330c196fc8c98d3044052d06513aa0d2b42ec70"
+  },
+  "iteration-00033-docker/node-metrics-timeseries.csv": {
+    "bytes": 33690688,
+    "sha256": "31fc23d5fdb74f5a75b7a94724dce6fe8ac0e79a341ed480380bec7497a37295"
+  },
+  "iteration-00033-docker/pytest.log": {
+    "bytes": 119685,
+    "sha256": "b7b06bce3ca7b84909f9311a1b41f0f68137fed8984f2f4c70a3ab68017656b7"
+  },
+  "iteration-00033-docker/resource-percore-timeseries.csv": {
+    "bytes": 279384,
+    "sha256": "9398725d0f28e99705d3641a3b0be18fb4a76b54c4f64b4e6ea3407bb361b373"
+  },
+  "iteration-00033-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "4e9746ec19723f0a1a6b8f382e961417168be66c330a213e2832223c0f4b8b61"
+  },
+  "iteration-00033-docker/resource-timeseries.csv": {
+    "bytes": 13895,
+    "sha256": "5b7c7beb2a607b7c378ac681f5f4c2d28e6963bf2b9191ad5c9df6ea354606e2"
+  },
+  "iteration-00034-subprocess/metrics.json": {
+    "bytes": 781,
+    "sha256": "e3c2563dbf02675b90d244ce50eeea971eeb66635252d2c7db47def2c0140963"
+  },
+  "iteration-00034-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 169679338,
+    "sha256": "62c676876ecfbb8da48efc4afb39eb2f8f947863337525b81b117267103812b5"
+  },
+  "iteration-00034-subprocess/pytest.log": {
+    "bytes": 119564,
+    "sha256": "5441863236b0d6d2557cda550457d35f62d476ccb2323b1cb5f163d06fc61241"
+  },
+  "iteration-00034-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00034-subprocess/resource-timeseries.csv": {
+    "bytes": 58290,
+    "sha256": "b61739189e76c185877c38cf4a7500317fe1c38353c1caf292d3ac34d54a0772"
+  },
+  "iteration-00035-docker/metrics.json": {
+    "bytes": 4253,
+    "sha256": "8f60014c47ec230dd429cabc0dcba519ae843ae6336040ba059550f4a8a6dca4"
+  },
+  "iteration-00035-docker/node-memory-timeseries.tsv": {
+    "bytes": 76819,
+    "sha256": "4066eb612a1d7d4a22913f05fdd4ab2ee37cf7a096f99150a818cd3cfdb44b4a"
+  },
+  "iteration-00035-docker/node-metrics-timeseries.csv": {
+    "bytes": 32878665,
+    "sha256": "311c275fc36bd7dc7660681294cdf9a1810cf42377889168e0e45ab038d01484"
+  },
+  "iteration-00035-docker/pytest.log": {
+    "bytes": 119749,
+    "sha256": "17834dc2371c3cc0488f754c4824be4f6caaf5bde7e10ab134a547b43446a29b"
+  },
+  "iteration-00035-docker/resource-percore-timeseries.csv": {
+    "bytes": 274539,
+    "sha256": "4626920ae2391ae34901f0533d50c9f82bca21491c05f55f0145c8077062f2d2"
+  },
+  "iteration-00035-docker/resource-timeseries.csv": {
+    "bytes": 13537,
+    "sha256": "31e9bf51754b6b24b7a1e9de37eb3ba4ad2d80678cc1c134b5f778bfc16776f3"
+  },
+  "iteration-00036-subprocess/metrics.json": {
+    "bytes": 783,
+    "sha256": "1674cb7b04149585d90015a8b9e28e955ede58d6e127456ceeb0791a1f1131f7"
+  },
+  "iteration-00036-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 185098037,
+    "sha256": "3d0ee65fa042f343de6121ec9c45202795098748acdae196d8c2a13be5c03713"
+  },
+  "iteration-00036-subprocess/pytest.log": {
+    "bytes": 119632,
+    "sha256": "8f620aecb4a9cbedacdaa8ea8a5c826bc2c2608947aadf2cebfe663606ff264f"
+  },
+  "iteration-00036-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00036-subprocess/resource-timeseries.csv": {
+    "bytes": 63795,
+    "sha256": "9f972c769df0faf8fa86cefe51676dd782512a00dcfa024a937ef8e6eb46c038"
+  },
+  "iteration-00037-docker/metrics.json": {
+    "bytes": 4239,
+    "sha256": "911d1ef64cf3c300d88f3378903bea3d9fefba3265d5fc7b578e87d564303731"
+  },
+  "iteration-00037-docker/node-memory-timeseries.tsv": {
+    "bytes": 78399,
+    "sha256": "4ae7cec084d6c6c0cf772fecc4866d8825c7299ea3bb37631e035489c64c9c42"
+  },
+  "iteration-00037-docker/node-metrics-timeseries.csv": {
+    "bytes": 33362105,
+    "sha256": "3093f82b3d6e6e2881e1c7cb548ed53186fbf1652ace0853d834648482d7a66e"
+  },
+  "iteration-00037-docker/pytest.log": {
+    "bytes": 119590,
+    "sha256": "05bcfc33045979b507957021fdd888d84888aca6b43555666b8698f926a4b174"
+  },
+  "iteration-00037-docker/resource-percore-timeseries.csv": {
+    "bytes": 277086,
+    "sha256": "105a6d729b3f7c4fd881408d54a3477f272d35f10954722df95abe07578d51e5"
+  },
+  "iteration-00037-docker/resource-timeseries.csv": {
+    "bytes": 13867,
+    "sha256": "7b26c45f4c3e092eae603ad91d36cb98fd05a2b89c9bf324cfc1e38d6d564956"
+  },
+  "iteration-00038-subprocess/metrics.json": {
+    "bytes": 783,
+    "sha256": "99372b311a264df0aba6716fe5e1454b66cc9d8c4a67aa99b248eed2fbf4d46e"
+  },
+  "iteration-00038-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 179518472,
+    "sha256": "b4ea001c5ac1e50984909ec35acc5ea9cd23f0a434216bcd5d820976d99bea57"
+  },
+  "iteration-00038-subprocess/pytest.log": {
+    "bytes": 119586,
+    "sha256": "00473ca6bef10186752f5fa8f691302244ace17ef0c22f2aa7310e8d46f91300"
+  },
+  "iteration-00038-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00038-subprocess/resource-timeseries.csv": {
+    "bytes": 61879,
+    "sha256": "7fe589e1eba0ae049179b6898ef018bdeb68183254cc4f7ec08825dfd57138b0"
+  },
+  "iteration-00039-docker/metrics.json": {
+    "bytes": 4248,
+    "sha256": "9bd5b91c0a2ebcc7db4395a06c93e0eb1bb6bf01d3866046b7377c95217ef09b"
+  },
+  "iteration-00039-docker/node-memory-timeseries.tsv": {
+    "bytes": 77395,
+    "sha256": "6f0eded44e12fc0103d774da5c60d7c2a5fca8284f11196a7c21954b9cb79106"
+  },
+  "iteration-00039-docker/node-metrics-timeseries.csv": {
+    "bytes": 33099144,
+    "sha256": "d2420b0e1f1ffdc47bf450675c9f26e73c8bb48b45b275a6f2e9cd64f157d127"
+  },
+  "iteration-00039-docker/pytest.log": {
+    "bytes": 119591,
+    "sha256": "8fb057d39e1b37bc13988cd812c69e9ddd51f3811911d2486b7f9454aa1a40ac"
+  },
+  "iteration-00039-docker/resource-percore-timeseries.csv": {
+    "bytes": 277047,
+    "sha256": "ad7c8ea7e52911983e8a8b44a321bcc2a51bf7987a325567632e2ef31f7721cd"
+  },
+  "iteration-00039-docker/resource-timeseries.csv": {
+    "bytes": 13608,
+    "sha256": "d88292d4686d1305c9c386b21d1ec9d9c4433215b7e27fc4871a6c5a8b7d04ba"
+  },
+  "iteration-00040-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "e59704f1ba47d7891413d8c2ed207bc500c8e629dc5e7e87d0e4f2c4221402e0"
+  },
+  "iteration-00040-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 173267107,
+    "sha256": "0c7f717eaf3f0d0a87bd4c0c4f183c42b9dbdd612970dff55a34cc02dd85c1f1"
+  },
+  "iteration-00040-subprocess/pytest.log": {
+    "bytes": 119653,
+    "sha256": "34daa1fbb5427160f5c7159d0a17b6cb117891eac08f5d884bba64acf7033412"
+  },
+  "iteration-00040-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00040-subprocess/resource-timeseries.csv": {
+    "bytes": 59607,
+    "sha256": "10af95a971eeaa5ad7b0f7c71e7047382fdd95b246f4918e0aaa831608b7f060"
+  },
+  "iteration-00041-docker/metrics.json": {
+    "bytes": 4228,
+    "sha256": "fc0f6f5fd49f2590cea5918d142ae8480aff22e8405010955892e5f6b30667e5"
+  },
+  "iteration-00041-docker/node-memory-timeseries.tsv": {
+    "bytes": 75513,
+    "sha256": "216432eb4a0ce2dd520c6d8a3a0bf4147ff2b36d1289ba8996ce06f86212e9a5"
+  },
+  "iteration-00041-docker/node-metrics-timeseries.csv": {
+    "bytes": 32097439,
+    "sha256": "21aab6f59b8386a9523cdeadeae129b1589a3b67a44db338da4ee87d5967ff39"
+  },
+  "iteration-00041-docker/pytest.log": {
+    "bytes": 119640,
+    "sha256": "ad0c119c306a1fa89e68b79a1ef718bf1ccde596b3df1f7c2a2092f1e4b8ef7a"
+  },
+  "iteration-00041-docker/resource-percore-timeseries.csv": {
+    "bytes": 268868,
+    "sha256": "0072cd4cd06c427a8b09b6fed25267af355ce5d5e1af2f947546bd2a9e1b1fc7"
+  },
+  "iteration-00041-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "eceab1ede3c77c8926778ab9db4d29a51d950502b34025dd8f77e796aa2b725d"
+  },
+  "iteration-00041-docker/resource-timeseries.csv": {
+    "bytes": 13225,
+    "sha256": "354bd800d87bda260b1a44f4a91a78faeb18a83b9644fa3c5a73f93c3d96a46b"
+  },
+  "iteration-00042-subprocess/exit-code.txt": {
+    "bytes": 2,
+    "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/node-metrics-timeseries.csv": {
+    "bytes": 32792485,
+    "sha256": "65ac6be5064befaba24d887a549e7d59acf97dafd14ed3984ac35be100bf22bf"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/resource-percore-timeseries.csv": {
+    "bytes": 274887,
+    "sha256": "171d88df174509d3531749d7cf1c82d135b4f3a6455b325967886c098c7e9870"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "4ed4adf6ec894ddc910b8722bab66fc0bcb22969a2a7eb5b0178764550916ceb"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/resource-timeseries.csv": {
+    "bytes": 13515,
+    "sha256": "4f4a4c3c9052cdd37d3d31fa87ec75d8a795057e7aa0e6fbd73543295495d140"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/shard1/rnode.test.087e8af6-s1.boot.log": {
+    "bytes": 24847338,
+    "sha256": "a598e9fd6e67872e3961a229be22446183ace7bf5905ae96e24636ebcdec2c40"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/shard1/rnode.test.087e8af6-s1.readonly.log": {
+    "bytes": 24870140,
+    "sha256": "906a50f9ab07ce5502b8ae8b119286fa2a3c47be5dba312967d54a16af4b8b6d"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/shard1/rnode.test.087e8af6-s1.validator1.log": {
+    "bytes": 43600822,
+    "sha256": "7d9e5b5071d1e535a77d72353fc3fc5c851230e514391caf1d88f64b637fd8a3"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/shard1/rnode.test.087e8af6-s1.validator2.log": {
+    "bytes": 29143780,
+    "sha256": "a56a8a823f94cc27749b3de7ed4b4a0661f85bc96ae4ee6b77c362696940b34e"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/shard1/rnode.test.087e8af6-s1.validator3.log": {
+    "bytes": 29160181,
+    "sha256": "1a0fb2b1006ef23aaef83c1ef662a14a2dcd6c92127fee3f971f9cc8d67be890"
+  },
+  "iteration-00042-subprocess/log-archive/087e8af6/shard1/rnode.test.087e8af6-s1.validator4.log": {
+    "bytes": 25456325,
+    "sha256": "128000b87fd8aa77bde81a6f03ce3f36335e617355a93cbdf9f0a2699cee7492"
+  },
+  "iteration-00042-subprocess/log-archive/18614b61/shard1/rnode.test.18614b61.boot.log": {
+    "bytes": 27605791,
+    "sha256": "ddaf8c7e70bb510a62ad6592cd500e69747d17c25873f15386e2fa7b2e1a7a68"
+  },
+  "iteration-00042-subprocess/log-archive/18614b61/shard1/rnode.test.18614b61.readonly.log": {
+    "bytes": 27104746,
+    "sha256": "59354f281a5c090fc9279fe516d1a509b1206e9f0f1e1a05bfb763289df3a903"
+  },
+  "iteration-00042-subprocess/log-archive/18614b61/shard1/rnode.test.18614b61.validator1.log": {
+    "bytes": 53525712,
+    "sha256": "8bd1acf7ae972f9e16c8ee29d93fbaa536487a0825fadbc1d7a2885d97567b96"
+  },
+  "iteration-00042-subprocess/log-archive/18614b61/shard1/rnode.test.18614b61.validator2.log": {
+    "bytes": 32688423,
+    "sha256": "7fbe2fe9065173ac65682caaf801e785937c5e7d5e34443c7bc36350b03b6487"
+  },
+  "iteration-00042-subprocess/log-archive/18614b61/shard1/rnode.test.18614b61.validator3.log": {
+    "bytes": 32604446,
+    "sha256": "e88d04aca12e112ad7631c3397a024a08e234d0ccf677b56e269a60b0083460e"
+  },
+  "iteration-00042-subprocess/log-archive/18614b61/shard1/rnode.test.18614b61.validator4.log": {
+    "bytes": 27964303,
+    "sha256": "79477044025b5af9913512abed22f4f8726f87d1ce0cfeabd5ad20d109310239"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/node-metrics-timeseries.csv": {
+    "bytes": 32842611,
+    "sha256": "93067e5c8605e9b727215cd9c049c2b379c35e2fd8e44917a0df4db2573f6044"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/resource-percore-timeseries.csv": {
+    "bytes": 274695,
+    "sha256": "f14d8b414bd85680c95d830dea7c894dbf084d6bfd19cc7d22a0b4f61a790c3e"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "cf66ff53f88096f976bf15ea8a5e7d0bc23364569722cd0d7baa3d9d58ad4b15"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/resource-timeseries.csv": {
+    "bytes": 13563,
+    "sha256": "0f140001d09905691359c685ff4f2bb2b8f6522beba624930bce6fc6e92dfbbd"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/shard1/rnode.test.2325eefa-s1.boot.log": {
+    "bytes": 26058909,
+    "sha256": "df4cb3704216e91c366757b90d40fec83ea4c03b256dc9a9479af4d2da66daa4"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/shard1/rnode.test.2325eefa-s1.readonly.log": {
+    "bytes": 25732081,
+    "sha256": "7024f8585be1e06e8b080092736661f1f4db9666d91e5db99a636fc270ba7436"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/shard1/rnode.test.2325eefa-s1.validator1.log": {
+    "bytes": 47112484,
+    "sha256": "1dafafc883ee32f6bcc046c19e67d50232359493dbdd0615c60947c717095067"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/shard1/rnode.test.2325eefa-s1.validator2.log": {
+    "bytes": 30419721,
+    "sha256": "8932daa74c5882c3826ae99306fd46f39ea65db230b3b04aebb7349a9db8bc44"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/shard1/rnode.test.2325eefa-s1.validator3.log": {
+    "bytes": 30677399,
+    "sha256": "6db18e5f827eaf64dc343b9af37c9c1a3017fb3bf14864f7f429ed76bdd899cf"
+  },
+  "iteration-00042-subprocess/log-archive/2325eefa/shard1/rnode.test.2325eefa-s1.validator4.log": {
+    "bytes": 26376117,
+    "sha256": "6abd06a043fdbc12318f343756955e0c58a006bcf9253d967ee7ab071bc85465"
+  },
+  "iteration-00042-subprocess/log-archive/2468fee6/shard1/rnode.test.2468fee6.boot.log": {
+    "bytes": 28222959,
+    "sha256": "575e8e401eef9ac44dced7140c627ff313201792b1127e21923929afce6940a6"
+  },
+  "iteration-00042-subprocess/log-archive/2468fee6/shard1/rnode.test.2468fee6.readonly.log": {
+    "bytes": 27958500,
+    "sha256": "8d5b7b39af32cdc91720fe0ce824e12ca6305fbaf98eaaa2099b4b3fd7e462c4"
+  },
+  "iteration-00042-subprocess/log-archive/2468fee6/shard1/rnode.test.2468fee6.validator1.log": {
+    "bytes": 53490023,
+    "sha256": "b620499e4058720b601ce29056a6f05cf3258ffb61887b4c9d02b80a95dc83aa"
+  },
+  "iteration-00042-subprocess/log-archive/2468fee6/shard1/rnode.test.2468fee6.validator2.log": {
+    "bytes": 33260843,
+    "sha256": "dcbcffc265cf2d8566c720750280e71f085669ce6cae734a423277ea7a31f778"
+  },
+  "iteration-00042-subprocess/log-archive/2468fee6/shard1/rnode.test.2468fee6.validator3.log": {
+    "bytes": 33230520,
+    "sha256": "1c48a70a53b4ee9a2fe3f3d4f0e81253b46b304023dbf98808a979d8ebe38055"
+  },
+  "iteration-00042-subprocess/log-archive/2468fee6/shard1/rnode.test.2468fee6.validator4.log": {
+    "bytes": 28736114,
+    "sha256": "26c815da5af34ead3836c2e960399b31aab382cad6119081f7eb0daab960cae0"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/node-metrics-timeseries.csv": {
+    "bytes": 32605611,
+    "sha256": "6cfb26c78854947d70cd66f0044326ecc5e944ac4cd852924a43174d31a4b631"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/resource-percore-timeseries.csv": {
+    "bytes": 272272,
+    "sha256": "b967be2fed538120cdc323bcc2fddb0bc47b1c31366c91006e289cb694b34537"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "21e788494c9bc960c0f418f977e241db01fcd106b02470137dcc4b5be26a0c33"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/resource-timeseries.csv": {
+    "bytes": 13528,
+    "sha256": "69c448f76ca1cac682c247fc237725ff168b4bf0c0a728e0a1c019baa022acb6"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/shard1/rnode.test.2774449c-s1.boot.log": {
+    "bytes": 25298332,
+    "sha256": "8a8cb9bd785e3d25d80329e3aec71000225e65d7712b671113510f7e53f39d17"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/shard1/rnode.test.2774449c-s1.readonly.log": {
+    "bytes": 25172467,
+    "sha256": "57b72a278ad2e877fae46da5351f677a77ed54768b54769e6446544910c2abb8"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/shard1/rnode.test.2774449c-s1.validator1.log": {
+    "bytes": 45571381,
+    "sha256": "9cd7f0da22ea4da2a9b4beedf80bc0756bdb819a364d5a6d64e9168ffb9a9f15"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/shard1/rnode.test.2774449c-s1.validator2.log": {
+    "bytes": 29892645,
+    "sha256": "dcdac2a9c7f71adbde85373081c24a79aa8fdc85963797fb76548c3c91f3949c"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/shard1/rnode.test.2774449c-s1.validator3.log": {
+    "bytes": 29774459,
+    "sha256": "ffec13cff966c54c2309c14168754472155780b2dec016c52c2bb86f8acb27f1"
+  },
+  "iteration-00042-subprocess/log-archive/2774449c/shard1/rnode.test.2774449c-s1.validator4.log": {
+    "bytes": 25866732,
+    "sha256": "4a74f9e7827114d2b449972354ca6dabffeba89e2a1a57049486d127fa370088"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/node-metrics-timeseries.csv": {
+    "bytes": 32098591,
+    "sha256": "0733cf0226e941710139e9bc709c382acf73150bf07e60d7c791aa24b1651e8f"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/resource-percore-timeseries.csv": {
+    "bytes": 265914,
+    "sha256": "f894fb178117b267da745c50297a7e8b412e13fb7f9e563ff144d3c216eb8220"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "34d472964fe8e426a08003d3b7aab1e9b2bafab2e886e0b0bbcd4f71894afa59"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/resource-timeseries.csv": {
+    "bytes": 13240,
+    "sha256": "67799e9e1df051b3f0f63de1c872f3883752a86c5f794bedd2eb05f2072407da"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/shard1/rnode.test.2df0d328-s1.boot.log": {
+    "bytes": 25359945,
+    "sha256": "e1bbc2803e7351cad6864e0bd56d7982a078af179e91347721614a1612e9c681"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/shard1/rnode.test.2df0d328-s1.readonly.log": {
+    "bytes": 25530910,
+    "sha256": "c4ec7284df55fb0ed78f412da5497b17ca13fe07053f268a584e2c5565098344"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/shard1/rnode.test.2df0d328-s1.validator1.log": {
+    "bytes": 44857119,
+    "sha256": "b52af3a88068ea311482c2c8453f8195939dfba47dca49eaf92b9e33f8910943"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/shard1/rnode.test.2df0d328-s1.validator2.log": {
+    "bytes": 29850729,
+    "sha256": "1cb4e96de45eb598c4a704fe29d68cfe5a66d21f4a59fbc3ee58c88bf9dca25f"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/shard1/rnode.test.2df0d328-s1.validator3.log": {
+    "bytes": 29978317,
+    "sha256": "a76f0d46129be4264f4674f06f914ef29cf8b099af5fcccfe2475cdc3cf8f2dd"
+  },
+  "iteration-00042-subprocess/log-archive/2df0d328/shard1/rnode.test.2df0d328-s1.validator4.log": {
+    "bytes": 25996745,
+    "sha256": "9820f9ac1ee593c42a1221ac3746cb816488507767b6f8a5b69cb6db4aee454c"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/resource-percore-timeseries.csv": {
+    "bytes": 277047,
+    "sha256": "ad7c8ea7e52911983e8a8b44a321bcc2a51bf7987a325567632e2ef31f7721cd"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/node-metrics-timeseries.csv": {
+    "bytes": 33099144,
+    "sha256": "d2420b0e1f1ffdc47bf450675c9f26e73c8bb48b45b275a6f2e9cd64f157d127"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "3f982f60b861eefbf737fcba678a01d460ba403ec9ebf3ce55bc2981fc4591e7"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/resource-timeseries.csv": {
+    "bytes": 13608,
+    "sha256": "d88292d4686d1305c9c386b21d1ec9d9c4433215b7e27fc4871a6c5a8b7d04ba"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/shard1/rnode.test.2f04d421-s1.boot.log": {
+    "bytes": 25558724,
+    "sha256": "41f224f14f6aca34cafa14882f9dd1e29b854aa9d8e3a0dc91ac148be1b6f633"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/shard1/rnode.test.2f04d421-s1.readonly.log": {
+    "bytes": 25602326,
+    "sha256": "c8b1fc799069f270987fd1b3029606fd2af1f96274b4137e5ae587d607596415"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/shard1/rnode.test.2f04d421-s1.validator1.log": {
+    "bytes": 45803376,
+    "sha256": "07436f3e640bc83874a76b5ae9a6507e31f5850282eb6a6d404dcf2580d9056e"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/shard1/rnode.test.2f04d421-s1.validator2.log": {
+    "bytes": 30220787,
+    "sha256": "fc24d6ff30926e96454bb5421500cb8e5aa6a4d80a05b3b9745fc5b393f18d37"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/shard1/rnode.test.2f04d421-s1.validator3.log": {
+    "bytes": 30058138,
+    "sha256": "61fa8d6c64532e018aca649e524f1dab8b64b49ee2e5bcdf98aaf35ee352ff85"
+  },
+  "iteration-00042-subprocess/log-archive/2f04d421/shard1/rnode.test.2f04d421-s1.validator4.log": {
+    "bytes": 26177585,
+    "sha256": "b4664f7cc5da39e15471e16e3c634cf219ff7fe5db601cf82b94f95f7a00ac49"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/node-metrics-timeseries.csv": {
+    "bytes": 32945730,
+    "sha256": "1fc7e4a2e90c685e06f1b32f76d7b6c838a15820926ae2121663f7765a0e7577"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/resource-percore-timeseries.csv": {
+    "bytes": 274951,
+    "sha256": "e7dc9d42a72ea437d053f122d2965693e17708d377d94842ce79c6308456066c"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "a4e3caf1e846ee43c2835fd23dcd7090820ef9704979ce7b022def8f8afabefc"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/resource-timeseries.csv": {
+    "bytes": 13549,
+    "sha256": "2ece15a50f0b20c8d57f7890e8952d3265a1b71f4cb289bc4e8ffe8ef43c3ee5"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/shard1/rnode.test.357240a2-s1.boot.log": {
+    "bytes": 25711361,
+    "sha256": "4947903f4efc6c1cff6ab38ba94836af1aa06063187bab16fb4ee05fb586d0fb"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/shard1/rnode.test.357240a2-s1.readonly.log": {
+    "bytes": 26116538,
+    "sha256": "d3ead4e41a9e8599f7831f46e24ebc0c9a91e6b5e19e3d0398d8d7a6e8bdbf1f"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/shard1/rnode.test.357240a2-s1.validator1.log": {
+    "bytes": 46645658,
+    "sha256": "53b55da08da3eabc47a930b5ec5c95ac53109dbfd3549a1bef6dff8b54137990"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/shard1/rnode.test.357240a2-s1.validator2.log": {
+    "bytes": 30407029,
+    "sha256": "a6ca49eadbb8f26047fcc8155dd0b7e9aae74c3fcd3b97edb31f87b86e46cc4b"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/shard1/rnode.test.357240a2-s1.validator3.log": {
+    "bytes": 30267631,
+    "sha256": "c3283df10d424f753a0490b2f85172eb3a93605c37ae004d91d8cb392a6aec15"
+  },
+  "iteration-00042-subprocess/log-archive/357240a2/shard1/rnode.test.357240a2-s1.validator4.log": {
+    "bytes": 26347939,
+    "sha256": "4a1ca4c1db444ad41c1934cf5ef64d644498fb65926c64c0799134e53708bb89"
+  },
+  "iteration-00042-subprocess/log-archive/3c36fe25/shard1/rnode.test.3c36fe25.boot.log": {
+    "bytes": 26892372,
+    "sha256": "82cbb86d7058fe178d6199bff0ec53f1386435a7d025ef8ed18fe56e006f50da"
+  },
+  "iteration-00042-subprocess/log-archive/3c36fe25/shard1/rnode.test.3c36fe25.readonly.log": {
+    "bytes": 25995096,
+    "sha256": "eeade27e2ac58a6386caf9d87b2c3b0c30722d72b157cede8f96d1570526e883"
+  },
+  "iteration-00042-subprocess/log-archive/3c36fe25/shard1/rnode.test.3c36fe25.validator1.log": {
+    "bytes": 52391966,
+    "sha256": "41cbab63872258b8e99b90d6a360aec9152e4f3ad7cfda4281af2868df5b56a3"
+  },
+  "iteration-00042-subprocess/log-archive/3c36fe25/shard1/rnode.test.3c36fe25.validator3.log": {
+    "bytes": 31737806,
+    "sha256": "bd002baee1a21b81e52f65ed4c2181cc823230b701597f178d3154c5bcc596c6"
+  },
+  "iteration-00042-subprocess/log-archive/3c36fe25/shard1/rnode.test.3c36fe25.validator2.log": {
+    "bytes": 31778079,
+    "sha256": "bdf9851ebb5375f7a84e708a25662b9daaf80c281c9216b18fb80bea84757d5f"
+  },
+  "iteration-00042-subprocess/log-archive/3c36fe25/shard1/rnode.test.3c36fe25.validator4.log": {
+    "bytes": 27257652,
+    "sha256": "94c4cc244de33ce53dc45bedba6005440c13eda66b34d831014c6220e4bd5c5a"
+  },
+  "iteration-00042-subprocess/log-archive/4254b7bd/shard1/rnode.test.4254b7bd.boot.log": {
+    "bytes": 29357797,
+    "sha256": "17ee6a82c8f6950dd414aaacd5f6601ad5d889b3eaf75dbc3912520c793711c5"
+  },
+  "iteration-00042-subprocess/log-archive/4254b7bd/shard1/rnode.test.4254b7bd.readonly.log": {
+    "bytes": 28980437,
+    "sha256": "6ec46c552babe6073e23f09b9cd7d1aec1948b133e075d8b9efab1c798fb06cb"
+  },
+  "iteration-00042-subprocess/log-archive/4254b7bd/shard1/rnode.test.4254b7bd.validator1.log": {
+    "bytes": 57092249,
+    "sha256": "a29e2409247dc1c89c4b47724c0f1a0206d3785fc76780da87ab542e1f5d573c"
+  },
+  "iteration-00042-subprocess/log-archive/4254b7bd/shard1/rnode.test.4254b7bd.validator2.log": {
+    "bytes": 34391144,
+    "sha256": "7d27dacf4a6e40b1c25e61d9fef0caee314e837516e2ffbbbe9cb2a4ea9b744b"
+  },
+  "iteration-00042-subprocess/log-archive/4254b7bd/shard1/rnode.test.4254b7bd.validator3.log": {
+    "bytes": 34554736,
+    "sha256": "47c1dffc3a2529feb45223ba417d7b84ca7cbb3753238e03b65e3b8dcb66ad91"
+  },
+  "iteration-00042-subprocess/log-archive/4254b7bd/shard1/rnode.test.4254b7bd.validator4.log": {
+    "bytes": 29805645,
+    "sha256": "bf58b02ea3393ef869a186b60b03d4f47fe91cc4bd81304dd63ebd45ff66c23c"
+  },
+  "iteration-00042-subprocess/log-archive/48598ef4/shard1/rnode.test.48598ef4.boot.log": {
+    "bytes": 26753553,
+    "sha256": "41348715b507509da19d61c84c298b6ed04df32ed4eb4ca51f7581818bc1d866"
+  },
+  "iteration-00042-subprocess/log-archive/48598ef4/shard1/rnode.test.48598ef4.readonly.log": {
+    "bytes": 26341604,
+    "sha256": "e8485a683d1288698017ed8538594035564acca46bb166e7d41f545fac21ad8a"
+  },
+  "iteration-00042-subprocess/log-archive/48598ef4/shard1/rnode.test.48598ef4.validator1.log": {
+    "bytes": 51878530,
+    "sha256": "64243e977fc796e84a4cde66b512e317f9314c6cd434f0d077e85594509ee1c7"
+  },
+  "iteration-00042-subprocess/log-archive/48598ef4/shard1/rnode.test.48598ef4.validator2.log": {
+    "bytes": 31357375,
+    "sha256": "cfb4f333b33646baf5c9f98453ec142826daf8b230e732eeee02537dab9a52aa"
+  },
+  "iteration-00042-subprocess/log-archive/48598ef4/shard1/rnode.test.48598ef4.validator3.log": {
+    "bytes": 31743509,
+    "sha256": "503ba244660b3a363f55668b2b72f373d1730ae183589f96aac00e0b7288a7a5"
+  },
+  "iteration-00042-subprocess/log-archive/48598ef4/shard1/rnode.test.48598ef4.validator4.log": {
+    "bytes": 27322155,
+    "sha256": "fe9d2cb9bc6b8d82c3223d2fa96b1c0ed4f6a59accf28f42326d953637adbe6f"
+  },
+  "iteration-00042-subprocess/log-archive/4958fd4a/shard1/rnode.test.4958fd4a.readonly.log": {
+    "bytes": 27918245,
+    "sha256": "4f0d852c99546691d1a9c5b7b78f44e7011b70789c8c1846cceecfe48e5b4bff"
+  },
+  "iteration-00042-subprocess/log-archive/4958fd4a/shard1/rnode.test.4958fd4a.boot.log": {
+    "bytes": 27793727,
+    "sha256": "a64c74d8c060ae4996a723ff9b7e491883cd231d784e0552b289d03d78431fe6"
+  },
+  "iteration-00042-subprocess/log-archive/4958fd4a/shard1/rnode.test.4958fd4a.validator1.log": {
+    "bytes": 53757196,
+    "sha256": "e526e5ce431ab99d5df47b921766bf66daae84f83da5c425cdc40db7ce78a732"
+  },
+  "iteration-00042-subprocess/log-archive/4958fd4a/shard1/rnode.test.4958fd4a.validator2.log": {
+    "bytes": 32965867,
+    "sha256": "8884449cb3c1d19ed463077b7c338b6bcbf18ba7f24905080e6b593794ef4696"
+  },
+  "iteration-00042-subprocess/log-archive/4958fd4a/shard1/rnode.test.4958fd4a.validator3.log": {
+    "bytes": 32777872,
+    "sha256": "8ff60e07ae44956d937eaddd0cf84aaf0504784a9e2ee050dd7eeeb032f30120"
+  },
+  "iteration-00042-subprocess/log-archive/4958fd4a/shard1/rnode.test.4958fd4a.validator4.log": {
+    "bytes": 28413644,
+    "sha256": "f2cf4a36ea958472fedf79cfffa86e3b5b8944ccfc228dea222e60dea039833e"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/node-metrics-timeseries.csv": {
+    "bytes": 32954375,
+    "sha256": "33b63fe148693cd8b1498fd34bcc184f4f7738e6c3a477d147e5833f0cd1d7d1"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/resource-percore-timeseries.csv": {
+    "bytes": 275105,
+    "sha256": "274b117181884db20f7afcf818b232d391a951cb26a7e38ae9face920cc80fa1"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "7de120eb0431cf655fea783722dfc819e52a42902be7f4e149d7e6c021f1d4ff"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/shard1/rnode.test.5395c5f3-s1.boot.log": {
+    "bytes": 24116173,
+    "sha256": "16df914f3184d15d7d271d171f4d6c6b8e45087240bad5d55ccb83f90203b4da"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/resource-timeseries.csv": {
+    "bytes": 13520,
+    "sha256": "d134a52299f7eeca979e3cb43c1aeb18c53a47cd33971dd5c6acebf0eb88b7a9"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/shard1/rnode.test.5395c5f3-s1.readonly.log": {
+    "bytes": 24122193,
+    "sha256": "63086f9c758421feb9d839cb26f509591a7974fb96ec5064e4863172f60b7122"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/shard1/rnode.test.5395c5f3-s1.validator1.log": {
+    "bytes": 41989278,
+    "sha256": "3113c029cf64bfdbcfa8d5252def18cd187e13cf3c5b01772579afe1dd672dac"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/shard1/rnode.test.5395c5f3-s1.validator2.log": {
+    "bytes": 28255476,
+    "sha256": "53e6e5f7aea7d924a3975149f2b226f437e694a0a5a06ca25ddcb7641c2ea44c"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/shard1/rnode.test.5395c5f3-s1.validator3.log": {
+    "bytes": 28410639,
+    "sha256": "43269641f4f329cc8a599ad932b5153cdd9730102771e99d058cfae740588aa5"
+  },
+  "iteration-00042-subprocess/log-archive/5395c5f3/shard1/rnode.test.5395c5f3-s1.validator4.log": {
+    "bytes": 24729582,
+    "sha256": "6f733f4a94d07e90cb402fb043833ddbff67c05398bf9a4784b8b4dfa03cd6e6"
+  },
+  "iteration-00042-subprocess/log-archive/5447d154/shard1/rnode.test.5447d154.boot.log": {
+    "bytes": 28349688,
+    "sha256": "46e583ceaa28535b7ccfae1f1b16f1b138a8ab97480fd7eb76dbce09178aa7f2"
+  },
+  "iteration-00042-subprocess/log-archive/5447d154/shard1/rnode.test.5447d154.readonly.log": {
+    "bytes": 28058358,
+    "sha256": "0b41f17bd93d56039733aac72755f2825304818d14e7b17a65246199b89105d2"
+  },
+  "iteration-00042-subprocess/log-archive/5447d154/shard1/rnode.test.5447d154.validator1.log": {
+    "bytes": 53962466,
+    "sha256": "77dba5d0f5c1f2cee3d35e1ad397cce226595126e780df229e5dfd592d5c5396"
+  },
+  "iteration-00042-subprocess/log-archive/5447d154/shard1/rnode.test.5447d154.validator2.log": {
+    "bytes": 33145010,
+    "sha256": "df28a64773390f3793e14ef4228c630d080330d7b6e0464fd5b97588583d1f5f"
+  },
+  "iteration-00042-subprocess/log-archive/5447d154/shard1/rnode.test.5447d154.validator3.log": {
+    "bytes": 33429750,
+    "sha256": "ec44affd27439cbb277998134050d95433c0a4651a228e9a29fd41638b4f1a1d"
+  },
+  "iteration-00042-subprocess/log-archive/5447d154/shard1/rnode.test.5447d154.validator4.log": {
+    "bytes": 28738307,
+    "sha256": "f565b4b23a6d124d2c50e6625e26e76769d7b2c4f32a11fe4955e5d6fd6aee53"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/node-metrics-timeseries.csv": {
+    "bytes": 33601183,
+    "sha256": "e143306e63febda12530bdc8052a0b90bed483b847657bcdb9a6f7db8959d201"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/resource-percore-timeseries.csv": {
+    "bytes": 280637,
+    "sha256": "862b11e38df25dc6ae27204650a89c24c6d4cfe4c8c38e235754338c754083ea"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "e0655cabc909c6e7bbb5484da4d5cc2d61058f66f5f7f01b2eb0afd16f234349"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/resource-timeseries.csv": {
+    "bytes": 13911,
+    "sha256": "207bc637018964e56e49a3713a2f969e8d00c086d54a77f5f72b2394b2cb4851"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/shard1/rnode.test.5d6d2bfb-s1.boot.log": {
+    "bytes": 26479753,
+    "sha256": "ba60ad2202dc034746d568f2ebb2d754fb809fe517656118ab2952dc3bf13caa"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/shard1/rnode.test.5d6d2bfb-s1.readonly.log": {
+    "bytes": 26922112,
+    "sha256": "595e8c230b01c3a299de32a62563d671eee1968165b53ac25e07779bfbb3d3f1"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/shard1/rnode.test.5d6d2bfb-s1.validator1.log": {
+    "bytes": 47020553,
+    "sha256": "3b583e70d59c281c0453af0978ec21eaa046ae595c3b9a60dc1989cd1859e083"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/shard1/rnode.test.5d6d2bfb-s1.validator3.log": {
+    "bytes": 31079103,
+    "sha256": "4e89599d29d43e906f190d2bee4407dd71f7dbd16c2638fdb90b944547e7cfc2"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/shard1/rnode.test.5d6d2bfb-s1.validator2.log": {
+    "bytes": 31105316,
+    "sha256": "f7b5b7aca2c0598dd53a2a1494042dcce682501bc99bf4659e30367829a7d4b7"
+  },
+  "iteration-00042-subprocess/log-archive/5d6d2bfb/shard1/rnode.test.5d6d2bfb-s1.validator4.log": {
+    "bytes": 27183346,
+    "sha256": "a12228743e1e712bde41fa7cd051fdcb86c189b530e359752e718eb8695db75b"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/node-metrics-timeseries.csv": {
+    "bytes": 33096716,
+    "sha256": "c39aae2754290f610000469205e17705791d4fa3ebd385f81e7de2668bc94c21"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/resource-percore-timeseries.csv": {
+    "bytes": 277671,
+    "sha256": "95ff6841de26f8b144a4830f9e9ddd407207f33134924aa5ead407ee138ddce3"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "22e2252fc7ba87d09ae846c9bcba7a88d0d0ad6d8dc0b679d0b0099ba59504ab"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/resource-timeseries.csv": {
+    "bytes": 13600,
+    "sha256": "6a715a3b6f5e3c10ed08ba697584a3cb1ef512b2885ec556819bbcc8c191d121"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/shard1/rnode.test.605319aa-s1.boot.log": {
+    "bytes": 25819586,
+    "sha256": "44f9422e6a292ac387c89f484c52145867a71405d77680a5496c54d82c77a6b4"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/shard1/rnode.test.605319aa-s1.readonly.log": {
+    "bytes": 26170331,
+    "sha256": "a86b059039717833caed62bd89b34181688e42ed6612e0f8049cb518c2eb5f0b"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/shard1/rnode.test.605319aa-s1.validator1.log": {
+    "bytes": 45526449,
+    "sha256": "7817a8360be68bf49cf1af0fc90b7468ae3a44f55a38fcb41053f374c20607df"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/shard1/rnode.test.605319aa-s1.validator2.log": {
+    "bytes": 30295151,
+    "sha256": "25a668df987cf7258767af6b7ffaa3b9aab359472df6da2a82f0e28b01fca2b8"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/shard1/rnode.test.605319aa-s1.validator3.log": {
+    "bytes": 30409254,
+    "sha256": "eb3ce4904690241357012f5103b76d7bb18afc3073d82d2d43ead5c5e4fdde76"
+  },
+  "iteration-00042-subprocess/log-archive/605319aa/shard1/rnode.test.605319aa-s1.validator4.log": {
+    "bytes": 26399081,
+    "sha256": "bbccbb7c2b1c5be45526e67f03d8bea191c7f3456715189218daa20406590012"
+  },
+  "iteration-00042-subprocess/log-archive/676a6854/shard1/rnode.test.676a6854.boot.log": {
+    "bytes": 29542052,
+    "sha256": "abef2480842641ff22cd97ee8b3406af27aad356902e7bc078df27457f0b2676"
+  },
+  "iteration-00042-subprocess/log-archive/676a6854/shard1/rnode.test.676a6854.readonly.log": {
+    "bytes": 28847980,
+    "sha256": "a0472da46d6e24f639a5e070df02602ac0253989178502275a0da13f52db673f"
+  },
+  "iteration-00042-subprocess/log-archive/676a6854/shard1/rnode.test.676a6854.validator1.log": {
+    "bytes": 56085572,
+    "sha256": "2ec4bfe4010e5ec97c0d269fe5fb956e018e204d05148ee16d3b8ac753538966"
+  },
+  "iteration-00042-subprocess/log-archive/676a6854/shard1/rnode.test.676a6854.validator2.log": {
+    "bytes": 34444699,
+    "sha256": "d73a6fb3731951ece32ca08293dce7b80ad63fb31ed2a8741ccfda5b34297add"
+  },
+  "iteration-00042-subprocess/log-archive/676a6854/shard1/rnode.test.676a6854.validator4.log": {
+    "bytes": 29509186,
+    "sha256": "ac55a4109d95e09eedc4d04ade3be2af8648ce2c6b689c2f834a48a4bbcff620"
+  },
+  "iteration-00042-subprocess/log-archive/676a6854/shard1/rnode.test.676a6854.validator3.log": {
+    "bytes": 34260662,
+    "sha256": "69c2784fc9ef943a319fc236acd6fba0fa2b8aec865fe736cb3250202cb96d51"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/node-metrics-timeseries.csv": {
+    "bytes": 32610422,
+    "sha256": "d938c1509bc2ab2f2d93c463d1cb4ff8912f13190a978b84c77f95305a12b012"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/resource-percore-timeseries.csv": {
+    "bytes": 272000,
+    "sha256": "c7ca0653c2e0dddddc29040cf96f97835948eecdca1f8b4135c7fe8b3efcdaab"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "a2695f500d5631ceed5066d0a5d7ffed9b13715a3c100969b423fb126b79c587"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/resource-timeseries.csv": {
+    "bytes": 13542,
+    "sha256": "05e4a24df1bd2c6daa98e1b1250f90da8698f23291c9fa08ab78c330fc4e2944"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/shard1/rnode.test.68b38209-s1.boot.log": {
+    "bytes": 26128251,
+    "sha256": "957cbb6fd27e94e8eac97cec3214ef8170f8b987d14a59e790d484fd77e28c02"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/shard1/rnode.test.68b38209-s1.validator1.log": {
+    "bytes": 47269695,
+    "sha256": "596a2494c482b745ae0a07a757af533702c6d805e268ba90bd4433145048033d"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/shard1/rnode.test.68b38209-s1.readonly.log": {
+    "bytes": 25977243,
+    "sha256": "9157e0a9ea261fd2270cc632e899ad62d44aa6baf6578a1b431450f320edd879"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/shard1/rnode.test.68b38209-s1.validator2.log": {
+    "bytes": 30720579,
+    "sha256": "1c682582b451a672c93916aa4552bad29af7ccaa0aa6ff237c06347cf4a53f6c"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/shard1/rnode.test.68b38209-s1.validator3.log": {
+    "bytes": 30748543,
+    "sha256": "53cc0aae44f121e0b6ce7e5a7a394460c74fdc236692130bb42296de737050b9"
+  },
+  "iteration-00042-subprocess/log-archive/68b38209/shard1/rnode.test.68b38209-s1.validator4.log": {
+    "bytes": 26663652,
+    "sha256": "b171ab3cdd9107f6ccb1a1d4eb1c2a2d980457cbedd1107bce620bdbc42d357e"
+  },
+  "iteration-00042-subprocess/log-archive/69a161c9/shard1/rnode.test.69a161c9.boot.log": {
+    "bytes": 24200036,
+    "sha256": "a53595734907af1da223853116d2c34ad1f6f89ee12a6e626ae19b3bab66c30a"
+  },
+  "iteration-00042-subprocess/log-archive/69a161c9/shard1/rnode.test.69a161c9.readonly.log": {
+    "bytes": 22864173,
+    "sha256": "0d4c26820b85948c6bc3d084cdc2f23d3d9514698505f223a9e898e3417f7deb"
+  },
+  "iteration-00042-subprocess/log-archive/69a161c9/shard1/rnode.test.69a161c9.validator1.log": {
+    "bytes": 56596555,
+    "sha256": "503f4956be65fa4870c0c7e26801f92ced5099e792e242ff85637f41978d1c84"
+  },
+  "iteration-00042-subprocess/log-archive/69a161c9/shard1/rnode.test.69a161c9.validator2.log": {
+    "bytes": 31751005,
+    "sha256": "ff41501dd5432b67f9754cca5b8b385d1d5ff8cf1f0bc3d70482c41d2d4da3d1"
+  },
+  "iteration-00042-subprocess/log-archive/69a161c9/shard1/rnode.test.69a161c9.validator3.log": {
+    "bytes": 31388694,
+    "sha256": "f122a2a4953f53887f141394c532cea1b49fa71976c5a652a4420b2b3bab22ed"
+  },
+  "iteration-00042-subprocess/log-archive/69a161c9/shard1/rnode.test.69a161c9.validator4.log": {
+    "bytes": 26734500,
+    "sha256": "3635b6893f00d41aa972b0ecedc8445471bcac3d3222476b30b2f05af21005e4"
+  },
+  "iteration-00042-subprocess/log-archive/752e1e9d/shard1/rnode.test.752e1e9d.boot.log": {
+    "bytes": 27828509,
+    "sha256": "c9a8430a6b4d923a08820c4ad0160c01f470b9d2054d1427ec790221031c9fb1"
+  },
+  "iteration-00042-subprocess/log-archive/752e1e9d/shard1/rnode.test.752e1e9d.readonly.log": {
+    "bytes": 27256459,
+    "sha256": "2bf114139cb939bd38fe141833eafcedc6f6582049cf5b5a8a255050182a6e17"
+  },
+  "iteration-00042-subprocess/log-archive/752e1e9d/shard1/rnode.test.752e1e9d.validator1.log": {
+    "bytes": 54229916,
+    "sha256": "5dc5759410cb9894dfa0c6d695952b6bd943a03e9e7e972cc81511abb6c1064c"
+  },
+  "iteration-00042-subprocess/log-archive/752e1e9d/shard1/rnode.test.752e1e9d.validator2.log": {
+    "bytes": 32756963,
+    "sha256": "26b107f41602e57abf3318d0cda8ddcfc53f91f2f8c0dd81c47856555d5a209e"
+  },
+  "iteration-00042-subprocess/log-archive/752e1e9d/shard1/rnode.test.752e1e9d.validator3.log": {
+    "bytes": 32583359,
+    "sha256": "1dd8b1e923d1899796b8403b4ad47ee2d487a4eb034eb3f257b0c73605fcf648"
+  },
+  "iteration-00042-subprocess/log-archive/752e1e9d/shard1/rnode.test.752e1e9d.validator4.log": {
+    "bytes": 28069845,
+    "sha256": "203a8bd232fcfd7ddcb905192debbafaecafdf1b4728dfcc1fb87aa76faa1ab3"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/node-metrics-timeseries.csv": {
+    "bytes": 32424920,
+    "sha256": "d00c1987e945297897fb15febe24d493dc39579288bf788029c168022442052f"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/resource-percore-timeseries.csv": {
+    "bytes": 268818,
+    "sha256": "fb9436f2efb839df4bb5699090e01c2a08c1b5e4c6cd8db0fb14fe3e76fe638a"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "077da8db217984bb81ba4ffdc1b6217d3d05732ba951a213acf1f6f8a963e9e9"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/resource-timeseries.csv": {
+    "bytes": 13504,
+    "sha256": "f4dc103015b7b4206ceb25ad27371bf08f24792571fa50a2dbf7a03c045cc5ab"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/shard1/rnode.test.7a5b8090-s1.boot.log": {
+    "bytes": 24603821,
+    "sha256": "6882538227771d361bf487f5eec4941175fc481093b68ae9c68540c2ba2d02e8"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/shard1/rnode.test.7a5b8090-s1.readonly.log": {
+    "bytes": 24579657,
+    "sha256": "a6a84f4201860a9309ea44a64d38d5a47e574d22188c15bacbe42d1343ad9c24"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/shard1/rnode.test.7a5b8090-s1.validator1.log": {
+    "bytes": 43512518,
+    "sha256": "d1950141075b88a54cf11a5c84ba53f8f0928eb96db5ad116b76cdd45d66a00d"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/shard1/rnode.test.7a5b8090-s1.validator2.log": {
+    "bytes": 28804562,
+    "sha256": "198f09e0e4929fc372226a2dbcbd013d6084ae42ae36b1735370047a914c9306"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/shard1/rnode.test.7a5b8090-s1.validator3.log": {
+    "bytes": 28807266,
+    "sha256": "d04964a73e566dca31d3b0805fc843f6a5a0bd783c6f450bd0a708b5381997db"
+  },
+  "iteration-00042-subprocess/log-archive/7a5b8090/shard1/rnode.test.7a5b8090-s1.validator4.log": {
+    "bytes": 25178628,
+    "sha256": "d2b3d71a3876cbcea2b6aa3b3cae510bc478be98ed9ef0de02edd98e8102651b"
+  },
+  "iteration-00042-subprocess/log-archive/7a65c007/shard1/rnode.test.7a65c007.boot.log": {
+    "bytes": 30548018,
+    "sha256": "267760bd4747c08b711ad508f099b91c4c4a732475f6e8529b7c4477c9673b13"
+  },
+  "iteration-00042-subprocess/log-archive/7a65c007/shard1/rnode.test.7a65c007.readonly.log": {
+    "bytes": 29928470,
+    "sha256": "9215425a83a0fa7ceedb1ad19fc0e69cf034b2c537e56658b21e86097467310b"
+  },
+  "iteration-00042-subprocess/log-archive/7a65c007/shard1/rnode.test.7a65c007.validator1.log": {
+    "bytes": 58709845,
+    "sha256": "fefcc6d0fc31814936a05bbc34e479ec73e6f02d35db9ea7cafdd9998a9e943e"
+  },
+  "iteration-00042-subprocess/log-archive/7a65c007/shard1/rnode.test.7a65c007.validator2.log": {
+    "bytes": 35872577,
+    "sha256": "bf17a9b145d0e9a39145a78fc13ee40a755447674e25410f14136cf3fd38f11a"
+  },
+  "iteration-00042-subprocess/log-archive/7a65c007/shard1/rnode.test.7a65c007.validator3.log": {
+    "bytes": 35449161,
+    "sha256": "d0b710f5f80327dece4e731c93f01378687bb7f4dd368e8ccf680b4cfa620c07"
+  },
+  "iteration-00042-subprocess/log-archive/7a65c007/shard1/rnode.test.7a65c007.validator4.log": {
+    "bytes": 30960176,
+    "sha256": "bf2903526b6aedba50d63d0c13cec0c213b6dc6f22128943c14303574ba975ce"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/resource-percore-timeseries.csv": {
+    "bytes": 274847,
+    "sha256": "40c2ad6ab6b1ee01c0db7a9436e5698ae88f8c220e6f46e672e232324b7568a5"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "fb1a4291384bd7c593ef2ddbb99177d9cab59cca129867a90635d0d8a7260b2e"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/node-metrics-timeseries.csv": {
+    "bytes": 33107156,
+    "sha256": "b62ccd5e24ecc150acfd6e5a8c9d82a5e0396d8cf6241aebe5e70838be0be23a"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/resource-timeseries.csv": {
+    "bytes": 13593,
+    "sha256": "ab6442df40125796b063925c9632501a8b28beaeba1ca42eb1d5e876bec51c6e"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/shard1/rnode.test.808f5bd3-s1.boot.log": {
+    "bytes": 25645847,
+    "sha256": "bcd96deca65403191f20027fcba77735e28f2b7811fb9ca4a62caa73d1b0f907"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/shard1/rnode.test.808f5bd3-s1.validator1.log": {
+    "bytes": 44194553,
+    "sha256": "2666ad667270110d3e9445f962c6e79d4f298685193bc2b3d5819019834e51db"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/shard1/rnode.test.808f5bd3-s1.readonly.log": {
+    "bytes": 25637753,
+    "sha256": "8c82242fa8a4ca2bfbcb610611d4367ccc40bbf6cbb2b56eb01f8adf67c5db8f"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/shard1/rnode.test.808f5bd3-s1.validator2.log": {
+    "bytes": 30173860,
+    "sha256": "e6a32b152e1071db60be36c26ab83cca0280fb6f10bb7cc289c01ddc23960011"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/shard1/rnode.test.808f5bd3-s1.validator3.log": {
+    "bytes": 30033259,
+    "sha256": "d556270722685b74fd5c5527d74ad76a25e773685c287677a33c962e3131889a"
+  },
+  "iteration-00042-subprocess/log-archive/808f5bd3/shard1/rnode.test.808f5bd3-s1.validator4.log": {
+    "bytes": 26278259,
+    "sha256": "d2ac185d910f66727f5a306b5ba2beebba4d19cf00a36ae98e9de97b8e4a29d8"
+  },
+  "iteration-00042-subprocess/log-archive/84347e8b/shard1/rnode.test.84347e8b.boot.log": {
+    "bytes": 28099899,
+    "sha256": "9d807dabe9ab4dcc2e204539a8bb79961bfc805c2fe661699a804dbc424be37e"
+  },
+  "iteration-00042-subprocess/log-archive/84347e8b/shard1/rnode.test.84347e8b.readonly.log": {
+    "bytes": 27540661,
+    "sha256": "18fa149d7e1b54977612cb6bc18e9b0d3ef8364e6fdc8d49c276a02ced652ef7"
+  },
+  "iteration-00042-subprocess/log-archive/84347e8b/shard1/rnode.test.84347e8b.validator1.log": {
+    "bytes": 54628358,
+    "sha256": "5573dc8c7ead60c87027a926571fc9a7938032a4d2164a8f176c4ba593722ecc"
+  },
+  "iteration-00042-subprocess/log-archive/84347e8b/shard1/rnode.test.84347e8b.validator2.log": {
+    "bytes": 33071571,
+    "sha256": "57b7620f0f003ed7e53abf94d512fe99a94072945762db4f43257cd8f5db3930"
+  },
+  "iteration-00042-subprocess/log-archive/84347e8b/shard1/rnode.test.84347e8b.validator3.log": {
+    "bytes": 33106654,
+    "sha256": "8ba46959ce5e2a5c5a1131a0f6ce99f1f6af94f82280c6d616bba69a60ca2845"
+  },
+  "iteration-00042-subprocess/log-archive/84347e8b/shard1/rnode.test.84347e8b.validator4.log": {
+    "bytes": 28585466,
+    "sha256": "22c18b5ff45892f693ef73ecf67af6d298b4cce2fa8e756c8895eebd63bd163c"
+  },
+  "iteration-00042-subprocess/log-archive/86b514e5/shard1/rnode.test.86b514e5.boot.log": {
+    "bytes": 28979354,
+    "sha256": "d23e0a3b81f2020fdd25181e418050db1bb7e55ddd9238e7fd4f250f56d035fa"
+  },
+  "iteration-00042-subprocess/log-archive/86b514e5/shard1/rnode.test.86b514e5.readonly.log": {
+    "bytes": 28638494,
+    "sha256": "c4fdfbc57f9643e780012aea07c8029f2b1f97e697a438c051dfdaadaf294807"
+  },
+  "iteration-00042-subprocess/log-archive/86b514e5/shard1/rnode.test.86b514e5.validator1.log": {
+    "bytes": 57207775,
+    "sha256": "7073c1b161e05ad8c30387ddc2d0c671e252368d1d848406ddd59566c6af87fc"
+  },
+  "iteration-00042-subprocess/log-archive/86b514e5/shard1/rnode.test.86b514e5.validator2.log": {
+    "bytes": 33987101,
+    "sha256": "03fb16eb6e72ab27517190ae3c2f2fb0c80d5c69dd93808081f48ceaf3a8f81d"
+  },
+  "iteration-00042-subprocess/log-archive/86b514e5/shard1/rnode.test.86b514e5.validator3.log": {
+    "bytes": 33920682,
+    "sha256": "2ed73451e8b4d4bffda27f9c4818b414d2757f75d3dc93fa210b25c87d18270e"
+  },
+  "iteration-00042-subprocess/log-archive/86b514e5/shard1/rnode.test.86b514e5.validator4.log": {
+    "bytes": 29389458,
+    "sha256": "ba7ddd145e1b58fce5b20e4b40255207a4cb4066a36f803159647404d38e2709"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/node-metrics-timeseries.csv": {
+    "bytes": 33108515,
+    "sha256": "d2481048a038a1e89b77ef3a51ab35e5bd8a9e96ab9f55b27c613f04856a4223"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/resource-percore-timeseries.csv": {
+    "bytes": 277409,
+    "sha256": "66e5fe7c6464da94259466ac95496a79812d833ce6cf5551dc8047cf1c448efb"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "340e8657c844e1d9265e27f497e1a5a746adc5ec9bd316c89d53fe38f0e46141"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/resource-timeseries.csv": {
+    "bytes": 13610,
+    "sha256": "b98397f344910f79f265df3ea747475606f6405b2804c787b2817c97dfdd28bb"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/shard1/rnode.test.89d16d0d-s1.boot.log": {
+    "bytes": 25805110,
+    "sha256": "5ed91778760d9b1bc6a5298573f6855d9a456f440899e95bdf4c365bb5cfda7f"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/shard1/rnode.test.89d16d0d-s1.readonly.log": {
+    "bytes": 26083200,
+    "sha256": "097852e899d37fac465c8664a370ab7272e4f6c35b10bf95b86c53029f481f6f"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/shard1/rnode.test.89d16d0d-s1.validator1.log": {
+    "bytes": 46577539,
+    "sha256": "5f9655dd9965d9f1d0938553e9d8b6ef3c25edb2bba1f9be0ecea36a7603252a"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/shard1/rnode.test.89d16d0d-s1.validator2.log": {
+    "bytes": 30416418,
+    "sha256": "ceea507157c72bcc6e64b76bf0a666dbd281c956c0c3f9e02a9039a23876d849"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/shard1/rnode.test.89d16d0d-s1.validator3.log": {
+    "bytes": 30450866,
+    "sha256": "f93775224c520544d60b850dc62851e5792ab9894787fa047b527827b678a026"
+  },
+  "iteration-00042-subprocess/log-archive/89d16d0d/shard1/rnode.test.89d16d0d-s1.validator4.log": {
+    "bytes": 26495321,
+    "sha256": "300df2e50d306bc65643bc686b3ce0b98d79a7ad45a041a87e1b7803fb68b805"
+  },
+  "iteration-00042-subprocess/log-archive/937e8195/shard1/rnode.test.937e8195.boot.log": {
+    "bytes": 28654508,
+    "sha256": "944c23cd4e52331eb2109da437a18a50fea394a072c25862254f9716825724a7"
+  },
+  "iteration-00042-subprocess/log-archive/937e8195/shard1/rnode.test.937e8195.readonly.log": {
+    "bytes": 28482811,
+    "sha256": "4bda8b562ce23e58e91257181d5704ea8581a6bf57313f1de9d4208b406adde8"
+  },
+  "iteration-00042-subprocess/log-archive/937e8195/shard1/rnode.test.937e8195.validator1.log": {
+    "bytes": 55231527,
+    "sha256": "a731a4e61bfca367650cc9441528bad424907f620f7f69f3254354a4f06d299a"
+  },
+  "iteration-00042-subprocess/log-archive/937e8195/shard1/rnode.test.937e8195.validator2.log": {
+    "bytes": 33890470,
+    "sha256": "354a4c19f04a60ccbc00f353f92e424c23b8be7aba6a6e1c4b413a98bb40e50b"
+  },
+  "iteration-00042-subprocess/log-archive/937e8195/shard1/rnode.test.937e8195.validator3.log": {
+    "bytes": 33981560,
+    "sha256": "0838bfcb4e1cb3eb1b923de9e3984921c018371558dde538b6af1cf86adaf26d"
+  },
+  "iteration-00042-subprocess/log-archive/937e8195/shard1/rnode.test.937e8195.validator4.log": {
+    "bytes": 29161096,
+    "sha256": "b5f2fecf5f4b4f7902be99f1dfab8bda58df856d2e9abf94bfee3f67aed15c59"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/node-metrics-timeseries.csv": {
+    "bytes": 32097439,
+    "sha256": "21aab6f59b8386a9523cdeadeae129b1589a3b67a44db338da4ee87d5967ff39"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/resource-percore-timeseries.csv": {
+    "bytes": 268868,
+    "sha256": "0072cd4cd06c427a8b09b6fed25267af355ce5d5e1af2f947546bd2a9e1b1fc7"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "eceab1ede3c77c8926778ab9db4d29a51d950502b34025dd8f77e796aa2b725d"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/resource-timeseries.csv": {
+    "bytes": 13225,
+    "sha256": "354bd800d87bda260b1a44f4a91a78faeb18a83b9644fa3c5a73f93c3d96a46b"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/shard1/rnode.test.95910c6c-s1.boot.log": {
+    "bytes": 24353458,
+    "sha256": "2790eb98ce8741e72d4b6162b4eb66cf911b6992cda22e7a83de861d1de956c4"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/shard1/rnode.test.95910c6c-s1.readonly.log": {
+    "bytes": 24393780,
+    "sha256": "70ef209bb204aaff2f662c0c3ae144029336ff3d492e47c181d1e8e70074e313"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/shard1/rnode.test.95910c6c-s1.validator1.log": {
+    "bytes": 44139699,
+    "sha256": "dcb964be813c783ba5f6633092c829add1f2a952ae69bc36c51fa2fa57846066"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/shard1/rnode.test.95910c6c-s1.validator2.log": {
+    "bytes": 28577349,
+    "sha256": "70914fb2eefcd1931d8b3809b0590a1975c3423daff110453fd0771f2b82b51d"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/shard1/rnode.test.95910c6c-s1.validator3.log": {
+    "bytes": 28829325,
+    "sha256": "acf819c8fecac560b9dba59db4e517597d1890b5441a6c326c87a58188ee4962"
+  },
+  "iteration-00042-subprocess/log-archive/95910c6c/shard1/rnode.test.95910c6c-s1.validator4.log": {
+    "bytes": 24957760,
+    "sha256": "fc2be631aa080d5c7dead639289714270c91cf1abb96288f9c131de51722f8f7"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/node-metrics-timeseries.csv": {
+    "bytes": 32096220,
+    "sha256": "9633c950c4526bc3dd381734eae933b74c47b18741fe4afb4d65def2991acd91"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/resource-percore-timeseries.csv": {
+    "bytes": 266431,
+    "sha256": "48db9ad6ee7238136b0f0f4e9e8dc898404a0cfa889088fa3ec3deddaeddaa36"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "4fd19bf2ccb20102e81d06a6e1e5c50c8f5160d064aa63023fd32b2a166671eb"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/resource-timeseries.csv": {
+    "bytes": 13180,
+    "sha256": "75c3e2554741b99f752b9257dbd5f64c5d65ad88f4c0c615d3dd39d98c1d3d18"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/shard1/rnode.test.9bd84666-s1.boot.log": {
+    "bytes": 24000799,
+    "sha256": "91c40e7dae62ae494129f06d64222d015e516da54083461f4fe1263721bc0f20"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/shard1/rnode.test.9bd84666-s1.readonly.log": {
+    "bytes": 23981468,
+    "sha256": "7b1743c0dd36845246be0f5288d9c874b0adfb2ce38e92abeb526e79cb41f175"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/shard1/rnode.test.9bd84666-s1.validator1.log": {
+    "bytes": 43757432,
+    "sha256": "931cf88649569d4a36d1da45529c6aaead9c9bcfe3fd34c2b0da51ac0b6bbb46"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/shard1/rnode.test.9bd84666-s1.validator3.log": {
+    "bytes": 28458136,
+    "sha256": "a522fb4f8927ac087c5786aa76b4c702c48397ac1816c65f02f1ef655b010d99"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/shard1/rnode.test.9bd84666-s1.validator2.log": {
+    "bytes": 28446408,
+    "sha256": "bbdf5077ae768c6fc05f24328257fa9c5ecb46cf57735e087e1186846128cf84"
+  },
+  "iteration-00042-subprocess/log-archive/9bd84666/shard1/rnode.test.9bd84666-s1.validator4.log": {
+    "bytes": 24537619,
+    "sha256": "f5d4ab097776dea64954187eb0eaeafdf1d5a68752978271901b8bfeeb3c4115"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/node-metrics-timeseries.csv": {
+    "bytes": 33690688,
+    "sha256": "31fc23d5fdb74f5a75b7a94724dce6fe8ac0e79a341ed480380bec7497a37295"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/resource-percore-timeseries.csv": {
+    "bytes": 279384,
+    "sha256": "9398725d0f28e99705d3641a3b0be18fb4a76b54c4f64b4e6ea3407bb361b373"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "4e9746ec19723f0a1a6b8f382e961417168be66c330a213e2832223c0f4b8b61"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/resource-timeseries.csv": {
+    "bytes": 13895,
+    "sha256": "5b7c7beb2a607b7c378ac681f5f4c2d28e6963bf2b9191ad5c9df6ea354606e2"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/shard1/rnode.test.a3fa1da1-s1.boot.log": {
+    "bytes": 24910989,
+    "sha256": "c470ce092060f0e8be1e0a3d7e5e6584db7bbf41960c4da64a09338e3d0eca31"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/shard1/rnode.test.a3fa1da1-s1.readonly.log": {
+    "bytes": 24903637,
+    "sha256": "1af32aa9a0588d73a9570936491a17adea0da3dc1d9248b5eb706cde49a2bee1"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/shard1/rnode.test.a3fa1da1-s1.validator1.log": {
+    "bytes": 43194912,
+    "sha256": "9eeafd1b3a802c6a6efda97e96de22f9a432e498092b78a0c59b7534e7f6b1df"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/shard1/rnode.test.a3fa1da1-s1.validator2.log": {
+    "bytes": 29186126,
+    "sha256": "1ef98ca5478000aea906548d7e25a6016517b2a78aa052df51e8198081cd36f4"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/shard1/rnode.test.a3fa1da1-s1.validator3.log": {
+    "bytes": 29044994,
+    "sha256": "e92c73f3f0c437841f24c73caa42776fb92a4c4b121b8a93f3747f854f9a8374"
+  },
+  "iteration-00042-subprocess/log-archive/a3fa1da1/shard1/rnode.test.a3fa1da1-s1.validator4.log": {
+    "bytes": 25488386,
+    "sha256": "8b3d193b7b58ac156aa1c9c4e468646a8153cdfbcfd0827e0a24e8801cd21fde"
+  },
+  "iteration-00042-subprocess/log-archive/a45d7226/shard1/rnode.test.a45d7226.boot.log": {
+    "bytes": 28851424,
+    "sha256": "4b860019a98083d5a3ba79e8ecd0169b2aaed8c253edbd9ede1c49b56785f0f1"
+  },
+  "iteration-00042-subprocess/log-archive/a45d7226/shard1/rnode.test.a45d7226.readonly.log": {
+    "bytes": 28126223,
+    "sha256": "c8854d8c12c32a83b2466b89ab3f43090a5abc25eb47e9f88c705c483de26ef9"
+  },
+  "iteration-00042-subprocess/log-archive/a45d7226/shard1/rnode.test.a45d7226.validator1.log": {
+    "bytes": 56261682,
+    "sha256": "56837ab4c0bfaa5085445229626bb4d374a6422201221f43bac7e460dc37b76c"
+  },
+  "iteration-00042-subprocess/log-archive/a45d7226/shard1/rnode.test.a45d7226.validator2.log": {
+    "bytes": 33887686,
+    "sha256": "59ebeea663c1152e71c5c8d1308b71f18034f92164d52a787f4d8caa6d11460f"
+  },
+  "iteration-00042-subprocess/log-archive/a45d7226/shard1/rnode.test.a45d7226.validator3.log": {
+    "bytes": 34403674,
+    "sha256": "bfd8b494deb5978cab13baec8adee5c945ff5e3e91dac88b67a0f7d2c65678e5"
+  },
+  "iteration-00042-subprocess/log-archive/a45d7226/shard1/rnode.test.a45d7226.validator4.log": {
+    "bytes": 29074552,
+    "sha256": "93f1f2af81e22f27700b0d69504409cdf3c8e3bf62f53060d999fd01da01402e"
+  },
+  "iteration-00042-subprocess/log-archive/a4c6e0ad/shard1/rnode.test.a4c6e0ad.boot.log": {
+    "bytes": 27491442,
+    "sha256": "f2c1c2137dc1dff4f37c75143103907d6bb918a93c2b844f0cc046c0710c8c0d"
+  },
+  "iteration-00042-subprocess/log-archive/a4c6e0ad/shard1/rnode.test.a4c6e0ad.readonly.log": {
+    "bytes": 26432323,
+    "sha256": "00ce3a39699516da04ebfa6b5858d72fc18117fa7dac7a81fd805331b4bc9772"
+  },
+  "iteration-00042-subprocess/log-archive/a4c6e0ad/shard1/rnode.test.a4c6e0ad.validator2.log": {
+    "bytes": 32091867,
+    "sha256": "08394b2cc70dffc1cdc944518a5f8ce0de7040a7feec4df25c6a79e52071d7e3"
+  },
+  "iteration-00042-subprocess/log-archive/a4c6e0ad/shard1/rnode.test.a4c6e0ad.validator1.log": {
+    "bytes": 53812061,
+    "sha256": "dca45795bdec04ece4b383bc7204c2d365232a9cfc5df8c01d5c81af575606fe"
+  },
+  "iteration-00042-subprocess/log-archive/a4c6e0ad/shard1/rnode.test.a4c6e0ad.validator3.log": {
+    "bytes": 32384053,
+    "sha256": "530af5af7aff32c30f0f4d4b657272dc90027b5f6061710fa2ee8ebe1dc700f6"
+  },
+  "iteration-00042-subprocess/log-archive/a4c6e0ad/shard1/rnode.test.a4c6e0ad.validator4.log": {
+    "bytes": 27608818,
+    "sha256": "b45ed6ee8b62651291c004507542a822410269b95c50856399c66652ec8cb848"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/node-metrics-timeseries.csv": {
+    "bytes": 33362105,
+    "sha256": "3093f82b3d6e6e2881e1c7cb548ed53186fbf1652ace0853d834648482d7a66e"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/resource-percore-timeseries.csv": {
+    "bytes": 277086,
+    "sha256": "105a6d729b3f7c4fd881408d54a3477f272d35f10954722df95abe07578d51e5"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "ab623b5bf676346362b75e6fe1b7a109dcbb3cd1fd01af08262850743cca1883"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/resource-timeseries.csv": {
+    "bytes": 13867,
+    "sha256": "7b26c45f4c3e092eae603ad91d36cb98fd05a2b89c9bf324cfc1e38d6d564956"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/shard1/rnode.test.a6eb9960-s1.boot.log": {
+    "bytes": 25371206,
+    "sha256": "84bb27d5b3e74e478e548329d8a8e98f33144673d429922fe5923c16fcc99d4d"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/shard1/rnode.test.a6eb9960-s1.readonly.log": {
+    "bytes": 25408747,
+    "sha256": "898238c3a61f89f4cc0bf739b2d132b24e01de91aa73af8cf8043b10dead55e5"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/shard1/rnode.test.a6eb9960-s1.validator1.log": {
+    "bytes": 43315193,
+    "sha256": "dbb56be69c2517c10c4b686868146204e9c05b3291842a1e64747ab245d942b8"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/shard1/rnode.test.a6eb9960-s1.validator2.log": {
+    "bytes": 29712574,
+    "sha256": "89ca95ed250565969e0253375807aa2b16083fc1f2437d241527138753b64bbc"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/shard1/rnode.test.a6eb9960-s1.validator3.log": {
+    "bytes": 29585976,
+    "sha256": "b0f1b63ec3b8e20295f8891767984028b9ca4608cf2f19a4f0a0abddb78cc8e3"
+  },
+  "iteration-00042-subprocess/log-archive/a6eb9960/shard1/rnode.test.a6eb9960-s1.validator4.log": {
+    "bytes": 26039705,
+    "sha256": "28002617ba890c9827b776dc9ce7db02c0be23ace781b625db8ba4dcaa36c698"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/node-metrics-timeseries.csv": {
+    "bytes": 32717517,
+    "sha256": "e2703b0178a61132f4e3ff94dc9d5ca8382ec3ee3d469a4097a969351ccdb0ce"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/resource-percore-timeseries.csv": {
+    "bytes": 272886,
+    "sha256": "bbb06e33e9ce9ca83ebe339e8c16c7a286789b81a896ea24bc21cb2b209296bd"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "0df8f354ad65e477ae4aea1c3cab57a2f0979297bca30ce76be0b5dac0aabfcc"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/resource-timeseries.csv": {
+    "bytes": 13519,
+    "sha256": "5a0c89b6a8e525a5f6fb7ecfe9c4d2fb9f311aa6318d8c40dedb411fdc3ad378"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/shard1/rnode.test.c617f8fc-s1.boot.log": {
+    "bytes": 25293988,
+    "sha256": "2e9e8ea5690290efadcc34437c337a02425bd7bd50e9c2f3c60ea58c9f78eb1e"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/shard1/rnode.test.c617f8fc-s1.readonly.log": {
+    "bytes": 25349898,
+    "sha256": "c69f512cfe152e8934456b1a0acf6f4ce3312aff5e6df552a0101fc99d5478a4"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/shard1/rnode.test.c617f8fc-s1.validator1.log": {
+    "bytes": 43944282,
+    "sha256": "86531f710fceb1f574ed4a7c68a6c2c0dc6f4c373495ac3663d6a04b02bd48fa"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/shard1/rnode.test.c617f8fc-s1.validator2.log": {
+    "bytes": 29608628,
+    "sha256": "e03662b071a503b8dadaf00af019ee0952304589b15ef18cec69b5a6a5cfe665"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/shard1/rnode.test.c617f8fc-s1.validator3.log": {
+    "bytes": 29618803,
+    "sha256": "2089e8eb177503faa73eae5ea95b18b9708b222f3bed4e316a5ad2abf5557828"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/node-metrics-timeseries.csv": {
+    "bytes": 33102801,
+    "sha256": "c5e855f5ad4a64938eb7231017e1f1793a9455683e34bcaa6a60cfbc7a092cd7"
+  },
+  "iteration-00042-subprocess/log-archive/c617f8fc/shard1/rnode.test.c617f8fc-s1.validator4.log": {
+    "bytes": 25933332,
+    "sha256": "f4bb3e19e598c6751d0bfbeb1de15290bda9a96e6ac8a3dcaef960b91d379d40"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/resource-percore-timeseries.csv": {
+    "bytes": 276970,
+    "sha256": "8fedc751ec0e20e6f66f57b3e3a1594a7c69e2166bcb09028bd635e6825bcea1"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "b0dc4cd1f2f22cbf8405ed6559ce18f212ce4a0a79582c713a729899feb634e1"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/resource-timeseries.csv": {
+    "bytes": 13546,
+    "sha256": "41ba8ba46dead6282b54ed57059032826970752ee369d25746fa2aa5017421f1"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/shard1/rnode.test.cf37aef0-s1.boot.log": {
+    "bytes": 25546574,
+    "sha256": "456fc5dbf9a2f82e63dc6ec020be080e6353c074fe82c7373b7279ab64570cea"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/shard1/rnode.test.cf37aef0-s1.readonly.log": {
+    "bytes": 25531989,
+    "sha256": "1fc635a4dd18e5e2ed3c9ad97d23700297ccbc5b5f74d87b54732629b2897362"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/shard1/rnode.test.cf37aef0-s1.validator1.log": {
+    "bytes": 43673196,
+    "sha256": "8f2a9dd37bb5844becd49bd65947b04743d7df88e5f91e5fd051be754989ce9d"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/shard1/rnode.test.cf37aef0-s1.validator2.log": {
+    "bytes": 29800157,
+    "sha256": "ac745ec51638343240910ab1d1f4eda7a9556031b266e5d67fe9fdf2b1457825"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/shard1/rnode.test.cf37aef0-s1.validator3.log": {
+    "bytes": 29892491,
+    "sha256": "1911bda5dcdda877a612dd795826c231a02a9991984a6b6f48324f056f3f384e"
+  },
+  "iteration-00042-subprocess/log-archive/cf37aef0/shard1/rnode.test.cf37aef0-s1.validator4.log": {
+    "bytes": 26166632,
+    "sha256": "dc95563639df208f983d046171401a677698208afb6dab42733ac89f1f3dfd75"
+  },
+  "iteration-00042-subprocess/log-archive/e42a93f7/shard1/rnode.test.e42a93f7.boot.log": {
+    "bytes": 28340747,
+    "sha256": "e8f59440caa2d5fb2d72126a10b40e90f7e42dc4ee6b83ac98b1007b42410ba4"
+  },
+  "iteration-00042-subprocess/log-archive/e42a93f7/shard1/rnode.test.e42a93f7.readonly.log": {
+    "bytes": 27851001,
+    "sha256": "6100b5252a91c99fc57ac3f032746fe44fdb6ae46e6752cf2b2e39418dbdde2f"
+  },
+  "iteration-00042-subprocess/log-archive/e42a93f7/shard1/rnode.test.e42a93f7.validator1.log": {
+    "bytes": 52575225,
+    "sha256": "1e3684c38e692e0fbe3c4ec420cc0545cff30205e6e1d9eeb9d20506ebb27700"
+  },
+  "iteration-00042-subprocess/log-archive/e42a93f7/shard1/rnode.test.e42a93f7.validator2.log": {
+    "bytes": 33167105,
+    "sha256": "7248f5789914a101953f5f8c62c23e13efe4c802e3bb6d85fbca20ff090c5754"
+  },
+  "iteration-00042-subprocess/log-archive/e42a93f7/shard1/rnode.test.e42a93f7.validator3.log": {
+    "bytes": 33048293,
+    "sha256": "bdf1c8bf3d8aca90be9870622b2d56620869cccf836098cf362bd84e16cbdb9e"
+  },
+  "iteration-00042-subprocess/log-archive/e42a93f7/shard1/rnode.test.e42a93f7.validator4.log": {
+    "bytes": 28649121,
+    "sha256": "4506d7674f933d706abda27e7f02591d3f9268d31111806bd00937bdbacabfde"
+  },
+  "iteration-00042-subprocess/log-archive/e4edc37c/shard1/rnode.test.e4edc37c.boot.log": {
+    "bytes": 28020170,
+    "sha256": "5ff3f2e2d78d8db61e9b3dde488223f984faae3af1a592011f234f9c508693e3"
+  },
+  "iteration-00042-subprocess/log-archive/e4edc37c/shard1/rnode.test.e4edc37c.readonly.log": {
+    "bytes": 27581017,
+    "sha256": "e5ff599215977f5686d77966c64c1d697c8325a2f6aa6b0e1b3ead1e94534fc8"
+  },
+  "iteration-00042-subprocess/log-archive/e4edc37c/shard1/rnode.test.e4edc37c.validator1.log": {
+    "bytes": 54468199,
+    "sha256": "6bf8c4355578f232f29a067479bc150b4594e820385d2d97d6336403f7dae2d8"
+  },
+  "iteration-00042-subprocess/log-archive/e4edc37c/shard1/rnode.test.e4edc37c.validator2.log": {
+    "bytes": 32970789,
+    "sha256": "509ab47e57f1bc4160e3cee1bb58d6d20256fe4cc557f07872dd10a56c3c7815"
+  },
+  "iteration-00042-subprocess/log-archive/e4edc37c/shard1/rnode.test.e4edc37c.validator3.log": {
+    "bytes": 33049007,
+    "sha256": "d602d056377c8fc15191f4c76ef66b92f29be02a24693e5e63db95467b70b338"
+  },
+  "iteration-00042-subprocess/log-archive/e4edc37c/shard1/rnode.test.e4edc37c.validator4.log": {
+    "bytes": 28214404,
+    "sha256": "18ec78b39c61c47ea1ddd4955b0b9c0d89ca687e06fa380ef9e62d9aeabebaf1"
+  },
+  "iteration-00042-subprocess/log-archive/e843313e/shard1/rnode.test.e843313e.boot.log": {
+    "bytes": 28551936,
+    "sha256": "974a2ea9e63d6293c2d36125298df62e63cab72633ad25b826d3da058e31b540"
+  },
+  "iteration-00042-subprocess/log-archive/e843313e/shard1/rnode.test.e843313e.readonly.log": {
+    "bytes": 28276940,
+    "sha256": "ae43498f62a49b21e20ea021c634fe35575afeb008ad499305b9401992ebd9d3"
+  },
+  "iteration-00042-subprocess/log-archive/e843313e/shard1/rnode.test.e843313e.validator1.log": {
+    "bytes": 55096367,
+    "sha256": "8162497c87e02f37aa08606f317852b392d3c82a6bf21e77efc055c947163c8a"
+  },
+  "iteration-00042-subprocess/log-archive/e843313e/shard1/rnode.test.e843313e.validator2.log": {
+    "bytes": 33371395,
+    "sha256": "5daf10e42621f98b1f7ed12436b89fbdb8ce38081fd7128088000c0b8cb0fc87"
+  },
+  "iteration-00042-subprocess/log-archive/e843313e/shard1/rnode.test.e843313e.validator3.log": {
+    "bytes": 33308106,
+    "sha256": "3d49cc9536fda5f14fcc0d1467bf6b63796aed9ce3986814e054e7caad2392a4"
+  },
+  "iteration-00042-subprocess/log-archive/e843313e/shard1/rnode.test.e843313e.validator4.log": {
+    "bytes": 28779014,
+    "sha256": "77fc74bbddf6d8888688efed9f624bd45b0d30550517a4705365919aa07bcd0f"
+  },
+  "iteration-00042-subprocess/log-archive/ef778047/shard1/rnode.test.ef778047.boot.log": {
+    "bytes": 27490203,
+    "sha256": "08ef55bd1f8af662feed0448cc30a03034e9a064ecaaf7894c4adfd2681b770a"
+  },
+  "iteration-00042-subprocess/log-archive/ef778047/shard1/rnode.test.ef778047.readonly.log": {
+    "bytes": 27170857,
+    "sha256": "e54dd633b34c7c5ac148e2a2982137fce3fc0267c62d86328b7ca77b64f3f419"
+  },
+  "iteration-00042-subprocess/log-archive/ef778047/shard1/rnode.test.ef778047.validator1.log": {
+    "bytes": 52894803,
+    "sha256": "2cec7b755f3f6b3418254766027664e02118424c6678b2c6371bd8ae2a3d7bf7"
+  },
+  "iteration-00042-subprocess/log-archive/ef778047/shard1/rnode.test.ef778047.validator3.log": {
+    "bytes": 32379257,
+    "sha256": "239b258adbe90f8c10b9429da9b2cc209a8306119ec6c29f16735153e835a437"
+  },
+  "iteration-00042-subprocess/log-archive/ef778047/shard1/rnode.test.ef778047.validator4.log": {
+    "bytes": 27943418,
+    "sha256": "9f9303383db6c2ba43d25ad1b7497b9aa4b63c17462e826e88de11d0ed8b3781"
+  },
+  "iteration-00042-subprocess/log-archive/ef778047/shard1/rnode.test.ef778047.validator2.log": {
+    "bytes": 32477302,
+    "sha256": "c99fe2f8047e46db5873a38ce50a59eb09fed6662525e7674f079ebacbf373a1"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/node-metrics-timeseries.csv": {
+    "bytes": 32878665,
+    "sha256": "311c275fc36bd7dc7660681294cdf9a1810cf42377889168e0e45ab038d01484"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "b6d252739d52ebb8d70d0fd2bca4bd07eeb663cf6d57daf4e471d858e8140642"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/resource-timeseries.csv": {
+    "bytes": 13537,
+    "sha256": "31e9bf51754b6b24b7a1e9de37eb3ba4ad2d80678cc1c134b5f778bfc16776f3"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/resource-percore-timeseries.csv": {
+    "bytes": 274539,
+    "sha256": "4626920ae2391ae34901f0533d50c9f82bca21491c05f55f0145c8077062f2d2"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/shard1/rnode.test.f2f44750-s1.boot.log": {
+    "bytes": 26231943,
+    "sha256": "4bc8cf4e52de2abda797ddbe9c73c0f30721e39e09db280dea0fba1b5dc1c12a"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/shard1/rnode.test.f2f44750-s1.readonly.log": {
+    "bytes": 26405904,
+    "sha256": "61475fb31893f6e963724cad227f57d53eeb51645c6aa94c79d75f121d23c4f2"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/shard1/rnode.test.f2f44750-s1.validator1.log": {
+    "bytes": 45730090,
+    "sha256": "536b6887fac63a0cd9659b3a7aa6d887148f7f6f7957fe0aaeddb1f652aa4384"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/shard1/rnode.test.f2f44750-s1.validator2.log": {
+    "bytes": 30293508,
+    "sha256": "403527b378ff83c7c43408f548968ab551c628c19f6b437b97ad604f91925e30"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/shard1/rnode.test.f2f44750-s1.validator3.log": {
+    "bytes": 30596486,
+    "sha256": "1918a57bb37ff06c023fdefc2a73c787b625210d5bc9a6f79886cca64dbdfa46"
+  },
+  "iteration-00042-subprocess/log-archive/f2f44750/shard1/rnode.test.f2f44750-s1.validator4.log": {
+    "bytes": 26717789,
+    "sha256": "45e9dc7aae75bb443bc6d958a31f441822434bb1bdb7ced3ff1f31aef7c96f14"
+  },
+  "iteration-00042-subprocess/log-archive/f9afd7ef/shard1/rnode.test.f9afd7ef.boot.log": {
+    "bytes": 27690603,
+    "sha256": "b6c13022beb8f25c63637a66626fc4001e53eab3bbe14a069fddd4e1bc806dec"
+  },
+  "iteration-00042-subprocess/log-archive/f9afd7ef/shard1/rnode.test.f9afd7ef.readonly.log": {
+    "bytes": 27220694,
+    "sha256": "086b3bc5362fef19768ce8e88f7fb4c9929b6b9dcd0b840d0dc43b02620798e7"
+  },
+  "iteration-00042-subprocess/log-archive/f9afd7ef/shard1/rnode.test.f9afd7ef.validator1.log": {
+    "bytes": 53101473,
+    "sha256": "6dcff5ab2988dccb69c9ea383751d3f6e4ab5670e8633761a4b164508b468ffe"
+  },
+  "iteration-00042-subprocess/log-archive/f9afd7ef/shard1/rnode.test.f9afd7ef.validator2.log": {
+    "bytes": 32751649,
+    "sha256": "2c06bc3e7bb69adca0dbfeb59ac21f33ee982dd8cfbed31042c02438644a8cc5"
+  },
+  "iteration-00042-subprocess/log-archive/f9afd7ef/shard1/rnode.test.f9afd7ef.validator3.log": {
+    "bytes": 32899575,
+    "sha256": "29ac10287d5104833eef836fc3c6d8051850ef71820435f8de1d851ecd20489c"
+  },
+  "iteration-00042-subprocess/log-archive/f9afd7ef/shard1/rnode.test.f9afd7ef.validator4.log": {
+    "bytes": 28299318,
+    "sha256": "0f95732ee6c82004b1bfc3eb4b728cca18978a8e5d576a891cbd237371308cac"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/node-metrics-timeseries.csv": {
+    "bytes": 33787916,
+    "sha256": "bb2b6229e0b08d912c4dbd864b05cb3b58c609505728680e9df0bcde28df18c7"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/resource-percore-timeseries.csv": {
+    "bytes": 281526,
+    "sha256": "863d5b8a547cc3d29fe50eab4e5b54c78db22f2420251a8edc5cecc961da72a5"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "84ec8f98a801ceb7ff272eb7ef4f1e491e20dd5d9dc4bb57e02713d46dee5d0c"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/shard1/rnode.test.fc0afcb9-s1.boot.log": {
+    "bytes": 26577498,
+    "sha256": "49a1868fd267ddf12e419eed029b23b07e913f75f3f4cf6174b0c58b7dda4a76"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/resource-timeseries.csv": {
+    "bytes": 13890,
+    "sha256": "a7da5816116b1778fbfcb1f2af6a565436c4bfc41cdd619b93311a4c6b6921a4"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/shard1/rnode.test.fc0afcb9-s1.readonly.log": {
+    "bytes": 26596897,
+    "sha256": "6dd85b0b0cc6124cf12806e4eec7167cce9ba8a7842a7123b6289034d510b51b"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/shard1/rnode.test.fc0afcb9-s1.validator1.log": {
+    "bytes": 43906837,
+    "sha256": "b7f1530b0efa7a94e89dc88d5e2212cec03e2b990cc09b9d1861751e537d422b"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/shard1/rnode.test.fc0afcb9-s1.validator2.log": {
+    "bytes": 30990224,
+    "sha256": "f4dbdb364e39a0b3fa0b7c4e1b131508274872b3cf3967300f3640054a28e620"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/shard1/rnode.test.fc0afcb9-s1.validator3.log": {
+    "bytes": 31009792,
+    "sha256": "2588745b3972844f5a56a7c361ebea760cc158dcd641e96401804bddf38ba366"
+  },
+  "iteration-00042-subprocess/log-archive/fc0afcb9/shard1/rnode.test.fc0afcb9-s1.validator4.log": {
+    "bytes": 27290181,
+    "sha256": "360bf0e42789a7331510fe932e16ad3e2aa437b5a92e9830a3cdaa958be73bb5"
+  },
+  "iteration-00042-subprocess/metrics.json": {
+    "bytes": 787,
+    "sha256": "ac0d9e6749bbac25eee78a6284b359e4bf9ad8c1ce9b83bfd1991477ab8f74b7"
+  },
+  "iteration-00042-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 155550708,
+    "sha256": "ac96141faf81fa89eafeae0613584da53f0a03f1cddbaf09c630ab18ce1937c8"
+  },
+  "iteration-00042-subprocess/pytest.log": {
+    "bytes": 11114832,
+    "sha256": "1f586e6bc813cf96ecf43de8c43b796d720a2f49f0d4f4922ec65bfcd2535630"
+  },
+  "iteration-00042-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00042-subprocess/resource-timeseries.csv": {
+    "bytes": 54006,
+    "sha256": "2aa682cf07c3d085869dd9c79e0a0be259419bb4b861b026c27eb6d9da9a693e"
+  },
+  "iteration-00043-docker/metrics.json": {
+    "bytes": 4244,
+    "sha256": "7df543a880ed0db67c72757271095e1c625b10cd69a183bee698a500e2e82727"
+  },
+  "iteration-00043-docker/node-memory-timeseries.tsv": {
+    "bytes": 77760,
+    "sha256": "ed73f767c8666ae1cc457c6ce14dff3013a547e94fda6de77c81ca6a15dbc491"
+  },
+  "iteration-00043-docker/node-metrics-timeseries.csv": {
+    "bytes": 33210319,
+    "sha256": "5378070161c1ec69887164479017296cf31772a2fa95b25b4fa6b035de008ebf"
+  },
+  "iteration-00043-docker/pytest.log": {
+    "bytes": 119629,
+    "sha256": "6690804cc681e02e2598e18c42a7a18155e3ca86470a2017c571b5681abde47a"
+  },
+  "iteration-00043-docker/resource-percore-timeseries.csv": {
+    "bytes": 275359,
+    "sha256": "34dce70611e78d3eca2eac5008a6d715c3856df5f5a206282493b39cffac7d26"
+  },
+  "iteration-00043-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "c16cc43b394bbc8efd1cca51cafebce3774d07d957f843da475f011c11013a35"
+  },
+  "iteration-00043-docker/resource-timeseries.csv": {
+    "bytes": 15063,
+    "sha256": "19ab8a27e2f1842f21e63468e4c3b966c5026af71f617250f701e3fdd8c97817"
+  },
+  "iteration-00044-subprocess/metrics.json": {
+    "bytes": 781,
+    "sha256": "dac7a4ddb6bfed632417f39e604d420f54aeb4694959000232c2d7f8d176568e"
+  },
+  "iteration-00044-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 177879938,
+    "sha256": "fa469160c58b1c404e01f63f0f7db8a6d35211cbfe342ad07f90ed6ad0d49849"
+  },
+  "iteration-00044-subprocess/pytest.log": {
+    "bytes": 119669,
+    "sha256": "2d361b9606ecff0bc643e5d3fd73144a44bc229eea7c17667c5dd7b4f14387d6"
+  },
+  "iteration-00044-subprocess/resource-timeseries.csv": {
+    "bytes": 61234,
+    "sha256": "72feda52ef978d28c6156a04ca015bf41be23353cacfbb4ce06e0a7cf52e5d06"
+  },
+  "iteration-00045-docker/metrics.json": {
+    "bytes": 4224,
+    "sha256": "a1f4ccc8e59085e80832f24cf619cdf02b99193c1892a8ecabf83bd2b01dafcd"
+  },
+  "iteration-00044-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00045-docker/node-memory-timeseries.tsv": {
+    "bytes": 76055,
+    "sha256": "1636cb0c46343a5a73177afe077ab0f584d91600b3fafa4d2a660ff498fd26f9"
+  },
+  "iteration-00045-docker/node-metrics-timeseries.csv": {
+    "bytes": 32432000,
+    "sha256": "b25ff14795114257febfcbcbaae2d3a090eda3f02594fecde98711f079813b2d"
+  },
+  "iteration-00045-docker/pytest.log": {
+    "bytes": 119621,
+    "sha256": "02880f4f554232ed32ddd688d0f2d69ee9ff0bea23458601f7e7bfdd3a9d654a"
+  },
+  "iteration-00045-docker/resource-percore-timeseries.csv": {
+    "bytes": 270193,
+    "sha256": "12cc3f5cfc777143f040a5da8aa33bb6bffc013bfbf70a7cfbabbf2d8b55080e"
+  },
+  "iteration-00045-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "540fc91d687eefe1426010d193850ba29f9540faf3bbdb0ab95a6b26e5f639dd"
+  },
+  "iteration-00045-docker/resource-timeseries.csv": {
+    "bytes": 13521,
+    "sha256": "a7940057732602da17dccba3f23c042c474f1df7a09e61c7316d58b167aa6b56"
+  },
+  "iteration-00046-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "26a228671775cdc9c8273fa3b0222e24b7993f4e44d02e647618bbc23ea0c1b2"
+  },
+  "iteration-00046-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 174945855,
+    "sha256": "d5367f6cbb5079c3ac8fe641191dd8578ec03f0aff5ea8a26d5b98a9e42f846c"
+  },
+  "iteration-00046-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00046-subprocess/pytest.log": {
+    "bytes": 119603,
+    "sha256": "42e3264b00017bafa9d5770adf9ed39c9406e82221c8652f3c37c01ced88c735"
+  },
+  "iteration-00046-subprocess/resource-timeseries.csv": {
+    "bytes": 60230,
+    "sha256": "bc5ba1ac8847f2ee92944c357c03d3f4847c0e6c03d40952324ac61d9e33271b"
+  },
+  "iteration-00047-docker/metrics.json": {
+    "bytes": 4244,
+    "sha256": "12e4f9b3ffd974a0bc1014a1b59620c4e44f0ae302da7439732c490ee117d80f"
+  },
+  "iteration-00047-docker/node-metrics-timeseries.csv": {
+    "bytes": 32515777,
+    "sha256": "1fa73f7101fe1f0a12c2d62d0a022cefcc8e002e9ccba4f0d0c446aa5dfc12d9"
+  },
+  "iteration-00047-docker/node-memory-timeseries.tsv": {
+    "bytes": 76572,
+    "sha256": "aed3c18762d4210de2baabab46b5270e90f52f37e4ec754dcf5007a1e94e8350"
+  },
+  "iteration-00047-docker/pytest.log": {
+    "bytes": 119655,
+    "sha256": "45ad0087a7c96690611dca45542d7185f59f3673895f5b20e3f04e90fa331ba6"
+  },
+  "iteration-00047-docker/resource-percore-timeseries.csv": {
+    "bytes": 272490,
+    "sha256": "3adc82341d17fd2ad6c376ced2f707201c76be117e415c1a523a31e028a99769"
+  },
+  "iteration-00047-docker/resource-timeseries.csv": {
+    "bytes": 13561,
+    "sha256": "3872df779eddd75e62d24f36f8051fcee3a0f980ef7aa9e58bf8b6afc87be60e"
+  },
+  "iteration-00048-subprocess/metrics.json": {
+    "bytes": 781,
+    "sha256": "06fa60797c2476cd2762d1ff40db941d12d2d6c0ebff30e6b40dba236b5e1420"
+  },
+  "iteration-00048-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 173654603,
+    "sha256": "dbc6cc82c1945d676228b968b53d9891940c2b64af142cbc1301aabd6b63c3e7"
+  },
+  "iteration-00048-subprocess/pytest.log": {
+    "bytes": 119601,
+    "sha256": "77fb3febd8ddc0261706adb7c9e049db1285670f542e9b937462ca8bf599add9"
+  },
+  "iteration-00048-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00048-subprocess/resource-timeseries.csv": {
+    "bytes": 59585,
+    "sha256": "2c557b741aca7ba514dce75b34c3060167214fc85aa9a6d7bb31d3992caba0d2"
+  },
+  "iteration-00049-docker/metrics.json": {
+    "bytes": 4226,
+    "sha256": "459b8df429526e75a2c8ecb664055556a0e4245563299932d49bd84d50ba0def"
+  },
+  "iteration-00049-docker/node-memory-timeseries.tsv": {
+    "bytes": 78896,
+    "sha256": "723954de2fb60a842c94608a1a70cd2136362f99f1150b1f21e896c2d4e76aba"
+  },
+  "iteration-00049-docker/node-metrics-timeseries.csv": {
+    "bytes": 33675368,
+    "sha256": "18b57b8d0dd8105fdd20710170bd7089e88dc0c858db3bae22a8adc3b1916ef3"
+  },
+  "iteration-00049-docker/pytest.log": {
+    "bytes": 119618,
+    "sha256": "3effa1e4376c955d2f352bbcfc40a8dac3e2b3a8fa0c8dfe46efc8ee8fc68f14"
+  },
+  "iteration-00049-docker/resource-percore-timeseries.csv": {
+    "bytes": 279662,
+    "sha256": "f197e3d1b2b027f128062806e6804e03dc7b86ff84d9beed0b8b11ebae29f5b2"
+  },
+  "iteration-00049-docker/resource-timeseries.csv": {
+    "bytes": 13891,
+    "sha256": "3b310425663d9156a1e302920bce4ca1ced95f738aa8e56220ea49114e39f246"
+  },
+  "iteration-00050-subprocess/metrics.json": {
+    "bytes": 785,
+    "sha256": "e9026d1113ac1fc8f36b46b21f5eae3b0daba38255136e3f024618ab9243345c"
+  },
+  "iteration-00050-subprocess/node-metrics-timeseries.csv": {
+    "bytes": 170965831,
+    "sha256": "799ac0b93928091d4f3fe3d97f9ee0391cc2b170aeb68ae1d237c7a1238ef3d7"
+  },
+  "iteration-00050-subprocess/pytest.log": {
+    "bytes": 119606,
+    "sha256": "b3758facfdfff887eec93991a6faa4dbc8917ce0662946dba5477d7b3924b4e0"
+  },
+  "iteration-00050-subprocess/resource-percore-timeseries.csv": {
+    "bytes": 33,
+    "sha256": "97f435d0142550e7e72870a53ef0f36a27f15435a0464c10c49012ede9984e9b"
+  },
+  "iteration-00050-subprocess/resource-timeseries.csv": {
+    "bytes": 58972,
+    "sha256": "55d17dbd468d82726c4337734ef1a79351622756c9476ca6d4240e7dbc01e090"
+  },
+  "iteration-00051-docker/metrics.json": {
+    "bytes": 4229,
+    "sha256": "87f4cff892108bf10e6059d58077a95ecfb0a3163427d353ca9fcf1d9d04c769"
+  },
+  "iteration-00051-docker/node-memory-timeseries.tsv": {
+    "bytes": 77030,
+    "sha256": "5bf76c904d21acb5a97ef6f18db628712431343d81b0c7f3eb45eab656c78180"
+  },
+  "iteration-00051-docker/node-metrics-timeseries.csv": {
+    "bytes": 32776599,
+    "sha256": "a7317ae27f66687c7475d2a8c8bbe7b78d2e5ea0264d00d76e1e17399dcafce3"
+  },
+  "iteration-00051-docker/pytest.log": {
+    "bytes": 119656,
+    "sha256": "e75c8b6f8adad9600cb2f4142d0f0c7362787905c8d50a4c0eeb1f875e4a0a91"
+  },
+  "iteration-00051-docker/resource-percore-timeseries.csv": {
+    "bytes": 274445,
+    "sha256": "86c2a8395f6188cb82f02971c1b78f432df2a127e07dfbf3af960e13e285b015"
+  },
+  "iteration-00051-docker/resource-summary.txt": {
+    "bytes": 1571,
+    "sha256": "c56d9ca141d99545677b7d1e0e1ea4b03532b639524943bb4c3e31bebb1534d0"
+  },
+  "iterations.json": {
+    "bytes": 144755,
+    "sha256": "ca760d187c6e7087f834fc9ebc04e16a90f249e14598070770887dfa4daf7a9c"
+  },
+  "iteration-00051-docker/resource-timeseries.csv": {
+    "bytes": 13510,
+    "sha256": "b80c5b813919403e85af48a4fb9fe3126415cec16785a5b7d6100979401cc161"
+  },
+  "preflight/junit-custom.xml": {
+    "bytes": 6509,
+    "sha256": "db7bf05aeeb08e8b1012c8d6eacfb74a344e8aa9d88425f05492a3789d797473"
+  },
+  "preflight/collection.log": {
+    "bytes": 12033,
+    "sha256": "91893531043d82f0bafdb24419cf1e6b949ec5ded4e1f23a55da48c2e408402f"
+  },
+  "preflight/junit-shared.xml": {
+    "bytes": 9625,
+    "sha256": "7d7cd6b6fd5bcb228907bcf7f0ca3555a6940ac397bc1a4ededf8f7396a39a4d"
+  },
+  "preflight/junit-standalone.xml": {
+    "bytes": 2447,
+    "sha256": "3936c3d7576694e389823e47b91eaaa252c0520644f2969d97bc988330eb2ed6"
+  },
+  "preflight/pytest-custom.log": {
+    "bytes": 10869,
+    "sha256": "d8a2f4ccce8e64dc5c844f48c75c63b5d709f9d5f96059a4ecd42b94967fc27f"
+  },
+  "preflight/pytest-shared.log": {
+    "bytes": 15499,
+    "sha256": "5062a7b103c405a8cc5bcecf63654367ec5df0b2b6722c457ad9fcd999750d79"
+  },
+  "preflight/junit.xml": {
+    "bytes": 18456,
+    "sha256": "742e67967f0a4922824fb0d0e7442a6b8bbcea8ee874fe5ed8bb08d7bc1d14c1"
+  },
+  "preflight/pytest-standalone.log": {
+    "bytes": 4399,
+    "sha256": "7b19dd05fbc02c30e84889dcf395491206f24156658d1053eea06d310f3f1808"
+  },
+  "preflight/report.txt": {
+    "bytes": 187,
+    "sha256": "642252b8eb56f18b07f8ef3f7d17cf012cae57ee81484e9c795dd1f5b8d97b65"
+  },
+  "preflight/pytest.log": {
+    "bytes": 30972,
+    "sha256": "dab0628e12dd2fc3596f871cbdcefa1fe94baaa11a9052aa55953045180478e4"
+  },
+  "preflight/result": {
+    "bytes": 7,
+    "sha256": "2700165975f68815c97d605c56eca8e90d497ade1264b6282401d13fee99ac27"
+  },
+  "preflight/selection.txt": {
+    "bytes": 115,
+    "sha256": "968bfff3cff8ebb2b9de7b5c2372222859f86ca2fa9db26f4db0d4d9b921a8fe"
+  },
+  "preflight/summary.md": {
+    "bytes": 202,
+    "sha256": "7a0313e0f5b52d5bb340a871570f9ff9df6c56df09d3abb1323a1cf57f24d959"
+  },
+  "summary.json": {
+    "bytes": 164253,
+    "sha256": "2af193544d46f0c58e20e86f4afcab90472578996a86a3bcfe3105b35780d7ab"
+  },
+  "report/weekly-summary.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "summary.txt": {
+    "bytes": 251,
+    "sha256": "536fc7578c04866364e635165249c57441194b26f28c7f042e4c09f2a79883ef"
+  }
+}

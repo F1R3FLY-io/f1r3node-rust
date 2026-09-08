@@ -2,15 +2,19 @@
 
 **Status:** Implementation started. The repair and acceptance gates below remain open.
 
-**Progress:** [Gate G0, cycles B1 and B2](../tdd-plans/soak-gates-2026-09-08.md) pass local verification. The gate rejects incorrect control outcomes, and pull requests now select bounded formal checks.
+**Progress:** [Gate G0, cycles B1 through B3](../tdd-plans/soak-gates-2026-09-08.md) pass local verification. Hosted evidence confirms B2 formal execution. B3 is committed and pushed at `9310ae2ce`.
 
-Hosted workflow confirmation, required-check enforcement, and the claim inventory remain open. Neither cycle discharges finalization or disk claims.
+Required-check enforcement and complete acceptance identity remain open. Hosted B3 inventory execution still requires confirmation. These cycles do not discharge finalization or disk claims.
+
+The [run 34180346282 inspection](../soak-evidence/34180346282/README.md) preserves one finalization failure, an incomplete duration, disk observations, and separate reporting failures.
 
 **Branch:** `fix/soak-disk-hygiene-stop`
 
 **Reviewed node revision:** `b05b2f00d03d16b32d9d9328c3be868ce565c03c`
 
-**Reviewed harness revision:** `022ae6d304ff47a112d7db76be956736cf056e0b`
+**Initial reviewed harness revision:** `022ae6d304ff47a112d7db76be956736cf056e0b`
+
+**Current merged harness pin:** `962effd17708192627bd249362761c0ccb1fd5fa`. The [repin record](../soak-evidence/repin-962effd-2026-09-08/README.md) retains merge verification and local checks.
 
 **Related work:** [Issue #24](https://github.com/F1R3FLY-io/f1r3node-rust/issues/24), [PR #387](https://github.com/F1R3FLY-io/f1r3node-rust/pull/387), [PR #399](https://github.com/F1R3FLY-io/f1r3node-rust/pull/399), and [system-integration PR #137](https://github.com/F1R3FLY-io/system-integration/pull/137).
 
@@ -390,7 +394,11 @@ This plan is documentation, not a claim discharge or a production repair. PR #39
 
 Keep performance correction commits separate from disk correction commits. Use a follow-up branch if PR #399 merges before finalization attribution completes.
 
-After system-integration PR #137 merges, repin to its merged SHA and rerun the cross-repository checks. Do not assume the current PR-head pin proves the merged candidate.
+Wait until system-integration PR stack [#139](https://github.com/F1R3FLY-io/system-integration/pull/139) → [#138](https://github.com/F1R3FLY-io/system-integration/pull/138) merges before repinning. Then select the resulting merged revision and repeat cross-repository checks. PR #137 alone does not satisfy this prerequisite.
+
+Keep the current pin unchanged until that prerequisite is met. Do not treat a PR-head pin as merged-candidate evidence.
+
+The prerequisite was verified on September 8. All three pins now identify merged `main` revision `962effd1`. Local cross-repository checks passed. This repin does not close any repair or acceptance gate.
 
 Keep issue #24 open until its acceptance evidence passes. Merge status, coverage, and a green unrelated proof cannot substitute for that evidence.
 

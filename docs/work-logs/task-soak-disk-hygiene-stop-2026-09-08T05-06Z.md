@@ -5,13 +5,13 @@ claimed_by: claude-session-74f6ecbb
 claimed_at: 2026-09-08T01:30:00Z
 handoff_status: ready
 next_steps:
-  - Review and commit the uncommitted G0/B3 inventory cycle after explicit authorization.
+  - Confirm hosted inventory execution for pushed G0/B3 commit 9310ae2ce.
   - Confirm required-check enforcement with a maintainer who can inspect classic protection.
-  - Inspect the retained artifact from failed soak run 34180346282 without inferring its cause from the workflow verdict.
+  - Use the retained run 34180346282 inspection to prepare the remaining diagnostic work.
   - Run D1 historical disk RED in a disposable container without host cleanup mounts.
   - "DONE 2026-09-08T06:20Z: repinned SYSTEM_INTEGRATION_REF x3 to SI 7f488f93 (PR #137 head after main 0fb6337 was merged in at 1e411383; descends per merge-base --is-ancestor). The first SI push c32f1f1d was refused because it was cut from dev and lacked #132 and #134"
   - "DONE 2026-09-08T06:40Z: repinned again to SI 022ae6d3, the #137 head that bounds the post-mortem du walks at 10s in aggregate and covers them in tests; descends from 7f488f93 and 0fb6337"
-  - Re-pin to the merged SHA once SI #137 lands
+  - "DONE 2026-09-08: verified PR stack #139 → #138 and repinned all three sites to merged main revision 962effd1."
   - Complete the diagnostic prerequisites before starting a non-overlapping soak.
   - Identify the growing consumer before selecting its lifecycle correction.
 ---
@@ -34,7 +34,7 @@ Each soak job ended with the runner worker failing on `No space left on device` 
 
 Hygiene runs at each iteration boundary when free space is inside floor plus band, 8192 MB by default. In run 34056342543 the pass at 05:42Z reclaimed 6.2 GB. The next three passes at 09:33Z, 09:43Z, and 09:52Z reclaimed nothing, while free space fell from 7956 MB to 7355 MB. The post-hygiene check compared against the 4096 MB floor only, so each pass let another iteration start. The last iteration crossed the floor mid-run, the guardian fired, and the runner died before any report.
 
-The failure-evidence copies are not the cause. Every observed copy finished in 0 to 2 seconds. The pytest failure dumps are about 20 MB each. The growth is outside every path hygiene sweeps. The terminated VMs could not say which path.
+The earlier inspection reported 0–2-second copies and roughly 20 MB pytest dumps. Those observations did not identify every disk writer or exclude other archive copies. The conclusion that failure-evidence copies could not contribute to disk growth was too strong.
 
 Secondary observations:
 
@@ -54,7 +54,9 @@ Verification: `bash -n` clean, driver test passed with three scenarios, pre-comm
 
 ## Cross-repository half
 
-The runner exit-path post-mortem in system-integration now adds a `df` line and bounded `du` lines to the `pm` tags. The change is applied and tested in `../system-integration` on `dev`, uncommitted. The request lives in that repository at `docs/discoveries/2026-09-07-soak-disk-post-mortem-request.md` with a ToDos entry. When its result file carries a SHA, repin here with `scripts/repin-system-integration.sh`.
+The initial system-integration pin was `022ae6d3`, a PR #137 head with bounded post-mortem walks. The request remains documented at `docs/discoveries/2026-09-07-soak-disk-post-mortem-request.md` in that repository.
+
+The repin required PR stack #139 → #138 to merge. That prerequisite is now verified. The pin identifies merged `main` revision `962effd1`, and local cross-repository checks passed.
 
 ## Attribution before limits
 
@@ -82,6 +84,40 @@ System-integration PR #137 remains open. Soak run `34180346282` was still active
 
 At 13:20 UTC, run `34180346282` had completed with failure. Its three soak segments, report aggregation, and dashboard assembly reported failure.
 
-Artifact `10057623626`, named `merge-recovery-soak-79200s-34180346282-1`, remains available at 851355201 bytes. Its contents, tested node identity, and failure causes have not yet been inspected.
+At that observation, artifact `10057623626`, named `merge-recovery-soak-79200s-34180346282-1`, remained available at 851355201 bytes. Its contents, tested node identity, and failure causes had not yet been inspected.
 
 The workflow API reported no active soaks at that observation. No new soak was dispatched.
+
+## Failed-run inspection
+
+G0/B3 is committed and pushed at `9310ae2ceda65d1944e1235336fd12df489e4197`. Its historical evidence remains unchanged.
+
+The [run 34180346282 report](../soak-evidence/34180346282/README.md) identifies tested node `0f5d2b74`, control revision `be232466`, and harness `0fb63372`. It also records the collector overlay.
+
+The artifact preserves 51 iterations and one completed finalization failure. Iteration 42 left five deploys unfinalized after the 45-second wait. Its sustained finalization p95 was 64.9 seconds.
+
+The run stopped after `dev` advanced. Earlier cleanup increased free space, but the evidence does not establish a full-duration disk guarantee.
+
+The failure archive contains 8,813,121,294 bytes from accumulated earlier Docker sessions. This identifies retained data, not every disk writer.
+
+Aggregation failed with `Argument list too long`. The dashboard then failed because its summary was missing. Neither reporting failure removes the finalization failure.
+
+Verified archive copies reside outside `target/`. The inspection preserves every available iteration outcome and raw CSV file. The dominant work bound remains unestablished.
+
+The current inventory now binds these reviewed documentation changes. The B3 manifest still describes its historical commit, not this inspection. All claims and acceptance gates retain their pending obligations.
+
+No repin, soak dispatch, production repair, formal discharge, commit, or push occurred during this inspection.
+
+## Merged harness repin
+
+The user then confirmed that the system-integration changes had merged. The [repin record](../soak-evidence/repin-962effd-2026-09-08/README.md) retains API observations and ancestry checks.
+
+The selected revision is `962effd17708192627bd249362761c0ccb1fd5fa` on `main`. It contains the previous pin, PR #139's head, and the observed `dev` revision.
+
+The repository helper updated all three pin sites without bypass flags. The merged harness passed 313 unit tests. The initial missing-Poetry failures were environment failures, not behavioral RED results.
+
+Pin, collector, release, and formal-routing regression checks passed. The collector overlay applied to the merged harness, compiled, and remained byte-identical on repeat application.
+
+The workload file and both collectors are unchanged across the repin. The finalization wait remains 45 seconds. The failed-run evidence remains separate from future acceptance evidence.
+
+No new soak, production correction, formal discharge, commit, or push followed the repin.

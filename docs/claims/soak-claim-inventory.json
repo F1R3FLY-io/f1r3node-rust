@@ -2,12 +2,13 @@
   "schema_version": 1,
   "scope": "soak-recurrence-prevention",
   "candidate": {
-    "base_commit": "43af06dab41ddf81b8dd1fcc5cf9e1303027aab7",
+    "base_commit": "9310ae2ceda65d1944e1235336fd12df489e4197",
     "binding": "source-sha256",
     "inputs_sha256": {
-      ".github/oci-validation.env": "9dad9e66220f6fefd30ad4e77fdc8dee3f458465b273542ba04963606347c05e",
+      ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
+      ".github/workflows/_integration-pipeline.yml": "2931f47de27ec73093e3a03a3bb91473203e1e7b7759450b4ebbd71e0098f11d",
       ".github/workflows/ci.yml": "5e73cf64ac529828ca1871959e60f644118766d4493b3c59647f4c24b053588c",
-      ".github/workflows/merge-recovery-soak.yml": "d1468c04bd8a1a99d8327114347d0ba9acd965b1342457846c226f27537227b1",
+      ".github/workflows/merge-recovery-soak.yml": "8e113745d06684ac9bd096f7d0ad52275777bc5df987316e2bd8be7f97891a7d",
       ".github/workflows/slashing-tests.yml": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
       "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "39382399fd484b5d9b670d3ad35af642659df61c6475497a90f5af7dc645f711",
       "block-storage/src/rust/dag/carrier_index.rs": "c6eb50e73dfc7f3dd019ac56acc1799528427718b230c8f186f6b2f124733247",
@@ -52,8 +53,32 @@
       "docs/claims/repeat-deploy-carrier-index-equivalence.md": "16f110d8ebf50d2f39a3fbb45364019684a5118b0a65db106c6d9f5b810230ba",
       "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
       "docs/claims/soak-formal-gate.md": "6356b7f25fcfec4050f1637b9fad6380ce410a7587fd7a55400c2a73119ab9f1",
-      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "00ff7b8bc57caf3d3aea258625cc3e0ab15aecaf224a0860c01690567ca407e1",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "58e3bec31dd5a990211459f421b14de39e007203bb51ee2654f4f5cf394425e6",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "26a5f966baa060be79899e51b6c2762c799264e7c82adb813d940d6a9ca6de0c",
+      "docs/soak-evidence/34180346282/README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
+      "docs/soak-evidence/34180346282/archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
+      "docs/soak-evidence/34180346282/inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
+      "docs/soak-evidence/34180346282/iterations.csv": "e5233c0c363205fa56171339b58e4cf700a5c252ad27fed96c488cc6d4b14956",
+      "docs/soak-evidence/34180346282/manifest.json": "76434f810484fa842b0c772297b513cac034348dd9878c234c453f62b3b6a10e",
+      "docs/soak-evidence/34180346282/observations.json": "a75ed0becd6b0356d17ebae53e7707f537bd462eeb44817514858e30b63ba125",
+      "docs/soak-evidence/34180346282/phases.csv": "2f834e4079780fd9b0dc631592507ec9d7ccd7eb6bbf4efb9bcac137666a056d",
+      "docs/soak-evidence/34180346282/raw-metrics-inspection.json": "0f52ab2d82a0b074edf86c3c311fcdec57015cf4e517800b42d87d2147e8cfbb",
+      "docs/soak-evidence/34180346282/storage.json": "792fa8346c3fa98762177457b79d52c6e9c3c0d81673f0dd4084ad07a8f36ce6",
+      "docs/soak-evidence/repin-962effd-2026-09-08/README.md": "c772223fc765587915efaebb32a1383f9fbe0a3ea7acb3af1b524763b0d1ec37",
+      "docs/soak-evidence/repin-962effd-2026-09-08/branch-dev.json": "131a6c6a5576df02c6d9196bc339e84dba2e4fe0db4bee5dd6971fb34c8c37a3",
+      "docs/soak-evidence/repin-962effd-2026-09-08/branch-main.json": "4bbb299165454a12b7c14c8f28effaf1b0ff1a8b7eed91f6c9a63f712bc80816",
+      "docs/soak-evidence/repin-962effd-2026-09-08/collector-compatibility.txt": "0d9b73d658029adc8b614817950b2b15183d127d67adf35d68e92f0cd34e836c",
+      "docs/soak-evidence/repin-962effd-2026-09-08/formal-classifier.txt": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "docs/soak-evidence/repin-962effd-2026-09-08/formal-routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "docs/soak-evidence/repin-962effd-2026-09-08/harness-unit-tests-initial.txt": "ca31cbd334cbf339a443d064ea527213b88820d1f8450f13aa167f7a40a35cea",
+      "docs/soak-evidence/repin-962effd-2026-09-08/harness-unit-tests.txt": "a4636a8c0542f9dd01488b0b2b531e9039610c41335e17445062076a21157c0f",
+      "docs/soak-evidence/repin-962effd-2026-09-08/metrics-regression.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/soak-evidence/repin-962effd-2026-09-08/pr-138.json": "d0cce266969d6721b997c1624d8f48c9c37365ad9afe3d1cc0a82bfbe7b7e139",
+      "docs/soak-evidence/repin-962effd-2026-09-08/pr-139.json": "2a9249b609e4beedbfff31af24dbbb2022b6f4e84bd74bd3848f4e73979b3acb",
+      "docs/soak-evidence/repin-962effd-2026-09-08/release-gates.txt": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+      "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
+      "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "5cb2c75eb62af1e041e49497e96bd7c74381097b507f41098a4bba07ec1b580a",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -255,7 +280,7 @@
         "Prove aggregate response time, confirmed writer termination, and durable minimal evidence during D2.",
         "Identify every writer and justify the common-unit reserve inequality R + G*T + J + M.",
         "Identify and correct the growing consumer during D3.",
-        "Repin system-integration after PR #137 merges and repeat cross-repository verification.",
+        "Complete exact-candidate acceptance with merged harness 962effd17708192627bd249362761c0ccb1fd5fa. Local repin checks do not discharge finalization or disk obligations.",
         "Preserve earlier product failures and require full-duration completion independently of safe disk stops."
       ]
     }
@@ -435,7 +460,7 @@
       "assumptions": [
         "Historical pre-fix execution requires a disposable container without host cleanup mounts.",
         "Successful cleanup is not an assumption.",
-        "The current harness pin identifies PR #137 head, not its eventual merged revision."
+        "The harness pin identifies merged main revision 962effd17708192627bd249362761c0ccb1fd5fa. Local repin checks are not full-duration candidate acceptance."
       ],
       "bounds": [
         "The known admission scenario holds free space at 7000 MB with no-op cleanup.",
@@ -504,6 +529,16 @@
       "identity": "Runs 33939315110, 33978505238, and 34056342543.",
       "limitations": [
         "The incidents identify disk exhaustion after protection fired. They do not identify the growing consumer."
+      ]
+    },
+    "RUN-34180346282": {
+      "path": "docs/soak-evidence/34180346282/README.md",
+      "role": "incident",
+      "identity": "Run 34180346282, attempt 1, artifact 10057623626. Tested node 0f5d2b7414786cd27b8a686ca636485c35a5edce.",
+      "limitations": [
+        "The run contains a finalization failure and ended before full duration.",
+        "Retained file lengths do not establish an all-writer disk bound.",
+        "The inspection does not establish the dominant finalization work bound or discharge a claim."
       ]
     },
     "PENDING-PLAN": {
