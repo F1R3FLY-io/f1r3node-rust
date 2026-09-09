@@ -259,11 +259,35 @@ pub trait FsHandler {
     /// one-line construction.
     fn parse_content(args: &[Par]) -> Result<Self::Args, Box<HandlerReply>>;
 
-    /// Handler's cost weight.  Charged at handler entry via
-    /// `metering.reserve_primitive`.  Length-parameterized
-    /// handlers (read/write/entries) get a post-reply supplement
-    /// via a framework hook landing in wave-3 S3.5.
+    /// Handler's constant-work cost weight.  Charged via
+    /// `metering.reserve_primitive` when
+    /// `pre_charge_incremental` returns None (default).
+    ///
+    /// Wave-3 S3.6 (2026-09-09): the framework moved the pre-charge
+    /// call from PRE-unapply to POST-unapply-POST-arity — matches
+    /// pre-refactor `fs_read` / `fs_read_at` which post-unapply
+    /// charge a length-parameterized cost.  For constant-work
+    /// handlers the ordering shift is unobservable under
+    /// determinism (a caller-misuse `contract_args.0.len() != 1`
+    /// or `args.len() != ARITY` is unreachable via the
+    /// deterministic ContractCall dispatcher).
     fn pre_charge_cost() -> Cost;
+
+    /// Length-parameterized cost override.  Returns
+    /// `Some(cost)` for handlers whose cost depends on caller-
+    /// supplied args (fs_read / fs_read_at / fs_write / fs_write_
+    /// at / fs_entries etc.).  Framework then uses
+    /// `metering.reserve_incremental_primitive(cost)` (which allows
+    /// zero-weight, unlike `reserve_primitive`).  Called with the
+    /// raw pre-ack args.  Default: None — framework falls back to
+    /// `pre_charge_cost()`.
+    ///
+    /// This is a SINGLE-EVENT charge, not a base + supplement.
+    /// Pre-refactor `fs_read` emits ONE `BillableTokenEvent::
+    /// Primitive` per invocation; splitting into two events would
+    /// change the authority_cost_witness fold bytes and split
+    /// peering.
+    fn pre_charge_incremental(_raw_args: &[Par]) -> Option<Cost> { None }
 
     /// Syscall + reply generation.  Returns a `HandlerReply`;
     /// the framework handles produce/ack.  The future's lifetime
@@ -352,32 +376,96 @@ pub trait FsHandler {
     }
 
     /// For verifying handlers that journal to the WAL (fs_stat,
-    /// fs_size, fs_exists, fs_entries, etc.): journal the given
-    /// `reply` Par with the handler's WalOp + derived path.
-    /// Called by the framework at:
-    ///   - Leader path: with `fresh_reply` after dispatch.
-    ///   - Consensus follower verify-Success: with `fresh_reply`.
-    ///   - Consensus follower verify-Failure: with the
-    ///     framework-built `consensus_divergence_reply`.
-    ///   - Oracular follower tautological-echo path: with
-    ///     `previous.first()` (matches pre-refactor structural
-    ///     parity — `journal_state_read` self-guards on Oracular
-    ///     so the call is a WAL no-op).
+    /// fs_size, fs_exists, fs_read, fs_write, fs_entries, etc.):
+    /// journal the reply to the WAL and perform any handler-
+    /// specific state advance (shadow position for fs_read /
+    /// fs_write).  Framework calls this at 4 semantic sites —
+    /// discriminated by `JournalPath`:
+    ///   - `Leader`: post-dispatch on the leader path.
+    ///   - `VerifySuccess`: post-verify on Consensus follower.
+    ///   - `VerifyDivergence`: post-verify-failure on Consensus
+    ///     follower.  Carries BOTH the fresh syscall reply (for
+    ///     state advance — fs_read advances shadow position by
+    ///     the actually-read bytes even though the produce Par
+    ///     is the divergence-err) AND the framework-built
+    ///     `consensus_divergence_reply` (for journal payload).
+    ///   - `OracularEcho`: post-arity on the non-verifying /
+    ///     Oracular-cmode replay path.  Carries only the
+    ///     cached leader reply from `previous.first()`.
     ///
     /// Default: no-op.  Non-journaling handlers skip.
-    ///
-    /// Handlers use `journal_state_read_via_table` internally.
-    /// Cmode determination is handler-specific: fs_size looks up
-    /// the fd's shadow, fs_stat/fs_exists parse cmode from
-    /// `raw_args[2]`.  On unresolved cmode/path the handler
-    /// returns without journaling.
     fn journal<'a>(
         _ctx: SyscallCtx<'a>,
         _raw_args: &'a [Par],
-        _reply: &'a Par,
+        _path: JournalPath<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+}
+
+/// Discriminates the 4 framework paths at which `FsHandler::journal`
+/// fires.  See `FsHandler::journal` doc-comment for the full site
+/// enumeration.  Handlers pattern-match on the path to select the
+/// correct WAL-entry shape (fs_read's success-vs-divergence entries
+/// differ in payload_ref) and the correct state-advance source
+/// (fs_read advances shadow by the actually-read bytes even on
+/// verify-divergence, when the produced reply is the divergence-err).
+pub enum JournalPath<'a> {
+    /// `is_replay=false` — leader path after successful dispatch.
+    /// `fresh_reply` is what will be produced to ack.
+    Leader { fresh_reply: &'a Par },
+    /// `is_replay=true` + `VERIFYING=true` + Consensus cmode +
+    /// verify_reply_hash_matches_cached succeeded.  `fresh_reply`
+    /// is what will be produced.
+    VerifySuccess { fresh_reply: &'a Par },
+    /// `is_replay=true` + `VERIFYING=true` + Consensus cmode +
+    /// verify_reply_hash_matches_cached failed.  `divergence_reply`
+    /// is what will be produced; `fresh_reply` is the actual
+    /// syscall outcome for state-advance purposes.
+    VerifyDivergence {
+        fresh_reply: &'a Par,
+        divergence_reply: &'a Par,
+    },
+    /// Oracular tautological echo — either non-verifying handler
+    /// on `is_replay=true`, or verifying handler with Oracular
+    /// cmode.  `previous_reply` is `previous.first()` (the leader's
+    /// cached play-time reply).
+    OracularEcho { previous_reply: &'a Par },
+}
+
+impl<'a> JournalPath<'a> {
+    /// The reply Par that will be produced to ack.  Handlers that
+    /// journal the produced reply (fs_stat / fs_size / fs_exists)
+    /// use this.
+    pub fn produce_reply(&self) -> &'a Par {
+        match *self {
+            JournalPath::Leader { fresh_reply } => fresh_reply,
+            JournalPath::VerifySuccess { fresh_reply } => fresh_reply,
+            JournalPath::VerifyDivergence {
+                divergence_reply, ..
+            } => divergence_reply,
+            JournalPath::OracularEcho { previous_reply } => previous_reply,
+        }
+    }
+
+    /// The reply Par whose bytes/count drive shadow state advance.
+    /// Same as `produce_reply` EXCEPT on `VerifyDivergence`, where
+    /// it's the FRESH syscall reply (actual bytes read/written)
+    /// rather than the divergence-err reply.
+    pub fn state_source_reply(&self) -> &'a Par {
+        match *self {
+            JournalPath::Leader { fresh_reply } => fresh_reply,
+            JournalPath::VerifySuccess { fresh_reply } => fresh_reply,
+            JournalPath::VerifyDivergence { fresh_reply, .. } => fresh_reply,
+            JournalPath::OracularEcho { previous_reply } => previous_reply,
+        }
+    }
+
+    /// True iff this path is a verify-failure.  Handlers whose
+    /// divergence-journal shape differs from their success-journal
+    /// shape (fs_read: `journal_read_divergence` vs `journal_read`)
+    /// use this.
+    pub fn is_divergence(&self) -> bool { matches!(self, JournalPath::VerifyDivergence { .. }) }
 }
 
 // ------------------------------------------------------------------
@@ -448,9 +536,14 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - S3.5 (2026-09-09): +3 (fs_size, fs_stat, fs_exists).
 ///     Count = 13.  First verifying handlers; framework extended for
 ///     the re-execute + verify_reply_hash_matches_cached path.
+///   - S3.6 (2026-09-09): +3 (fs_read, fs_read_at, fs_seek).
+///     Count = 16.  Verifying observation handlers with length-
+///     parameterized cost (fs_read / fs_read_at) or shadow-position
+///     state advance (fs_read / fs_read_at / fs_seek).  Framework
+///     extended with `pre_charge_incremental` + `JournalPath` enum.
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 13;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 16;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -481,17 +574,13 @@ pub async fn dispatch_via_trait<H: FsHandler>(
     fs: &FsProcesses,
     contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
 ) -> Result<Vec<Par>, InterpreterError> {
-    // Step 1: cost pre-charge — matches current handler discipline
-    // (see the header comment in handlers.rs § "Each handler").
-    fs.metering.reserve_primitive(H::pre_charge_cost())?;
-
-    // Step 2: unapply.
+    // Step 1: unapply.
     let Some((produce, is_replay, previous, args)) = fs.is_contract_call().unapply(contract_args)
     else {
         return Err(illegal_argument_error(H::NAME));
     };
 
-    // Step 3: arity check.  Framework rejects with
+    // Step 2: arity check.  Framework rejects with
     // `illegal_argument_error`; matches the current
     // `let [x, y, ack] = args.as_slice() else {
     //     return Err(illegal_argument_error("fs_x")); }` pattern.
@@ -505,6 +594,26 @@ pub async fn dispatch_via_trait<H: FsHandler>(
     let ack = args[H::ARITY - 1].clone();
 
     let raw_pre_ack: &[Par] = &args[..H::ARITY - 1];
+
+    // Step 3: cost pre-charge — post-unapply-post-arity.  Wave-3
+    // S3.6 (2026-09-09) moved this from pre-unapply to match
+    // pre-refactor `fs_read` / `fs_read_at` semantics (length-
+    // parameterized weights require the args to compute).  For
+    // constant-work handlers the ordering shift is unobservable
+    // under determinism (the pre-arity `illegal_argument_error`
+    // path is unreachable via the deterministic ContractCall
+    // dispatcher).  Handlers with a length-parameterized weight
+    // override `pre_charge_incremental` to return `Some(cost)` —
+    // framework uses `reserve_incremental_primitive` (which
+    // allows zero-weight, unlike `reserve_primitive`).  Emits a
+    // SINGLE BillableTokenEvent per invocation, matching
+    // pre-refactor's single `reserve_incremental_primitive(base
+    // + n*per_byte)` call — splitting into two events would
+    // change the authority_cost_witness fold bytes.
+    match H::pre_charge_incremental(raw_pre_ack) {
+        Some(cost) => fs.metering.reserve_incremental_primitive(cost)?,
+        None => fs.metering.reserve_primitive(H::pre_charge_cost())?,
+    }
 
     // Step 4: is_replay short-circuit.
     if is_replay {
@@ -534,8 +643,13 @@ pub async fn dispatch_via_trait<H: FsHandler>(
             // structural parity.  journal_state_read self-guards on
             // Consensus so this is a WAL no-op for Oracular caps.
             if H::VERIFYING {
-                if let Some(reply_par) = previous.first() {
-                    H::journal(SyscallCtx::new(fs, &ack), raw_pre_ack, reply_par).await;
+                if let Some(previous_reply) = previous.first() {
+                    H::journal(
+                        SyscallCtx::new(fs, &ack),
+                        raw_pre_ack,
+                        JournalPath::OracularEcho { previous_reply },
+                    )
+                    .await;
                 }
             }
             // Post-reply supplement charge based on `previous`'s
@@ -578,7 +692,14 @@ pub async fn dispatch_via_trait<H: FsHandler>(
         // proceeds.
         match super::verify::verify_reply_hash_matches_cached(&fresh_par, &previous) {
             Ok(()) => {
-                H::journal(SyscallCtx::new(fs, &ack), raw_pre_ack, &fresh_par).await;
+                H::journal(
+                    SyscallCtx::new(fs, &ack),
+                    raw_pre_ack,
+                    JournalPath::VerifySuccess {
+                        fresh_reply: &fresh_par,
+                    },
+                )
+                .await;
                 let out = vec![fresh_par];
                 if let Some(supp) = H::post_reply_supplement(&out) {
                     fs.metering.reserve_incremental_primitive(supp)?;
@@ -588,7 +709,15 @@ pub async fn dispatch_via_trait<H: FsHandler>(
             }
             Err(reason) => {
                 let divergence = super::handlers::consensus_divergence_reply(H::NAME, reason);
-                H::journal(SyscallCtx::new(fs, &ack), raw_pre_ack, &divergence).await;
+                H::journal(
+                    SyscallCtx::new(fs, &ack),
+                    raw_pre_ack,
+                    JournalPath::VerifyDivergence {
+                        fresh_reply: &fresh_par,
+                        divergence_reply: &divergence,
+                    },
+                )
+                .await;
                 let out = vec![divergence];
                 if let Some(supp) = H::post_reply_supplement(&out) {
                     fs.metering.reserve_incremental_primitive(supp)?;
@@ -599,7 +728,14 @@ pub async fn dispatch_via_trait<H: FsHandler>(
         }
     } else {
         // Leader path — journal fresh_par, produce it.
-        H::journal(SyscallCtx::new(fs, &ack), raw_pre_ack, &fresh_par).await;
+        H::journal(
+            SyscallCtx::new(fs, &ack),
+            raw_pre_ack,
+            JournalPath::Leader {
+                fresh_reply: &fresh_par,
+            },
+        )
+        .await;
         let out = vec![fresh_par];
         if let Some(supp) = H::post_reply_supplement(&out) {
             fs.metering.reserve_incremental_primitive(supp)?;
@@ -669,6 +805,9 @@ mod tests {
             "fs_size",                 // S3.5 (2026-09-09)
             "fs_stat",                 // S3.5 (2026-09-09)
             "fs_exists",               // S3.5 (2026-09-09)
+            "fs_read",                 // S3.6 (2026-09-09)
+            "fs_read_at",              // S3.6 (2026-09-09)
+            "fs_seek",                 // S3.6 (2026-09-09)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);

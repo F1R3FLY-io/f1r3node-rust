@@ -53,7 +53,7 @@ use super::errors::*;
 use super::handle_table::{FileHandle, FileHandleTable};
 use super::handler_trait::{
     dispatch_via_trait, dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerReply,
-    SyscallCtx, FS_HANDLERS,
+    JournalPath, SyscallCtx, FS_HANDLERS,
 };
 // C-R1 review fix: `extract_ok_fd` is used from fs_open's is_replay
 // branch to reconstruct the leader's returned fd for shadow-handle
@@ -902,7 +902,14 @@ impl FsProcesses {
     /// symmetrically via `journal_read` on both sides) catches this
     /// at WAL-root-comparison time rather than as a silent tuplespace
     /// fork downstream.
-    async fn journal_read(
+    // Wave-3 S3.6 (2026-09-09) — the `&self` wrappers
+    // `journal_read`, `journal_read_divergence`, `read_impl` retired
+    // now that fs_read / fs_read_at / fs_seek migrated to the
+    // FsHandler trait.  Trait impls call the free-fn forms
+    // (`journal_read_via_table`, `journal_read_divergence_via_table`,
+    // `read_impl_via_table`) at the module bottom via `ctx.handles`.
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_journal_read(
         &self,
         fd: u64,
         bytes: &[u8],
@@ -994,7 +1001,13 @@ impl FsProcesses {
     /// IS exercised via the Oracular is_replay tautological path).
     /// A future caller that hits this branch through a NEW
     /// dispatch site would need its own coverage pin.
-    async fn journal_read_divergence(&self, fd: u64, offset: Option<u64>, ack: &Par) -> bool {
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_journal_read_divergence(
+        &self,
+        fd: u64,
+        offset: Option<u64>,
+        ack: &Par,
+    ) -> bool {
         let wal_meta = self
             .handles
             .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
@@ -1645,155 +1658,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_read"));
-        };
-        let [fd_par, n_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_read"));
-        };
-        // Phase 9 slice 9b-iv: charge fs_read cost based on the
-        // REQUESTED byte count.  Per costs.rs::fs_read_cost docstring,
-        // the requested count is what's charged (not actually-returned)
-        // so an EOF-truncated read still burns the intended bytes,
-        // closing the pre-seek-past-EOF cost-amplification vector.
-        // The count is a deterministic function of `n_par` (a user-
-        // supplied GInt), which is identical across leader and replay.
-        // A non-parseable or negative n_par yields 0 requested bytes,
-        // which still burns FS_SYSCALL_CONST = 100 for the dispatch.
-        let requested_bytes: u64 = RhoNumber::unapply(n_par)
-            .and_then(|n| u64::try_from(n).ok())
-            .unwrap_or(0);
-        // Cost-helper audit (2026-08-26): `fs_read_cost` docstring
-        // requires `reserve_incremental_primitive` because
-        // `requested_bytes` can legitimately be 0 (EOF-truncated
-        // read, or non-parseable n_par).  Current base
-        // `FS_SYSCALL_CONST = 100` guarantees positivity, so the
-        // switch is a no-op for today's inputs; defense-in-depth
-        // against a future coefficient change that could drop the
-        // base to 0.
-        self.metering
-            .reserve_incremental_primitive(costs::fs_read_cost(requested_bytes))?;
-        // Phase 2 (Consensus re-execute + verify, 2026-09-01):
-        // dispatch is_replay on the fd's cmode.  Oracular / no-
-        // shadow → unchanged Phase-0 tautological path (cached
-        // reply, journal + advance shadow position by cached
-        // bytes' length).  Consensus follower → re-execute
-        // libc::read via the shadow's real fd (installed by
-        // fs_open's Phase-2 real-open), verify vs cached, journal
-        // fresh + advance shadow on match, emit divergence-err +
-        // Failure WAL on mismatch.  Same shape as fs_read_at with
-        // the addition that fs_read (sequential) advances the
-        // shadow position; fs_read_at (positional) doesn't.
-        let jmode: Option<ConsensusMode> = match RhoNumber::unapply(fd_par) {
-            Some(fd) => self.handles.with_mut(fd as u64, |h| h.cmode).await,
-            None => None,
-        };
-        if is_replay && jmode != Some(ConsensusMode::Consensus) {
-            // Oracular / no-shadow follower — unchanged Phase-0 path.
-            if let (Some(fd), Some(bytes)) =
-                (RhoNumber::unapply(fd_par), extract_ok_bytes(&previous))
-            {
-                // Order matters: journal_read reads the PRE-read
-                // shadow position from FileHandle; then the
-                // subsequent with_mut advances position by
-                // bytes.len().  If we advanced first, journal_read
-                // would record the post-read offset which is
-                // wrong.  Mirrors the leader path below.
-                let fd_u = fd as u64;
-                let _ = self.journal_read(fd_u, &bytes, None, ack).await;
-                let n = bytes.len() as u64;
-                let _ = self
-                    .handles
-                    .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
-                    .await;
-            }
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // Fresh syscall — leader (always) or Consensus follower.
-        // read_impl calls libc::read (offset = None) against the
-        // shadow's real raw_fd.  The follower's own libc::read
-        // advances the OS-level fd position by the returned byte
-        // count; the shadow position advance below keeps our
-        // in-process shadow in sync with the OS position, matching
-        // what the leader's play run did on its own OS fd.
-        let fresh_reply = match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
-            (Some(fd), Some(n)) if n >= 0 => self.read_impl(fd as u64, n as u64, None).await,
-            _ => err(FSERR_BAD_ARG, "expected (fd:GInt, n:GInt>=0)"),
-        };
-        if is_replay {
-            // Consensus follower — Phase 2 re-execute + verify.
-            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
-                Ok(()) => {
-                    // Match — journal fresh bytes + advance shadow.
-                    // Bytes hash to the same Blake2b256 as leader's
-                    // WAL entry (verify succeeded → Pars are byte-
-                    // identical), so WAL byte-identity is preserved.
-                    if let (Some(fd), Some(bytes)) = (
-                        RhoNumber::unapply(fd_par),
-                        extract_ok_bytes(std::slice::from_ref(&fresh_reply)),
-                    ) {
-                        let fd_u = fd as u64;
-                        let _ = self.journal_read(fd_u, &bytes, None, ack).await;
-                        let n = bytes.len() as u64;
-                        let _ = self
-                            .handles
-                            .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
-                            .await;
-                    }
-                    let out = vec![fresh_reply];
-                    produce(&out, ack).await?;
-                    Ok(out)
-                }
-                Err(reason) => {
-                    // Divergence — emit divergence-err + Failure WAL
-                    // via the shared journal_read_divergence helper
-                    // (offset=None → WalOp::Read).  Shadow position:
-                    // advance by the FRESH read's byte count (the
-                    // follower's OS-level libc::read already
-                    // advanced the OS position by that count, so
-                    // this keeps shadow-vs-OS position in sync on
-                    // the follower).  Subsequent ops in the failing
-                    // deploy don't affect correctness — the deploy
-                    // will be rejected at check_replay_data — but
-                    // matching OS position is cleaner than skipping
-                    // the advance.
-                    let divergence_reply = consensus_divergence_reply("fs_read", reason);
-                    if let Some(fd) = RhoNumber::unapply(fd_par) {
-                        let fd_u = fd as u64;
-                        let _ = self.journal_read_divergence(fd_u, None, ack).await;
-                        if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&fresh_reply)) {
-                            let n = bytes.len() as u64;
-                            let _ = self
-                                .handles
-                                .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
-                                .await;
-                        }
-                    }
-                    let out = vec![divergence_reply];
-                    produce(&out, ack).await?;
-                    Ok(out)
-                }
-            }
-        } else {
-            // Leader path — journal fresh bytes + advance shadow.
-            if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&fresh_reply)) {
-                if let Some(fd) = RhoNumber::unapply(fd_par) {
-                    let fd_u = fd as u64;
-                    let _ = self.journal_read(fd_u, &bytes, None, ack).await;
-                    let n = bytes.len() as u64;
-                    let _ = self
-                        .handles
-                        .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
-                        .await;
-                }
-            }
-            let out = vec![fresh_reply];
-            produce(&out, ack).await?;
-            Ok(out)
-        }
+        dispatch_via_trait::<FsReadHandler>(self, contract_args).await
     }
 
     // -------------------------------------------------------------------
@@ -1803,6 +1668,14 @@ impl FsProcesses {
     // leader/follower journal_read pattern, with offset populated.
     // -------------------------------------------------------------------
     pub async fn fs_read_at(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        dispatch_via_trait::<FsReadAtHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_read_at_body(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
@@ -1929,49 +1802,9 @@ impl FsProcesses {
         }
     }
 
-    async fn read_impl(&self, fd: u64, n: u64, offset: Option<u64>) -> Par {
-        if n > super::MAX_READ_BYTES {
-            return err(
-                FSERR_QUOTA_EXCEEDED,
-                format!("read {n} exceeds MAX_READ_BYTES"),
-            );
-        }
-        // We can't move a `&mut FileHandle` into spawn_blocking (it lives
-        // behind an RwLock owned by `handles`).  Instead: take the fd's
-        // raw fd, do the syscall on a blocking task, and let `File` be
-        // reconstructed from the handle table on the next call.  We use
-        // libc::pread directly so we don't need &mut File.
-        // A4-M-1 fix (2026-09-04): Arc<File> moved into the closure
-        // keeps the OS fd alive for the syscall's duration even if
-        // a concurrent remove(fd) drops the table's own Arc.
-        let file_arc = match self.handles.raw_fd(fd).await {
-            Some(f) => f,
-            None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
-        };
-        let result = spawn_blocking(move || {
-            use std::os::fd::AsRawFd;
-            let raw_fd = file_arc.as_raw_fd();
-            let mut buf = vec![0u8; n as usize];
-            let got = unsafe {
-                if let Some(off) = offset {
-                    libc::pread(raw_fd, buf.as_mut_ptr() as *mut _, n as usize, off as i64)
-                } else {
-                    libc::read(raw_fd, buf.as_mut_ptr() as *mut _, n as usize)
-                }
-            };
-            if got < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                buf.truncate(got as usize);
-                Ok(buf)
-            }
-        })
-        .await;
-        match result {
-            Err(_join_err) => err(FSERR_IO, "spawn_blocking task failed"),
-            Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
-            Ok(Ok(bytes)) => ok_bytes(bytes),
-        }
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_read_impl(&self, fd: u64, n: u64, offset: Option<u64>) -> Par {
+        read_impl_via_table(&self.handles, fd, n, offset).await
     }
 
     // -------------------------------------------------------------------
@@ -2371,8 +2204,14 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_seek weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
+        dispatch_via_trait::<FsSeekHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_seek_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering.reserve_primitive(costs::fs_seek_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
@@ -5814,8 +5653,9 @@ impl FsHandler for FsSizeHandler {
     fn journal<'a>(
         ctx: SyscallCtx<'a>,
         raw_args: &'a [Par],
-        reply: &'a Par,
+        path: JournalPath<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        let reply = path.produce_reply();
         // Look up (cmode, canon_path) from the fd's shadow.  If the
         // fd is unknown, no journaling.
         Box::pin(async move {
@@ -5955,8 +5795,9 @@ impl FsHandler for FsStatHandler {
     fn journal<'a>(
         ctx: SyscallCtx<'a>,
         raw_args: &'a [Par],
-        reply: &'a Par,
+        path: JournalPath<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        let reply = path.produce_reply();
         Box::pin(async move {
             let [root_par, rel_par, cmode_par] = raw_args else {
                 return;
@@ -6100,8 +5941,9 @@ impl FsHandler for FsExistsHandler {
     fn journal<'a>(
         ctx: SyscallCtx<'a>,
         raw_args: &'a [Par],
-        reply: &'a Par,
+        path: JournalPath<'a>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        let reply = path.produce_reply();
         Box::pin(async move {
             let [root_par, rel_par, cmode_par] = raw_args else {
                 return;
@@ -6137,6 +5979,430 @@ static FS_EXISTS_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsExistsHandler as FsHandler>::ARITY,
     verifying: <FsExistsHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsExistsHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_read — (fd, n) -> [true, bytes]  (S3.6, 2026-09-09)
+//
+// Verifying observation with length-parameterized cost.  Cmode
+// fd-based (fs_size shape).  Journal writes to WAL via journal_
+// read_via_table (offset=None for sequential Read).  Shadow
+// position advances by bytes.len() on both leader and verify
+// paths — including verify-failure (POSIX libc::read advances
+// OS fd position by bytes returned; shadow must sync).
+// -------------------------------------------------------------------
+
+pub struct FsReadHandler;
+
+pub struct FsReadArgs {
+    fd: u64,
+    n: u64,
+}
+
+impl FsHandler for FsReadHandler {
+    const NAME: &'static str = "fs_read";
+    const ARITY: usize = 3; // (fd, n, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsReadArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsReadArgs, Box<HandlerReply>> {
+        let [fd_par, n_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (fd:GInt, n:GInt>=0)",
+            ));
+        };
+        match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
+            (Some(fd), Some(n)) if n >= 0 => Ok(FsReadArgs {
+                fd: fd as u64,
+                n: n as u64,
+            }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (fd:GInt, n:GInt>=0)",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        // Only used when pre_charge_incremental returns None.  fs_read
+        // always overrides.
+        costs::fs_read_cost(0)
+    }
+
+    fn pre_charge_incremental(
+        raw_args: &[Par],
+    ) -> Option<crate::rust::interpreter::accounting::costs::Cost> {
+        // Charge based on REQUESTED byte count (n_par).  Deterministic
+        // across leader and replay.  A non-parseable or negative n_par
+        // yields 0 requested bytes, still burning FS_SYSCALL_CONST for
+        // the dispatch (via fs_read_cost's base).
+        let requested_bytes: u64 = raw_args
+            .get(1)
+            .and_then(RhoNumber::unapply)
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        Some(costs::fs_read_cost(requested_bytes))
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsReadArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let par = read_impl_via_table(ctx.handles, args.fd, args.n, None).await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return None;
+            };
+            let fd = RhoNumber::unapply(fd_par)?;
+            ctx.handles.with_mut(fd as u64, |h| h.cmode).await
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return;
+            };
+            let Some(fd_i64) = RhoNumber::unapply(fd_par) else {
+                return;
+            };
+            let fd_u = fd_i64 as u64;
+            let state_source = path.state_source_reply();
+            let bytes_slot = extract_ok_bytes(std::slice::from_ref(state_source));
+            let advance_n = bytes_slot.as_ref().map(|b| b.len() as u64).unwrap_or(0);
+            // Order matters: journal_read reads the PRE-read shadow
+            // position from FileHandle before we advance below.
+            // Mirrors pre-refactor's write-then-advance sequence.
+            if path.is_divergence() {
+                // Verify-failure — journal a Failure entry with
+                // FSERR_CODE_CONSENSUS_DIVERGENCE.  Shadow still
+                // advances by fresh bytes (POSIX libc::read
+                // advanced OS fd position; keeping shadow in sync).
+                let _ = journal_read_divergence_via_table(ctx.handles, fd_u, None, ctx.ack).await;
+            } else if let Some(bytes) = &bytes_slot {
+                // Success / Oracular-echo — journal bytes with
+                // payload_ref = Hash(bytes).
+                let _ = journal_read_via_table(ctx.handles, fd_u, bytes, None, ctx.ack).await;
+            }
+            if advance_n > 0 {
+                let _ = ctx
+                    .handles
+                    .with_mut(fd_u, |h| h.position = h.position.saturating_add(advance_n))
+                    .await;
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_READ_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsReadHandler as FsHandler>::NAME,
+    arity: <FsReadHandler as FsHandler>::ARITY,
+    verifying: <FsReadHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsReadHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_read_at — (fd, off, n) -> [true, bytes]  (S3.6, 2026-09-09)
+//
+// Verifying observation, length-parameterized cost.  Same shape as
+// fs_read but with an offset arg.  Uses libc::pread (does NOT
+// advance OS fd position per POSIX) — so journal writes with the
+// caller-supplied offset, and shadow position is NOT advanced.
+// -------------------------------------------------------------------
+
+pub struct FsReadAtHandler;
+
+pub struct FsReadAtArgs {
+    fd: u64,
+    off: u64,
+    n: u64,
+}
+
+impl FsHandler for FsReadAtHandler {
+    const NAME: &'static str = "fs_read_at";
+    const ARITY: usize = 4; // (fd, off, n, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsReadAtArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsReadAtArgs, Box<HandlerReply>> {
+        let [fd_par, off_par, n_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (fd:GInt, off:GInt>=0, n:GInt>=0)",
+            ));
+        };
+        match (
+            RhoNumber::unapply(fd_par),
+            RhoNumber::unapply(off_par),
+            RhoNumber::unapply(n_par),
+        ) {
+            (Some(fd), Some(off), Some(n)) if off >= 0 && n >= 0 => Ok(FsReadAtArgs {
+                fd: fd as u64,
+                off: off as u64,
+                n: n as u64,
+            }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (fd:GInt, off:GInt>=0, n:GInt>=0)",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_read_at_cost(0)
+    }
+
+    fn pre_charge_incremental(
+        raw_args: &[Par],
+    ) -> Option<crate::rust::interpreter::accounting::costs::Cost> {
+        // n_par is at slot 2 for fs_read_at (fd, off, n).
+        let requested_bytes: u64 = raw_args
+            .get(2)
+            .and_then(RhoNumber::unapply)
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        Some(costs::fs_read_at_cost(requested_bytes))
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsReadAtArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let par = read_impl_via_table(ctx.handles, args.fd, args.n, Some(args.off)).await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return None;
+            };
+            let fd = RhoNumber::unapply(fd_par)?;
+            ctx.handles.with_mut(fd as u64, |h| h.cmode).await
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let [fd_par, off_par, ..] = raw_args else {
+                return;
+            };
+            let (Some(fd_i64), Some(off_i64)) =
+                (RhoNumber::unapply(fd_par), RhoNumber::unapply(off_par))
+            else {
+                return;
+            };
+            if off_i64 < 0 {
+                return;
+            }
+            let fd_u = fd_i64 as u64;
+            let off_u = off_i64 as u64;
+            let state_source = path.state_source_reply();
+            let bytes_slot = extract_ok_bytes(std::slice::from_ref(state_source));
+            if path.is_divergence() {
+                let _ = journal_read_divergence_via_table(ctx.handles, fd_u, Some(off_u), ctx.ack)
+                    .await;
+            } else if let Some(bytes) = &bytes_slot {
+                let _ =
+                    journal_read_via_table(ctx.handles, fd_u, bytes, Some(off_u), ctx.ack).await;
+            }
+            // fs_read_at (pread) does NOT advance shadow position
+            // per POSIX (see FdPositionMutator in verify.rs — pread
+            // deliberately excluded).
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_READ_AT_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsReadAtHandler as FsHandler>::NAME,
+    arity: <FsReadAtHandler as FsHandler>::ARITY,
+    verifying: <FsReadAtHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsReadAtHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_seek — (fd, off, whence) -> [true, pos]  (S3.6, 2026-09-09)
+//
+// Verifying observation, constant cost.  Cmode fd-based.  Does NOT
+// journal to WAL — but journal hook is where shadow position
+// advance lives (fires on Leader / VerifySuccess / OracularEcho
+// paths; skipped on VerifyDivergence).
+// -------------------------------------------------------------------
+
+pub struct FsSeekHandler;
+
+pub struct FsSeekArgs {
+    fd: u64,
+    off: i64,
+    whence: libc::c_int,
+}
+
+impl FsHandler for FsSeekHandler {
+    const NAME: &'static str = "fs_seek";
+    const ARITY: usize = 4; // (fd, off, whence, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsSeekArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsSeekArgs, Box<HandlerReply>> {
+        let [fd_par, off_par, whence_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, i64, String)",
+            ));
+        };
+        // First tier: all three args must parse.  Mismatched error
+        // message per pre-refactor.
+        let combined_err = || HandlerReply::boxed_err(FSERR_BAD_ARG, "expected (u64, i64, String)");
+        let fd = RhoNumber::unapply(fd_par).ok_or_else(combined_err)?;
+        let off = RhoNumber::unapply(off_par).ok_or_else(combined_err)?;
+        let w = RhoString::unapply(whence_par).ok_or_else(combined_err)?;
+        // Second tier: whence must be in {set,cur,end}, and "set"
+        // additionally requires off >= 0.  Distinct pre-refactor
+        // error message.
+        let whence = match w.as_str() {
+            "set" if off >= 0 => libc::SEEK_SET,
+            "cur" => libc::SEEK_CUR,
+            "end" => libc::SEEK_END,
+            _ => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "expected whence in {set,cur,end}",
+                ));
+            }
+        };
+        Ok(FsSeekArgs {
+            fd: fd as u64,
+            off,
+            whence,
+        })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_seek_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsSeekArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let file_arc = match ctx.handles.raw_fd(args.fd).await {
+                Some(f) => f,
+                // Pre-refactor fs_seek formatted `fd` as signed i64
+                // (RhoNumber::unapply returns i64).  Preserve byte-
+                // identity by casting `args.fd: u64` back through
+                // `as i64` before formatting.  See wave-3 S3.5
+                // review F2 for the equivalent drift in
+                // fs_flush/fs_tell/fs_size (deferred).
+                None => {
+                    return HandlerReply::err(
+                        FSERR_CLOSED,
+                        format!("unknown fd {}", args.fd as i64),
+                    );
+                }
+            };
+            let r = spawn_blocking(move || {
+                use std::os::fd::AsRawFd;
+                let raw_fd = file_arc.as_raw_fd();
+                unsafe {
+                    let pos = libc::lseek(raw_fd, args.off, args.whence);
+                    if pos < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(pos as u64)
+                    }
+                }
+            })
+            .await;
+            match r {
+                Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
+                Ok(Ok(pos)) => HandlerReply::ok(ok_u64(pos)),
+            }
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return None;
+            };
+            let fd = RhoNumber::unapply(fd_par)?;
+            ctx.handles.with_mut(fd as u64, |h| h.cmode).await
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // fs_seek doesn't journal to WAL; the "journal" hook here
+        // is purely for shadow position advance.  Skip on divergence
+        // (pre-refactor's `Err(reason) =>` branch does not touch
+        // shadow).  On Leader / VerifySuccess / OracularEcho: set
+        // shadow position to the reply's ok_u64.
+        Box::pin(async move {
+            if path.is_divergence() {
+                return;
+            }
+            let [fd_par, ..] = raw_args else {
+                return;
+            };
+            let Some(fd_i64) = RhoNumber::unapply(fd_par) else {
+                return;
+            };
+            let state_source = path.state_source_reply();
+            if let Some(new_pos) = extract_ok_u64(std::slice::from_ref(state_source)) {
+                let _ = ctx
+                    .handles
+                    .with_mut(fd_i64 as u64, |h| h.position = new_pos)
+                    .await;
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_SEEK_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsSeekHandler as FsHandler>::NAME,
+    arity: <FsSeekHandler as FsHandler>::ARITY,
+    verifying: <FsSeekHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsSeekHandler>(fs, args)),
 };
 
 // ---------------------------------------------------------------------
@@ -6259,6 +6525,132 @@ fn journal_state_read_via_table(
         },
         ack_channel_hash(ack),
     );
+}
+
+/// Free-function form of `FsProcesses::read_impl` for wave-3 trait
+/// impls (FsReadHandler, FsReadAtHandler).  Semantic behavior
+/// identical to the `&self` wrapper.
+async fn read_impl_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    n: u64,
+    offset: Option<u64>,
+) -> Par {
+    if n > super::MAX_READ_BYTES {
+        return err(
+            FSERR_QUOTA_EXCEEDED,
+            format!("read {n} exceeds MAX_READ_BYTES"),
+        );
+    }
+    let file_arc = match handles.raw_fd(fd).await {
+        Some(f) => f,
+        None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
+    };
+    let result = spawn_blocking(move || {
+        use std::os::fd::AsRawFd;
+        let raw_fd = file_arc.as_raw_fd();
+        let mut buf = vec![0u8; n as usize];
+        let got = unsafe {
+            if let Some(off) = offset {
+                libc::pread(raw_fd, buf.as_mut_ptr() as *mut _, n as usize, off as i64)
+            } else {
+                libc::read(raw_fd, buf.as_mut_ptr() as *mut _, n as usize)
+            }
+        };
+        if got < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            buf.truncate(got as usize);
+            Ok(buf)
+        }
+    })
+    .await;
+    match result {
+        Err(_join_err) => err(FSERR_IO, "spawn_blocking task failed"),
+        Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
+        Ok(Ok(bytes)) => ok_bytes(bytes),
+    }
+}
+
+/// Free-function form of `FsProcesses::journal_read` for wave-3
+/// trait impls.  Semantic behavior identical to the `&self` wrapper.
+async fn journal_read_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    bytes: &[u8],
+    offset: Option<u64>,
+    ack: &Par,
+) -> Result<bool, ()> {
+    let wal_meta = handles
+        .with_mut(fd, |h| (h.cmode, h.canon_path.clone(), h.position))
+        .await;
+    match wal_meta {
+        Some((ConsensusMode::Consensus, canon_path, position)) => {
+            let (op, resolved_offset) = match offset {
+                Some(off) => (WalOp::ReadAt, Some(off)),
+                None => (WalOp::Read, Some(position)),
+            };
+            handles
+                .wal
+                .append_with_ack(
+                    WalEntry {
+                        op,
+                        path: canon_path,
+                        extra_path: None,
+                        offset: resolved_offset,
+                        length: Some(bytes.len() as u64),
+                        payload_ref: Some(PayloadRef::hash(bytes)),
+                        mode_bits: None,
+                        owner: None,
+                        group: None,
+                        outcome: WalOutcome::Success,
+                    },
+                    ack_channel_hash(ack),
+                )
+                .map(|()| true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Free-function form of `FsProcesses::journal_read_divergence`
+/// for wave-3 trait impls.
+async fn journal_read_divergence_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    offset: Option<u64>,
+    ack: &Par,
+) -> bool {
+    let wal_meta = handles
+        .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+        .await;
+    match wal_meta {
+        Some((ConsensusMode::Consensus, canon_path)) => {
+            let op = match offset {
+                Some(_) => WalOp::ReadAt,
+                None => WalOp::Read,
+            };
+            let _ = handles.wal.append_with_ack(
+                WalEntry {
+                    op,
+                    path: canon_path,
+                    extra_path: None,
+                    offset,
+                    length: None,
+                    payload_ref: None,
+                    mode_bits: None,
+                    owner: None,
+                    group: None,
+                    outcome: WalOutcome::Failure {
+                        code: fserr_to_code(FSERR_CONSENSUS_DIVERGENCE),
+                    },
+                },
+                ack_channel_hash(ack),
+            );
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Free-function form of the pre-wave-3 `FsProcesses::dev_inode_from_fd`
