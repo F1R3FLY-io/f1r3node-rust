@@ -5060,3 +5060,415 @@ Print Assumptions linked_settlement_is_deterministic.
 Print Assumptions every_linked_run_preserves_eager_result_prefix_and_pop_bounded_checks.
 
 End PersistentFocusedOwners.
+
+Module PersistentFrameRealization.
+
+Module F := FocusedRegionOwners.
+Module P := PersistentFocusedOwners.
+
+Definition source_location := (nat * nat)%type.
+Inductive obligation_kind := RawParEscape | NestedEpm1.
+Inductive varint_role :=
+| ScalarRole | ScaleRole | BytesRole (utf8 : bool) | CountRole | RegionLengthRole
+| ObligationLengthRole (kind : obligation_kind) (tag_source : source_location).
+
+Record varint_snapshot := VarintSnapshot {
+  varint_value : nat;
+  varint_shift : nat;
+  varint_bytes : nat
+}.
+
+Record utf8_snapshot := Utf8Snapshot {
+  utf8_remaining : nat;
+  utf8_next_min : nat;
+  utf8_next_max : nat
+}.
+
+Record obligation_snapshot := ObligationSnapshot {
+  obligation_id : nat;
+  obligation_type : obligation_kind;
+  obligation_payload_len : nat;
+  obligation_tag_source : source_location
+}.
+
+Inductive obligation_phase :=
+| PayloadPhase (remaining : nat)
+| AwaitingPhase (payload_end : source_location).
+
+Record raw_path := RawPath {
+  raw_metadata : F.path_metadata;
+  raw_stack : option nat
+}.
+
+Section Storage.
+
+Context {Span : Type}.
+
+Inductive inactive_payload :=
+| TagPayload (escape_allowed : bool)
+| VarintPayload (role : varint_role) (state : varint_snapshot)
+| BytesPayload (remaining : nat) (utf8 : option utf8_snapshot)
+| KidsPayload (remaining : nat)
+| RegionLengthPayload (remaining : nat) (previous : option Span) (state : varint_snapshot)
+| ObligationPayload (obligation : obligation_snapshot) (phase : obligation_phase) (payload_start : nat).
+
+Inductive stored_frame :=
+| InactiveFrame (payload : inactive_payload) (next : option nat)
+| ActiveRegionFrame (remaining : nat) (previous : option Span)
+    (declared_len path_remaining start_depth : nat) (child : raw_path) (next : option nat).
+
+Inductive frame_tree :=
+| EmptyTree
+| InactiveTree (slot : nat) (payload : inactive_payload) (next : frame_tree)
+| RegionTree (slot remaining : nat) (previous : option Span)
+    (declared_len path_remaining start_depth : nat) (child_metadata : F.path_metadata)
+    (child next : frame_tree).
+
+Definition tree_root tree :=
+  match tree with EmptyTree => None | InactiveTree slot _ _ | RegionTree slot _ _ _ _ _ _ _ _ => Some slot end.
+
+Fixpoint physical_tree (frames : list stored_frame) tree : Prop :=
+  match tree with
+  | EmptyTree => True
+  | InactiveTree slot payload next =>
+      nth_error frames slot = Some (InactiveFrame payload (tree_root next)) /\ physical_tree frames next
+  | RegionTree slot remaining previous declared_len path_remaining start_depth child_metadata child next =>
+      nth_error frames slot = Some (ActiveRegionFrame remaining previous declared_len path_remaining start_depth
+        (RawPath child_metadata (tree_root child)) (tree_root next)) /\
+      physical_tree frames child /\ physical_tree frames next
+  end.
+
+Record semantic_path := SemanticPath {
+  semantic_metadata : F.path_metadata;
+  semantic_frames : frame_tree
+}.
+
+Definition raw_of path := RawPath (semantic_metadata path) (tree_root (semantic_frames path)).
+Definition physical_path frames raw path := raw = raw_of path /\ physical_tree frames (semantic_frames path).
+
+Theorem typed_physical_frames_survive_arbitrary_append frames suffix tree :
+  physical_tree frames tree -> physical_tree (frames ++ suffix) tree.
+Proof.
+  induction tree; cbn; intros represented; [exact I| |].
+  - destruct represented as [found next]. split.
+    + eapply P.old_lookup_after_append; exact found.
+    + now apply IHtree.
+  - destruct represented as [found [child next]]. split.
+    + eapply P.old_lookup_after_append; exact found.
+    + split; [now apply IHtree1|now apply IHtree2].
+Qed.
+
+Theorem typed_path_metadata_and_all_payloads_survive_append frames suffix raw path :
+  physical_path frames raw path -> physical_path (frames ++ suffix) raw path.
+Proof.
+  intros [same represented]. split; [exact same|].
+  now apply typed_physical_frames_survive_arbitrary_append.
+Qed.
+
+Record held_owner := HeldOwner {
+  held_metadata : F.path_metadata;
+  held_slot : nat;
+  held_region_end : nat;
+  held_path_end : nat;
+  held_previous : option Span;
+  held_declared_len : nat;
+  held_start_depth : nat;
+  held_next : frame_tree
+}.
+
+Definition owner_realizes frames stamp owner :=
+  physical_tree frames (held_next owner) /\
+  exists birth region_remaining path_remaining old_child old_child_tree,
+    nth_error frames (held_slot owner) = Some
+      (ActiveRegionFrame region_remaining (held_previous owner) (held_declared_len owner)
+        path_remaining (held_start_depth owner) old_child (tree_root (held_next owner))) /\
+    physical_path frames old_child (SemanticPath (raw_metadata old_child) old_child_tree) /\
+    held_region_end owner = birth + region_remaining /\
+    held_path_end owner = birth + path_remaining /\
+    birth <= stamp /\ stamp <= held_region_end owner /\ stamp <= held_path_end owner.
+
+Definition wrap_owner stamp owner child :=
+  SemanticPath (held_metadata owner)
+    (RegionTree (held_slot owner) (held_region_end owner - stamp) (held_previous owner)
+      (held_declared_len owner) (held_path_end owner - stamp) (held_start_depth owner)
+      (semantic_metadata child) (semantic_frames child) (held_next owner)).
+
+Fixpoint reify_owners stamp current owners :=
+  match owners with [] => current | owner :: rest => reify_owners stamp (wrap_owner stamp owner current) rest end.
+
+Inductive overlay_realizes frames stamp : semantic_path -> list held_owner -> semantic_path -> Prop :=
+| overlay_leaf focus : physical_tree frames (semantic_frames focus) -> overlay_realizes frames stamp focus [] focus
+| overlay_outer focus owners inner owner :
+    overlay_realizes frames stamp focus owners inner -> owner_realizes frames stamp owner ->
+    overlay_realizes frames stamp focus (owners ++ [owner]) (wrap_owner stamp owner inner).
+
+Lemma reify_owners_append stamp focus left right :
+  reify_owners stamp focus (left ++ right) = reify_owners stamp (reify_owners stamp focus left) right.
+Proof. revert focus. induction left; intro focus; cbn; [reflexivity|apply IHleft]. Qed.
+
+Theorem typed_overlay_derives_exact_logical_graph frames stamp focus owners graph :
+  overlay_realizes frames stamp focus owners graph -> graph = reify_owners stamp focus owners.
+Proof.
+  intro represented. induction represented; [reflexivity|].
+  rewrite reify_owners_append. cbn. now rewrite <- IHrepresented.
+Qed.
+
+Lemma owner_realizes_append frames suffix stamp owner :
+  owner_realizes frames stamp owner -> owner_realizes (frames ++ suffix) stamp owner.
+Proof.
+  intros [next [birth [region_remaining [path_remaining [child [child_tree [found [child_physical facts]]]]]]]]. split.
+  - now apply typed_physical_frames_survive_arbitrary_append.
+  - exists birth, region_remaining, path_remaining, child, child_tree. split.
+    + eapply P.old_lookup_after_append; exact found.
+    + split; [now apply typed_path_metadata_and_all_payloads_survive_append|exact facts].
+Qed.
+
+Theorem every_typed_overlay_checkpoint_survives_frame_append frames suffix stamp focus owners graph :
+  overlay_realizes frames stamp focus owners graph -> overlay_realizes (frames ++ suffix) stamp focus owners graph.
+Proof.
+  intro represented. induction represented.
+  - constructor. now apply typed_physical_frames_survive_arbitrary_append.
+  - apply overlay_outer; [exact IHrepresented|now apply owner_realizes_append].
+Qed.
+
+Fixpoint erase_frame_ids tree :=
+  match tree with
+  | EmptyTree => EmptyTree
+  | InactiveTree _ payload next => InactiveTree 0 payload (erase_frame_ids next)
+  | RegionTree _ remaining previous declared_len path_remaining start_depth metadata child next =>
+      RegionTree 0 remaining previous declared_len path_remaining start_depth metadata
+        (erase_frame_ids child) (erase_frame_ids next)
+  end.
+
+Definition same_path_semantics left right :=
+  semantic_metadata left = semantic_metadata right /\
+  erase_frame_ids (semantic_frames left) = erase_frame_ids (semantic_frames right).
+
+Definition materialize_owner frames stamp owner child :=
+  let frame := ActiveRegionFrame (held_region_end owner - stamp) (held_previous owner)
+    (held_declared_len owner) (held_path_end owner - stamp) (held_start_depth owner)
+    (raw_of child) (tree_root (held_next owner)) in
+  (frames ++ [frame], SemanticPath (held_metadata owner)
+    (RegionTree (length frames) (held_region_end owner - stamp) (held_previous owner)
+      (held_declared_len owner) (held_path_end owner - stamp) (held_start_depth owner)
+      (semantic_metadata child) (semantic_frames child) (held_next owner))).
+
+Theorem materializing_one_owner_uses_a_fresh_slot_and_preserves_semantics_and_history frames stamp owner child :
+  owner_realizes frames stamp owner -> physical_tree frames (semantic_frames child) ->
+  let '(next_frames, next_path) := materialize_owner frames stamp owner child in
+  physical_tree next_frames (semantic_frames next_path) /\
+  tree_root (semantic_frames next_path) = Some (length frames) /\
+  same_path_semantics next_path (wrap_owner stamp owner child) /\
+  length next_frames = S (length frames) /\
+  (forall slot frame, nth_error frames slot = Some frame -> nth_error next_frames slot = Some frame).
+Proof.
+  intros [next owner_fields] child_fields. cbn [materialize_owner semantic_frames].
+  split.
+  - cbn [physical_tree]. split.
+    + rewrite nth_error_app2 by lia. rewrite Nat.sub_diag. reflexivity.
+    + split; now apply typed_physical_frames_survive_arbitrary_append.
+  - split; [reflexivity|]. split.
+    + split; reflexivity.
+    + split; [rewrite length_app; cbn; lia|].
+      intros slot frame found. eapply P.old_lookup_after_append; exact found.
+Qed.
+
+Lemma path_semantics_refl path : same_path_semantics path path.
+Proof. split; reflexivity. Qed.
+
+Lemma path_semantics_trans left middle right :
+  same_path_semantics left middle -> same_path_semantics middle right -> same_path_semantics left right.
+Proof. intros [metadata frames] [metadata2 frames2]. split; congruence. Qed.
+
+Lemma wrap_owner_preserves_semantic_correspondence stamp owner left right :
+  same_path_semantics left right -> same_path_semantics (wrap_owner stamp owner left) (wrap_owner stamp owner right).
+Proof.
+  intros [metadata frames]. split; [reflexivity|].
+  cbn [wrap_owner semantic_frames erase_frame_ids]. now rewrite metadata, frames.
+Qed.
+
+Lemma reify_owners_preserves_semantic_correspondence stamp owners left right :
+  same_path_semantics left right -> same_path_semantics (reify_owners stamp left owners) (reify_owners stamp right owners).
+Proof.
+  revert left right. induction owners; intros left right same; cbn; [exact same|].
+  apply IHowners. now apply wrap_owner_preserves_semantic_correspondence.
+Qed.
+
+Fixpoint materialize_spine frames stamp focus owners :=
+  match owners with
+  | [] => (frames, focus)
+  | owner :: rest =>
+      let '(next_frames, next_focus) := materialize_owner frames stamp owner focus in
+      materialize_spine next_frames stamp next_focus rest
+  end.
+
+Theorem full_spine_materialization_preserves_typed_semantics_and_appends_one_cell_per_owner
+    frames stamp focus owners :
+  physical_tree frames (semantic_frames focus) -> Forall (owner_realizes frames stamp) owners ->
+  let '(next_frames, next_path) := materialize_spine frames stamp focus owners in
+  exists suffix,
+    next_frames = frames ++ suffix /\ length suffix = length owners /\
+    physical_tree next_frames (semantic_frames next_path) /\
+    same_path_semantics next_path (reify_owners stamp focus owners).
+Proof.
+  revert frames focus. induction owners as [|owner rest IH]; intros frames focus physical owners.
+  - exists []. cbn. rewrite app_nil_r. repeat split; auto.
+  - inversion owners as [|? ? held tail]; subst.
+    pose proof (@materializing_one_owner_uses_a_fresh_slot_and_preserves_semantics_and_history
+      frames stamp owner focus held physical) as one.
+    destruct (materialize_owner frames stamp owner focus) as [next_frames next_focus] eqn:step.
+    destruct one as [next_physical [root [same [size old_cells]]]].
+    assert (tail_realizes : Forall (owner_realizes next_frames stamp) rest).
+    { unfold materialize_owner in step. inversion step; subst next_frames.
+      eapply Forall_impl; [|exact tail]. intros retained represents.
+      now apply owner_realizes_append. }
+    pose proof (IH next_frames next_focus next_physical tail_realizes) as later.
+    cbn [materialize_spine]. rewrite step.
+    destruct (materialize_spine next_frames stamp next_focus rest) as [final_frames final_path] eqn:result.
+    destruct later as [suffix [extension [count [final_physical final_same]]]].
+    unfold materialize_owner in step. inversion step; subst next_frames next_focus.
+    eexists. split.
+    + rewrite extension, <- app_assoc. reflexivity.
+    + split; [cbn; now rewrite count|]. split; [exact final_physical|].
+      eapply path_semantics_trans; [exact final_same|].
+      cbn [reify_owners]. apply reify_owners_preserves_semantic_correspondence. exact same.
+Qed.
+
+Theorem forced_spine_preserves_every_old_physical_and_focused_checkpoint
+    frames stamp focus owners old_raw old_path old_stamp old_focus old_owners old_graph :
+  physical_tree frames (semantic_frames focus) -> Forall (owner_realizes frames stamp) owners ->
+  physical_path frames old_raw old_path -> overlay_realizes frames old_stamp old_focus old_owners old_graph ->
+  let '(next_frames, _) := materialize_spine frames stamp focus owners in
+  physical_path next_frames old_raw old_path /\
+  overlay_realizes next_frames old_stamp old_focus old_owners old_graph /\
+  (forall slot frame, nth_error frames slot = Some frame -> nth_error next_frames slot = Some frame).
+Proof.
+  intros physical valid_owners old_physical old_overlay.
+  pose proof (@full_spine_materialization_preserves_typed_semantics_and_appends_one_cell_per_owner
+    frames stamp focus owners physical valid_owners) as forced.
+  destruct (materialize_spine frames stamp focus owners) as [next_frames next_path].
+  destruct forced as [suffix [extension rest]]. subst next_frames.
+  split; [now apply typed_path_metadata_and_all_payloads_survive_append|].
+  split; [now apply every_typed_overlay_checkpoint_survives_frame_append|].
+  intros slot frame found. eapply P.old_lookup_after_append; exact found.
+Qed.
+
+Theorem capturing_a_physical_region_establishes_its_exact_held_owner_and_child
+    frames stamp metadata slot remaining previous declared_len path_remaining start_depth child_metadata child next :
+  physical_tree frames
+    (RegionTree slot remaining previous declared_len path_remaining start_depth child_metadata child next) ->
+  let owner := HeldOwner metadata slot (stamp + remaining) (stamp + path_remaining)
+    previous declared_len start_depth next in
+  owner_realizes frames stamp owner /\
+  wrap_owner stamp owner (SemanticPath child_metadata child) =
+    SemanticPath metadata
+      (RegionTree slot remaining previous declared_len path_remaining start_depth child_metadata child next).
+Proof.
+  intros [found [child_physical next_physical]]. cbn zeta. split.
+  - split; [exact next_physical|].
+    exists stamp, remaining, path_remaining, (RawPath child_metadata (tree_root child)), child.
+    cbn. split; [exact found|]. split.
+    + split; [reflexivity|exact child_physical].
+    + repeat split; lia.
+  - unfold wrap_owner. cbn. f_equal; f_equal; lia.
+Qed.
+
+Theorem advancing_a_valid_graph_stamp_preserves_held_cells_and_decreases_residuals
+    frames stamp later owner :
+  owner_realizes frames stamp owner -> stamp <= later ->
+  later <= held_region_end owner -> later <= held_path_end owner ->
+  owner_realizes frames later owner /\
+  held_region_end owner - later <= held_region_end owner - stamp /\
+  held_path_end owner - later <= held_path_end owner - stamp.
+Proof.
+  intros [next [birth [region_remaining [path_remaining [child [child_tree
+    [found [child_physical [region_end [path_end [born bounds]]]]]]]]]]] advanced region_bound path_bound.
+  split.
+  - split; [exact next|]. exists birth, region_remaining, path_remaining, child, child_tree.
+    split; [exact found|]. split; [exact child_physical|]. repeat split; try assumption; lia.
+  - split; lia.
+Qed.
+
+Fixpoint private_terminal tree : P.terminal_view :=
+  match tree with
+  | RegionTree _ _ _ _ _ _ _ child _ => private_terminal child
+  | InactiveTree _ (ObligationPayload obligation phase _) _ =>
+      let '(source, offset) := obligation_tag_source obligation in
+      P.TerminalObligation (obligation_id obligation) source offset
+        (match phase with AwaitingPhase _ => true | PayloadPhase _ => false end)
+  | _ => P.TerminalOther
+  end.
+
+Definition path_private_terminal path := private_terminal (semantic_frames path).
+
+Theorem typed_overlay_private_terminal_is_the_selected_focus_terminal stamp owners focus :
+  path_private_terminal (reify_owners stamp focus owners) = path_private_terminal focus.
+Proof.
+  revert focus. induction owners; intro focus; cbn [reify_owners]; [reflexivity|].
+  rewrite IHowners. reflexivity.
+Qed.
+
+Lemma erasing_frame_ids_preserves_private_terminal tree :
+  private_terminal (erase_frame_ids tree) = private_terminal tree.
+Proof. induction tree; cbn; [reflexivity|destruct payload; reflexivity|exact IHtree1]. Qed.
+
+Lemma equal_typed_path_semantics_preserve_private_terminal left right :
+  same_path_semantics left right -> path_private_terminal left = path_private_terminal right.
+Proof.
+  intros [_ same]. unfold path_private_terminal.
+  rewrite <- (erasing_frame_ids_preserves_private_terminal (semantic_frames left)),
+    <- (erasing_frame_ids_preserves_private_terminal (semantic_frames right)). now rewrite same.
+Qed.
+
+Theorem typed_materialization_preserves_exact_private_resolve_and_reject_preflight
+    frames stamp focus owners requested caller :
+  physical_tree frames (semantic_frames focus) -> Forall (owner_realizes frames stamp) owners ->
+  let '(_, forced) := materialize_spine frames stamp focus owners in
+  P.resolve_preflight requested (path_private_terminal forced) =
+    P.resolve_preflight requested (path_private_terminal focus) /\
+  P.reject_preflight requested caller (path_private_terminal forced) =
+    P.reject_preflight requested caller (path_private_terminal focus).
+Proof.
+  intros physical valid_owners.
+  pose proof (@full_spine_materialization_preserves_typed_semantics_and_appends_one_cell_per_owner
+    frames stamp focus owners physical valid_owners) as result.
+  destruct (materialize_spine frames stamp focus owners) as [next_frames forced].
+  destruct result as [suffix [extension [count [represented same]]]].
+  apply equal_typed_path_semantics_preserve_private_terminal in same.
+  rewrite typed_overlay_private_terminal_is_the_selected_focus_terminal in same.
+  rewrite same. split; reflexivity.
+Qed.
+
+Theorem capture_from_a_physical_path_copies_the_actual_enclosing_metadata_and_stack
+    frames stamp raw metadata slot remaining previous declared_len path_remaining start_depth child_metadata child next :
+  physical_path frames raw (SemanticPath metadata
+    (RegionTree slot remaining previous declared_len path_remaining start_depth child_metadata child next)) ->
+  let owner := HeldOwner (raw_metadata raw) slot (stamp + remaining) (stamp + path_remaining)
+    previous declared_len start_depth next in
+  raw_metadata raw = metadata /\ raw_stack raw = Some slot /\
+  owner_realizes frames stamp owner /\
+  wrap_owner stamp owner (SemanticPath child_metadata child) =
+    SemanticPath metadata
+      (RegionTree slot remaining previous declared_len path_remaining start_depth child_metadata child next).
+Proof.
+  intros [same represented]. subst raw. cbn zeta.
+  split; [reflexivity|]. split; [reflexivity|].
+  now apply capturing_a_physical_region_establishes_its_exact_held_owner_and_child.
+Qed.
+
+End Storage.
+
+Print Assumptions typed_physical_frames_survive_arbitrary_append.
+Print Assumptions typed_path_metadata_and_all_payloads_survive_append.
+Print Assumptions typed_overlay_derives_exact_logical_graph.
+Print Assumptions every_typed_overlay_checkpoint_survives_frame_append.
+Print Assumptions materializing_one_owner_uses_a_fresh_slot_and_preserves_semantics_and_history.
+Print Assumptions full_spine_materialization_preserves_typed_semantics_and_appends_one_cell_per_owner.
+Print Assumptions forced_spine_preserves_every_old_physical_and_focused_checkpoint.
+Print Assumptions capturing_a_physical_region_establishes_its_exact_held_owner_and_child.
+Print Assumptions advancing_a_valid_graph_stamp_preserves_held_cells_and_decreases_residuals.
+Print Assumptions typed_overlay_private_terminal_is_the_selected_focus_terminal.
+Print Assumptions typed_materialization_preserves_exact_private_resolve_and_reject_preflight.
+Print Assumptions capture_from_a_physical_path_copies_the_actual_enclosing_metadata_and_stack.
+
+End PersistentFrameRealization.

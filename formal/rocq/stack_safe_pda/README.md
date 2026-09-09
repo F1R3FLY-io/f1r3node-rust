@@ -1148,6 +1148,66 @@ The five new laws raise the focused runner to 132 RPB3 reports. Existing referen
 runtime controls remain unchanged; the persistent optimized representation and its
 new property bindings are not yet implemented.
 
+#### Typed persistent frames and fresh-cell materialization (2026-09-09)
+
+`RPB3Admission.PersistentFrameRealization` connects immutable frame storage to a
+logical focused overlay. An overlay keeps historical Region cells unchanged and
+computes their current residual lengths from absolute endpoints and a graph stamp.
+When a physical graph is required, materialization appends fresh Region cells from
+the innermost owner outward. It does not overwrite the historical slots.
+
+The model retains all fields of the six Rust `Frame` variants, splitting Region's
+length and active-path phases. `raw_path` retains both enclosing path metadata and
+the stack handle; the active Region separately retains its child's metadata and
+stack. `Span` is an abstract handle type, not a decoded byte vector.
+
+| Rust storage | Typed model fields retained |
+|---|---|
+| Tag | Escape permission and next handle. |
+| Varint | Role, UTF-8 requirement or obligation kind/source as applicable; accumulator, shift, byte count; next handle. |
+| Bytes | Remaining count, optional UTF-8 remaining/min/max state, next handle. |
+| Kids | Remaining count and next handle. |
+| Region / Length | Remaining count, optional previous span handle, varint state, next handle. |
+| Region / Path | Remaining and declared lengths, path residual, start depth, previous span handle, child path metadata/stack, next handle. |
+| Obligation | ID, kind, payload length, tag source, payload/awaiting phase including residual/end source, payload start, next handle. |
+| InnerPath | Escape permission, status/error, completed segments, first tag/source, stability, stack handle. |
+
+The following catalogue extracts all twelve exported laws. The executable checks
+are required bindings for the persistent implementation, not claims that new Rust
+property tests already exist. Existing `canonical_frame_storage.rs` and
+`canonical_path_opaque_interior.rs` support modules are the intended reuse points.
+
+| ID / exported theorem | Invariant and required executable observation |
+|---|---|
+| PFR-01 `typed_physical_frames_survive_arbitrary_append` | Every old typed tree remains represented after arbitrary suffix append. Revisit every retained branch, not only the current endpoint. |
+| PFR-02 `typed_path_metadata_and_all_payloads_survive_append` | Old raw path handles, metadata and every payload field remain exact. Compare normalized full frames, not validity alone. |
+| PFR-03 `typed_overlay_derives_exact_logical_graph` | Inductively valid overlays denote the inside-out owner composition. Independently project the owner chain and compare the full graph. |
+| PFR-04 `every_typed_overlay_checkpoint_survives_frame_append` | Arbitrary frame extension preserves old focused checkpoints at their own stamps. Fork and revisit siblings in different orders. |
+| PFR-05 `materializing_one_owner_uses_a_fresh_slot_and_preserves_semantics_and_history` | One owner appends one fresh Region, preserves old lookups and exact ID-insensitive semantics. Inspect the new slot and all prior cells. |
+| PFR-06 `full_spine_materialization_preserves_typed_semantics_and_appends_one_cell_per_owner` | Full forcing appends exactly one cell per supplied owner and yields a physical graph with identical typed semantics. Count actual cells separately from retained backing capacity. |
+| PFR-07 `forced_spine_preserves_every_old_physical_and_focused_checkpoint` | Forcing cannot invalidate any historical physical path, overlay or lookup. Retain shared historical roots during tests. |
+| PFR-08 `capturing_a_physical_region_establishes_its_exact_held_owner_and_child` | Capture derives absolute endpoints from current residuals and preserves the actual stored child and continuation. Inspect capture before consuming another byte. |
+| PFR-09 `advancing_a_valid_graph_stamp_preserves_held_cells_and_decreases_residuals` | Advancing within both endpoints leaves held cells valid and cannot increase either residual. Exercise both boundaries and equal endpoints. |
+| PFR-10 `typed_overlay_private_terminal_is_the_selected_focus_terminal` | Private terminal inspection follows active Region children regardless of path status. Include hidden Payload and Awaiting obligations under Dead paths. |
+| PFR-11 `typed_materialization_preserves_exact_private_resolve_and_reject_preflight` | Forcing preserves distinct resolve/reject phase, ID and error-source decisions. Compare exact errors and failed-call nonmutation. |
+| PFR-12 `capture_from_a_physical_path_copies_the_actual_enclosing_metadata_and_stack` | Capture copies metadata and stack from the actual enclosing raw path, not caller-invented metadata. Compare every enclosing field independently of child fields. |
+
+**Proof boundary.** `same_path_semantics` erases frame IDs but retains payloads,
+span handles, metadata and tree structure. It does not preserve sharing identity;
+historical lookup preservation is a separate theorem. Persistent sharing across
+checkpoints remains permitted. The model uses mathematical naturals, not Rust
+integer widths or allocation limits. Span identity preservation does not establish
+span validity, byte observation or backing lifetime. The one-cell-per-owner result
+counts one forcing operation, not total parser allocation or runtime complexity.
+
+Before replacing the persistent runtime representation, bind typed owners to the
+existing linked-owner scheduler, span observations to the located-byte model, and
+fault checkpoints to the selected graph stamp, current byte extension and root
+error. Checked arithmetic/capacity and effectful private resolution still require
+composition. Private-terminal equality alone does not establish constant-time
+inspection without an already available terminal focus. No new parser, production
+representation or consensus format is introduced by these twelve laws.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

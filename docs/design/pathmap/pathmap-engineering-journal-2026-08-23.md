@@ -7378,6 +7378,59 @@ Rust sources are unchanged from J-101's 391-test full-library checkpoint; the
 new timing benchmark or measured persistent-frame improvement is claimed here.
 Task 6018 and the production-equivalent ACT/LMDB comparison remain open.
 
+### J-104 — 2026-09-09: typed immutable frames and fresh-cell forcing
+
+**FORMAL RESULT.** Twelve new laws in `PersistentFrameRealization` bind typed
+frame payloads to immutable physical storage and a logical focused overlay.
+All six Rust frame variants are represented, with Region's two phases separate.
+Capturing an active Region copies the actual enclosing path metadata and stack;
+its saved child and continuation remain physically represented. Advancing the
+graph stamp within both endpoints changes residual observations without editing
+the historical cell.
+
+Forcing an owner chain appends exactly one fresh Region cell per owner, from
+inside outward. The resulting physical graph preserves all payloads, span
+handles, path metadata and tree structure under frame-ID erasure. Every old
+frame lookup, physical path and focused checkpoint remains valid. Private
+resolve/reject preflight preserves the exact phase, ID and source decisions,
+including obligations hidden beneath Dead paths.
+
+**IMPLEMENTATION CONTRACT.** The formal README's PFR-01–12 catalogue extracts
+every exported law and the corresponding required executable observation. The
+typed snapshots retain varint/UTF-8 state, obligation payload/phase/source,
+Region child and continuation fields, and enclosing metadata independently.
+Reuse the existing frame-storage and opaque-interior test support; do not add
+a second parser or decode PathMap keys to ASTs to establish this correspondence.
+
+**LIMITS.** ID erasure forgets sharing identity; unchanged historical lookups are
+proved separately. Valid sharing between persistent checkpoints is not forbidden.
+Natural-number arithmetic and generic span handles do not establish Rust-width
+checks, backing lifetime or span-to-byte observation. The one-cell result counts
+one forcing operation, not whole-parser allocation. Typed-to-linked owner and
+located-byte correspondence, selected-fault coherence, effectful private
+resolution and concrete resource bounds remain required before runtime cutover.
+
+**MEASURED QUALIFICATION.** The standalone final compilation printed 144 closed
+RPB3 reports and exited successfully in 13.428 s, with 609.7 MiB peak memory and
+zero swap. The proof ran under systemd with High 1 GiB / Max 2 GiB / CPU 200%.
+The combined proof/runtime gate separately passed all 144 RPB3 closed reports,
+three kernel checks and 88 selected runtime tests, with no failures or ignores.
+Rust ran with High 4 GiB / Max 6 GiB / CPU 400% and swap disabled. Existing Rust
+sources remain unchanged from J-101's 391-test full-library checkpoint; this
+88-test rerun is not a new full-library or workspace result. Independent review
+accepted the typed slice with the explicit sharing/span/arithmetic boundaries
+above; its requested actual-enclosing-metadata corollary is included. No new
+Rust behavior, timing benchmark, consensus format, persistence cutover or
+completed campaign is claimed.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-typed-frame-final-20260909.log` | `096fa432fbb8356fd03c6132eb41756375e76eae54c7d4553499d7ce442b8c91` |
+| `/tmp/epathmap-typed-frame-gate-20260909.log` | `2bc876ab1bc5047133dea6c2c1845d33459fc45011c5daa719fd31af2b7f03fa` |
+
+The reproduction command remains
+`bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

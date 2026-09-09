@@ -10273,6 +10273,24 @@ records exact logs, extracted invariants and the required historical-frame
 overlay/fresh-ID materialization binding. Production Rust is unchanged; the
 persistent frame-growth correction and final ACT/LMDB comparison remain open.
 
+#### 5.33.23 Typed persistent frame-preservation proof (2026-09-09, task 6018)
+
+Twelve new laws bind complete frame payloads and enclosing path metadata to
+immutable historical storage. A logical focused overlay can be forced into
+physical storage by appending one fresh Region cell per held owner, preserving
+all old lookups and checkpoints. Private resolve/reject preflight is unchanged.
+This establishes a forcing-operation cell count, not a whole-parser memory bound
+or a correction to the persistent depth-growth baseline in 5.33.19.
+
+The standalone model compilation passed with 144 closed RPB3 reports, 609.7 MiB
+peak memory and zero swap under a 2 GiB hard cap. The combined gate separately
+passed three kernel checks and 88 selected runtime tests, with no failures or
+ignores. Exact qualification is recorded in
+[J-104](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-104--2026-09-09-typed-immutable-frames-and-fresh-cell-forcing).
+The formal README extracts twelve implementation/property invariants and the
+remaining typed-to-linked, fault, span and checked-arithmetic composition duties.
+Production Rust and consensus behavior are unchanged by this proof checkpoint.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
