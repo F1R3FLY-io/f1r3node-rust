@@ -349,7 +349,9 @@ jobs:
 
       - name: Verify soak claim inventory
         shell: bash -euo pipefail {0}
-        run: bash scripts/ci/test-soak-claim-inventory.sh
+        run: |
+          bash scripts/ci/test-soak-claim-inventory.sh
+          bash scripts/ci/test-soak-claim-inventory-jsonc.sh
 
       - name: Verify coverage summary aggregation
         shell: bash -euo pipefail {0}

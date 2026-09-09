@@ -1,8 +1,10 @@
+// This inventory tracks current bindings.
+// Historical evidence retains its original source identities.
 {
   "schema_version": 1,
   "scope": "soak-recurrence-prevention",
   "candidate": {
-    "base_commit": "3d2aa79048c9da0af09c7771b3f5c3eb3c369414",
+    "base_commit": "3498fa4f34e3a4632df9182c47a5a84916e85b04",
     "binding": "source-sha256",
     "inputs_sha256": {
       ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
@@ -10,7 +12,7 @@
       ".github/scripts/test-release-gates.sh": "ba92e9f13fd6a055335a6a9968af354d577179990d7a8b1b1b28a58bb5645b35",
       ".github/scripts/test-release-workflows.sh": "91fee0b371c66df859f0d178e9daff89ff277a063e24286fd8a9842501f70503",
       ".github/workflows/_integration-pipeline.yml": "2931f47de27ec73093e3a03a3bb91473203e1e7b7759450b4ebbd71e0098f11d",
-      ".github/workflows/ci.yml": "573aebbd0651ac396928222e6c4c5616c2743ff527396317cdc05954b53ebb96",
+      ".github/workflows/ci.yml": "5657024078bf6b4927c946958a7a68632df73bcd0a4129f9510175579b10d138",
       ".github/workflows/merge-recovery-soak.yml": "8e113745d06684ac9bd096f7d0ad52275777bc5df987316e2bd8be7f97891a7d",
       ".github/workflows/slashing-tests.yml": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
       "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "39382399fd484b5d9b670d3ad35af642659df61c6475497a90f5af7dc645f711",
@@ -25,7 +27,7 @@
       "docs/Glossary.md": "7f161ea8bc9a23728afd3baccff64e08904806fef0c9226dfdece339baef3516",
       "docs/cbc-evidence/casper-src-rust-finality-deploy-lifecycle-rs.md": "6f05187d21932fb3178582857cb12742a02e1d0aac12034a86d9f04ab5008df4",
       "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md": "d1beaad52820cd00d45751153d48d346c83e0ad5a3144753bd6c3796427760f2",
-      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/README.md": "a3d3f62e52a004f3ba2904841bf9d5ccb3d2e54ed422b62957e509fe5b3dc64c",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/README.md": "70679761f27e1f0aae0f00245b20993cb6c695cd35ddd3a36b6e9683a496f0f0",
       "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b10/formal-green.txt": "a89bb41148e568559bf4433e53907f30a3663a73a650387b5832b0f179c5e094",
       "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b10/formal-red.txt": "7a051f83cfbb9aefbeb21f28034745854f8551ee165a6bf9586e8188811e2f3e",
       "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b10/production-green.txt": "b40f4fe7aad53fd52da7c2da493250836d8017ec3fec9b07d7588a243901e3c5",
@@ -54,21 +56,21 @@
       "docs/cbc-evidence/soak-d2-emergency-2026-09-09/composed-production.txt": "5271c58fb9d2732f7f3aae52fcf4ee0b67b052f92f342b78630dd13382ec56bf",
       "docs/cbc-evidence/soak-d2-emergency-2026-09-09/composed-tla.txt": "9caa3c7e70376f899db55f69132b46a4fc5ff16d79124de5c1498954f61a94a2",
       "docs/cbc-evidence/soak-d2-emergency-2026-09-09/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
-      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json": "36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc": "36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773",
       "docs/cbc-evidence/soak-d2-emergency-2026-09-09/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
-      "docs/cbc-evidence/soak-d2-probe-2026-09-08/README.md": "346c7393a58895258310b3ba1c5de390611598f7cb0071bf348b1f4673759c94",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/README.md": "0cd66a34f8ce2797a2af6993491ba88b755478165925766d282667242a7fc20a",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/composed-tla.txt": "5ff5b904ee438f6593fcca0d2944dad199e864220cfaeb01ce573f5c2d900ecc",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/d1-green.txt": "6bd38a16289989e9b23b6b77b858ea326102369060c1353ade24376c8c2f06d7",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/formal-green.txt": "ee5881b3785b00f789f512df6757154d0b24404994e3c813de356a085cb97aa4",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/formal-red.txt": "0c3a6589a001fd7ce162fbe5daa2bf96d3ffcefc429e867cc58094ec722879bb",
-      "docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.json": "3f1a1697d34f4696f877bcb5138942ecba5a9cd2754f8ad1e43d70a4e05870c7",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.jsonc": "3f1a1697d34f4696f877bcb5138942ecba5a9cd2754f8ad1e43d70a4e05870c7",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/production-green.txt": "7bc962f62dffdf9d785c6dd7dc7222425735f5bb26b0c83a54166610e52e9c69",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/production-red.txt": "381963438be550f98a2ae07a2b7cd10f5507bbfce3eeaa01e1d7b9b8e6d1920e",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
       "docs/cbc-evidence/soak-d2-probe-2026-09-08/summary-test.txt": "e5932a2b8042b930bc55b739d26886dc3caaecf5005f99a75d82c431dc6ae133",
-      "docs/cbc-evidence/soak-d2-sample-2026-09-09/README.md": "be9e6e8f1c20781200e44b55ccea787cd50eceaedab6c251550bac9ff3493067",
+      "docs/cbc-evidence/soak-d2-sample-2026-09-09/README.md": "e76f906acf08a8314d6cef362ffd4fcc332bee09a4501c5e9461e4877ee9ce04",
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/b5-green.txt": "a87733e13f248ae5915e51fd7b9fc208cc5548e05a1d59e2790423532e9f9f96",
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/composed-tla.txt": "322b443b0ab1280c6ab1479084e3eb8a3b8c5919d534c9ab741b17babfaa33b1",
@@ -76,7 +78,7 @@
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/formal-green.txt": "59c510d06ff1773fa502da457d24a606a60b6ccda71ecafc4f3228f47bcc10f9",
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/formal-red.txt": "0c858bba025a5b2efa53678eb1feffd6a401cf0e04add267d63a7a7a9b03d817",
-      "docs/cbc-evidence/soak-d2-sample-2026-09-09/manifest.json": "167d3a6bb8025d2d80615b4c178d0961fd433f83e5840d3aa038336c4bbeb137",
+      "docs/cbc-evidence/soak-d2-sample-2026-09-09/manifest.jsonc": "167d3a6bb8025d2d80615b4c178d0961fd433f83e5840d3aa038336c4bbeb137",
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/production-green.txt": "7cec95d2b9cb28d4f15cdbaf53dcacd5517034e12f7133f6bd7f595f8a039548",
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/production-red.txt": "6139300c54a58ce49256c8265c17128f5d6a17c560c2220c5f69cb9679f7f8b6",
       "docs/cbc-evidence/soak-d2-sample-2026-09-09/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
@@ -91,7 +93,7 @@
       "docs/cbc-evidence/soak-d2-stop-2026-09-09/formal-red-confirmed.txt": "ff11ccf45e8192f15b01d6b64c4f1f94aa4632fb0eb68379b0a94dfb94a74843",
       "docs/cbc-evidence/soak-d2-stop-2026-09-09/formal-red.txt": "eb6f249458bced833eef2f43cf732e40f405be079a6a6313c9b2b391bb0d1a75",
       "docs/cbc-evidence/soak-d2-stop-2026-09-09/initial-correction-failure.txt": "54a8c559a41c6e9d3920df0d4cc6524aad9a7328dab5f91f0613fae8d8a3dd2d",
-      "docs/cbc-evidence/soak-d2-stop-2026-09-09/manifest.json": "1f0ec6ca4b469fbfff33ae939221da8a2845e1bf5744f1c8d54f783aa9b55006",
+      "docs/cbc-evidence/soak-d2-stop-2026-09-09/manifest.jsonc": "1f0ec6ca4b469fbfff33ae939221da8a2845e1bf5744f1c8d54f783aa9b55006",
       "docs/cbc-evidence/soak-d2-stop-2026-09-09/production-green.txt": "c5aa52954c688dc57c3e089eaec675f4e9ccdbc3102305ff4c76c659e119ac90",
       "docs/cbc-evidence/soak-d2-stop-2026-09-09/production-red-confirmed.txt": "db0fa79f1e26f9ca972533d280207125e2cb81eb8e04e7bef57342f9288d0501",
       "docs/cbc-evidence/soak-d2-stop-2026-09-09/production-red.txt": "2f2df51bc33dfa2789211cdad266a44bd484169cd575c779607bec2861dd22d8",
@@ -102,7 +104,7 @@
       "docs/cbc-evidence/soak-g0-2026-09-08/MC_CarrierIndex_read_failure_pre_fix.log": "006a3853c2857fc0505f6e76fb990a01507263145df85edd8d9efda99c79091b",
       "docs/cbc-evidence/soak-g0-2026-09-08/gate-green.log": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
       "docs/cbc-evidence/soak-g0-2026-09-08/gate-red.log": "79fefd2ce87b9d9e882168821cf102762307a5a9760ffccfe67548ac6a847098",
-      "docs/cbc-evidence/soak-g0-2026-09-08/manifest.json": "b4e857a74cf4e091c7cff84a495e0db77d6a5ea3f2234f81078c2bdbe4ce0cde",
+      "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc": "b4e857a74cf4e091c7cff84a495e0db77d6a5ea3f2234f81078c2bdbe4ce0cde",
       "docs/cbc-evidence/soak-g0-2026-09-08/release-workflows.log": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/cbc-evidence/soak-g0-2026-09-08/workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/b1-regression.log": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
@@ -111,26 +113,26 @@
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/carrier_index-MC_CarrierIndex_read_failure_pre_fix.log": "3aa870af96411d35f6d6314094aae4a2d5d186a9ff4a4e5bbd62b4935dab9f26",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/forbidden-exhaustive.log": "a493c0b027d3ab657896d93433fade6f93c1634ce47d693d17dd407bbf4349b6",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/green.log": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
-      "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.json": "2e132518c37579b90c0c0a143e0ee553278e4b763562ee3b54eb3f6c1ea68a0e",
+      "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc": "2e132518c37579b90c0c0a143e0ee553278e4b763562ee3b54eb3f6c1ea68a0e",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/real-gate.log": "2e5a94583adfe5b8081631e554c29ae7437b3c4b9e1be35025b14d677be65d6d",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/red.log": "e1fd6c977271e23832e45f5717aea6a0b31ba3cff6af6c4addd18721b04743e5",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/release-gates.log": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/release-workflows.log": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/replay_liveness-MC_ReplayHotLoop.log": "b64524e0d14b287a1d7d938e2cc8cb7bb59175d018d027ebb8d16c047186438c",
       "docs/cbc-evidence/soak-g0-b2-2026-09-08/workflow-security.log": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
-      "docs/cbc-evidence/soak-g0-b3-2026-09-08/dev-required-checks.json": "c104ef2dce9c1ec7e6b4aecc78e2971f2a7de655e448bfa282e4d26870362de1",
-      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-artifacts.json": "e110ae3fd6a077aa2a5de3e2b1ea1ca06dc4c00dba3616c4d75446ac8b8933f4",
-      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-job.json": "a0a8e22b55f123b1fef0dd32f03ed79c547006368494667a75ce69efc3e5f48c",
-      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.json": "0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6",
-      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-run.json": "1b7769b7164eba9653a08080c0cc1f5e689a346012f93e2ca3c0f3405217ee32",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/dev-required-checks.jsonc": "c104ef2dce9c1ec7e6b4aecc78e2971f2a7de655e448bfa282e4d26870362de1",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-artifacts.jsonc": "e110ae3fd6a077aa2a5de3e2b1ea1ca06dc4c00dba3616c4d75446ac8b8933f4",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-job.jsonc": "a0a8e22b55f123b1fef0dd32f03ed79c547006368494667a75ce69efc3e5f48c",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc": "0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6",
+      "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-run.jsonc": "1b7769b7164eba9653a08080c0cc1f5e689a346012f93e2ca3c0f3405217ee32",
       "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-carrier_index-MC_CarrierIndex.log": "8830d18c8b4df3e2ab2bd5469e07275c1599701776fcc0ccaea49e53c56cef7a",
       "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log": "bc3efd682bde71f944dd810d3920480f79bf96ee611e0144625bef0a16761ec4",
       "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log": "0a53c3af73068820850076408449e054288163582f2a0fc93f3743bb2226b03a",
       "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-replay_liveness-MC_ReplayHotLoop.log": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
       "docs/claims/repeat-deploy-carrier-index-equivalence.md": "16f110d8ebf50d2f39a3fbb45364019684a5118b0a65db106c6d9f5b810230ba",
       "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
-      "docs/claims/soak-formal-gate.md": "03b7dc8becd09c470a1d1e11a1b97ce4c9c26994d2afc347c313c1c39a0d2fac",
-      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "0800e67d8131ec0536658c663a2ee0ad4475096f7d4aed1c513840cfb1e4b22d",
+      "docs/claims/soak-formal-gate.md": "027d529ad36da3fbc704df91789401755b9a5d948409e04f946d7c5fc01f7dee",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "445ca66fbcb5aece95baf79f30c8c18e314a22bf6f10c684c5f5a4f44d9b903e",
       "docs/soak-evidence/34180346282/README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
       "docs/soak-evidence/34180346282/archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
       "docs/soak-evidence/34180346282/inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
@@ -155,8 +157,8 @@
       "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
-      "docs/tdd-plans/soak-gates-2026-09-08.md": "a4590097fa68ddc1dfe199e282c151c2c1942f66d80d4e85d15805127158ba7f",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "5b25492a858cae18df33a1b8a5b3a661bd8b2b64b56bfb7b284fea364938b768",
+      "docs/tdd-plans/soak-gates-2026-09-08.md": "664036e9fe87761e67fcf3dc65147cf989b4ad68af6c1bb6011dfe06c2d4ef86",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "7ba680410abf4087a08f152ce4b1f66e45d53238e5a18c38da57b4edfb551667",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -265,9 +267,9 @@
       "scripts/bench/test-extend-issue24-metrics.sh": "52cc1b8ac82a395ca187de577d28276ad79798ed6132b3289d3b4b6957dbc34d",
       "scripts/bench/test-run-merge-recovery-soak.sh": "b2479d5ae1b911225dd8ddf33440d0c613c3e8db716dd373ca54f136a584855f",
       "scripts/bench/test-soak-disk-active-probe.sh": "9e5c50a0bf37cfa1a1b00b6ad2d442e2421fbd3788d82540ab5edb3058474f2b",
-      "scripts/bench/test-soak-disk-admission.sh": "60359a9e42115377b8eb519796beb49c0dc14ae155db2cb1afa4534d1b862238",
+      "scripts/bench/test-soak-disk-admission.sh": "359494de3d0ca6e7cb7f5fcc8c76fd9a718e4b19fe4b54bafa9b45916966c9dd",
       "scripts/bench/test-soak-disk-diagnostic-deadline.sh": "b44ff741f9d62d2c75cc119e12e70f9cdea9de0d9dec099e993c32e2ade1c955",
-      "scripts/bench/test-soak-disk-emergency.sh": "063196902ae84aadb4a69ca5ed7028b86d335c0e19d451261298105e25da6cde",
+      "scripts/bench/test-soak-disk-emergency.sh": "b1df3b37b55ae09370c6743f1457fdfb9468990c0ca0a7cf456354a67e01c360",
       "scripts/bench/test-soak-disk-probe-timeout.sh": "872d44a5940e59d7a2457ee0747bd8cca5ad73ba5bc3e20ccacadc090b00e098",
       "scripts/bench/test-soak-disk-probe.sh": "41ee399da2c2bbf7a54634a5bbf90087071ecd0e8456dc6478932ca2032dbc41",
       "scripts/bench/test-soak-disk-record.sh": "c319c55aa832897d3c6f1d94d8a64bd68ba8dfc644cc1a9a1e4ec464e046be13",
@@ -279,13 +281,33 @@
       "scripts/bench/write-soak-summary.sh": "ed6c53492ab35dd9b2cc82123766e76efec9ea6a7e18b759a034b4a038d8a489",
       "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
       "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
-      "scripts/ci/check-tla-invariants.sh": "6f710e4cddf94115fe00d2738a1f2d3d0abc470fcfc8168069ce37ec8952ca6f",
-      "scripts/ci/test-check-tla-invariants.sh": "dbeb92c8dc18124ad4781fe6e51afcbc1a327f14921a75483322eaa507ed885e",
-      "scripts/ci/test-soak-claim-inventory.sh": "dbd16e78ab45353585a3beff0942141fd9c6ce9a1f45dccc9392e790b0fb165e",
-      "scripts/ci/test-soak-pr-formal-gate.sh": "7248c2ac49e0be828d4f55acd3602a6b8fc33c8597d7a97e3000e5189f262bb2",
+      "scripts/ci/check-tla-invariants.sh": "52c1a1a34afe6798340c917e73cab69e577fdadecc02cabb6e06cf00643af6b4",
+      "scripts/ci/test-check-tla-invariants.sh": "30e4b8a88eb971b848d28611c00234173aa4eaa2eca5a4c0cd33555802045ec7",
+      "scripts/ci/test-soak-claim-inventory-jsonc.sh": "b6ba3dcd5a81ef37698bd10cb6ca4058afccfdf9d0bf0273530a865202c691db",
+      "scripts/ci/test-soak-claim-inventory.sh": "8bcbdb5ec7ab008ec9057ba07f03c425bd6e9237c915340ba7957681b5d7f3d4",
+      "scripts/ci/test-soak-pr-formal-gate.sh": "c8aa5f88a621d44062bdf29048a2f1ca5fec4cb91c82acc55defea3a9398248b",
       "scripts/repin-system-integration.sh": "762e421890952bc4c84ac7f1c4a844356edefe4786cf86e65e12f21590018a06",
-      "scripts/run-merge-recovery-soak.sh": "f404ff4d47855f12a965063638fafc9a1aba8d5f9f9f3f67b1eb8d065d0905c3",
-      "scripts/test-repin-system-integration.sh": "cf238a85019b74c232106fbcd2c357f09095d01f65f40bd8941e30e99f57c104"
+      "scripts/run-merge-recovery-soak.sh": "141b522a0cb076d3d4d6e17e9522a2e9c5e8b6675d6e42cd4cdc187764b2afdc",
+      "scripts/test-repin-system-integration.sh": "cf238a85019b74c232106fbcd2c357f09095d01f65f40bd8941e30e99f57c104",
+      "formal/tlaplus/soak_disk/GuardianAdmission.md": "b66d1b0bdfc57b75778c5969356131fa40f97d328bddd0682deb236557ec05ef",
+      "formal/tlaplus/soak_disk/GuardianAdmission.tla": "20033b702594dc615b100656b7abe3943088f7babd6a2916b63b04438bd69e4f",
+      "formal/tlaplus/soak_disk/MC_GuardianAdmission.cfg": "5ca9b340ddc8de3b4c06b74426f8118d27ffe68b02ac1c9e3f00210bdec9621e",
+      "formal/tlaplus/soak_disk/MC_GuardianAdmission.tla": "9d166b3086df876ccece56ec2ceb9f4246c48964d735e1219ff661878c308485",
+      "formal/tlaplus/soak_disk/MC_GuardianAdmission_unchecked_pre_fix.cfg": "b39f561015806c7d4cd72b733d3571e91617f9b06dcf348e9bd148388f6c6948",
+      "formal/tlaplus/soak_disk/MC_GuardianAdmission_unchecked_pre_fix.tla": "d4912efe5b08be66670a8724e452decb13cbacd17ef9eaa5e3f4de02cfe2b893",
+      "scripts/bench/test-soak-guardian-admission.sh": "996e9a65762a54cf168802ba932d7813e28da422d0aba23925a34e6842416377",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/README.md": "ba4d60865ff5b08e64ef0abd7e5b0e1c8aeea4cba7837348545c95acc704a444",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/composed-tla.txt": "40baf65cd74a656e461fe95ee5c06f9e81218e983f7cd0eb9c48c8706de55659",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/emergency.txt": "e5330ca99f5a724a93820ced562e83cd317ed2de6774cbac2c8deeb338ec90c2",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/formal-green.txt": "812080c58e266bb4ee4d33464539679db1109d21c4c30346c8810ae93b81925d",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/formal-red.txt": "d12cf7d5578d21da628b6e1ecc85bbe3d6b2786d2419171dd5fd707a4b1fec08",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/manifest.jsonc": "9ea2de48dcc9e353454a8451453fdb69772d827fdb9a689a26491b130ffae3ae",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/production-green.txt": "22f2e39ebde5b27324484e6fd6a02d45ec6ea49b87f1efbc7110342ca222568f",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/production-red.txt": "00a219f69885e9b211b4a0ac8bf3d91d174fd20d7a2f3732933f5aa3f79a2e43",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/regressions.txt": "b54774b2533666ef367cdf043ce398232071a8a98f6a94f5966fef91ed6ed40a",
+      "docs/cbc-evidence/soak-d2-boundary-2026-09-09/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7"
     }
   },
   "claims": [
@@ -515,7 +537,9 @@
         "formal/tlaplus/soak_disk/MC_DiskBreachRestart.cfg",
         "formal/tlaplus/soak_disk/MC_DiskBreachRestart_clear_pre_fix.cfg",
         "formal/tlaplus/soak_disk/MC_DiskStopDeadline.cfg",
-        "formal/tlaplus/soak_disk/MC_DiskStopDeadline_unbounded_pre_fix.cfg"
+        "formal/tlaplus/soak_disk/MC_DiskStopDeadline_unbounded_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_GuardianAdmission.cfg",
+        "formal/tlaplus/soak_disk/MC_GuardianAdmission_unchecked_pre_fix.cfg"
       ],
       "verifier": {
         "name": "TLC",
@@ -541,7 +565,8 @@
         "D2 sample validation: valid samples 7000, 8192, and 16384 MiB, plus a malformed field with numeric prefix 16384.",
         "Execution: two workers, 120-second configuration timeout, and 60-second kill grace.",
         "B7 through B12 have 5, 11, 4, 5, 129, and 6 distinct states in their corrected configurations.",
-        "B13 has five distinct states. Abstract cancellation ticks do not establish a wall-clock emergency bound."
+        "B13 has five distinct states. Abstract cancellation ticks do not establish a wall-clock emergency bound.",
+        "B14 has four distinct states. Its atomic admission decision does not model a later crash or a live but stalled guardian."
       ],
       "expected_results": [
         {
@@ -651,6 +676,15 @@
           "configuration": "MC_DiskStopDeadline_unbounded_pre_fix",
           "exit_code": 12,
           "invariant": "StopWithinBudget"
+        },
+        {
+          "configuration": "MC_GuardianAdmission",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_GuardianAdmission_unchecked_pre_fix",
+          "exit_code": 12,
+          "invariant": "AdmissionRequiresGuardian"
         }
       ],
       "production_tests": [
@@ -677,7 +711,8 @@
         "D2-PROBE-LOCAL",
         "D2-SAMPLE-LOCAL",
         "D2-EMERGENCY-LOCAL",
-        "D2-STOP-LOCAL"
+        "D2-STOP-LOCAL",
+        "D2-BOUNDARY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -703,7 +738,8 @@
       "bounds": [
         "B1 covered 14 classifier cases, D1 covered 21, B5 covered 28, and B6 covered 35.",
         "B7 through B12 extend the classifier to 77 cases. Routing covers six scenarios.",
-        "B13 extends the classifier to 84 cases. Routing still covers six scenarios."
+        "B13 extends the classifier to 84 cases. Routing still covers six scenarios.",
+        "B14 extends the classifier to 91 cases. Routing still covers six scenarios."
       ],
       "production_tests": [
         {
@@ -729,7 +765,8 @@
         "D2-PROBE-LOCAL",
         "D2-SAMPLE-LOCAL",
         "D2-EMERGENCY-LOCAL",
-        "D2-STOP-LOCAL"
+        "D2-STOP-LOCAL",
+        "D2-BOUNDARY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -822,7 +859,8 @@
         "PENDING-PLAN",
         "D1-LOCAL",
         "D2-EMERGENCY-LOCAL",
-        "D2-STOP-LOCAL"
+        "D2-STOP-LOCAL",
+        "D2-BOUNDARY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -868,7 +906,8 @@
       "evidence_refs": [
         "D2-SAMPLE-LOCAL",
         "D2-EMERGENCY-LOCAL",
-        "D2-STOP-LOCAL"
+        "D2-STOP-LOCAL",
+        "D2-BOUNDARY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -917,7 +956,8 @@
         "D2-PROBE-LOCAL",
         "D2-SAMPLE-LOCAL",
         "D2-EMERGENCY-LOCAL",
-        "D2-STOP-LOCAL"
+        "D2-STOP-LOCAL",
+        "D2-BOUNDARY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -948,7 +988,10 @@
         "formal/tlaplus/soak_disk/MC_DiskBreachRestart_clear_pre_fix.cfg",
         "formal/tlaplus/soak_disk/MC_DiskStopDeadline.cfg",
         "formal/tlaplus/soak_disk/MC_DiskStopDeadline_unbounded_pre_fix.cfg",
-        "formal/tlaplus/soak_disk/DiskStopDeadline.md"
+        "formal/tlaplus/soak_disk/DiskStopDeadline.md",
+        "formal/tlaplus/soak_disk/MC_GuardianAdmission.cfg",
+        "formal/tlaplus/soak_disk/MC_GuardianAdmission_unchecked_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/GuardianAdmission.md"
       ],
       "verifier": {
         "name": "Bash production fixtures and bounded TLC",
@@ -960,7 +1003,7 @@
         "Restart starts with a retained breach marker and a valid state file."
       ],
       "bounds": [
-        "Eight fixture scenarios cover seven local behaviors. These tests do not establish a composed response deadline.",
+        "Nine fixture scenarios cover eight local behaviors. These tests do not establish a composed response deadline.",
         "The disk probe limit is two seconds with a one-second kill grace.",
         "Attribution defaults to ten seconds with a one-second kill grace. The fixture uses one second and 32 session roots.",
         "Each disk stop group defaults to two seconds plus one second of kill grace. B13 uses a one-second budget and a five-second observation."
@@ -1000,6 +1043,11 @@
           "path": "scripts/bench/test-soak-disk-stop-deadline.sh",
           "command": "bash scripts/bench/test-soak-disk-stop-deadline.sh",
           "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-guardian-admission.sh",
+          "command": "bash scripts/bench/test-soak-guardian-admission.sh",
+          "result": "local-matched-production-formal-red-green"
         }
       ],
       "ci": {
@@ -1009,7 +1057,8 @@
       },
       "evidence_refs": [
         "D2-EMERGENCY-LOCAL",
-        "D2-STOP-LOCAL"
+        "D2-STOP-LOCAL",
+        "D2-BOUNDARY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1018,13 +1067,14 @@
         "Complete soft-floor, cleanup-outcome, numeric-range, status, and location fault cases.",
         "Verify active-session and image preservation, confirmed termination, and durable evidence publication.",
         "Establish one composed emergency deadline, including shutdown and evidence handling.",
-        "Complete crash-recovery accounting and the D3-dependent writer-growth and reserve bounds."
+        "Complete crash-recovery accounting and the D3-dependent writer-growth and reserve bounds.",
+        "Extend B14 beyond observed guardian death during the iteration-boundary probe. Benchmark admission, live but stalled guardians, and later crashes remain open."
       ]
     }
   ],
   "evidence": {
     "D2-SAMPLE-LOCAL": {
-      "path": "docs/cbc-evidence/soak-d2-sample-2026-09-09/manifest.json",
+      "path": "docs/cbc-evidence/soak-d2-sample-2026-09-09/manifest.jsonc",
       "role": "historical-baseline",
       "identity": "Production RED at 59430d59b45e4640187fd4b0414b03249c431e8f. The manifest binds the local correction and D1/B5 regressions by source hashes.",
       "limitations": [
@@ -1034,7 +1084,7 @@
       ]
     },
     "D2-PROBE-LOCAL": {
-      "path": "docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.json",
+      "path": "docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.jsonc",
       "role": "historical-baseline",
       "identity": "Production RED at 80914eedabd3413e174e9fca4fe8bd5c17021cb4. The manifest binds the local correction by source hashes.",
       "limitations": [
@@ -1053,7 +1103,7 @@
       ]
     },
     "B1-LOCAL": {
-      "path": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.json",
+      "path": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
       "role": "historical-baseline",
       "identity": "7034e21683044fb1525d213d5a1ae2e16bbb57c0",
       "limitations": [
@@ -1061,7 +1111,7 @@
       ]
     },
     "B2-LOCAL": {
-      "path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.json",
+      "path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
       "role": "historical-baseline",
       "identity": "3fee1ca8a111b8d6435d926902cd4d991e652e2a",
       "limitations": [
@@ -1069,7 +1119,7 @@
       ]
     },
     "B2-HOSTED": {
-      "path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.json",
+      "path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
       "role": "hosted-baseline",
       "identity": "PR #399 formal run 34228660038, attempt 1, job 102069244605.",
       "limitations": [
@@ -1115,7 +1165,7 @@
       ]
     },
     "D2-EMERGENCY-LOCAL": {
-      "path": "docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json",
+      "path": "docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc",
       "role": "historical-baseline",
       "identity": "Six local cycles start from ac94c17559cab399d42e84e8dd0792f8fe943668. Intermediate corrections and final inputs use source digests.",
       "limitations": [
@@ -1125,7 +1175,7 @@
       ]
     },
     "D2-STOP-LOCAL": {
-      "path": "docs/cbc-evidence/soak-d2-stop-2026-09-09/manifest.json",
+      "path": "docs/cbc-evidence/soak-d2-stop-2026-09-09/manifest.jsonc",
       "role": "historical-baseline",
       "identity": "B13 starts from 3d2aa79048c9da0af09c7771b3f5c3eb3c369414. Source digests bind the local correction and retained unsuccessful attempt.",
       "limitations": [
@@ -1134,6 +1184,17 @@
         "D2, hosted confirmation, maintainer review, claim ratification, and acceptance remain pending.",
         "Concurrent initial gate runs shared log paths. Only subsequent serial verification supplies combined gate evidence.",
         "The raw backup is local, not off-host."
+      ]
+    },
+    "D2-BOUNDARY-LOCAL": {
+      "path": "docs/cbc-evidence/soak-d2-boundary-2026-09-09/manifest.jsonc",
+      "role": "historical-baseline",
+      "identity": "B14 starts from e6fdd343b84726c29c9ac5fa992cac8b04e0d294. Source digests bind its local production and formal RED/GREEN evidence.",
+      "limitations": [
+        "The cycle covers observed guardian death during a boundary probe that still returns a valid sample.",
+        "The model assumes an atomic decision. Production liveness checks do not establish guardian progress or atomic workload admission.",
+        "D2, hosted confirmation, maintainer review, claim ratification, and acceptance remain pending.",
+        "The local records do not establish writer termination, durability, the composed deadline, or reserve bounds."
       ]
     }
   },
@@ -1172,7 +1233,7 @@
         "DISK-EMERGENCY"
       ],
       "pending_obligations": [
-        "B5 through B13 pass their local behavior cycles. D2 is not complete.",
+        "B5 through B14 pass their local behavior cycles. D2 is not complete.",
         "Confirm hosted execution and obtain maintainer review of the model-to-code correspondence.",
         "Bound disk hygiene and stop paths outside B13, and verify guardian health at every admission boundary.",
         "Complete soft-floor, cleanup-outcome, numeric-range, status, and location fault cases.",

@@ -6,7 +6,7 @@
 
 **Base revision:** `599513d4af1382e87787c2b2c746d0c887d3b738`
 
-**Historical candidate:** The [B1 manifest](soak-g0-2026-09-08/manifest.json) records the content later committed as `7034e21683044fb1525d213d5a1ae2e16bbb57c0`.
+**Historical candidate:** The [B1 manifest](soak-g0-2026-09-08/manifest.jsonc) records the content later committed as `7034e21683044fb1525d213d5a1ae2e16bbb57c0`.
 
 B1 evidence applies to that source and claim revision, not to subsequent changes. [Cycle B2](github-workflows-slashing-tests-yml.md) records later workflow and gate verification.
 
@@ -73,7 +73,7 @@ The full 17-configuration suite and Rocq suite were not rerun with real verifier
   "status": "pending",
   "evidence": {
     "kind": "behavior-tests+bounded-model-check",
-    "ref": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.json",
+    "ref": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
     "counterexample": "docs/cbc-evidence/soak-g0-2026-09-08/gate-red.log",
     "detail": "Direct TLC runs establish the existing carrier baseline only. No adapter discharged the gate implementation."
   },

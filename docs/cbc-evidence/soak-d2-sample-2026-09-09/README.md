@@ -8,7 +8,7 @@ scope: B6 numeric-prefix rejection at admission
 status: pending
 verified_at: null
 waiver: null
-evidence: manifest.json
+evidence: manifest.jsonc
 ```
 
 ## Result and sequence
@@ -46,7 +46,7 @@ Fixture errors, tool errors, timeouts, unfinished containers, and out-of-memory 
 
 ## Retained verification
 
-The [manifest](manifest.json) binds tested inputs, baseline Git bytes, raw records, verifier identity, and complete logs. GREEN uses working-tree source hashes.
+The [manifest](manifest.jsonc) binds tested inputs, baseline Git bytes, raw records, verifier identity, and complete logs. GREEN uses working-tree source hashes.
 
 D1 and both B5 scenarios pass with the corrected parser. The existing three-scenario driver suite passes in a separate disposable container.
 
