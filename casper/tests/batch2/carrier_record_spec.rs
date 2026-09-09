@@ -195,7 +195,6 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("merge over the full frontier");

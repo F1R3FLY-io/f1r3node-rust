@@ -43,6 +43,8 @@ pub type StatePartPath = Vec<(Blake2b256Hash, Option<u8>)>;
 /// Number of nodes in LFS sync data transfer
 ///
 /// **Scala equivalent**: `val pageSize = 750`
+/// Per-request chunk size, carried in the request (the responder pages by
+/// it); independent of `lfs_horizon_requester::PAGE_SIZE`.
 pub const PAGE_SIZE: i32 = 750;
 
 /// Trait that abstracts the network operations needed by the LFS tuple space requester
@@ -577,8 +579,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
 
     tracing::info!("LFS Tuple Space Requester stream initialized - starting processing");
 
-    // Default max timeout is 128 seconds
-    let max_request_timeout = Duration::from_secs(128);
+    let max_request_timeout = crate::rust::engine::lfs_block_requester::LFS_MAX_REQUEST_TIMEOUT;
     let last_error: Arc<Mutex<Option<CasperError>>> = Arc::new(Mutex::new(None));
     let last_error_for_stream = last_error.clone();
 
