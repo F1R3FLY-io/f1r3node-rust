@@ -1011,6 +1011,52 @@ resource closure. Arena freeze page/leaf indexing remains outside this bound.
 The runtime is not implemented at this checkpoint. The combined runner now
 expects nine frame-storage tests, including the persistent baseline.
 
+#### Persistent owner and fault foundations (2026-09-09)
+
+`PersistentFocusedOwners` supplies sixteen new closed-report obligations before
+runtime changes. Its append-only linked arena has concrete parent and cached
+boundary/outermost handles. A `linked` witness includes exact lookup, strictly
+backward parent references and list-selection correspondence. The constructor
+theorem establishes those premises for an appended owner; extension preserves
+every existing witness. The owner-list projection is used only for reification:
+its unused FRO cached-minimum field is `None`, so no `F.cache_valid` theorem or
+linked scheduler refinement is inferred from that projection.
+
+| New law | Binding and scope |
+|---|---|
+| `immutable_extension_preserves_every_linked_checkpoint` | PFO-01: old linked observations survive arbitrary appended owner cells. |
+| `cached_linked_reads_refine_exact_list_selection` | PFO-02: all-bound, path-bound and outermost cached handles agree with the reference selection on a valid linked chain. |
+| `append_owner_constructs_valid_backward_links_and_exact_caches` | PFO-01/02: fresh owner construction establishes backward links and both caches, rather than assuming its validity. |
+| `extension_preserves_exact_reified_graph_and_old_frame_lookups` | PFO-01: owner-graph observations and old frame lookups survive append. These are separate facts, not yet a concrete frame-ID realization relation. |
+| `pop_restores_the_exact_preexisting_prefix` | PFO-03: selecting the parent restores the old chain and cached observations. No whole-parser cost bound follows. |
+| `publishing_a_sibling_preserves_every_old_stamp_focus_and_byte_history` | PFO-04: every previously published state retains all its fields after a sibling is appended. |
+| `historical_restore_never_rewinds_the_global_obligation_clock` | PFO-04: state selection is separate from the global allocator; subsequent IDs remain increasing in the mathematical model. |
+| `equal_endpoint_caches_use_opposite_owner_handles` | PFO-02: exact opposite tie behavior for equal endpoints. |
+| `refusing_hidden_leaf_replaces_only_the_original_root_error` | PFO-06: the shared child-Dead unwind preserves original child graphs while propagating the error to the root. |
+| `root_error_replacement_preserves_all_slots_and_last_error` | PFO-06: error replacement retains graph slots and is last-error-wins. |
+| `resolve_and_reject_preflight_preserve_their_distinct_phase_and_source_rules` | PFO-06: resolve requires AwaitingResolution; reject accepts Payload; no-stack errors use different sources. |
+| `wrong_id_returns_the_hidden_tag_source_for_both_operations` | PFO-06: ID mismatch returns the retained hidden tag location. |
+| `focused_fault_observations_match_the_exact_root_dead_branches` | PFO-06: queries and value observations use the exact stored root error independently of the live-grammar branch. |
+| `dead_edge_preserves_selected_graph_stamp_and_clock_while_appending_current_bytes` | PFO-04/06: a successful Dead edge appends current bytes and history while retaining the saved graph/stamp and allocator. |
+| `fault_forcing_uses_saved_graph_stamp_but_current_suffix_bytes` | PFO-06: required forcing inputs; this is a denotation pair, not executable checked materialization. |
+| `fault_preflight_causal_controls_distinguish_payload_and_rolled_back_events` | PFO-06: pending phase and latest-event shortcuts produce distinguishable errors. |
+
+The Rust reference test
+`persistent_fault_private_preflight_uses_selected_graph_not_latest_event` pins
+two discriminating traces. `[0x0d,4,3,0x10,2,0xaa]` retains the pre-step payload
+remainder 2 after outer truncation: matching-ID resolve refuses at the tag while
+reject succeeds at the caller source without new frames. `[0x0d,3,2,0x10,2]`
+emits a fresh obligation but restores the old length-varint frame: resolve and
+reject must not use the emitted obligation as their hidden terminal. Exact old
+states, frames, counters, allocator and error sources are checked.
+
+Before persistent runtime implementation, complete linked-to-scheduler and
+frame-realization refinement, hidden-terminal correspondence, checked forcing
+and their full resource accounting. These foundation laws and reference traces
+do not complete PFO-01–07 or prove the Rust implementation. The combined runner
+requires 120 total RPB3 reports and ten frame-storage tests. J-101 records the
+qualification and precise remaining premises.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

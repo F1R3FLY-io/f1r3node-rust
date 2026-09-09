@@ -4223,3 +4223,384 @@ Print Assumptions boundary_scheduler_equal_endpoints_pending_and_rollback_positi
 Print Assumptions boundary_scheduler_causal_controls_reject_wrong_ties_gap_completion_and_region_only_expiry.
 
 End FocusedRegionOwners.
+
+Module PersistentFocusedOwners.
+
+Module F := FocusedRegionOwners.
+
+Definition boundary_handle := option (nat * nat).
+
+Definition choose_boundary (prefer_new : bool) (ending index : nat) (previous : boundary_handle) : boundary_handle :=
+  match previous with
+  | None => Some (ending, index)
+  | Some (old_end, old_index) =>
+      if (if prefer_new then ending <=? old_end else ending <? old_end)
+      then Some (ending, index) else Some (old_end, old_index)
+  end.
+
+Record owner_cell := OwnerCell {
+  cell_owner : F.owner;
+  cell_parent : option nat;
+  cell_all_boundary : boundary_handle;
+  cell_path_boundary : boundary_handle;
+  cell_outermost : nat
+}.
+
+Definition owner_arena := list owner_cell.
+Definition owner_entries := list (nat * owner_cell).
+
+Definition lookup (arena : owner_arena) (root : option nat) :=
+  match root with None => None | Some index => nth_error arena index end.
+
+Definition read_all arena root :=
+  match lookup arena root with None => None | Some current => cell_all_boundary current end.
+Definition read_path arena root :=
+  match lookup arena root with None => None | Some current => cell_path_boundary current end.
+Definition read_outer arena root :=
+  match lookup arena root with None => None | Some current => Some (cell_outermost current) end.
+
+Fixpoint reference_all (entries : owner_entries) : boundary_handle :=
+  match entries with
+  | [] => None
+  | (index, current) :: rest =>
+      choose_boundary false (F.owner_bound (cell_owner current)) index (reference_all rest)
+  end.
+
+Fixpoint reference_path (entries : owner_entries) : boundary_handle :=
+  match entries with
+  | [] => None
+  | (index, current) :: rest =>
+      choose_boundary true (F.owner_path_end (cell_owner current)) index (reference_path rest)
+  end.
+
+Fixpoint reference_outer (entries : owner_entries) : option nat :=
+  match entries with
+  | [] => None
+  | (index, _) :: rest =>
+      match reference_outer rest with None => Some index | Some outer => Some outer end
+  end.
+
+Inductive linked (arena : owner_arena) : option nat -> owner_entries -> Prop :=
+| linked_empty : linked arena None []
+| linked_cons index current rest :
+    nth_error arena index = Some current ->
+    linked arena (cell_parent current) rest ->
+    (forall parent, cell_parent current = Some parent -> parent < index) ->
+    cell_all_boundary current =
+      choose_boundary false (F.owner_bound (cell_owner current)) index (reference_all rest) ->
+    cell_path_boundary current =
+      choose_boundary true (F.owner_path_end (cell_owner current)) index (reference_path rest) ->
+    Some (cell_outermost current) =
+      match reference_outer rest with None => Some index | Some outer => Some outer end ->
+    linked arena (Some index) ((index, current) :: rest).
+
+Lemma old_lookup_after_append {A : Type} (arena suffix : list A) index value :
+  nth_error arena index = Some value -> nth_error (arena ++ suffix) index = Some value.
+Proof.
+  intro found. rewrite nth_error_app1; [exact found|].
+  apply nth_error_Some. rewrite found. discriminate.
+Qed.
+
+Theorem immutable_extension_preserves_every_linked_checkpoint arena suffix root entries :
+  linked arena root entries -> linked (arena ++ suffix) root entries.
+Proof.
+  intro valid. induction valid; constructor; auto.
+  eapply old_lookup_after_append; eauto.
+Qed.
+
+Lemma linked_root_in_bounds arena index entries :
+  linked arena (Some index) entries -> index < length arena.
+Proof.
+  intro valid. inversion valid; subst. apply nth_error_Some. congruence.
+Qed.
+
+Theorem cached_linked_reads_refine_exact_list_selection arena root entries :
+  linked arena root entries ->
+  read_all arena root = reference_all entries /\
+  read_path arena root = reference_path entries /\
+  read_outer arena root = reference_outer entries.
+Proof.
+  intro valid. destruct valid; [repeat split; reflexivity|].
+  unfold read_all, read_path, read_outer, lookup. rewrite H. cbn. auto.
+Qed.
+
+Definition make_cell arena parent value :=
+  let index := length arena in
+  OwnerCell value parent
+    (choose_boundary false (F.owner_bound value) index (read_all arena parent))
+    (choose_boundary true (F.owner_path_end value) index (read_path arena parent))
+    (match read_outer arena parent with None => index | Some outer => outer end).
+
+Theorem append_owner_constructs_valid_backward_links_and_exact_caches arena root entries value :
+  linked arena root entries ->
+  let cell := make_cell arena root value in
+  linked (arena ++ [cell]) (Some (length arena)) ((length arena, cell) :: entries).
+Proof.
+  intro valid. cbn zeta. apply linked_cons.
+  - rewrite nth_error_app2 by lia. rewrite Nat.sub_diag. reflexivity.
+  - cbn. apply immutable_extension_preserves_every_linked_checkpoint. exact valid.
+  - cbn. intros parent same. subst root. eapply linked_root_in_bounds; eauto.
+  - cbn. destruct (cached_linked_reads_refine_exact_list_selection valid) as [all _]. now rewrite all.
+  - cbn. destruct (cached_linked_reads_refine_exact_list_selection valid) as [_ [paths _]]. now rewrite paths.
+  - cbn. destruct (cached_linked_reads_refine_exact_list_selection valid) as [_ [_ outer]].
+    rewrite outer. now destruct (reference_outer entries).
+Qed.
+
+Definition projected_owners (entries : owner_entries) :=
+  map (fun entry => F.CachedOwner (cell_owner (snd entry)) None) entries.
+
+Definition projected_graph stamp focus entries :=
+  F.reify stamp (F.LeafGraph focus) (projected_owners entries).
+
+Definition observes arena root stamp focus graph :=
+  exists entries, linked arena root entries /\ graph = projected_graph stamp focus entries.
+
+Theorem extension_preserves_exact_reified_graph_and_old_frame_lookups
+    {FrameValue : Type} arena extra root graph stamp focus
+    (frames more_frames : list FrameValue) frame_index frame_value :
+  observes arena root stamp focus graph -> nth_error frames frame_index = Some frame_value ->
+  observes (arena ++ extra) root stamp focus graph /\
+  nth_error (frames ++ more_frames) frame_index = Some frame_value.
+Proof.
+  intros [entries [owners observed]] frame. split.
+  - exists entries. split; [|exact observed].
+    apply immutable_extension_preserves_every_linked_checkpoint. exact owners.
+  - eapply old_lookup_after_append; eauto.
+Qed.
+
+Theorem pop_restores_the_exact_preexisting_prefix arena root entries value :
+  linked arena root entries ->
+  let cell := make_cell arena root value in
+  cell_parent cell = root /\
+  linked (arena ++ [cell]) (cell_parent cell) entries /\
+  read_all (arena ++ [cell]) (cell_parent cell) = reference_all entries /\
+  read_path (arena ++ [cell]) (cell_parent cell) = reference_path entries /\
+  read_outer (arena ++ [cell]) (cell_parent cell) = reference_outer entries.
+Proof.
+  intro valid. cbn zeta. split; [reflexivity|].
+  assert (preserved : linked (arena ++ [make_cell arena root value]) root entries).
+  { apply immutable_extension_preserves_every_linked_checkpoint. exact valid. }
+  split; [exact preserved|]. apply cached_linked_reads_refine_exact_list_selection. exact preserved.
+Qed.
+
+Record focused_checkpoint := FocusedCheckpoint {
+  checkpoint_focus : F.leaf;
+  checkpoint_owners : option nat;
+  checkpoint_stamp : nat;
+  checkpoint_bytes : list CanonicalKeyProtocol.located_byte
+}.
+
+Record history := History {
+  history_states : list focused_checkpoint;
+  history_clock : nat
+}.
+
+Definition restore (store : history) index := nth_error (history_states store) index.
+Definition publish (store : history) next next_clock :=
+  History (history_states store ++ [next]) next_clock.
+
+Theorem publishing_a_sibling_preserves_every_old_stamp_focus_and_byte_history
+    store index previous next next_clock :
+  restore store index = Some previous ->
+  restore (publish store next next_clock) index = Some previous.
+Proof. unfold restore, publish; cbn. apply old_lookup_after_append. Qed.
+
+Definition allocate_obligation store :=
+  (history_clock store, History (history_states store) (S (history_clock store))).
+
+Theorem historical_restore_never_rewinds_the_global_obligation_clock store index :
+  let '(first, after_first) := allocate_obligation store in
+  let restored := restore after_first index in
+  let '(second, after_second) := allocate_obligation after_first in
+  restored = restore store index /\ first < second /\
+  history_states after_second = history_states store /\
+  history_clock after_second = history_clock store + 2.
+Proof. cbn. repeat split; auto; lia. Qed.
+
+Theorem equal_endpoint_caches_use_opposite_owner_handles ending inner outer :
+  choose_boundary false ending inner (Some (ending, outer)) = Some (ending, outer) /\
+  choose_boundary true ending inner (Some (ending, outer)) = Some (ending, inner).
+Proof. unfold choose_boundary. rewrite Nat.ltb_irrefl, Nat.leb_refl. auto. Qed.
+
+Print Assumptions immutable_extension_preserves_every_linked_checkpoint.
+Print Assumptions cached_linked_reads_refine_exact_list_selection.
+Print Assumptions append_owner_constructs_valid_backward_links_and_exact_caches.
+Print Assumptions extension_preserves_exact_reified_graph_and_old_frame_lookups.
+Print Assumptions pop_restores_the_exact_preexisting_prefix.
+Print Assumptions publishing_a_sibling_preserves_every_old_stamp_focus_and_byte_history.
+Print Assumptions historical_restore_never_rewinds_the_global_obligation_clock.
+Print Assumptions equal_endpoint_caches_use_opposite_owner_handles.
+
+Record fault_error := FaultError {
+  fault_code : nat;
+  fault_source : nat;
+  fault_offset : nat
+}.
+
+Definition dead_status error := F.DeadPath (fault_code error) (fault_source error) (fault_offset error).
+
+Definition kill_metadata (metadata : F.path_metadata) error :=
+  F.PathMetadata (F.path_escape_allowed metadata) (dead_status error)
+    (F.path_completed_segments metadata) (F.path_first_tag metadata) (F.path_stable metadata).
+
+Definition kill_root (graph : F.path_graph) error :=
+  match graph with
+  | F.LeafGraph current =>
+      F.LeafGraph (F.Leaf (kill_metadata (F.leaf_metadata current) error) (F.leaf_frames current))
+  | F.RegionGraph metadata region_remaining path_remaining child =>
+      F.RegionGraph
+        (F.RegionMetadata (F.region_slot metadata) (kill_metadata (F.region_owner metadata) error)
+          (F.region_previous metadata) (F.region_declared_length metadata)
+          (F.region_start_depth metadata) (F.region_next metadata))
+        region_remaining path_remaining child
+  end.
+
+Definition root_metadata (graph : F.path_graph) :=
+  match graph with
+  | F.LeafGraph current => F.leaf_metadata current
+  | F.RegionGraph metadata _ _ _ => F.region_owner metadata
+  end.
+
+Lemma killed_root_has_exact_error graph error :
+  F.path_status_value (root_metadata (kill_root graph error)) = dead_status error.
+Proof. destruct graph; reflexivity. Qed.
+
+Fixpoint propagate_dead_from_hidden_leaf (graph : F.path_graph) error :=
+  match graph with
+  | F.LeafGraph _ => kill_root graph error
+  | F.RegionGraph _ _ _ child =>
+      match F.path_status_value (root_metadata (propagate_dead_from_hidden_leaf child error)) with
+      | F.DeadPath code source offset => kill_root graph (FaultError code source offset)
+      | _ => graph
+      end
+  end.
+
+Theorem refusing_hidden_leaf_replaces_only_the_original_root_error graph error :
+  propagate_dead_from_hidden_leaf graph error = kill_root graph error.
+Proof.
+  induction graph as [current|metadata region_remaining path_remaining child IH]; cbn; [reflexivity|].
+  rewrite IH, killed_root_has_exact_error. destruct error; reflexivity.
+Qed.
+
+Theorem root_error_replacement_preserves_all_slots_and_last_error graph first second :
+  F.graph_slots (kill_root graph first) = F.graph_slots graph /\
+  kill_root (kill_root graph first) second = kill_root graph second.
+Proof. destruct graph; repeat split; reflexivity. Qed.
+
+Inductive terminal_view :=
+| TerminalOther
+| TerminalObligation (id source offset : nat) (awaiting : bool).
+
+Definition unresolved := (nat * nat)%type.
+
+Definition resolve_preflight requested terminal : option unresolved :=
+  match terminal with
+  | TerminalOther => Some (0, 0)
+  | TerminalObligation id source offset awaiting =>
+      if (requested =? id) && awaiting then None else Some (source, offset)
+  end.
+
+Definition reject_preflight requested caller terminal : option unresolved :=
+  match terminal with
+  | TerminalOther => Some caller
+  | TerminalObligation id source offset _ =>
+      if requested =? id then None else Some (source, offset)
+  end.
+
+Theorem resolve_and_reject_preflight_preserve_their_distinct_phase_and_source_rules
+    id source offset caller :
+  resolve_preflight id (TerminalObligation id source offset false) = Some (source, offset) /\
+  reject_preflight id caller (TerminalObligation id source offset false) = None /\
+  resolve_preflight id (TerminalObligation id source offset true) = None /\
+  reject_preflight id caller (TerminalObligation id source offset true) = None /\
+  resolve_preflight id TerminalOther = Some (0, 0) /\
+  reject_preflight id caller TerminalOther = Some caller.
+Proof. unfold resolve_preflight, reject_preflight. rewrite Nat.eqb_refl. repeat split; reflexivity. Qed.
+
+Theorem wrong_id_returns_the_hidden_tag_source_for_both_operations
+    requested actual source offset awaiting caller :
+  requested <> actual ->
+  resolve_preflight requested (TerminalObligation actual source offset awaiting) = Some (source, offset) /\
+  reject_preflight requested caller (TerminalObligation actual source offset awaiting) = Some (source, offset).
+Proof.
+  intro different. unfold resolve_preflight, reject_preflight.
+  assert (wrong : (requested =? actual) = false) by (apply Nat.eqb_neq; exact different).
+  rewrite wrong. auto.
+Qed.
+
+Record fault_state := FaultState {
+  fault_saved : focused_checkpoint;
+  fault_selected_entries : owner_entries;
+  fault_current_bytes : list CanonicalKeyProtocol.located_byte;
+  fault_selected_error : fault_error
+}.
+
+Definition fault_graph current :=
+  kill_root (projected_graph (checkpoint_stamp (fault_saved current))
+    (checkpoint_focus (fault_saved current)) (fault_selected_entries current))
+    (fault_selected_error current).
+
+Definition fault_edge current byte :=
+  FaultState (fault_saved current) (fault_selected_entries current)
+    (fault_current_bytes current ++ [byte]) (fault_selected_error current).
+
+Definition visible_fault (has_value : bool)
+    (live_observation : option nat * bool * option fault_error) graph :=
+  match F.path_status_value (root_metadata graph) with
+  | F.DeadPath code source offset =>
+      (None, false, if has_value then Some (FaultError code source offset) else None)
+  | _ => live_observation
+  end.
+
+Theorem focused_fault_observations_match_the_exact_root_dead_branches current has_value live_observation :
+  visible_fault has_value live_observation (fault_graph current) =
+    (None, false, if has_value then Some (fault_selected_error current) else None).
+Proof.
+  unfold visible_fault, fault_graph. rewrite killed_root_has_exact_error.
+  destruct (fault_selected_error current); reflexivity.
+Qed.
+
+Record fault_world := FaultWorld {
+  world_current : fault_state;
+  world_history : list fault_state;
+  world_clock : nat
+}.
+
+Definition dead_step world byte :=
+  let next := fault_edge (world_current world) byte in
+  FaultWorld next (world_history world ++ [next]) (world_clock world).
+
+Theorem dead_edge_preserves_selected_graph_stamp_and_clock_while_appending_current_bytes
+    world byte :
+  let before := world_current world in
+  let after := world_current (dead_step world byte) in
+  fault_graph after = fault_graph before /\
+  checkpoint_stamp (fault_saved after) = checkpoint_stamp (fault_saved before) /\
+  fault_current_bytes after = fault_current_bytes before ++ [byte] /\
+  world_clock (dead_step world byte) = world_clock world /\
+  length (world_history (dead_step world byte)) = S (length (world_history world)).
+Proof. cbn. repeat split; auto. rewrite length_app. cbn. lia. Qed.
+
+Definition force_fault current := (fault_graph current, fault_current_bytes current).
+
+Theorem fault_forcing_uses_saved_graph_stamp_but_current_suffix_bytes current byte :
+  force_fault (fault_edge current byte) = (fault_graph current, fault_current_bytes current ++ [byte]).
+Proof. reflexivity. Qed.
+
+Theorem fault_preflight_causal_controls_distinguish_payload_and_rolled_back_events :
+  resolve_preflight 3 (TerminalObligation 3 7 11 false) = Some (7, 11) /\
+  reject_preflight 3 (8, 19) (TerminalObligation 3 7 11 false) = None /\
+  resolve_preflight 4 TerminalOther <> resolve_preflight 4 (TerminalObligation 4 7 13 true) /\
+  reject_preflight 4 (8, 19) TerminalOther <> reject_preflight 4 (8, 19) (TerminalObligation 4 7 13 true).
+Proof. repeat split; cbn; congruence. Qed.
+
+Print Assumptions refusing_hidden_leaf_replaces_only_the_original_root_error.
+Print Assumptions root_error_replacement_preserves_all_slots_and_last_error.
+Print Assumptions resolve_and_reject_preflight_preserve_their_distinct_phase_and_source_rules.
+Print Assumptions wrong_id_returns_the_hidden_tag_source_for_both_operations.
+Print Assumptions focused_fault_observations_match_the_exact_root_dead_branches.
+Print Assumptions dead_edge_preserves_selected_graph_stamp_and_clock_while_appending_current_bytes.
+Print Assumptions fault_forcing_uses_saved_graph_stamp_but_current_suffix_bytes.
+Print Assumptions fault_preflight_causal_controls_distinguish_payload_and_rolled_back_events.
+
+End PersistentFocusedOwners.

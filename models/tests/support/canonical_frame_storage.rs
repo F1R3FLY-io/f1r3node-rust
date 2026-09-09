@@ -860,3 +860,146 @@ fn persistent_topology_shared_prefix_owner_work_baseline() {
         }
     }
 }
+
+#[test]
+fn persistent_fault_private_preflight_uses_selected_graph_not_latest_event() {
+    for payload_started in [false, true] {
+        let key: &[u8] = if payload_started {
+            &[EPATHMAP, 4, 3, EPATHMAP_MAP, 2, 0xaa]
+        } else {
+            &[EPATHMAP, 3, 2, EPATHMAP_MAP, 2]
+        };
+        let mut arena = CanonicalBytesArena::new();
+        let mut reducer = CanonicalPathReducer::new();
+        let mut handle = reducer.root(&arena);
+        let mut emitted = None;
+        for (offset, byte) in key.iter().copied().enumerate() {
+            let (next, event) = reducer
+                .edge(
+                    &mut arena,
+                    handle,
+                    CanonicalLocatedByte::new(
+                        byte,
+                        CanonicalByteProvenance::new(7, 101 + offset * 13),
+                    ),
+                )
+                .unwrap();
+            handle = next;
+            if let CanonicalPathTransition::ObligationStarted(obligation) = event {
+                emitted = Some(obligation);
+            }
+        }
+        let emitted = emitted.unwrap();
+        assert_eq!(reducer.machine.next_obligation, emitted.id.0 + 1);
+        assert_eq!(reducer.active_obligation(handle), None);
+        assert!(
+            reducer
+                .freeze_completed_obligation(&arena, handle)
+                .unwrap()
+                .is_none()
+        );
+        let original = reducer.states[handle.state.0].clone();
+        let error = reducer
+            .value(handle, true, CanonicalPathSource::new(99))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind, CanonicalPathAdmissionErrorKind::Truncated);
+        assert_eq!(
+            error.source,
+            CanonicalPathSource::in_source(7, 101 + (key.len() - 1) * 13)
+        );
+        let mut hidden = &original;
+        loop {
+            match &reducer.machine.frames[hidden.stack.unwrap().0] {
+                Frame::Region {
+                    phase: RegionPhase::Path { path, .. },
+                    ..
+                } => hidden = path,
+                Frame::Obligation {
+                    obligation,
+                    status: ObligationStatus::Payload { remaining },
+                    ..
+                } if payload_started => {
+                    assert_eq!(*remaining, 2);
+                    assert_eq!(*obligation, emitted);
+                    break;
+                }
+                Frame::Varint {
+                    role: VarintRole::ObligationLength { .. },
+                    ..
+                } if !payload_started => break,
+                other => panic!("unexpected selected hidden terminal: {other:?}"),
+            }
+        }
+        let before = (
+            reducer.states.clone(),
+            reducer.machine.frames.slots.clone(),
+            reducer.stats(),
+            reducer.machine.next_obligation,
+        );
+        let returned = reducer
+            .resolve_obligation(
+                &arena,
+                handle,
+                emitted.id,
+                CanonicalPathObligationResolution::NestedEpm1 {
+                    mode: NestedEpmMode::Map,
+                    entries_stable: true,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            returned.kind,
+            CanonicalPathAdmissionErrorKind::UnresolvedObligation
+        );
+        assert_eq!(
+            returned.source,
+            if payload_started {
+                emitted.tag_source
+            } else {
+                CanonicalPathSource::new(0)
+            }
+        );
+        assert_eq!(
+            (
+                reducer.states.clone(),
+                reducer.machine.frames.slots.clone(),
+                reducer.stats(),
+                reducer.machine.next_obligation
+            ),
+            before
+        );
+        let caller = CanonicalPathSource::in_source(8, 919);
+        let rejected = reducer.reject_obligation(&arena, handle, emitted.id, caller);
+        if payload_started {
+            let next = rejected.unwrap();
+            let mut expected = original.clone();
+            expected.kill(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::RejectedObligation,
+                caller,
+            ));
+            assert_eq!(reducer.states[next.state.0], expected);
+            assert_eq!(reducer.machine.frames.slots, before.1);
+            assert_eq!(reducer.states[handle.state.0], original);
+            assert_eq!(reducer.states.len(), before.0.len() + 1);
+            assert_eq!(reducer.machine.next_obligation, before.3);
+        } else {
+            assert_eq!(
+                rejected.unwrap_err(),
+                CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::UnresolvedObligation,
+                    caller
+                )
+            );
+            assert_eq!(
+                (
+                    reducer.states.clone(),
+                    reducer.machine.frames.slots.clone(),
+                    reducer.stats(),
+                    reducer.machine.next_obligation
+                ),
+                before
+            );
+        }
+    }
+}

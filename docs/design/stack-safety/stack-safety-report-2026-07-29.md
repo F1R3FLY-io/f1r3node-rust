@@ -10222,6 +10222,25 @@ refusal does not reconstruct every ancestor per branch. This is still open,
 not a repaired persistent-resource claim. All 390 models tests pass; no production
 algorithm changes in this baseline/planning checkpoint.
 
+#### 5.33.20 Persistent owner/fault proof foundations (2026-09-09, task 6018)
+
+Sixteen new model laws establish immutable linked-owner append, cached selection,
+old checkpoint preservation and exact early-Dead observation/preflight behavior.
+Two new encoded controls distinguish selected hidden payload/varint frames from
+the most recently emitted obligation. The reference implementation passes them,
+including exact error sources and old-state preservation.
+
+[J-101](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-101--2026-09-09-immutable-checkpoint-and-fault-foundations)
+records the law-to-test bindings and remaining realization/scheduler/forcing
+obligations. This is proof-first preparation, not a reduction of J-100's measured
+persistent frame growth; production code is unchanged at this checkpoint.
+
+The focused gate passed 120 RPB3 closed reports, three kernel checks and 88
+runtime tests. The final models-library rerun passed all 391 tests in 53.66 s
+with zero ignores; its bounded service reported 1.3 GiB peak memory and zero
+swap, including compilation. J-101 retains commands and raw-log hashes. These
+checks do not establish a whole-workspace pass or persistent-resource closure.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

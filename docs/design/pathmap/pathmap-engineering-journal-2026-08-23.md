@@ -7197,6 +7197,80 @@ No production behavior, codec, hash, charge, PathMap dependency or persistence
 authority changes in this checkpoint. The persistent focused design remains to
 be proved and implemented; task 6018 and the ACT/LMDB comparison remain open.
 
+### J-101 — 2026-09-09: immutable checkpoint and fault foundations
+
+**FORMAL STEP.** `PersistentFocusedOwners` adds sixteen foundational laws to the
+existing RPB3 theory. They establish append-preserved linked chains, fresh owner
+construction with backward links and exact cached selections, old graph/state/
+frame-lookup preservation, parent restore, and global-clock independence. The
+fault model retains a root error over the exact saved graph while current input
+continues growing. It proves the early-Dead observations and distinguishes saved
+graph stamp from current suffix bytes needed by later private resolution.
+
+**SOURCE-REVIEW CORRECTION.** Ordinary active/completed queries stop at a Dead
+root, but private resolve/reject deliberately traverse hidden Region children.
+Resolve accepts only a matching AwaitingResolution obligation; reject also accepts
+a matching Payload obligation. An absent/non-obligation leaf reports source zero
+for resolve and caller source for reject. Wrong IDs report the hidden tag source.
+Wrong resolution kind is not a returned error: a matching pending ID succeeds
+as a call but records `RejectedObligation` in the path state.
+
+Matching rejection and explicitly refusing semantic resolution need not force
+the complete graph: the existing child-Dead owner unwind preserves every original
+owner stack and changes only the root error. An admissible resolution on an Open
+hidden leaf can instead pop, bubble and complete enclosing Regions. It must use
+the shared graph-dependent protocol and current byte provenance. This distinction
+refines J-100's forcing plan; it does not authorize an absorbing-Dead shortcut.
+
+**EXECUTABLE REFERENCE WITNESSES.** The new private-preflight regression test
+passes both source-derived controls before production optimization:
+
+| Encoded bytes | Required selected state and observation |
+|---|---|
+| `[0x0d,4,3,0x10,2,0xaa]` | Outer truncation retains a hidden Payload remainder of 2. Resolve with the emitted ID refuses at its tag; reject accepts at caller source. Root error changes without new frames, and the old checkpoint stays unchanged. |
+| `[0x0d,3,2,0x10,2]` | The length byte emits a fresh obligation and advances its global clock, but outer rollback selects the previous Varint frame. Resolve refuses at source zero; reject refuses at caller source. Neither may use the latest event as the selected hidden leaf. |
+
+The test checks all historical states and frame cells before/after returned
+errors, exact error provenance and allocator/state/frame counters. The existing
+shared-prefix baseline, post-Dead recovery and borrowed/frozen controls remain.
+An independent review found no blocker in these foundations or encoded tests.
+
+**ASSURANCE BOUNDARY.** The linked predicate is an explicit representation
+premise, established by the fresh-owner constructor theorem and preserved under
+append. Its reification projection does not assert validity of unused FRO cache
+fields. Owner-graph preservation and arbitrary old frame lookups are proved
+separately; a concrete frame-ID realization relation remains required. The
+forcing definition specifies the exact graph/current-byte pair, not an executable
+materializer. Runtime implementation must wait for the remaining linked scheduler,
+hidden-terminal, frame-realization, forcing and resource refinements. The formal
+README maps all sixteen laws to PFO requirements without marking them complete.
+No production parser, accepted bytes, PathMap dependency, hash or charge changes
+in this proof/reference-control checkpoint. The persistent owner optimization
+and equal-contract ACT/LMDB comparison remain open.
+
+**MEASURED QUALIFICATION.** The focused admission runner passed 120 RPB3 closed
+reports, all three kernel checks and 88 selected runtime tests. After adding the
+review's exact successful-rejection state-count and global-clock assertions, the
+complete models library passed **391 tests, zero failures and zero ignores**, in
+53.66 s. The service, including compilation, took 85.436 s and reported 1.3 GiB
+peak memory with zero swap. Rust used four build jobs/test threads and systemd
+High 4 GiB / Max 6 GiB / Swap 0 / CPU 400%; proof processes used their separate
+bounded launcher. These are correctness results, not timing benchmarks or a
+whole-workspace CI result.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-persistent-owner-proof-gate-20260909.log` | `f491fd74ee79630b8f11da0475103ca99cc3b31d5f1b8a37f7cdfc25f38b7759` |
+| `/tmp/epathmap-persistent-foundations-final-20260909.log` | `28ffa8800df3d4b8b986f9e2f802e6e6476172458f497d056476d1d56ca4c656` |
+
+The focused runner preceded the final two assertions; the full 391-test rerun
+includes them. The formal source did not change between these checks. Existing
+compiler warnings remain. Reproduction commands are
+`bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import` and
+`PROPTEST_RNG_SEED=41315976 cargo test --release -j4 -p models --lib -- --test-threads=4`,
+with the bounds above. Task 6018 remains open pending the concrete implementation
+refinements listed above; task 5976 is not closed by this checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
