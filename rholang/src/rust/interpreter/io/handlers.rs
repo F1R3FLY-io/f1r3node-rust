@@ -1273,7 +1273,8 @@ impl FsProcesses {
     /// touching `resolve_or_identity` on the pair), so this
     /// invariant holds today.
     #[allow(clippy::result_unit_err)]
-    async fn journal_path_mutation_two(
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_journal_path_mutation_two(
         &self,
         cmode: ConsensusMode,
         op: WalOp,
@@ -1322,7 +1323,8 @@ impl FsProcesses {
     /// fs_exists take cmode as an arg (fs_exists's cmode slot was
     /// added in the 2026-09-04 ban-lift slice, bumping arity 3 →
     /// 4); fs_size looks up the FileHandle's cmode via the fd.
-    fn journal_state_read(
+    #[cfg(any())]
+    fn _deleted_pre_wave3_journal_state_read(
         &self,
         cmode: ConsensusMode,
         op: WalOp,
@@ -2662,21 +2664,20 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-iv: charge fs_entries SETUP cost at entry.
-        // Weight = 50 (the base term, `fs_entries_cost(0)`).  The
-        // per-entry supplement (FS_ENTRIES_PER_ENTRY * n_entries)
-        // fires as a second `reserve_primitive` call once `n` is
-        // knowable — see the two-branch post-reply supplement charges
-        // below.  Both branches emit the same two-event sequence
-        // with matching weights so the D3 canonical event log is
-        // byte-identical across leader and follower.
+        dispatch_via_trait::<FsEntriesHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_entries_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering.reserve_primitive(costs::fs_entries_cost(0))?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
             return Err(illegal_argument_error("fs_entries"));
         };
-        // Slice 26: `(root, rel, cmode, ack)`.
         let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_entries"));
         };
@@ -2878,18 +2879,20 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-iii: charge fs_rename weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        // Path-mutation constant (2x FS_SYSCALL_CONST: two-endpoint work).
+        dispatch_via_trait::<FsRenameHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_rename_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering.reserve_primitive(costs::fs_rename_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
             return Err(illegal_argument_error("fs_rename"));
         };
-        // H-29-3 lift (2026-08-26): Consensus caps journal a Rename
-        // entry pre-syscall with `path` = from-canon-path,
-        // `extra_path` = to-canon-path.
         let [from_root_par, from_rel_par, to_root_par, to_rel_par, cmode_par, ack] =
             args.as_slice()
         else {
@@ -3042,9 +3045,14 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-iii: charge fs_copy_file weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        // Path-mutation constant (2x FS_SYSCALL_CONST: two-endpoint work).
+        dispatch_via_trait::<FsCopyFileHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_copy_file_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering
             .reserve_primitive(costs::fs_copy_file_cost())?;
         let Some((produce, is_replay, previous, args)) =
@@ -3052,10 +3060,6 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_copy_file"));
         };
-        // H-29-3 lift (2026-08-26): Consensus caps journal a CopyFile
-        // entry pre-syscall.  Applier-side reconstruction reads the
-        // source file from the follower's reconstructed tree — the
-        // source's bytes are already established by prior WAL entries.
         let [from_root_par, from_rel_par, to_root_par, to_rel_par, cmode_par, ack] =
             args.as_slice()
         else {
@@ -7329,6 +7333,601 @@ static FS_WRITE_AT_ENTRY: FsHandlerEntry = FsHandlerEntry {
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsWriteAtHandler>(fs, args)),
 };
 
+// -------------------------------------------------------------------
+// fs_entries — (root, rel, cmode) -> [true, [row1, ..., rowN]]  (S3.9)
+//
+// Verifying observation with TWO-EVENT cost accounting:
+// `pre_charge_cost() = fs_entries_cost(0)` = FS_ENTRIES_SETUP
+// (base 50, reserve_primitive) — event 1.  `post_reply_supplement`
+// = fs_entries_per_entry_supplement_cost(n_entries) via
+// reserve_incremental_primitive — event 2.  Both leader and
+// follower emit the same 2-event sequence to preserve the D3
+// canonical event log fold bytes.
+// -------------------------------------------------------------------
+
+pub struct FsEntriesHandler;
+
+pub struct FsEntriesArgs {
+    root: String,
+    rel: String,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsEntriesHandler {
+    const NAME: &'static str = "fs_entries";
+    const ARITY: usize = 4; // (root, rel, cmode, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsEntriesArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsEntriesArgs, Box<HandlerReply>> {
+        let [root_par, rel_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String)",
+            ));
+        };
+        // Cmode validation first — matches pre-refactor.
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(r), Some(l)) => (r, l),
+            _ => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "expected (String, String)",
+                ));
+            }
+        };
+        Ok(FsEntriesArgs { root, rel, cmode })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        // Setup weight — base 50 (FS_ENTRIES_SETUP).  Per-entry
+        // supplement fires via `post_reply_supplement` after the
+        // reply is known.
+        costs::fs_entries_cost(0)
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsEntriesArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let root_pb = PathBuf::from(&args.root);
+            let (root_pb, expected_root_id) =
+                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let rel = args.rel;
+            let cmode = args.cmode;
+            let par = spawn_blocking_par(move || -> Par {
+                let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
+                    Ok(p) => p,
+                    Err(qe) => {
+                        let (code, msg) = quarantine_err_reply(&qe);
+                        return err(code, msg);
+                    }
+                };
+                let dir_fd = unsafe {
+                    libc::openat(
+                        parent.as_raw_fd(),
+                        parent.leaf_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if dir_fd < 0 {
+                    let e = std::io::Error::last_os_error();
+                    return err(io_err_code(&e), io_msg_scrub(&e));
+                }
+                // L-3: F_DUPFD_CLOEXEC keeps CLOEXEC set atomically.
+                let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
+                if read_fd < 0 {
+                    let e = std::io::Error::last_os_error();
+                    unsafe { libc::close(dir_fd) };
+                    return err(io_err_code(&e), io_msg_scrub(&e));
+                }
+                let entries = read_dir_capped(read_fd, MAX_ENTRIES);
+                match entries {
+                    Err(e) => {
+                        unsafe { libc::close(dir_fd) };
+                        err(io_err_code(&e), io_msg_scrub(&e))
+                    }
+                    Ok((mut names, hit_cap)) => {
+                        if hit_cap {
+                            unsafe { libc::close(dir_fd) };
+                            return err(
+                                FSERR_QUOTA_EXCEEDED,
+                                format!(
+                                    "entries exceeds MAX_ENTRIES={MAX_ENTRIES}; use \
+                                     entriesStreamOpen / _Next / _Close for large \
+                                     directories",
+                                ),
+                            );
+                        }
+                        names.sort();
+                        let rows: Vec<Par> = names
+                            .into_iter()
+                            .map(|name| entry_stat_row(dir_fd, &name, cmode))
+                            .collect();
+                        unsafe { libc::close(dir_fd) };
+                        ok_list(rows)
+                    }
+                }
+            })
+            .await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        _ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [_, _, cmode_par] = raw_args else {
+                return None;
+            };
+            resolve_cmode(cmode_par)
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // State-read journal (fs_stat / fs_size / fs_exists shape).
+        // No pre-append + finalize pattern for fs_entries — just
+        // journal the reply's stable_hash with WalOp::Entries.
+        Box::pin(async move {
+            let [root_par, rel_par, cmode_par] = raw_args else {
+                return;
+            };
+            let Some(cmode) = resolve_cmode(cmode_par) else {
+                return;
+            };
+            let (Some(root), Some(rel)) =
+                (RhoString::unapply(root_par), RhoString::unapply(rel_par))
+            else {
+                return;
+            };
+            let mut path_buf = PathBuf::from(root);
+            if !rel.is_empty() {
+                path_buf.push(&rel);
+            }
+            let reply = path.produce_reply();
+            journal_state_read_via_table(
+                ctx.handles,
+                cmode,
+                WalOp::Entries,
+                path_buf,
+                reply,
+                ctx.ack,
+                None,
+            );
+        })
+    }
+
+    fn post_reply_supplement(
+        reply: &[Par],
+    ) -> Option<crate::rust::interpreter::accounting::costs::Cost> {
+        // Per-entry supplement — fires after dispatch (leader path)
+        // OR after Oracular echo (via `previous` reply slice).  n =
+        // 0 on error / EOS / bad-shape reply.  Uses
+        // reserve_incremental_primitive (framework auto-dispatches)
+        // because n=0 legitimately produces zero-weight cost.
+        let n_entries = extract_ok_list_len(reply).unwrap_or(0);
+        Some(costs::fs_entries_per_entry_supplement_cost(n_entries))
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_ENTRIES_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsEntriesHandler as FsHandler>::NAME,
+    arity: <FsEntriesHandler as FsHandler>::ARITY,
+    verifying: <FsEntriesHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsEntriesHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_rename — (fromRoot, fromRel, toRoot, toRel, cmode) -> [true]
+//                                                        (S3.9)
+//
+// Verifying mutation, path-based with TWO endpoints.  cmode
+// arg-based.  Pre-appends WAL entry via
+// `journal_path_mutation_two_via_table(WalOp::Rename)` — from-canon
+// in `path`, to-canon in `extra_path`.  EXDEV → FSERR_CROSS_DEVICE.
+// -------------------------------------------------------------------
+
+pub struct FsRenameHandler;
+
+pub struct FsRenameArgs {
+    from_root: String,
+    from_rel: String,
+    to_root: String,
+    to_rel: String,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsRenameHandler {
+    const NAME: &'static str = "fs_rename";
+    const ARITY: usize = 6; // (fromRoot, fromRel, toRoot, toRel, cmode, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsRenameArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsRenameArgs, Box<HandlerReply>> {
+        let [from_root_par, from_rel_par, to_root_par, to_rel_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected 4 String args + cmode",
+            ));
+        };
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        match (
+            RhoString::unapply(from_root_par),
+            RhoString::unapply(from_rel_par),
+            RhoString::unapply(to_root_par),
+            RhoString::unapply(to_rel_par),
+        ) {
+            (Some(from_root), Some(from_rel), Some(to_root), Some(to_rel)) => Ok(FsRenameArgs {
+                from_root,
+                from_rel,
+                to_root,
+                to_rel,
+                cmode,
+            }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected 4 String args + cmode",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_rename_cost()
+    }
+
+    fn pre_syscall<'a>(
+        ctx: SyscallCtx<'a>,
+        args: &'a FsRenameArgs,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let from_canon = canonicalize_lexical(&args.from_root, &args.from_rel);
+            let to_canon = canonicalize_lexical(&args.to_root, &args.to_rel);
+            if journal_path_mutation_two_via_table(
+                ctx.handles,
+                args.cmode,
+                WalOp::Rename,
+                from_canon,
+                to_canon,
+                ctx.ack,
+            )
+            .await
+            .is_err()
+            {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    "WAL cap exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsRenameArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let from_root_pb = PathBuf::from(&args.from_root);
+            let to_root_pb = PathBuf::from(&args.to_root);
+            let (from_root_pb, from_expected_id) =
+                ctx.handles.root_registry.resolve_or_identity(&from_root_pb);
+            let (to_root_pb, to_expected_id) =
+                ctx.handles.root_registry.resolve_or_identity(&to_root_pb);
+            let from_rel = args.from_rel;
+            let to_rel = args.to_rel;
+            let par = spawn_blocking_par(move || -> Par {
+                let from_parent =
+                    match safe_descend_verified(&from_root_pb, &from_rel, from_expected_id) {
+                        Ok(p) => p,
+                        Err(qe) => {
+                            let (c, m) = quarantine_err_reply(&qe);
+                            return err(c, m);
+                        }
+                    };
+                let to_parent = match safe_descend_verified(&to_root_pb, &to_rel, to_expected_id) {
+                    Ok(p) => p,
+                    Err(qe) => {
+                        let (c, m) = quarantine_err_reply(&qe);
+                        return err(c, m);
+                    }
+                };
+                let rc = unsafe {
+                    libc::renameat(
+                        from_parent.as_raw_fd(),
+                        from_parent.leaf_ptr(),
+                        to_parent.as_raw_fd(),
+                        to_parent.leaf_ptr(),
+                    )
+                };
+                if rc == 0 {
+                    ok_bare()
+                } else {
+                    let e = std::io::Error::last_os_error();
+                    let code = if e.raw_os_error() == Some(libc::EXDEV) {
+                        FSERR_CROSS_DEVICE
+                    } else {
+                        io_err_code(&e)
+                    };
+                    err(code, io_msg_scrub(&e))
+                }
+            })
+            .await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        _ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [_, _, _, _, cmode_par] = raw_args else {
+                return None;
+            };
+            resolve_cmode(cmode_par)
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // H-6 finalize pattern — same as fs_chmod / fs_truncate.
+        Box::pin(async move {
+            if path.is_divergence() {
+                finalize_failure_journal_via_table(
+                    ctx.handles,
+                    FSERR_CODE_CONSENSUS_DIVERGENCE,
+                    ctx.ack,
+                );
+            } else {
+                let reply = path.produce_reply();
+                if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+                    finalize_failure_journal_via_table(
+                        ctx.handles,
+                        fserr_to_code(&code_str),
+                        ctx.ack,
+                    );
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_RENAME_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsRenameHandler as FsHandler>::NAME,
+    arity: <FsRenameHandler as FsHandler>::ARITY,
+    verifying: <FsRenameHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsRenameHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_copy_file — (fromRoot, fromRel, toRoot, toRel, cmode)
+//                                        -> [true, nBytes]  (S3.9)
+//
+// Verifying mutation, path-based with TWO endpoints.  Same shape as
+// fs_rename but reply carries a u64 byte count.  H-5 identity
+// migration: uses safe_open_verified on both endpoints.
+// -------------------------------------------------------------------
+
+pub struct FsCopyFileHandler;
+
+pub struct FsCopyFileArgs {
+    from_root: String,
+    from_rel: String,
+    to_root: String,
+    to_rel: String,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsCopyFileHandler {
+    const NAME: &'static str = "fs_copy_file";
+    const ARITY: usize = 6; // (fromRoot, fromRel, toRoot, toRel, cmode, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsCopyFileArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsCopyFileArgs, Box<HandlerReply>> {
+        let [from_root_par, from_rel_par, to_root_par, to_rel_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected 4 String args + cmode",
+            ));
+        };
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        match (
+            RhoString::unapply(from_root_par),
+            RhoString::unapply(from_rel_par),
+            RhoString::unapply(to_root_par),
+            RhoString::unapply(to_rel_par),
+        ) {
+            (Some(from_root), Some(from_rel), Some(to_root), Some(to_rel)) => Ok(FsCopyFileArgs {
+                from_root,
+                from_rel,
+                to_root,
+                to_rel,
+                cmode,
+            }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected 4 String args + cmode",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_copy_file_cost()
+    }
+
+    fn pre_syscall<'a>(
+        ctx: SyscallCtx<'a>,
+        args: &'a FsCopyFileArgs,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let from_canon = canonicalize_lexical(&args.from_root, &args.from_rel);
+            let to_canon = canonicalize_lexical(&args.to_root, &args.to_rel);
+            if journal_path_mutation_two_via_table(
+                ctx.handles,
+                args.cmode,
+                WalOp::CopyFile,
+                from_canon,
+                to_canon,
+                ctx.ack,
+            )
+            .await
+            .is_err()
+            {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    "WAL cap exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsCopyFileArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let from_root_pb = PathBuf::from(&args.from_root);
+            let to_root_pb = PathBuf::from(&args.to_root);
+            let (from_root_pb, from_expected_id) =
+                ctx.handles.root_registry.resolve_or_identity(&from_root_pb);
+            let (to_root_pb, to_expected_id) =
+                ctx.handles.root_registry.resolve_or_identity(&to_root_pb);
+            let from_rel = args.from_rel;
+            let to_rel = args.to_rel;
+            let par = spawn_blocking_par(move || -> Par {
+                let mut src = match safe_open_verified(
+                    &from_root_pb,
+                    &from_rel,
+                    libc::O_RDONLY,
+                    0,
+                    from_expected_id,
+                ) {
+                    Ok(f) => f,
+                    Err(qe) => {
+                        let (c, m) = quarantine_err_reply(&qe);
+                        return err(c, m);
+                    }
+                };
+                let mut dst = match safe_open_verified(
+                    &to_root_pb,
+                    &to_rel,
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                    0o644,
+                    to_expected_id,
+                ) {
+                    Ok(f) => f,
+                    Err(qe) => {
+                        let (c, m) = quarantine_err_reply(&qe);
+                        return err(c, m);
+                    }
+                };
+                match std::io::copy(&mut src, &mut dst) {
+                    Ok(n) => ok_u64(n),
+                    Err(e) => err(io_err_code(&e), io_msg_scrub(&e)),
+                }
+            })
+            .await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        _ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [_, _, _, _, cmode_par] = raw_args else {
+                return None;
+            };
+            resolve_cmode(cmode_par)
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // H-6 finalize — same as fs_rename.  No shadow state to
+        // advance.
+        Box::pin(async move {
+            if path.is_divergence() {
+                finalize_failure_journal_via_table(
+                    ctx.handles,
+                    FSERR_CODE_CONSENSUS_DIVERGENCE,
+                    ctx.ack,
+                );
+            } else {
+                let reply = path.produce_reply();
+                if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+                    finalize_failure_journal_via_table(
+                        ctx.handles,
+                        fserr_to_code(&code_str),
+                        ctx.ack,
+                    );
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_COPY_FILE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsCopyFileHandler as FsHandler>::NAME,
+    arity: <FsCopyFileHandler as FsHandler>::ARITY,
+    verifying: <FsCopyFileHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsCopyFileHandler>(fs, args)),
+};
+
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.
 // ---------------------------------------------------------------------
@@ -7646,6 +8245,43 @@ async fn journal_truncate_via_table(
             .map(|()| true),
         _ => Ok(false),
     }
+}
+
+/// Free-function form of `FsProcesses::journal_path_mutation_two`
+/// for wave-3 trait impls (S3.9+).  Two-endpoint mutation
+/// (Rename, CopyFile) — `from_canon_path` goes in `path`,
+/// `to_canon_path` in `extra_path`.  Cmode arg, self-guards on
+/// Oracular.
+#[allow(clippy::result_unit_err)]
+async fn journal_path_mutation_two_via_table(
+    handles: &FileHandleTable,
+    cmode: ConsensusMode,
+    op: WalOp,
+    from_canon_path: PathBuf,
+    to_canon_path: PathBuf,
+    ack: &Par,
+) -> Result<bool, ()> {
+    if cmode != ConsensusMode::Consensus {
+        return Ok(false);
+    }
+    handles
+        .wal
+        .append_with_ack(
+            WalEntry {
+                op,
+                path: from_canon_path,
+                extra_path: Some(to_canon_path),
+                offset: None,
+                length: None,
+                payload_ref: None,
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            ack_channel_hash(ack),
+        )
+        .map(|()| true)
 }
 
 /// Free-function form of `FsProcesses::journal_path_mutation_single`

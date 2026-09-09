@@ -582,9 +582,14 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///     parameterized cost + pre-append WAL + finalize_write on
 ///     partial write.  fs_write advances shadow position on all
 ///     4 paths; fs_write_at doesn't (pwrite semantics).
+///   - S3.9 (2026-09-09): +3 (fs_entries, fs_rename, fs_copy_file).
+///     Count = 24.  fs_entries: verifying observation with
+///     two-event cost (setup + per-entry supplement).  fs_rename +
+///     fs_copy_file: verifying mutation with 2-path journal via
+///     new `journal_path_mutation_two_via_table` free-fn.
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 21;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 24;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -866,6 +871,9 @@ mod tests {
             "fs_truncate",             // S3.7 (2026-09-09)
             "fs_write",                // S3.8 (2026-09-09)
             "fs_write_at",             // S3.8 (2026-09-09)
+            "fs_entries",              // S3.9 (2026-09-09)
+            "fs_rename",               // S3.9 (2026-09-09)
+            "fs_copy_file",            // S3.9 (2026-09-09)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);
