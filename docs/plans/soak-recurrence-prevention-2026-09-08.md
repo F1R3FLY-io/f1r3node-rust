@@ -281,7 +281,9 @@ The [B13 stop cycle](../cbc-evidence/soak-d2-stop-2026-09-09/README.md) bounds e
 
 The first correction returned but left the clients alive. The corrected wrapper preserves its process group until `KILL` and passes the fixture.
 
-The bounded gate now passes 12 positive configurations and 12 exact controls. These results do not confirm writer termination or establish a composed emergency deadline.
+The [B14 admission cycle](../cbc-evidence/soak-d2-boundary-2026-09-09/README.md) prevents iteration admission when the guardian dies during a valid boundary probe.
+
+The bounded gate now passes 13 positive configurations and 13 exact controls. These results do not confirm writer termination or establish a composed emergency deadline.
 
 Disk hygiene, other stop paths, cleanup ownership, full admission coverage, durable publication, and the D3 reserve argument remain open.
 

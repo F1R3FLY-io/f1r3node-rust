@@ -1,0 +1,2 @@
+FAIL: The driver admitted an iteration after guardian death during the boundary probe.
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-boundary-rgLfbV0o/production-red

@@ -198,6 +198,21 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B14
+    statement: Guardian death during a boundary probe prevents iteration admission.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-boundary-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-guardian-admission.sh
+        red_revision: e6fdd343b84726c29c9ac5fa992cac8b04e0d294
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -225,6 +240,7 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B11: Stalled attribution stops within an aggregate fixture deadline across 32 session roots.
 - [x] B12: A retained breach prevents restart admission and preserves a failure outcome.
 - [x] B13: Stalled disk stop clients exit before the fixture deadline, and the driver publishes a local failure.
+- [x] B14: Guardian death during a valid boundary probe prevents iteration admission and produces one recorded failure.
 
 ## Cycle evidence
 
@@ -277,6 +293,12 @@ The first correction returned but left two clients alive. The corrected timeout 
 The combined gate now passes 12 positive configurations and 12 exact controls. The classifier covers 84 cases. Eight emergency fixture scenarios pass.
 
 Concurrent verification initially shared fixed temporary log paths. Those runs cannot supply isolated gate evidence. Subsequent serial verification passes.
+
+B14 adds a matched cycle for guardian death during the boundary probe. The [evidence](../cbc-evidence/soak-d2-boundary-2026-09-09/README.md) retains the rejected admission and four-state corrected model.
+
+The combined gate now passes 13 positive configurations and 13 exact controls. The classifier covers 91 cases. Nine emergency fixture scenarios pass.
+
+B14 does not cover benchmark admission, live but stalled guardians, or a crash after the final liveness check.
 
 ## Remaining D2 work
 

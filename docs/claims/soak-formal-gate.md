@@ -63,9 +63,13 @@ After B12, the bounded tier checks 11 positive configurations and 11 exact negat
 
 The [B13 stop cycle](../cbc-evidence/soak-d2-stop-2026-09-09/README.md) adds `MC_DiskStopDeadline` and its `unbounded_pre_fix` control.
 
-The control requires TLC exit 12 and the exact `StopWithinBudget` violation. The current tier passes 12 positive configurations and 12 exact controls.
+The control requires TLC exit 12 and the exact `StopWithinBudget` violation. After B13, the tier passes 12 positive configurations and 12 exact controls.
 
-The classifier covers 84 cases. Routing covers six scenarios. Verification runs execute serially because the current gate shares fixed temporary log paths.
+The [B14 admission cycle](../cbc-evidence/soak-d2-boundary-2026-09-09/README.md) adds `MC_GuardianAdmission` and its `unchecked_pre_fix` control.
+
+That control requires TLC exit 12 and the exact `AdmissionRequiresGuardian` violation. The current tier passes 13 positive configurations and 13 exact controls.
+
+The classifier covers 91 cases. Routing covers six scenarios. Verification runs execute serially because the current gate shares fixed temporary log paths.
 
 These cycles do not formally prove the shell implementation. They do not establish a residual finalization repair or a disk resource bound.
 
