@@ -6513,11 +6513,14 @@ impl FsHandler for FsTruncateHandler {
             }
             let file_arc = match ctx.handles.raw_fd(args.fd).await {
                 Some(f) => f,
+                // Pre-refactor fs_truncate destructured `fd: u64` from
+                // the parsed tuple `Some((fd as u64, n as u64))`, so
+                // the format is UNSIGNED.  Different from fs_seek /
+                // fs_size where fd is `i64` from RhoNumber::unapply
+                // and format is signed.  Preserve pre-refactor
+                // byte-identity — no `as i64` cast here.
                 None => {
-                    return HandlerReply::err(
-                        FSERR_CLOSED,
-                        format!("unknown fd {}", args.fd as i64),
-                    );
+                    return HandlerReply::err(FSERR_CLOSED, format!("unknown fd {}", args.fd));
                 }
             };
             let n = args.n;
