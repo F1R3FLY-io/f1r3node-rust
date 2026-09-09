@@ -10,7 +10,7 @@ a Boolean constant and must violate exactly the invariant named below.
 
 | Model action | Driver behavior |
 | --- | --- |
-| `Benchmark` | Launch the opening benchmark on the first segment only when no breach marker was retained and a known sample is at or above floor plus band. A guardian started first records a disk fall during the benchmark and asks for a stop |
+| `Benchmark` | Launch the opening benchmark on the first segment only when no breach marker was retained, a known sample is at or above floor plus band, and the guardian is alive. A guardian started first records a disk fall during the benchmark; a watched fault (breach or guardian death) cancels the benchmark and publishes the failure |
 | `CheckGuardian` | Read the guardian marker before the probe and after hygiene |
 | `ProbeBoundary`, `ProbeAfterHygiene` | `disk_free_mb`: `df` reports the free space, prints a malformed field, or fails |
 | `DecideHygiene` | Run hygiene only when a known sample is below floor plus band |
@@ -26,12 +26,13 @@ a Boolean constant and must violate exactly the invariant named below.
 | `RequireBand` | Post-hygiene refusal compares against floor plus band, not the floor | `MC_SoakDiskAdmission_floor_only_pre_fix` | `AdmissionRequiresBand` |
 | `RejectMissing` | A probe that returns nothing cannot admit | `MC_SoakDiskAdmission_missing_sample_pre_fix` | `AdmissionRequiresSample` |
 | `RejectMalformed` | A field such as `16384junk` cannot admit | `MC_SoakDiskAdmission_numeric_prefix_pre_fix` | `AdmissionRequiresValidSample` |
-| `CheckGuardianAlive` | A dead guardian process cannot admit | `MC_SoakDiskAdmission_unchecked_guardian_pre_fix` | `AdmissionRequiresGuardian` |
+| `CheckGuardianAlive` | A dead guardian process cannot admit an iteration (B14) or a benchmark (B19) | `MC_SoakDiskAdmission_unchecked_guardian_pre_fix` | `AdmissionRequiresGuardian` |
 | `CheckRetainedBreach` | A retained breach marker blocks the opening benchmark | `MC_SoakDiskAdmission_retained_breach_pre_fix` | `RetainedBreachPreventsBenchmark` |
 | `CheckDiskBand` | The opening benchmark needs a sample at or above floor plus band | `MC_SoakDiskAdmission_benchmark_band_pre_fix` | `BenchmarkRequiresBand` |
 | `MonitorOpening` | The guardian starts before the opening benchmark, so a fall below the hard floor during it is recorded and stopped | `MC_SoakDiskAdmission_late_guardian_pre_fix` | `BenchmarkBreachObserved` |
+| `WatchGuardian` | A guardian fault during the benchmark cancels it and publishes the failure; the stop, TERM, grace, and kill sequence is one step | `MC_SoakDiskAdmission_unwatched_death_pre_fix`, `MC_SoakDiskAdmission_unwatched_breach_pre_fix` | `BenchmarkCancellationObserved` |
 
-`MC_SoakDiskAdmission` enables all seven corrections. It checks `TypeOK`, the seven invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 1014 distinct states.
+`MC_SoakDiskAdmission` enables all eight corrections with both benchmark fault kinds. It checks `TypeOK`, the eight invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 1038 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 

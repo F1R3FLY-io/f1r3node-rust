@@ -321,3 +321,39 @@ B17 remains immutable historical evidence. Its earlier fixture and driver bindin
 This coverage is not a new RED/GREEN repair cycle. Interleaved admission, guardian failure, benchmark cancellation, cleanup, termination, durability, and reserve obligations remain open.
 
 D2 and acceptance remain pending. No commit, push, hosted dispatch, or soak occurs.
+
+## D2 active benchmark cancellation B18
+
+The user requested continued D2 completion from `59b90568c`. The baseline benchmark call waits synchronously without parent supervision.
+
+B18 checks guardian death and a disk breach while a benchmark client ignores termination requests. An external fixture observer releases the client after eight seconds.
+
+Both production RED results matched separate formal controls before the correction. Each control violated `BenchmarkCancellationObserved` with exit 12.
+
+The corrected driver supervises a timed benchmark command group. It cancels that group on a guardian fault and records one protection failure.
+
+Both production cases publish failure before fixture release and leave no active benchmark client. Formal GREEN completes with fourteen distinct states.
+
+No peer was available, and the other agent retains refactoring ownership. These results do not confirm node termination or complete D2.
+
+## D2 benchmark guardian admission B19
+
+B19 uses the retained B18 correction as its source-bound baseline. Both opening and interleaved admission initially incremented the benchmark counter after guardian death.
+
+The unchanged `GuardianAdmission` control supplies the matching `AdmissionRequiresGuardian` counterexample. Both production RED results precede the new admission guard.
+
+The shared benchmark function now checks guardian liveness and the breach marker after the disk probe. It refuses admission before the benchmark counter changes.
+
+Production GREEN preserves one protection failure in both cases. The interleaved case preserves its completed iteration. Formal GREEN has four distinct states.
+
+The [combined package](../cbc-evidence/soak-d2-benchmark-supervision-2026-09-09/README.md) retains each cycle's source snapshots and RED/GREEN logs.
+
+Seventeen positive configurations, eighteen exact controls, 126 classifier cases, six routing scenarios, and twenty emergency scenarios pass.
+
+The verification command reached its 600-second tool limit during release regressions. The original partial run remains unchanged, and the remaining checks passed separately.
+
+A source navigation tool could not parse the Bash file. Direct source reads supplied the required inspection. Neither tool limitation supplies behavioral RED.
+
+D2 and acceptance remain pending. Guardian progress, cleanup ownership, confirmed writers, durability, aggregate deadlines, and reserve evidence remain open.
+
+No commit, push, hosted dispatch, or soak occurs in these cycles.

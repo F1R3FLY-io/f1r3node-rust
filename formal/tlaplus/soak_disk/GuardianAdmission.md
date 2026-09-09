@@ -16,12 +16,26 @@ The production correction checks the guardian process identifier after the disk 
 
 The driver then publishes the protection failure without incrementing the iteration count. Existing healthy-driver regressions still pass.
 
+## Benchmark correspondence B19
+
+B19 applies the same admission contract to opening and interleaved benchmarks. It reuses the unchanged positive configuration and exact negative control.
+
+Each fixture kills the guardian during the valid benchmark disk probe. The interleaved fixture first completes one iteration and then reaches its configured benchmark boundary.
+
+The disk shim distinguishes guardian probes through process ancestry. It injects the fault only into the driver-side admission probe.
+
+`admitted` corresponds to the benchmark counter increment and command launch. A later cancellation cannot make that earlier admission safe.
+
+The shared benchmark function now checks guardian liveness and the breach marker after its disk sample, before it increments the benchmark counter.
+
+Production GREEN records no benchmark admissions and one protection failure. The interleaved case preserves its one completed iteration.
+
 ## Limits
 
 The modeled decision is atomic. Bash does not make the liveness check and workload launch atomic. A later crash remains an active-supervision obligation.
 
 A successful `kill -0` call does not establish guardian progress. This cycle does not cover a live but stalled guardian or process identifier reuse.
 
-The fixture covers iteration admission, not benchmark admission or every startup and cleanup boundary. It does not prove writer termination or durable publication.
+B14 covers iteration admission. B19 covers two benchmark admission paths, not every startup and cleanup boundary. Neither cycle proves writer termination or durable publication.
 
 The fixture replaces external commands and runs no nodes. Source bindings and local model results do not discharge the resource claim or complete D2.

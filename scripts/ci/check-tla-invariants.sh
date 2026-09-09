@@ -162,6 +162,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_retained_breach_pre_fix:RetainedBreachPreventsBenchmark
     soak_disk/MC_SoakDiskAdmission_benchmark_band_pre_fix:BenchmarkRequiresBand
     soak_disk/MC_SoakDiskAdmission_late_guardian_pre_fix:BenchmarkBreachObserved
+    soak_disk/MC_SoakDiskAdmission_unwatched_death_pre_fix:BenchmarkCancellationObserved
+    soak_disk/MC_SoakDiskAdmission_unwatched_breach_pre_fix:BenchmarkCancellationObserved
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline
