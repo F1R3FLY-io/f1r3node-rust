@@ -7923,6 +7923,147 @@ was terminal before the recheck. That incomplete run is not passing evidence.
 | `/tmp/epathmap-full-admission-models-recheck-20260909.log` | `85334ec759c264e15b56f6b910f1ff845651bffc0afc4e647aca6909f0d5eb36` |
 | `/tmp/epathmap-full-admission-final-gate-20260909.log` | `4313cfc10142544d53e9b0b2223aea502642ccba6fcc4839630a15834e34bf75` |
 
+### J-112 — 2026-09-09: compact-import allocation and timing protocol
+
+**HYPOTHESIS / ROUTE AUDIT.** Continue task 6018 through public
+`ParBag::from_compact_bytes`, which reaches component-key canonical admission.
+The older `map_epm1_decode` benchmark builds ACT and validates map values, but
+does not exercise the focused validator for its own keys. It is therefore not
+a valid target for this experiment with scalar values.
+
+Extend the existing benchmark with an early compact-import mode before its old
+fixtures/projections. Construct typed canonical fixtures once, encode their compact
+ParBag image, and check exact public import equality and compact-byte round trip
+before timing. The timed operation is complete public import plus teardown. A
+setup-only mode performs exactly the same fixture preparation and correctness
+check, but no measured imports. There is no alternate production implementation.
+
+**FROZEN FINITE MATRIX.** Shared Region prefixes: depths 0/8/32, endpoints
+1/16/256, 1,024-byte payload, fixed integer map values. Opaque nested map keys:
+depths 8/32/128, one endpoint, 16-byte payload. Run 51 unprofiled samples after
+three warmups, recording every sample, input size, shape, source commit and
+idle-core preflight. Report absolute timings and geometric slopes, not an
+eager-versus-focused speedup. Profile setup-only/import pairs separately at the
+shallow and largest shared shapes and opaque depth 128, using 16 measured imports,
+`heaptrack --record-only`, then `heaptrack_print`; never open a GUI. Compare
+allocation totals and stack attribution, not differences between process peaks.
+All artifacts go under ignored target scratch on disk; every heavy subprocess
+uses systemd memory limits and zero swap. Use AMD uProf, not perf, for any needed
+CPU attribution.
+
+**SOURCE-IDENTIFIED REMAINING MECHANISM.** Each nested EPathMap admission frame
+creates a fresh path-byte arena. An enclosing ACT traversal ingests a nested
+map-key payload before freezing it and admitting the child snapshot; the child
+traversal ingests descendant bytes again into its own arena. Freeze shares payload
+storage, but that does not eliminate per-layer ingestion. The opaque-chain matrix
+measures this distinct mechanism; it must not be conflated with J-110's repaired
+Region-owner walks or declared harmless without measurements. No production repair
+is selected by this protocol; any required change still needs a formal model and
+property bindings before implementation.
+
+**MEASURED — 2026-09-09.** All 12 fixture equality and exact compact-byte
+round-trip controls passed. Each timing cell contains 51 samples after three
+warmups; the operation includes import and teardown, but excludes fixture
+construction. The raw samples are preserved in
+[the compact-import timing record](../stack-safety/measurements/compact-parbag-import-timing-2026-09-09.txt).
+
+| Shape | Depth | Endpoints | Payload bytes | Compact bytes | Median ms | Min ms | Max ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Region | 0 | 1 | 1,024 | 3,263 | 1.168043 | 1.125892 | 1.248785 |
+| Region | 0 | 16 | 1,024 | 3,530 | 1.272430 | 1.263814 | 1.281417 |
+| Region | 0 | 256 | 1,024 | 7,163 | 2.416798 | 2.407580 | 2.499334 |
+| Region | 8 | 1 | 1,024 | 3,343 | 1.290033 | 1.220212 | 1.367320 |
+| Region | 8 | 16 | 1,024 | 3,610 | 1.427864 | 1.417014 | 1.450417 |
+| Region | 8 | 256 | 1,024 | 7,243 | 2.619651 | 2.598903 | 2.652955 |
+| Region | 32 | 1 | 1,024 | 3,583 | 1.393790 | 1.341531 | 1.445608 |
+| Region | 32 | 16 | 1,024 | 3,850 | 1.588990 | 1.578841 | 1.618095 |
+| Region | 32 | 256 | 1,024 | 7,483 | 2.856561 | 2.839860 | 2.937514 |
+| Opaque | 8 | 1 | 16 | 1,091 | 0.763716 | 0.751113 | 0.829381 |
+| Opaque | 32 | 1 | 16 | 3,803 | 5.043593 | 4.955847 | 5.356957 |
+| Opaque | 128 | 1 | 16 | 14,652 | 74.138043 | 69.549151 | 78.311739 |
+
+The depth-32 to depth-128 opaque ratio is 14.70 for time and 3.85 for
+encoded bytes: this finite ladder is consistent with near-quadratic cost, not a
+proof of an asymptotic bound. It is a remaining admission issue, not a regression
+verdict against an independently timed prior implementation.
+
+**HEADLESS ALLOCATION ATTRIBUTION.** Each pair shares fixture construction and
+one verification import. The import arm adds 16 imports with zero warmups.
+Counts include process setup and reporting; their differences include the
+sample buffer and extra output, so they are not exact per-import counters.
+
+| Shape (depth/endpoints) | Setup allocations | Import-arm allocations | Difference | Setup/import peak heap | Setup/import peak RSS |
+|---|---:|---:|---:|---|---|
+| Region 0/1 | 10,146 | 65,395 | 55,249 | 752.45K / 753.72K | 8.22M / 8.57M |
+| Region 32/256 | 49,415,759 | 49,604,896 | 189,137 | 2.69M / 2.69M | 11.46M / 11.66M |
+| Opaque 128/1 | 5,055,621 | 5,890,918 | 835,297 | 185.58M / 185.58M | 147.36M / 191.13M |
+
+Heap/RSS units above retain `heaptrack_print` formatting. These are absolute
+whole-process peaks, including fixture construction; RSS includes profiler
+overhead. Equal heap peaks do not imply zero import allocation. Subtracting
+independent process peaks is not a valid operation-specific memory measurement.
+The large Region setup count is outside the timed import and must not be
+attributed to import.
+
+The opaque difference report attributes 232,896 allocation calls through
+`PageBackedArena<64>::push_segment` → `CanonicalBytesArena::append` →
+`CanonicalPathTopologyAdmission::edge` → canonical component admission →
+`ParBag::from_compact_bytes`. This is one attributed stack, not the entire
+allocation difference. It corroborates repeated payload ingestion in the
+source audit. Optimizer-folded symbol aliases elsewhere in the report are not
+evidence that the named aliased test code actually executed.
+
+**REPRODUCIBILITY AND LIMITS.** Production source is commit `1fa89bc4a`, with
+the additive compact-import benchmark recorded in this checkpoint. Built
+benchmark source SHA-256:
+`3592a839cbb8161cc26de916e788fd3c625e982eda7effdfee046c03a5a92611`;
+binary SHA-256:
+`70a9adb218a77266fa0f1088681dd2fbde843adaf2c7bcf8413dd7a7816ce8d6`.
+The benchmark was built with
+`cargo bench -j4 -p models --bench epathmap_pathmap_native --no-run`.
+An initial unsupported `--release` invocation and a corrected fixture
+constructor compile error are not passing runs.
+
+The timing service was pinned to CPU 2 after a three-second `mpstat` sample
+showed 95.78% idle there and 74.99% aggregate idle across 32 physical cores.
+The governor was performance with amd-pstate-epp. This is preflight evidence,
+not continuous interference monitoring; cells ran sequentially, not randomized.
+Timing and recording services used MemoryMax=6G, zero swap, and CPUQuota=100%.
+Timing took 21.152 s with 175.6M service memory peak; headless recordings took
+69.308 s with 296.6M peak. Analysis services used MemoryMax=2G, zero swap.
+All completed successfully. No GUI or hardware-counter profiler was used.
+
+Original service/profile files remain under
+`target/verification/compact-import-20260909/`. Selected sanitized reports are
+preserved in
+[the allocation record](../stack-safety/measurements/compact-parbag-import-heaptrack-2026-09-09.txt).
+Original timing log SHA-256:
+`7a8ff49e0bcaf40386f726415f2a1c217a6fb8778c05e4a415c8330e170e872a`;
+CPU preflight:
+`82c0df340c3895e8f772518b3b6763451d96254cde8dfc83fa02100330899e05`;
+opaque difference report:
+`1068200884a8f4699ad07858cbeacb8bfa7d5bd7cd5eeef46370a6ca75a54ce9`.
+
+**REQUIRED NEXT REFINEMENT — DESIGN, NOT IMPLEMENTED.** Preserve the general
+ACT topology, including branches and interior values. A checked ACT-line offer
+must stop before any value, branch, leave, or grammar-completion boundary.
+Only a strictly interior opaque payload span may advance in bulk; the last
+payload byte remains scalar so completion and refusal ordering stay exact.
+Represent restoration across such a span as a run rather than one checkpoint
+per byte, and retain indexed source ranges rather than copied payload bytes.
+Normalize ranges to underlying sources so nested views do not introduce another
+depth multiplier.
+
+Before implementation, prove scalar event expansion, equality at every
+intermediate prefix, exact partial/full restoration and graph stamps, global
+obligation freshness, unchanged refusal/error provenance, stale-offer
+nonmutation, and source lifetime/alias preservation. Reuse the existing
+`StrictOpaqueInterior`, `IndexedWindowTransport`, and persistent focused-owner
+models. Qualification must include branched/shared opaque prefixes, multiple ACT
+lines, malformed interior endpoints, fragmented sources, and descent/unwind.
+A singleton-only shortcut does not satisfy task 6018. This checkpoint changes
+no production codec, consensus bytes, hashes, accounting, or persistence policy.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

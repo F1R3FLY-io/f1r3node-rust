@@ -10435,6 +10435,35 @@ contains the complete protocol and raw matrix. This closes the full-pipeline
 checkpoint-sharing observation only: byte/score arenas, ACT plans, allocation
 traffic and latency remain separate required resource evidence.
 
+#### 5.33.31 Public compact-import timing and allocation qualification (2026-09-09, task 6018)
+
+The public `ParBag::from_compact_bytes` route now has a 12-cell qualification
+matrix, with exact fixture and compact-byte equality checked before timing.
+Each cell has 51 samples after three warmups. Nine Region shared-prefix cells
+range from 1.17 to 2.86 ms median. Opaque nested-map cells at depths 8, 32 and
+128 measure 0.764, 5.044 and 74.138 ms respectively. The last fourfold depth
+increase costs 14.70 times as much time for 3.85 times as many encoded bytes.
+
+This is a remaining near-quadratic trend in nested payload ingestion, distinct
+from the checkpoint owner-walk mechanism repaired in sections 5.33.29–30.
+Headless setup/import profile pairs attribute 232,896 additional allocation
+calls at opaque depth 128 to one byte-arena append stack in canonical path
+admission. The total allocation-count difference is 835,297 for 16 added
+imports plus measurement bookkeeping. Neither figure is a whole-runtime
+allocation claim or a comparison with an independently measured old importer.
+
+All recording was headless under systemd limits: 6G hard memory, zero swap,
+one pinned CPU for timing/recording; reports used a 2G hard limit. Timing
+service memory peaked at 175.6M; recording peaked at 296.6M, including setup
+and profiling overhead. Individual profiler peaks include fixture construction
+and must not be subtracted to estimate import-only peak memory.
+
+[J-112](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-112--2026-09-09-compact-import-allocation-and-timing-protocol)
+records every timing cell, absolute profile peaks, raw artifacts, source
+coordinates, experimental limitations and the required general source-range/
+bulk-ACT refinement. The refinement is not implemented or proved by these
+measurements. Task 6018 remains open; this is not the ACT-versus-LMDB comparison.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

@@ -80,6 +80,64 @@ fn ns_per(duration: Duration, operations: usize) -> f64 {
     duration.as_nanos() as f64 / operations.max(1) as f64
 }
 
+fn compact_import_focus(setup_only: bool) {
+    use models::rust::par_bag::ParBag;
+
+    fn parameter(name: &str, default: usize) -> usize {
+        std::env::var(name).map_or(default, |value| value.parse().expect("integer benchmark parameter"))
+    }
+    fn carrier(map: EPathMap) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(map)),
+        }])
+    }
+
+    let depth = parameter("EPATHMAP_IMPORT_DEPTH", 32);
+    let endpoints = parameter("EPATHMAP_IMPORT_ENDPOINTS", 256);
+    let width = parameter("EPATHMAP_IMPORT_WIDTH", 1_024);
+    let repetitions = parameter("EPATHMAP_IMPORT_REPS", 51);
+    let warmups = parameter("EPATHMAP_IMPORT_WARMUPS", 3);
+    let shape = std::env::var("EPATHMAP_IMPORT_SHAPE").unwrap_or_else(|_| "region".to_string());
+    assert!(width > 0 && (1..=256).contains(&endpoints));
+    assert!(shape == "region" || shape == "opaque");
+    let mut entries = Vec::with_capacity(endpoints);
+    for endpoint in 0..endpoints {
+        let mut payload = vec![0; width];
+        *payload.last_mut().unwrap() = u8::try_from(endpoint).unwrap();
+        let mut key = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GByteArray(payload)),
+        }]);
+        for _ in 0..depth {
+            key = carrier(if shape == "region" {
+                EPathMap::from_set_iter([key], Vec::new(), false, None)
+            } else {
+                EPathMap::new_map([(key, gint(7))], Vec::new(), false, None)
+            });
+        }
+        entries.push((key, gint(7)));
+    }
+    let expected = carrier(EPathMap::new_map(entries, Vec::new(), false, None));
+    let compact = expected.components().compact_bytes();
+    let verified = ParBag::from_compact_bytes(&compact).expect("fixture compact import");
+    assert_eq!(&verified, expected.components());
+    assert_eq!(verified.compact_snapshot(), compact);
+    drop(verified);
+    println!("compact-import fixture shape={shape} depth={depth} endpoints={endpoints} width={width} compact_bytes={} mode={}", compact.len(), if setup_only { "setup_only" } else { "import" });
+    if setup_only { return; }
+    let mut times = Vec::with_capacity(repetitions);
+    for sample in 0..warmups.checked_add(repetitions).unwrap() {
+        let started = Instant::now();
+        let imported = ParBag::from_compact_bytes(black_box(&compact)).expect("measured compact import");
+        black_box(&imported);
+        drop(imported);
+        let elapsed = started.elapsed();
+        if sample >= warmups { times.push(elapsed.as_nanos()); }
+    }
+    for (sample, elapsed) in times.into_iter().enumerate() {
+        println!("compact-import sample shape={shape} depth={depth} endpoints={endpoints} width={width} compact_bytes={} sample={sample} elapsed_ns={elapsed}", compact.len());
+    }
+}
+
 fn legacy_address_ordinal_map_snapshot(repr: &EPathMapRepr<Par>) -> Vec<u8> {
     let EPathMapRepr::Map(map) = repr else {
         panic!("legacy ordinal control requires map mode")
@@ -111,6 +169,11 @@ fn legacy_address_ordinal_map_snapshot(repr: &EPathMapRepr<Par>) -> Vec<u8> {
 }
 
 fn main() {
+    match std::env::var("EPATHMAP_BENCH_FOCUS").as_deref() {
+        Ok("compact_import") => return compact_import_focus(false),
+        Ok("compact_import_setup_only") => return compact_import_focus(true),
+        _ => {}
+    }
     let entries = std::env::var("EPATHMAP_BENCH_ENTRIES")
         .ok()
         .and_then(|value| value.parse().ok())

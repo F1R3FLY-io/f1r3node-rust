@@ -1,0 +1,628 @@
+J-112 headless compact-import profiles (2026-09-09)
+Source: production 1fa89bc4a plus compact_import benchmark addition.
+Paths sanitized; counts are whole-process setup/import differences, not exact per-call counts.
+Peak figures must not be subtracted. RSS includes profiler overhead.
+
+target/verification/compact-import-20260909/heaptrack-region-0-1-compact_import_setup_only-summary.txt
+total runtime: 0.041000s.
+calls to allocation functions: 10146 (247463/s)
+temporary memory allocations: 9214 (224731/s)
+peak heap memory consumption: 752.45K
+peak RSS (including heaptrack overhead): 8.22M
+total memory leaked: 544B
+
+target/verification/compact-import-20260909/heaptrack-region-0-1-compact_import-summary.txt
+total runtime: 0.076000s.
+calls to allocation functions: 65395 (860460/s)
+temporary memory allocations: 58638 (771552/s)
+peak heap memory consumption: 753.72K
+peak RSS (including heaptrack overhead): 8.57M
+total memory leaked: 544B
+
+target/verification/compact-import-20260909/heaptrack-region-0-1-diff.txt (first 190 lines)
+Running as unit: epathmap-compact-import-headless-report-20260909.service
+reading file "target/verification/compact-import-20260909/heaptrack-region-0-1-compact_import.zst" - please wait, this might take some time...
+reading diff file "target/verification/compact-import-20260909/heaptrack-region-0-1-compact_import_setup_only.zst" - please wait, this might take some time...
+Debuggee command was: target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+Debuggee command was: target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+finished reading file, now analyzing data:
+
+MOST CALLS TO ALLOCATION FUNCTIONS
+50448 calls to allocation functions with 0B peak consumption from
+_RNvMs2_NtCsaHgCS5HszWS_7pathmap14line_list_nodeINtB5_12LineListNodeNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE7split_0B19_
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+50448 calls with 0B peak consumption from:
+    _RNvXs3_NtCsaHgCS5HszWS_7pathmap14line_list_nodeINtB5_12LineListNodeNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuEINtNtB7_9trie_node8TrieNodeB13_uE12node_set_valB19_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsP_NtCsaHgCS5HszWS_7pathmap12write_zipperINtB5_15WriteZipperCoreNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE7set_valB1a_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvXs2_NtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace15guarded_pathmapINtB5_10AnchorRootNtNtB7_3bag12MultiplicityNtB1n_20MultiplicityDisposerNtB1n_19MultiplicityBarrierENtNtNtCs1KGYUCP4dch_4core3ops4drop4Drop4dropB9_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtCsfUxcwD0dPxF_5alloc4syncINtB5_3ArcINtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace15guarded_pathmap10AnchorRootNtNtBL_3bag12MultiplicityNtB1V_20MultiplicityDisposerNtB1V_19MultiplicityBarrierEE9drop_slowBN_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+
+1536 calls to allocation functions with 0B peak consumption from
+_RNvMs4_NtCsfUxcwD0dPxF_5alloc7raw_vecNtB5_11RawVecInner11finish_growCslj1rACwLYUm_6models.llvm.18257801571123447003
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+736 calls with 0B peak consumption from:
+    _RNvMs3_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaINtB5_15PageBackedArenaKj40_E12push_segmentBb_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMse_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaNtB5_19CanonicalBytesArena6append
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission4edge
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+160 calls with 0B peak consumption from:
+    _RNvMs3_NtCsfUxcwD0dPxF_5alloc7raw_vecINtB5_6RawVecINtNtNtCspT5GSUsRrm_8proptest8strategy3map3MapINtNtBT_5tuple14TupleValueTreeTINtNtBT_10collection12VecValueTreeINtNtB7_5boxed3BoxDNtNtBR_6traits9ValueTreep5ValueNtNtNtCslj1rACwLYUm_6models4rust3par3ParEL_EEB2z_IB2A_DB2S_p5ValueINtNtCs1KGYUCP4dch_4core6option6OptionNtNtB3t_6rhoapi3VarEEL_ENtNtNtBT_3num3i3212BinarySearchEENCNvNtNtB3r_10test_utils10test_utils16generate_receive0EE8grow_oneB3t_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission4edge
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+160 calls with 0B peak consumption from:
+    _RNvMs3_NtCsfUxcwD0dPxF_5alloc7raw_vecINtB5_6RawVecNtNtCslj1rACwLYUm_6models6casper14CompoundSignerE8grow_oneBQ_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission4edge
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+  and 480 from 12 other places
+
+1216 calls to allocation functions with 0B peak consumption from
+_RNvMs2_NtCsaHgCS5HszWS_7pathmap14line_list_nodeINtB5_12LineListNodeNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE25set_payload_0_no_overflowB19_
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+1216 calls with 0B peak consumption from:
+    _RNvXs3_NtCsaHgCS5HszWS_7pathmap14line_list_nodeINtB5_12LineListNodeNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuEINtNtB7_9trie_node8TrieNodeB13_uE12node_set_valB19_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsP_NtCsaHgCS5HszWS_7pathmap12write_zipperINtB5_15WriteZipperCoreNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE7set_valB1a_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvMs3_NtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace15guarded_pathmapINtB6_14GuardedPathMapNtNtB8_3bag12MultiplicityNtB1s_20MultiplicityDisposerNtB1s_19MultiplicityBarrierE17with_write_cursorINtNtCs1KGYUCP4dch_4core6result6ResultTjoENtB1s_13BagCodecErrorENCNvMsg_B1s_NtB1s_3Bag18from_compact_bytes0EBa_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsg_NtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bagNtB5_3Bag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+
+544 calls to allocation functions with 0B peak consumption from
+_RNvMs3_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaINtB5_15PageBackedArenaKj40_E12push_segmentBb_
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+544 calls with 0B peak consumption from:
+    _RNvMse_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaNtB5_19CanonicalBytesArena6append
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission4edge
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+
+336 calls to allocation functions with 0B peak consumption from
+_RNvMsd_Cs6vOGudQRMRe_8smallvecINtB5_8SmallVecAINtNtNtCsaHgCS5HszWS_7pathmap9trie_node15tagged_node_ref13TaggedNodePtrNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace10data_index11ChannelSlotuEj1_E21reserve_one_uncheckedB1X_
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+112 calls with 0B peak consumption from:
+    _RINvMNtNtCsaHgCS5HszWS_7pathmap12write_zipper14mut_node_stackINtB3_12MutNodeStackNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE7advanceNCNvMsP_B5_INtB5_15WriteZipperCoreB1h_uE21descend_step_internal0EB1n_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvXsK_NtCsaHgCS5HszWS_7pathmap12write_zipperINtB6_15WriteZipperCoreNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuENtNtB8_6zipper12ZipperMoving10descend_toRAhj1_EB1b_.llvm.13569839816989314604
+
+target/verification/compact-import-20260909/heaptrack-region-32-256-compact_import_setup_only-summary.txt
+total runtime: 31.020000s.
+calls to allocation functions: 49415759 (1593028/s)
+temporary memory allocations: 27427788 (884196/s)
+peak heap memory consumption: 2.69M
+peak RSS (including heaptrack overhead): 11.46M
+total memory leaked: 544B
+
+target/verification/compact-import-20260909/heaptrack-region-32-256-compact_import-summary.txt
+total runtime: 30.913000s.
+calls to allocation functions: 49604896 (1604661/s)
+temporary memory allocations: 27541580 (890938/s)
+peak heap memory consumption: 2.69M
+peak RSS (including heaptrack overhead): 11.66M
+total memory leaked: 544B
+
+target/verification/compact-import-20260909/heaptrack-region-32-256-diff.txt (first 190 lines)
+reading file "target/verification/compact-import-20260909/heaptrack-region-32-256-compact_import.zst" - please wait, this might take some time...
+reading diff file "target/verification/compact-import-20260909/heaptrack-region-32-256-compact_import_setup_only.zst" - please wait, this might take some time...
+Debuggee command was: target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+Debuggee command was: target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+finished reading file, now analyzing data:
+
+MOST CALLS TO ALLOCATION FUNCTIONS
+116352 calls to allocation functions with 0B peak consumption from
+_RNvMs2_NtCsaHgCS5HszWS_7pathmap14line_list_nodeINtB5_12LineListNodeNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE7split_0B19_
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+116352 calls with 0B peak consumption from:
+    _RNvXs3_NtCsaHgCS5HszWS_7pathmap14line_list_nodeINtB5_12LineListNodeNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuEINtNtB7_9trie_node8TrieNodeB13_uE12node_set_valB19_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsP_NtCsaHgCS5HszWS_7pathmap12write_zipperINtB5_15WriteZipperCoreNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE7set_valB1a_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvXs2_NtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace15guarded_pathmapINtB5_10AnchorRootNtNtB7_3bag12MultiplicityNtB1n_20MultiplicityDisposerNtB1n_19MultiplicityBarrierENtNtNtCs1KGYUCP4dch_4core3ops4drop4Drop4dropB9_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtCsfUxcwD0dPxF_5alloc4syncINtB5_3ArcINtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace15guarded_pathmap10AnchorRootNtNtBL_3bag12MultiplicityNtB1V_20MultiplicityDisposerNtB1V_19MultiplicityBarrierEE9drop_slowBN_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+
+16448 calls to allocation functions with 0B peak consumption from
+_RNvMs2_NtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admissionNtB5_12MessageFrame19from_message_region
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+16416 calls with 0B peak consumption from:
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+32 calls with 0B peak consumption from:
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+
+14352 calls to allocation functions with 0B peak consumption from
+_RNvMs4_NtCsfUxcwD0dPxF_5alloc7raw_vecNtB5_11RawVecInner11finish_growCslj1rACwLYUm_6models.llvm.18257801571123447003
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+4128 calls with 0B peak consumption from:
+    _RNvMs3_NtCsfUxcwD0dPxF_5alloc7raw_vecINtB5_6RawVecINtNtNtCspT5GSUsRrm_8proptest8strategy3map3MapINtNtBT_5tuple14TupleValueTreeTINtNtBT_10collection12VecValueTreeINtNtB7_5boxed3BoxDNtNtBR_6traits9ValueTreep5ValueNtNtNtCslj1rACwLYUm_6models4rust3par3ParEL_EEB2z_IB2A_DB2S_p5ValueINtNtCs1KGYUCP4dch_4core6option6OptionNtNtB3t_6rhoapi3VarEEL_ENtNtNtBT_3num3i3212BinarySearchEENCNvNtNtB3r_10test_utils10test_utils16generate_receive0EE8grow_oneB3t_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+4096 calls with 0B peak consumption from:
+    _RNvMs3_NtCsfUxcwD0dPxF_5alloc7raw_vecINtB5_6RawVecINtNtNtCspT5GSUsRrm_8proptest8strategy3map3MapINtNtBT_5tuple14TupleValueTreeTINtNtBT_10collection12VecValueTreeINtNtB7_5boxed3BoxDNtNtBR_6traits9ValueTreep5ValueNtNtNtCslj1rACwLYUm_6models4rust3par3ParEL_EEB2z_IB2A_DB2S_p5ValueINtNtCs1KGYUCP4dch_4core6option6OptionNtNtB3t_6rhoapi3VarEEL_ENtNtNtBT_3num3i3212BinarySearchEENCNvNtNtB3r_10test_utils10test_utils16generate_receive0EE8grow_oneB3t_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission13record_scalar
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+4096 calls with 0B peak consumption from:
+    _RNvMs3_NtCsfUxcwD0dPxF_5alloc7raw_vecINtB5_6RawVecNtNtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_score_bytes20CanonicalScoreHandleE8grow_oneBU_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission20reduce_semantic_kind
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+  and 2032 from 14 other places
+
+8224 calls to allocation functions with 0B peak consumption from
+_RINvXNtNtCsfUxcwD0dPxF_5alloc3vec14spec_from_elemINtNtCs1KGYUCP4dch_4core6option6OptionTNtNtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_score_bytes20CanonicalScoreHandleNtNtB1s_16indexed_protobuf17IndexedByteRegionEENtB3_12SpecFromElem9from_elemNtNtB7_5alloc6GlobalEB1w_
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+8208 calls with 0B peak consumption from:
+    _RNvMs2_NtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admissionNtB5_12MessageFrame19from_message_region
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+
+target/verification/compact-import-20260909/heaptrack-opaque-128-1-compact_import_setup_only-summary.txt
+total runtime: 2.745000s.
+calls to allocation functions: 5055621 (1841756/s)
+temporary memory allocations: 941997 (343168/s)
+peak heap memory consumption: 185.58M
+peak RSS (including heaptrack overhead): 147.36M
+total memory leaked: 544B
+
+target/verification/compact-import-20260909/heaptrack-opaque-128-1-compact_import-summary.txt
+total runtime: 4.310000s.
+calls to allocation functions: 5890918 (1366802/s)
+temporary memory allocations: 1184349 (274790/s)
+peak heap memory consumption: 185.58M
+peak RSS (including heaptrack overhead): 191.13M
+total memory leaked: 544B
+
+target/verification/compact-import-20260909/heaptrack-opaque-128-1-diff.txt (first 190 lines)
+reading file "target/verification/compact-import-20260909/heaptrack-opaque-128-1-compact_import.zst" - please wait, this might take some time...
+reading diff file "target/verification/compact-import-20260909/heaptrack-opaque-128-1-compact_import_setup_only.zst" - please wait, this might take some time...
+Debuggee command was: target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+Debuggee command was: target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+finished reading file, now analyzing data:
+
+MOST CALLS TO ALLOCATION FUNCTIONS
+334768 calls to allocation functions with 0B peak consumption from
+_RNvMs4_NtCsfUxcwD0dPxF_5alloc7raw_vecNtB5_11RawVecInner11finish_growCslj1rACwLYUm_6models.llvm.18257801571123447003
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+232896 calls with 0B peak consumption from:
+    _RNvMs3_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaINtB5_15PageBackedArenaKj40_E12push_segmentBb_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMse_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaNtB5_19CanonicalBytesArena6append
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission4edge
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+22032 calls with 0B peak consumption from:
+    _RNvMs3_NtCsfUxcwD0dPxF_5alloc7raw_vecINtB5_6RawVecINtNtNtCspT5GSUsRrm_8proptest8strategy3map3MapINtNtBT_5tuple14TupleValueTreeTINtNtBT_10collection12VecValueTreeINtNtB7_5boxed3BoxDNtNtBR_6traits9ValueTreep5ValueNtNtNtCslj1rACwLYUm_6models4rust3par3ParEL_EEB2z_IB2A_DB2S_p5ValueINtNtCs1KGYUCP4dch_4core6option6OptionNtNtB3t_6rhoapi3VarEEL_ENtNtNtBT_3num3i3212BinarySearchEENCNvNtNtB3r_10test_utils10test_utils16generate_receive0EE8grow_oneB3t_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission4edge
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+22032 calls with 0B peak consumption from:
+    _RNvMs3_NtCsfUxcwD0dPxF_5alloc7raw_vecINtB5_6RawVecNtNtCslj1rACwLYUm_6models6casper14CompoundSignerE8grow_oneBQ_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission4edge
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+  and 57808 from 15 other places
+
+228320 calls to allocation functions with 0B peak consumption from
+_RNvMs2_NtCsaHgCS5HszWS_7pathmap14line_list_nodeINtB5_12LineListNodeNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE7split_0B19_
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+228320 calls with 0B peak consumption from:
+    _RNvXs3_NtCsaHgCS5HszWS_7pathmap14line_list_nodeINtB5_12LineListNodeNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuEINtNtB7_9trie_node8TrieNodeB13_uE12node_set_valB19_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsP_NtCsaHgCS5HszWS_7pathmap12write_zipperINtB5_15WriteZipperCoreNtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace3bag12MultiplicityuE7set_valB1a_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvXs2_NtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace15guarded_pathmapINtB5_10AnchorRootNtNtB7_3bag12MultiplicityNtB1n_20MultiplicityDisposerNtB1n_19MultiplicityBarrierENtNtNtCs1KGYUCP4dch_4core3ops4drop4Drop4dropB9_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtCsfUxcwD0dPxF_5alloc4syncINtB5_3ArcINtNtNtCs5SzWMdlIvZ6_16rspace_plus_plus6rspace15guarded_pathmap10AnchorRootNtNtBL_3bag12MultiplicityNtB1V_20MultiplicityDisposerNtB1V_19MultiplicityBarrierEE9drop_slowBN_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+
+203712 calls to allocation functions with 0B peak consumption from
+_RNvMs3_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaINtB5_15PageBackedArenaKj40_E12push_segmentBb_
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+203712 calls with 0B peak consumption from:
+    _RNvMse_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaNtB5_19CanonicalBytesArena6append
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission4edge
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+
+10064 calls to allocation functions with 0B peak consumption from
+_RINvMsa_NtCsaYDTlQDfkAZ_9hashbrown3rawNtB6_13RawTableInner22fallible_with_capacityNtNtCsfUxcwD0dPxF_5alloc5alloc6GlobalECslj1rACwLYUm_6models.llvm.18055413528142721224
+  in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+10064 calls with 0B peak consumption from:
+    _RINvMs6_NtCsaYDTlQDfkAZ_9hashbrown3rawINtB6_8RawTableTjjEE14reserve_rehashNCINvNtB8_3map11make_hasherjjNtNtNtCs16rmOfHBWgw_3std4hash6random11RandomStateE0ECslj1rACwLYUm_6models
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMse_NtNtNtCslj1rACwLYUm_6models4rust7rholang21canonical_bytes_arenaNtB5_19CanonicalBytesArena6freeze
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsn_NtNtNtCslj1rACwLYUm_6models4rust7rholang24canonical_path_admissionNtB5_30CanonicalPathTopologyAdmission27freeze_completed_obligation
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission15drive_admission
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission33validate_canonical_protobuf_inner.llvm.12193253355506931708
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtNtCslj1rACwLYUm_6models4rust7rholang18protobuf_admission45validate_canonical_component_protobuf_indexed
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCslj1rACwLYUm_6models4rust7par_bag18validate_typed_keyNtNtB6_6rhoapi4ExprEB6_
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtNtCslj1rACwLYUm_6models4rust7par_bag12validate_key.llvm.14573497746413063670
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag12try_from_bag
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvMsR_NtNtCslj1rACwLYUm_6models4rust7par_bagNtB5_6ParBag18from_compact_bytes
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvCsda61bXu9hSE_23epathmap_pathmap_native4main
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RINvNtNtCs16rmOfHBWgw_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsda61bXu9hSE_23epathmap_pathmap_native
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNCINvNtCs16rmOfHBWgw_3std2rt10lang_startuE0Csda61bXu9hSE_23epathmap_pathmap_native.llvm.11698814184561947794
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    _RNvNtCs16rmOfHBWgw_3std2rt19lang_start_internal
+      in [WORKTREE]/target/release/deps/epathmap_pathmap_native-2a0f89084e4c0d9a
+    main
