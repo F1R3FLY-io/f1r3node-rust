@@ -1,0 +1,23 @@
+PASS: The driver stopped the active iteration after the disk probe fault (missing-active).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/active-probe
+PASS: The disk breach record exists before Docker starts the stop command. Termination remains unconfirmed.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/record
+PASS: The driver recorded guardian death and stopped the active iteration.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/guardian-death
+PASS: The driver stopped the active iteration after the disk probe fault (stalled-active).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/probe-timeout
+PASS: Stalled attribution stopped within the aggregate fixture deadline across 32 session roots.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/diagnostic-deadline
+PASS: Restart preserved the guardian breach and failure count without new work (restart-uncounted).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/restart/restart-uncounted
+PASS: Restart preserved the guardian breach and failure count without new work (restart-counted).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/restart/restart-counted
+PASS: The driver bounded stalled stop commands and published the protection failure. Writer termination remains unconfirmed.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/stop-deadline
+PASS: Guardian death during the boundary probe prevented admission and produced a protection failure.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/guardian-admission
+PASS: The retained breach prevented benchmark and iteration admission and preserved the failure.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/benchmark-restart
+PASS: The 7000 MiB sample prevented benchmark and iteration admission and recorded one protection failure.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/emergency/benchmark-disk-admission
+PASS: The isolated disk emergency regressions completed.

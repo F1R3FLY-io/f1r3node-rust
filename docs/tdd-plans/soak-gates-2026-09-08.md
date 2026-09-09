@@ -228,6 +228,21 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B16
+    statement: A disk sample below floor plus band prevents opening benchmark admission and records a protection failure.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-benchmark-band-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-benchmark-disk-admission.sh
+        red_revision: 7f0f46923d9d972a95625fb3b8cdfc2ca2a8fc0c
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -257,6 +272,7 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B13: Stalled disk stop clients exit before the fixture deadline, and the driver publishes a local failure.
 - [x] B14: Guardian death during a valid boundary probe prevents iteration admission and produces one recorded failure.
 - [x] B15: A retained breach prevents the opening benchmark without a state file and preserves the failure.
+- [x] B16: A 7000 MiB sample prevents opening benchmark admission below the 8192 MiB threshold and records one protection failure.
 
 ## Cycle evidence
 
@@ -320,7 +336,15 @@ B15 prevents the opening benchmark from bypassing a retained breach when the sta
 
 The bounded gate passes 14 positive configurations and 14 exact controls. The classifier covers 98 cases. All ten emergency scenarios pass.
 
+B16 adds the [benchmark disk-admission cycle](../cbc-evidence/soak-d2-benchmark-band-2026-09-09/README.md). The production fixture and formal counterexample use 7000 MiB free and an 8192 MiB threshold.
+
+Production GREEN refuses both benchmark and iteration admission and records one protection failure. Formal GREEN completes with 12 distinct states.
+
+The bounded gate passes 15 positive configurations and 15 exact controls. The classifier covers 105 cases. All eleven emergency scenarios pass.
+
 ## Remaining D2 work
+
+- [ ] Verify other benchmark sample cases, interleaved admission, and active benchmark supervision.
 
 - [ ] Bound disk hygiene and stop paths outside B13, including detached and uninterruptible command cases.
 - [ ] Verify soft-floor sampling, cleanup outcomes, and guardian events at every admission boundary.

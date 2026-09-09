@@ -808,6 +808,20 @@ run_bench_segment() {
 	if [ "$remaining" -le "$((BENCH_DURATION + 600))" ]; then
 		return 0
 	fi
+	if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+		local disk_mb
+		disk_mb="$(disk_free_mb)"
+		if [ -z "$disk_mb" ] || [ "$disk_mb" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
+			EARLY_EXIT_REASON="host_protection_breach"
+			DEADLINE=0
+			FAILURES="$((FAILURES + 1))"
+			printf 'The disk sample does not permit benchmark admission. The driver refused work.\n' |
+				tee "$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: benchmark disk sample %s MiB, required %s MiB\n' \
+				"${disk_mb:-unavailable}" "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" >"$OUTPUT_DIR/early-exit.txt"
+			return 1
+		fi
+	fi
 	BENCH_SEGMENTS="$((BENCH_SEGMENTS + 1))"
 	local segment_dir
 	segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"

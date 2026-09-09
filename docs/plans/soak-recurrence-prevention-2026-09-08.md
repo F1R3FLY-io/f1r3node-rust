@@ -289,6 +289,12 @@ The [B15 benchmark cycle](../cbc-evidence/soak-d2-benchmark-2026-09-09/README.md
 
 Its production and formal counterexamples precede the correction. The bounded gate now passes 14 positive configurations and 14 exact controls.
 
+The [B16 disk-admission cycle](../cbc-evidence/soak-d2-benchmark-band-2026-09-09/README.md) refuses the opening benchmark when a 7000 MiB sample falls below the 8192 MiB threshold.
+
+Both RED results precede the correction. Production GREEN records no benchmarks, no iterations, and one protection failure. The model completes with 12 distinct states.
+
+The bounded gate now passes 15 positive configurations and 15 exact controls. Other benchmark sample cases, interleaved admission, and active benchmark supervision remain open.
+
 Disk hygiene, other stop paths, cleanup ownership, full admission coverage, durable publication, and the D3 reserve argument remain open.
 
 Hosted confirmation and maintainer review remain pending. D2 is not complete.

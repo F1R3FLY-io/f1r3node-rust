@@ -251,3 +251,25 @@ The first metadata audit detects a hash of its own active build log. The raw arc
 D2 remains in progress. Other benchmark admission paths, active benchmark supervision, stalled guardians, cleanup, termination, durability, and reserve evidence remain open.
 
 No commit, push, hosted dispatch, or soak occurs in this cycle.
+
+## D2 benchmark disk-admission cycle B16
+
+The user confirmed B16 after publication of `7f0f46923`. The cycle uses that baseline and preserves the D2-first order.
+
+Production RED requests the opening benchmark with 7000 MiB free, below the 8192 MiB admission threshold. The Docker fixture starts no node writers.
+
+The formal control violates `BenchmarkRequiresBand` with exit 12 for the same sample and threshold. Both RED results precede the production correction.
+
+The shared benchmark function now checks the disk sample before admission. Refusal sets the protection reason, ends further execution, and records one failure.
+
+Production GREEN records no benchmarks and no iterations. Formal GREEN completes with 12 distinct states. The [B16 package](../cbc-evidence/soak-d2-benchmark-band-2026-09-09/README.md) retains the evidence.
+
+Fifteen positive configurations, fifteen exact controls, 105 classifier cases, six routing scenarios, and eleven emergency scenarios pass. The supporting regressions also pass.
+
+The first read-only inventory inspection used an absent key and raised `KeyError`. The raw archive records that helper error separately from behavioral evidence.
+
+Published logs replace the local raw-root prefix with a documented placeholder. The original logs retain their bytes and separate digests.
+
+B16 covers low-space opening admission only. Other sample cases, interleaved admission, active supervision, guardian progress, cleanup, termination, durability, and reserve evidence remain open.
+
+D2 and acceptance remain pending. The workload and 45-second finalization wait remain unchanged. No commit, push, hosted dispatch, or soak occurs in B16.

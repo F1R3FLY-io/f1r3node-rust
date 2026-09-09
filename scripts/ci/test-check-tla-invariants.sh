@@ -34,6 +34,7 @@ case "$config" in
     MC_DiskStopDeadline_unbounded_pre_fix.cfg) invariant=StopWithinBudget ;;
     MC_GuardianAdmission_unchecked_pre_fix.cfg) invariant=AdmissionRequiresGuardian ;;
     MC_BenchmarkBreachAdmission_unchecked_pre_fix.cfg) invariant=RetainedBreachPreventsBenchmark ;;
+    MC_BenchmarkDiskAdmission_unchecked_pre_fix.cfg) invariant=BenchmarkRequiresBand ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 if [[ "$config" == "$TEST_TLC_TARGET" ]]; then
@@ -63,7 +64,8 @@ for target in carrier_index/MC_CarrierIndex_dag_first_pre_fix \
     soak_disk/MC_DiskBreachRestart_clear_pre_fix \
     soak_disk/MC_DiskStopDeadline_unbounded_pre_fix \
     soak_disk/MC_GuardianAdmission_unchecked_pre_fix \
-    soak_disk/MC_BenchmarkBreachAdmission_unchecked_pre_fix; do
+    soak_disk/MC_BenchmarkBreachAdmission_unchecked_pre_fix \
+    soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix; do
     for result in clean wrong-invariant tool-error wrong-exit timeout missing expected; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
         if [[ "$result" == missing ]]; then

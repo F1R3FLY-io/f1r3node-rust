@@ -114,6 +114,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_DiskStopDeadline
     soak_disk/MC_GuardianAdmission
     soak_disk/MC_BenchmarkBreachAdmission
+    soak_disk/MC_BenchmarkDiskAdmission
 )
 
 TLC_WORKERS=auto
@@ -133,6 +134,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_DiskStopDeadline
         soak_disk/MC_GuardianAdmission
         soak_disk/MC_BenchmarkBreachAdmission
+        soak_disk/MC_BenchmarkDiskAdmission
     )
     TLC_WORKERS=2
 fi
@@ -183,6 +185,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_DiskStopDeadline_unbounded_pre_fix:StopWithinBudget
     soak_disk/MC_GuardianAdmission_unchecked_pre_fix:AdmissionRequiresGuardian
     soak_disk/MC_BenchmarkBreachAdmission_unchecked_pre_fix:RetainedBreachPreventsBenchmark
+    soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix:BenchmarkRequiresBand
 )
 
 failed=0
