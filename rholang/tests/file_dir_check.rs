@@ -16693,7 +16693,7 @@ async fn open_file_impl_rejects_bad_cmode_before_calling_fs_open() {
     let src = with_libs(
         r#"
         new implRet in {
-          openFileImpl!("/root", "", "f.txt", "rw", "BOGUS", *File, *implRet) |
+          openFileImpl!("/root", "", "f.txt", "r+", "BOGUS", *File, *implRet) |
           for (@reply <- implRet) { @"out"!(reply) }
         }
         "#,

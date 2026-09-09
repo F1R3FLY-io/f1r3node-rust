@@ -727,6 +727,45 @@ fn method_body<'a>(src: &'a str, method_signature_prefix: &str) -> Option<&'a st
     Some(&after[..end])
 }
 
+/// Wave-3 helper: convert `fs_flush` → `FsFlushHandler`, etc.
+/// Used by `every_fs_handler_charges_its_cost_helper` to locate
+/// the trait-impl block for migrated handlers.
+fn to_camel_case_handler(snake_case: &str) -> String {
+    let mut out = String::with_capacity(snake_case.len() + 8);
+    let mut capitalize_next = true;
+    for c in snake_case.chars() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            out.push(c.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out.push_str("Handler");
+    out
+}
+
+/// Wave-3 helper: locate a top-level `impl FsHandler for FsXHandler
+/// { ... }` block in `handlers.rs` and return its body slice.
+/// Returns None if the anchor is missing (i.e., the handler isn't
+/// migrated yet).
+///
+/// Scans for `\n<anchor> {` — the leading newline + trailing ` {`
+/// discriminate the actual impl block from prose-comment
+/// references like `// lives at `impl FsHandler for FsXHandler``
+/// higher up in the file.
+fn trait_impl_block<'a>(src: &'a str, anchor: &str) -> Option<&'a str> {
+    let needle = format!("\n{anchor} {{");
+    let start = src.find(&needle)? + 1; // skip the leading '\n'
+    let after = &src[start..];
+    // Trait-impl blocks are top-level; the closing `}` is at column
+    // 0, matching `^}\n` in this file's formatting.
+    let end = after.find("\n}\n").map(|e| e + 3).unwrap_or(after.len());
+    Some(&after[..end])
+}
+
 /// **Slice 9b regression pin — handler charge presence.**
 ///
 /// For every `pub async fn fs_<name>(` in `handlers.rs`, this test
@@ -775,9 +814,24 @@ fn every_fs_handler_charges_its_cost_helper() {
             continue;
         };
         let expected_call = format!("costs::{handler_name}_cost(");
-        if !body.contains(&expected_call) {
-            missing.push(handler_name.to_string());
+        if body.contains(&expected_call) {
+            continue;
         }
+        // Wave-3 migration (S3.1+, 2026-09-08): migrated handlers
+        // have a 4-line `pub async fn fs_x` wrapper that no longer
+        // references the cost helper directly — the helper is
+        // returned from `impl FsHandler for FsXHandler::pre_charge_cost()`.
+        // Check the trait-impl block for the cost helper.  A
+        // migrated handler `fs_x_y` has a struct
+        // `FsXYHandler` (snake_case → CamelCase).
+        let handler_struct = to_camel_case_handler(handler_name);
+        let trait_anchor = format!("impl FsHandler for {handler_struct}");
+        if let Some(trait_block) = trait_impl_block(src, &trait_anchor) {
+            if trait_block.contains(&expected_call) {
+                continue;
+            }
+        }
+        missing.push(handler_name.to_string());
     }
 
     assert!(

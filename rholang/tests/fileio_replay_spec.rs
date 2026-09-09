@@ -99,7 +99,7 @@ mod tests {
                         wr(`rho:io:fs:native:1.0.0/writeAt`),
                         cl(`rho:io:fs:native:1.0.0/close`),
                         oret, wret, cret in {{
-                      op!("{root}", "data.bin", "rw", "oracular", *oret) |
+                      op!("{root}", "data.bin", "r+", "oracular", *oret) |
                       for (@[true, fd] <- oret) {{
                         wr!(fd, 0, "aabbccdd".hexToBytes(), *wret) |
                         for (@_ <- wret) {{
@@ -139,7 +139,7 @@ mod tests {
                         tr(`rho:io:fs:native:1.0.0/truncate`),
                         cl(`rho:io:fs:native:1.0.0/close`),
                         oret, tret, cret in {{
-                      op!("{root}", "data.bin", "rw", "oracular", *oret) |
+                      op!("{root}", "data.bin", "r+", "oracular", *oret) |
                       for (@[true, fd] <- oret) {{
                         tr!(fd, 16, *tret) |
                         for (@_ <- tret) {{
@@ -210,14 +210,14 @@ mod tests {
                 wr(`rho:io:fs:native:1.0.0/writeAt`),
                 cl(`rho:io:fs:native:1.0.0/close`),
                 orcO, orcW, orcC, conO, conW, conC in {{
-              op!("{root}", "orc.bin", "rw", "oracular", *orcO) |
+              op!("{root}", "orc.bin", "r+", "oracular", *orcO) |
               for (@[true, orcFd] <- orcO) {{
                 wr!(orcFd, 0, "aa".hexToBytes(), *orcW) |
                 for (@_ <- orcW) {{
                   cl!(orcFd, *orcC) | for (@_ <- orcC) {{ Nil }}
                 }}
               }} |
-              op!("{root}", "con.bin", "rw", "consensus", *conO) |
+              op!("{root}", "con.bin", "r+", "consensus", *conO) |
               for (@[true, conFd] <- conO) {{
                 wr!(conFd, 4, "bb".hexToBytes(), *conW) |
                 for (@_ <- conW) {{
