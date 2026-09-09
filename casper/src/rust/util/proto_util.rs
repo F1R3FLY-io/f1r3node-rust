@@ -769,9 +769,7 @@ mod fork_choice_b1_repro_tests {
             "unheld main parent must be MissingBlock naming the parent, got {err:?}"
         );
         // The deferral collapse the block pipeline routes on: the typed
-        // absence becomes BlockNotHeld, never a judged exception — and the
-        // accessor tag rides along, so "which walk needed this block" stays
-        // answerable from the surfaced error.
+        // absence becomes BlockNotHeld with the accessor tag riding along.
         match crate::rust::errors::CasperError::from(err) {
             crate::rust::errors::CasperError::BlockNotHeld(hash, site) => {
                 assert_eq!(hash, missing);
@@ -784,11 +782,8 @@ mod fork_choice_b1_repro_tests {
         }
     }
 
-    /// The live-decision policy tolerates the edge the verdict policy errors
-    /// on: a parent below the restore horizon is skipped (it is settled
-    /// ancestry the number filter would discard anyway), never an error that
-    /// wedges the snapshot. The held sibling still comes back, and the number
-    /// filter still applies to it.
+    /// The live-decision policy skips a sub-horizon parent instead of
+    /// erroring; the held sibling and the number filter are unaffected.
     #[test]
     fn in_scope_walk_skips_an_unheld_parent_and_keeps_the_held_window() {
         let v = h(9);
@@ -821,8 +816,7 @@ mod fork_choice_b1_repro_tests {
             "the number filter still bounds the held parent"
         );
 
-        // The verdict policy refuses the same DAG: an unreadable ancestry must
-        // name the missing block, never be scanned around.
+        // The verdict policy refuses the same DAG.
         assert!(
             matches!(
                 parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::Surface),

@@ -361,8 +361,8 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 
     // Step 1: Check if block is of interest
     // Equivalent to: blockProcessor.checkIfOfInterest(c, b)
-    let is_of_interest = match block_processor.check_if_of_interest(casper.clone(), &block) {
-        Ok(is_of_interest) => is_of_interest,
+    let verdict = match block_processor.check_if_of_interest(casper.clone(), &block) {
+        Ok(verdict) => verdict,
         Err(err) => {
             block_processor
                 .ack_processed(&block)
@@ -377,17 +377,30 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         }
     };
 
-    if !is_of_interest {
-        tracing::info!("Block {} is not of interest. Dropped.", block_str);
-        block_processor
-            .purge_from_buffer_and_ack(&block)
-            .await
-            .map_err(|err| {
+    if !verdict.is_fresh() {
+        if verdict.purges_buffer() {
+            tracing::info!("Block {} is not of interest. Dropped.", block_str);
+            block_processor
+                .purge_from_buffer_and_ack(&block)
+                .await
+                .map_err(|err| {
+                    CasperError::RuntimeError(format!(
+                        "Block {} was not of interest, and purge+cleanup failed: {}",
+                        block_str, err
+                    ))
+                })?;
+        } else {
+            tracing::info!(
+                "Block {} is already processed or in recovery. Duplicate copy dropped.",
+                block_str
+            );
+            block_processor.ack_processed(&block).await.map_err(|err| {
                 CasperError::RuntimeError(format!(
-                    "Block {} was not of interest, and purge+cleanup failed: {}",
+                    "Block {} duplicate drop cleanup failed: {}",
                     block_str, err
                 ))
             })?;
+        }
         return Ok(BlockProcessOutcome::NotOfInterest);
     }
 

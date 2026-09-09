@@ -315,12 +315,8 @@ impl HeartbeatProposer {
                                 consecutive_failures
                             );
                         }
-                        // A walk needed a block this node does not hold. Erroring
-                        // every cycle fetches nothing — the check stays dead until
-                        // someone else happens to supply the block. Solicit it, the
-                        // way the block processor's deferral path does, and skip
-                        // the cycle; the propose path already treats the same error
-                        // as "a reason not to propose, not an error to retry".
+                        // Erroring every cycle fetches nothing; solicit the named
+                        // block and skip the cycle.
                         Err(CasperError::BlockNotHeld(missing, site)) => {
                             tracing::warn!(
                                 missing = %hex::encode(&missing[..8.min(missing.len())]),

@@ -104,6 +104,53 @@ pub(crate) fn guard_deferral(
     }
 }
 
+/// Why a consumed block copy will or will not be processed. Typed because the
+/// drop policy differs per verdict: see [`OfInterestVerdict::purges_buffer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfInterestVerdict {
+    Fresh,
+    AlreadyProcessed,
+    WrongShard,
+    WrongVersion,
+    OldUnsolicited,
+}
+
+impl OfInterestVerdict {
+    pub fn is_fresh(&self) -> bool { matches!(self, OfInterestVerdict::Fresh) }
+
+    /// True only for verdicts about the BLOCK (requeue-loop fuel).
+    /// `AlreadyProcessed` judges the COPY: the buffer entry belongs to the
+    /// recovery already in flight and must survive.
+    pub fn purges_buffer(&self) -> bool {
+        matches!(
+            self,
+            OfInterestVerdict::WrongShard
+                | OfInterestVerdict::WrongVersion
+                | OfInterestVerdict::OldUnsolicited
+        )
+    }
+}
+
+fn of_interest_verdict(
+    already_processed: bool,
+    shard_of_interest: bool,
+    version_of_interest: bool,
+    old_block: bool,
+    requested_as_dependency: bool,
+) -> OfInterestVerdict {
+    if already_processed {
+        OfInterestVerdict::AlreadyProcessed
+    } else if !shard_of_interest {
+        OfInterestVerdict::WrongShard
+    } else if !version_of_interest {
+        OfInterestVerdict::WrongVersion
+    } else if old_block && !requested_as_dependency {
+        OfInterestVerdict::OldUnsolicited
+    } else {
+        OfInterestVerdict::Fresh
+    }
+}
+
 /// Whether an arriving block is settled history to be admitted unjudged —
 /// the LFS door, opened at runtime.
 ///
@@ -252,7 +299,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
-    ) -> Result<bool, CasperError> {
+    ) -> Result<OfInterestVerdict, CasperError> {
         // TODO casper.dag_contains does not take into account equivocation tracker
         let already_processed =
             casper.dag_contains(&block.block_hash) || casper.buffer_contains(&block.block_hash);
@@ -282,10 +329,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             .dependencies
             .was_requested_as_dependency(&block.block_hash)?;
 
-        Ok(!already_processed
-            && shard_of_interest
-            && version_of_interest
-            && (!old_block || requested_as_dependency))
+        Ok(of_interest_verdict(
+            already_processed,
+            shard_of_interest,
+            version_of_interest,
+            old_block,
+            requested_as_dependency,
+        ))
     }
 
     /// check block format and store if check passed
@@ -1610,6 +1660,48 @@ mod tests {
             ),
             "a genesis-rooted node has the whole spine, so a missing block is corruption \
              and must be judged — deferring here is an escape hatch for crafted blocks"
+        );
+    }
+
+    /// Purging on a duplicate of a block mid-dependency-recovery removes the
+    /// block from every retry structure at once — recovery then ends unless a
+    /// peer happens to resend it.
+    #[test]
+    fn a_duplicate_of_a_block_in_recovery_drops_without_purging_the_buffer() {
+        use super::{of_interest_verdict, OfInterestVerdict};
+
+        assert_eq!(
+            of_interest_verdict(true, true, true, false, false),
+            OfInterestVerdict::AlreadyProcessed
+        );
+        assert_eq!(
+            of_interest_verdict(false, false, true, false, false),
+            OfInterestVerdict::WrongShard
+        );
+        assert_eq!(
+            of_interest_verdict(false, true, false, false, false),
+            OfInterestVerdict::WrongVersion
+        );
+        assert_eq!(
+            of_interest_verdict(false, true, true, true, false),
+            OfInterestVerdict::OldUnsolicited
+        );
+        assert_eq!(
+            of_interest_verdict(false, true, true, true, true),
+            OfInterestVerdict::Fresh,
+            "an old block this node solicited as a dependency is fresh work"
+        );
+        assert_eq!(
+            of_interest_verdict(false, true, true, false, false),
+            OfInterestVerdict::Fresh
+        );
+
+        assert!(OfInterestVerdict::WrongShard.purges_buffer());
+        assert!(OfInterestVerdict::WrongVersion.purges_buffer());
+        assert!(OfInterestVerdict::OldUnsolicited.purges_buffer());
+        assert!(
+            !OfInterestVerdict::AlreadyProcessed.purges_buffer(),
+            "a verdict about the COPY must not destroy the recovery state of the block"
         );
     }
 

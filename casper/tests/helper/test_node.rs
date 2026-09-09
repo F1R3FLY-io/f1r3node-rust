@@ -174,9 +174,9 @@ impl TestNode {
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
         // Check if block is of interest
-        let is_of_interest = block_processor.check_if_of_interest(casper.clone(), &block)?;
+        let verdict = block_processor.check_if_of_interest(casper.clone(), &block)?;
 
-        if !is_of_interest {
+        if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
