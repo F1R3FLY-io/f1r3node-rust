@@ -577,9 +577,14 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///     via new `pre_syscall` framework hook.  fs_chown is
 ///     non-verifying (Consensus banned at parse); fs_chmod +
 ///     fs_truncate verify.
+///   - S3.8 (2026-09-09): +2 (fs_write, fs_write_at).  Count = 21.
+///     Verifying mutation with byte payload; both use length-
+///     parameterized cost + pre-append WAL + finalize_write on
+///     partial write.  fs_write advances shadow position on all
+///     4 paths; fs_write_at doesn't (pwrite semantics).
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 19;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 21;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -859,6 +864,8 @@ mod tests {
             "fs_chown",                // S3.7 (2026-09-09)
             "fs_chmod",                // S3.7 (2026-09-09)
             "fs_truncate",             // S3.7 (2026-09-09)
+            "fs_write",                // S3.8 (2026-09-09)
+            "fs_write_at",             // S3.8 (2026-09-09)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);

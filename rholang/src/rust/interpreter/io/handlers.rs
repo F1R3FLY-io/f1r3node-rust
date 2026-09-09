@@ -759,7 +759,12 @@ impl FsProcesses {
     /// contract args, which is what makes leader/follower symmetric
     /// on the `is_replay` short-circuit path (the follower does NOT
     /// re-issue the syscall and therefore does not know `n`).
-    async fn journal_write(
+    // Wave-3 S3.8 (2026-09-09): retired now that fs_write /
+    // fs_write_at migrated to the FsHandler trait.  Free-fn form
+    // `journal_write_via_table` is what the trait impls call via
+    // `ctx.handles`.
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_journal_write(
         &self,
         fd: u64,
         bytes: &[u8],
@@ -1075,7 +1080,13 @@ impl FsProcesses {
     /// pre-syscall placeholder already has the correct content.
     /// Failed writes (error reply) go through
     /// `finalize_failure_journal` instead (H-6).
-    fn finalize_write_journal(&self, requested_bytes: &[u8], actual_n: u64, ack: &Par) {
+    #[cfg(any())]
+    fn _deleted_pre_wave3_finalize_write_journal(
+        &self,
+        requested_bytes: &[u8],
+        actual_n: u64,
+        ack: &Par,
+    ) {
         let n = (actual_n as usize).min(requested_bytes.len());
         let actual_slice = &requested_bytes[..n];
         // Phase 7b-2 (2026-08-27): re-persist under the truncated
@@ -1823,6 +1834,14 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        dispatch_via_trait::<FsWriteHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_write_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2032,6 +2051,14 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        dispatch_via_trait::<FsWriteAtHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_write_at_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
@@ -2166,7 +2193,13 @@ impl FsProcesses {
         }
     }
 
-    async fn write_impl(&self, fd: u64, bytes: Vec<u8>, offset: Option<u64>) -> Par {
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_write_impl(
+        &self,
+        fd: u64,
+        bytes: Vec<u8>,
+        offset: Option<u64>,
+    ) -> Par {
         if bytes.len() as u64 > MAX_WRITE_BYTES {
             return err(
                 FSERR_QUOTA_EXCEEDED,
@@ -6941,6 +6974,361 @@ static FS_CHOWN_ENTRY: FsHandlerEntry = FsHandlerEntry {
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsChownHandler>(fs, args)),
 };
 
+// -------------------------------------------------------------------
+// fs_write — (fd, bytes) -> [true, nWritten]  (S3.8, 2026-09-09)
+//
+// Verifying mutation, length-parameterized cost.  Cmode fd-based.
+// Pre-appends WAL entry (with position from fd shadow as offset
+// for sequential Write) via `journal_write_via_table` in
+// `pre_syscall`.  On partial write, patches WAL entry's length +
+// payload_ref via `finalize_write_journal_via_table`.  Shadow
+// position advances by actually-written bytes on all 4 paths
+// (POSIX libc::write advances OS fd; shadow must sync).
+// -------------------------------------------------------------------
+
+pub struct FsWriteHandler;
+
+pub struct FsWriteArgs {
+    fd: u64,
+    bytes: Vec<u8>,
+}
+
+impl FsHandler for FsWriteHandler {
+    const NAME: &'static str = "fs_write";
+    const ARITY: usize = 3; // (fd, bytes, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsWriteArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsWriteArgs, Box<HandlerReply>> {
+        let [fd_par, bytes_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, ByteArray)",
+            ));
+        };
+        match (RhoNumber::unapply(fd_par), RhoByteArray::unapply(bytes_par)) {
+            (Some(fd), Some(bytes)) => Ok(FsWriteArgs {
+                fd: fd as u64,
+                bytes,
+            }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, ByteArray)",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_write_cost(0)
+    }
+
+    fn pre_charge_incremental(
+        raw_args: &[Par],
+    ) -> Option<crate::rust::interpreter::accounting::costs::Cost> {
+        // Cost based on bytes.len() from raw_args[1] (bytes_par).
+        let requested_bytes: u64 = raw_args
+            .get(1)
+            .and_then(RhoByteArray::unapply)
+            .map(|b| b.len() as u64)
+            .unwrap_or(0);
+        Some(costs::fs_write_cost(requested_bytes))
+    }
+
+    fn pre_syscall<'a>(
+        ctx: SyscallCtx<'a>,
+        args: &'a FsWriteArgs,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            // MAX_WRITE_BYTES gate first — oversize writes must NOT
+            // consume a WAL slot (M-R3 review round 2).
+            if args.bytes.len() as u64 > MAX_WRITE_BYTES {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    format!("write {} exceeds MAX_WRITE_BYTES", args.bytes.len()),
+                ));
+            }
+            // Pre-append WAL entry (fd-based cmode; self-guards for
+            // Oracular).  Err → WAL cap → early exit with
+            // FSERR_QUOTA_EXCEEDED.
+            if journal_write_via_table(ctx.handles, args.fd, &args.bytes, None, ctx.ack)
+                .await
+                .is_err()
+            {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    "WAL cap exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsWriteArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let par = write_impl_via_table(ctx.handles, args.fd, args.bytes, None).await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return None;
+            };
+            let fd = RhoNumber::unapply(fd_par)?;
+            ctx.handles.with_mut(fd as u64, |h| h.cmode).await
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let [fd_par, bytes_par, ..] = raw_args else {
+                return;
+            };
+            let Some(fd_i64) = RhoNumber::unapply(fd_par) else {
+                return;
+            };
+            let fd_u = fd_i64 as u64;
+            let bytes_opt = RhoByteArray::unapply(bytes_par);
+            let state_source = path.state_source_reply();
+            // Gated `n_opt` — matches pre-refactor's `if let Some(n)
+            // = extract_ok_u64(...)` gate.  On error reply,
+            // extract_ok_u64 returns None → NO finalize_write_journal
+            // (would incorrectly patch WAL length to 0) and NO shadow
+            // advance (nothing to sync — the syscall didn't move OS
+            // fd position).
+            let n_opt = extract_ok_u64(std::slice::from_ref(state_source));
+            if path.is_divergence() {
+                finalize_failure_journal_via_table(
+                    ctx.handles,
+                    FSERR_CODE_CONSENSUS_DIVERGENCE,
+                    ctx.ack,
+                );
+            } else {
+                // Success paths (Leader / VerifySuccess /
+                // OracularEcho).  Finalize partial write only if the
+                // reply carries an ok_u64 n AND n < requested bytes
+                // (patches WAL entry's length + payload_ref).
+                if let Some(n) = n_opt {
+                    if let Some(bytes) = bytes_opt.as_ref() {
+                        if n < bytes.len() as u64 {
+                            finalize_write_journal_via_table(ctx.handles, bytes, n, ctx.ack);
+                        }
+                    }
+                }
+                // Finalize failure if the reply carries an err code
+                // (independent of the partial-write check — the reply
+                // is either ok or err, never both).
+                let reply = path.produce_reply();
+                if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+                    finalize_failure_journal_via_table(
+                        ctx.handles,
+                        fserr_to_code(&code_str),
+                        ctx.ack,
+                    );
+                }
+            }
+            // Shadow position advance by n on all 4 paths (POSIX
+            // libc::write moved the OS-fd position by that count).
+            // Gated on Some(n) — no advance on error reply.
+            if let Some(n) = n_opt {
+                if n > 0 {
+                    let _ = ctx
+                        .handles
+                        .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
+                        .await;
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_WRITE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsWriteHandler as FsHandler>::NAME,
+    arity: <FsWriteHandler as FsHandler>::ARITY,
+    verifying: <FsWriteHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsWriteHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_write_at — (fd, off, bytes) -> [true, nWritten]  (S3.8)
+//
+// Verifying mutation with offset.  Same shape as fs_write; NO
+// shadow position advance (POSIX libc::pwrite doesn't advance
+// OS-fd position).
+// -------------------------------------------------------------------
+
+pub struct FsWriteAtHandler;
+
+pub struct FsWriteAtArgs {
+    fd: u64,
+    off: u64,
+    bytes: Vec<u8>,
+}
+
+impl FsHandler for FsWriteAtHandler {
+    const NAME: &'static str = "fs_write_at";
+    const ARITY: usize = 4; // (fd, off, bytes, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsWriteAtArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsWriteAtArgs, Box<HandlerReply>> {
+        let [fd_par, off_par, bytes_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, u64, ByteArray)",
+            ));
+        };
+        match (
+            RhoNumber::unapply(fd_par),
+            RhoNumber::unapply(off_par),
+            RhoByteArray::unapply(bytes_par),
+        ) {
+            (Some(fd), Some(off), Some(bytes)) if off >= 0 => Ok(FsWriteAtArgs {
+                fd: fd as u64,
+                off: off as u64,
+                bytes,
+            }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, u64, ByteArray)",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_write_at_cost(0)
+    }
+
+    fn pre_charge_incremental(
+        raw_args: &[Par],
+    ) -> Option<crate::rust::interpreter::accounting::costs::Cost> {
+        // bytes_par is at slot 2 for fs_write_at (fd, off, bytes).
+        let requested_bytes: u64 = raw_args
+            .get(2)
+            .and_then(RhoByteArray::unapply)
+            .map(|b| b.len() as u64)
+            .unwrap_or(0);
+        Some(costs::fs_write_at_cost(requested_bytes))
+    }
+
+    fn pre_syscall<'a>(
+        ctx: SyscallCtx<'a>,
+        args: &'a FsWriteAtArgs,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            if args.bytes.len() as u64 > MAX_WRITE_BYTES {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    format!("write {} exceeds MAX_WRITE_BYTES", args.bytes.len()),
+                ));
+            }
+            if journal_write_via_table(ctx.handles, args.fd, &args.bytes, Some(args.off), ctx.ack)
+                .await
+                .is_err()
+            {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    "WAL cap exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsWriteAtArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let par = write_impl_via_table(ctx.handles, args.fd, args.bytes, Some(args.off)).await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return None;
+            };
+            let fd = RhoNumber::unapply(fd_par)?;
+            ctx.handles.with_mut(fd as u64, |h| h.cmode).await
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // fs_write_at doesn't advance shadow (pwrite semantics).
+        // Otherwise same as fs_write: finalize partial + finalize
+        // failure.  Gated on Some(n) so an error reply doesn't
+        // patch the WAL entry's length to 0.
+        Box::pin(async move {
+            let [_, _, bytes_par, ..] = raw_args else {
+                return;
+            };
+            let bytes_opt = RhoByteArray::unapply(bytes_par);
+            let state_source = path.state_source_reply();
+            let n_opt = extract_ok_u64(std::slice::from_ref(state_source));
+            if path.is_divergence() {
+                finalize_failure_journal_via_table(
+                    ctx.handles,
+                    FSERR_CODE_CONSENSUS_DIVERGENCE,
+                    ctx.ack,
+                );
+            } else {
+                if let Some(n) = n_opt {
+                    if let Some(bytes) = bytes_opt.as_ref() {
+                        if n < bytes.len() as u64 {
+                            finalize_write_journal_via_table(ctx.handles, bytes, n, ctx.ack);
+                        }
+                    }
+                }
+                let reply = path.produce_reply();
+                if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+                    finalize_failure_journal_via_table(
+                        ctx.handles,
+                        fserr_to_code(&code_str),
+                        ctx.ack,
+                    );
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_WRITE_AT_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsWriteAtHandler as FsHandler>::NAME,
+    arity: <FsWriteAtHandler as FsHandler>::ARITY,
+    verifying: <FsWriteAtHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsWriteAtHandler>(fs, args)),
+};
+
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.
 // ---------------------------------------------------------------------
@@ -7061,6 +7449,157 @@ fn journal_state_read_via_table(
         },
         ack_channel_hash(ack),
     );
+}
+
+/// Free-function form of `FsProcesses::journal_write` for wave-3
+/// trait impls (FsWriteHandler, FsWriteAtHandler).  Semantic
+/// behavior identical to the `&self` wrapper.  Fd-based cmode
+/// lookup; self-guards on Oracular.  Persists payload to the
+/// payload store + records payload_source_index BEFORE appending
+/// the WAL entry.
+async fn journal_write_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    bytes: &[u8],
+    offset: Option<u64>,
+    ack: &Par,
+) -> Result<bool, ()> {
+    let wal_meta = handles
+        .with_mut(fd, |h| (h.cmode, h.canon_path.clone(), h.position))
+        .await;
+    match wal_meta {
+        Some((ConsensusMode::Consensus, canon_path, position)) => {
+            let (op, resolved_offset) = match offset {
+                Some(off) => (WalOp::WriteAt, Some(off)),
+                None => (WalOp::Write, Some(position)),
+            };
+            // Phase 7b-2: persist payload BEFORE WAL append so a
+            // joining validator's fetch protocol sees the bytes as
+            // soon as the WAL entry lands.  Fail-open — log warn.
+            if let Some(store) = handles.payload_store() {
+                if let Err(e) = store.persist(bytes) {
+                    tracing::warn!(
+                        target: "f1r3fly.fs_wal.payload_store",
+                        error = %e,
+                        "payload store persist failed on Consensus write; \
+                         joiners will need to fetch from another peer"
+                    );
+                }
+            }
+            let PayloadRef::Hash(payload_hash) = PayloadRef::hash(bytes) else {
+                unreachable!("PayloadRef::hash always returns Hash variant")
+            };
+            // DD-7b-2 Option 2: record payload_hash → deploy_sig
+            // mapping.  Fail-open.
+            if let Some(recorder) = handles.payload_source_recorder() {
+                let sig = handles
+                    .current_deploy_sig
+                    .read()
+                    .expect("current_deploy_sig lock poisoned")
+                    .clone();
+                if !sig.is_empty() {
+                    if let Err(e) = recorder.record(payload_hash, &sig) {
+                        tracing::warn!(
+                            target: "f1r3fly.fs_wal.payload_source_index",
+                            error = %e,
+                            "payload_source recorder record failed on \
+                             Consensus write; joiners will need to fall back \
+                             to peer fetch for this payload hash"
+                        );
+                    }
+                }
+            }
+            handles
+                .wal
+                .append_with_ack(
+                    WalEntry {
+                        op,
+                        path: canon_path,
+                        extra_path: None,
+                        offset: resolved_offset,
+                        length: Some(bytes.len() as u64),
+                        payload_ref: Some(PayloadRef::Hash(payload_hash)),
+                        mode_bits: None,
+                        owner: None,
+                        group: None,
+                        outcome: WalOutcome::Success,
+                    },
+                    ack_channel_hash(ack),
+                )
+                .map(|()| true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Free-function form of `FsProcesses::finalize_write_journal` for
+/// wave-3 trait impls.  Patches the pre-appended WAL entry's
+/// `length` + `payload_ref` to reflect actual bytes written on a
+/// partial write.  Re-persists the truncated slice to the payload
+/// store (fail-open).
+fn finalize_write_journal_via_table(
+    handles: &FileHandleTable,
+    requested_bytes: &[u8],
+    actual_n: u64,
+    ack: &Par,
+) {
+    let n = (actual_n as usize).min(requested_bytes.len());
+    let actual_slice = &requested_bytes[..n];
+    if let Some(store) = handles.payload_store() {
+        if let Err(e) = store.persist(actual_slice) {
+            tracing::warn!(
+                target: "f1r3fly.fs_wal.payload_store",
+                error = %e,
+                "payload store persist failed on partial-write finalize"
+            );
+        }
+    }
+    let _ = handles
+        .wal
+        .update_partial_write_by_ack_hash(ack_channel_hash(ack), actual_slice);
+}
+
+/// Free-function form of `FsProcesses::write_impl` for wave-3
+/// trait impls.  spawn_blocking libc::write (offset=None) or
+/// libc::pwrite (offset=Some).  MAX_WRITE_BYTES gate at entry.
+async fn write_impl_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    bytes: Vec<u8>,
+    offset: Option<u64>,
+) -> Par {
+    if bytes.len() as u64 > MAX_WRITE_BYTES {
+        return err(
+            FSERR_QUOTA_EXCEEDED,
+            format!("write {} exceeds MAX_WRITE_BYTES", bytes.len()),
+        );
+    }
+    let file_arc = match handles.raw_fd(fd).await {
+        Some(f) => f,
+        None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
+    };
+    let result = spawn_blocking(move || {
+        use std::os::fd::AsRawFd;
+        let raw_fd = file_arc.as_raw_fd();
+        let n = unsafe {
+            if let Some(off) = offset {
+                libc::pwrite(raw_fd, bytes.as_ptr() as *const _, bytes.len(), off as i64)
+            } else {
+                libc::write(raw_fd, bytes.as_ptr() as *const _, bytes.len())
+            }
+        };
+        if n < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(n as u64)
+        }
+    })
+    .await;
+    match result {
+        Err(_join_err) => err(FSERR_IO, "spawn_blocking task failed"),
+        Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
+        Ok(Ok(n)) => ok_u64(n),
+    }
 }
 
 /// Free-function form of `FsProcesses::finalize_failure_journal`
