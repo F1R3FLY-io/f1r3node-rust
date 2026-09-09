@@ -18,6 +18,7 @@
 #   stop-timeout          pkill/docker kill stall; the stop is bounded and the failure still publishes
 #   guardian-death-boundary the guardian dies during the boundary probe -> refuse
 #   restart-benchmark     a retained breach marker blocks the opening benchmark (no state file)
+#   benchmark-band        a 7000 MiB sample below floor plus band blocks the opening benchmark
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -34,7 +35,7 @@ SOURCE_FILES=(
 )
 SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missing-active
     stalled-active record-before-stop guardian-death diagnostic-deadline restart-uncounted
-    restart-counted stop-timeout guardian-death-boundary restart-benchmark)
+    restart-counted stop-timeout guardian-death-boundary restart-benchmark benchmark-band)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -130,7 +131,8 @@ SH
     cat >bin/docker <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
-if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == restart-benchmark &&
+if [[ ( "${SOAK_DISK_TEST_SCENARIO:-band}" == restart-benchmark ||
+    "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-band ) &&
     "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench up -d' ]]; then
     printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
     exit 1
@@ -192,15 +194,15 @@ SH
     fi
     duration=30
     run_benchmarks=false
-    if [[ "$SCENARIO" == restart-benchmark ]]; then
-        # A retained marker without a state file: the opening benchmark
-        # condition runs before the recovery block that reads the marker.
+    if [[ "$SCENARIO" == restart-benchmark || "$SCENARIO" == benchmark-band ]]; then
         duration=700
         run_benchmarks=true
         mkdir -p evidence/output node/docker
         printf 'services: {}\n' >node/docker/shard.yml
-        printf 'A prior guardian detected a disk breach. Termination remains unconfirmed.\n' >evidence/output/host-guardian-breach.txt
-        cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt
+        if [[ "$SCENARIO" == restart-benchmark ]]; then
+            printf 'A prior guardian detected a disk breach. Termination remains unconfirmed.\n' >evidence/output/host-guardian-breach.txt
+            cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt
+        fi
     fi
     observer=""
     if [[ "$SCENARIO" == stop-timeout ]]; then
@@ -320,6 +322,31 @@ SH
             exit 1
         fi
         printf 'PASS: The retained breach prevented benchmark and iteration admission and preserved the failure.\n'
+        exit 0
+    fi
+    if [[ "$SCENARIO" == benchmark-band ]]; then
+        if ! grep -Fxq 'valid=7000' evidence/probe-samples.txt ||
+            [[ -e evidence/output/host-guardian-breach.txt ]]; then
+            printf 'ERROR: The fixture lacks the low disk sample or has an unexpected guardian breach.\n' >&2
+            exit 2
+        fi
+        if ! jq -e '.bench_segments == 0' evidence/output/summary.json >/dev/null &&
+            [[ ! -s evidence/benchmark-started.txt ]]; then
+            printf 'ERROR: The benchmark fixture did not reach the Docker boundary.\n' >&2
+            exit 2
+        fi
+        if [[ -s evidence/benchmark-started.txt ]]; then
+            printf 'FAIL: The opening benchmark started with 7000 MiB below the 8192 MiB admission threshold.\n' >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            [[ ! -s evidence/output/protection-breach.txt || ! -s evidence/output/early-exit.txt ]] ||
+            ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Benchmark disk refusal lost the protection failure or admitted later work.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: The 7000 MiB sample prevented benchmark and iteration admission and recorded one protection failure.\n'
         exit 0
     fi
     if [[ "$SCENARIO" == stop-timeout ]]; then

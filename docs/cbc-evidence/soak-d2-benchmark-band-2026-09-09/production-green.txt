@@ -1,0 +1,2 @@
+PASS: The 7000 MiB sample prevented benchmark and iteration admission and recorded one protection failure.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-band-xzY4nTYN/production-green

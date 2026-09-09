@@ -1,8 +1,8 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Five constants  *)
-(* switch the five corrections on and off so that each pre-fix configuration *)
+(* decide, after the opening benchmark on the first segment. Six constants   *)
+(* switch the six corrections on and off so that each pre-fix configuration  *)
 (* reproduces one historical defect.                                         *)
 EXTENDS Naturals, TLC
 
@@ -11,7 +11,8 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           RejectMissing,   \* a probe that returns nothing cannot admit
           RejectMalformed, \* a field such as 16384junk cannot admit
           CheckGuardianAlive, \* a dead guardian process cannot admit
-          CheckRetainedBreach \* a retained breach marker blocks the opening benchmark
+          CheckRetainedBreach, \* a retained breach marker blocks the opening benchmark
+          CheckDiskBand \* the opening benchmark needs a sample at or above floor + band
 
 ASSUME /\ FloorMiB \in Nat \ {0}
        /\ BandMiB \in Nat
@@ -19,7 +20,7 @@ ASSUME /\ FloorMiB \in Nat \ {0}
        /\ InitialFreeMiB \in FreeSamples
        /\ MalformedPrefixMiB \in Nat
        /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
-           CheckRetainedBreach} \subseteq BOOLEAN
+           CheckRetainedBreach, CheckDiskBand} \subseteq BOOLEAN
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
 
@@ -42,10 +43,12 @@ Parse(r) ==
 VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence,
           retained,  \* a breach marker left behind by the previous run
-          benchmark  \* the opening benchmark was launched
+          benchmark, \* the opening benchmark was launched
+          benchmarkSample \* the disk sample read before the benchmark decision
 
 vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
-          admissionRaw, admissionSample, stopReason, evidence, retained, benchmark>>
+          admissionRaw, admissionSample, stopReason, evidence, retained, benchmark,
+          benchmarkSample>>
 
 Init ==
     /\ phase = "benchmark"
@@ -55,6 +58,7 @@ Init ==
     /\ retained \in BOOLEAN
     /\ guardian = retained
     /\ benchmark = FALSE
+    /\ benchmarkSample = Unknown
     /\ guardianAlive = TRUE
     /\ admitted = FALSE
     /\ admissionRaw = MissingRaw
@@ -70,15 +74,30 @@ Probe(next) ==
 
 BelowBand == sample.known /\ sample.mib < FloorMiB + BandMiB
 
-\* The opening benchmark of the first segment (B15): the driver launches it
-\* only when no breach marker was retained from the previous run. The
-\* recovery block that reads the marker runs later, so nothing else guards it.
+\* The opening benchmark of the first segment. B15: the driver skips it when a
+\* breach marker was retained from the previous run; the recovery block that
+\* reads the marker runs later. B16: otherwise it probes the disk first and
+\* refuses, recording a protection failure, unless a known sample is at or
+\* above floor + band. The benchmark-time sample ranges over every raw sample;
+\* the boundary decision that follows starts from InitialFreeMiB, since the
+\* benchmark itself consumes space.
 Benchmark ==
     /\ phase = "benchmark"
-    /\ benchmark' = (~CheckRetainedBreach \/ ~retained)
-    /\ phase' = "guard"
+    /\ IF CheckRetainedBreach /\ retained
+          THEN /\ benchmark' = FALSE
+               /\ benchmarkSample' = Unknown
+               /\ phase' = "guard"
+               /\ UNCHANGED stopReason
+          ELSE \E r \in RawSamples :
+               LET s == Parse(r)
+                   ok == ~CheckDiskBand \/ (s.known /\ s.mib >= FloorMiB + BandMiB)
+               IN /\ benchmarkSample' = s
+                  /\ benchmark' = ok
+                  /\ phase' = IF ok THEN "guard" ELSE "stopped"
+                  /\ stopReason' = IF ok THEN stopReason
+                                   ELSE IF s.known THEN "disk" ELSE "probe"
     /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
-                   admissionRaw, admissionSample, stopReason, evidence, retained>>
+                   admissionRaw, admissionSample, evidence, retained>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -178,7 +197,7 @@ Next == Benchmark
         \/ (/\ CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
                \/ Admit \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
-            /\ UNCHANGED <<retained, benchmark>>)
+            /\ UNCHANGED <<retained, benchmark, benchmarkSample>>)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -198,6 +217,7 @@ TypeOK ==
     /\ evidence \in BOOLEAN
     /\ retained \in BOOLEAN
     /\ benchmark \in BOOLEAN
+    /\ benchmarkSample \in ParsedSamples
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -205,6 +225,8 @@ AdmissionRequiresSample == admitted => admissionSample.known
 AdmissionRequiresValidSample == admitted => admissionRaw.kind # "malformed"
 AdmissionRequiresGuardian == admitted => guardianAlive
 RetainedBreachPreventsBenchmark == retained => ~benchmark
+BenchmarkRequiresBand ==
+    benchmark => benchmarkSample.known /\ benchmarkSample.mib >= FloorMiB + BandMiB
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
 Completes == <>(admitted \/ (phase = "done" /\ evidence))
