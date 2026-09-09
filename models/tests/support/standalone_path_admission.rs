@@ -20,6 +20,175 @@ fn expr(value: ExprInstance) -> Par {
 
 fn integer(value: i64) -> Par { expr(ExprInstance::GInt(value)) }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FullAdmissionPathObservation {
+    edges: usize,
+    states: usize,
+    frames: usize,
+    state_owner_bytes: usize,
+    frame_bytes: usize,
+    restore_bytes: usize,
+    repeated_owner_work: usize,
+    observations: usize,
+}
+
+thread_local! {
+    static FULL_ADMISSION_PATH: std::cell::Cell<Option<FullAdmissionPathObservation>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+pub(super) fn record_full_admission_path(path: &CanonicalPathTopologyAdmission) {
+    FULL_ADMISSION_PATH.with(|cell| {
+        if let Some(mut observation) = cell.get() {
+            let stats = path.stats();
+            let (state_owner_bytes, frame_bytes, restore_bytes, work) = path.checkpoint_resources();
+            observation.edges = observation.edges.max(stats.edges);
+            observation.states = observation.states.max(stats.states);
+            observation.frames = observation.frames.max(stats.frames);
+            observation.state_owner_bytes = observation.state_owner_bytes.max(state_owner_bytes);
+            observation.frame_bytes = observation.frame_bytes.max(frame_bytes);
+            observation.restore_bytes = observation.restore_bytes.max(restore_bytes);
+            observation.repeated_owner_work = observation.repeated_owner_work.max(
+                stats.region_descents + work.active_queries + work.completed_queries
+                    + work.rebuilds + work.reifications,
+            );
+            observation.observations += 1;
+            cell.set(Some(observation));
+        }
+    });
+}
+
+fn observe_full_admission<T>(action: impl FnOnce() -> T) -> (T, FullAdmissionPathObservation) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) { FULL_ADMISSION_PATH.with(|cell| cell.set(None)); }
+    }
+    FULL_ADMISSION_PATH.with(|cell| {
+        assert!(cell.get().is_none());
+        cell.set(Some(FullAdmissionPathObservation::default()));
+    });
+    let _reset = Reset;
+    let result = action();
+    (result, FULL_ADMISSION_PATH.with(|cell| cell.get().unwrap()))
+}
+
+fn full_admission_fixture(depth: usize, width: usize, endpoints: usize, malformed: bool) -> Vec<u8> {
+    use crate::rust::epathmap_trie_codec::{self, EPathMapRepr};
+    use crate::rust::rholang::canonical_path_admission::frame_storage_tests::nested_persistent_key;
+
+    fn field(number: u32, body: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        prost::encoding::encode_key(number, prost::encoding::WireType::LengthDelimited, &mut bytes);
+        prost::encoding::encode_varint(body.len() as u64, &mut bytes);
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    let mut key = nested_persistent_key(depth, width);
+    let mut trie = pathmap::PathMap::new();
+    for index in 0..endpoints {
+        *key.last_mut().unwrap() = u8::try_from(index).unwrap();
+        trie.insert(&key, integer(7));
+    }
+    if malformed {
+        trie.insert(&key[..key.len() - 1], integer(7));
+    }
+    let snapshot = epathmap_trie_codec::encode(&EPathMapRepr::Map(trie));
+    field(5, &field(32, &field(9, &snapshot)))
+}
+
+#[test]
+fn full_admission_shared_region_checkpoint_matrix() {
+    use crate::rust::par_bag::ParBag;
+    use crate::rust::rholang::protobuf_decoder;
+
+    for depth in [0, 8, 32] {
+        for endpoints in [1, 16, 256] {
+            for width in [16, 1_024] {
+                let bytes = full_admission_fixture(depth, width, endpoints, false);
+                let expected = protobuf_decoder::decode_par(bytes.as_slice()).unwrap();
+                assert_eq!(protobuf_encoder::encode_to_vec(&expected), bytes);
+                let (expression, _) = expected.first::<Expr>().unwrap().unwrap();
+                let Some(ExprInstance::EPathmapBody(map)) = &expression.expr_instance else {
+                    panic!("fixture must contain one EPathMap");
+                };
+                assert_eq!(map.len(), endpoints);
+                let compact = expected.components().compact_bytes();
+                let restored = ParBag::from_compact_bytes(&compact).unwrap();
+                assert_eq!(restored, *expected.components());
+                let mut expected_score = Vec::new();
+                expected.components().append_par_score_key(false, &mut expected_score);
+                let mut control = None;
+                for (backing, input) in [
+                    ("borrowed", IndexedByteRegion::from_borrowed(&bytes, 0, 0)),
+                    ("fragmented", fragmented(&bytes)),
+                ] {
+                    let (result, observed) = observe_full_admission(|| {
+                        validate_canonical_protobuf_inner(input, &PAR_PROTOBUF_REGION_PROGRAM, None)
+                    });
+                    let admission = result.unwrap();
+                    let stats = admission.stats();
+                    assert_eq!(admission.score_bytes().unwrap(), expected_score);
+                    assert_eq!(stats.epathmaps, 1);
+                    assert_eq!(stats.byte_native_validations, 1);
+                    assert_eq!(stats.reconstructed_key_bytes, 0);
+                    assert_eq!(stats.legacy_endpoint_replays, 0);
+                    assert_eq!(stats.typed_decodes, 0);
+                    assert_eq!(observed.repeated_owner_work, 0);
+                    assert_eq!(observed.states, observed.edges + 1);
+                    assert!(observed.frames <= 2 * observed.edges + 1);
+                    assert!(observed.observations >= endpoints);
+                    assert!(stats.max_frames <= 8);
+                    if let Some(before) = control { assert_eq!(observed, before); }
+                    else { control = Some(observed); }
+                    println!(
+                        "full-admission depth={depth} endpoints={endpoints} width={width} backing={backing} encoded={} edges={} states={} frames={} state_owner_bytes={} frame_bytes={} restore_bytes={} outer_frame_capacity={} repeated_owner_work={} observations={}",
+                        bytes.len(), observed.edges, observed.states, observed.frames,
+                        observed.state_owner_bytes, observed.frame_bytes, observed.restore_bytes,
+                        stats.max_frame_capacity_bytes, observed.repeated_owner_work, observed.observations,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn full_admission_incomplete_endpoint_preserves_failure_provenance() {
+    let good = full_admission_fixture(32, 1_024, 256, false);
+    let bad = full_admission_fixture(32, 1_024, 256, true);
+    for input in [IndexedByteRegion::from_borrowed(&good, 0, 0), fragmented(&good)] {
+        validate_canonical_protobuf_inner(input, &PAR_PROTOBUF_REGION_PROGRAM, None).unwrap();
+    }
+    let mut first = None;
+    for (backing, input) in [
+        ("borrowed", IndexedByteRegion::from_borrowed(&bad, 0, 0)),
+        ("fragmented", fragmented(&bad)),
+    ] {
+        let (result, observed) = observe_full_admission(|| {
+            validate_canonical_protobuf_inner(input, &PAR_PROTOBUF_REGION_PROGRAM, None)
+        });
+        let CanonicalProtobufAdmissionError::CanonicalPath { position, detail, .. } = result.unwrap_err() else {
+            panic!("incomplete valued endpoint must fail canonical path admission");
+        };
+        assert!(detail.contains("Truncated"), "{detail}");
+        assert_eq!(observed.repeated_owner_work, 0);
+        assert_eq!(observed.states, observed.edges + 1);
+        assert!(observed.frames <= 2 * observed.edges + 1);
+        assert!(observed.observations > 0);
+        if let Some((offset, previous)) = first {
+            let expected = origin(offset);
+            assert_eq!(position, CanonicalPathSource::in_source(expected.source, expected.offset));
+            assert_eq!(observed, previous);
+        } else {
+            assert_eq!(position.source, 0);
+            first = Some((position.offset, observed));
+        }
+        println!("full-admission malformed backing={backing} position={position:?} observation={observed:?}");
+    }
+}
+
 fn payload(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut bytes = vec![tag];
     prost::encoding::encode_varint(body.len() as u64, &mut bytes);

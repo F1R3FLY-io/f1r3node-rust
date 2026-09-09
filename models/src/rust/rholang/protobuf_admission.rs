@@ -3188,7 +3188,12 @@ fn drive_admission<'src>(
         {
             Frame::Message(frame) => message_step(frame, &mut stats, &mut scores)?,
             Frame::Map(frame) => map_step(frame, &mut stats)?,
-            Frame::EPathMap(frame) => epathmap_step(frame, &mut stats)?,
+            Frame::EPathMap(frame) => {
+                let action = epathmap_step(frame, &mut stats);
+                #[cfg(test)]
+                standalone_path_admission::record_full_admission_path(&frame.path);
+                action?
+            }
             Frame::CanonicalPath(frame) => frame.step(&mut stats)?,
         };
         match action {

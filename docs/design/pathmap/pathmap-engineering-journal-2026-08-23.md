@@ -7828,6 +7828,101 @@ nested-import allocation/time scaling and the production-equivalent ACT/LMDB
 comparison remain open. J-109's negative result is preserved as historical
 evidence; this entry supersedes only its shallow checkpoint-backing observation.
 
+### J-111 — 2026-09-09: preregistered full-admission checkpoint matrix
+
+**HYPOTHESIS / PROTOCOL.** Experiment 342, linked to task 6018, embeds J-110's
+checkpoint representation in real PathMap-produced ACT/EPM1 and the canonical
+Par/Expr/EPathMap protobuf carrier. Freeze depths 0/8/32, endpoint counts
+1/16/256 and shared byte-array payload lengths 16/1,024: 18 shapes, each with
+borrowed and fragmented/discontinuous-provenance input. Only the last payload
+byte differs among keys. Values are one fixed small integer. Fixture construction,
+typed encoding controls and public compact-ParBag round trips are outside the
+observed admission call. Reuse the existing linear nested-region fixture rather
+than maintaining another codec implementation.
+
+**INVARIANT BINDINGS BEFORE IMPLEMENTATION.** The nine compact storage laws and
+existing focused-owner/effectful-settlement models retain their scopes. This slice
+adds tests and read-only, test-only probes, not a new production algorithm.
+
+| Existing requirement | Full-pipeline binding |
+|---|---|
+| Exact schema, score and semantic admission | Compare both source backings, canonical protobuf re-encoding and a public compact ParBag round trip; verify endpoint cardinality. |
+| Persistent traversal, no endpoint replay or typed decode | Assert zero replay/reconstruction/decode counters, exact one admission, one EPM1 frame, state count equal to topology edges plus root, and bounded frame count. |
+| No repeated ancestor work | Observe actual EPM1 path reducer after each step; require zero region descents and repeated owner query/rebuild/materialization counts. |
+| Bounded historical storage | Record maximum per-EPM1 state/owner backing, frame backing and restore-stack capacity, separately from outer PDA frame capacity. The matrix has exactly one EPM1 instance; these maxima are not a sum over arbitrary nested instances. |
+| Value-free topology versus malformed valued endpoint | At the largest shape, an incomplete shared key prefix remains legal without a value but must fail when given a value. Compare the exact physical error anchor through the fragmented source mapping. Observe path storage before error propagation destroys the frame. |
+
+The probe uses thread-local state with unwind-safe reset and constant-time reads;
+it must not scan active frame stacks, change scheduling or affect production builds.
+The observations are deterministic counts and capacities. The experiment service's
+default stochastic/Welch protocol is not applicable to these counts: do not use
+its default decision as an acceptance verdict. Raw artifacts and explicit invariant
+gates supply this slice's evidence. Timing, allocation-call, RSS and headless
+profiling remain separate qualification; fixture/test execution times are not
+promoted to throughput claims. All heavy commands retain systemd memory limits
+and zero swap. No historical experiment is recreated if its record is unavailable.
+
+Independent review confirmed that the malformed fixture values the same incomplete
+shared-prefix branch that is legal without a value in the positive fixture, and
+that the probe reads capacities/counters in constant time before error propagation.
+The ParBag round trip is a public-entry integration control, not an independent
+admission implementation. The error test checks borrowed-to-fragmented physical
+provenance correspondence, not a separately predetermined absolute ACT offset.
+
+**MEASURED.** Both added tests passed: all 36 shape/backing combinations and both
+malformed-source observations. [The complete raw matrix](../stack-safety/measurements/full-admission-checkpoint-counters-2026-09-09.txt)
+retains every observation. The selected run took 1.17 s of test execution;
+compile-inclusive service time was 33.650 s, peak memory 1.5 GiB, zero swap,
+under High 4 GiB / Max 6 GiB / CPU 400%, four build jobs and one test thread.
+These are correctness-run observations, not throughput estimates.
+
+| Depth | Endpoints | Payload bytes | Encoded carrier bytes | Distinct topology edges | Path frames | State/owner backing (B) | Frame backing (B) | Restore backing (B) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 1 | 1,024 | 1,083 | 1,027 | 1,027 | 180,224 | 344,064 | 81,920 |
+| 0 | 256 | 1,024 | 2,906 | 1,282 | 1,027 | 180,224 | 344,064 | 81,920 |
+| 32 | 1 | 1,024 | 1,243 | 1,187 | 1,219 | 285,888 | 344,064 | 81,920 |
+| 32 | 256 | 1,024 | 3,066 | 1,442 | 1,219 | 330,240 | 344,064 | 81,920 |
+
+All shown counters, and all other shape counters, are identical between the two
+backings. Outer PDA frame capacity is 10,176 B in every cell. Every successful
+cell records exactly one EPM1 and one byte-native validation, zero reconstructed
+keys, zero endpoint replay, zero typed decode, zero repeated ancestor work,
+and states equal to distinct topology edges plus the root. Historical frames
+do not multiply by endpoint count when the prefix is shared. These are finite
+runtime bindings to the existing models, not a new universal complexity proof.
+
+The largest malformed carrier refuses its incomplete valued prefix before any
+map value is admitted. Its physical endpoint is source 0 / offset 1,735 for
+borrowed input and source 11 / offset 22,655 after the declared discontinuous
+mapping. Both record 1,186 edges, 1,187 states, 1,219 frames, 285,888 B state/owner
+backing, 344,064 B frame backing and 81,920 B restore capacity, with zero repeated
+ancestor work. The corresponding value-free branch is accepted in the positive
+fixture. No malformed-run statistic is silently omitted by early error return.
+
+**NEGATIVE CONTROLS / LIMITS.** Initial test compilation exposed incorrect decoder
+and Par accessor names and a provenance-wrapper type mismatch. Those fixture
+errors were repaired without changing production semantics or weakening gates.
+The selected passing log is `/tmp/epathmap-full-admission-matrix3-20260909.log`,
+SHA-256 `b68b3d8ac1720bdd73d74598074f37a4ee20a3997ac24dec14645335bca2784f`.
+This slice does not measure aggregate allocations, byte-arena pages, score-arena
+retention, ACT plan storage, process RSS attributable to admission, or latency.
+The measurements therefore close the embedded checkpoint-sharing observation,
+not the entire admission or ACT/LMDB resource qualification.
+
+**FINAL REGRESSION GATES.** The complete models library passed 405 tests with
+zero failures/ignores in 55.99 s. Its already-built capped service took 56.301 s,
+reported 278.9 MiB peak and zero swap. The combined gate passed 169 closed RPB3
+reports, three kernel checks and 102 selected runtime tests, including all 27
+standalone-admission tests and 22 checkpoint-storage tests. An earlier full-library
+service terminated with exit 101 and incomplete captured output during a session
+transition; the service journal, not an observation timeout, established that it
+was terminal before the recheck. That incomplete run is not passing evidence.
+
+| Final evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-full-admission-models-recheck-20260909.log` | `85334ec759c264e15b56f6b910f1ff845651bffc0afc4e647aca6909f0d5eb36` |
+| `/tmp/epathmap-full-admission-final-gate-20260909.log` | `4313cfc10142544d53e9b0b2223aea502642ccba6fcc4839630a15834e34bf75` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

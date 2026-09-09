@@ -10409,6 +10409,32 @@ new depth limit, larger native stack or PathMap change is introduced.
 records the design, verification and complete measurements. The whole nested-import
 resource matrix and production-equivalent ACT/LMDB qualification remain open.
 
+#### 5.33.30 Checkpoint sharing in full protobuf/EPM1 admission (2026-09-09, task 6018)
+
+Experiment 342 embeds the focused reducer inside real PathMap-produced ACT/EPM1
+and a canonical protobuf Par carrier. Both added tests pass: depths 0/8/32,
+endpoint counts 1/16/256 and shared payload lengths 16/1,024 with borrowed and
+fragmented sources, plus an incomplete valued endpoint and its legal value-free
+counterpart. All successful cells report zero reconstruction, endpoint replay,
+typed decode and repeated ancestor work. The malformed case preserves physical
+provenance and its path-storage observation before error propagation.
+
+At depth 32 and payload length 1,024, increasing endpoints from 1 to 256 leaves
+historical path frames unchanged at 1,219; state/owner backing rises from
+285,888 to 330,240 B. Frame backing stays 344,064 B, restore capacity 81,920 B,
+and outer PDA capacity 10,176 B. Borrowed and fragmented counter results agree.
+The selected correctness service peaked at 1.5 GiB with zero swap under its
+6 GiB hard cap; this compile-inclusive figure is not admission-only RSS.
+
+The final full models library passed 405 tests, zero failures/ignores, in 55.99 s;
+the already-built service peaked at 278.9 MiB with zero swap. The combined gate
+passed 169 closed RPB3 reports, three kernel checks and 102 selected runtime tests.
+
+[J-111](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-111--2026-09-09-preregistered-full-admission-checkpoint-matrix)
+contains the complete protocol and raw matrix. This closes the full-pipeline
+checkpoint-sharing observation only: byte/score arenas, ACT plans, allocation
+traffic and latency remain separate required resource evidence.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

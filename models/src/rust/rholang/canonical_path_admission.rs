@@ -3018,6 +3018,16 @@ impl CanonicalPathTopologyAdmission {
     #[cfg(test)]
     pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats { self.reducer.stats() }
 
+    #[cfg(test)]
+    pub(crate) fn checkpoint_resources(&self) -> (usize, usize, usize, CanonicalPathOwnerWork) {
+        (
+            self.reducer.retained_state_bytes(),
+            self.reducer.retained_frame_bytes(),
+            self.restore.capacity() * std::mem::size_of::<CanonicalPathReducerHandle>(),
+            self.reducer.machine.owner_work.get(),
+        )
+    }
+
     pub(crate) fn active_obligation(&self) -> Option<CanonicalPathObligationProgress> {
         self.reducer.active_obligation(self.current)
     }
@@ -3131,7 +3141,7 @@ impl CanonicalPathTopologyAdmission {
 
 #[cfg(test)]
 #[path = "../../../tests/support/canonical_frame_storage.rs"]
-mod frame_storage_tests;
+pub(crate) mod frame_storage_tests;
 
 #[cfg(test)]
 #[path = "../../../tests/support/canonical_path_byte_policy.rs"]

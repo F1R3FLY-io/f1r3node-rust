@@ -2103,7 +2103,7 @@ fn focused_persistent_outer_refusal_keeps_inner_completion_effects() {
     assert_focused_persistent_matches(&reference, &reference_arena, other, &focused, &arena, next);
 }
 
-fn nested_persistent_key(depth: usize, width: usize) -> Vec<u8> {
+pub(crate) fn nested_persistent_key(depth: usize, width: usize) -> Vec<u8> {
     let mut leaf = vec![GBYTE_ARRAY];
     prost::encoding::encode_varint(width as u64, &mut leaf);
     leaf.resize(leaf.len() + width, 0);
