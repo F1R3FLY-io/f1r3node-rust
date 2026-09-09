@@ -35,8 +35,8 @@ With disk protection enabled, the soak driver never starts an iteration from a f
 
 | Check | Command | Status |
 | --- | --- | --- |
-| Bounded models and nine controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
-| Container regressions, 11 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally and in CI |
+| Bounded models and ten controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
+| Container regressions, 12 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally and in CI |
 | Host driver regression, band scenario | `scripts/bench/test-run-merge-recovery-soak.sh` | Green locally and in CI |
 
 ## Pending obligations
@@ -47,7 +47,7 @@ The claim is not discharged. Gates from the prevention plan:
 | --- | --- | --- |
 | G0 | Evidence binding and required-check enforcement | Pending. `TLA+ invariant check` is not a required check on `dev`. |
 | D1 | Band admission | Local RED/GREEN complete. Maintainer review pending. |
-| D2 | Emergency response bounds | Partial. Stop and cleanup command bounds, confirmed termination, durable publication, and a composed deadline remain open. |
+| D2 | Emergency response bounds | Partial. Stop commands are bounded (B13). Cleanup command bounds, confirmed termination, durable publication, and a composed deadline remain open. |
 | O1 | Observability before the diagnostic soak | Pending. |
 | D3 | Identify and remove the disk-growth cause | Pending. |
 | F1, F2, F3 | Finalization work bound and repair | Pending and separate from this claim. |

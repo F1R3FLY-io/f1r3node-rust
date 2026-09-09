@@ -164,6 +164,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_stop_first_pre_fix:StopRequiresRecord
     soak_disk/MC_SoakDiskGuardian_per_root_deadline_pre_fix:AttributionWithinBudget
     soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix:RetainedBreachStopsRestart
+    soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix:StopWithinBudget
 )
 
 # Areas whose expected-violation configurations are all registered. A

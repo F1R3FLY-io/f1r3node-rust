@@ -15,6 +15,7 @@
 #   diagnostic-deadline   du stalls on 32 roots; attribution stays bounded
 #   restart-uncounted     a retained breach marker blocks the next segment (failures 0 -> 1)
 #   restart-counted       same, with a prior failure count that stays at 2
+#   stop-timeout          pkill/docker kill stall; the stop is bounded and the failure still publishes
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -30,7 +31,7 @@ SOURCE_FILES=(
 )
 SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missing-active
     stalled-active record-before-stop guardian-death diagnostic-deadline restart-uncounted
-    restart-counted)
+    restart-counted stop-timeout)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -66,7 +67,7 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
     guardian-death | restart-uncounted | restart-counted)
         available=16384
         ;;
-    record-before-stop)
+    record-before-stop | stop-timeout)
         available=16384
         if [[ -f /case/evidence/workload-started.txt ]]; then
             available=1024
@@ -115,6 +116,17 @@ printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
 if [[ "$*" == 'builder prune -af' ]]; then
     touch /case/evidence/hygiene-completed
 fi
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == stop-timeout ]]; then
+    case "$*" in
+        'ps -q --filter name=rnode.' | 'ps -aq --filter name=rnode.') printf 'disk-fixture\n' ;;
+        'kill disk-fixture' | 'rm -f disk-fixture')
+            printf '%s\n' "$$" >>/case/evidence/stop-pids.txt
+            touch /case/evidence/stop-started
+            trap '' TERM
+            while [[ ! -e /case/evidence/release-stop ]]; do sleep 0.05; done
+            ;;
+    esac
+fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == record-before-stop ]]; then
     if [[ "$*" == "ps -q --filter name=rnode." ]]; then
         printf 'disk-fixture\n'
@@ -141,7 +153,7 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
         printf '%s\n' "$guardian_pid" >/case/evidence/guardian-killed.txt
         sleep 12
         ;;
-    missing-active | record-before-stop | stalled-active) sleep 12 ;;
+    missing-active | record-before-stop | stalled-active | stop-timeout) sleep 12 ;;
 esac
 printf 'finalize\n' >/case/evidence/output/signal
 printf 'The boundary workload fixture completed.\n'
@@ -157,6 +169,30 @@ SH
         cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt
     fi
     observer=""
+    if [[ "$SCENARIO" == stop-timeout ]]; then
+        (
+            for _ in $(seq 1 200); do
+                [[ ! -e evidence/stop-started ]] || break
+                sleep 0.05
+            done
+            [[ -e evidence/stop-started ]] || exit 2
+            sleep 5
+            ps -eo pid,ppid,stat,args >evidence/stop-processes.txt
+            date -u '+%Y-%m-%dT%H:%M:%SZ' >evidence/stop-observed-at.txt
+            outcome=met
+            if [[ -s evidence/output/summary.json ]]; then
+                cp evidence/output/summary.json evidence/stop-observed-summary.json
+            else
+                outcome=exceeded
+            fi
+            while IFS= read -r pid; do
+                if kill -0 "$pid" 2>/dev/null; then outcome=exceeded; fi
+            done <evidence/stop-pids.txt
+            printf '%s\n' "$outcome" >evidence/stop-deadline.txt
+            touch evidence/release-stop
+        ) &
+        observer=$!
+    fi
     if [[ "$SCENARIO" == diagnostic-deadline ]]; then
         for n in $(seq 1 32); do mkdir -p "/tmp/test-diagnostic-$n"; done
         cat >bin/du <<'SH'
@@ -194,6 +230,7 @@ SH
         SOAK_DISK_FREE_FLOOR_MB=4096 \
         SOAK_DISK_HYGIENE_BAND_MB=4096 \
         SOAK_DISK_DIAGNOSTIC_SECONDS=1 \
+        SOAK_DISK_STOP_SECONDS=1 \
         SOAK_TMP_ROOT=/tmp \
         SOAK_RUNNER_ROOT=/case/runner \
         SOAK_RUN_BENCHMARKS=false \
@@ -222,6 +259,25 @@ SH
             exit 1
         fi
         printf 'PASS: Restart preserved the guardian breach and failure count without new work (%s).\n' "$SCENARIO"
+        exit 0
+    fi
+    if [[ "$SCENARIO" == stop-timeout ]]; then
+        if [[ ! -s evidence/stop-deadline.txt || ! -s evidence/stop-pids.txt ]] ||
+            ! grep -Fxq 'valid=1024' evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not exercise stalled disk stop commands.\n' >&2
+            exit 2
+        fi
+        if ! grep -Fxq met evidence/stop-deadline.txt; then
+            printf 'FAIL: Stalled stop commands prevented failure publication within the fixture deadline.\n' >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || "$iterations" != 1 ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 1 and .failures == 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Bounded stop commands lost the protection failure.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: The driver bounded stalled stop commands and published the protection failure. Writer termination remains unconfirmed.\n'
         exit 0
     fi
     if [[ "$SCENARIO" == diagnostic-deadline ]]; then

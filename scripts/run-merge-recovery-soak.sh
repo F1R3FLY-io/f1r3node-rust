@@ -188,6 +188,11 @@ fi
 # of the developer's real /tmp.
 SOAK_TMP_ROOT="${SOAK_TMP_ROOT:-/tmp}"
 SOAK_RUNNER_ROOT="${SOAK_RUNNER_ROOT:-/opt/actions-runner}"
+DISK_STOP_SECONDS="${SOAK_DISK_STOP_SECONDS:-2}"
+if ! [[ "$DISK_STOP_SECONDS" =~ ^[1-5]$ ]]; then
+	printf 'SOAK_DISK_STOP_SECONDS must be an integer from 1 through 5\n' >&2
+	exit 2
+fi
 DISK_DIAGNOSTIC_SECONDS="${SOAK_DISK_DIAGNOSTIC_SECONDS:-10}"
 if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
 	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
@@ -206,6 +211,20 @@ disk_free_mb() {
 	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$mb"
 }
+
+stop_node_writer_commands() {
+	local selection="$1"
+	shift
+	pkill -9 -f '/tmp/rnode' 2>/dev/null || true
+	docker ps "$selection" --filter 'name=rnode.' 2>/dev/null |
+		xargs -r docker "$@" 2>/dev/null || true
+}
+
+stop_node_writers() (
+	export -f stop_node_writer_commands
+	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
+		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
+)
 
 # Reclaim space that accumulates across iterations without touching anything
 # an active session owns. Container removal is scoped to EXITED containers in
@@ -990,8 +1009,7 @@ print(json.dumps(tags))
 				disk_mb="$(disk_free_mb)"
 				if [ -z "$disk_mb" ]; then
 					printf 'The disk probe is unavailable during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
-					pkill -9 -f '/tmp/rnode' 2>/dev/null || true
-					docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
+					stop_node_writers -q kill || true
 					exit 0
 				fi
 				if [ -n "$disk_mb" ]; then
@@ -1002,8 +1020,7 @@ print(json.dumps(tags))
 						if [ "$disk_mb" -lt "$disk_hard_floor_mb" ] || [ "$disk_over" -ge 3 ]; then
 							printf 'The disk guardian detected %s MiB below floor %s MiB (hard floor %s MiB, consecutive samples %s). Workload termination is unconfirmed.\n' \
 								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" >"$HOST_GUARDIAN_BREACH"
-							pkill -9 -f '/tmp/rnode' 2>/dev/null || true
-							docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
+							stop_node_writers -q kill || true
 							# Who filled it rides in the tag: on weekend runs
 							# 33939315110, 33978505238 and 34056342543 the VM
 							# was gone ~20s after this stamp and the tag was
@@ -1223,8 +1240,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_FIFO=""
 	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
 		STATUS=1
-		pkill -9 -f '/tmp/rnode' 2>/dev/null || true
-		docker ps -aq --filter 'name=rnode.' 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true
+		stop_node_writers -aq rm -f >/dev/null 2>&1 || true
 	fi
 	# No `set -e` restore: this script never enables errexit (line 2 is
 	# `set -uo pipefail`), and turning it on here made the first failed

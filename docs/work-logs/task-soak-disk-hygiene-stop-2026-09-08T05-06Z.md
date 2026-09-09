@@ -191,3 +191,21 @@ The combined bounded gate passes 11 positive configurations and 11 exact negativ
 D2 remains incomplete. Stop and cleanup command bounds, confirmed termination, durable publication, full admission coverage, and cleanup ownership still require work.
 
 A composed emergency deadline and the D3-dependent reserve argument remain open. No claim is discharged. No commit, push, hosted run, or soak followed these cycles.
+
+## D2 stop deadline cycle B13
+
+The next cycle starts from `3d2aa7904`. A stalled Docker fixture reproduces delayed failure publication before the matching `StopWithinBudget` formal counterexample.
+
+The first timeout correction returns but leaves two clients alive. The retained process snapshot shows both clients after local summary publication.
+
+The corrected wrapper keeps its shell alive until process-group cancellation. The fixture clients exit, and the driver publishes one protection failure.
+
+The [B13 evidence package](../cbc-evidence/soak-d2-stop-2026-09-09/README.md) retains both correction attempts and separate production and formal results.
+
+The first combined verifier runs overlap on fixed temporary log paths. Those results cannot provide isolated verification evidence. Fresh serial runs pass.
+
+The current bounded gate passes 12 positive configurations and 12 exact controls. The classifier covers 84 cases. All eight emergency scenarios and supporting regressions pass.
+
+D2 remains pending. Client exit does not confirm writer termination, durable publication, or the complete emergency deadline. Cleanup, admission coverage, reserve evidence, and maintainer review remain open.
+
+No commit, push, hosted dispatch, or soak occurs in this cycle.
