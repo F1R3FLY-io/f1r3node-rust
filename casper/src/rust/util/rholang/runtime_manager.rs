@@ -3486,7 +3486,7 @@ mod h7_cross_runtime_wiring_tests {
                 fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
                 oc, w1, w2, w3
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "aa".hexToBytes(), *w1) |
                 for (@_ <- w1) {{
@@ -3604,7 +3604,7 @@ mod h7_cross_runtime_wiring_tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 oc, w1
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "aa".hexToBytes(), *w1) |
                 for (@_ <- w1) {{ Nil }}
