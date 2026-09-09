@@ -16,7 +16,8 @@ a Boolean constant and must violate exactly the invariant named below.
 | `DecideHygiene` | Run hygiene only when a known sample is below floor plus band |
 | `Hygiene` | `reclaim_disk_space`, which can reclaim nothing |
 | `DecideAfterHygiene` | Refuse a known sample below the threshold |
-| `CheckAdmission` | Refuse a missing sample, or a dead guardian process, before starting work |
+| `CheckAdmission` | Refuse a missing sample, a dead guardian process, or expired guardian progress before starting work |
+| `GuardianStall` | The guardian stays alive but its progress record expires before admission |
 | `GuardianCrash` | The guardian process dies before the workload starts |
 | `Admit` | Start the iteration |
 | `PublishRefusal` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary |
@@ -31,8 +32,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `CheckDiskBand` | The opening benchmark needs a sample at or above floor plus band | `MC_SoakDiskAdmission_benchmark_band_pre_fix` | `BenchmarkRequiresBand` |
 | `MonitorOpening` | The guardian starts before the opening benchmark, so a fall below the hard floor during it is recorded and stopped | `MC_SoakDiskAdmission_late_guardian_pre_fix` | `BenchmarkBreachObserved` |
 | `WatchGuardian` | A guardian fault during the benchmark cancels it and publishes the failure; the stop, TERM, grace, and kill sequence is one step | `MC_SoakDiskAdmission_unwatched_death_pre_fix`, `MC_SoakDiskAdmission_unwatched_breach_pre_fix` | `BenchmarkCancellationObserved` |
+| `CheckProgress` | Expired guardian progress cannot admit an iteration or a benchmark (B22) | `MC_SoakDiskAdmission_unchecked_progress_pre_fix` | `StaleProgressPreventsAdmission` |
 
-`MC_SoakDiskAdmission` enables all eight corrections with both benchmark fault kinds. It checks `TypeOK`, the eight invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 1038 distinct states.
+`MC_SoakDiskAdmission` enables all nine corrections with both benchmark fault kinds. It checks `TypeOK`, the nine invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 2097 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 
@@ -51,6 +53,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | Model action | Driver behavior |
 | --- | --- |
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
+| `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
 | `StartProbe`, `Tick`, `ProbeReturns` | The guardian runs `df` under `timeout` |
 | `DecideSample` | A timed-out or empty probe supplies no sample |
 | `Detect`, `Record`, `BeginStop` | Write `host-guardian-breach.txt`, then start `stop_node_writers` |
@@ -67,8 +70,9 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `AggregateDeadline` | Attribution has one budget for all roots | `MC_SoakDiskGuardian_per_root_deadline_pre_fix` | `AttributionWithinBudget` |
 | `PreserveBreach` | A restart keeps the marker and records a failure | `MC_SoakDiskGuardian_cleared_breach_pre_fix` | `RetainedBreachStopsRestart` |
 | `EnforceStopDeadline` | `pkill` and `docker kill` run under a deadline | `MC_SoakDiskGuardian_unbounded_stop_pre_fix` | `StopWithinBudget` |
+| `CheckProgress` | A live guardian without recent progress counts as failed, and the work is interrupted | `MC_SoakDiskGuardian_alive_only_pre_fix` | `StaleGuardianRequiresInterrupt` |
 
-`MC_SoakDiskGuardian` enables all seven corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, and `KillFollowsTerm`. It completes with 3144 distinct states.
+`MC_SoakDiskGuardian` enables all eight corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, and `KillFollowsTerm`. It completes with 6294 distinct states.
 
 Clock units: the probe deadline is 3 units (a 2-second timeout plus a 1-second kill grace), a stalled `df` returns at 4 units, the stop budget is 2 units (TERM at 1, KILL at 2), and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
 

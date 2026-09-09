@@ -357,3 +357,13 @@ A source navigation tool could not parse the Bash file. Direct source reads supp
 D2 and acceptance remain pending. Guardian progress, cleanup ownership, confirmed writers, durability, aggregate deadlines, and reserve evidence remain open.
 
 No commit, push, hosted dispatch, or soak occurs in these cycles.
+
+## D2 guardian progress B20
+
+The user requested the remaining tasks after publishing `8ab599e5c`. The branch and worktree were current and clean at the start.
+
+B20 suspends a live guardian during an active benchmark. The existing liveness check cannot detect missing progress.
+
+The fixture checks client cancellation and failure publication before releasing the suspended guardian after twelve seconds. It starts no nodes.
+
+No peer was available. The other agent retains refactoring ownership. D2 and acceptance remain pending.

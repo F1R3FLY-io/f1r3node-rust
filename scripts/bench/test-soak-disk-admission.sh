@@ -28,6 +28,10 @@
 #   benchmark-cancel-breach the guardian records a breach during the benchmark; same cancellation
 #   benchmark-guardian-boundary the guardian dies during the opening benchmark's disk probe -> refuse
 #   benchmark-guardian-interleaved same, at an interleaved benchmark after one iteration -> refuse
+#   benchmark-cancel-stall the guardian is SIGSTOPped during the benchmark; no progress -> cancel it
+#   guardian-stall        the guardian is SIGSTOPped during an iteration; no progress -> stop it
+#   guardian-progress-boundary driver and guardian paused across the iteration probe; stale progress -> refuse
+#   benchmark-progress-boundary same, across the opening benchmark probe -> refuse
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -46,7 +50,8 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     stalled-active record-before-stop guardian-death diagnostic-deadline restart-uncounted
     restart-counted stop-timeout guardian-death-boundary restart-benchmark benchmark-band
     benchmark-active-disk benchmark-equal benchmark-sufficient benchmark-missing benchmark-disabled
-    benchmark-cancel-death benchmark-cancel-breach benchmark-guardian-boundary benchmark-guardian-interleaved)
+    benchmark-cancel-death benchmark-cancel-breach benchmark-guardian-boundary benchmark-guardian-interleaved
+    benchmark-cancel-stall guardian-stall guardian-progress-boundary benchmark-progress-boundary)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -78,6 +83,24 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
             stall_after=true
         fi
         available=16384
+        ;;
+    guardian-progress-boundary | benchmark-progress-boundary)
+        available=16384
+        guardian_pid="$(awk '/^orchestrator host guardian watching/ {print $NF; exit}' /case/evidence/driver.log)"
+        from_guardian=false
+        ancestor="$PPID"
+        for _ in $(seq 1 16); do
+            if [[ "$ancestor" == "$guardian_pid" ]]; then from_guardian=true; break; fi
+            [[ "$ancestor" -gt 1 ]] || break
+            ancestor="$(awk '/^PPid:/ {print $2}' "/proc/$ancestor/status")" || exit 2
+        done
+        if [[ "$guardian_pid" =~ ^[1-9][0-9]*$ && "$from_guardian" == false && ! -e /case/evidence/admission-suspended.txt ]]; then
+            driver_pid="$(awk '/^PPid:/ {print $2}' "/proc/$guardian_pid/status")" || exit 2
+            [[ "$driver_pid" =~ ^[1-9][0-9]*$ ]] || exit 2
+            kill -STOP "$guardian_pid" || exit 2
+            printf '%s %s\n' "$driver_pid" "$guardian_pid" >/case/evidence/admission-suspended.txt
+            kill -STOP "$driver_pid" || exit 2
+        fi
         ;;
     benchmark-guardian-boundary | benchmark-guardian-interleaved)
         available=16384
@@ -117,7 +140,7 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
     benchmark-equal)
         available=8192
         ;;
-    guardian-death | restart-uncounted | restart-counted | restart-benchmark | benchmark-sufficient | benchmark-cancel-death)
+    guardian-death | restart-uncounted | restart-counted | restart-benchmark | benchmark-sufficient | benchmark-cancel-death | benchmark-cancel-stall | guardian-stall)
         available=16384
         ;;
     benchmark-active-disk | benchmark-cancel-breach)
@@ -219,6 +242,18 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-cancel-* &&
         kill -KILL "$guardian_pid" || exit 2
         printf '%s\n' "$guardian_pid" >/case/evidence/benchmark-guardian-killed.txt
     fi
+    if [[ "$SOAK_DISK_TEST_SCENARIO" == benchmark-cancel-stall ]]; then
+        guardian_pid="$(awk '/^orchestrator host guardian watching/ {print $NF; exit}' /case/evidence/driver.log)"
+        [[ "$guardian_pid" =~ ^[1-9][0-9]*$ ]] || exit 2
+        kill -STOP "$guardian_pid" || exit 2
+        for _ in $(seq 1 20); do
+            guardian_state="$(ps -o stat= -p "$guardian_pid" || true)"
+            [[ "$guardian_state" != T* ]] || break
+            sleep 0.05
+        done
+        [[ "$guardian_state" == T* ]] || exit 2
+        printf '%s\n' "$guardian_pid" >/case/evidence/guardian-stopped.txt
+    fi
     printf '%s\n' "$SOAK_DISK_TEST_SCENARIO" >/case/evidence/benchmark-fault-ready.txt
     while [[ ! -e /case/evidence/release-benchmark ]]; do sleep 0.05; done
     touch /case/evidence/benchmark-returned.txt
@@ -264,6 +299,15 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
         printf '%s\n' "$guardian_pid" >/case/evidence/guardian-killed.txt
         sleep 12
         ;;
+    guardian-stall)
+        guardian_pid="$(awk '/^orchestrator host guardian watching/ {print $NF; exit}' /case/evidence/driver.log)"
+        [[ "$guardian_pid" =~ ^[1-9][0-9]*$ ]] || exit 2
+        kill -STOP "$guardian_pid" || exit 2
+        printf '%s\n' "$guardian_pid" >/case/evidence/guardian-stopped.txt
+        printf '%s\n' "$$" >/case/evidence/iteration-client-pid.txt
+        touch /case/evidence/iteration-fault-ready
+        while [[ ! -e /case/evidence/release-iteration ]]; do sleep 0.05; done
+        ;;
     missing-active | record-before-stop | stalled-active | stop-timeout) sleep 12 ;;
 esac
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" != benchmark-guardian-interleaved ]]; then
@@ -302,6 +346,52 @@ SH
             "$(date +%s)" >evidence/output/.soak-state
     fi
     observer=""
+    if [[ "$SCENARIO" == guardian-progress-boundary || "$SCENARIO" == benchmark-progress-boundary ]]; then
+        (
+            for _ in $(seq 1 200); do
+                [[ ! -s evidence/admission-suspended.txt ]] || break
+                sleep 0.05
+            done
+            [[ -s evidence/admission-suspended.txt ]] || exit 2
+            read -r driver_pid guardian_pid <evidence/admission-suspended.txt
+            sleep 9
+            ps -o stat= -p "$driver_pid" >evidence/admission-driver-state.txt || exit 2
+            ps -o stat= -p "$guardian_pid" >evidence/admission-guardian-state.txt || exit 2
+            cp evidence/output/.host-guardian-progress evidence/admission-progress.txt || exit 2
+            read -r uptime _ </proc/uptime
+            printf '%s\n' "${uptime%%.*}" >evidence/admission-resumed-at.txt
+            kill -CONT "$driver_pid" || exit 2
+            sleep 3
+            kill -CONT "$guardian_pid" || exit 2
+        ) &
+        observer=$!
+    fi
+    if [[ "$SCENARIO" == guardian-stall ]]; then
+        (
+            for _ in $(seq 1 200); do
+                [[ ! -e evidence/iteration-fault-ready ]] || break
+                sleep 0.05
+            done
+            [[ -e evidence/iteration-fault-ready ]] || exit 2
+            sleep 12
+            ps -eo pid,ppid,pgid,stat,args >evidence/iteration-observed-processes.txt
+            outcome=met
+            if [[ -s evidence/output/summary.json ]]; then
+                cp evidence/output/summary.json evidence/iteration-observed-summary.json
+            else
+                outcome=exceeded
+            fi
+            pid="$(<evidence/iteration-client-pid.txt)"
+            client_state="$(ps -o stat= -p "$pid" || true)"
+            [[ -z "$client_state" || "$client_state" == Z* ]] || outcome=exceeded
+            printf '%s\n' "$outcome" >evidence/iteration-cancellation.txt
+            guardian_pid="$(<evidence/guardian-stopped.txt)"
+            ps -o stat= -p "$guardian_pid" >evidence/guardian-observed-state.txt || exit 2
+            kill -CONT "$guardian_pid" || exit 2
+            touch evidence/release-iteration
+        ) &
+        observer=$!
+    fi
     if [[ "$SCENARIO" == benchmark-cancel-* ]]; then
         (
             for _ in $(seq 1 200); do
@@ -309,7 +399,7 @@ SH
                 sleep 0.05
             done
             [[ -s evidence/benchmark-fault-ready.txt ]] || exit 2
-            sleep 8
+            if [[ "$SCENARIO" == benchmark-cancel-stall ]]; then sleep 12; else sleep 8; fi
             ps -eo pid,ppid,pgid,stat,args >evidence/benchmark-observed-processes.txt
             outcome=met
             if [[ -s evidence/output/summary.json ]]; then
@@ -321,6 +411,11 @@ SH
             client_state="$(ps -o stat= -p "$pid" || true)"
             [[ -z "$client_state" || "$client_state" == Z* ]] || outcome=exceeded
             printf '%s\n' "$outcome" >evidence/benchmark-cancellation.txt
+            if [[ "$SCENARIO" == benchmark-cancel-stall ]]; then
+                guardian_pid="$(<evidence/guardian-stopped.txt)"
+                ps -o stat= -p "$guardian_pid" >evidence/guardian-observed-state.txt || exit 2
+                kill -CONT "$guardian_pid" || exit 2
+            fi
             touch evidence/release-benchmark
         ) &
         observer=$!
@@ -395,6 +490,7 @@ SH
         SOAK_NODE_REPO_DIR=/case/node \
         DEPLOYER_KEY=fixture-not-used \
         SOAK_MERGE_EXIT_MIN_SECONDS=0 \
+        SOAK_GUARDIAN_MAX_SILENCE_SECONDS=8 \
         SOAK_GUARDIAN_POLL_SECONDS=0.05 \
         SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
         timeout --signal=TERM --kill-after=2 20 \
@@ -468,6 +564,52 @@ SH
         printf 'PASS: Guardian death during the probe prevented benchmark admission and preserved failure (%s).\n' "$SCENARIO"
         exit 0
     fi
+    if [[ "$SCENARIO" == guardian-progress-boundary || "$SCENARIO" == benchmark-progress-boundary ]]; then
+        if ! grep -Eq '^T' evidence/admission-driver-state.txt ||
+            ! grep -Eq '^T' evidence/admission-guardian-state.txt ||
+            ! grep -Fxq 'valid=16384' evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not suspend the driver and guardian at admission.\n' >&2
+            exit 2
+        fi
+        last="$(<evidence/admission-progress.txt)"
+        now="$(<evidence/admission-resumed-at.txt)"
+        if [[ ! "$last" =~ ^[0-9]+$ || ! "$now" =~ ^[0-9]+$ ]] || ((now - last <= 8)); then
+            printf 'ERROR: The fixture did not expire guardian progress before admission.\n' >&2
+            exit 2
+        fi
+        if ! jq -e '.iterations == 0 and .bench_segments == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Stale guardian progress permitted new work at admission (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt || -e evidence/benchmark-started.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.failures == 1 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Stale guardian admission refusal lost its protection failure.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: Stale guardian progress prevented admission and preserved failure (%s).\n' "$SCENARIO"
+        exit 0
+    fi
+    if [[ "$SCENARIO" == guardian-stall ]]; then
+        if [[ ! -s evidence/guardian-stopped.txt || ! -s evidence/iteration-client-pid.txt ]] ||
+            ! grep -Fxq 'valid=16384' evidence/probe-samples.txt ||
+            ! grep -Eq '^T' evidence/guardian-observed-state.txt; then
+            printf 'ERROR: The fixture did not suspend a live guardian during the active iteration.\n' >&2
+            exit 2
+        fi
+        if ! grep -Fxq met evidence/iteration-cancellation.txt; then
+            printf 'FAIL: A live guardian without progress did not stop its active iteration before fixture release.\n' >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || "$iterations" != 1 ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 1 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/iteration-observed-summary.json >/dev/null; then
+            printf 'FAIL: Guardian progress refusal lost its protection failure or admitted another iteration.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: The missing guardian progress stopped the active iteration and preserved failure before fixture release.\n'
+        exit 0
+    fi
     if [[ "$SCENARIO" == benchmark-cancel-* ]]; then
         if [[ ! -s evidence/benchmark-client-pid.txt ]] ||
             ! grep -Fxq "$SCENARIO" evidence/benchmark-fault-ready.txt ||
@@ -479,6 +621,11 @@ SH
         if [[ "$SCENARIO" == benchmark-cancel-breach ]] &&
             ! grep -Fxq 'valid=1024' evidence/probe-samples.txt; then
             printf 'ERROR: The guardian did not sample the benchmark disk fault.\n' >&2
+            exit 2
+        fi
+        if [[ "$SCENARIO" == benchmark-cancel-stall ]] &&
+            { [[ ! -s evidence/guardian-stopped.txt ]] || ! grep -Eq '^T' evidence/guardian-observed-state.txt; }; then
+            printf 'ERROR: The fixture did not retain a live suspended guardian until observation.\n' >&2
             exit 2
         fi
         if ! grep -Fxq met evidence/benchmark-cancellation.txt; then

@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Eight Boolean   *)
+(* decide, after the opening benchmark on the first segment. Nine Boolean    *)
 (* constants switch the corrections on and off so that each pre-fix          *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -16,6 +16,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           CheckDiskBand, \* the opening benchmark needs a sample at or above floor + band
           MonitorOpening, \* the guardian is started before the opening benchmark
           WatchGuardian,  \* a guardian fault during the benchmark cancels it (B18)
+          CheckProgress,  \* stale guardian progress cannot admit (B22)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -24,8 +25,8 @@ ASSUME /\ FloorMiB \in Nat \ {0}
        /\ InitialFreeMiB \in FreeSamples
        /\ MalformedPrefixMiB \in Nat
        /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
-           CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian}
-            \subseteq BOOLEAN
+           CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
+           CheckProgress} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -54,12 +55,15 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkFault,  \* "none", or the fault the admitted benchmark suffered
           benchmarkObserved, \* a started guardian recorded the breach and asked for a stop
           benchmarkCancelled, \* the driver cancelled the benchmark on the fault (B18)
-          benchmarkGuardianAlive \* the guardian was alive when the benchmark was admitted (B19)
+          benchmarkGuardianAlive, \* the guardian was alive when the benchmark was admitted (B19)
+          guardianFresh,  \* the guardian's progress record is within the silence limit
+          admissionFresh, \* progress was fresh when the iteration was admitted (B22)
+          benchmarkFresh  \* progress was fresh when the benchmark was admitted (B22)
 
 vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence, retained, benchmark,
           benchmarkSample, benchmarkFault, benchmarkObserved, benchmarkCancelled,
-          benchmarkGuardianAlive>>
+          benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh>>
 
 Init ==
     /\ phase = "benchmark"
@@ -74,6 +78,9 @@ Init ==
     /\ benchmarkObserved = FALSE
     /\ benchmarkCancelled = FALSE
     /\ benchmarkGuardianAlive = TRUE
+    /\ guardianFresh = TRUE
+    /\ admissionFresh = TRUE
+    /\ benchmarkFresh = TRUE
     /\ guardianAlive = TRUE
     /\ admitted = FALSE
     /\ admissionRaw = MissingRaw
@@ -111,12 +118,14 @@ Benchmark ==
                /\ benchmarkObserved' = FALSE
                /\ benchmarkCancelled' = FALSE
                /\ benchmarkGuardianAlive' = guardianAlive
+               /\ benchmarkFresh' = guardianFresh
                /\ phase' = "guard"
                /\ UNCHANGED <<stopReason, guardian, guardianAlive>>
           ELSE \E r \in RawSamples, fault \in {"none"} \cup BenchmarkFaults :
                LET s == Parse(r)
                    diskOk == ~CheckDiskBand \/ (s.known /\ s.mib >= FloorMiB + BandMiB)
-                   guardianOk == ~CheckGuardianAlive \/ guardianAlive
+                   guardianOk == /\ ~CheckGuardianAlive \/ guardianAlive
+                                 /\ ~CheckProgress \/ guardianFresh
                    admit == diskOk /\ guardianOk
                    f == IF admit THEN fault ELSE "none"
                    observed == f = "breach" /\ MonitorOpening
@@ -124,6 +133,7 @@ Benchmark ==
                IN /\ benchmarkSample' = s
                   /\ benchmark' = admit
                   /\ benchmarkGuardianAlive' = guardianAlive
+                  /\ benchmarkFresh' = guardianFresh
                   /\ benchmarkFault' = f
                   /\ benchmarkObserved' = observed
                   /\ benchmarkCancelled' = cancelled
@@ -135,7 +145,7 @@ Benchmark ==
                                    ELSE IF ~diskOk THEN "probe"
                                    ELSE "guardian"
     /\ UNCHANGED <<free, raw, sample, admitted, admissionRaw, admissionSample,
-                   evidence, retained>>
+                   evidence, retained, guardianFresh, admissionFresh>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -184,13 +194,17 @@ DecideAfterHygiene ==
                    admissionRaw, admissionSample, evidence>>
 
 \* The common check before work starts: a missing sample, then (B14) a
-\* guardian process that died since the boundary probe.
+\* guardian process that died since the boundary probe, then (B22) a guardian
+\* whose progress record has expired.
 CheckAdmission ==
     /\ phase = "admission-check"
     /\ IF RejectMissing /\ ~sample.known
           THEN /\ phase' = "stopped"
                /\ stopReason' = "probe"
           ELSE IF CheckGuardianAlive /\ ~guardianAlive
+          THEN /\ phase' = "stopped"
+               /\ stopReason' = "guardian"
+          ELSE IF CheckProgress /\ ~guardianFresh
           THEN /\ phase' = "stopped"
                /\ stopReason' = "guardian"
           ELSE /\ phase' = "admit"
@@ -203,6 +217,7 @@ Admit ==
     /\ admitted' = TRUE
     /\ admissionRaw' = raw
     /\ admissionSample' = sample
+    /\ admissionFresh' = guardianFresh
     /\ phase' = "running"
     /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, stopReason, evidence>>
 
@@ -224,6 +239,15 @@ GuardianCrash ==
     /\ UNCHANGED <<phase, free, raw, sample, guardian, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
+\* The guardian stays alive but stops recording progress (SIGSTOP, a paused
+\* host) at any point up to the admission check, as GuardianCrash does.
+GuardianStall ==
+    /\ phase \notin {"admit", "running", "stopped", "done"}
+    /\ guardianFresh
+    /\ guardianFresh' = FALSE
+    /\ UNCHANGED <<phase, free, raw, sample, guardian, guardianAlive, admitted,
+                   admissionRaw, admissionSample, stopReason, evidence>>
+
 PublishRefusal ==
     /\ phase = "stopped"
     /\ evidence' = TRUE
@@ -231,13 +255,22 @@ PublishRefusal ==
     /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason>>
 
+FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
+                          benchmarkObserved, benchmarkCancelled,
+                          benchmarkGuardianAlive, benchmarkFresh>>
+
 Next == Benchmark
+        \/ (/\ Admit
+            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED guardianFresh)
+        \/ (/\ GuardianStall
+            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED admissionFresh)
         \/ (/\ CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
-               \/ Admit \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
-            /\ UNCHANGED <<retained, benchmark, benchmarkSample, benchmarkFault,
-                           benchmarkObserved, benchmarkCancelled,
-                           benchmarkGuardianAlive>>)
+               \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
+            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<guardianFresh, admissionFresh>>)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -262,6 +295,9 @@ TypeOK ==
     /\ benchmarkObserved \in BOOLEAN
     /\ benchmarkCancelled \in BOOLEAN
     /\ benchmarkGuardianAlive \in BOOLEAN
+    /\ guardianFresh \in BOOLEAN
+    /\ admissionFresh \in BOOLEAN
+    /\ benchmarkFresh \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -276,6 +312,9 @@ BenchmarkRequiresBand ==
 BenchmarkBreachObserved == benchmarkFault = "breach" => benchmarkObserved /\ guardian
 BenchmarkCancellationObserved ==
     benchmarkFault # "none" => benchmarkCancelled /\ guardian
+StaleProgressPreventsAdmission ==
+    /\ admitted => admissionFresh
+    /\ benchmark => benchmarkFresh
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
 Completes == <>(admitted \/ (phase = "done" /\ evidence))

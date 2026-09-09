@@ -164,6 +164,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_late_guardian_pre_fix:BenchmarkBreachObserved
     soak_disk/MC_SoakDiskAdmission_unwatched_death_pre_fix:BenchmarkCancellationObserved
     soak_disk/MC_SoakDiskAdmission_unwatched_breach_pre_fix:BenchmarkCancellationObserved
+    soak_disk/MC_SoakDiskAdmission_unchecked_progress_pre_fix:StaleProgressPreventsAdmission
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline
@@ -171,6 +172,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_per_root_deadline_pre_fix:AttributionWithinBudget
     soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix:RetainedBreachStopsRestart
     soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix:StopWithinBudget
+    soak_disk/MC_SoakDiskGuardian_alive_only_pre_fix:StaleGuardianRequiresInterrupt
 )
 
 # Areas whose expected-violation configurations are all registered. A

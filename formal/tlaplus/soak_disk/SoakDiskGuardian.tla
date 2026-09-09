@@ -2,7 +2,7 @@
 (* The emergency path of one soak iteration in                               *)
 (* scripts/run-merge-recovery-soak.sh: the guardian probes, records a        *)
 (* breach, stops the writers, attributes the space, and the next segment     *)
-(* finds the marker. Seven constants switch the seven corrections on and off *)
+(* finds the marker. Eight constants switch the eight corrections on and off *)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
 EXTENDS Naturals, TLC
 
@@ -12,10 +12,12 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           RecordFirst,       \* the breach record precedes the stop command
           AggregateDeadline, \* attribution has one budget for all roots
           PreserveBreach,    \* a restart keeps the marker and a failure
-          EnforceStopDeadline \* pkill and docker kill run under a deadline
+          EnforceStopDeadline, \* pkill and docker kill run under a deadline
+          CheckProgress \* a live guardian without recent progress counts as failed (B20, B21)
 
 ASSUME {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
-        AggregateDeadline, PreserveBreach, EnforceStopDeadline} \subseteq BOOLEAN
+        AggregateDeadline, PreserveBreach, EnforceStopDeadline, CheckProgress}
+         \subseteq BOOLEAN
 
 ProbeDeadline     == 3  \* two-second timeout plus one-second kill grace
 ProbeReturnsAt    == 4  \* a stalled df prints a valid field after the deadline
@@ -26,13 +28,14 @@ VARIABLES phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
-          marker, priorFailures, failures, admitted
+          marker, priorFailures, failures, admitted,
+          stale \* the guardian is alive but its progress record has expired
 
 vars == <<phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
-          marker, priorFailures, failures, admitted>>
+          marker, priorFailures, failures, admitted, stale>>
 
 Init ==
     /\ phase = "running"
@@ -52,6 +55,31 @@ Init ==
     /\ priorFailures \in {0, 2}
     /\ failures = priorFailures
     /\ admitted = FALSE
+    /\ stale = FALSE
+
+\* The guardian process is alive but stops making progress (SIGSTOP, a hung
+\* probe): its progress record ages past SOAK_GUARDIAN_MAX_SILENCE_SECONDS.
+Stall ==
+    /\ phase = "running"
+    /\ alive
+    /\ ~stale
+    /\ stale' = TRUE
+    /\ UNCHANGED <<phase, alive, interruptRequested, breachRecorded, elapsed,
+                   timedOut, known, stopStarted, stopElapsed, termSent, killSent,
+                   diagElapsed, rootsLeft, marker, priorFailures, failures, admitted>>
+
+\* The watcher reads the progress record; only the corrected driver treats an
+\* expired record as a breach.
+WatcherPollStale ==
+    /\ phase = "running"
+    /\ alive
+    /\ stale
+    /\ interruptRequested' = CheckProgress
+    /\ breachRecorded' = CheckProgress
+    /\ phase' = "progress-decided"
+    /\ UNCHANGED <<alive, elapsed, timedOut, known, stopStarted, stopElapsed,
+                   termSent, killSent, diagElapsed, rootsLeft, marker,
+                   priorFailures, failures, admitted, stale>>
 
 \* The guardian process dies while the iteration runs.
 Crash ==
@@ -222,17 +250,20 @@ RestartDecision ==
                    known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker,
                    priorFailures, failures>>
 
-Next == Crash \/ WatcherPoll \/ StartProbe \/ Tick \/ ProbeReturns
-        \/ DecideSample \/ Detect \/ Record \/ BeginStop \/ StopTick
-        \/ StopReturns \/ PublishLate \/ AttributionTick \/ CompleteRoot
-        \/ Finish \/ Recover \/ RestartDecision
+Next == Stall \/ WatcherPollStale
+        \/ (/\ Crash \/ WatcherPoll \/ StartProbe \/ Tick \/ ProbeReturns
+               \/ DecideSample \/ Detect \/ Record \/ BeginStop \/ StopTick
+               \/ StopReturns \/ PublishLate \/ AttributionTick \/ CompleteRoot
+               \/ Finish \/ Recover \/ RestartDecision
+            /\ UNCHANGED stale)
 
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
-    /\ phase \in {"running", "watcher-decided", "probing", "sampled",
-                  "sample-decided", "breach", "record", "stop", "stopping",
-                  "attribution", "finished", "resume", "stopped", "ready", "done"}
+    /\ phase \in {"running", "watcher-decided", "progress-decided", "probing",
+                  "sampled", "sample-decided", "breach", "record", "stop",
+                  "stopping", "attribution", "finished", "resume", "stopped",
+                  "ready", "done"}
     /\ alive \in BOOLEAN
     /\ interruptRequested \in BOOLEAN
     /\ breachRecorded \in BOOLEAN
@@ -249,9 +280,12 @@ TypeOK ==
     /\ priorFailures \in {0, 2}
     /\ failures \in 0..2
     /\ admitted \in BOOLEAN
+    /\ stale \in BOOLEAN
 
 DeadGuardianRequiresInterrupt ==
     (phase = "watcher-decided" /\ ~alive) => (interruptRequested /\ breachRecorded)
+StaleGuardianRequiresInterrupt ==
+    (phase = "progress-decided" /\ stale) => (interruptRequested /\ breachRecorded)
 InvalidSampleRequiresInterrupt ==
     (phase = "sample-decided" /\ ~known) => (interruptRequested /\ breachRecorded)
 ProbeWithinDeadline == phase = "probing" => elapsed < ProbeDeadline
