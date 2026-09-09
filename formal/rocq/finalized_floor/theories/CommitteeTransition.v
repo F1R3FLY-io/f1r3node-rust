@@ -35,9 +35,12 @@ Definition serialized_post_state_bonds
 
 Definition authority_committee
   (floor_bonds : BlockHash -> Committee)
+  (floor_active : BlockHash -> list Validator)
   (floor_of : Block -> BlockHash)
   (block : Block) : Committee :=
-  floor_bonds (floor_of block).
+  active_weight_committee
+    (floor_bonds (floor_of block))
+    (floor_active (floor_of block)).
 
 Definition certified_finality_committee
   (floor_bonds : BlockHash -> Committee)
@@ -72,14 +75,17 @@ Definition parent_post_state_finality_committee
 
 Definition authority_context_valid
   (floor_bonds : BlockHash -> Committee)
+  (floor_active : BlockHash -> list Validator)
   (floor_of : Block -> BlockHash)
   (block : Block)
   (sender : Validator) : Prop :=
   same_validator_set
     (justification_validators block)
     (positive_committee_validators
-      (authority_committee floor_bonds floor_of block))
-  /\ authorized (authority_committee floor_bonds floor_of block) sender.
+      (authority_committee floor_bonds floor_active floor_of block))
+  /\ authorized
+       (authority_committee floor_bonds floor_active floor_of block)
+       sender.
 
 Definition promotion_ready
   (accepted : bool)
@@ -99,6 +105,49 @@ Definition register_transition
   if accepted
   then registered ++ positive_committee_validators (post_state_bonds candidate)
   else registered.
+
+Definition canonical_active
+  (limit : nat) (bonds : Committee) : list Validator :=
+  firstn limit (positive_committee_validators bonds).
+
+Definition transition_active
+  (is_boundary : bool)
+  (limit : nat)
+  (prior_active : list Validator)
+  (post_state_bonds : Committee) : list Validator :=
+  if is_boundary
+  then canonical_active limit post_state_bonds
+  else prior_active.
+
+Record CommitteeProjection : Type := {
+  projection_bonds : Committee;
+  projection_active : list Validator
+}.
+
+Definition promote_projection
+  (bonds : Committee) (active : list Validator) : CommitteeProjection :=
+  {| projection_bonds := bonds; projection_active := active |}.
+
+Definition api_bonds (projection : CommitteeProjection) : Committee :=
+  projection_bonds projection.
+
+Definition api_active_bonds (projection : CommitteeProjection) : Committee :=
+  active_weight_committee
+    (projection_bonds projection)
+    (projection_active projection).
+
+Lemma firstn_member :
+  forall (A : Type) (limit : nat) (values : list A) (value : A),
+    In value (firstn limit values) -> In value values.
+Proof.
+  intros A limit. induction limit as [|limit IH].
+  - intros values value Hin. simpl in Hin. contradiction.
+  - intros values value Hin. destruct values as [|head tail].
+    + simpl in Hin. contradiction.
+    + simpl in Hin |- *. destruct Hin as [Heq | Hin].
+      * left. exact Heq.
+      * right. apply IH. exact Hin.
+Qed.
 
 Inductive admission_path : Type :=
 | ApprovedGenesisAdmission
@@ -182,18 +231,22 @@ Theorem serialized_bonds_are_post_state_bonds :
 Proof. reflexivity. Qed.
 
 Theorem authority_ignores_same_block_post_state :
-  forall floor_bonds floor_of block
+  forall floor_bonds floor_active floor_of block
     (post_state_bonds_left post_state_bonds_right : BlockHash -> Committee),
-    authority_committee floor_bonds floor_of block =
-    authority_committee floor_bonds floor_of block.
+    authority_committee floor_bonds floor_active floor_of block =
+    authority_committee floor_bonds floor_active floor_of block.
 Proof. reflexivity. Qed.
 
 Theorem same_block_transition_does_not_grant_authority :
-  forall floor_bonds post_state_bonds floor_of block validator,
-    ~ authorized (authority_committee floor_bonds floor_of block) validator ->
+  forall floor_bonds floor_active post_state_bonds floor_of block validator,
+    ~ authorized
+        (authority_committee floor_bonds floor_active floor_of block)
+        validator ->
     In validator
       (committee_validators (serialized_post_state_bonds post_state_bonds block)) ->
-    ~ authorized (authority_committee floor_bonds floor_of block) validator.
+    ~ authorized
+        (authority_committee floor_bonds floor_active floor_of block)
+        validator.
 Proof. intros. assumption. Qed.
 
 Theorem certified_finality_committee_is_authority_floor_committee :
@@ -289,33 +342,37 @@ Proof.
 Qed.
 
 Theorem exact_justifications_are_floor_authorized :
-  forall floor_bonds floor_of block,
+  forall floor_bonds floor_active floor_of block,
     same_validator_set
       (justification_validators block)
       (positive_committee_validators
-        (authority_committee floor_bonds floor_of block)) ->
+        (authority_committee floor_bonds floor_active floor_of block)) ->
     forall validator,
       In validator (justification_validators block) <->
-      authorized (authority_committee floor_bonds floor_of block) validator.
+      authorized
+        (authority_committee floor_bonds floor_active floor_of block)
+        validator.
 Proof.
-  intros floor_bonds floor_of block Hexact validator.
+  intros floor_bonds floor_active floor_of block Hexact validator.
   apply Hexact.
 Qed.
 
 Theorem valid_authority_context_has_exact_justifications :
-  forall floor_bonds floor_of block sender,
-    authority_context_valid floor_bonds floor_of block sender ->
+  forall floor_bonds floor_active floor_of block sender,
+    authority_context_valid floor_bonds floor_active floor_of block sender ->
     same_validator_set
       (justification_validators block)
       (positive_committee_validators
-        (authority_committee floor_bonds floor_of block)).
-Proof. intros floor_bonds floor_of block sender [Hexact _]. exact Hexact. Qed.
+        (authority_committee floor_bonds floor_active floor_of block)).
+Proof. intros floor_bonds floor_active floor_of block sender [Hexact _]. exact Hexact. Qed.
 
 Theorem valid_authority_context_authorizes_sender :
-  forall floor_bonds floor_of block sender,
-    authority_context_valid floor_bonds floor_of block sender ->
-    authorized (authority_committee floor_bonds floor_of block) sender.
-Proof. intros floor_bonds floor_of block sender [_ Hsender]. exact Hsender. Qed.
+  forall floor_bonds floor_active floor_of block sender,
+    authority_context_valid floor_bonds floor_active floor_of block sender ->
+    authorized
+      (authority_committee floor_bonds floor_active floor_of block)
+      sender.
+Proof. intros floor_bonds floor_active floor_of block sender [_ Hsender]. exact Hsender. Qed.
 
 Theorem accepted_transition_registers_post_state_validators :
   forall registered post_state_bonds candidate validator,
@@ -513,24 +570,46 @@ Theorem rejected_transition_cannot_promote :
     ~ promotion_ready false registered post_state_bonds candidate.
 Proof. intros registered post_state_bonds candidate [H _]. discriminate. Qed.
 
-Theorem registered_transition_is_eligible_after_floor_promotion :
-  forall floor_bonds post_state_bonds floor_of registered source promoted validator,
+Theorem registered_active_transition_is_eligible_after_floor_promotion :
+  forall floor_bonds floor_active post_state_bonds floor_of
+    registered source promoted validator,
     promotion_ready true
       (register_transition true registered post_state_bonds (blk_hash source))
       post_state_bonds
       (blk_hash source) ->
     floor_of promoted = blk_hash source ->
     floor_bonds (blk_hash source) = post_state_bonds (blk_hash source) ->
+    In validator (floor_active (blk_hash source)) ->
     In validator
       (positive_committee_validators
         (serialized_post_state_bonds post_state_bonds source)) ->
-    authorized (authority_committee floor_bonds floor_of promoted) validator.
+    authorized
+      (authority_committee floor_bonds floor_active floor_of promoted)
+      validator.
 Proof.
-  intros floor_bonds post_state_bonds floor_of registered source promoted validator
-    _ Hfloor Hbonds Hin.
+  intros floor_bonds floor_active post_state_bonds floor_of registered source
+    promoted validator _ Hfloor Hbonds Hactive Hin.
   unfold authorized, authority_committee.
   rewrite Hfloor, Hbonds.
-  exact Hin.
+  unfold positive_committee_validators in Hin |- *.
+  apply in_map_iff in Hin.
+  destruct Hin as [[bond_validator stake] [Heq Hfiltered]].
+  simpl in Heq. subst bond_validator.
+  apply filter_In in Hfiltered.
+  destruct Hfiltered as [Hinbonds Hpositive].
+  apply in_map_iff.
+  exists (validator, stake).
+  split; [reflexivity |].
+  apply filter_In.
+  split.
+  - unfold active_weight_committee.
+    apply filter_In.
+    split; [exact Hinbonds |].
+    simpl.
+    destruct (in_dec Nat.eq_dec validator (floor_active (blk_hash source))).
+    + simpl in Hpositive. exact Hpositive.
+    + contradiction.
+  - exact Hpositive.
 Qed.
 
 Theorem active_weight_committee_exact :
@@ -566,3 +645,81 @@ Proof.
   unfold active_weight_committee. simpl.
   destruct (in_dec Nat.eq_dec validator active); [contradiction | reflexivity].
 Qed.
+
+Theorem canonical_active_respects_limit :
+  forall limit bonds,
+    length (canonical_active limit bonds) <= limit.
+Proof.
+  intros limit bonds. unfold canonical_active.
+  apply firstn_le_length.
+Qed.
+
+Theorem canonical_active_contains_only_positive_bonds :
+  forall limit bonds validator,
+    In validator (canonical_active limit bonds) ->
+    In validator (positive_committee_validators bonds).
+Proof.
+  intros limit bonds validator Hin.
+  unfold canonical_active in Hin.
+  eapply firstn_member. exact Hin.
+Qed.
+
+Theorem off_boundary_transition_preserves_active_committee :
+  forall limit prior_active post_state_bonds,
+    transition_active false limit prior_active post_state_bonds = prior_active.
+Proof. reflexivity. Qed.
+
+Theorem activation_boundary_selects_canonical_committee :
+  forall limit prior_active post_state_bonds,
+    transition_active true limit prior_active post_state_bonds =
+    canonical_active limit post_state_bonds.
+Proof. reflexivity. Qed.
+
+Theorem off_boundary_bond_does_not_grant_active_membership :
+  forall limit prior_active post_state_bonds validator,
+    ~ In validator prior_active ->
+    ~ In validator
+      (transition_active false limit prior_active post_state_bonds).
+Proof. intros. assumption. Qed.
+
+Theorem inactive_validator_is_not_authorized :
+  forall bonds active validator,
+    ~ In validator active ->
+    ~ authorized (active_weight_committee bonds active) validator.
+Proof.
+  intros bonds active validator Hinactive Hauthorized.
+  unfold authorized, positive_committee_validators in Hauthorized.
+  apply in_map_iff in Hauthorized.
+  destruct Hauthorized as [[bond_validator stake] [Heq Hpositive]].
+  simpl in Heq. subst bond_validator.
+  apply filter_In in Hpositive.
+  destruct Hpositive as [Hweighted _].
+  unfold active_weight_committee in Hweighted.
+  apply filter_In in Hweighted.
+  destruct Hweighted as [_ Hactive].
+  simpl in Hactive.
+  destruct (in_dec Nat.eq_dec validator active); [contradiction | discriminate].
+Qed.
+
+Theorem promoted_projection_keeps_bonds_and_active_together :
+  forall bonds active,
+    projection_bonds (promote_projection bonds active) = bonds /\
+    projection_active (promote_projection bonds active) = active.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem api_bonds_exposes_complete_ledger :
+  forall bonds active,
+    api_bonds (promote_projection bonds active) = bonds.
+Proof. reflexivity. Qed.
+
+Theorem api_active_bonds_exposes_selected_positive_committee :
+  forall bonds active,
+    api_active_bonds (promote_projection bonds active) =
+    active_weight_committee bonds active.
+Proof. reflexivity. Qed.
+
+Theorem equal_boundary_inputs_select_equal_active_committees :
+  forall limit bonds_left bonds_right,
+    bonds_left = bonds_right ->
+    canonical_active limit bonds_left = canonical_active limit bonds_right.
+Proof. intros. subst. reflexivity. Qed.

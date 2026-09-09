@@ -2,6 +2,11 @@
 
 **Status:** Implementation-aligned design record
 **Date:** 2026-05-29
+
+Implementation status does not establish upstream Casper ratification.
+The [ratification status ledger](../design/cost-accounting-ratification-status.md)
+separates branch history, current evidence, and required upstream approval.
+
 **Governing authority:** the specification `publications/cost-accounting/cost-accounted-rho.tex`
 ("Cost-Accounted Rho Calculus: A Spectral Decomposition of Phlogiston," May 2026) is the **law of the
 implementation**. No deviation from its design is admitted unless a bug in the spec is *proven* to exist
@@ -86,9 +91,9 @@ MakeMint purse ⇒ `VB` re-blocks ⇒ the DR-3 liveness halt); (b) insert the va
 `CloseBlockDeploy::post_eval` recompute both skip `v ∈ mintingHalted`); and (c) **zero `Σ⟦v⟧`** via the
 slash deploy's Rust `post_eval` calling `supply::produce_balance(from_sig(Ground(pk)), 0)` — the
 spec-complete realization of "all remaining phlogiston is removed" (tex 3030-3033), idempotent, eliminating
-the residual-funding edge case. Redemption (`redeemSlashed`, DR-7) writes NEITHER `Σ⟦v⟧` NOR `@W_v` directly:
-it clears `mintingHalted` + removes stale `mintedEpochs (v, e≥current)` and lets the normal next-epoch mint
-re-fund (all phlogiston creation stays on the single authorized path). Proved by `MintingHalt.v`
+the residual-funding edge case. Redemption (`redeemSlashed`, DR-7) writes NEITHER `Σ⟦v⟧` NOR `@W_v` directly.
+It clears `mintingHalted` and preserves the collective mint frontier. Only the
+normal next-epoch close can re-fund the validator. Proved by `MintingHalt.v`
 (`halted_validator_supply_not_increased`, `halted_validator_not_minted`) + `SlashFlow.tla` `Inv_HaltedNotMinted`.
 Stage B EXPOSES the `mintingHalted` key + `supply::produce_balance`; Stage C consumes them. See
 [cost-accounting-impl/stageb-minting-halt-interface.md](cost-accounting-impl/stageb-minting-halt-interface.md)
@@ -1334,6 +1339,9 @@ settlement conservation this bounds). Verification-doc §4.4.1. The one-system-t
 
 ## DR-30 — Genesis is the authenticated authority trust root; admission follows verified replay
 
+**Status:** partially superseded by DR-36 and DR-59. Genesis remains the trust root.
+The separate supply payload, block-one mirror, and post-genesis initial grant are retired.
+
 **Context.** Making the funding obligation mandatory exposed a circular bootstrap that the former
 absent-wallet bypass had hidden. Block assembly checked the signer pool before executing block 1, while validator
 `initial_phlogiston` and client `client_fuel_allocations` were credited only by the block-1 close hook. The first
@@ -1410,7 +1418,8 @@ changing genesis supply in `EndToEndAuthority.v`. TLA+
 `AdmissionRequiresGenesisAgreement`, and the double-credit configuration must refute
 `InitialDrawDoesNotCreditSupply`. Rust tests bind allocation bytes into the block hash and replay-cache key,
 reject every non-canonical shape after a valid cache entry exists, reconstruct the genesis root, reject ceremony
-mismatches, and execute block 1 with `epoch_length = 1` and distinct initial/epoch amounts. The first-block Casper
+mismatches, and execute block 1 with `epoch_length = 1` and distinct initial/epoch amounts. The current
+`block_one_epoch_issuance_does_not_repeat_genesis_allocation` regression checks that boundary. The first-block Casper
 smoke and full Casper integration suite cover the original `NoNewDeploys` failure class.
 
 **Cross-refs.** RHO Definition 19 and Appendix B.1/B.3; DR-11 (admission), DR-13 (Rust-owned supply names), DR-28
@@ -1907,7 +1916,8 @@ validator reports an unknown root before it has replayed $`d_1`$.
 deployment loop. For $`d_i`$, the validator first checks that its current root is
 $`R_{i-1}`$. A separate ordinary runtime resets to that already-materialized
 root and captures the complete purse inventory for every required authority
-lane. ReplayRuntimeOps consumes that immutable snapshot while replaying only
+lane. The snapshot also captures the certified proposer's validator-fuel purse.
+ReplayRuntimeOps consumes that immutable snapshot while replaying only
 $`d_i`$'s committed causal witness. Its checkpoint must equal $`R_i`$; that
 checkpoint materializes $`R_i`$ locally before the loop reads the snapshot for
 $`d_{i+1}`$. Missing, unexpected, or mismatched authority lanes fail closed.
@@ -1935,8 +1945,9 @@ are not misclassified as user authority events. Any replayed user authority even
 absent from the committed trace remains an error.
 
 **Formal verification.** `ReplaySupplySnapshot.tla` proves authenticated
-per-deployment snapshots, replay supply conservation, exact recorded trace, and
-eventual completion. `ReplayRootMaterialization.tla` adds independent producer,
+per-deployment snapshots, exact proposer-fuel depletion, exact recorded trace,
+and deferred noninterference. Eight controls isolate each required guard.
+`ReplayRootMaterialization.tla` adds independent producer,
 validator, and reporter histories and proves that every snapshot root is locally
 materialized, every snapshot uses ordinary RSpace, accepted validators have the
 same terminal root, and every validator eventually decides. Its three negative
@@ -1947,15 +1958,16 @@ axioms.
 
 **Implementation verification.** Ordinary Casper replay, reporting replay,
 checkpoint replay, genesis replay, and the lifecycle-trace subset regression
-exercise this boundary. The independent-validator and reporting regressions use
+exercise this boundary. Native tests reject live ReplayRSpace economic queries.
+The independent-validator and reporting regressions use
 isolated RSpace histories containing genesis but not the producer's intermediate
 root; both must materialize that root by replaying the first deployment before
 reading the second deployment's purse. The directed merge-dependency regression
 also confirms that sequential SystemVault settlement remains a real causal edge
 rather than being erased as an allegedly side-effect-free `Nil` deployment.
 
-**Cross-refs.** DR-31, DR-32, DR-36, TM-CA-173, CA-P-188, CA-P-191, and
-UC-CA-168.
+**Cross-refs.** DR-31, DR-32, DR-36, DR-62, TM-CA-173, TM-CA-198,
+CA-P-188, CA-P-191, CA-P-208, UC-CA-168, and UC-CA-187.
 
 ## DR-38 — Reserve and settle algebra refines to one native atomic application
 
@@ -3114,12 +3126,11 @@ DR-51, and
 remain release evidence.
 
 **Context.** State-preserving cost effects made a block carried through a
-secondary parent eligible as a per-block proposal floor. That path used complete
-all-parent latest-message coverage. The durable LFB finalizer still propagated
-support only through main-parent edges. It could therefore fail to enumerate the
-exact target whose absence caused `FinalizedFloorMaterializationPending`.
-Repeated scheduling did not help because every frozen view reproduced the same
-incomplete candidate set.
+secondary parent eligible for finalization. That path used complete all-parent
+latest-message coverage. The durable LFB finalizer still propagated support
+only through main-parent edges. It could therefore fail to enumerate the exact
+target. Repeated scheduling did not help because every frozen view reproduced
+the same incomplete candidate set.
 
 **Decision.** Candidate enumeration in the durable finalizer MUST use the same
 descending all-parent coverage relation as floor derivation. For frozen latest
@@ -3383,3 +3394,427 @@ settled content. Storage tests check accepted and rejected exact effects.
 
 **Cross-refs.** DR-43, DR-50, DR-53, CA-P-203, TM-CA-193, UC-CA-184,
 E2E-052, and finalized-floor safety invariant S34.
+
+---
+
+## DR-58 — Protocol-6 replay uses its signed certified floor
+
+**Status:** accepted and implemented. The canonical multi-node rerun remains
+release evidence.
+
+**Context.** Protocol 6 added a signed finalized-floor commitment to each
+block. The proposal path could still derive a different floor from current
+justifications. It then compared the derived candidate with the durable
+context.
+
+This design created two failures. Replay could use a state different from the
+signed floor. An equality gate could also stop proposal while the finalizer
+correctly rejected a state-dropping candidate.
+
+`dev` does not contain this exact mismatch because it has no separate signed
+floor certificate. However, `dev` also lacks the protocol-6 replay binding.
+Copying its complete floor path would remove the new certificate guarantee.
+
+**Decision.** A protocol-6 proposal captures one valid durable finalization
+certificate. The certificate identifies floor $`F`$, its post-state, and its
+authority context.
+
+Proposal uses $`F`$ for sender authority, replay, merge scope, retry scope, and
+the signed block commitment. A candidate $`G`$ from current finalizer evidence
+does not enter proposal readiness.
+
+The receiver verifies the certificate before replay. It requires one accepted
+stored floor with the committed hash, state, and height. At least one declared
+parent must DAG-descend from $`F`$.
+
+Missing dependencies defer validation. An inconsistent binding invalidates the
+block. Replay reconstructs state from $`F`$ and deterministic accepted effects
+above $`F`$.
+
+**Casper compatibility.** The decision retains `dev` concurrency between
+proposal and finalization. It does not change LMD-GHOST, selected parents,
+stake weights, clique membership, thresholds, or finalizer promotion.
+
+Protocol versions before 6 retain the `dev` rule. They derive one deterministic
+floor from frozen parents and justifications.
+
+**Rejected alternatives.** Substituting $`G`$ breaks the signed replay
+commitment. Requiring $`G=F`$ serializes proposal behind finalization. Always
+replaying from genesis discards the certified floor optimization and scope.
+
+**Formal verification.** `CertifiedReplayAnchor.v` proves exact committed-state
+replay and candidate-evidence independence. `ProposalFloorReadiness.v` proves
+that only certified authority and permit state control proposal readiness.
+
+`StatePreservingForkChoice.tla` checks the committed replay anchor. Its
+substitution control violates that invariant. `ProposalFloorReadiness.tla`
+checks concurrent proposal and finalizer actions over two nodes. Candidate-gate
+and finalizer-cancellation controls reproduce the liveness failures.
+
+**Implementation verification.** Rust tests bind proposal replay to the
+captured certificate. Receiver validation uses the signed commitment. A
+256-case property checks exact hash, state, height, and admission identity.
+
+The parent replay regression checks a covering parent that omits $`F`$ state.
+Two Loom tests check concurrent promotion and candidate observation. The
+canonical lifecycle run must prove multi-node progress before release.
+
+**Cross-refs.** TM-CA-194, H24, T-CERTIFIED-REPLAY-ANCHOR,
+T-PROPOSAL-FLOOR-READINESS, R-FINALIZATION-PROPOSAL-READINESS, and
+R-CERTIFIED-REPLAY-ANCHOR.
+
+---
+
+## DR-59 — Initial validator allocation occurs only during authenticated genesis
+
+**Status:** accepted, implemented, and verified.
+
+**Context.** The PoS contract queued every successful bond for `initial_phlogiston`.
+The next close-block transition credited that amount to the validator's transferable SystemVault custody.
+
+This behavior created a repeatable subsidy. A validator could withdraw, rebond, and receive another initial allocation.
+
+The papers define initial validator provisioning as bootstrap authority. They do not define bonding as a mint operation.
+Normal validator replenishment belongs to authenticated epoch issuance after active-set selection.
+
+**Decision.** The blessed genesis SystemVault allocation is the only `initial_phlogiston` transition.
+The PoS contract does not retain a pending-initial queue.
+
+A fresh bond or rebond transfers existing custody into stake. The operation creates no new custody.
+
+An epoch close selects active validators before issuance. Each eligible validator receives exactly `epoch_phlogiston` once for that epoch.
+
+Eligibility requires an epoch boundary, active membership, and no mint halt.
+The retained frontier in DR-61 prevents duplicate epoch issuance.
+Withdrawal, slash, redemption, and activation create no initial allocation.
+
+A successful rebond increments the validator's bond generation. Ordinary epoch issuance does not change that generation.
+
+**Casper compatibility.** This decision changes no voting, finality, fork choice, parent selection, or wire format.
+Validators still execute independent blocks concurrently. Play and replay apply the same deterministic PoS transition.
+
+**Invariants.** The repair requires these properties:
+
+- Only authenticated genesis can increase `playInitialCredit` or `replayInitialCredit`.
+- Bonding conserves combined liquid custody and stake, excluding ordinary execution cost.
+- Epoch credit requires boundary, active membership, and a non-halted validator.
+- One canonical epoch close credits each eligible validator at most once.
+- Withdrawal and settlement conserve custody plus stake.
+- Slash, redemption, and activation create no custody.
+- Play and replay compute identical issuance and post-state roots.
+- Distinct validator lifecycle transitions commute when they access disjoint custody.
+
+**Formal verification.** `BondIssuanceLifecycle.v` proves the unbounded arithmetic and lifecycle obligations without axioms.
+`BondIssuanceLifecycle.tla` explores two interleaved validators through bond, activation, withdrawal, slash, redemption, and rebond.
+
+Nine registered controls reproduce fresh-bond, rebond, eligibility, duplicate, generation, and asymmetric replay defects.
+TLC and Apalache must refute every control through its named invariant.
+
+**Implementation verification.** Generated lifecycle traces check conservation, logical receipts, generations, replay equality, and distinct-validator commutativity.
+Native runtime tests check fresh bond, epoch activation, duplicate close, completed withdrawal, and rebond.
+
+The native tests compare every close-block play root with independent replay from the same pre-state.
+The PoS contract suite checks that bonding transfers stake without minting liquid custody.
+
+**Cross-refs.** Appendix B.1 and B.3 of `cost-accounted-rho.tex`; DR-30, DR-36, UC-CA-153, and UC-CA-154.
+
+---
+
+## DR-60 — Epoch close publishes all validator issuance or no state
+
+**Status:** accepted and implemented.
+
+**Context.** One epoch close applies rewards, withdrawals, active-set changes,
+validator issuance, and its retained frontier. These effects form one financial
+transaction.
+
+The PoS fold calls `protocolMint` once for each eligible validator. An early
+call can change SystemVault custody before a later call fails.
+
+The former fold ignored a failed call. A later checkpoint could therefore
+publish incomplete issuance and inconsistent replay-protection state.
+
+**Decision.** The complete close-block system deploy is the transaction
+boundary. Every successful effect publishes together at one final checkpoint.
+
+The fold stops after the first mint failure. The fold advances the retained
+frontier only after all required mint operations succeed.
+
+Zero issuance records completion without calling the positive-only mint
+primitive. This rule makes zero issuance successful and idempotent.
+
+Every system-deploy failure restores the exact supplied pre-state root. This
+rule covers contract rejection, interpreter error, and post-evaluation read
+failure.
+
+The block creator propagates the failed checkpoint attempt. It creates no block
+from a failed epoch close.
+
+A retry starts from the same pre-state and applies each eligible credit once.
+Distinct validator credits remain independent and order-insensitive.
+
+**Casper compatibility.** The repair adds no global lock and changes no vote,
+clique, threshold, fork-choice, or finalization rule.
+
+Validators can still execute disjoint proposals concurrently. Atomicity applies
+only to the existing per-block system-deploy checkpoint.
+
+**Paper alignment.** The cost-accounting papers require one funded financial
+transaction to publish all effects or no effects.
+
+Rewrite atomicity alone is insufficient. SystemVault custody and the PoS
+frontier must share the deployment transaction boundary.
+
+**Formal verification.** `EpochMintAtomicity.v` proves failure identity,
+complete issuance, exact supply change, idempotence, commutation, and replay
+agreement.
+
+`EpochMintAtomicity.tla` explores three independently ordered validator mints.
+Six unsafe controls reproduce partial balance, partial receipt, missing
+rollback, replay, swallowed-failure, and zero-call defects.
+
+Loom explores concurrent disjoint completion, failure, duplicate completion,
+and retry publication. Generated Rust cases refine the same atomic transition.
+
+**Implementation verification.** Native PoS tests force overflow at each
+validator position. They require exact root rollback and unchanged custody.
+
+The same tests repair the balance, retry the epoch, replay it, and repeat it.
+They require one exact credit per validator.
+
+**Cross-refs.** DR-30, DR-48, DR-50, DR-59, DR-61, CA-P-206,
+TM-CA-196, UC-CA-185, and E2E-053.
+
+---
+
+## DR-61 — One monotonic frontier bounds epoch-mint replay protection
+
+**Status:** accepted, implemented, and verified.
+
+**Context.** A per-validator epoch set grows with validator count and shard
+age. It retains history that the canonical close transition does not need.
+
+An epoch close is one atomic system-deploy effect chain. The merger selects one
+complete sibling close effect and rejects redundant sibling close effects.
+
+The merger never combines partial validator mint effects from sibling closes.
+Therefore, the canonical chain completes each epoch collectively or not at all.
+
+**Decision.** PoS stores one signed integer named `mintedThroughEpoch`.
+The initial value is `-1`, which means that no epoch close has completed.
+
+A direct contract test can close epoch zero from `-1`. Production can close
+epoch one from `-1` because genesis contains no epoch-zero close deploy.
+
+After bootstrap, only epoch `f + 1` can advance frontier `f`. An epoch at or
+below `f` is a successful no-op.
+
+An epoch above `f + 1` fails without a state change. The gap reports a missing
+required close effect instead of repairing history silently.
+
+Zero issuance and an empty eligible set still advance the frontier. The close
+must first complete every required operation.
+
+Bonding, withdrawal, slashing, redemption, and rebonding never decrease or
+clear the frontier. These operations never create historical catch-up issuance.
+
+A bond that becomes canonical after a selected close waits for the next epoch.
+This rule makes supply independent of sibling arrival order.
+
+**Safety interpretation.** The frontier is a compact representation of the
+logical receipt history on legal canonical traces.
+
+Logical receipts remain useful as proof variables. Production does not store
+those proof variables.
+
+The retained value uses constant storage. Restart and replay read the same
+frontier from the authenticated PoS state.
+
+**Casper compatibility.** This decision changes no vote, threshold, clique,
+fork-choice, finalization, or network rule.
+
+The decision uses the existing atomic close-block boundary. Validators retain
+parallel proposal and replay execution.
+
+**Migration.** A new shard needs no migration. Genesis installs the frontier
+with value `-1`.
+
+A live contract migration requires an authenticated activation state and an
+exact canonical height witness. Migration must reject contradictory history or
+supply.
+
+**Formal verification.** `MintedEpochRetention.v` proves bootstrap,
+monotonicity, gap rejection, atomic rollback, lifecycle preservation, restart,
+sibling selection, and constant storage.
+
+`MintedEpochFrontier.tla` explores concurrent sibling close, bond, slash,
+redemption, restart, duplicate close, and gap-close transitions.
+
+Eight unsafe configurations refute incorrect initialization, rejected
+bootstrap, accepted gaps, double siblings, dropped siblings, catch-up bonds,
+frontier clearing, and retroactive redemption minting.
+
+The Loom model explores concurrent mint completion, failure, retry, duplicate
+completion, sibling publication, both bootstraps, and gap rejection.
+
+Generated Rust properties refine the retained frontier against a full logical
+receipt history. Native tests check exact replay roots and consecutive epochs.
+
+A multi-parent regression checks two boundary siblings. The merged state must
+contain one validator credit on every node.
+
+**Cross-refs.** DR-3, DR-30, DR-50, DR-59, DR-60, CA-P-207,
+TM-CA-197, UC-CA-186, and E2E-054.
+
+## DR-62 — Replay captures every economic input before trace rigging
+
+**Context.** Ordinary execution charges one fixed handler cost from the
+proposer's role-separated validator-fuel purse. Admission reads that purse from
+the candidate pre-state and selects a maximal affordable prefix.
+
+Replay previously queried the validator-fuel purse after it rigged the recorded
+deployment trace. ReplayRSpace accepts only communications from that trace.
+
+The unrecorded SystemVault query could not complete. Valid blocks then stalled
+or failed replay, although their authority-purse snapshots were correct.
+
+**Decision.** A separate ordinary runtime captures one complete economic
+snapshot at each authenticated deployment pre-state. Capture occurs before
+ReplayRSpace receives the recorded trace.
+
+The snapshot contains every required authority purse and the proposer
+validator-fuel balance. The certificate's fee recipient selects that proposer.
+
+The snapshot binds its root, proposer, and exact nonnegative balance. Replay
+rejects a missing snapshot or any binding mismatch before user execution.
+
+ReplayRSpace performs no registry, purse, or validator-fuel query. It consumes
+only the recorded causal events for that deployment.
+
+The snapshot is evidence for replay admission. It does not replace physical
+custody or authorize a debit by itself.
+
+The final SystemVault application checks and debits actual role-separated
+custody in the replayed state. A stale or forged snapshot cannot create fuel.
+
+Play and replay use independent transition implementations. Each session owns
+its certificate cursor, so concurrent validators cannot consume another
+session's replay evidence.
+
+```text
+require deployment.pre_state = current_root
+snapshot := ordinary_runtime.capture(current_root, certified_proposer)
+require snapshot.fuel >= handler_cost
+replay_runtime.rig(recorded_trace)
+replay_runtime.execute(snapshot)
+require atomic_settlement_debits_actual_fuel(handler_cost)
+require checkpoint = deployment.post_state
+```
+
+**Casper compatibility.** This decision changes no vote, clique, threshold,
+fork-choice, finalization, or parent-selection rule. Validators retain
+independent replay sessions and parallel block processing.
+
+**Formal verification.** `ReplaySupplySnapshot.tla` models the exact six-fuel,
+three-candidate failure. The safe model admits two candidates and defers one.
+
+Eight controls independently remove runtime separation, capture order, root
+binding, proposer binding, balance authenticity, settlement, or deferred
+noninterference. TLC and Apalache must refute every control.
+
+`ValidatorEconomicsReplay.v` proves independent play and replay refinement. It
+also proves binding checks, exact depletion, maximal-prefix equality, and
+session cursor separation without axioms.
+
+Loom explores stale snapshot settlement, independent session cursors, and
+disjoint validator settlement. Generated Rust properties use separate play and
+replay machines.
+
+**Verification lesson.** The earlier replay model covered authority-purse
+snapshots but did not enumerate validator fuel as a separate economic input.
+
+The implementation added that input after the modeled snapshot boundary. A
+shared high-level assumption therefore hid a native phase-order defect.
+
+CA-P-208 now requires an inventory of every state-dependent economic query.
+Each query needs a production boundary test and an independent negative
+control.
+
+**Cross-refs.** DR-37, DR-38, DR-50, CA-P-191, CA-P-208, TM-CA-198,
+UC-CA-187, and E2E-055.
+
+## DR-63 — Every proposal retry receives a fresh state-bound admission certificate
+
+**Context.** Proposal admission classifies one canonical candidate window
+against an authenticated pre-state.
+
+Checkpoint construction can exceed its capacity after admission completes.
+The proposer previously shrank the admitted vector and reused its original
+certificate.
+
+That retry no longer represented the canonical raw candidate prefix. It could
+also lose terminal rejections or drain candidates outside the successful
+window.
+
+**Decision.** The proposer canonicalizes raw user candidates once. Every
+attempt selects a raw-user prefix and appends the complete dummy set.
+
+The runtime certifies the complete window again. The opaque certificate binds
+the candidate identities, authenticated context, and complete admission
+partition.
+
+The partition contains three disjoint classes: admitted, rejected, and
+deferred. Each class preserves canonical window order.
+
+One owned attempt value binds its generation, limit, window, partition, and
+certificate. Checkpoint execution can consume only that attempt.
+
+```text
+users := canonicalize(raw_users)
+generation := 0
+limit := length(users)
+
+repeat
+  window := canonicalize(first(limit, users) + dummies)
+  attempt := certify(generation, window, authenticated_context)
+  result := execute_checkpoint(attempt)
+
+  if result succeeds
+    publish(attempt, result)
+    drain(admitted_users(attempt) + rejected_users(attempt))
+    stop
+
+  publish_nothing()
+  settle_nothing()
+  drain_nothing()
+  generation := generation + 1
+  limit := strictly_smaller(limit)
+end
+```
+
+Only the successful attempt can publish state, settle cost, package rejection
+evidence, or drain terminal user candidates.
+
+Deferred users and removed suffix users remain available. Rejected dummy
+deployments remain in the published partition but never enter user storage.
+
+Validators own independent attempt values. The repair adds no global lock and
+does not change voting, finality, fork choice, or parent selection.
+
+**Formal verification.** `CheckpointAdmissionRecertification.v` proves
+partition completeness, disjointness, order, exact roots, atomic failure, and
+strict retry termination.
+
+`CheckpointAdmissionRecertification.tla` explores two independently scheduled
+validators. Twelve controls isolate each forbidden stale, partial, early, or
+shared-state behavior.
+
+TLC and Apalache must refute every control. Loom explores atomic terminal
+drain, failed-attempt custody, invalid partitions, and independent storage.
+
+Rust properties check arbitrary partition classifications. Forced retry tests
+check final-window rejection evidence, suffix retention, and independent peer
+replay.
+
+**Cross-refs.** DR-11, DR-31, DR-38, CA-P-209, TM-CA-199, UC-CA-188,
+and E2E-056.

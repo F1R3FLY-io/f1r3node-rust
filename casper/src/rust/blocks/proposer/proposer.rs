@@ -278,15 +278,10 @@ where
                     BlockCreatorResult::NoNewDeploys => {
                         Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
                     }
-                    BlockCreatorResult::RecoveryDeferred(reason) => {
-                        if reason.requires_finalization_request() {
-                            casper.request_finalization()?;
-                        }
-                        Ok((
-                            ProposeResult::failure(ProposeFailure::RecoveryDeferred(reason)),
-                            None,
-                        ))
-                    }
+                    BlockCreatorResult::RecoveryDeferred(reason) => Ok((
+                        ProposeResult::failure(ProposeFailure::RecoveryDeferred(reason)),
+                        None,
+                    )),
                     BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
                         // Publish BlockCreated event immediately after block is created (before validation)
                         self.propose_effect_handler.publish_block_created(&block)?;
@@ -1003,23 +998,16 @@ mod proposal_intent_tests {
     }
 
     #[tokio::test]
-    async fn only_floor_materialization_deferral_schedules_finalization() {
+    async fn recovery_deferrals_do_not_schedule_finalization() {
         use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
 
         let cases = [
-            (
-                RecoveryDeferralReason::FinalizedFloorMaterializationPending,
-                1,
-            ),
-            (RecoveryDeferralReason::CandidateFloorRegression, 0),
-            (RecoveryDeferralReason::CandidateFloorConflict, 0),
-            (RecoveryDeferralReason::CertifiedContextMismatch, 0),
-            (RecoveryDeferralReason::IncompleteCandidateCommitteeSlots, 0),
-            (RecoveryDeferralReason::InactiveCandidateValidator, 0),
-            (RecoveryDeferralReason::StaleRecoveryPermit, 0),
+            RecoveryDeferralReason::IncompleteCertifiedCommitteeSlots,
+            RecoveryDeferralReason::InactiveCertifiedValidator,
+            RecoveryDeferralReason::StaleRecoveryPermit,
         ];
 
-        for (reason, expected_requests) in cases {
+        for reason in cases {
             let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
             let lfb = models::rust::block_implicits::get_random_block_default();
             let casper = Arc::new(TestCasperWithSnapshot::new(snapshot.clone(), lfb));
@@ -1047,7 +1035,7 @@ mod proposal_intent_tests {
                 result.propose_status,
                 ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(actual)) if actual == reason
             ));
-            assert_eq!(casper.finalization_request_count(), expected_requests);
+            assert_eq!(casper.finalization_request_count(), 0);
         }
     }
 
@@ -1066,7 +1054,7 @@ mod proposal_intent_tests {
             AllowActiveValidator,
             AllowStake,
             AllowHeight,
-            DeferredBlockCreator(RecoveryDeferralReason::CandidateFloorConflict),
+            DeferredBlockCreator(RecoveryDeferralReason::IncompleteCertifiedCommitteeSlots),
             UnusedBlockValidator,
             UnusedEffectHandler,
             false,
@@ -1188,6 +1176,7 @@ mod proposal_intent_tests {
                     protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                     objective_equivocation_evidence_delta: Vec::new(),
                     sender_authority: None,
+                    settled_history_admission: None,
                     finalized_floor_commitment: None,
                     admission_schema_version:
                         models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,

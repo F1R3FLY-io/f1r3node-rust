@@ -43,7 +43,9 @@ and the proof and execution evidence is cataloged in
 | `FinalizationAtomicity.tla` | parallel immutable evaluation, one-winner compare-and-append publication, stale-worker effect exclusion, and request/release wake ownership |
 | `FinalizationSnapshotRetry.tla` | concurrent durable-head advance, delayed projection, stale reader retry, and coherent snapshot publication |
 | `FinalizationWorkerRetry.tla` | failed-worker non-completion, bounded retry readiness, newer-success subsumption, and eventual request coverage with parallel workers |
-| `ProposalFloorReadiness.tla` | typed proposal readiness across independent nodes, materialization-only finalizer scheduling, authority-defect isolation, and post-materialization progress |
+| `RestoreRetryOwnership.tla` | generation-scoped restoration ownership, channel renewal, stale-result isolation, bounded terminal failure, restart availability, and permanent Running commit |
+| `ProposalFloorReadiness.tla` | typed proposal readiness, independent finalizer observation, candidate-evidence isolation, and proposal preservation during finalizer progress |
+| `SignedFloorReplayReadiness.tla` | exact signed-floor occurrence, typed artifact deferral, predecessor decision authority, target proposal authority, immutable replay anchoring, concurrent promotion, and receiver agreement |
 | `FinalizationBoundHead.tla` | exact predecessor binding across parallel certificate evaluation, state-lineage revalidation, and compare-and-append; includes the DAG-descending but state-regressive late-binding counterexample |
 | `FinalizationRecovery.tla` | crash/restart recovery of immutable rounds, ordered projection, independently receipted effects, contiguous completion, and safe compaction |
 | `FinalizationGenesisIdentity.tla` | atomic pristine bootstrap, immutable genesis identity, write-free duplicate assertion after arbitrary head advancement, and rooted restart integrity |
@@ -74,16 +76,17 @@ each transition. Equal replica inputs must produce equal latest-message slots.
 
 `StatePreservingForkChoice.tla` models proposal construction after a finalized-floor
 advance with independently scheduled validators. Each node freezes its exact latest
-messages and selected floor before deriving two projections: causal parents `C` and
-floor-descending votes `V`. The model then inserts a floor backstop when required,
-computes the reachability-maximal parent antichain, preserves the GHOST head at index
-zero, roots evidence at both the floor and every exact latest message, applies
-deterministic depth expiry, and permits recovery narrowing only after causal coverage
-and floor ancestry are both established.
+messages and selected floor. The node then derives causal parents `C` and
+floor-descending votes `V`. Protocol 6 uses the signed committed floor `F` as the
+replay anchor. Independent derived floor evidence `G` cannot replace `F`. The model
+inserts a floor backstop when required and computes the reachability-maximal parent
+antichain. The model preserves the GHOST head at index zero. It roots evidence at the
+floor and at each exact latest message. Deterministic depth expiry removes stale live
+tips. Recovery narrowing requires causal coverage and floor ancestry.
 
 The safe configuration exhausts every local ordering of certificate delivery,
 latest-message delivery, floor promotion, recovery observation, and proposal
-capture. It generates 17,169 states, finds 808 distinct states, reaches depth 10,
+capture. It generates 17,589 states, finds 808 distinct states, reaches depth 10,
 and checks both temporal properties. The zero-depth configuration is the
 constructive liveness witness: a permanently old disjoint tip expires from the
 live proposal frontier while remaining an evidence root. Its paired no-expiry
@@ -191,6 +194,23 @@ parallel workers and bounded repeated failures; Apalache checks the safe model
 through length 12. The failure-as-completion control violates the contract after
 one request, launch, failed exit, and false completion under both checkers.
 
+`RestoreRetryOwnership.tla` covers approved-state restoration during node join.
+One valid approved block acquires the restoration lease.
+Duplicate delivery cannot create a second active restoration.
+Recoverable failure renews both consumed message channels before the lease returns to `Idle`.
+Each lease has a monotonic generation within one process lifecycle.
+A delayed retry-request result can change only its matching `Idle` generation.
+Stale failures cannot terminate active, `Running`, or newer `Idle` generations.
+The third consecutive failure publishes a terminal startup error.
+A process restart creates a new request owner with a new failure budget.
+Running publication remains permanent after any best-effort notification failure.
+
+TLC exhausts 339 generated states and 138 distinct states to depth 15.
+Apalache checks the safe model through length 10.
+Four controls expose lost ownership, duplicate restoration, post-commit reopen, and stale-request termination.
+Rocq proves the unbounded lifecycle contract in `RestoreRetryOwnership.v`.
+Loom tests explore the corresponding lock, generation, ABA, and publication interleavings.
+
 `FinalizerFloorMaterialization.tla` closes the discovery seam between the
 all-parent proposal floor and the durable finalizer. Two nodes receive four
 validator tips independently. A `1/3/5/7` stake topology makes one secondary
@@ -204,15 +224,64 @@ target binding by substituting the rejected sibling. Both controls fail under
 TLC and Apalache for their named reason.
 
 `ProposalFloorReadiness.tla` connects that scheduler contract to proposal
-admission without collapsing distinct failure classes into one retry. A
-certified candidate ahead of the locally materialized floor defers and requests
-finalization. Incomplete committee slots, inactive candidate authority, and a
-stale recovery permit defer without scheduling finalizer work. Creation requires
-all four readiness predicates. TLC exhausts 1,612,009 generated / 93,636
-distinct states to depth 21 over two independently evolving nodes. Apalache
-checks the safe model through length 8. Three mutation controls independently
-produce missing-request, authority-defect hot-loop, and readiness-bypass
-counterexamples under both checkers.
+admission. Proposal reads the captured certified authority and recovery permit.
+Independent finalizer observation reads current candidate evidence. Candidate
+equality, descent, regression, and conflict cannot gate proposal. Finalizer
+progress cannot cancel a created proposal. TLC exhausts 4,325,377 generated
+states and 147,456 distinct states to depth 19 over two nodes. Ten mutation
+controls isolate missing requests, invalid requests, readiness bypass, candidate
+gates, finalizer cancellation, and unsafe materialization.
+
+`SignedFloorReplayReadiness.tla` composes proposal capture, finalizer progress,
+artifact delivery, receiver validation, replay selection, and authority
+selection. Two nodes execute those actions in independent orders.
+
+A proposal signs one captured floor, state root, certificate digest, and
+proposal-authority digest. Validation accepts only the exact accepted floor
+occurrence. At least one declared parent must descend from that floor.
+The floor hash determines its canonical state root.
+
+The certificate uses predecessor-floor decision authority. The proposal uses
+target-floor sender authority. These authority digests can differ after a
+valid committee transition. Each verifier reconstructs the applicable
+authority from its bound floor and complete latest-message domain.
+
+The certificate digest binds every certificate field. This binding includes
+the target height, threshold, decision authority, latest messages, and proof
+manifests. The signed commitment binds height through this certificate digest.
+The certificate and shard thresholds must match exactly. The finality test uses
+strict integer inequalities for majority and fault tolerance.
+
+Missing certificates, blocks, metadata, or receiver state roots produce typed
+deferral. Missing receiver data never becomes acceptance or invalidity. Later
+delivery permits the same proposal to complete validation.
+
+A proposer must hold the committed state before execution and signing. A
+receiver can lack that state independently. The receiver requests the state,
+imports it, and retries the unchanged signed proposal.
+
+The model starts after authenticated state import completes. `stateAvailable` means that the receiver validated and atomically published the complete requested root.
+
+The model does not verify RSpace pagination, page authentication, durable staging, or root publication. Those operations require a separate refinement model.
+
+Current Rust network import does not satisfy this premise. Consequently, the Rust tests here cover trusted local root availability, not authenticated page transfer.
+
+The replay floor, replay state, proposal committee, proposal latest-message
+domain, and sender authority come from the captured target floor. Certificate
+decision authority comes from the predecessor floor. Concurrent finalizer
+progress cannot cancel or rewrite an existing proposal.
+
+TLC exhausts 70,876 generated states and 13,417 distinct states to depth 20.
+It checks eventual acceptance under weak fairness. Apalache checks complete
+acceptance schedules through length 10 and replay selection through length 11.
+
+Thirty-one unsafe configurations remove one exact gate each. They cover floor
+substitution, certificate mismatch, rejected occurrence, and missing-root
+misclassification. They also cover stored artifact mismatch, canonical tuple
+mismatch, authority drift, torn capture, finalizer cancellation, and receiver
+disagreement. Eight controls isolate certificate-digest omission, authority
+context collapse, wrong-floor committee selection, inclusive threshold use,
+threshold mismatch, missing proposer state, and unbound certificate height.
 
 `FinalizationBoundHead.tla` refines the append identity from a numeric revision
 to the exact predecessor block and its state. Its safe model exhausts 101

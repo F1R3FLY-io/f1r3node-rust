@@ -21,6 +21,134 @@ therefore enables the same owner on each replica and no other validator.
 Distinct carrier owners can recover distinct work in parallel. The model does
 not use a global retry lock.
 
+`RequestQuarantineLifecycle.tla` separates a retry attempt from its dependency
+evidence. A retry budget controls network activity. It does not erase the
+bounded request owner or its dependency origin.
+
+| Lifecycle action | Rust realization |
+| --- | --- |
+| `DiscoverOne` | `BlockRetriever::admit_hash` and `add_new_request` |
+| `RetryOne` | `BlockRetriever::request_all` and `recover_dependency` |
+| `ExhaustOne` | `mark_retry_budget_quarantine` followed by attempt-state cleanup |
+| `ReceiveOne` | `BlockRetriever::ack_receive` |
+| `DeferOne` | `BlockRetriever::defer_for_admission` |
+| `AdmitOne` | `BlockRetriever::ack_in_casper` after durable buffer admission |
+| `CertifyObsoleteOne` | `forget_hash_tracking` after DAG membership proves the request obsolete |
+| `PruneOne` | `CasperBufferKeyValueStorage::dependency_free_nodes_with_age_ms` and `enforce_limits` |
+
+Receipt and admission deferral are nonterminal transitions. Durable buffer
+admission and certified obsolescence are terminal transitions. Only terminal
+transitions remove dependency evidence.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_RequestQuarantineLifecycle.cfg` | pass | bounded evidence survives retry exhaustion, receipt, deferral, and quarantine expiry |
+| `MC_RequestQuarantineLifecycle_cleanup_unsafe.cfg` | violate `Inv_UnresolvedHasEvidence` | retry exhaustion deletes an unresolved dependency owner |
+| `MC_RequestQuarantineLifecycle_receipt_unsafe.cfg` | violate `Inv_UnresolvedHasEvidence` | receipt deletes evidence before durable admission |
+| `MC_RequestQuarantineLifecycle_prune_parent_unsafe.cfg` | violate `Inv_MissingParentNeverReadiesWaiter` | pruning deletes a missing parent and falsely wakes its waiting children |
+| `MC_RequestQuarantineLifecycleApalache.cfg` | pass | symbolic check through the complete bounded lifecycle |
+| `MC_RequestQuarantineLifecycleCleanupUnsafeApalache.cfg` | violate `Inv_UnresolvedHasEvidence` | symbolic retry-cleanup counterexample |
+| `MC_RequestQuarantineLifecycleReceiptUnsafeApalache.cfg` | violate `Inv_UnresolvedHasEvidence` | symbolic receipt-cleanup counterexample |
+| `MC_RequestQuarantineLifecyclePruneParentUnsafeApalache.cfg` | violate `Inv_MissingParentNeverReadiesWaiter` | symbolic false-wakeup counterexample |
+
+`RecoveryBudgetEpisodes.tla` composes the durable settled-admission budget with the volatile keyed request window.
+The durable budget advances only with a certified finalization-ledger revision.
+The request window uses exact keys, finite capacity, fair selection, and private dispatch identities.
+
+A dispatch handle owns one strong identity.
+The tracked entry owns only a weak identity and its finite lease.
+Completion compares allocation identity and cannot accept a stale value-equivalent handle.
+
+Timeout consumes the matching handle and applies maximum backoff.
+Cancellation releases the strong identity.
+Lease expiry then reclaims the abandoned claim and applies maximum backoff.
+
+| TLA⁺ element | Rust realization |
+|---|---|
+| `charges` and `usage` | finalization-ledger `SettledRecoveryCharge` records and per-episode usage |
+| `currentEpisode` | `RecoveryEpisodeId` derived from the durable finalization head and witness |
+| `obligations` | durable certificate dependencies or blocks awaiting exact state roots |
+| `phase` and `attempts` | keyed `RecoveryWindow` entries with saturating backoff |
+| `dispatchHandles` | non-cloneable `RecoveryDispatch` values with strong private identities |
+| `inFlight` | weak identity ownership and a finite dispatch lease |
+| `DispatchBatch` | fair batches of at most 16 concurrent transport sends |
+| `TimeoutDispatch` | transport deadline followed by `expire_dispatch` |
+| `ReclaimExpired` | abandoned weak claim recovery after lease expiry |
+| `CompleteDispatch` | pointer-identity checked completion or effect-free stale completion |
+| `Restart` | ready volatile reconstruction without durable charge or usage loss |
+
+Restart clears process-local handles and attempt history.
+It preserves durable obligations, settled charges, and episode usage.
+Finite key capacity and per-transition batch size bound reconstructed work.
+
+The safe model separates ledger, request-window, composition, and temporal checks.
+TLC exhausts each finite state space.
+Apalache checks the typed composition with one equivalent conjunctive safety invariant.
+
+| Configuration | Expected result | Defect isolated |
+|---|---|---|
+| `MC_RecoveryBudgetEpisodesLedger.cfg` | pass | certified episodes, exact durable charges, migration, capacity, and restart durability |
+| `MC_RecoveryBudgetEpisodesWindow.cfg` | pass | bounded tracking, fair dispatch, unique identities, exact completion, and exact resolution |
+| `MC_RecoveryBudgetEpisodes.cfg` | pass | composed durable accounting and volatile recovery safety |
+| `MC_RecoveryBudgetEpisodesLiveness.cfg` | pass | ready work dispatches or resolves, and in-flight work leaves that state |
+| `MC_RecoveryBudgetEpisodesApalache.cfg` | pass | symbolic composition safety through the configured depth |
+| `MC_RecoveryBudgetEpisodes_abandoned_owner_unsafe.cfg` | violate `EventuallyLeavesInFlight` | a dropped handle permanently owns one key |
+| `MC_RecoveryBudgetEpisodes_bounded_counter_unsafe.cfg` | violate `EventuallyDispatchesOrResolves` | numeric dispatch identity exhaustion permanently blocks ready work |
+| `MC_RecoveryBudgetEpisodes_active_eviction_unsafe.cfg` | violate `Inv_ObligationsStayTracked` | capacity pressure deletes established work |
+| `MC_RecoveryBudgetEpisodes_attempt_reset_unsafe.cfg` | violate `Inv_AttemptsResetOnlyAfterProgress` | time resets retry pressure without exact progress |
+| `MC_RecoveryBudgetEpisodes_duplicate_token_unsafe.cfg` | violate `Inv_LiveIdentityIsNotReused` | two live dispatches share one identity |
+| `MC_RecoveryBudgetEpisodes_stale_completion_unsafe.cfg` | violate `Inv_StaleCompletionIsEffectFree` | an old handle mutates replacement state |
+| `MC_RecoveryBudgetEpisodes_unbounded_batch_unsafe.cfg` | violate `Inv_BatchIsBounded` | one maintenance call sends an unbounded request set |
+| `MC_RecoveryBudgetEpisodes_ownerless_tracked_unsafe.cfg` | violate `Inv_TrackedHasOwner` | a tracked request has no durable consumer |
+| `MC_RecoveryBudgetEpisodes_wrong_key_resolve_unsafe.cfg` | violate `Inv_ResolutionUsesRequestedKey` | one response removes another key |
+| Ledger safety controls | violate their named invariants | uncertified advancement, overcapacity, mismatched usage, or restart loss |
+
+The unsafe temporal controls run under TLC because they require weak fairness.
+Every unsafe safety configuration also runs under Apalache.
+
+`RecoveryBudgetEpisodes.v` proves the general identity and transition contract.
+The proof uses abstract identities and derives fresh natural identities for every finite history.
+The capstone has no unexpected assumptions.
+
+[Recovery budgets and dispatch identities](../../../docs/casper/theory/finalized-floor/recovery-budget-episodes.md) gives the production design and executable-test map.
+
+`SettledTicketTransaction.tla` models one settled-history admission transaction.
+The durable buffer edge supplies evidence that a bonded citer requested the target.
+One target can have one claim owner.
+The owner reserves budget before storage and releases that budget after a precommit failure.
+Durable DAG insertion commits the ticket before buffer and retriever cleanup.
+
+| TLA⁺ element | Rust realization |
+| --- | --- |
+| `evidence[h]` | a persisted Casper-buffer dependency edge from target `h` to a verified citer |
+| `Claim(h, w)` | `claim_settled_ticket` installs `InFlight(claim_id)` for worker `w` |
+| `Reserve(h, w)` | `SettledTicketGuard::reserve` acquires one bounded admission unit |
+| `PrecommitError(h, w)` | guard destruction releases the reservation and removes the matching claim |
+| `Commit(h, w)` | certified DAG insertion precedes `SettledTicketGuard::commit` |
+| `Cleanup(h)` | retryable buffer removal follows durable commit |
+| `Duplicate(h, w)` | `DuplicateInFlight` and `AlreadyAdmitted` bypass ordinary validation |
+| `Restart` | persisted DAG metadata restores admission ownership, budget, and pending cleanup |
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_SettledTicketTransaction.cfg` | pass | exclusive claims, rollback, authentic durable commit, retryable cleanup, duplicate safety, and bounded budget |
+| `MC_SettledTicketTransactionLiveness.cfg` | pass | weak fairness eventually removes each committed buffer edge |
+| `MC_SettledTicketTransaction_consume_on_claim_unsafe.cfg` | violate `Inv_CommitImpliesDurability` | claim consumes evidence before durable insertion |
+| `MC_SettledTicketTransaction_drop_evidence_unsafe.cfg` | violate `Inv_PrecommitFailureRetainsEvidence` | precommit failure removes retry evidence |
+| `MC_SettledTicketTransaction_validate_duplicate_unsafe.cfg` | violate `Inv_DuplicateNeverValidates` | duplicate delivery enters ordinary validation |
+| `MC_SettledTicketTransaction_keep_reservation_unsafe.cfg` | violate `Inv_BudgetMatchesOwnership` | failed transaction retains its budget reservation |
+| `MC_SettledTicketTransaction_restore_after_commit_unsafe.cfg` | violate `Inv_DurableCommitIsPermanent` | postcommit cleanup restores unresolved evidence |
+| `MC_SettledTicketTransaction_forged_proof_unsafe.cfg` | violate `Inv_DurableProofAuthentic` | forged evidence reaches durable storage |
+| `MC_SettledTicketTransaction_lost_restart_budget_unsafe.cfg` | violate `Inv_BudgetMatchesOwnership` | restart loses durable budget use |
+| `MC_SettledTicketTransactionApalache.cfg` | pass through length 12 | independent symbolic check of all safe invariants |
+| `MC_SettledTicketTransactionConsumeOnClaimUnsafeApalache.cfg` | violate `Inv_CommitImpliesDurability` | symbolic claim-time consumption counterexample |
+| `MC_SettledTicketTransactionDropEvidenceUnsafeApalache.cfg` | violate `Inv_PrecommitFailureRetainsEvidence` | symbolic precommit evidence-loss counterexample |
+| `MC_SettledTicketTransactionValidateDuplicateUnsafeApalache.cfg` | violate `Inv_DuplicateNeverValidates` | symbolic duplicate-validation counterexample |
+| `MC_SettledTicketTransactionKeepReservationUnsafeApalache.cfg` | violate `Inv_BudgetMatchesOwnership` | symbolic reservation-leak counterexample |
+| `MC_SettledTicketTransactionRestoreAfterCommitUnsafeApalache.cfg` | violate `Inv_DurableCommitIsPermanent` | symbolic postcommit restoration counterexample |
+| `MC_SettledTicketTransactionForgedProofUnsafeApalache.cfg` | violate `Inv_DurableProofAuthentic` | symbolic forged-proof counterexample |
+| `MC_SettledTicketTransactionLostRestartBudgetUnsafeApalache.cfg` | violate `Inv_BudgetMatchesOwnership` | symbolic restart-budget counterexample |
+
 `RecoveryFrontierCoverage.tla` refines retry readiness to the selected parent
 frontier. Every valid latest message must be an ancestor of at least one
 selected parent. Different messages can use different parents. This relation

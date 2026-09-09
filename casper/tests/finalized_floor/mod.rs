@@ -13,6 +13,7 @@
 //     plus the below-target ancestor-prefix red the walk refinement answers.
 
 mod horizon_read_abstention_spec;
+mod finalization_replay_properties;
 mod oracle_stall_replay_spec;
 mod prop_bonds_from_floor;
 mod prop_ft_ppm_provenance;

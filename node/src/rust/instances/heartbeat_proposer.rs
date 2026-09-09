@@ -1190,7 +1190,7 @@ mod tests {
                         FixedProposerOutcome::Empty => ProposerResult::Empty,
                         FixedProposerOutcome::RecoveryDeferred => ProposerResult::Failure(
                             ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(
-                                casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::FinalizedFloorMaterializationPending,
+                                casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::IncompleteCertifiedCommitteeSlots,
                             )),
                             7,
                         ),
@@ -1347,6 +1347,7 @@ mod tests {
                 protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 objective_equivocation_evidence_delta: Vec::new(),
                 sender_authority: Some(sender_authority),
+                settled_history_admission: None,
                 finalized_floor_commitment: Some(finalized_floor_commitment),
                 admission_schema_version: ADMISSION_SCHEMA_VERSION,
                 approved_genesis: false,
@@ -1874,7 +1875,7 @@ mod tests {
         async fn do_heartbeat_check_retains_deferred_leader_round_for_retry() {
             let deferred_failures = [
                 ProposeFailure::RecoveryDeferred(
-                    casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::FinalizedFloorMaterializationPending,
+                    casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::IncompleteCertifiedCommitteeSlots,
                 ),
                 ProposeFailure::ParentFrontierCapacityExceeded {
                     configured_cap: 2,

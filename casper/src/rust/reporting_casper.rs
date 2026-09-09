@@ -231,14 +231,14 @@ impl RhoReporterCasper {
                     &current_root,
                 )
                 .map_err(|error| format!("reporting effect pre-state failed: {error}"))?;
-            let purse_snapshot =
+            let state_snapshot =
                 if block_kind == crate::rust::rholang::replay_runtime::ReplayBlockKind::Ordinary {
-                    Some(self.purse_snapshot_at_root(term, &current_root).await?)
+                    Some(self.state_snapshot_at_root(term, &current_root).await?)
                 } else {
                     None
                 };
             runtime
-                .replay_deploy_e(block_kind, term, purse_snapshot.as_ref())
+                .replay_deploy_e(block_kind, term, state_snapshot.as_ref())
                 .await
                 .map_err(|error| format!("reporting user deploy replay failed: {error}"))?;
             let events = runtime
@@ -319,11 +319,11 @@ impl RhoReporterCasper {
         })
     }
 
-    async fn purse_snapshot_at_root(
+    async fn state_snapshot_at_root(
         &self,
         term: &ProcessedDeploy,
         root: &StateHash,
-    ) -> Result<crate::rust::util::rholang::acceptance::ReplayPurseSnapshot, String> {
+    ) -> Result<crate::rust::util::rholang::acceptance::ReplayStateSnapshot, String> {
         use rholang::rust::interpreter::matcher::r#match::Matcher;
         use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
         use rspace_plus_plus::rspace::r#match::Match;
@@ -355,9 +355,9 @@ impl RhoReporterCasper {
                 .try_into()
                 .expect("consensus state roots are Blake2b-256"),
         };
-        crate::rust::util::rholang::acceptance::replay_purse_snapshot(term, &reader)
+        crate::rust::util::rholang::acceptance::replay_state_snapshot(term, &reader)
             .await
-            .map_err(|error| format!("reporting purse snapshot failed: {error}"))
+            .map_err(|error| format!("reporting state snapshot failed: {error}"))
     }
 
     async fn verify_admission(
@@ -473,14 +473,14 @@ impl ReportingRuntime {
         &mut self,
         block_kind: crate::rust::rholang::replay_runtime::ReplayBlockKind,
         processed_deploy: &ProcessedDeploy,
-        purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
+        state_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayStateSnapshot>,
     ) -> Result<(), crate::rust::errors::CasperError> {
         use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 
         let mut replay_ops = ReplayRuntimeOps::new_from_runtime(self.runtime.clone());
 
         replay_ops
-            .replay_deploy_e_with_snapshot(block_kind, processed_deploy, purse_snapshot)
+            .replay_deploy_e_with_snapshot(block_kind, processed_deploy, state_snapshot)
             .await?;
 
         self.runtime = replay_ops.runtime_ops.runtime;

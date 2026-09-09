@@ -149,6 +149,31 @@ capped() {
 }
 
 echo "== [1/8] Rocq (authoritative) =="
+if capped bash "$REPO_ROOT/scripts/check-recovery-actor-service.sh" formal >"$LOG_DIR/ff_recovery_actor_formal.log" 2>&1; then
+  pass "Recovery actor service: parameterized proofs, parallel scheduling, shutdown, and negative controls"
+else
+  fail "Recovery actor formal checks failed (see $LOG_DIR/ff_recovery_actor_formal.log)"
+fi
+if capped bash "$REPO_ROOT/scripts/check-buffer-durable-membership.sh" formal >"$LOG_DIR/ff_buffer_membership_formal.log" 2>&1; then
+  pass "Buffer membership: parameterized proofs, concurrent mutation, restart, and negative controls"
+else
+  fail "Buffer membership formal checks failed (see $LOG_DIR/ff_buffer_membership_formal.log)"
+fi
+if capped bash "$REPO_ROOT/scripts/check-admission-identity-ownership.sh" formal >"$LOG_DIR/ff_admission_identity_formal.log" 2>&1; then
+  pass "Admission identity: exact owner proofs, queued cancellation, and negative controls"
+else
+  fail "Admission identity formal checks failed (see $LOG_DIR/ff_admission_identity_formal.log)"
+fi
+if capped bash "$REPO_ROOT/scripts/check-recovery-pump-control.sh" formal >"$LOG_DIR/ff_recovery_pump_formal.log" 2>&1; then
+  pass "Recovery pump: wake, pass, proposal, and dispatcher ownership checks"
+else
+  fail "Recovery pump formal checks failed (see $LOG_DIR/ff_recovery_pump_formal.log)"
+fi
+if capped bash "$REPO_ROOT/scripts/check-recovery-pump-control.sh" startup-native >"$LOG_DIR/ff_startup_runtime.log" 2>&1; then
+  pass "Startup ownership: native callbacks, publication, cancellation, and Casper integration"
+else
+  fail "Startup runtime checks failed (see $LOG_DIR/ff_startup_runtime.log)"
+fi
 if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
@@ -158,6 +183,11 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
     # Coq derives the module name from the file's basename, so it must be a valid
     # identifier (no dots) — use a fixed name inside a scratch dir.
     tmpd=$(mktemp -d "$LOG_DIR/rocq-gate.XXXXXX")
+    if capped coqchk -Q "$ROCQ_DIR/theories" FinalizedFloor FinalizedFloor.PayloadReservationCoverage >"$LOG_DIR/ff_payload_ownership_kernel.log" 2>&1; then
+      pass "Payload reservation ownership: independent kernel check"
+    else
+      fail "Payload reservation ownership kernel check failed (see $LOG_DIR/ff_payload_ownership_kernel.log)"
+    fi
     chk="$tmpd/GateCheck.v"
     # The 5 original capstones + the 3 Phase-7 GuardBridge lemmas that close the
     # "Rocq assumes what Rust enforces" seam (guard⇒AdjDC bridge + frontier-is-
@@ -185,6 +215,8 @@ From FinalizedFloor Require Import GenesisApprovalTrust.
 From FinalizedFloor Require Import FinalizationCertificateRetrieval.
 From FinalizedFloor Require Import WitnessEquivalentCarrier.
 From FinalizedFloor Require Import DependencyMaintenanceRound.
+From FinalizedFloor Require Import RestoreRetryOwnership.
+From FinalizedFloor Require Import RequestQuarantineLifecycle.
 Print Assumptions finalized_floor_merge_correct.
 Print Assumptions finalized_floor_candidate_scope_rehome_correct.
 Print Assumptions finalized_floor_objective_evidence_sequence_boundary_correct.
@@ -192,6 +224,9 @@ Print Assumptions finalized_floor_occurrence_correct.
 Print Assumptions finalized_floor_deploy_identity_separation_correct.
 Print Assumptions finalized_floor_occurrence_status_scope_correct.
 Print Assumptions finalized_floor_recovery_admission_correct.
+Print Assumptions finalized_floor_request_quarantine_lifecycle_correct.
+Print Assumptions evidence_admission_is_bounded.
+Print Assumptions full_capacity_preserves_existing_evidence.
 Print Assumptions finalized_floor_recovery_leadership_correct.
 Print Assumptions finalized_floor_merge_recovery_coherence_correct.
 Print Assumptions finalized_floor_admission_effect_alignment_correct.
@@ -200,6 +235,7 @@ Print Assumptions finalized_floor_protocol_activation_correct.
 Print Assumptions finalized_floor_protocol_lifecycle_correct.
 Print Assumptions finalized_floor_selection_correct.
 Print Assumptions committee_transition_correct.
+Print Assumptions bonded_active_committee_lifecycle_correct.
 Print Assumptions finalized_floor_active_finality_committee_correct.
 Print Assumptions finalized_floor_certified_finality_authority_correct.
 Print Assumptions finalized_floor_deploy_lifecycle_decision_correct.
@@ -227,6 +263,9 @@ Print Assumptions finalized_floor_effect_causal_closure_correct.
 Print Assumptions finalized_floor_settled_effect_probe_correct.
 Print Assumptions finalized_floor_state_lineage_correct.
 Print Assumptions finalized_floor_state_effect_provenance_correct.
+Print Assumptions finalized_floor_certified_replay_anchor_correct.
+Print Assumptions finalized_floor_signed_replay_readiness_correct.
+Print Assumptions finalized_floor_validated_proposal_readiness_correct.
 Print Assumptions finalized_floor_unequal_applied_state_rejection_correct.
 Print Assumptions finalized_floor_exact_missing_dependency_deferral_correct.
 Print Assumptions finalized_floor_applied_state_acceptance_correct.
@@ -249,6 +288,7 @@ Print Assumptions finalized_floor_worker_retry_correct.
 Print Assumptions finalized_floor_proposal_readiness_correct.
 Print Assumptions finalized_floor_pending_work_readiness_correct.
 Print Assumptions finalized_floor_recovery_cursors_correct.
+Print Assumptions finalized_floor_restore_retry_ownership_correct.
 Print Assumptions finalized_floor_genesis_approval_trust_correct.
 Print Assumptions genesis_placeholder_classification_is_heldness_independent.
 Print Assumptions missing_noncanonical_latest_fails_closed.
@@ -299,7 +339,7 @@ EOF
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
     if [[ "$n_closed" == "$expected_closed" ]]; then
-      pass "all $expected_closed headline results axiom-free, including exact target-bound dual certification, all-parent finalizer discovery equivalence, unique highest exact selection, materialization-target alignment, strict candidate/finalizer threshold alignment, candidate-scope deploy rehome, signed-sequence evidence eligibility, typed proposal readiness, outcome-aware finalization retry, typed admission disposition, framing resistance, local-fault isolation, atomic finalization, crash-recovery cursors, local-ledger identity separation, live minority-fork recovery, certified causal admission, exact projection identity binding, durable floor/latest evidence roots, certified validator incarnations, bounded monotonic bond generations, exact quarantine restoration, causal finality projection, objective equivocation, accountable parallel promotion, admission/effect alignment, exact-effect causal closure, merge-effect provenance, committee transition, snapshot materialization, and heartbeat backpressure"
+      pass "all $expected_closed headline results axiom-free, including exact target-bound dual certification, certified replay anchoring, proposal-finalizer independence, all-parent finalizer discovery equivalence, unique highest exact selection, materialization-target alignment, strict candidate/finalizer threshold alignment, candidate-scope deploy rehome, signed-sequence evidence eligibility, typed proposal readiness, outcome-aware finalization retry, typed admission disposition, framing resistance, local-fault isolation, atomic finalization, crash-recovery cursors, local-ledger identity separation, live minority-fork recovery, certified causal admission, exact projection identity binding, durable floor/latest evidence roots, certified validator incarnations, bounded monotonic bond generations, exact quarantine restoration, causal finality projection, objective equivocation, accountable parallel promotion, admission/effect alignment, exact-effect causal closure, merge-effect provenance, committee transition, snapshot materialization, and heartbeat backpressure"
     else
       fail "headline results NOT all axiom-free ($n_closed/$expected_closed Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
     fi
@@ -324,10 +364,44 @@ if "$REPO_ROOT/scripts/check-finalization-atomicity.sh" >"$LOG_DIR/ff_finalizati
 else
   fail "finalization atomicity/recovery verification failed (see $LOG_DIR/ff_finalization_atomicity.log)"
 fi
+if "$REPO_ROOT/scripts/check-signed-floor-replay-readiness.sh" >"$LOG_DIR/ff_signed_floor_replay_readiness.log" 2>&1; then
+  pass "signed-floor occurrence, ancestry, replay, authority, deferral, finalizer independence, and receiver agreement"
+else
+  fail "signed-floor replay readiness verification failed (see $LOG_DIR/ff_signed_floor_replay_readiness.log)"
+fi
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "$REPO_ROOT/scripts/lib/tlc-run.sh"
+  for runtime_cache_variant in '' BlockIndex HoldReadUnsafe ShadowCloneUnsafe; do
+    runtime_cache_name="RuntimeCacheLockOrder$runtime_cache_variant"
+    runtime_cache_log="$LOG_DIR/ff_tlc_$runtime_cache_name.log"
+    if tlc_run "$(tlc_metadir "$runtime_cache_name")" \
+      "$TLA_DIR/$runtime_cache_name.cfg" "$TLA_DIR/RuntimeCacheLockOrder.tla" \
+      >"$runtime_cache_log" 2>&1; then
+      runtime_cache_result=0
+    else
+      runtime_cache_result=$?
+    fi
+    case "$runtime_cache_variant" in
+      ''|BlockIndex)
+        if [[ "$runtime_cache_result" == 0 ]] \
+          && rg -q 'Model checking completed. No error has been found.' "$runtime_cache_log"; then
+          pass "TLA+ $runtime_cache_name lock safety and finite-operation completion"
+        else
+          fail "TLA+ $runtime_cache_name failed (see $runtime_cache_log)"
+        fi
+        ;;
+      *)
+        if [[ "$runtime_cache_result" == 12 ]] \
+          && rg -q 'Invariant NoWaitForCycle is violated' "$runtime_cache_log"; then
+          pass "TLA+ $runtime_cache_name reproduces the cache wait cycle"
+        else
+          fail "TLA+ $runtime_cache_name did not reproduce the expected cycle (see $runtime_cache_log)"
+        fi
+        ;;
+    esac
+  done
   if tlc_run "$(tlc_metadir ff_parents_post_state_cache)" "$TLA_DIR/MC_ParentsPostStateCache.cfg" "$TLA_DIR/ParentsPostStateCache.tla" >"$LOG_DIR/ff_tlc_parents_post_state_cache.log" 2>&1; then
     pass "TLA+ parents-post-state cache preserves main-parent identity and secondary-parent permutation confluence"
   else
@@ -647,7 +721,9 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       'unregistered_lmm_unsafe:Inv_InvalidUnregisteredSendersHaveNoLmmSlot:an invalid unregistered sender creating an LMM slot' \
       'nonpositive_slot_unsafe:Inv_OnlyPositivePostStateBondsCreateSlots:a non-positive post-state bond creating a validator slot' \
       'invalid_finality_lmm_unsafe:Inv_InvalidLmmDoesNotContributeToFinality:an invalid LMM slot contributing to a finality certificate' \
-      'legacy_backfill_unsafe:Inv_DuplicateApprovedBackfillsLegacyIndex:a duplicate approved genesis failing to backfill a legacy empty canonical index'; do
+      'legacy_backfill_unsafe:Inv_DuplicateApprovedBackfillsLegacyIndex:a duplicate approved genesis failing to backfill a legacy empty canonical index' \
+      'immediate_activation_unsafe:Inv_ActivationRequiresBoundary:an off-boundary bond immediately entering validator authority' \
+      'mismatched_active_cache_unsafe:Inv_SerializedActiveIsPostStateCache:a serialized active-validator cache disagreeing with replayed post-state activation'; do
     IFS=: read -r transition_suffix transition_invariant transition_description <<<"$transition_control"
     transition_log="$LOG_DIR/ff_tlc_recovery_committee_transition_${transition_suffix}.log"
     if tlc_run "$(tlc_metadir "ff_recovery_committee_transition_${transition_suffix}")" "$TLA_DIR/MC_RecoveryCommitteeTransition_${transition_suffix}.cfg" "$TLA_DIR/RecoveryCommitteeTransition.tla" >"$transition_log" 2>&1; then
@@ -656,6 +732,24 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       pass "TLA+ recovery committee-transition control reproduces ${transition_description}"
     else
       fail "TLA+ recovery committee-transition control failed for the wrong reason (see $transition_log)"
+    fi
+  done
+  if tlc_run "$(tlc_metadir ff_active_validator_boundary_convergence)" "$TLA_DIR/MC_ActiveValidatorBoundaryConvergence.cfg" "$TLA_DIR/ActiveValidatorBoundaryConvergence.tla" >"$LOG_DIR/ff_tlc_active_validator_boundary_convergence.log" 2>&1; then
+    pass "TLA+ concurrent replicas select one bounded active committee at activation boundaries regardless of local arrival order"
+  else
+    fail "TLA+ active-validator boundary-convergence model failed (see $LOG_DIR/ff_tlc_active_validator_boundary_convergence.log)"
+  fi
+  for active_boundary_control in \
+      'arrival_order_unsafe:Inv_CompleteBoundaryReplicasConverge:arrival-order-dependent active-validator selection' \
+      'immediate_activation_unsafe:Inv_ActivationOccursOnlyAtBoundary:off-boundary validator activation'; do
+    IFS=: read -r active_boundary_suffix active_boundary_invariant active_boundary_description <<<"$active_boundary_control"
+    active_boundary_log="$LOG_DIR/ff_tlc_active_validator_boundary_${active_boundary_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_active_validator_boundary_${active_boundary_suffix}")" "$TLA_DIR/MC_ActiveValidatorBoundaryConvergence_${active_boundary_suffix}.cfg" "$TLA_DIR/ActiveValidatorBoundaryConvergence.tla" >"$active_boundary_log" 2>&1; then
+      fail "TLA+ active-validator control should reproduce ${active_boundary_description} but passed"
+    elif grep -Fq "Invariant ${active_boundary_invariant} is violated" "$active_boundary_log"; then
+      pass "TLA+ active-validator control reproduces ${active_boundary_description}"
+    else
+      fail "TLA+ active-validator control failed for the wrong reason (see $active_boundary_log)"
     fi
   done
   if tlc_run "$(tlc_metadir ff_authority_floor_state_binding)" "$TLA_DIR/MC_AuthorityFloorStateBinding.cfg" "$TLA_DIR/AuthorityFloorStateBinding.tla" >"$LOG_DIR/ff_tlc_authority_floor_state_binding.log" 2>&1; then
@@ -1134,6 +1228,13 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     pass "TLA+ floor-unprotected replay control reproduces finalized-effect loss after LFB advancement"
   else
       fail "TLA+ floor-unprotected replay control failed for the wrong reason (see $LOG_DIR/ff_tlc_state_preserving_fork_choice_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_state_preserving_fork_choice_replay_anchor_unsafe)" "$TLA_DIR/MC_StatePreservingForkChoice_replay_anchor_unsafe.cfg" "$TLA_DIR/StatePreservingForkChoice.tla" >"$LOG_DIR/ff_tlc_state_preserving_fork_choice_replay_anchor_unsafe.log" 2>&1; then
+    fail "TLA+ derived-floor substitution control should violate the certified replay anchor but passed"
+  elif grep -q "Inv_ReplayUsesCommittedFloor is violated" "$LOG_DIR/ff_tlc_state_preserving_fork_choice_replay_anchor_unsafe.log"; then
+    pass "TLA+ derived-floor substitution control reproduces certified-floor replay mismatch"
+  else
+    fail "TLA+ derived-floor substitution control failed for the wrong reason (see $LOG_DIR/ff_tlc_state_preserving_fork_choice_replay_anchor_unsafe.log)"
   fi
   if tlc_run "$(tlc_metadir ff_state_preserving_fork_choice_vote_parent_unsafe)" "$TLA_DIR/MC_StatePreservingForkChoice_parent_uses_votes_unsafe.cfg" "$TLA_DIR/StatePreservingForkChoice.tla" >"$LOG_DIR/ff_tlc_state_preserving_fork_choice_vote_parent_unsafe.log" 2>&1; then
     fail "TLA+ vote-projection parent control should drop an accepted stale sibling but passed"
@@ -1778,7 +1879,9 @@ if command -v apalache-mc >/dev/null 2>&1; then
       'unregistered_lmm_unsafe:Inv_InvalidUnregisteredSendersHaveNoLmmSlot:unregistered invalid-sender LMM allocation' \
       'nonpositive_slot_unsafe:Inv_OnlyPositivePostStateBondsCreateSlots:non-positive bond slot allocation' \
       'invalid_finality_lmm_unsafe:Inv_InvalidLmmDoesNotContributeToFinality:invalid-LMM certificate contribution' \
-      'legacy_backfill_unsafe:Inv_DuplicateApprovedBackfillsLegacyIndex:missing duplicate-approved legacy-index backfill'; do
+      'legacy_backfill_unsafe:Inv_DuplicateApprovedBackfillsLegacyIndex:missing duplicate-approved legacy-index backfill' \
+      'immediate_activation_unsafe:Inv_ActivationRequiresBoundary:off-boundary validator activation' \
+      'mismatched_active_cache_unsafe:Inv_SerializedActiveIsPostStateCache:a serialized/replayed active-validator cache mismatch'; do
     IFS=: read -r transition_suffix transition_invariant transition_description <<<"$transition_apalache_control"
     transition_log="$LOG_DIR/ff_apalache_recovery_committee_transition_${transition_suffix}.log"
     transition_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/recovery-committee-transition-${transition_suffix}" check --config="MC_RecoveryCommitteeTransition_${transition_suffix}_Apalache.cfg" --length="$RECOVERY_COMMITTEE_APALACHE_UNSAFE_LENGTH" RecoveryCommitteeTransition.tla 2>&1)"
@@ -1791,6 +1894,31 @@ if command -v apalache-mc >/dev/null 2>&1; then
       pass "Apalache recovery committee-transition control finds ${transition_description} by bound $RECOVERY_COMMITTEE_APALACHE_UNSAFE_LENGTH"
     else
       fail "Apalache recovery committee-transition control did not reproduce ${transition_description} (see $transition_log)"
+    fi
+  done
+  active_boundary_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/active-validator-boundary-safe" check --config=MC_ActiveValidatorBoundaryConvergenceApalache.cfg --length="$RECOVERY_COMMITTEE_APALACHE_SAFE_LENGTH" ActiveValidatorBoundaryConvergence.tla 2>&1)"
+  active_boundary_rc=$?
+  printf '%s\n' "$active_boundary_output" >"$LOG_DIR/ff_apalache_active_validator_boundary.log"
+  if [[ $active_boundary_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_active_validator_boundary.log"; then
+    pass "Apalache active-validator boundary convergence through bound $RECOVERY_COMMITTEE_APALACHE_SAFE_LENGTH"
+  else
+    fail "Apalache active-validator boundary-convergence model failed (see $LOG_DIR/ff_apalache_active_validator_boundary.log)"
+  fi
+  for active_boundary_apalache_control in \
+      'arrival_order_unsafe:Inv_CompleteBoundaryReplicasConverge:arrival-order-dependent active-validator selection' \
+      'immediate_activation_unsafe:Inv_ActivationOccursOnlyAtBoundary:off-boundary validator activation'; do
+    IFS=: read -r active_boundary_suffix active_boundary_invariant active_boundary_description <<<"$active_boundary_apalache_control"
+    active_boundary_log="$LOG_DIR/ff_apalache_active_validator_boundary_${active_boundary_suffix}.log"
+    active_boundary_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/active-validator-boundary-${active_boundary_suffix}" check --config="MC_ActiveValidatorBoundaryConvergence_${active_boundary_suffix}_Apalache.cfg" --length="$RECOVERY_COMMITTEE_APALACHE_UNSAFE_LENGTH" ActiveValidatorBoundaryConvergence.tla 2>&1)"
+    active_boundary_rc=$?
+    printf '%s\n' "$active_boundary_output" >"$active_boundary_log"
+    if [[ $active_boundary_rc -ne 0 ]] \
+         && grep -Fq "Using inv predicate(s) ${active_boundary_invariant}" "$active_boundary_log" \
+         && grep -qE 'state invariant [0-9]+ violated' "$active_boundary_log" \
+         && grep -q 'The outcome is: Error' "$active_boundary_log"; then
+      pass "Apalache active-validator control finds ${active_boundary_description} by bound $RECOVERY_COMMITTEE_APALACHE_UNSAFE_LENGTH"
+    else
+      fail "Apalache active-validator control did not reproduce ${active_boundary_description} (see $active_boundary_log)"
     fi
   done
   authority_floor_state_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/authority-floor-state-binding-safe" check --config=MC_AuthorityFloorStateBindingApalache.cfg --length=3 AuthorityFloorStateBinding.tla 2>&1)"
@@ -2459,6 +2587,17 @@ if command -v apalache-mc >/dev/null 2>&1; then
   else
     fail "Apalache floor-unprotected replay control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_state_preserving_fork_choice_unsafe.log)"
   fi
+  fork_choice_replay_anchor_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/state-preserving-fork-choice-replay-anchor-unsafe" check --config=MC_StatePreservingForkChoice_replay_anchor_unsafe_Apalache.cfg --length=4 StatePreservingForkChoice.tla 2>&1)"
+  fork_choice_replay_anchor_unsafe_rc=$?
+  printf '%s\n' "$fork_choice_replay_anchor_unsafe_output" >"$LOG_DIR/ff_apalache_state_preserving_fork_choice_replay_anchor_unsafe.log"
+  if [[ $fork_choice_replay_anchor_unsafe_rc -ne 0 ]] \
+       && grep -Fq 'Using inv predicate(s) Inv_ReplayUsesCommittedFloor' "$LOG_DIR/ff_apalache_state_preserving_fork_choice_replay_anchor_unsafe.log" \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_state_preserving_fork_choice_replay_anchor_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_state_preserving_fork_choice_replay_anchor_unsafe.log"; then
+    pass "Apalache derived-floor substitution control finds certified-floor replay mismatch"
+  else
+    fail "Apalache derived-floor substitution control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_state_preserving_fork_choice_replay_anchor_unsafe.log)"
+  fi
   fork_choice_vote_parent_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/state-preserving-fork-choice-vote-parent-unsafe" check --config=MC_StatePreservingForkChoice_parent_uses_votes_unsafe_Apalache.cfg --length=4 StatePreservingForkChoice.tla 2>&1)"
   fork_choice_vote_parent_unsafe_rc=$?
   printf '%s\n' "$fork_choice_vote_parent_unsafe_output" >"$LOG_DIR/ff_apalache_state_preserving_fork_choice_vote_parent_unsafe.log"
@@ -2815,6 +2954,26 @@ echo "== [7/8] Rust proptests + floor-selection lib tests (fail-soft) =="
 # thereafter), then runs only the `finalized_floor::` tests. SKIPPED if cargo is absent;
 # any proptest failure fails the gate.
 if command -v cargo >/dev/null 2>&1; then
+  runtime_cache_markers=(
+    "active_validator_hit_releases_shard_before_order ... ok"
+    "bond_hit_releases_shard_before_order ... ok"
+    "generation_hit_releases_shard_before_order ... ok"
+    "parent_state_hit_releases_shard_before_order ... ok"
+    "block_index_fast_hit_releases_shard_before_order ... ok"
+    "block_index_recheck_releases_shard_before_order ... ok"
+    "probe_accepts_touch_without_a_shard_guard ... ok"
+    "cache_touch_preserves_unique_order_without_a_shard_guard ... ok"
+    "generic_eviction_skips_stale_order_and_preserves_owned_values ... ok"
+    "validator_hit_returns_an_owned_copy_across_eviction ... ok"
+    "block_index_hit_and_eviction_preserve_owned_identity_and_byte_accounting ... ok"
+  )
+  if cargo test -p casper --lib cache_lock_tests:: -- --test-threads=1 \
+      >"$LOG_DIR/ff_rust_runtime_cache_locks.log" 2>&1 \
+      && all_markers_present "$LOG_DIR/ff_rust_runtime_cache_locks.log" "${runtime_cache_markers[@]}"; then
+    pass "Rust cache guard release, copied values, stale-order eviction, and byte accounting"
+  else
+    fail "Rust cache-lock regression failed (see $LOG_DIR/ff_rust_runtime_cache_locks.log)"
+  fi
   if cargo test -p block-storage --release --lib finalization_ledger >"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
        && cargo test -p block-storage --release --lib finalization_snapshot_tests >>"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
        && cargo test -p casper --lib finalization_schedule >>"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
@@ -3036,7 +3195,19 @@ if command -v cargo >/dev/null 2>&1; then
   else
     skip "Loom finalized-floor cache: could not build the loom test in this cfg (fail-soft; see $LOG_DIR/ff_loom.log)"
   fi
-  for loom_protocol in loom_committee_transition loom_objective_equivocation loom_certified_causal_admission loom_consensus_projection_freeze loom_finalization_atomicity loom_live_minority_fork_recovery loom_local_validation_recovery loom_parent_post_state_cache loom_recovery_custody loom_pending_work_readiness loom_deploy_lifecycle_finalization loom_state_effect_provenance loom_applied_state_validation_precedence; do
+  for loom_protocol in recovery_actor_service loom_recovery_service_rotation \
+    loom_committee_transition loom_objective_equivocation loom_certified_causal_admission \
+    loom_consensus_projection_freeze loom_finalization_atomicity \
+    loom_production_effect_observation loom_production_integrity_pages \
+    loom_production_ledger_pages loom_production_sparse_transaction \
+    loom_production_admission_budget loom_admission_identity loom_recovery_pump_control property_recovery_pump_control initializer_ownership \
+    property_startup_snapshot loom_startup_snapshot property_startup_scan \
+    property_startup_completion loom_startup_completion \
+    loom_buffer_transaction_publication loom_buffer_candidate_rotation \
+    loom_live_minority_fork_recovery loom_local_validation_recovery \
+    loom_parent_post_state_cache loom_runtime_cache_lock_order loom_recovery_custody loom_pending_work_readiness \
+    loom_deploy_lifecycle_finalization loom_state_effect_provenance \
+    loom_applied_state_validation_precedence loom_restore_retry_ownership; do
     loom_protocol_log="$LOG_DIR/ff_${loom_protocol}.log"
     if env RUSTFLAGS='--cfg loom -C target-cpu=native' LOOM_MAX_PREEMPTIONS=3 \
       cargo test -p cost-accounting-loom-models --test "$loom_protocol" >"$loom_protocol_log" 2>&1; then

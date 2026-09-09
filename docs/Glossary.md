@@ -1,5 +1,78 @@
 # Glossary
 
+## Recovery service terms
+
+### Durable owner
+
+A durable owner is a stored buffer row that makes an unresolved block discoverable for another processing attempt.
+See the [publication specification](casper/theory/finalized-floor/buffer-publication-ownership.md).
+
+### Request owner
+
+A request owner is a request-tracker entry that retains an unresolved block identity.
+Ownership does not by itself establish retry eligibility or eventual service.
+See the [publication specification](casper/theory/finalized-floor/buffer-publication-ownership.md).
+
+### Worker lease
+
+A worker lease retains a block's local identity claim and byte reservation during queueing and processing.
+See the [publication specification](casper/theory/finalized-floor/buffer-publication-ownership.md).
+
+### Retry-ready entry
+
+A retry-ready entry has `received=false` and remains subject to the existing retry budget, quarantine, and cooldowns.
+See the [publication specification](casper/theory/finalized-floor/buffer-publication-ownership.md).
+
+### Service lane
+
+A service lane is one input source that an actor can select for work.
+The runtime state requester has chunk, command, and retry-timer service lanes.
+See the [recovery actor specification](casper/theory/finalized-floor/recovery-actor-service.md).
+
+### Block payload reservation
+
+A block payload reservation holds encoded-byte capacity while a queue or worker owns the corresponding admitted block.
+This local resource limit is not a token charge or a consensus validity rule.
+See the [ownership specification](casper/theory/finalized-floor/payload-reservation-ownership.md).
+
+### Buffered identity
+
+A buffered identity identifies a block with its own durable buffer row.
+The row can have an empty parent set.
+A referenced missing root does not have an independent row unless the node also buffers that block.
+
+### Candidate index
+
+A candidate index holds live block identities in a rotating examination order.
+It does not establish admission eligibility or consensus validity.
+See the [candidate specification](casper/theory/finalized-floor/buffer-candidate-rotation.md).
+
+### Age epoch
+
+An age epoch is the time origin for measuring a buffer identity's waiting time.
+Restored buffer identities use the current startup time as their age epoch.
+
+### Admission identity
+
+An admission identity gives one queue item or worker exclusive local ownership of a block hash.
+Its private token prevents an old owner from clearing a replacement owner.
+See the [identity specification](casper/theory/finalized-floor/admission-identity-ownership.md).
+
+### Startup snapshot
+
+A startup snapshot retains the dependency-free hash membership captured for one initialization request.
+Later buffer changes do not change that membership.
+The snapshot does not establish current admission eligibility.
+See the [snapshot specification](casper/theory/finalized-floor/startup-snapshot-semantics.md).
+
+### Ordered snapshot
+
+An ordered snapshot retains a shared immutable set root and visits its keys through an exclusive key cursor.
+Each cursor step excludes the previous key.
+This representation avoids copying the complete hash set during capture or one cursor step.
+
+## Existing terminology
+
 > This glossary is **load-bearing**: documentation, design decisions
 > (`docs/casper/theory/slashing/design/15-decision-records.md`), TDD plans
 > (`docs/tdd-plans/`), and code review notes cite its anchors directly.
@@ -29,6 +102,29 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Host-work unit
+
+A host-work unit measures one deterministic part of node work.
+It does not represent a token, a phlogiston charge, or a wallet debit.
+
+**Preferred usage.** Use this term for one unit in a named host-work dimension.
+*Distinguish from* semantic resource cost, which controls economic settlement.
+
+### Host-work budget
+
+A host-work budget contains independent dimension counters, one limit schedule, and one sticky rejection state for a deployment boundary.
+
+**Preferred usage.** Use this term for deterministic node-work protection across play and replay.
+*Distinguish from* the economic budget that reserves SystemVault custody.
+
+### Host-work limit schedule
+
+A host-work limit schedule maps each host-work dimension to one unsigned integer limit.
+The protocol version must bind one schedule for all validating nodes.
+
+**Preferred usage.** Use this term for the complete versioned mapping.
+*Avoid*: host-work limit, when the text refers to more than one dimension.
+
 ### Failed-body settlement
 
 See [Failed-body settlement](casper/GLOSSARY.md#failed-body-settlement) in the
@@ -57,6 +153,38 @@ See [State witness](casper/GLOSSARY.md#state-witness) in the Casper glossary.
 
 See [Settled floor set](casper/GLOSSARY.md#settled-floor-set) in the Casper
 glossary.
+
+### Settled-history admission proof
+
+See [Settled-history admission proof](casper/GLOSSARY.md#settled-history-admission-proof) in the Casper glossary.
+
+### Settled-history admission ticket
+
+See [Settled-history admission ticket](casper/GLOSSARY.md#settled-history-admission-ticket) in the Casper glossary.
+
+### Certified replay floor
+
+See [Certified replay floor](casper/GLOSSARY.md#certified-replay-floor) in the
+Casper glossary.
+
+### Validator fuel
+
+See [Validator fuel](casper/GLOSSARY.md#validator-fuel) in the Casper glossary.
+
+### Retained execution result
+
+See [Retained execution result](casper/GLOSSARY.md#retained-execution-result)
+in the Casper glossary.
+
+### Replay economic snapshot
+
+See [Replay economic snapshot](casper/GLOSSARY.md#replay-economic-snapshot) in
+the Casper glossary.
+
+### Certified checkpoint attempt
+
+See [Certified checkpoint attempt](casper/GLOSSARY.md#certified-checkpoint-attempt)
+in the Casper glossary.
 
 
 ### Release candidate
@@ -222,9 +350,25 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#equivocation).
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#bond-generation).
 
+### Complete bond ledger
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#complete-bond-ledger).
+
+### Active validator set
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#active-validator-set).
+
+### Activation boundary
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#activation-boundary).
+
 ### Validator lifetime
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#validator-lifetime).
+
+### Mint frontier
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#mint-frontier).
 
 ### Equivocation detector
 
@@ -265,6 +409,16 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#test-node).
 ### Rejected deploy buffer
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#rejected-deploy-buffer).
+
+### Dependency evidence
+
+Dependency evidence is the retained relation between unresolved work and its
+missing prerequisite. Retry pacing cannot remove this relation.
+
+### Request quarantine
+
+Request quarantine is a bounded interval that suppresses network retries for
+one tracked dependency. It does not remove dependency evidence.
 
 ### Merge scope
 
@@ -459,6 +613,44 @@ conflated: [implementation tiers](#implementation-tier)
 (Production/Oracle/Harness — code artifacts in the consensus stack entry) and
 [verification tiers](#verification-tier) (PR-gate/nightly/exhaustive — CI
 budget classes in the formal-verification stack entry).
+
+## Evaluation attempt
+
+An evaluation attempt invokes the user evaluator. Authority discovery can make
+several attempts before the runtime retains one successful result. Attempt
+counts include failed evaluations and differ from accepted-result counts.
+
+## Replay cache context
+
+The replay cache context identifies runtime inputs outside the pre-state and
+processed replay payload. It includes the sender, sequence number, timestamp,
+height, and invalid-block map.
+
+**Preferred usage:** Use "replay cache context" for these inputs. Do not use
+the term for same-call retained admission or the persisted replay-payload hash.
+
+## Startup context identity
+
+A startup context identity identifies one engine publication for local recovery.
+The recovery controller must not confuse retained handles from an old publication with the current context.
+
+## Startup request identity
+
+A startup request identity identifies one initialization request within its startup context.
+The request identity must remain distinct from the block hash, deploy identity, and validator identity.
+
+## Startup ticket
+
+A startup ticket owns one initialization request through scan completion, optional callback authorization, and the startup-success commit.
+Cancellation affects only the matching context and request identities.
+It does not revoke already authorized work or a committed result.
+
+## Read tape
+
+A read tape records the completed history callbacks from one state-import traversal, in execution order.
+Each record contains the requested key, the observation cache at that callback, and the classified lookup result.
+Repeated callbacks can share one physical storage observation.
+The verifier must not remove failed records or search later records for a replacement.
 
 ## Usage Notes
 

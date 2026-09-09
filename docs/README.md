@@ -115,6 +115,7 @@ The Cargo workspace contains 10 crates:
 |----------|-------------|
 | [Implementation Guide](./casper/theory/cost-accounting-impl/) | Reading paths and subsystem ownership from wallet ingress through Casper finality |
 | [Parallel Runtime and Shard Isolation](./casper/theory/cost-accounting-impl/parallel-runtime-and-shard-isolation.md) | Node-local root authority, independent validator transitions, and arbitrary-shard resource frames |
+| [Deterministic Host-Work Budget](./casper/theory/host-work-budget.md) | Canonical node-work units, checked limits, rollback, replay, and economic separation |
 | [Formal Verification Catalog](./casper/theory/cost-accounted-rho-verification.md) | Rocq, TLA+, Apalache, Sage, Verus, Loom, property, and integration evidence |
 | [Conformance Properties](./casper/theory/cost-accounting-conformance-properties.md) | Publication-to-implementation obligation ledger |
 | [Threat Model](./casper/theory/cost-accounting-threat-model.md) | Consensus, replay, custody, resource, and cryptographic failure analysis |
@@ -147,6 +148,7 @@ The native token's name, symbol, and decimals are configured before genesis and 
 | [RNode API](./rnode-api/) | Protocol Buffer API documentation (legacy Scala reference) |
 | [LFS Requester Architecture](./plans/lfs_tuple_space_requester_concurrency_architecture.md) | LFS tuple space concurrency design |
 | [Whiteblock Test Plan](./whiteblock/whiteblock-test-plan.md) | Network testing plan |
+| [Merge Recovery Soak Qualification](./testing/merge-recovery-soak-qualification.md) | The 24-hour evidence contract, formal checks, and current integration limits. |
 
 ### Archive
 

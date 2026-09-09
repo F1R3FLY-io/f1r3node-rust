@@ -19,6 +19,9 @@ replication.
 | Theory dossiers | [theory/](./theory/README.md) — fork choice, finalized floor, merge algebra, slashing |
 | Validation | [validation/](./validation/) — FV campaign gap analysis, merge-recovery validation plan, PR-280 FV review |
 | Design analyses | [Casper CbC repair plan](./design/cbc-repair-plan.md) · [LFS Block Requester analysis](./design/lfs-block-requester-analysis.md) |
+| Cost-accounting review | [Casper ratification status](./design/cost-accounting-ratification-status.md) |
+| PR 390 review | [Corrections and retained findings](./design/pr390-corrections-and-retained-findings.md) |
+| Buffer ownership | [Publication and retry ownership](./theory/finalized-floor/buffer-publication-ownership.md) |
 | Economic layer | `casper/src/main/resources/PoS.rhox` — the Rholang bond/slash/reward contract (see [Rholang macro docs](../rholang/16-rhox-macros.md)) |
 
 Related documentation that stays platform-owned: [formal-verification.md](../formal-verification.md) (umbrella for `formal/**` artifacts), [data-flows](../data-flows/README.md), [docs index](../README.md).

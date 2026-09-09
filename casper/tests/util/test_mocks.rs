@@ -5,6 +5,83 @@ use std::sync::{Arc, Mutex};
 
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
+#[derive(Clone)]
+pub struct FailingWriteKeyValueStore {
+    inner: Arc<dyn KeyValueStore>,
+    attempts: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl FailingWriteKeyValueStore {
+    pub fn new(inner: Arc<dyn KeyValueStore>) -> Self {
+        Self {
+            inner,
+            attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn write_attempts(&self) -> usize {
+        self.attempts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn reject_write(&self) -> KvStoreError {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        KvStoreError::IoError("injected persistence failure".to_string())
+    }
+}
+
+impl KeyValueStore for FailingWriteKeyValueStore {
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn with_value(
+        &self,
+        key: &Vec<u8>,
+        reader: &mut shared::rust::store::key_value_store::ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        self.inner.with_value(key, reader)
+    }
+
+    fn visit_entries(
+        &self,
+        reader: &mut shared::rust::store::key_value_store::EntryReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        self.inner.visit_entries(reader)
+    }
+
+    fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
+        self.inner.get(keys)
+    }
+
+    fn put(&self, _pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
+        Err(self.reject_write())
+    }
+
+    fn put_one_if_absent(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<bool, KvStoreError> {
+        Err(self.reject_write())
+    }
+
+    fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> { self.inner.delete(keys) }
+
+    fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> { self.inner.iterate(f) }
+
+    fn iterate_while(
+        &self,
+        f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
+    ) -> Result<(), KvStoreError> {
+        self.inner.iterate_while(f)
+    }
+
+    fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
+
+    fn to_map(&self) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> { self.inner.to_map() }
+
+    fn print_store(&self) -> Result<(), KvStoreError> { self.inner.print_store() }
+
+    fn non_empty(&self) -> Result<bool, KvStoreError> { self.inner.non_empty() }
+
+    fn size_bytes(&self) -> usize { self.inner.size_bytes() }
+}
+
 /// A mock KeyValueStore implementation for testing that uses in-memory HashMap storage.
 /// This implementation is thread-safe and supports cloning for use in multi-threaded tests.
 #[derive(Clone, Default)]
@@ -35,6 +112,26 @@ impl MockKeyValueStore {
 
 impl KeyValueStore for MockKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn with_value(
+        &self,
+        key: &Vec<u8>,
+        reader: &mut shared::rust::store::key_value_store::ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        let data = self.data.lock().unwrap();
+        reader(data.get(key).map(Vec::as_slice))
+    }
+
+    fn visit_entries(
+        &self,
+        reader: &mut shared::rust::store::key_value_store::EntryReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        let data = self.data.lock().unwrap();
+        for (key, value) in data.iter() {
+            reader(key, value)?;
+        }
+        Ok(())
+    }
 
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         let data = self.data.lock().unwrap();
@@ -132,6 +229,21 @@ pub struct EmptyKeyValueStore;
 
 impl KeyValueStore for EmptyKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn with_value(
+        &self,
+        _key: &Vec<u8>,
+        reader: &mut shared::rust::store::key_value_store::ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        reader(None)
+    }
+
+    fn visit_entries(
+        &self,
+        _reader: &mut shared::rust::store::key_value_store::EntryReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        Ok(())
+    }
 
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         Ok(vec![None; keys.len()])

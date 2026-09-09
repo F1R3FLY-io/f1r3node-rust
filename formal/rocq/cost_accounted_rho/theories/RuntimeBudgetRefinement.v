@@ -915,6 +915,9 @@ Record rb_replay_cache_key_model := {
   rb_cache_start_state : nat;
   rb_cache_sender : nat;
   rb_cache_seq_num : nat;
+  rb_cache_timestamp : nat;
+  rb_cache_height : nat;
+  rb_cache_invalid_blocks : list (nat * nat);
   rb_cache_replay_payload : rb_full_replay_payload
 }.
 
@@ -924,6 +927,9 @@ Definition rb_replay_cache_key_equiv
   rb_cache_start_state a = rb_cache_start_state b /\
   rb_cache_sender a = rb_cache_sender b /\
   rb_cache_seq_num a = rb_cache_seq_num b /\
+  rb_cache_timestamp a = rb_cache_timestamp b /\
+  rb_cache_height a = rb_cache_height b /\
+  rb_cache_invalid_blocks a = rb_cache_invalid_blocks b /\
   rb_full_replay_payload_equiv
     (rb_cache_replay_payload a)
     (rb_cache_replay_payload b).
@@ -1099,27 +1105,89 @@ Proof.
 Qed.
 
 Theorem rb_replay_cache_key_payload_change_detected :
-  forall state sender seq p1 p2,
+  forall state sender seq timestamp height invalid_blocks p1 p2,
     ~ rb_full_replay_payload_equiv p1 p2 ->
     ~ rb_replay_cache_key_equiv
       {|
         rb_cache_start_state := state;
         rb_cache_sender := sender;
         rb_cache_seq_num := seq;
+        rb_cache_timestamp := timestamp;
+        rb_cache_height := height;
+        rb_cache_invalid_blocks := invalid_blocks;
         rb_cache_replay_payload := p1
       |}
       {|
         rb_cache_start_state := state;
         rb_cache_sender := sender;
         rb_cache_seq_num := seq;
+        rb_cache_timestamp := timestamp;
+        rb_cache_height := height;
+        rb_cache_invalid_blocks := invalid_blocks;
         rb_cache_replay_payload := p2
       |}.
 Proof.
-  intros state sender seq p1 p2 Hpayload Hequiv.
+  intros state sender seq timestamp height invalid_blocks p1 p2 Hpayload Hequiv.
   unfold rb_replay_cache_key_equiv in Hequiv.
-  destruct Hequiv as [_ [_ [_ Hequiv_payload]]].
+  destruct Hequiv as [_ [_ [_ [_ [_ [_ Hequiv_payload]]]]]].
   exact (Hpayload Hequiv_payload).
 Qed.
+
+Theorem rb_replay_cache_key_binds_runtime_context :
+  forall a b,
+    rb_replay_cache_key_equiv a b ->
+    rb_cache_timestamp a = rb_cache_timestamp b /\
+    rb_cache_height a = rb_cache_height b /\
+    rb_cache_invalid_blocks a = rb_cache_invalid_blocks b.
+Proof.
+  intros a b [_ [_ [_ [timestamp [height [invalid_blocks _]]]]]].
+  repeat split; assumption.
+Qed.
+
+Theorem rb_replay_cache_context_substitution_rejected :
+  forall a b,
+    (rb_cache_timestamp a <> rb_cache_timestamp b \/
+     rb_cache_height a <> rb_cache_height b \/
+     rb_cache_invalid_blocks a <> rb_cache_invalid_blocks b) ->
+    ~ rb_replay_cache_key_equiv a b.
+Proof.
+  intros a b different equivalent.
+  apply rb_replay_cache_key_binds_runtime_context in equivalent.
+  destruct equivalent as [timestamp [height invalid_blocks]].
+  destruct different as [different | [different | different]]; contradiction.
+Qed.
+
+Section ReplayContextDigest.
+  Variable digest : list (nat * nat) -> nat.
+  Variable admissible : list (nat * nat) -> Prop.
+  Hypothesis digest_separates_admissible_contexts :
+    forall a b, admissible a -> admissible b -> digest a = digest b -> a = b.
+
+  Definition rb_digest_cache_key_equiv
+    (a b : rb_replay_cache_key_model) : Prop :=
+    rb_cache_start_state a = rb_cache_start_state b /\
+    rb_cache_sender a = rb_cache_sender b /\
+    rb_cache_seq_num a = rb_cache_seq_num b /\
+    rb_cache_timestamp a = rb_cache_timestamp b /\
+    rb_cache_height a = rb_cache_height b /\
+    digest (rb_cache_invalid_blocks a) = digest (rb_cache_invalid_blocks b) /\
+    rb_full_replay_payload_equiv
+      (rb_cache_replay_payload a) (rb_cache_replay_payload b).
+
+  Theorem rb_digest_cache_key_refines_complete_key :
+    forall a b,
+      admissible (rb_cache_invalid_blocks a) ->
+      admissible (rb_cache_invalid_blocks b) ->
+      rb_digest_cache_key_equiv a b -> rb_replay_cache_key_equiv a b.
+  Proof.
+    intros a b allowed_a allowed_b
+      [state [sender [seq [timestamp [height [context payload]]]]]].
+    unfold rb_replay_cache_key_equiv.
+    refine (conj state (conj sender (conj seq (conj timestamp
+      (conj height (conj _ payload)))))).
+    eapply digest_separates_admissible_contexts; eassumption.
+  Qed.
+End ReplayContextDigest.
 
 Theorem rb_full_replay_payload_signature_change_detected :
   forall sigs1 sigs2 costs traces trace_counts failed errors user_logs kinds

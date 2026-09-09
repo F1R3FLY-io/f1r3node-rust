@@ -4,6 +4,8 @@ use std::time::Instant;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
+use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use tokio::sync::RwLock;
 use tracing::{event, Level};
@@ -15,6 +17,7 @@ use super::accounting::costs::Cost;
 use super::accounting::{RuntimeBudget, SignedProcess};
 use super::compiler::compiler::Compiler;
 use super::errors::InterpreterError;
+use super::host_work::HostWorkBudget;
 use super::metrics_constants::{
     INJ_ATTEMPT_BUILD_NORMALIZED_TERM_TIME_METRIC, INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
     INTERPRETER_METRICS_SOURCE,
@@ -65,6 +68,52 @@ impl Interpreter for InterpreterImpl {
         rand: Blake2b512Random,
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
     ) -> Result<EvaluateResult, InterpreterError> {
+        self.inj_attempt_inner(
+            reducer,
+            term,
+            initial_phlo,
+            normalizer_env,
+            rand,
+            authority_allocation,
+            None,
+        )
+        .await
+    }
+}
+
+impl InterpreterImpl {
+    pub async fn inj_attempt_with_host_work(
+        &self,
+        reducer: &DebruijnInterpreter,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        host_work: HostWorkBudget,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        self.inj_attempt_inner(
+            reducer,
+            term,
+            initial_phlo,
+            normalizer_env,
+            rand,
+            authority_allocation,
+            Some(host_work),
+        )
+        .await
+    }
+
+    async fn inj_attempt_inner(
+        &self,
+        reducer: &DebruijnInterpreter,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        host_work: Option<HostWorkBudget>,
+    ) -> Result<EvaluateResult, InterpreterError> {
         // Using tracing events for async context
         // Scala spans: "set-initial-cost", "build-normalized-term", "reduce-term"
         // Implemented as debug events since this is an async function
@@ -82,6 +131,23 @@ impl Interpreter for InterpreterImpl {
                 authority_stack_births: Vec::new(),
                 quantitative_byte_cost: 0,
             });
+        }
+
+        if let Some(host_work) = &host_work {
+            let source_bytes = u64::try_from(term.len()).map_err(|_| {
+                InterpreterError::BugFoundError(
+                    "structural source byte count does not fit in u64".to_string(),
+                )
+            })?;
+            if host_work
+                .reserve(
+                    HostWorkDimension::StructuralBytes,
+                    HostWorkUnits::new(source_bytes),
+                )
+                .is_err()
+            {
+                return self.handle_error(InterpreterError::HostWorkRejected);
+            }
         }
 
         let evaluation_result: Result<EvaluateResult, InterpreterError> = {
@@ -122,6 +188,29 @@ impl Interpreter for InterpreterImpl {
                     Err(err) => return err,
                 }
             };
+            if let Some(host_work) = &host_work {
+                let normalized_bytes = u64::try_from(parsed.encoded_len()).map_err(|_| {
+                    InterpreterError::BugFoundError(
+                        "normalized process byte count does not fit in u64".to_string(),
+                    )
+                })?;
+                let structural_items = Self::structural_items(&parsed)?;
+                if host_work
+                    .reserve(
+                        HostWorkDimension::StructuralBytes,
+                        HostWorkUnits::new(normalized_bytes),
+                    )
+                    .and_then(|_| {
+                        host_work.reserve(
+                            HostWorkDimension::StructuralItems,
+                            HostWorkUnits::new(structural_items),
+                        )
+                    })
+                    .is_err()
+                {
+                    return self.handle_error(InterpreterError::HostWorkRejected);
+                }
+            }
             // Trace: set-initial-cost (matching Scala's Span[F].traceI("set-initial-cost"))
             let parsed = {
                 event!(
@@ -157,7 +246,19 @@ impl Interpreter for InterpreterImpl {
             let phase_start = Instant::now();
             event!(Level::DEBUG, mark = "started-reduce-term", "inj_attempt");
             let _comm_accounting_scope = self.c.enter_comm_accounting_scope();
-            let reduce_result = reducer.inj(parsed, rand).await;
+            let reduce_result = match &host_work {
+                Some(host_work) => {
+                    reducer
+                        .inj_with_host_work(parsed, rand, host_work.clone())
+                        .await
+                }
+                None => reducer.inj(parsed, rand).await,
+            };
+            let reduce_result = if host_work.as_ref().is_some_and(HostWorkBudget::is_rejected) {
+                Err(InterpreterError::HostWorkRejected)
+            } else {
+                reduce_result
+            };
             metrics::histogram!(
                 INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
                 "source" => INTERPRETER_METRICS_SOURCE
@@ -197,8 +298,36 @@ impl InterpreterImpl {
         InterpreterImpl { c: cost, merge_chs }
     }
 
+    fn structural_items(par: &Par) -> Result<u64, InterpreterError> {
+        let counts = [
+            par.sends.len(),
+            par.receives.len(),
+            par.news.len(),
+            par.exprs.len(),
+            par.matches.len(),
+            par.unforgeables.len(),
+            par.bundles.len(),
+            par.connectives.len(),
+            par.conditionals.len(),
+            par.cost_signed_terms.len(),
+            par.cost_stacks.len(),
+        ];
+        let total = counts
+            .into_iter()
+            .try_fold(0usize, usize::checked_add)
+            .ok_or_else(|| {
+                InterpreterError::BugFoundError("structural item count overflow".to_string())
+            })?;
+        u64::try_from(total).map_err(|_| {
+            InterpreterError::BugFoundError("structural item count does not fit in u64".to_string())
+        })
+    }
+
     fn handle_error(&self, error: InterpreterError) -> Result<EvaluateResult, InterpreterError> {
-        if matches!(&error, InterpreterError::ParserError(_)) {
+        if matches!(
+            &error,
+            InterpreterError::ParserError(_) | InterpreterError::HostWorkRejected
+        ) {
             return Ok(EvaluateResult {
                 cost: Cost::create(0, "parse failure"),
                 errors: vec![error],

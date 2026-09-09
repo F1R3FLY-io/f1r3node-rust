@@ -361,6 +361,7 @@ mod tests {
             admission_ruleset_digest: vec![2; 32],
             admission_context_digest: vec![3; 32],
             sender_authority_digest: vec![4; 32],
+            settled_history_admission_digest: Vec::new(),
             is_failed: false,
         }
     }

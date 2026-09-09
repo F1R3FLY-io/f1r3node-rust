@@ -57,27 +57,31 @@ impl TestFixture {
             peers: Arc::new(Mutex::new(Connections::from_vec(vec![local_peer.clone()]))),
         };
 
-        let requested_blocks = Arc::new(Mutex::new(HashMap::new()));
-        let block_retriever = BlockRetriever::new(
-            requested_blocks,
-            transport_layer.clone(),
-            connections_cell_for_retriever,
-            rp_conf.clone(),
-        );
-
         let (mut block_store, mut indexed_dag_storage, casper_buffer) =
             with_storage(|bs, ids| async move {
                 // Create CasperBuffer from in-memory store
                 let mut kvm = InMemoryStoreManager::new();
                 let store = kvm.store("parents-map".to_string()).await.unwrap();
                 let typed_store = KeyValueTypedStoreImpl::new(store);
-                let cb = CasperBufferKeyValueStorage::new_from_kv_store(typed_store)
-                    .await
-                    .unwrap();
+                let cb = CasperBufferKeyValueStorage::new_from_kv_store(
+                    typed_store,
+                    kvm.store(CasperBufferKeyValueStorage::PENDING_POLICY_NAMESPACE.into())
+                        .await
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
 
                 (bs, ids, cb)
             })
             .await;
+
+        let block_retriever = BlockRetriever::new(
+            casper_buffer.clone(),
+            transport_layer.clone(),
+            connections_cell_for_retriever,
+            rp_conf.clone(),
+        );
 
         // Get underlying BlockDagKeyValueStorage for CasperDependencyAnalyzer
         let block_dag_storage = {
@@ -135,14 +139,14 @@ impl TestFixture {
         // Create unified dependencies
         let dependencies = BlockProcessorDependencies::new(
             block_store,
-            casper_buffer,
             block_dag_storage,
             block_retriever.clone(),
             transport_layer,
             connections_cell,
             rp_conf,
             None,
-        );
+        )
+        .unwrap();
 
         Self {
             dependencies,
@@ -839,9 +843,9 @@ async fn slash_evidence_is_fetched_before_block_validation() {
         .expect("dependency check");
     assert!(!ready);
     assert!(node
-        .requested_blocks
-        .lock()
-        .expect("requested blocks")
+        .casper
+        .block_retriever
+        .request_states()
         .contains_key(&evidence_hash));
 
     let mut evidence = node.genesis.clone();
@@ -933,9 +937,9 @@ async fn tracker_witness_cannot_satisfy_a_certified_block_dependency() {
 
     assert!(!ready);
     assert!(node
-        .requested_blocks
-        .lock()
-        .expect("requested blocks")
+        .casper
+        .block_retriever
+        .request_states()
         .contains_key(&tracker_only_hash));
 }
 
@@ -1013,7 +1017,7 @@ async fn objective_pair_requires_both_admitted_metadata_records() {
         .expect("partial objective dependency check");
     assert!(!ready);
     {
-        let requested = node.requested_blocks.lock().expect("requested blocks");
+        let requested = node.casper.block_retriever.request_states();
         assert!(!requested.contains_key(&first_hash));
         assert!(requested.contains_key(&second_hash));
     }

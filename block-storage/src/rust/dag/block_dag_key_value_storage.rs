@@ -38,11 +38,17 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
+#[path = "admitted_metadata.rs"]
+mod admitted_metadata;
+
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 #[cfg(any(test, feature = "test-internals"))]
 use models::rust::block_metadata::AdmissionRejectionReason;
 use models::rust::block_metadata::{BlockMetadata, ADMISSION_SCHEMA_VERSION};
-pub use models::rust::block_metadata::{CertifiedAdmissionOutcome, CertifiedSenderAuthority};
+pub use models::rust::block_metadata::{
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority, CertifiedSettledHistoryAdmission,
+    ValidatedSettledHistoryAdmission,
+};
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, FinalizationCertificate};
@@ -80,11 +86,19 @@ use super::deploy_occurrence_types::{
 use super::equivocation_tracker_store::EquivocationTrackerStore;
 use crate::rust::finality::{
     state_preservation, FinalizationAppendOutcome, FinalizationEffectId, FinalizationHead,
-    FinalizationLedger, FinalizationRecord,
+    FinalizationLedger, FinalizationRecord, RecoveryEpisodeId, SettledRecoveryCharge,
+    RECOVERY_STATE_SCHEMA_VERSION, SETTLED_RECOVERY_EPISODE_CAPACITY,
 };
 use crate::rust::key_value_block_store::KeyValueBlockStore;
 
 pub type DeployId = shared::rust::ByteString;
+
+struct SettledAdmissionSummary {
+    shard_id: String,
+    protocol_version: i64,
+    citer_validator: Validator,
+    citer_generation: BondGeneration,
+}
 
 #[cfg(any(test, feature = "test-internals"))]
 fn test_sender_authority_certificate(
@@ -1618,7 +1632,7 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(block_metadata_kv_store);
         let mut block_metadata_store = BlockMetadataStore::new(block_metadata_db)?;
         let finalization_ledger = FinalizationLedger::from_store(finalization_ledger_kv_store);
-        finalization_ledger.validate_integrity()?;
+        finalization_ledger.validate_integrity_async().await?;
         if let Some(head) = finalization_ledger.head()? {
             if head.revision == 0 && block_metadata_store.contains(&head.block_hash.0) {
                 block_metadata_store.record_finalized(
@@ -1627,7 +1641,8 @@ impl BlockDagKeyValueStorage {
                     1.0,
                 )?;
             }
-            for record in finalization_ledger.pending_projection_records()? {
+            let mut projection_scan = finalization_ledger.pending_projection_scan()?;
+            while let Some(record) = projection_scan.next_record()? {
                 let indirectly = record
                     .finalized
                     .iter()
@@ -1694,6 +1709,315 @@ impl BlockDagKeyValueStorage {
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: genesis_hash_db,
         })
+    }
+
+    pub fn settled_history_admission_count(&self) -> Result<u64, KvStoreError> {
+        let _lock_guard = self.global_lock.read();
+        let metadata = self.block_metadata_index.read();
+        let mut count = 0u64;
+        for hash in metadata.dag_set() {
+            if metadata
+                .get_unsafe(&hash)?
+                .settled_history_admission
+                .is_some()
+            {
+                count = count.checked_add(1).ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "settled-history admission count exceeds u64".to_string(),
+                    )
+                })?;
+            }
+        }
+        Ok(count)
+    }
+
+    fn recovery_episode_at_internal(
+        &self,
+        revision: u64,
+        shard_id: &str,
+        protocol_version: i64,
+    ) -> Result<RecoveryEpisodeId, KvStoreError> {
+        let episode = if revision == 0 {
+            let genesis = self
+                .finalization_ledger
+                .genesis_anchor()?
+                .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
+            let metadata = self
+                .block_metadata_index
+                .read()
+                .get_unsafe(&genesis.block_hash.0)?;
+            RecoveryEpisodeId {
+                schema_version: RECOVERY_STATE_SCHEMA_VERSION,
+                revision,
+                shard_id: shard_id.to_string(),
+                protocol_version,
+                floor_hash: genesis.block_hash,
+                floor_post_state_hash: BlockHashSerde(metadata.post_state_hash),
+                certificate_digest: genesis.certificate_digest,
+            }
+        } else {
+            let record = self.finalization_ledger.record(revision)?.ok_or_else(|| {
+                KvStoreError::KeyNotFound(format!(
+                    "recovery episode revision {revision} is missing"
+                ))
+            })?;
+            let witness = self
+                .finalization_ledger
+                .witness(&record.witness_digest)?
+                .ok_or_else(|| {
+                    KvStoreError::KeyNotFound(format!(
+                        "recovery episode revision {revision} has no witness"
+                    ))
+                })?;
+            if witness.shard_id != shard_id || witness.protocol_version != protocol_version {
+                return Err(KvStoreError::InvalidArgument(
+                    "recovery episode shard or protocol does not match the local chain".to_string(),
+                ));
+            }
+            RecoveryEpisodeId {
+                schema_version: RECOVERY_STATE_SCHEMA_VERSION,
+                revision,
+                shard_id: witness.shard_id,
+                protocol_version: witness.protocol_version,
+                floor_hash: witness.target_block_hash,
+                floor_post_state_hash: witness.target_post_state_hash,
+                certificate_digest: witness.witness_digest,
+            }
+        };
+        episode.validate()?;
+        Ok(episode)
+    }
+
+    pub fn current_recovery_episode(
+        &self,
+        shard_id: &str,
+        protocol_version: i64,
+    ) -> Result<RecoveryEpisodeId, KvStoreError> {
+        let _lock_guard = self.global_lock.read();
+        let head = self
+            .finalization_ledger
+            .head()?
+            .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
+        self.recovery_episode_at_internal(head.revision, shard_id, protocol_version)
+    }
+
+    pub fn prepare_settled_recovery_charge(
+        &self,
+        block: &BlockMessage,
+        proof: &ValidatedSettledHistoryAdmission,
+    ) -> Result<SettledRecoveryCharge, KvStoreError> {
+        proof
+            .record()
+            .validate_for(block)
+            .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
+        let episode = self.current_recovery_episode(&block.shard_id, block.header.version)?;
+        let charge = SettledRecoveryCharge {
+            schema_version: RECOVERY_STATE_SCHEMA_VERSION,
+            episode,
+            target_block_hash: BlockHashSerde(block.block_hash.clone()),
+            citer_validator: ValidatorSerde(proof.record().citer_sender().clone()),
+            citer_bond_generation: proof.record().citer_generation().get(),
+        };
+        charge.validate()?;
+        Ok(charge)
+    }
+
+    fn validate_settled_recovery_charge_internal(
+        &self,
+        target_hash: &BlockHash,
+        shard_id: &str,
+        protocol_version: i64,
+        citer_validator: &Validator,
+        citer_generation: BondGeneration,
+        charge: &SettledRecoveryCharge,
+    ) -> Result<(), KvStoreError> {
+        charge.validate()?;
+        if charge.target_block_hash.0 != *target_hash
+            || charge.citer_validator.0 != *citer_validator
+            || charge.citer_bond_generation != citer_generation.get()
+            || charge.episode.shard_id != shard_id
+            || charge.episode.protocol_version != protocol_version
+        {
+            return Err(KvStoreError::InvalidArgument(
+                "settled recovery charge does not match its admission proof".to_string(),
+            ));
+        }
+        let durable =
+            self.recovery_episode_at_internal(charge.episode.revision, shard_id, protocol_version)?;
+        if durable != charge.episode {
+            return Err(KvStoreError::InvalidArgument(
+                "settled recovery charge does not name a durable certified episode".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn settled_recovery_usage(&self, episode: &RecoveryEpisodeId) -> Result<u64, KvStoreError> {
+        let _lock_guard = self.global_lock.read();
+        self.finalization_ledger.settled_recovery_usage(episode)
+    }
+
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn clear_settled_recovery_state_for_tests(&self) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        self.finalization_ledger
+            .clear_settled_recovery_state_for_tests()
+    }
+
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn put_settled_recovery_usage_for_tests(
+        &self,
+        episode: &RecoveryEpisodeId,
+        usage: u64,
+    ) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        self.finalization_ledger
+            .put_settled_recovery_usage_for_tests(episode, usage)
+    }
+
+    pub fn validate_settled_history_admissions(
+        &self,
+        block_store: &KeyValueBlockStore,
+        approved_anchor: &BlockMessage,
+    ) -> Result<u64, KvStoreError> {
+        let _lock_guard = self.global_lock.read();
+        self.visit_validated_settled_history_internal(block_store, approved_anchor, |_, _| Ok(()))
+    }
+
+    pub fn reconcile_settled_history_admissions(
+        &self,
+        block_store: &KeyValueBlockStore,
+        approved_anchor: &BlockMessage,
+    ) -> Result<u64, KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        let mut records_by_target = HashMap::new();
+        let count = self.visit_validated_settled_history_internal(
+            block_store,
+            approved_anchor,
+            |target, record| {
+                records_by_target.insert(
+                    BlockHashSerde(target.block_hash.clone()),
+                    SettledAdmissionSummary {
+                        shard_id: target.shard_id.clone(),
+                        protocol_version: target.header.version,
+                        citer_validator: record.citer_sender().clone(),
+                        citer_generation: record.citer_generation(),
+                    },
+                );
+                Ok(())
+            },
+        )?;
+        #[cfg(test)]
+        crate::allocation_probe::mark(2);
+        let recovery_state = self.finalization_ledger.settled_recovery_state()?;
+        let mut charged_targets = HashSet::new();
+        let mut expected_usage = HashMap::<BlockHashSerde, u64>::new();
+        for charge in &recovery_state.charges {
+            let Some(record) = records_by_target.get(&charge.target_block_hash) else {
+                return Err(KvStoreError::SerializationError(
+                    "settled recovery charge has no settled-history admission".to_string(),
+                ));
+            };
+            if !charged_targets.insert(charge.target_block_hash.clone()) {
+                return Err(KvStoreError::SerializationError(
+                    "settled-history admission has multiple recovery charges".to_string(),
+                ));
+            }
+            self.validate_settled_recovery_charge_internal(
+                &charge.target_block_hash.0,
+                &record.shard_id,
+                record.protocol_version,
+                &record.citer_validator,
+                record.citer_generation,
+                charge,
+            )?;
+            let count = expected_usage.entry(charge.episode.digest()).or_insert(0);
+            *count = count.checked_add(1).ok_or_else(|| {
+                KvStoreError::InvalidArgument("settled recovery usage exceeds u64".to_string())
+            })?;
+        }
+        if recovery_state.usage != expected_usage {
+            return Err(KvStoreError::SerializationError(
+                "settled recovery usage does not match durable charges".to_string(),
+            ));
+        }
+
+        records_by_target.retain(|target, _| !charged_targets.contains(target));
+        let head = self
+            .finalization_ledger
+            .head()?
+            .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
+        let episode = self.recovery_episode_at_internal(
+            head.revision,
+            &approved_anchor.shard_id,
+            approved_anchor.header.version,
+        )?;
+        let mut missing = Vec::with_capacity(records_by_target.len());
+        for (target_hash, record) in records_by_target {
+            let charge = SettledRecoveryCharge {
+                schema_version: RECOVERY_STATE_SCHEMA_VERSION,
+                episode: episode.clone(),
+                target_block_hash: target_hash,
+                citer_validator: ValidatorSerde(record.citer_validator),
+                citer_bond_generation: record.citer_generation.get(),
+            };
+            charge.validate()?;
+            missing.push(charge);
+        }
+        let active_usage = expected_usage.get(&episode.digest()).copied().unwrap_or(0);
+        #[cfg(test)]
+        crate::allocation_probe::mark(3);
+        let reconciled = self.finalization_ledger.commit_settled_recovery_migration(
+            &episode,
+            &missing,
+            active_usage,
+        )?;
+        metrics::gauge!("casper.recovery.settled-episode-usage", "source" => "f1r3fly.casper.block-dag")
+            .set(reconciled as f64);
+        Ok(count)
+    }
+
+    fn visit_validated_settled_history_internal(
+        &self,
+        block_store: &KeyValueBlockStore,
+        approved_anchor: &BlockMessage,
+        mut visitor: impl FnMut(
+            &BlockMessage,
+            &CertifiedSettledHistoryAdmission,
+        ) -> Result<(), KvStoreError>,
+    ) -> Result<u64, KvStoreError> {
+        let metadata = self.block_metadata_index.read();
+        let mut count = 0u64;
+        for hash in metadata.dag_set() {
+            let entry = metadata.get_unsafe(&hash)?;
+            let Some(record) = entry.settled_history_admission.as_ref() else {
+                continue;
+            };
+            if record.anchor_block_hash() != &approved_anchor.block_hash {
+                return Err(KvStoreError::InvalidArgument(
+                    "settled-history admission uses a non-approved anchor".to_string(),
+                ));
+            }
+            let target = block_store.get(&entry.block_hash)?.ok_or_else(|| {
+                KvStoreError::KeyNotFound(
+                    "settled-history target is missing during startup validation".to_string(),
+                )
+            })?;
+            let citer = block_store.get(record.citer_block_hash())?.ok_or_else(|| {
+                KvStoreError::KeyNotFound(
+                    "settled-history citer is missing during startup validation".to_string(),
+                )
+            })?;
+            ValidatedSettledHistoryAdmission::from_record(record, &target, approved_anchor, &citer)
+                .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
+            visitor(&target, record)?;
+            count = count.checked_add(1).ok_or_else(|| {
+                KvStoreError::InvalidArgument(
+                    "settled-history admission count exceeds u64".to_string(),
+                )
+            })?;
+        }
+        Ok(count)
     }
 
     const GENESIS_HASH_KEY: &'static str = "genesis";
@@ -2080,6 +2404,36 @@ impl BlockDagKeyValueStorage {
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
     pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
 
+    pub fn has_admitted_metadata(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
+        let _storage_guard = self.global_lock.read();
+        let metadata = self.block_metadata_index.read();
+        admitted_metadata::metadata_present(metadata.contains(hash), || {
+            metadata.get(hash).map(|row| row.is_some())
+        })
+    }
+
+    pub fn publish_if_unadmitted<R, E>(
+        &self,
+        hash: &BlockHash,
+        publish: impl FnOnce() -> Result<R, E>,
+    ) -> Result<Option<R>, E>
+    where
+        E: From<KvStoreError>,
+    {
+        admitted_metadata::publish_if_unadmitted(
+            self.global_lock.read(),
+            || {
+                let metadata = self.block_metadata_index.read();
+                if metadata.contains(hash) {
+                    metadata.get_unsafe(hash).map(|_| true).map_err(E::from)
+                } else {
+                    Ok(false)
+                }
+            },
+            publish,
+        )
+    }
+
     /// Public method to get DAG representation with global lock protection.
     /// Matches Scala's lock.withPermit(representation).
     ///
@@ -2172,7 +2526,11 @@ impl BlockDagKeyValueStorage {
         let __insert_start = std::time::Instant::now();
         let _lock_guard = self.global_lock.write();
         let result = if matches!(mode, InsertMode::ApprovedGenesis) {
-            self.insert_internal_impl(block, mode, None, None)
+            self.insert_internal_impl(block, mode, None, None, None, None)
+        } else if matches!(mode, InsertMode::SettledHistory) {
+            Err(KvStoreError::InvalidArgument(
+                "settled-history admission requires its certified citation proof".to_string(),
+            ))
         } else {
             #[cfg(any(test, feature = "test-internals"))]
             {
@@ -2191,18 +2549,23 @@ impl BlockDagKeyValueStorage {
                     .unwrap_or(1);
                 let certificate = test_sender_authority_certificate(block, generation, stake)?;
                 let outcome = match mode {
-                    InsertMode::Normal | InsertMode::SettledHistory => {
-                        CertifiedAdmissionOutcome::accepted(block, &certificate)
-                    }
+                    InsertMode::Normal => CertifiedAdmissionOutcome::accepted(block, &certificate),
                     InsertMode::Invalid => CertifiedAdmissionOutcome::rejected(
                         block,
                         &certificate,
                         AdmissionRejectionReason::InvalidTransaction,
                     ),
-                    InsertMode::ApprovedGenesis => unreachable!(),
+                    InsertMode::ApprovedGenesis | InsertMode::SettledHistory => unreachable!(),
                 }
                 .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
-                self.insert_internal_impl(block, mode, Some(&certificate), Some(&outcome))
+                self.insert_internal_impl(
+                    block,
+                    mode,
+                    Some(&certificate),
+                    Some(&outcome),
+                    None,
+                    None,
+                )
             }
             #[cfg(not(any(test, feature = "test-internals")))]
             {
@@ -2261,7 +2624,12 @@ impl BlockDagKeyValueStorage {
         mode: InsertMode,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         if matches!(mode, InsertMode::ApprovedGenesis) {
-            return self.insert_internal_impl(block, mode, None, None);
+            return self.insert_internal_impl(block, mode, None, None, None, None);
+        }
+        if matches!(mode, InsertMode::SettledHistory) {
+            return Err(KvStoreError::InvalidArgument(
+                "settled-history admission requires its certified citation proof".to_string(),
+            ));
         }
         #[cfg(any(test, feature = "test-internals"))]
         {
@@ -2280,18 +2648,16 @@ impl BlockDagKeyValueStorage {
                 .unwrap_or(1);
             let certificate = test_sender_authority_certificate(block, generation, stake)?;
             let outcome = match mode {
-                InsertMode::Normal | InsertMode::SettledHistory => {
-                    CertifiedAdmissionOutcome::accepted(block, &certificate)
-                }
+                InsertMode::Normal => CertifiedAdmissionOutcome::accepted(block, &certificate),
                 InsertMode::Invalid => CertifiedAdmissionOutcome::rejected(
                     block,
                     &certificate,
                     AdmissionRejectionReason::InvalidTransaction,
                 ),
-                InsertMode::ApprovedGenesis => unreachable!(),
+                InsertMode::ApprovedGenesis | InsertMode::SettledHistory => unreachable!(),
             }
             .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
-            self.insert_internal_impl(block, mode, Some(&certificate), Some(&outcome))
+            self.insert_internal_impl(block, mode, Some(&certificate), Some(&outcome), None, None)
         }
         #[cfg(not(any(test, feature = "test-internals")))]
         {
@@ -2309,9 +2675,12 @@ impl BlockDagKeyValueStorage {
         certificate: &CertifiedSenderAuthority,
         outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
-        if matches!(mode, InsertMode::ApprovedGenesis) {
+        if matches!(
+            mode,
+            InsertMode::ApprovedGenesis | InsertMode::SettledHistory
+        ) {
             return Err(KvStoreError::InvalidArgument(
-                "approved genesis must not carry a sender authority certificate".to_string(),
+                "this insertion mode must not carry ordinary admission certificates".to_string(),
             ));
         }
         let __insert_start = std::time::Instant::now();
@@ -2329,12 +2698,54 @@ impl BlockDagKeyValueStorage {
         certificate: &CertifiedSenderAuthority,
         outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
-        if matches!(mode, InsertMode::ApprovedGenesis) {
+        if matches!(
+            mode,
+            InsertMode::ApprovedGenesis | InsertMode::SettledHistory
+        ) {
             return Err(KvStoreError::InvalidArgument(
-                "approved genesis must not carry a sender authority certificate".to_string(),
+                "this insertion mode must not carry ordinary admission certificates".to_string(),
             ));
         }
-        self.insert_internal_impl(block, mode, Some(certificate), Some(outcome))
+        self.insert_internal_impl(block, mode, Some(certificate), Some(outcome), None, None)
+    }
+
+    pub fn insert_settled_history_certified(
+        &self,
+        block: &BlockMessage,
+        proof: &ValidatedSettledHistoryAdmission,
+    ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        let charge = self.prepare_settled_recovery_charge(block, proof)?;
+        self.insert_settled_history_certified_with_charge(block, proof, &charge)
+    }
+
+    pub fn insert_settled_history_certified_with_charge(
+        &self,
+        block: &BlockMessage,
+        proof: &ValidatedSettledHistoryAdmission,
+        charge: &SettledRecoveryCharge,
+    ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        let __insert_start = std::time::Instant::now();
+        let _lock_guard = self.global_lock.write();
+        let result = self.insert_internal_settled_history_certified(block, proof, charge);
+        metrics::histogram!("dag.insert.time", "source" => "f1r3fly.casper.block-dag")
+            .record(__insert_start.elapsed().as_secs_f64());
+        result
+    }
+
+    pub fn insert_internal_settled_history_certified(
+        &self,
+        block: &BlockMessage,
+        proof: &ValidatedSettledHistoryAdmission,
+        charge: &SettledRecoveryCharge,
+    ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        self.insert_internal_impl(
+            block,
+            InsertMode::SettledHistory,
+            None,
+            None,
+            Some(proof.record()),
+            Some(charge),
+        )
     }
 
     fn insert_internal_impl(
@@ -2343,13 +2754,23 @@ impl BlockDagKeyValueStorage {
         mode: InsertMode,
         certificate: Option<&CertifiedSenderAuthority>,
         outcome: Option<&CertifiedAdmissionOutcome>,
+        settled_history_proof: Option<&CertifiedSettledHistoryAdmission>,
+        settled_recovery_charge: Option<&SettledRecoveryCharge>,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
-        match (certificate, outcome, mode) {
-            (None, None, InsertMode::ApprovedGenesis) => {}
+        match (
+            certificate,
+            outcome,
+            settled_history_proof,
+            settled_recovery_charge,
+            mode,
+        ) {
+            (None, None, None, None, InsertMode::ApprovedGenesis) => {}
             (
                 Some(certificate),
                 Some(outcome),
-                InsertMode::Normal | InsertMode::Invalid | InsertMode::SettledHistory,
+                None,
+                None,
+                InsertMode::Normal | InsertMode::Invalid,
             ) => {
                 certificate
                     .validate_for(block)
@@ -2358,15 +2779,28 @@ impl BlockDagKeyValueStorage {
                     .validate_for(block, certificate)
                     .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
                 let mode_matches = match mode {
-                    InsertMode::Normal | InsertMode::SettledHistory => outcome.is_accepted(),
+                    InsertMode::Normal => outcome.is_accepted(),
                     InsertMode::Invalid => outcome.is_rejected(),
-                    InsertMode::ApprovedGenesis => false,
+                    InsertMode::ApprovedGenesis | InsertMode::SettledHistory => false,
                 };
                 if !mode_matches {
                     return Err(KvStoreError::InvalidArgument(
                         "DAG insert mode disagrees with certified admission outcome".to_string(),
                     ));
                 }
+            }
+            (None, None, Some(proof), Some(charge), InsertMode::SettledHistory) => {
+                proof
+                    .validate_for(block)
+                    .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
+                self.validate_settled_recovery_charge_internal(
+                    &block.block_hash,
+                    &block.shard_id,
+                    block.header.version,
+                    proof.citer_sender(),
+                    proof.citer_generation(),
+                    charge,
+                )?;
             }
             _ => {
                 return Err(KvStoreError::InvalidArgument(
@@ -2557,14 +2991,25 @@ impl BlockDagKeyValueStorage {
                     ));
                 }
             }
+            if let Some(proof) = settled_history_proof {
+                if existing.settled_history_admission.as_ref() != Some(proof) {
+                    return Err(KvStoreError::InvalidArgument(
+                        "stored block metadata disagrees with settled-history proof".to_string(),
+                    ));
+                }
+            }
             existing
         } else {
-            match (certificate, outcome) {
-                (Some(certificate), Some(outcome)) => {
+            match (certificate, outcome, settled_history_proof) {
+                (Some(certificate), Some(outcome), None) => {
                     BlockMetadata::from_certified_block(block, None, None, certificate, outcome)
                         .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?
                 }
-                (None, None) => BlockMetadata::from_approved_genesis(block)
+                (None, None, Some(proof)) => {
+                    BlockMetadata::from_settled_history_block(block, proof)
+                        .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?
+                }
+                (None, None, None) => BlockMetadata::from_approved_genesis(block)
                     .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?,
                 _ => unreachable!(),
             }
@@ -2657,6 +3102,20 @@ impl BlockDagKeyValueStorage {
             metadata_key,
             AtomicStoreOperation::PutIfAbsentOrEqual(metadata_value),
         ));
+        let mut settled_usage = None;
+        if let Some(charge) = settled_recovery_charge {
+            let plan = self
+                .finalization_ledger
+                .prepare_settled_recovery_charge(charge, SETTLED_RECOVERY_EPISODE_CAPACITY)?;
+            let recovery_store = plan.store.clone();
+            let committed = plan.committed;
+            owned_mutations.extend(
+                plan.mutations
+                    .into_iter()
+                    .map(|(key, operation)| (recovery_store.clone(), key, operation)),
+            );
+            settled_usage = Some(committed);
+        }
 
         if !invalid {
             let source_block_hash: [u8; 32] =
@@ -2676,12 +3135,28 @@ impl BlockDagKeyValueStorage {
                             admission_ruleset_digest,
                             admission_context_digest,
                             sender_authority_digest,
+                            settled_history_admission_digest,
                         ) = if approved {
                             (
                                 OccurrenceAdmissionMode::ApprovedGenesis,
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                Vec::new(),
+                            )
+                        } else if settled_history {
+                            let proof = settled_history_proof.ok_or_else(|| {
+                                KvStoreError::InvalidArgument(
+                                    "settled-history occurrence requires its certified proof"
+                                        .to_string(),
+                                )
+                            })?;
+                            (
+                                OccurrenceAdmissionMode::SettledHistory,
+                                proof.ruleset_digest().to_vec(),
+                                proof.context_digest().to_vec(),
+                                Vec::new(),
+                                proof.digest().to_vec(),
                             )
                         } else {
                             let outcome = outcome.ok_or_else(|| {
@@ -2691,14 +3166,11 @@ impl BlockDagKeyValueStorage {
                                 )
                             })?;
                             (
-                                if settled_history {
-                                    OccurrenceAdmissionMode::SettledHistory
-                                } else {
-                                    OccurrenceAdmissionMode::Normal
-                                },
+                                OccurrenceAdmissionMode::Normal,
                                 outcome.ruleset_digest().to_vec(),
                                 outcome.incoming_context_digest().to_vec(),
                                 outcome.sender_authority_digest().to_vec(),
+                                Vec::new(),
                             )
                         };
                         let plan =
@@ -2723,6 +3195,7 @@ impl BlockDagKeyValueStorage {
                                     admission_ruleset_digest,
                                     admission_context_digest,
                                     sender_authority_digest,
+                                    settled_history_admission_digest,
                                     is_failed: deploy.is_failed,
                                 })?;
                         owned_mutations.extend(plan.mutations.into_iter().map(
@@ -2897,6 +3370,10 @@ impl BlockDagKeyValueStorage {
             commit_admission_mutations(block.header.version, &mutations)?;
         }
         drop(carrier_guard);
+        if let Some(committed) = settled_usage {
+            metrics::gauge!("casper.recovery.settled-episode-usage", "source" => "f1r3fly.casper.block-dag")
+                .set(committed as f64);
+        }
 
         if !block_exists {
             self.block_metadata_index
@@ -3081,6 +3558,31 @@ impl BlockDagKeyValueStorage {
         self.finalization_ledger.reconcile_effect_compaction()
     }
 
+    pub async fn reconcile_finalization_effect_compaction_async(&self) -> Result<(), KvStoreError> {
+        self.finalization_ledger
+            .reconcile_effect_compaction_async()
+            .await
+    }
+
+    pub async fn reconcile_finalization_effects_cursor_async(&self) -> Result<u64, KvStoreError> {
+        self.finalization_ledger
+            .reconcile_effects_cursor_async()
+            .await
+    }
+
+    pub fn pending_finalization_effect_scan(
+        &self,
+    ) -> Result<crate::rust::finality::FinalizationRecordScan, KvStoreError> {
+        self.finalization_ledger.pending_effect_scan()
+    }
+
+    pub fn require_finalization_effect_projection(
+        &self,
+        revision: u64,
+    ) -> Result<(), KvStoreError> {
+        self.finalization_ledger.require_effect_projection(revision)
+    }
+
     pub fn finalization_effect_completed(
         &self,
         id: &FinalizationEffectId,
@@ -3100,8 +3602,18 @@ impl BlockDagKeyValueStorage {
             .record_round_effects_completed(revision)
     }
 
+    pub async fn record_finalization_round_effects_completed_async(
+        &self,
+        revision: u64,
+    ) -> Result<u64, KvStoreError> {
+        self.finalization_ledger
+            .record_round_effects_completed_async(revision)
+            .await
+    }
+
     pub fn reconcile_finalization_projection(&self) -> Result<(), KvStoreError> {
-        for record in self.finalization_ledger.pending_projection_records()? {
+        let mut projection_scan = self.finalization_ledger.pending_projection_scan()?;
+        while let Some(record) = projection_scan.next_record()? {
             let fault_tolerance = f32::from_bits(record.fault_tolerance_bits);
             let indirectly_finalized = record
                 .finalized
@@ -3924,6 +4436,8 @@ mod certified_closure_tests {
 
 #[cfg(test)]
 mod finalization_snapshot_tests {
+    mod resource_measurements;
+    mod recovery_metadata_tests;
     use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
     use models::rust::block_implicits;
     use models::rust::bond_generation::BondGeneration;
@@ -3994,6 +4508,15 @@ mod finalization_snapshot_tests {
         storage: &BlockDagKeyValueStorage,
         child: &BlockMessage,
     ) -> FinalizationHead {
+        append_without_projection_at_ft(storage, child, 1, 1)
+    }
+
+    fn append_without_projection_at_ft(
+        storage: &BlockDagKeyValueStorage,
+        child: &BlockMessage,
+        numerator: i64,
+        denominator: i64,
+    ) -> FinalizationHead {
         let expected = storage.finalization_head().unwrap().unwrap();
         let genesis = storage
             .finalization_ledger
@@ -4029,8 +4552,8 @@ mod finalization_snapshot_tests {
             predecessor_certificate_block_hash,
             child.body.state.block_number,
             child.body.state.post_state_hash.clone(),
-            1,
-            1,
+            numerator,
+            denominator,
             latest_messages,
             supporting,
             BlockHashSerde(hash(99)),
@@ -4045,7 +4568,7 @@ mod finalization_snapshot_tests {
             &expected,
             child.block_hash.clone(),
             child.body.state.block_number,
-            1.0,
+            numerator as f32 / denominator as f32,
             finalized,
             &witness,
         )

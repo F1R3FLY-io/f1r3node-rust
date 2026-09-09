@@ -8,6 +8,7 @@ use models::rhoapi::{
     Par, Receive, Send,
 };
 use models::rust::utils::union;
+use prost::Message;
 
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -32,6 +33,22 @@ pub enum GeneratedMessage {
     If(If),
     CostSignedTerm(CostSignedTerm),
     CostStack(CostStack),
+}
+
+impl GeneratedMessage {
+    pub fn encoded_len(&self) -> usize {
+        match self {
+            Self::Send(value) => value.encoded_len(),
+            Self::Receive(value) => value.encoded_len(),
+            Self::New(value) => value.encoded_len(),
+            Self::Match(value) => value.encoded_len(),
+            Self::Bundle(value) => value.encoded_len(),
+            Self::Expr(value) => value.encoded_len(),
+            Self::If(value) => value.encoded_len(),
+            Self::CostSignedTerm(value) => value.encoded_len(),
+            Self::CostStack(value) => value.encoded_len(),
+        }
+    }
 }
 
 pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {
@@ -85,6 +102,53 @@ pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {
         par.cost_stacks
             .iter()
             .cloned()
+            .map(GeneratedMessage::CostStack)
+            .collect(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+pub fn owned_evaluation_terms(par: Par) -> Vec<GeneratedMessage> {
+    vec![
+        par.sends
+            .into_iter()
+            .map(GeneratedMessage::Send)
+            .collect::<Vec<_>>(),
+        par.receives
+            .into_iter()
+            .map(GeneratedMessage::Receive)
+            .collect(),
+        par.news.into_iter().map(GeneratedMessage::New).collect(),
+        par.matches
+            .into_iter()
+            .map(GeneratedMessage::Match)
+            .collect(),
+        par.conditionals
+            .into_iter()
+            .map(GeneratedMessage::If)
+            .collect(),
+        par.bundles
+            .into_iter()
+            .map(GeneratedMessage::Bundle)
+            .collect(),
+        par.exprs
+            .into_iter()
+            .filter(|expr| {
+                matches!(
+                    expr.expr_instance,
+                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
+                )
+            })
+            .map(GeneratedMessage::Expr)
+            .collect(),
+        par.cost_signed_terms
+            .into_iter()
+            .map(GeneratedMessage::CostSignedTerm)
+            .collect(),
+        par.cost_stacks
+            .into_iter()
             .map(GeneratedMessage::CostStack)
             .collect(),
     ]

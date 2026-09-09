@@ -192,11 +192,11 @@ recovery therefore keeps its round open and retries on a later tick.
 
 **Why snapshot first?** The snapshot is immutable once created. This prevents race conditions — the proposal works against a consistent view of the DAG even as new blocks arrive concurrently.
 
-An overlapping finalizer is observable for diagnostics, but it does not make a
-partially mutable snapshot authoritative. The snapshot owns one immutable DAG
-view, and proposal preflight derives its prospective structural floor from the
-selected parents and frozen justifications. If that authority differs from the
-captured LFB authority, proposal defers before replay.
+An overlapping finalizer cannot modify the proposal snapshot. Protocol 6 binds
+the captured finalization certificate and finalized floor to the block. The
+proposer uses that floor for authority and replay. Current justifications can
+produce independent finalizer evidence, but that evidence cannot delay or
+replace the proposal replay floor.
 
 ### Step 2: Check Constraints
 
@@ -253,6 +253,8 @@ Finally: `create_checkpoint()` produces the post-state hash.
   `post_state(floor(B))`
 - Bonds cache: the complete PoS bonds replayed from `B.post_state`; this records
   the transition and does not authorize `B`
+- Active-validator cache: the bounded PoS authority set replayed from
+  `B.post_state`; an activation-boundary change does not authorize `B`
 - Hash the block via Blake2b256
 - Sign with validator's Secp256k1 key
 
@@ -276,6 +278,82 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - Implements retry budgets, cooldowns, and quarantine for stuck requests
 - Deduplicates requests to avoid flooding
 
+Retry exhaustion clears only attempt and cooldown data. The bounded request
+record retains its dependency origin and quarantine deadline. Receipt retains
+that record until durable Casper-buffer admission or another terminal result.
+
+An expired quarantine starts a new paced retrieval episode. Admission deferral
+also reopens retrieval without loss of dependency origin. Capacity protects
+existing work and rejects new tracking work.
+
+Casper-buffer pruning retires a waiting child instead of its missing parent
+placeholder. This rule prevents pruning from falsely making sibling blocks
+dependency-free.
+
+### Settled-history admission
+
+A restored node can receive a historical block that its approved-state snapshot omitted.
+The block is below the approved sync anchor, but a live bonded block cites it as a dependency.
+
+A **settled-history admission proof** records why the node stored that historical block.
+The proof does not certify the block as a new consensus transition.
+The proof also does not change a latest message or create a validation verdict.
+
+The proof binds these values:
+
+- the target hash, protocol, height, sender, and bond generation
+- the approved anchor hash, height, and post-state hash
+- the citer hash, protocol, sender, bond generation, and positive anchor stake
+- the admission schema version and compiled ruleset digest
+
+The node accepts this path only when all eligibility checks pass.
+The target height cannot exceed the approved anchor height.
+The target sequence must precede the sender's current latest message, when that message exists.
+A signature-verified citer must name the target through a direct dependency relation.
+The node verifies target, anchor, and citer content hashes before it creates the storage witness.
+The node also verifies the target and citer signatures.
+The citer must have positive stake and the same bond generation at the approved anchor.
+The bounded admission budget must also have available capacity.
+
+The following pseudocode defines the transaction boundary.
+
+```text
+if the DAG contains a settled-history proof for target:
+    revalidate the proof against the approved anchor and stored citer
+    retry buffer and retriever cleanup
+    classify target as already admitted
+else:
+    load durable target-to-citer dependency evidence
+    verify target, citer, anchor, and eligibility
+    claim target and reserve one budget unit
+    insert target and proof into the DAG as the durable commit
+    remove the Casper-buffer entry under the storage lock order
+    mark the volatile claim admitted
+    retain the edge for retry if cleanup fails
+    request the target state roots
+    acknowledge retrieval
+```
+
+A precommit error destroys the claim and releases its budget reservation.
+The durable dependency edge remains available for a later retry.
+A postcommit cleanup error cannot undo the DAG record.
+After restart, the persisted proof identifies the completed admission without volatile ticket state.
+Startup revalidates each proof and reconstructs budget use from unique durable admissions.
+
+Concurrent equal deliveries have one owner.
+Other deliveries return a typed duplicate result and never enter ordinary validation.
+This rule prevents one historical block from receiving conflicting local verdicts.
+
+The fixed DAG-then-buffer lock order prevents cleanup before insertion.
+A crash can retain the buffer edge after the durable insert.
+The retained edge causes an idempotent cleanup retry and cannot reopen admission.
+The implementation does not hold this lock across network or state-root operations.
+Thus, different target hashes can prepare concurrently before the short storage transaction.
+
+This path repairs local history availability only.
+It does not change fork choice, finality voting, committee selection, or block execution semantics.
+See [Atomic finalization and crash recovery](theory/finalized-floor/finalization-atomicity-and-recovery.md#settled-history-admission-transaction) for verification evidence.
+
 Protocol-6 finalized-floor certificates use a distinct content-addressed sidecar
 path. A block that names an unavailable certificate is stored as detached and
 waits on a typed certificate dependency rather than being treated as invalid or
@@ -287,6 +365,12 @@ to the requested digest. Concurrent duplicate responses converge on the same
 content-addressed record and schedule the waiting block at most once. The full
 state machine and implementation mapping are in
 [`finalization-certificate-retrieval.md`](theory/finalized-floor/finalization-certificate-retrieval.md).
+
+Certificate and state-root recovery share a bounded keyed request window.
+The window uses private generative dispatch identities, explicit transport deadlines, finite leases, and fair concurrent batches.
+A stale completion cannot mutate replacement work.
+A cancelled send cannot retain one key forever.
+The [recovery budget design](theory/finalized-floor/recovery-budget-episodes.md) defines the complete contract and formal evidence.
 
 ---
 
@@ -317,7 +401,9 @@ state machine and implementation mapping are in
 
 ### Step 5: Block Summary and Floor Authority
 - Structural consistency: block number progression and justification shape
-- Derive `floor(B)` from immutable parents and justifications
+- For protocol 6, verify the signed finalized-floor commitment and certificate
+- Load the exact accepted replay floor and its committed post-state
+- For earlier protocols, derive `floor(B)` from immutable parents and justifications
 - Require exact floor-committee justifications, a positive floor-authorized
   sender, and one canonical floor weight map
 
@@ -349,6 +435,8 @@ state machine and implementation mapping are in
   settlement, and replay witnesses agree exactly
 - The serialized bond cache equals the PoS bonds recomputed from the replayed
   post-state and contains no duplicate validator entry
+- The serialized active-validator cache equals the PoS active set recomputed
+  from the same replayed post-state
 - Invalid block tracking applied
 
 ### On Success
@@ -426,9 +514,9 @@ In a multi-parent DAG, different validators may have included different deploys 
 
 ### Algorithm (`dag_merger.rs` + `conflict_set_merger.rs`)
 
-1. **Derive the finalized floor**: From the parents' inherited floors and the
-   highest state-safe clique-certified frontier in the block's frozen
-   justification snapshot.
+1. **Select the replay floor**: Protocol 6 uses the block's verified signed
+   finalized-floor commitment. Earlier protocols derive the floor from frozen
+   parents and justifications.
 2. **Identify visible blocks**: Use `closure(parents) \\ closure(floor)`.
    This set contains each parent-reachable block above the finalized floor.
 3. **Collect deploys**: Extract user deploys from all visible blocks
@@ -761,8 +849,24 @@ validator's latest-message slot. It does not authorize its own block. Proposal
 and receive validation instead derive `Auth(B)` from `post_state(floor(B))`,
 require the justification validators to equal `Auth(B)` exactly, require the
 sender to have positive floor stake, and use the same floor weights for
-synchrony. An accepted bond transition becomes authoritative only after a later
-floor promotion includes it.
+synchrony.
+
+PoS maintains two different validator projections. `allBonds` is the complete
+replayed bond ledger. `activeValidators` is the bounded authority set selected
+at an epoch boundary. An accepted bond updates the ledger immediately, but it
+does not grant proposal or finality authority.
+
+At a boundary, PoS converts the canonical bond-map order into a list. PoS takes
+the configured prefix and stores that set as `activeValidators`. Equal replay
+state therefore gives all validators the same bounded active set.
+
+Each block commits both projections from one replay state. A later finalized
+floor promotes both projections together. Proposal, receive, synchrony, and
+finality logic use only positive bonds whose validators occur in the promoted
+active set.
+
+The API exposes the projections separately. `bonds` reports the complete bond
+ledger. `activeBonds` reports positive bonds in the active authority set.
 
 ### Pending work composes with recovery
 
@@ -879,7 +983,7 @@ Operator config files are minimal overrides — HOCON's fallback semantics merge
 
 - `fault-tolerance-threshold` and `synchrony-constraint-threshold` define the on-chain consensus limits.
 - `max-cosigners-per-deploy` defines the signer-count limit for deploy admission.
-- `initial-phlogiston` and `epoch-phlogiston` define validator fuel credits.
+- `initial-phlogiston` funds genesis validators once. `epoch-phlogiston` funds eligible active validators at epoch boundaries.
 - `client-fuel-allocations` defines additional client SystemVault balances at genesis.
 - `native-token-name`, `native-token-symbol`, and `native-token-decimals` define immutable token metadata.
 

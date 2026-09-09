@@ -64,10 +64,10 @@ t(a) = \min\!\left(500 \cdot 2^{\min(a-1,6)}, 30000\right)\ \mathrm{ms},
 
 where `$`a \ge 1`$` is the attempt count. A transport failure increments the
 attempt but retains the live obligation. Maintenance freezes the currently
-visible block and certificate obligations, attempts every member of that
-snapshot, and returns the first dispatch error only after the round is
-exhausted. One unreachable peer set therefore cannot starve later certificates
-or ordinary block work.
+visible certificate obligations and registers them without transport work.
+It sends at most 16 eligible digests concurrently during one maintenance call.
+The call returns the first error after every selected dispatch completes.
+Fair queue rotation gives later digests access to subsequent batches.
 
 The in-memory tracker is not consensus state. Its source of truth is the
 persistent buffer relation. Capacity defers new requests; it never evicts an
@@ -127,7 +127,9 @@ rebuild_certificate_work():
         if certificate_store contains digest:
             resolve dependency digest
         else:
-            request digest subject to capacity and backoff
+            register digest subject to capacity
+
+    send one fair bounded batch subject to backoff and transport deadlines
 
     scan dependency-free blocks and enqueue each absent processing identity
 ```
@@ -151,7 +153,9 @@ second network transfer.
 | DAG visits per verification | 1,048,576 | certificate verifier |
 | Concurrent tracked digests | 256 | certificate retriever |
 | Request fanout | 4 peers | certificate retriever |
+| Dispatches per maintenance call | 16 | certificate retriever |
 | Retry delay | 500 ms–30 s | monotonic exponential backoff |
+| Dispatch deadline | `RPConf::default_timeout` | transport timeout and abandoned-handle lease |
 
 The bounds are deterministic admission limits. They bound memory, decoding, and
 DAG work without changing the clique calculation, committee weights, or
@@ -164,19 +168,23 @@ finalization threshold.
 | Two valid responses for one digest | One content-addressed value, one dependency resolution, and one queue insertion. |
 | Valid and invalid responses race | Only the valid digest-bound certificate may persist; invalid input cannot complete the tracker. |
 | Send failure races with maintenance | The request remains live and becomes eligible after monotonic backoff. |
-| Ordinary block send fails before certificate work | The caller records the error, still attempts every certificate in the frozen maintenance snapshot, then returns the first error. |
+| Caller cancellation races with dispatch | The weak claim expires, then the key enters maximum backoff. |
+| Stale completion races with replacement | Allocation identity rejects the stale completion without changing the replacement. |
+| Ordinary block send fails before certificate work | The caller records the error, attempts every selected certificate, then returns the first error. |
 | Response races with restart | Durable sidecar or durable dependency determines recovery; volatile tracker state is irrelevant to safety. |
 | Capacity is full | Existing obligations remain tracked; deferred persistent obligations become eligible as completed entries leave. |
 | Queue is temporarily full | The processing identity is released and the periodic dependency-free scan retries. |
 
 No transition changes Casper voting or serializes validators. Certificate
 fetches, certificate verification, block replay, and validator activity remain
-independent per digest or block. A maintenance invocation uses bounded sequential
-local dispatch so one failure cannot cancel later work; this neither creates a
-global lock nor orders independent validators. The LFS block requester preserves
-its parallel request set and awaits all members before reporting the first error.
+independent per digest or block. A maintenance invocation uses one bounded concurrent batch.
+One failure cannot cancel other selected work or create a global validator lock.
+The LFS block requester preserves its parallel request set and awaits all members before reporting the first error.
 The only serialized storage operation is the local dependency-free queue scan
 needed to make one enqueue decision for one local processing identity.
+
+The retriever uses private generative dispatch identities and finite leases.
+[Recovery budgets and dispatch identities](recovery-budget-episodes.md) specifies this shared control.
 
 ## Cost-accounting relationship
 
@@ -195,7 +203,7 @@ declared finalized state cannot yet be authenticated.
 |---|---|---|
 | Typed namespaces are disjoint | Rocq `typed_dependency_namespace_disjoint`; TLA+ `TypedDependencyNamespaceIsDisjoint` | property test `certificate_dependency_namespace_is_disjoint_and_round_trips` |
 | Only expected, valid, digest-bound responses persist | Rocq `persisted_response_is_expected_and_content_addressed`; TLA+ response invariants | protobuf, block-store mismatch, oversized-value, and unsolicited-response tests |
-| Failed sends retain work and do not starve other digests | Rocq `failed_send_retains_live_request`; TLA+ `FailedSendsRetainObligations` and temporal progress | retriever transport-failure and all-digest maintenance regressions |
+| Failed sends retain work and do not starve other digests | Rocq `failed_send_retains_live_request`; TLA+ `FailedSendsRetainObligations` and temporal progress | transport-failure, bounded-batch, fairness, timeout, and cancellation regressions |
 | A caller-level failure cannot discard later mixed dependencies | Rocq `DependencyMaintenanceRound.dependency_maintenance_round_contract`; TLA+ `DependencyMaintenanceRound` full-snapshot and cross-type invariants | direct `MultiParentCasper::fetch_dependencies`, block-processor ordinary/stale, block-retriever mixed-maintenance, and LFS await-all regressions |
 | Restart reconstructs bounded work | Rocq `rebuilt_tracker_is_bounded` and `bounded_persistent_obligations_are_rebuilt_exactly`; TLA+ crash/restart transition | `detached_block_and_certificate_obligation_survive_store_recreation` |
 | Duplicate responses wake once | Rocq `duplicate_response_cannot_persist_twice` and `enqueue_once_is_idempotent`; TLA+ queue-count invariant | Loom duplicate-response interleavings and async Running-engine integration |

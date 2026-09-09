@@ -44,6 +44,11 @@ for marker in 'ADVISORY (relaxed)' 'SKIP (tool absent)' 'tool — skipped (fail-
   fi
 done
 
+if ! bash "$ROOT/scripts/test-check-cost-accounted-rho-loom.sh"; then
+  echo "error: Loom gate regression checks failed" >&2
+  exit 1
+fi
+
 for gate in "$ROOT"/scripts/check-cost-accounted-rho-*.sh; do
   base="$(basename "$gate")"
   [ "$base" = "$SELF" ] && continue

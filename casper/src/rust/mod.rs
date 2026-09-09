@@ -17,6 +17,7 @@ pub mod last_finalized_height_constraint_checker;
 pub mod merging;
 pub mod metrics_constants;
 pub mod protocol;
+pub(crate) mod recovery_budget;
 pub mod report_store;
 pub mod reporting_casper;
 pub mod reporting_proto_transformer;

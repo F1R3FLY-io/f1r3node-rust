@@ -32,7 +32,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 120 modules and 44,528 lines of development, and
+in **Rocq 9.1.1** across 150 modules and 61,805 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -54,14 +54,71 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 1,867 `Qed.`/`Defined.` proof terms are discharged without any
-`Admitted`, `admit`, or `Axiom`; the trust base consists of the
-Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process`
-encoding parameter with three explicit section hypotheses (Section 12.1).
+All 2,857 `Qed.`/`Defined.` proof terms belong to the current source inventory.
+Source counts alone do not establish that an aggregate verification run passed.
+The aggregate gate rejects admitted proofs and unsupported axiom declarations.
+The declared trust base consists of the Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process` encoding parameter.
+That parameter has three explicit section hypotheses (Section 12.1).
 The consensus-critical results
 (`token_monotone_*`, `ca_cost_deterministic`, `ca_step_deterministic`,
 `fuel_events_consumed_perm`) are unconditional and report
 `Closed under the global context` under `Print Assumptions`.
+
+The catalog also includes twenty-two state-import refinement modules.
+The retry module bounds definite compare-and-swap conflicts through fresh, mixed-time observations and exact-byte-preserving concurrent writes.
+It includes the last conflict when a subsequent read fails and excludes duplicate physical guards through normalization.
+It also proves disjoint raw and legacy key encodings for valid 32-byte identities.
+The bound does not establish elapsed-time limits or recovery under permanent storage failure.
+The checkpoint module derives readable new roots from contextual construction evidence and compatible physical writes.
+Its physical theorem preserves the exact 32-byte root identity and previously captured readable roots.
+This proof does not establish that the current native writers satisfy every premise.
+The [state-import record](finalized-floor/state-import-validity.md#checkpoint-construction-and-first-publication) lists the native gaps, regression results, and concurrent-model boundaries.
+The history-observation module separates physical storage reads from repeated logical traversal lookups.
+It derives checked-byte provenance and preserves successful lookup results as the attempt cache grows.
+Received-key absence retains its own observation record and still requires a transaction-time comparison.
+The read-tape module connects the exact callback sequence to strict accepted-page cursor execution.
+Preparation precedes traversal at the actual physical-trace prefix, and accepted completion consumes every callback successfully.
+The final checked overlay derives from that same trace, with unchanged skip, budget, and shared-occurrence semantics.
+Complete-root publication and full native error correspondence remain separate connections.
+The observation module connects per-location physical cold reads to current-state commit checks and authorized typed consumption.
+It distinguishes unread locations, observed absence, present bytes, and read failure.
+Its trace permits compatible concurrent writes and derives read-once cache behavior without assuming unique records.
+The production adapter must still satisfy this cache contract.
+The cold module proves payload framing and derives readable closure from completed consuming scans.
+It preserves typed results across guarded writes and separate alias lookups.
+The concrete nested decoders remain explicit native conformance obligations.
+The encoded-cold module distinguishes absent aliases, malformed present bytes, and decoded leaves.
+It preserves existing bytes and split-reader results across guarded commits.
+Exact comparison of both observed aliases transfers preflight checks to the current commit state without losing unrelated concurrent writes.
+Its extended proof composes arbitrary cold batches with guarded history insertions and preserves every previously consumable root.
+Repeated keys, definite rollback, and commit-time observation checks refine the consuming scan's write-preservation contract.
+The closure and storage modules quantify over hash functions without an injectivity assumption.
+They establish conditional graph closure and exact storage-binding preservation.
+The page module preserves selected leaf and history occurrences across arbitrary finite page sequences.
+The codec module proves exact record acceptance and distinguishes raw-byte identity from canonical slot lookup.
+The cursor module characterizes canonical wire cursors and their exact field widths.
+The traversal module proves authenticated path resolution and correspondence between wire and closure-model history reads.
+It also proves path preservation across compatible writes between successive node reads and after the final read.
+The stack module reconstructs exact ancestor frames and preserves later siblings across shared-subtree visits.
+The export module connects successful traversal to history budgets, skip counts, root anchors, and separate leaf/history projections.
+It proves finite-prefix preservation across compatible interleaved writes and a decreasing measure for successful bounded traversal steps.
+The execution module proves total slice evaluation over a mathematical reader, with exact success and read-failure results.
+It also proves final-view correspondence for budgeted, anchored export with compatible writes before and between reads.
+The wire module separates ordered traversal references from continuation metadata and deduplicated payload rows.
+It proves exact residual-stack reconstruction and strict nonterminal cursor progress for anchored and interleaved export.
+It binds captured root bytes to their hash and decoder, and requires exact unique-key payload coverage without a fixed row order.
+Successful payload loading preserves exact rows and key coverage across compatible interleaved writes.
+The occurrence module binds each emitted reference to its exact traversal step and original-root path.
+Its annotated cursor relation covers Start anchors, Resume, skipped entries, and exact final-history selection.
+The overlay module checks every received history row and proves successful preparation independent of row order.
+It connects checked raw-history readers, exact occurrence annotations, and encoded response cursors.
+The received-cold module checks every raw response row against all matching occurrence kinds before normalization.
+It excludes durable fallback and preserves decoded maps under arbitrary row permutations, including keys absent from the response.
+Its composition theorem connects the exact operational cursor witness to typed reads after guarded cold batches.
+It checks compatible trailer handling and conflicting duplicate rejection without assuming hash injectivity.
+These results do not establish real storage latency bounds, whole-transfer liveness, or publication validity.
+They do not establish correctness of the current network importer.
+The [state-import record](finalized-floor/state-import-validity.md) states the implementation gaps and focused proof evidence.
 
 **Claim boundary.** This document is the repo-local verification record.
 It does not modify the external paper. Its implementation-facing claims
@@ -137,7 +194,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 120 modules and 44,528 lines, with 1,867 `Qed.` or
+   development spans 150 modules and 61,805 lines, with 2,857 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -302,9 +359,9 @@ the proof context.
 
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
-| Rocq source files                                | 120 modules                                                |
-| Total lines of Rocq                              | 44,528                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 1,867                                                      |
+| Rocq source files                                | 150 modules                                                |
+| Total lines of Rocq                              | 61,805                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 2,857                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -326,7 +383,7 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-The foundational 32-module subgraph of the 120-module formalization
+The foundational 32-module subgraph of the 150-module formalization
 (`formal/rocq/cost_accounted_rho/theories`) organizes into **seven dependency
 tiers**. Figure 1.7 renders that foundational subgraph, transitively reduced
 (`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
@@ -336,7 +393,7 @@ tier is its depth in the import order; the tiers refine — and are colour-keyed
 cool→warm to match — the proof-layer narrative of
 [§7.1](#71-the-proof-layers).
 
-![Dependency graph of the foundational cost-accounted-rho proof subgraph. The 32 foundational Rocq modules are arranged in seven cool-to-warm dependency tiers and transitively reduced. The current 120-module catalog extends this subgraph with native syntax, GSLT seams, authority, settlement, admission, spatial/modal checking, and additional refinement modules; the complete ordered module list is the repository's _CoqProject.](diagrams/module-dependency-graph.svg)
+![Dependency graph of the foundational cost-accounted-rho proof subgraph. The graph shows 32 foundational Rocq modules in seven dependency tiers. The current 150-module catalog also includes native syntax, GSLT interfaces, authority, settlement, admission, spatial and modal checks, and refinement modules. The repository's _CoqProject lists every module.](diagrams/module-dependency-graph.svg)
 
 (*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/casper/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/casper/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted from the foundational modules' `Require Import` statements; `tred` removes transitively redundant edges. The authoritative full ordered catalog is `formal/rocq/cost_accounted_rho/_CoqProject`.*)
 
@@ -3102,7 +3159,7 @@ bounded checker is, in practice, very unlikely to have been stated
 incorrectly.
 
 The original core consists of the eight TLA+ specifications listed below. The
-current directory contains 82 specifications spanning the subsequent native
+current directory contains 114 specifications spanning the subsequent native
 authority, settlement, replay, merge, and OSLF refinements; its authoritative
 safe/unsafe catalog is
 [`formal/tlaplus/cost_accounted_rho/README.md`](../../../formal/tlaplus/cost_accounted_rho/README.md).
@@ -3166,6 +3223,14 @@ safe/unsafe catalog is
    outside numeric merge accounting, and that mergeable/slash system metadata
    updates preserve user cost and settlement cost evidence. *(2,656 distinct
    states / 8,992 generated states.)*
+
+`BondIssuanceLifecycle.tla` refines validator funding across two interleaved
+lifecycles. It separates genesis allocation, bond custody transfer, active-set
+selection, epoch issuance, withdrawal, slash, redemption, and rebond.
+
+The safe instance explores 3,555 distinct states and 12,917 generated states.
+Nine unsafe controls reproduce each prohibited subsidy, eligibility, receipt,
+generation, or replay behavior.
 
 ### 10.2 Module Structure
 
@@ -3386,6 +3451,20 @@ The following invariants are checked by TLC across all reachable states:
 |---------------------|-------------------------|--------------------------------------------|
 | `AllEventuallyDone` | `◇(executed = Bodies)`  | Every body eventually executes (liveness). |
 
+**`BondIssuanceLifecycle.tla` invariants:**
+
+| Invariant | Meaning |
+|-----------|---------|
+| `InitialIssuanceOccursOnlyAtGenesis` | Fresh bond and rebond cannot repeat the genesis allocation. |
+| `EpochIssuanceRequiresBoundary` | Epoch credit cannot occur outside an epoch boundary. |
+| `EpochIssuanceRequiresActiveMembership` | Only an active validator can receive epoch credit. |
+| `HaltedValidatorsReceiveNoIssuance` | A halted validator cannot receive epoch credit. |
+| `AtMostOneCreditPerValidatorEpoch` | One validator receives at most one configured credit per epoch. |
+| `EveryEpochCreditHasReceipt` | Every epoch credit has its exact `(validator, epoch)` receipt. |
+| `GenerationChangesOnlyOnSuccessfulBond` | Epoch and lifecycle actions cannot change bond generation. |
+| `CustodyConservedModuloAuthorizedIssuance` | Liquid custody plus stake equals base funds plus authorized issuance. |
+| `PlayReplayIssuanceAgree` | Play and replay compute identical initial and epoch credits. |
+
 ### 10.4 Model Checking Results
 
 **`CostAccountedRho.tla` via `MC.tla`:**
@@ -3409,6 +3488,18 @@ The following invariants are checked by TLC across all reachable states:
 | Temporal properties checked | `AllEventuallyDone`                                                  |
 | Violations found            | **0**                                                                |
 | Deadlocks found             | **0**                                                                |
+
+**`BondIssuanceLifecycle.tla` via `MC_BondIssuanceLifecycle.tla`:**
+
+| Metric | Value |
+|--------|-------|
+| Total states generated | 12,917 |
+| Distinct states | 3,555 |
+| Search depth | 21 |
+| Configuration | Two validators, three epochs, two generations, withdrawal, slash, redemption, and rebond |
+| Invariants checked | Ten lifecycle, conservation, receipt, and replay invariants |
+| Expected-refutation controls | Nine, each bound to one named invariant |
+| Violations found in safe model | **0** |
 
 **`CompoundProtocol.tla` via `MCCompound.tla`:**
 
@@ -3622,7 +3713,7 @@ references.
 ### 11.1 File Listing
 
 The table below preserves the detailed foundational-module inventory. The
-authoritative complete catalog is `_CoqProject`, which currently lists 120
+authoritative complete catalog is `_CoqProject`, which currently lists 124
 modules. The Scale table in Section 1.6 is computed across that complete list;
 the subtotal at the bottom of this table applies only to the foundational
 inventory shown here.
@@ -3655,6 +3746,9 @@ inventory shown here.
 | `Replication.v`             | 2,071      | 56       | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
 | `MintingInjection.v`        | 630        | 26       | Authenticated protocol minting into canonical SystemVault custody, public-key address injectivity, epoch idempotence, direct fee backing, and exclusion of user-step minting |
 | `MintingHalt.v`             | 179        | 8        | A halted (slashed) validator is never minted and never gains supply; redemption is the only path back to funding (`halted_validator_not_minted`, `halted_validator_supply_not_increased`) |
+| `BondIssuanceLifecycle.v`   | 406        | 21       | Genesis-only initial allocation, unsubsidized fresh bond and rebond, guarded epoch issuance, generation discipline, custody conservation, duplicate suppression, and play/replay equality |
+| `EpochMintAtomicity.v`      | Mechanically counted by the proof gate | Mechanically counted by the proof gate | Whole-close failure identity, exact eligible issuance, zero-amount completion, receipt idempotence, disjoint-validator commutation, deterministic retry, and play/replay equality |
+| `MintedEpochRetention.v`    | Mechanically counted by the proof gate | Mechanically counted by the proof gate | Frontier bootstrap, monotonicity, contiguous advancement, gap rejection, exact rollback, restart preservation, lifecycle stability, sibling selection, bounded storage, and replay idempotence |
 | `CanonicalRevRedemption.v`  | 149        | 8        | Canonical REV custody disposition for slash, vindication, strictly partial guilt, and burn; every authorized branch conserves the combined liquid, quarantined, bonded, cooperative, and burned ledger |
 | `RedemptionCustodyAtomicity.v` | 350     | 11       | Generation-scoped redemption receipts, exact lifecycle restoration, strict partial-guilt rejection, retry idempotence, physical PoS-vault coverage, and pointwise commutation for distinct validators |
 | `RedemptionMintResumption.v` | 142       | 11       | Redemption removes only the target's mint halt, never directly credits its SystemVault purse or rewrites the mint ledger, enables one fresh epoch credit, and makes replayed epoch minting idempotent |
@@ -4752,12 +4846,324 @@ subsets, policy-wide authority, member-zero authority, policy-wide debit,
 witness mismatch, and ground-authority aliasing.
 
 The safe replay-publication model explores 1,035,710 generated states, 130,321
-distinct states, and depth 37. Its nine unsafe controls independently refute
-all-admitted bypass, count-only matching, primary-signature identity,
-caller-provided invalid context, early durable publication, bare-row trust,
-peer-byte publication, conflicting overwrite, and cache-before-store. TLC and
-Apalache check every safe model and require the named counterexample from every
-unsafe control.
+distinct states, and depth 37. Its fifteen unsafe controls independently refute
+partition bypass, incomplete matching, malformed typed identities, unconsumed
+evidence, invalid context, unauthenticated publication, conflicting overwrite,
+and cache-before-store. TLC and Apalache require every named counterexample.
+
+### C.5 Exact execution-result reuse
+
+An execution result is the complete consensus evidence from one user-deploy
+execution. It includes the deployment identity, roots, schedule, witness,
+resource surface, grade, context, processed result, and mergeable evidence.
+
+Each validator must independently authenticate the result. A validator does
+not trust a result because the proposer supplied it. The validator recomputes
+the state-bound user partition and compares every processed field. Authority
+discovery can retry a candidate when new authenticated funding increases capacity.
+
+After exact comparison, the validator retains the user post-state and
+mergeable evidence. The validator starts system-deploy replay from that retained
+post-state. The validator does not execute the user partition a second time.
+
+The implementation follows this validation algorithm:
+
+```text
+validate_block(block, authenticated_pre_state):
+    candidates := reconstruct every user candidate from block evidence
+    retained := execute state_bound_admission(candidates, authenticated_pre_state)
+    require retained.partition equals block.partition
+    require retained.processed_results equals block.processed_results
+
+    system_result := replay only block.system_deploys from retained.user_post_state
+    require system_result.post_state equals block.declared_post_state
+
+    durable_mergeable := retained.user_mergeable followed by system_result.mergeable
+    publish durable_mergeable
+    publish replay_cache_entry
+    return block.declared_post_state
+```
+
+The cache publication follows durable validation. A cache entry cannot replace
+missing mergeable evidence. Recovery repeats the same authenticated algorithm
+when durable evidence is absent.
+
+The metric `runtime.user-deploy.evaluation-attempts` counts user evaluator
+invocations, including discovery retries and failed evaluations. Its origins
+separate `proposal`, `validation`, `replay`, and `recovery`. Direct evaluator
+callers without an assigned origin use `unattributed`.
+
+The older `runtime.user-deploy.executions` metric counts processed results
+returned to the runtime manager. It does not count all discovery attempts.
+Do not use that counter to prove the absence of repeated evaluation.
+
+The focused checkpoint regression uses the attempt counter. Its simple deploy
+requires one proposal attempt and one validator attempt. The regression also
+requires zero generic user-replay attempts during validator admission.
+
+Persistent production uses two accounting identities. Listener installation is
+infrastructure and receives one charge after successful reservation. Each
+completed base-rewrite firing is a separate semantic occurrence and receives a
+separate charge.
+
+The following artifacts provide different levels of evidence:
+
+| Layer | Evidence | Obligation |
+| --- | --- | --- |
+| Rocq | `ReplayAdmissionPublication.v` | Abstract certification rejects unequal results. Cache content equals certified content. The numeric policy preserves installation and firing counts. |
+| TLA+ and TLC | `ExecutionResultReuse.tla` and `ExecutionResultReuse.cfg` | Two modeled validators preserve reuse, publication order, agreement, installation idempotence, and firing multiplicity across the finite state graph. |
+| Apalache | `ExecutionResultReuseApalache.cfg` | The independent symbolic checker verifies every safety invariant through length eight. |
+| Rust | Runtime properties, checkpoint replay, and RSpace properties | Production assertions check field mutation, differential replay, execution metrics, and persistent charging. |
+| Loom | `loom_production_replay_cache.rs` | Shared production transitions check cache races and persistence-before-publication. The harness does not execute the interpreter or persistent store. |
+| Loom | `loom_execution_result_reuse.rs` | Separate model types check persistent charging. These tests do not exercise production charging or cancellation. |
+
+The Rocq lifecycle model permits multiple discovery attempts before retaining
+one successful result. System replay and publication do not increase the
+attempt count after retention. The inductive proof preserves these invariants
+under arbitrary interleavings of independent workers. Cancellation of one
+worker does not change another worker's state.
+
+The lifecycle proof does not establish a discovery-time bound. The separate
+frontier model supplies its finite-frontier premise and retry bound. Production
+metrics provide separate evidence for the tested paths. Production refinement
+must connect each modeled transition to its runtime operation.
+
+The following map identifies the call-local correspondence for review:
+
+| Modeled transition | Production boundary |
+| --- | --- |
+| `AttemptDiscovery` | The discovery loop calls the user evaluator. The attempt counter increments before evaluation. |
+| `RetainDiscovery` | `state_bound_execution_internal` returns the processed evidence, post-state, and mergeable results. |
+| `CheckSystems` | Ordinary replay passes an empty user list and starts system replay from the retained user state. |
+| `PublishRetained` | Final-state equality succeeds before mergeable persistence and cache publication. |
+| `CancelExecution` | Dropping a pending caller releases its owned future and guards without changing another caller's local result. |
+
+Each modeled worker represents one candidate's call-local lifecycle. This map
+does not prove shared-purse atomicity or extract Rust control flow into Rocq.
+The separate settlement and concurrency obligations remain mandatory.
+
+TLC exhausts 118,709 generated states and 28,224 distinct states to depth 19.
+All thirteen unsafe controls must violate their named invariants. These controls
+cover nine omitted result axes, cache-first publication, duplicate user replay,
+persistent reinstallation charging, and collapsed firing multiplicity.
+
+### C.6 Shared replay-cache context
+
+Same-call retained execution and shared replay-cache reuse have different
+trust boundaries. Retained admission owns its authenticated context. A later
+cache lookup must establish that context again.
+
+`replay_cache_state.rs` contains the production cache transitions. The Loom
+harness imports that file and replaces only the enclosing mutex and fixture types.
+Production keeps key normalization and retained-byte measurement at the cache boundary.
+
+The shared `persist_before_publish` helper preserves fresh-result publication
+order in proposal and replay. A persistence error prevents that invocation
+from publishing. An independent successful invocation can still publish.
+
+Cache publication remains optional. Capacity rejection does not roll back a
+successful durable write. Genesis cache hits remain separate from fresh persistence.
+
+There is no await between persistence and publication. Task cancellation cannot
+interrupt that synchronous interval. A process crash is a separate failure class.
+Proposal cancellation after publication can leave a complete cache entry.
+
+The Loom publication test assumes metadata remains present. Production lookup
+checks current metadata but does not reserve it against later deletion.
+This test therefore does not establish indefinite durable retention.
+
+The gate reports its preemption bound and rejects inherited early-success limits
+or checkpoint resume. A passing bounded search is not unbounded production verification.
+
+The shared key must include the original pre-state, sender, sequence number,
+timestamp, height, invalid-block map, and replay payload. The payload includes
+processed users, system deploys, and genesis status.
+
+Timestamp and height reach contracts through `rho:block:data`. The invalid-block
+map reaches contracts through `rho:casper:invalidBlocks`. A cache hit bypasses
+these runtime reads. Omitting their inputs can return evidence for another
+execution context.
+
+Ordinary consensus validation disables this shared shortcut after admission.
+Public full replay and genesis replay can use the shortcut. Therefore, the
+context obligation applies even when ordinary block admission reuses only
+its own result.
+
+Preserve the persisted replay-payload fingerprint. The in-memory key adds
+runtime context without changing the mergeable-store identity or wire format.
+Normalize an absent invalid-block map to an empty map. Canonically sort map
+entries before hashing their length-delimited keys and values.
+
+`RuntimeBudgetRefinement.v` models the complete key. The context-substitution
+theorem rejects every unequal modeled timestamp, height, or invalid-block map.
+The digest refinement states its collision-separation premise explicitly.
+It does not prove cryptographic hash injectivity.
+
+`ReplayCacheContext.tla` models two concurrent callers and all eight combinations
+of its two-valued context fields. Callers independently select bounded or
+unbounded replay. The model includes rejection, cancellation, publication,
+cache eviction, and mergeable-metadata removal.
+
+| Invariant | Required production behavior |
+| --- | --- |
+| `ReplayUsesExactContext` | A reused result has the request's complete execution context. |
+| `NoUnvalidatedPublication` | Failed or incomplete execution cannot publish a reusable result. |
+| `BoundedWorkCannotHitCache` | A request with host-work limits cannot bypass those limits through an unbounded cache entry. |
+| `HitHadMetadata` | A cache lookup requires the corresponding mergeable evidence at lookup. |
+
+Six unsafe controls omit each context field, ignore host-work limits, ignore
+mergeable metadata, or publish before validation. Each control must fail its
+named invariant. TLC checks the finite state graph. Apalache checks through
+length eight.
+
+The model abstracts the common pre-state and payload. It does not replace their
+existing identity tests. It also abstracts execution as an observable context
+result. Production warm-cache and cold-cache tests must validate that connection.
+
+A warm replay can read cache entries. A cold replay disables cache lookup.
+`replay_cache_rejects_runtime_context_substitution` executes a contract that reads
+block data and invalid blocks. Each substituted context must produce the same
+rejection with and without the cache.
+
+The regression reproduced a timestamp substitution before the repair. Warm
+replay returned success, while cold replay rejected the quantitative byte witness.
+The repaired path rejects timestamp, height, and invalid-block substitutions.
+
+Cache properties vary all key inputs and verify map-order independence.
+The checkpoint regression verifies that an identical-context hit avoids another
+user execution. The final-state regression verifies that failed validation
+publishes neither mergeable evidence nor a cache entry.
+
+That regression also injects mergeable-store write failures through the actual
+proposal and consensus replay routes. Each failure must propagate without cache
+publication. A later replay with the original store must publish successfully.
+
+The cache property test compares every result and eviction order against an
+independent ordered-list implementation. It also checks exact retained-byte totals.
+
+The [evidence-field properties](../../../casper/src/rust/util/rholang/replay_evidence_tests.rs)
+check all sixteen funding-certificate fields and all fourteen witness fields.
+Each generated case checks every listed field, not one randomly selected field.
+Exhaustive Rust field patterns make additions to these message types require test updates.
+The same pattern covers all processed-deploy fields and deploy-intent fields.
+Forged protocol-v6 envelope inputs must fail reconstruction before payload hashing.
+Changes to reconstructed result evidence must change the payload hash.
+System-result properties check all five encoded fields or require rejection of invalid encoding.
+Separate properties check genesis mode, system-result presence, and user order and multiplicity.
+The properties also check message presence, nested resource keys and amounts,
+stack reservations, event fields, authority regions, and economic event order and multiplicity.
+
+These properties exercise the production replay-payload hash through processed evidence.
+They refine the equality obligation in `changed_execution_result_is_not_reusable`.
+They check encoded identity, not the admission validity of each synthetic mutation.
+The peer-replay regression separately checks rejection through actual state-bound admission.
+The properties do not prove collision resistance or cover future message definitions.
+
+`replay_cache_publication_obeys_exact_event_log_limits` checks empty logs, one
+event, the exact event cap, and cap-plus-one rejection through production publication.
+The context regression checks zero witness-work rejection with warm and cold caches.
+That rejection must preserve the valid cached result for other callers.
+
+Cancellation changes only the caller's lifecycle. It does not remove another
+caller's result. The model permits independent computation after concurrent
+cache misses. It does not require shared in-flight execution or a global
+validator lock.
+
+The context regression also polls two real replay calls while another caller
+holds the replay permit. It drops one waiting future and releases the permit.
+The surviving replay must return the expected state and release its permit.
+Neither canceled waiting nor uncommitted replay may publish a cache entry.
+This test covers queued cancellation, not every active-execution cancellation
+boundary or process-crash boundary.
+
+The [replay lifecycle regressions](../../../casper/tests/util/rholang/replay_cache_lifecycle.rs)
+check additional production boundaries. Each test must observe its specified event.
+A timeout detects a stuck test. Elapsed time does not establish that an event occurred.
+
+| Boundary | Required observation | Required result |
+| --- | --- | --- |
+| Active public replay | The future remains pending after evaluator entry and a reducer call. | Cancellation publishes no cache or mergeable evidence. Independent replay returns the expected root. |
+| Active reducer child | A test-local native handler signals entry before cancellation. | The handler signals destruction. Its continuation cannot run. The checkpoint boundary becomes available. |
+| Published proposal | The proposal remains pending after cache and mergeable publication. | Cancellation preserves complete evidence. Warm and cold replay return the same root. |
+| Process termination | The child confirms the selected database or cache boundary through a pipe. | A fresh process verifies durable metadata, reads both roots, and independently replays the block. |
+
+The active-replay test covers the public runtime-manager route. Its permit check
+does not establish that every child task has terminated.
+The controlled-handler test checks child release through the actual reducer.
+It does not replace runtime-manager admission or settlement tests.
+
+The controlled-handler test restores the private runtime to its original root
+before reuse. It does not assume that dropping an evaluation performs asynchronous rollback.
+Previously committed state and independent callers must remain unaffected.
+
+The process test uses actual LMDB stores and production proposal publication.
+The parent terminates its child before the target mergeable write, after that
+write commits, or after cache publication. Each cut has a separate fresh-process check.
+The parent copies only the initial RSpace stores into each isolated directory.
+The child must produce the tested post-state itself.
+The control message starts on its own line because the test runner can leave a partial output line.
+A property test varies that prefix and checks the exact control message.
+
+A before-write crash must leave the target metadata absent. Later cuts must
+preserve the exact committed metadata. Every fresh process must start with an empty memory cache.
+Independent consensus replay must restore the same evidence and post-state.
+These checks establish process-crash behavior, not power-loss durability or
+atomicity across separate databases.
+
+`ReplayCacheContext` supplies the validation, cancellation, metadata, and reuse
+obligations. `EvaluationBoundary` separately models child cancellation and checkpoint exclusion.
+`ReplayAdmissionPublication.CrashRecoveryExposesAbsentOrCompleteRow` requires absent
+or complete evidence after a modeled crash. Its durable-write transition assumes atomic persistence.
+The process test checks that boundary against actual LMDB writes and reopening.
+It does not prove atomicity inside LMDB or extend the model to arbitrary storage failures.
+
+### C.7 Current replay input audit
+
+The current implementation has two distinct reuse mechanisms. The following table
+maps their inputs to production checks. This map does not approve a future protocol version.
+
+The current authority-certificate version is eight. The byte-schedule version is one.
+These version domains differ from the block-header version.
+
+| Input or result | Same-call retained admission | Shared replay cache |
+| --- | --- | --- |
+| Block protocol and deploy identity | The block version selects legacy or protocol-v6 identity. Reconstruction and partition comparison precede retention. | Processed evidence contains the deploy envelope. Public replay is not a substitute for block-version admission. |
+| Accounting protocol | Exact processed-evidence comparison includes certificate and witness versions. | The payload hash includes both version fields. |
+| Original pre-state | Admission executes against the supplied root. | The key includes the original root. |
+| Sender, sequence, timestamp, height, invalid blocks | Admission retains the complete context used for execution. | The key includes these inputs. Invalid-block hashing is canonical and length-delimited. |
+| Activation and funding state | Admission reads the state bound to its root. | A different root has a different key. |
+| Byte schedule | Admission recomputes certificate and witness evidence with the implementation's schedule. | The payload includes schedule versions, digests, bounds, and realized byte evidence. |
+| Proof, authority, allocation, and settlement | Exact comparison includes complete funding certificates and witnesses. | The payload includes their encoded fields and nested evidence. |
+| Economic events | Exact comparison preserves event order and multiplicity. | Witness event sequences remain ordered. Only RSpace replay logs receive the existing canonical sorting. |
+| Host-work limits | Bounded execution must enforce its supplied limits. | Every request with explicit host-work limits bypasses shared cache lookup. |
+| User post-state | Admission retains its computed root. System replay starts from that root with no user deploys. | The entry belongs to the keyed execution and its processed evidence. |
+| Final post-state | Consensus replay compares the computed and declared roots before publication. | A fresh cache entry follows successful execution and durable mergeable publication. |
+| Mergeable evidence | User and system results combine before durable publication. | Lookup requires the execution-specific metadata key to exist. This check is not a retention pin. |
+
+The in-memory cache belongs to one runtime-manager configuration. Restart starts
+with an empty cache. Future activation or schedule changes need new correspondence
+checks when they add executable inputs.
+
+The evidence audit found a coverage defect in the earlier property name.
+`replay_payload_identity_binds_every_execution_result_field` selected only seventeen
+mutations. Its name overstated its coverage. The renamed selected-field property
+remains useful, but it cannot establish complete message coverage alone.
+
+The additional properties use exhaustive field patterns for `ProcessedDeploy`,
+`DeployData`, funding certificates, witnesses, and the audited nested record types.
+Each generated case visits every declared mutation for its record.
+Adding a field to an audited record without updating its mutation list prevents compilation.
+This control addresses schema drift. It does not replace semantic review of a field's mutation.
+
+The current task's evidence combines abstract proofs, bounded concurrency models,
+production-linked Loom transitions, payload properties, and actual replay lifecycle tests.
+Each layer retains the limits stated in C.5 and C.6.
+Successful targeted tests are not evidence that full CI or the qualifying soak passed.
+
+The campaign separately requires future phlo and arbitrary-payer correspondence,
+persistent-charging correspondence, and live-root retention verification.
+Those requirements remain assigned to their existing tasks.
+Current replay evidence must not mark those requirements complete.
 
 ## Appendix D — Consensus-regression closure
 
@@ -4831,6 +5237,7 @@ test-only consensus path is part of the repair.
 | Replay supply is state-authenticated, locally materialized, and absent from the causal trace | independent-validator and isolated-reporting multi-deployment regressions; ordinary Casper, checkpoint, and genesis replay regressions | TLA+ `ReplaySupplySnapshot.cfg` and `ReplayRootMaterialization.cfg`; Apalache `ReplayRootMaterializationApalache.cfg` through the complete two-validator/two-deployment eight-step horizon; Rocq `ReplayRootMaterialization.v`; exact authority-lane and adjacent-root validation in `ReplayRuntimeOps`; lifecycle-trace subset regression | live-query, eager-root, producer-history, and replay-query controls must violate their named trace, materialization, agreement, and runtime-separation invariants |
 | Native reserve→settle refinement is atomic, merge-local, and complete across application transfer, physical settlement, byte settlement, and fee | SystemVault two-payer conservation/rollback example; same-key sibling merge regression; recovery fixture derives its two-fit/three-overdraw boundary from protocol-4 witnesses | 512-case complete-debit Rust property; 221,184 Sage component/order traces; Rocq `AtomicVaultSettlementRefinement.v`; TLA+ and Apalache `MCAtomicVaultSettlementRefinement.cfg` | The global-cell control must violate `NoPersistentReservationState`; application-, physical-, byte-, and fee-omission controls must each violate `FinalizedAggregateIsFunded` |
 | Vault-backed byte cost is complete, arrival-order independent, bounded, top-up isolated, and replay exact | canonical footprint/overflow examples; either-trigger, persistent fixed-point retry, peek, and pre-mutation rejection observer tests; matched/unmatched deployment isolation; state-bound settlement and replay equality | byte-footprint and budget proptests; Loom reservation/top-up and persistent-identity interleavings; Rocq `VaultBackedByteAccounting.v`; TLC and Apalache `VaultBackedByteAccounting` safe model | eight `VaultBackedByteAccounting*Unsafe.cfg` controls must respectively refute mutation-before-charge, trigger-side charging, join omission, persistent recharge, peek credit, replay omission, in-flight top-up expansion, or overflow wrapping |
+| Logical authority aliases cannot duplicate physical SystemVault capacity | Native and protocol-6 principals retain separate witnesses but share one balance. Compute, byte, and fee settlement use the same physical residual. | The allocator property checks arbitrary alias draws. Rocq proves physical conservation and permutation independence. TLC and Apalache check concurrent play and replay. | The duplicate-lane-capacity control must violate `NoDoubleCapacity`. Malformed principals must not alias valid custody. |
 | Stack introduction is failure-atomic across physical reservation, byte charging, RSpace, continuation execution, birth publication, enclosing-deployment rejection, and replay | candidate-created authority rejection; exactly funded and equal-parallel stack transfers; matched-produce causal extraction; later-deploy stack rollback with retained attempt cost; play/replay root equality | exact operation-abort and deployment-rollback runtime properties; Loom commit/reject/pre-mutation-cancellation/competition/deployment-rollback interleavings; Rocq `StackIntroductionAtomicity.v`; TLC and Apalache `StackIntroductionAtomicity` safe model | exposed-preparation, omitted-operation-abort, fallible-birth, omitted-deployment-rollback, omitted-nested-produce, and replay-omission controls must each violate their named invariant |
 | Evaluation rejection is state-and-witness atomic from parsing through replay post-validation | parser-after-paid-deploy returns an empty witness; reducer operator failure retains current attempted work; later deployment failure removes linear custody; forged replay post-state witness rejects, restores the active pre-state root, and publishes no merge evidence | Rocq `EvaluationTransactionIsolation.v`; TLC and Apalache `EvaluationTransactionIsolation` safe model; direct interpreter and runtime-manager regressions | parser-reuse, reducer-attempt-erasure, play-no-rollback, replay-post-checkpoint-no-rollback, and early-evidence controls must each violate their named invariant |
 | Parallel reducer commitment is independent of Tokio arrival while preserving disjoint work | exact root/log repetitions for competing sends and receives, overlapping joins, persistent send/receive, peek, guards, and textual ACI permutations; play/replay consumes the complete log and reaches the same root; RSpace reverses arrival order and still emits causal order | Rocq `DeterministicParallelReduction.v`; exhaustive TLC `DeterministicParallelReduction` and `EvaluationBoundary`; Loom frontier, compound-authority, checkpoint, and cancellation schedules; Rust conflict-partition proptest | incomplete-frontier, non-canonical-order, partial-checkpoint, global-serialization, omitted-authority, and cancelled-root permit-release controls must violate their named invariants |
@@ -4841,6 +5248,7 @@ test-only consensus path is part of the repair.
 | Terminal admission records remain observable without becoming runtime effects | concrete funding-rejection plus `closeBlock`, ordinary execution-failure, and projection-order examples | 256-case Rust property over status/failure/order/system counts; axiom-free finalized-floor Rocq `AdmissionEffectAlignment.v`; TLC and Apalache deploy-recovery `AdmissionEffectAlignment` safe model | raw status counting must violate `Inv_StatusOnlyRecordCannotBlock`; canonical multi-node lifecycle must finalize later deploys without merge-cardinality proposal failure |
 | Explicit authority cannot fall back to the deployment payer | `explicit_region_authority_overrides_the_deploy_default` and `explicit_region_cannot_spend_an_unrelated_default_balance` prove region attribution, underfunding rejection despite abundant ambient custody, and matching-stack-only settlement | Rocq `explicit_regions_do_not_debit_ambient_purse`; TLA+ `LocatedAuthoritySettlement.cfg` checks exact and located authority through execution and replay | `LocatedAuthoritySettlementAmbientPurseUnsafe.cfg` must violate `NoAmbientAuthority` |
 | Native wallet funding composes with authenticated lollipop authority, exact component-wise settlement, and replay | `wallet_funded_lollipop_slot_settles_across_deploys_and_replays` derives distinct public outer and continuation purse addresses, atomically funds both from an authenticated sponsor wallet, retains the unforgeable draw capability, proves an unauthorized public trigger cannot activate or debit the continuation, admits the configured gateway through `rho:system:deployerId`, charges outer and continuation costs to their own purses, separates the gateway fee, and compares play/replay roots; `same_deploy_stack_transfer_is_vault_backed_consumed_and_replayed` proves that candidate-created authority requires prior certified custody | Rocq `WalletFundedLollipop.v` and `VaultBackedByteAccounting.candidate_created_stack_cannot_supply_prestate_byte_capacity`; TLA+ and Apalache `WalletFundedLollipop` safe configurations; component models for runtime-bound authority, located settlement, and atomic vault settlement | Eight `WalletFundedLollipop*Unsafe.cfg` controls must respectively violate conservation, address/capability separation, gateway authentication, canonical payer attribution, funding-before-activation, outer-authority staging, exact refund, or replay equality |
+| Deterministic host work is bounded without becoming an economic charge | direct interpreter tests measure all execution dimensions; state-bound play rejects before publication and restores its checkpoint; replay applies the same limit schedule, reproduces the accepted root, rejects an insufficient witness-byte limit, and bypasses a populated replay cache | [Host-work specification](host-work-budget.md); Rocq `HostWorkBudget.v` and `HostWorkExecution.v`; exhaustive TLC `HostWorkBudget` safe model; Rust properties and Loom schedules | Ten required unsafe configurations must violate order, checked-reservation, rollback, replay, shard, economic-separation, or pre-allocation invariants |
 | Funding-slot bootstrap is admissible, staged, and atomic before lollipop activation | native SystemVault contract tests prove exact dual credit and prove that underfunding, invalid targets, and duplicate targets preserve the source and do not create destination vaults; client tests require both public addresses and emit one batch operation; the live shard workflow finalizes install, dual funding, unauthorized trigger, dual top-up, and authorized activation in order | Rocq `FundingSlotBootstrap.v`; TLC and Apalache `FundingSlotBootstrap` safe configuration; Loom funding/activation, competing-funding, and top-up races | eager install, candidate self-funding, slot-only funding, partial debit, and rejected target creation must each violate its named invariant; no client step may claim the grant funded until the batch deploy and result are final |
 | PoS stake-vault human control is bound to the authenticated blessed deployer and fails closed on incomplete source generation | `CompiledRholangTemplate` complete/incomplete examples and `pos_vault_human_control_uses_the_authenticated_genesis_deployer_and_replays` exercise the generated contract under unauthorized and authorized signatures, exact custody movement, and replay | Rocq `PoSVaultAuthority.v`; TLC and Apalache `PoSVaultAuthority` safe configuration | the literal-controller control must violate authenticated binding and the permissive unresolved-template control must violate compilation completeness |
 | Validator redemption is generation-scoped, failure-atomic, conservative, lifecycle-exact, replay-idempotent, and independent across validator keys | `redemption_restores_exact_pending_and_withdrawing_lifecycle`, `completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation`, `redeem_outcomes_and_multisig_gate`, and `redeem_outcomes_are_play_replay_deterministic`; production authorization properties mutate validator identity, bond generation, outcome tag, and penalty under a reused signature | Rocq `CanonicalRevRedemption.v`, `RedemptionCustodyAtomicity.v`, and `RedemptionMintResumption.v`; TLC and Apalache `ConcurrentRedemptionCustody`; Loom conflicting, stale, invalid, retry, abort, and distinct-validator schedules | no-target-lock, ignored-generation, full-guilty, wrong-phase restoration, partial stake/fuel publication, lost receipt, and conflicting-retry overwrite controls must violate their named invariants |
@@ -4995,5 +5403,234 @@ necessary. The Rocq refinements quantify conservation, failure atomicity,
 physical custody coverage, exact restoration, idempotence, and distinct-key
 commutation. Loom explores the corresponding Rust memory interleavings, while
 the production Rholang tests compare play and replay roots and balances.
+
+## Appendix E — Atomic epoch issuance refinement
+
+### E.1 Transaction state
+
+An epoch close starts from committed state $`C`$. Prepared state $`P`$
+contains candidate rewards, withdrawals, active membership, and custody.
+
+Let $`f`$ be the retained frontier. Let $`e`$ be the candidate epoch.
+
+Let $`E(P)`$ contain validators that are active and not halted. Let $`m`$ be
+the epoch issuance amount.
+
+The committed transition is:
+
+```math
+\operatorname{close}(C,P,m)=
+\begin{cases}
+P[E(P)\mapsto +m, f\mapsto e],
+& \text{when }e\text{ is new and every mint succeeds},\\
+P[f\mapsto f],
+& \text{when }e\leq f,\\
+C,
+& \text{when }e\text{ has a gap or one mint fails}.
+\end{cases}
+```
+
+A new epoch satisfies $`f=-1 \land e\in\{0,1\}`$ or
+$`f\geq 0 \land e=f+1`$. Later bootstrap values are invalid.
+
+When $`m=0`$, the transition advances the frontier without calling the
+positive-only mint primitive. Every balance remains unchanged.
+
+Logical per-validator receipts remain proof variables. Production stores only
+the frontier because canonical close publication is collective and atomic.
+
+### E.2 Executable boundary
+
+The implementation uses the existing close-block system-deploy checkpoint. It
+does not add a SystemVault batch API or a consensus-wide lock.
+
+```text
+close_epoch(pre_state):
+    prepare rewards, withdrawals, and active membership
+    derive the candidate epoch and read mintedThroughEpoch
+    if the epoch is complete, publish prepared non-mint effects
+    if the epoch skips a required frontier, return failure
+    for each eligible validator in canonical PoS order:
+        if issuance is zero, continue
+        otherwise call authenticated protocolMint
+        if the call fails, stop and return failure
+    set mintedThroughEpoch to the candidate epoch
+    publish one final checkpoint
+    on any failure, reset the runtime to pre_state
+```
+
+The proposer propagates the failed checkpoint result. Therefore, failed epoch
+state cannot enter a block, DAG index, replay cache, or finalization input.
+
+### E.3 Formal obligations
+
+`EpochMintAtomicity.v` proves the unbounded arithmetic and transition laws. The
+proof has no admitted theorem.
+
+`EpochMintAtomicity.tla` explores all interleavings for three validators. TLC
+and Apalache check positive and zero issuance.
+
+`MintedEpochRetention.v` proves bootstrap, frontier monotonicity, contiguous
+advancement, failure identity, restart preservation, and constant storage.
+
+`MintedEpochFrontier.tla` schedules two validators across sibling close, bond,
+slash, redemption, restart, duplicate, and gap transitions.
+
+The safe TLC model contains 13,985 distinct states and reaches depth 15.
+
+Apalache checks every epoch value from genesis through length four. A separate
+inductive configuration checks every transition from every invariant state.
+
+Together, the Apalache checks establish the base case and invariant closure.
+Rocq removes the finite epoch-domain bound.
+
+The epoch-close atomicity model has six unsafe variants:
+
+| Unsafe variant | Required violation |
+| --- | --- |
+| Swallow one failed mint | Complete issuance before commit |
+| Publish an early balance | No partial balance publication |
+| Publish an early receipt | No partial receipt publication |
+| Omit runtime rollback | Exact abort restoration |
+| Replay only a mint prefix | Play and replay equality |
+| Call strict mint with zero | Zero-issuance completion |
+
+The bounded frontier model has eight unsafe variants:
+
+| Unsafe variant | Required violation |
+| --- | --- |
+| Initialize at epoch zero | Production epoch-one bootstrap |
+| Reject epoch-one bootstrap | Production epoch-one bootstrap |
+| Accept a skipped epoch | Contiguous frontier advancement |
+| Publish both sibling mints | One collective close effect |
+| Drop both sibling mints | One collective close effect |
+| Credit a late bond retroactively | Boundary membership isolation |
+| Clear the frontier during redemption | Lifecycle frontier preservation |
+| Mint a redeemed validator retroactively | No historical catch-up issuance |
+
+Loom explores concurrent target completion, failed completion, duplicate
+completion, retry, sibling publication, bootstrap, and gap rejection. One root
+publication exposes only old or complete state.
+
+Generated Rust cases compare the implementation-shaped fold with an atomic
+specification and a full logical receipt history. The cases vary balances,
+eligibility, order, failure, retry, replay, bootstrap, gaps, and lifecycle.
+
+Native PoS tests force overflow at every validator position. They compare the
+complete runtime root and every SystemVault balance before and after failure.
+
+The tests then remove the overflow condition and retry. They require one exact
+credit, deterministic replay, duplicate-close idempotence, gap rejection, and
+consecutive frontier advancement.
+
+The multi-parent regression creates two valid boundary siblings. Their merged
+state must contain one exact validator credit on every node.
+
+### E.4 Focused verification commands
+
+```bash
+coqc -Q theories CostAccountedRho theories/EpochMintAtomicity.v
+coqc -Q theories CostAccountedRho theories/MintedEpochRetention.v
+scripts/check-cost-accounted-rho-tla-invariants.sh --filter EpochMintAtomicity
+scripts/check-cost-accounted-rho-tla-invariants.sh --filter MintedEpochFrontier
+scripts/check-cost-accounted-rho-apalache.sh --filter epoch-mint
+scripts/check-cost-accounted-rho-apalache.sh --filter minted-epoch-frontier
+cargo test -p casper --test epoch_mint_atomicity_property_spec
+cargo test -p casper --test bond_issuance_lifecycle_property_spec
+cargo test --manifest-path formal/loom/cost_accounting/Cargo.toml --test loom_epoch_mint_atomicity
+cargo test -p casper epoch_mint_frontier_
+cargo test -p casper epoch_mint_failure_rolls_back_every_validator_and_retries_exactly_once
+cargo test -p casper zero_epoch_mint_records_completion_without_balance_change
+cargo test -p casper sibling_epoch_closes_publish_one_validator_mint
+```
+
+## Appendix F — Proposal checkpoint admission recertification
+
+### F.1 State boundary
+
+A proposal attempt owns one immutable candidate window. The window contains a
+canonical raw-user prefix and every protocol-required dummy.
+
+State-bound admission maps the complete window to admitted, rejected, and
+deferred classes. The certificate binds each candidate identity and the
+authenticated execution context.
+
+Checkpoint failure invalidates that complete attempt. A smaller retry receives
+a new generation, window, classification, certificate, and root chain.
+
+Only one successful generation can supply block contents. That generation
+also supplies terminal rejection evidence and storage removal decisions.
+
+Deferred candidates remain in storage. Raw users outside the selected prefix
+also remain in storage.
+
+### F.2 Formal obligations
+
+`CheckpointAdmissionRecertification.v` quantifies over arbitrary candidate
+types, classifiers, candidate lists, and retry limits.
+
+The classifier receives the complete window. This rule permits aggregate
+authority and validator-fuel capacity to change classifications between attempts.
+
+The canonicalizer processes the raw-user prefix and all dummy candidates
+together. Therefore, the proof does not assume that dummy candidates sort last.
+
+The Rocq development proves complete partitions, pairwise disjoint classes,
+canonical subsequence order, exact root-chain length, and raw-prefix
+selection.
+
+It also proves single-generation publication, failed-attempt atomicity,
+deferred retention, strict retry decrease, and well-founded retry termination.
+
+`CheckpointAdmissionRecertification.tla` schedules two validators
+independently. Each validator owns its generation, window, certificate,
+storage, settlement, and publication state.
+
+The safe model requires exact state-bound classification and peer
+recomputation. It also requires strict progress without a global validator
+lock.
+
+Twelve negative controls isolate these defects:
+
+| Defect | Required violation |
+| --- | --- |
+| Reuse an old certificate | Current certificate generation |
+| Preserve old rejections | Complete certified partition |
+| Drop final rejections | Complete published partition |
+| Recertify admitted candidates only | Complete certified partition |
+| Change authenticated context | Frozen certificate context |
+| Shrink the earlier admitted set | Canonical raw-user prefix |
+| Drain the original candidate set | Exact terminal user drain |
+| Publish before checkpoint success | Failed-attempt publication exclusion |
+| Convert deferred candidates to rejected | Peer recomputation equality |
+| Use arrival order | Canonical raw-user prefix |
+| Share mutable attempt state | Validator independence |
+| Keep the same retry limit | Strict retry decrease |
+
+The TLA+ model explores retry generations and validator interleavings.
+
+The Loom model explores the production shared-storage boundary. It checks
+atomic terminal drain, failed-attempt custody, invalid partitions, and
+independent validator storage.
+
+The Rust property varies every candidate disposition and class order. It
+requires a complete, unique, canonical partition.
+
+The forced integration retry places one rejected user inside the retained
+prefix and another rejected user outside it. The test rejects stale terminal
+evidence and verifies suffix retention, settlement, and peer replay.
+
+### F.3 Focused verification commands
+
+```bash
+coqc -Q formal/rocq/cost_accounted_rho/theories CostAccountedRho formal/rocq/cost_accounted_rho/theories/CheckpointAdmissionRecertification.v
+scripts/check-cost-accounted-rho-tla-invariants.sh --filter CheckpointAdmissionRecertification
+scripts/check-cost-accounted-rho-apalache.sh --filter checkpoint-
+cargo test --manifest-path formal/loom/cost_accounting/Cargo.toml --test loom_checkpoint_admission_recertification
+cargo test -p casper state_bound_partitions_are_complete_disjoint_and_canonically_ordered
+cargo test -p casper --test mod blocks::checkpoint_replay_spec::nonretryable_checkpoint_failure_returns_no_created_block -- --exact
+cargo test -p casper --test mod blocks::checkpoint_replay_spec::forced_prefix_shrink_replays_the_canonical_retained_batch -- --exact
+cargo test -p casper --test mod blocks::checkpoint_replay_spec::forced_shrink_publishes_only_final_window_rejections -- --exact
+```
 
 *E Pluribus Potentia*

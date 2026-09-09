@@ -25,6 +25,7 @@
 (* Validate with:  tlapm SlashFlowProofs.tla                                *)
 (* Reference: docs/casper/theory/slashing/slashing-verification.md §6, §7;         *)
 (* cost-accounted-rho.tex (Slashing), Rocq ValidatorRedemption.             *)
+(* The inherited mintedEpochs variable is a proof-only logical history.      *)
 (****************************************************************************)
 
 EXTENDS SlashFlow, TLAPS

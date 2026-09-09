@@ -81,12 +81,8 @@ pub enum BlockCreatorResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryDeferralReason {
-    FinalizedFloorMaterializationPending,
-    CandidateFloorRegression,
-    CandidateFloorConflict,
-    CertifiedContextMismatch,
-    IncompleteCandidateCommitteeSlots,
-    InactiveCandidateValidator,
+    IncompleteCertifiedCommitteeSlots,
+    InactiveCertifiedValidator,
     StaleRecoveryPermit,
 }
 
@@ -253,32 +249,11 @@ impl fmt::Display for ProposeStatus {
 impl fmt::Display for RecoveryDeferralReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RecoveryDeferralReason::FinalizedFloorMaterializationPending => {
-                write!(f, "certified finalized floor is not materialized yet")
+            RecoveryDeferralReason::IncompleteCertifiedCommitteeSlots => {
+                write!(f, "certified committee latest-message slots are incomplete")
             }
-            RecoveryDeferralReason::CandidateFloorRegression => {
-                write!(
-                    f,
-                    "candidate finalized floor regresses the materialized floor"
-                )
-            }
-            RecoveryDeferralReason::CandidateFloorConflict => {
-                write!(
-                    f,
-                    "candidate finalized floor conflicts with the materialized floor"
-                )
-            }
-            RecoveryDeferralReason::CertifiedContextMismatch => {
-                write!(
-                    f,
-                    "candidate and materialized certified contexts disagree at one floor"
-                )
-            }
-            RecoveryDeferralReason::IncompleteCandidateCommitteeSlots => {
-                write!(f, "candidate committee latest-message slots are incomplete")
-            }
-            RecoveryDeferralReason::InactiveCandidateValidator => {
-                write!(f, "proposer is inactive in the candidate committee")
+            RecoveryDeferralReason::InactiveCertifiedValidator => {
+                write!(f, "proposer is inactive in the certified committee")
             }
             RecoveryDeferralReason::StaleRecoveryPermit => {
                 write!(f, "finality-recovery permit is stale")
@@ -287,28 +262,9 @@ impl fmt::Display for RecoveryDeferralReason {
     }
 }
 
-impl RecoveryDeferralReason {
-    pub fn requires_finalization_request(self) -> bool {
-        self == RecoveryDeferralReason::FinalizedFloorMaterializationPending
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_floor_materialization_deferral_requests_finalization() {
-        assert!(RecoveryDeferralReason::FinalizedFloorMaterializationPending
-            .requires_finalization_request());
-        assert!(!RecoveryDeferralReason::CandidateFloorRegression.requires_finalization_request());
-        assert!(!RecoveryDeferralReason::CandidateFloorConflict.requires_finalization_request());
-        assert!(!RecoveryDeferralReason::CertifiedContextMismatch.requires_finalization_request());
-        assert!(!RecoveryDeferralReason::IncompleteCandidateCommitteeSlots
-            .requires_finalization_request());
-        assert!(!RecoveryDeferralReason::InactiveCandidateValidator.requires_finalization_request());
-        assert!(!RecoveryDeferralReason::StaleRecoveryPermit.requires_finalization_request());
-    }
 
     #[test]
     fn parent_frontier_capacity_is_a_non_recovery_deferral() {

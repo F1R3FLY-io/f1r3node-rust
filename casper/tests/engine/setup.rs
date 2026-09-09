@@ -1,6 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/Setup.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@ use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejec
 use block_storage::rust::deploy::pending_deploy::PendingDeploy;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::block_processing_queue::{
-    BlockProcessingQueueItem, BlockProcessingQueueReceiver, BlockProcessingQueueSender,
+    BlockProcessingIdentities, BlockProcessingQueueReceiver, BlockProcessingQueueSender,
 };
 use casper::rust::casper::{CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
@@ -31,7 +31,6 @@ use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::{Cosigned, Signed};
-use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -71,8 +70,6 @@ pub struct TestFixture {
     // Refactored to use mpsc channel - both sender and receiver kept for test inspection
     pub block_processing_queue_tx: BlockProcessingQueueSender,
     pub block_processing_queue_rx: Arc<tokio::sync::Mutex<BlockProcessingQueueReceiver>>,
-    // Test-only: Track blocks enqueued for processing (updated lazily on first check)
-    blocks_enqueued_for_processing: Arc<Mutex<HashSet<BlockHash>>>,
     // Scala Step 4: implicit val rspaceStateManager = RSpacePlusPlusStateManagerImpl(exporter, importer)
     pub rspace_state_manager: RSpaceStateManager,
     // Scala: implicit val runtimeManager = RuntimeManager[Task](rspace, replay, historyRepo, mStore, Genesis.NonNegativeMergeableTagName)
@@ -105,7 +102,7 @@ pub struct TestFixture {
     // Scala: val bap = BlockApproverProtocol.of[Task](validatorId, deployTimestamp, ...)
     pub bap: BlockApproverProtocol<TransportLayerStub>,
     // Scala: implicit val blockProcessingState = Ref.of[Task, Set[BlockHash]](Set.empty)
-    pub blocks_in_processing: Arc<DashSet<BlockHash>>,
+    pub blocks_in_processing: Arc<BlockProcessingIdentities>,
     // Scala: implicit val rpConf = createRPConfAsk[Task](local)
     pub rp_conf_ask: RPConf,
     // Scala: implicit val connectionsCell: ConnectionsCell[Task] = Cell.unsafe[Task, Connections](List(local))
@@ -428,7 +425,7 @@ impl TestFixture {
         };
 
         // Scala: implicit val blockProcessingState = Ref.of[Task, Set[BlockHash]](Set.empty)
-        let blocks_in_processing: Arc<DashSet<BlockHash>> = Arc::new(DashSet::new());
+        let blocks_in_processing = block_processing_queue_tx.identities();
 
         // NOT in Scala Setup - created locally in each test as: implicit val eventBus = EventPublisher.noop[Task]
         // Rust: Create F1r3flyEvents with default capacity (equivalent to noop for tests)
@@ -438,9 +435,8 @@ impl TestFixture {
         // Rust: Create EngineCell with Engine::noop (equivalent to Scala)
         let engine_cell = Arc::new(EngineCell::init());
 
-        let requested_blocks = Arc::new(Mutex::new(HashMap::new()));
         let block_retriever = block_retriever::BlockRetriever::new(
-            requested_blocks,
+            casper_buffer_storage.clone(),
             transport_layer.clone(),
             connections_cell_for_retriever,
             rp_conf.clone(),
@@ -452,7 +448,7 @@ impl TestFixture {
 
         let engine = Running::new(
             block_processing_queue_tx.clone(),
-            Arc::new(DashSet::new()),
+            blocks_in_processing.clone(),
             casper_trait_object,
             approved_block,
             Arc::new(|| {
@@ -475,7 +471,6 @@ impl TestFixture {
             engine,
             block_processing_queue_tx,
             block_processing_queue_rx: Arc::new(tokio::sync::Mutex::new(block_processing_queue_rx)),
-            blocks_enqueued_for_processing: Arc::new(Mutex::new(HashSet::new())),
             rspace_state_manager,
             runtime_manager: runtime_manager_shared,
             estimator,
@@ -506,45 +501,8 @@ impl TestFixture {
         // which automatically closes LMDB file handles (matching Scala's finalizer behavior)
     }
 
-    /// Check if a block with the given hash is in the processing queue (for testing)
-    ///
-    /// This method syncs the tracking set with the mpsc channel by draining it,
-    /// updating the tracking set, and re-enqueuing all blocks. Subsequent calls
-    /// will use the cached tracking set unless the channel has new messages.
-    pub async fn is_block_in_processing_queue(&self, hash: &BlockHash) -> bool {
-        // Sync the tracking set with the channel
-        self.sync_block_tracking().await;
-
-        // Check the tracking set
-        self.blocks_enqueued_for_processing
-            .lock()
-            .unwrap()
-            .contains(hash)
-    }
-
-    /// Sync the tracking set with the mpsc channel by draining and re-enqueuing
-    #[allow(clippy::await_holding_lock)]
-    async fn sync_block_tracking(&self) {
-        let mut rx = self.block_processing_queue_rx.lock().await;
-        let mut tracking_set = self.blocks_enqueued_for_processing.lock().unwrap();
-        let mut blocks = Vec::new();
-
-        // Drain the queue and update tracking set
-        while let Ok(BlockProcessingQueueItem {
-            casper,
-            block,
-            reservation,
-        }) = rx.try_recv()
-        {
-            tracking_set.insert(block.block_hash.clone());
-            drop(reservation);
-            blocks.push((casper, block));
-        }
-
-        // Re-enqueue all blocks to maintain queue state
-        for (casper, block) in blocks {
-            let _ = self.block_processing_queue_tx.try_enqueue(casper, block);
-        }
+    pub fn is_block_admitted(&self, hash: &BlockHash) -> bool {
+        self.block_processing_queue_tx.identities().contains(hash)
     }
 }
 

@@ -246,7 +246,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                 [
                                   ((finalBonds, "==", initialBonds), "user is not in the bond map after withdraw"),
                                   ((finalRewards, "==", initialRewards.set(userPubKey, 0)), "rewards don't change for bonding"),
-                                  ((finalUserBalance, "==", initialUserBalance - bondAmt + $$initialPhlogiston$$), "bonding mints initial validator phlogiston exactly once"),
+                                  ((finalUserBalance, "==", initialUserBalance - bondAmt), "bonding transfers stake without minting liquid custody"),
                                   ((finalPosBalance, "==", initialPosBalance + bondAmt), "pos balance should change by bond amount"),
                                   ((true, "==", withdrawers.contains(userPubKey)), "withdrawer is moved to withdrawers map"),
                                   (((bondAmt, quarantinePeriod, 0), "==", withdrawers.get(userPubKey)), "withdrawer state has correct quarantine period, bonds, and generation after withdrawing from pos")

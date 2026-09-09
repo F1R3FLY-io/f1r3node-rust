@@ -15,7 +15,6 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
-use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, NoApprovedBlockAvailable, StoreItemsMessage,
@@ -202,11 +201,15 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
     block_processing_queue_tx: BlockProcessingQueueSender,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    blocks_in_processing: Arc<BlockProcessingIdentities>,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
     the_init: Arc<
-        dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
+        dyn Fn(
+                crate::rust::blocks::block_processing_queue::RecoveryStartupContext,
+            ) -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+            + Send
+            + Sync,
     >,
     disable_state_exporter: bool,
     transport: Arc<U>,
@@ -234,22 +237,13 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     )
     .increment(1);
 
-    // Publish EnteredRunningState event
     let block_hash_string =
         PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
-    event_log
-        .publish(F1r3flyEvent::entered_running_state(block_hash_string))
-        .map_err(|e| {
-            CasperError::Other(format!(
-                "Failed to publish EnteredRunningState event: {}",
-                e
-            ))
-        })?;
-    tracing::info!(
-        event = "casper_running_state_published",
-        "Casper Running state published after startup validation"
-    );
 
+    let recovery = block_processing_queue_tx.recovery();
+    let prepared = recovery.startup().prepare(&casper);
+    let context = prepared.handle();
+    let the_init = Arc::new(move || the_init(context.clone()));
     let running = Running::new(
         block_processing_queue_tx,
         blocks_in_processing,
@@ -264,7 +258,22 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
         state_items_tx,
     );
 
-    engine_cell.set(Arc::new(running)).await;
+    engine_cell
+        .set_running(Arc::new(running), recovery, prepared)
+        .await?;
+
+    event_log
+        .publish(F1r3flyEvent::entered_running_state(block_hash_string))
+        .map_err(|e| {
+            CasperError::Other(format!(
+                "Failed to publish EnteredRunningState event: {}",
+                e
+            ))
+        })?;
+    tracing::info!(
+        event = "casper_running_state_published",
+        "Casper Running state published after startup validation"
+    );
 
     Ok(())
 }
@@ -285,7 +294,7 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
     block_processing_queue_tx: &BlockProcessingQueueSender,
-    blocks_in_processing: &Arc<DashSet<BlockHash>>,
+    blocks_in_processing: &Arc<BlockProcessingIdentities>,
     casper_shard_conf: &CasperShardConf,
     required_genesis_signatures: i32,
     validator_id: &Option<ValidatorIdentity>,
@@ -360,4 +369,4 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
 
     Ok(())
 }
-use dashmap::DashSet;
+use crate::rust::blocks::block_processing_queue::BlockProcessingIdentities;

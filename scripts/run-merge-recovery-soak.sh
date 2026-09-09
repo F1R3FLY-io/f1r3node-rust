@@ -8,6 +8,18 @@ TARGET_REF="${SOAK_TARGET_REF:-unknown}"
 TARGET_SHA="${SOAK_TARGET_SHA:-unknown}"
 TRIGGER_SOURCE="${SOAK_TRIGGER_SOURCE:-manual}"
 SLOT_DELAY_SECONDS="${SOAK_SLOT_DELAY_SECONDS:-0}"
+QUALIFICATION="${SOAK_QUALIFICATION:-false}"
+case "$QUALIFICATION" in
+	true)
+		if [[ "$DURATION_SECONDS" != 86400 || -n "${SOAK_DEADLINE_EPOCH:-}" \
+			|| "${SOAK_RUN_BENCHMARKS:-false}" != false || -e "$OUTPUT_DIR/.soak-state" ]]; then
+			printf 'Qualification requires a fresh, unsplit 86400-second run without benchmark segments.\n' >&2
+			exit 2
+		fi
+		;;
+	false) ;;
+	*) printf 'SOAK_QUALIFICATION must be true or false.\n' >&2; exit 2 ;;
+esac
 if ! [[ "$SLOT_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
 	SLOT_DELAY_SECONDS=0
 fi
@@ -75,6 +87,13 @@ if [ -f "$OUTPUT_DIR/early-exit.txt" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+QUALIFICATION_COLLECTOR="$SCRIPT_DIR/soak/collect_qualification.py"
+QUALIFIED_NS=0
+if [[ "$QUALIFICATION" == true ]]; then
+	export SOAK_QUALIFICATION_OWNER_PID=$$
+	export SOAK_OUTPUT_DIR="$OUTPUT_DIR"
+	python3 "$QUALIFICATION_COLLECTOR" start || exit 1
+fi
 # Harness telemetry roots. Subprocess sessions write monitor artifacts and
 # node logs under .subprocess-data/; docker sessions write them under
 # log-archive/ (the provider's host-visible per-session dir —
@@ -944,7 +963,15 @@ print(json.dumps(tags))
 		"$DISK_FREE_FLOOR_MB" "$((DISK_FREE_FLOOR_MB / 2))" "$HOST_GUARDIAN_PID"
 fi
 
-while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+soak_work_remains() {
+	if [[ "$QUALIFICATION" == true ]]; then
+		[[ "$QUALIFIED_NS" -lt 86400000000000 ]]
+	else
+		[ "$(date +%s)" -lt "$DEADLINE" ]
+	fi
+}
+
+while soak_work_remains; do
 	# The orchestrator guardian can fire outside a failing iteration — during a
 	# bench segment, or after an iteration that still exited 0. Never start new
 	# work once the host has been defended.
@@ -1030,6 +1057,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
 	mkdir -p "$ITERATION_DIR"
 	REMAINING="$((DEADLINE - $(date +%s)))"
+	QUALIFICATION_PYTEST_ARGS=()
+	if [[ "$QUALIFICATION" == true ]]; then
+		REMAINING=1800
+		export PYTHONHASHSEED
+		PYTHONHASHSEED=$(python3 "$QUALIFICATION_COLLECTOR" begin \
+			--iteration "$ITERATIONS" --provider "$PROVIDER") || exit 1
+		QUALIFICATION_PYTEST_ARGS=("--junitxml=$ITERATION_DIR/junit.xml")
+	fi
 	if [ "$REMAINING" -le 0 ]; then
 		break
 	fi
@@ -1050,6 +1085,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			--monitor \
 			--rss-ceiling-mb "$RSS_CEILING_MB" \
 			--host-free-floor-mb "$HOST_FREE_FLOOR_MB" \
+			"${QUALIFICATION_PYTEST_ARGS[@]}" \
 			-v --tb=short --instafail --maxfail=20 \
 			--timeout=1200
 	) >"$ITERATION_FIFO" 2>&1 &
@@ -1072,6 +1108,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	done
 	wait "$ITERATION_PID" 2>/dev/null
 	STATUS=$?
+	if [[ "$QUALIFICATION" == true ]]; then
+		ITER_FINISHED_NS=$(python3 -c 'import time; print(time.monotonic_ns())') || exit 1
+	fi
 	wait "$ITERATION_TEE_PID" 2>/dev/null || true
 	kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
@@ -1093,6 +1132,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITER_FINISHED="$(date +%s)"
 	emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
 		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
+	if [[ "$QUALIFICATION" == true ]]; then
+		QUALIFIED_NS=$(python3 "$QUALIFICATION_COLLECTOR" end \
+			--iteration "$ITERATIONS" --directory "$ITERATION_DIR" \
+			--exit-code "$STATUS" --at-ns "$ITER_FINISHED_NS") || exit 1
+	fi
 
 	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
 		printf '%s\n' "deadline reached during iteration $ITERATIONS" >"$ITERATION_DIR/deadline.txt"
@@ -1272,4 +1316,7 @@ fi
 
 if [ "$FAILURES" -ne 0 ]; then
 	exit 1
+fi
+if [[ "$QUALIFICATION" == true ]]; then
+	python3 "$QUALIFICATION_COLLECTOR" finish || exit 1
 fi

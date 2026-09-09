@@ -711,6 +711,10 @@ pub async fn stream<T: HorizonRequesterOps>(
 }
 
 #[cfg(test)]
+#[path = "horizon_state_import_tests.rs"]
+mod import_validity_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -4,13 +4,14 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 use casper::rust::engine::engine::{transition_to_initializing, Engine};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::initializing::Initializing;
 use casper::rust::engine::lfs_tuple_space_requester;
 use casper::rust::errors::CasperError;
+use comm::rust::errors::CommError;
 use comm::rust::rp::protocol_helper::packet_with_content;
 use comm::rust::test_instances::TransportLayerStub;
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -422,9 +423,442 @@ async fn create_initializing_engine(
     )))
 }
 
+fn signed_approved_block(fixture: &TestFixture) -> ApprovedBlock {
+    let mut candidate = fixture.approved_block_candidate.clone();
+    candidate.required_sigs = fixture.required_sigs;
+    let candidate_hash = Blake2b256::hash(candidate.clone().to_proto().encode_to_vec());
+    let signature_bytes = Secp256k1.sign(&candidate_hash, &fixture.validator_sk.bytes);
+    ApprovedBlock {
+        candidate,
+        sigs: vec![Signature {
+            public_key: fixture.validator_pk.bytes.clone(),
+            algorithm: "secp256k1".to_string(),
+            sig: signature_bytes.into(),
+        }],
+        floor_seed: None,
+    }
+}
+
+fn exported_store_responses(
+    fixture: &TestFixture,
+    approved_block: &ApprovedBlock,
+) -> Vec<StoreItemsMessage> {
+    let post_state_hash = Blake2b256Hash::from_bytes_prost(
+        &approved_block.candidate.block.body.state.post_state_hash,
+    );
+    let exporter = Arc::new(RSpaceExporterStore::create(
+        fixture.rspace_store.history.clone(),
+        fixture.rspace_store.cold.clone(),
+        fixture.rspace_store.roots.clone(),
+    ));
+    let mut responses = Vec::new();
+    let mut start_path = vec![(post_state_hash, None::<u8>)];
+    let mut seen_paths = HashSet::new();
+
+    loop {
+        assert!(seen_paths.insert(start_path.clone()));
+        let (history_items, data_items) = RSpaceExporterItems::get_history_and_data(
+            exporter.clone(),
+            start_path.clone(),
+            fixture.exporter_params.skip,
+            fixture.exporter_params.take,
+        );
+        let last_path = history_items.last_path.clone();
+        responses.push(StoreItemsMessage {
+            start_path: start_path.clone(),
+            last_path: last_path.clone(),
+            history_items: history_items
+                .items
+                .into_iter()
+                .map(|(hash, bytes)| (hash, Bytes::from(bytes)))
+                .collect(),
+            data_items: data_items
+                .items
+                .into_iter()
+                .map(|(hash, bytes)| (hash, Bytes::from(bytes)))
+                .collect(),
+        });
+        if last_path.is_empty() || last_path == start_path {
+            break;
+        }
+        start_path = last_path;
+        assert!(responses.len() < 1024);
+    }
+    responses
+}
+
+fn corrupt_store_response(approved_block: &ApprovedBlock) -> StoreItemsMessage {
+    let post_state_hash = Blake2b256Hash::from_bytes_prost(
+        &approved_block.candidate.block.body.state.post_state_hash,
+    );
+    StoreItemsMessage {
+        start_path: vec![(post_state_hash, None)],
+        last_path: Vec::new(),
+        history_items: vec![(
+            Blake2b256Hash::from_bytes(vec![7; 32]),
+            Bytes::from_static(b"corrupt-state-chunk"),
+        )],
+        data_items: Vec::new(),
+    }
+}
+
+async fn enqueue_restore_responses(
+    engine: Arc<Initializing<TransportLayerStub>>,
+    transport_layer: Arc<TransportLayerStub>,
+    send_genesis: bool,
+    store_responses: Vec<StoreItemsMessage>,
+    genesis: BlockMessage,
+) {
+    let tuple_tx = engine
+        .tuple_space_tx
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .clone();
+    let block_tx = engine
+        .block_message_tx
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .clone();
+    for response in store_responses {
+        tuple_tx.send(response).await.unwrap();
+    }
+    if !send_genesis {
+        return;
+    }
+    let expected_request = BlockRequest {
+        hash: genesis.block_hash.clone(),
+    }
+    .to_proto()
+    .encode_to_vec();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let request_count = transport_layer
+                .get_all_requests()
+                .iter()
+                .filter(|request| {
+                    matches!(
+                        &request.msg.message,
+                        Some(ProtocolMessage::Packet(packet))
+                            if packet.content.as_ref() == expected_request
+                    )
+                })
+                .count();
+            if request_count >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the block requester must request the genesis block");
+    block_tx.send(genesis).await.unwrap();
+}
+
 #[tokio::test]
 async fn make_transition_to_running_once_approved_block_received() {
     InitializingSpec::make_transition_to_running_once_approved_block_received().await;
+}
+
+#[tokio::test]
+async fn corrupt_first_restore_retries_and_correct_second_restore_runs() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let engine_cell = Arc::new(EngineCell::init());
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine(&fixture, the_init, engine_cell.clone())
+        .await
+        .unwrap();
+    engine_cell.set(engine.clone()).await;
+    let approved_block = signed_approved_block(&fixture);
+
+    fixture.transport_layer.reset();
+    fixture
+        .transport_layer
+        .set_responses(|_peer, _protocol| Ok(()));
+    let enqueue = enqueue_restore_responses(
+        engine.clone(),
+        fixture.transport_layer.clone(),
+        true,
+        vec![corrupt_store_response(&approved_block)],
+        fixture.genesis.clone(),
+    );
+    let restore = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        engine.handle(
+            fixture.local.clone(),
+            CasperMessage::ApprovedBlock(approved_block.clone()),
+        ),
+    );
+    let (_, restore_result) = tokio::join!(enqueue, restore);
+    restore_result
+        .expect("the first restoration attempt must terminate")
+        .expect("the first restoration failure must schedule a retry");
+    assert!(engine_cell.get().await.with_casper().is_none());
+
+    let retry_request = models::casper::ApprovedBlockRequestProto {
+        identifier: String::new(),
+        trim_state: true,
+    }
+    .encode_to_vec();
+    assert!(fixture
+        .transport_layer
+        .get_all_requests()
+        .iter()
+        .any(|request| {
+            matches!(
+                &request.msg.message,
+                Some(ProtocolMessage::Packet(packet)) if packet.content.as_ref() == retry_request
+            )
+        }));
+
+    let correct_responses = exported_store_responses(&fixture, &approved_block);
+    let enqueue = enqueue_restore_responses(
+        engine.clone(),
+        fixture.transport_layer.clone(),
+        false,
+        correct_responses,
+        fixture.genesis.clone(),
+    );
+    let restore = engine.handle(
+        fixture.local.clone(),
+        CasperMessage::ApprovedBlock(approved_block),
+    );
+    let (_, restore_result) = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        tokio::join!(enqueue, restore)
+    })
+    .await
+    .expect("the second restoration attempt must terminate");
+    restore_result.expect("the second restoration attempt must reach Running");
+    assert!(engine_cell.get().await.with_casper().is_some());
+    InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_retry_request_failure_cannot_terminate_newer_restore() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let engine_cell = Arc::new(EngineCell::init());
+    let startup_failure = engine_cell.subscribe_startup_failure();
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine(&fixture, the_init, engine_cell.clone())
+        .await
+        .unwrap();
+    engine_cell.set(engine.clone()).await;
+    let approved_block = signed_approved_block(&fixture);
+    let retry_request = models::casper::ApprovedBlockRequestProto {
+        identifier: String::new(),
+        trim_state: true,
+    }
+    .encode_to_vec();
+    let retry_entered = Arc::new(AtomicBool::new(false));
+    let retry_gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let release_retry = || {
+        let (released, ready) = &*retry_gate;
+        *released.lock().unwrap() = true;
+        ready.notify_all();
+    };
+
+    fixture.transport_layer.reset();
+    fixture.transport_layer.set_responses({
+        let retry_entered = retry_entered.clone();
+        let retry_gate = retry_gate.clone();
+        move |_peer, protocol| match &protocol.message {
+            Some(ProtocolMessage::Packet(packet))
+                if packet.content.as_ref() == retry_request
+                    && !retry_entered.swap(true, Ordering::SeqCst) =>
+            {
+                let (released, ready) = &*retry_gate;
+                let mut released = released.lock().unwrap();
+                while !*released {
+                    released = ready.wait(released).unwrap();
+                }
+                Err(CommError::TimeOut)
+            }
+            _ => Ok(()),
+        }
+    });
+
+    let first_enqueue = tokio::spawn(enqueue_restore_responses(
+        engine.clone(),
+        fixture.transport_layer.clone(),
+        true,
+        vec![corrupt_store_response(&approved_block)],
+        fixture.genesis.clone(),
+    ));
+    let first_restore = tokio::spawn({
+        let engine = engine.clone();
+        let local = fixture.local.clone();
+        let approved_block = approved_block.clone();
+        async move {
+            engine
+                .handle(local, CasperMessage::ApprovedBlock(approved_block))
+                .await
+        }
+    });
+
+    let first_request_started = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !retry_entered.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    if first_request_started.is_err() {
+        release_retry();
+    }
+    first_request_started.expect("the first generation must begin its replacement request");
+    let first_enqueue_result = first_enqueue.await;
+    if first_enqueue_result.is_err() {
+        release_retry();
+    }
+    first_enqueue_result.unwrap();
+    let request_count_before_second_restore = fixture.transport_layer.request_count();
+
+    let second_restore = tokio::spawn({
+        let engine = engine.clone();
+        let local = fixture.local.clone();
+        let approved_block = approved_block.clone();
+        async move {
+            engine
+                .handle(local, CasperMessage::ApprovedBlock(approved_block))
+                .await
+        }
+    });
+    let second_restore_started = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while fixture.transport_layer.request_count() <= request_count_before_second_restore {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    release_retry();
+    second_restore_started.expect("the second generation must start state restoration");
+    first_restore
+        .await
+        .unwrap()
+        .expect("the stale request failure must not terminate the newer restoration");
+
+    enqueue_restore_responses(
+        engine.clone(),
+        fixture.transport_layer.clone(),
+        false,
+        exported_store_responses(&fixture, &approved_block),
+        fixture.genesis.clone(),
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(120), second_restore)
+        .await
+        .expect("the second restoration attempt must terminate")
+        .unwrap()
+        .expect("the second restoration attempt must reach Running");
+
+    assert!(startup_failure.borrow().is_none());
+    assert!(engine_cell.get().await.with_casper().is_some());
+    InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test]
+async fn restore_failure_budget_reports_terminal_startup_failure() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let engine_cell = Arc::new(EngineCell::init());
+    let startup_failure = engine_cell.subscribe_startup_failure();
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine(&fixture, the_init, engine_cell)
+        .await
+        .unwrap();
+    let approved_block = signed_approved_block(&fixture);
+
+    for attempt in 1..=3 {
+        let enqueue = enqueue_restore_responses(
+            engine.clone(),
+            fixture.transport_layer.clone(),
+            attempt == 1,
+            vec![corrupt_store_response(&approved_block)],
+            fixture.genesis.clone(),
+        );
+        let restore = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            engine.handle(
+                fixture.local.clone(),
+                CasperMessage::ApprovedBlock(approved_block.clone()),
+            ),
+        );
+        let (_, result) = tokio::join!(enqueue, restore);
+        let result =
+            result.unwrap_or_else(|_| panic!("restoration attempt {attempt} did not terminate"));
+        assert_eq!(result.is_err(), attempt == 3);
+    }
+
+    assert!(startup_failure.borrow().is_some());
+    let duplicate = engine
+        .handle(
+            fixture.local.clone(),
+            CasperMessage::ApprovedBlock(approved_block),
+        )
+        .await;
+    assert!(duplicate.is_ok());
+    InitializingSpec::after_each(&fixture);
+}
+
+#[tokio::test]
+async fn fork_choice_notice_failure_after_running_does_not_reopen_restore() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let engine_cell = Arc::new(EngineCell::init());
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine(&fixture, the_init, engine_cell.clone())
+        .await
+        .unwrap();
+    engine_cell.set(engine.clone()).await;
+    let approved_block = signed_approved_block(&fixture);
+    let fork_choice_request = models::casper::ForkChoiceTipRequestProto::default().encode_to_vec();
+    fixture.transport_layer.reset();
+    fixture
+        .transport_layer
+        .set_responses(move |_peer, protocol| match &protocol.message {
+            Some(ProtocolMessage::Packet(packet))
+                if packet.content.as_ref() == fork_choice_request =>
+            {
+                Err(CommError::TimeOut)
+            }
+            _ => Ok(()),
+        });
+
+    let enqueue = enqueue_restore_responses(
+        engine.clone(),
+        fixture.transport_layer.clone(),
+        true,
+        exported_store_responses(&fixture, &approved_block),
+        fixture.genesis.clone(),
+    );
+    let restore = engine.handle(
+        fixture.local.clone(),
+        CasperMessage::ApprovedBlock(approved_block.clone()),
+    );
+    let (_, restore_result) = tokio::join!(enqueue, restore);
+    restore_result.expect("post-commit notification failure must not fail restoration");
+    assert!(engine_cell.get().await.with_casper().is_some());
+
+    engine
+        .handle(
+            fixture.local.clone(),
+            CasperMessage::ApprovedBlock(approved_block),
+        )
+        .await
+        .expect("a duplicate cannot reopen a committed restoration");
+    assert!(engine_cell.get().await.with_casper().is_some());
+    InitializingSpec::after_each(&fixture);
 }
 
 /// Test that verifies the fix for the race condition where a slow validator

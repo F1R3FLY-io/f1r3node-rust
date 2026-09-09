@@ -8,7 +8,6 @@
 // faultToleranceThresholdPpm - protocol fault-tolerance threshold in parts-per-million
 // posMultiSigPublicKeys - public keys
 // posMultiSigQuorum - how many confirmations are necessary to use multi-sig vault
-// initialPhlogiston - fuel credited to a validator's SystemVault when it first bonds
 // epochPhlogiston - fuel credited to each eligible validator's SystemVault at an epoch boundary
 /*
 
@@ -176,7 +175,7 @@ in {
                @(true, _) <- moveInitialBondCh) {
             new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
                 accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState,
-                mintPhlogistonToValidators, mintInitialPhlogistonToPending in {
+                mintPhlogistonToValidators in {
               stateCh!({
                 // Map[PublicKey, Int] - each validator stake
                 "allBonds"        : $$initialBonds$$,
@@ -194,9 +193,8 @@ in {
                 "pendingWithdrawers": {},
                 "randomImages"    : {},
                 "randomNumbers"   : {},
-                "mintedEpochs"     : Set(),
+                "mintedThroughEpoch" : -1,
                 "mintingHalted"    : Set(),
-                "pendingInitialPhlogiston": Set(),
                 "quarantinedStake" : {},
                 "burnedValidators" : Set(),
               }) |
@@ -386,8 +384,7 @@ in {
                             resultCh!(
                               state
                                 .set("allBonds", state.get("allBonds").set(userPk, amount))
-                                .set("bondGenerations", state.get("bondGenerations").set(userPk, state.get("bondGenerations").getOrElse(userPk, -1) + 1))
-                                .set("pendingInitialPhlogiston", state.get("pendingInitialPhlogiston").add(userPk)),
+                                .set("bondGenerations", state.get("bondGenerations").set(userPk, state.get("bondGenerations").getOrElse(userPk, -1) + 1)),
                               depositResult
                             )
                           }
@@ -433,15 +430,13 @@ in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
-                        new vaultAddressCh, mintCh in {
-                          vaultAddressOps!("fromPublicKey", validatorPk, *vaultAddressCh) |
-                          for (@vaultAddress <- vaultAddressCh) {
-                            @SystemVault!("protocolMint", vaultAddress, amount, sysAuthToken, *mintCh) |
-                            for (@mintResult <- mintCh) {
-                              match mintResult {
-                                (true, _) => { return!(true) }
-                                (false, error) => { return!((false, error)) }
-                              }
+                        new mintCh in {
+                          @SystemVault!("protocolMintValidatorFuel", validatorPk, amount, sysAuthToken, *mintCh) |
+                          for (@mintResult <- mintCh) {
+                            match mintResult {
+                              (true, _) => { return!(true) }
+                              (false, error) => { return!((false, error)) }
+                              _ => { return!((false, "Malformed protocol mint result")) }
                             }
                           }
                         }
@@ -452,57 +447,61 @@ in {
                   }
                 } |
                 contract mintPhlogistonToValidators(@state, @amount, @epochIdx, @sysAuthToken, returnCh) = {
-                  new mintFold, seedCh in {
-                    seedCh!(state) |
-                    for (@seed <- seedCh) {
-                      @ListOps!("fold", state.get("allBonds").toList(), seed, *mintFold, *returnCh) |
-                      contract mintFold(@(pk, _bond), @accState, resultCh) = {
-                        if (
-                          accState.get("activeValidators").contains(pk) and
-                          (accState.get("mintingHalted").contains(pk) == false) and
-                          (accState.get("mintedEpochs").contains((pk, epochIdx)) == false)
-                        ) {
-                          new mintAckCh in {
-                            PoS!("mintPhlogiston", pk, amount, sysAuthToken, *mintAckCh) |
-                            for (@mintAck <- mintAckCh) {
-                              match mintAck {
-                                true => {
-                                  resultCh!(accState.set("mintedEpochs", accState.get("mintedEpochs").add((pk, epochIdx))))
+                  new mintFold, seedCh, mintResultCh in {
+                    if (epochIdx <= state.get("mintedThroughEpoch")) {
+                      returnCh!((true, state))
+                    } else if (
+                      ((state.get("mintedThroughEpoch") == -1) and ((epochIdx == 0) or (epochIdx == 1))) or
+                      ((state.get("mintedThroughEpoch") >= 0) and (epochIdx == state.get("mintedThroughEpoch") + 1))
+                    ) {
+                      seedCh!((true, state)) |
+                      for (@seed <- seedCh) {
+                        @ListOps!("fold", state.get("allBonds").toList(), seed, *mintFold, *mintResultCh) |
+                        contract mintFold(@(pk, _bond), @acc, resultCh) = {
+                          match acc {
+                            (true, accState) => {
+                              if (
+                                accState.get("activeValidators").contains(pk) and
+                                (accState.get("mintingHalted").contains(pk) == false)
+                              ) {
+                                if (amount == 0) {
+                                  resultCh!((true, accState))
+                                } else {
+                                  new mintAckCh in {
+                                    PoS!("mintPhlogiston", pk, amount, sysAuthToken, *mintAckCh) |
+                                    for (@mintAck <- mintAckCh) {
+                                      match mintAck {
+                                        true => { resultCh!((true, accState)) }
+                                        (false, error) => { resultCh!((false, error)) }
+                                        _ => { resultCh!((false, "Malformed protocol mint result")) }
+                                      }
+                                    }
+                                  }
                                 }
-                                _ => { resultCh!(accState) }
+                              } else {
+                                resultCh!((true, accState))
                               }
                             }
+                            (false, error) => { resultCh!((false, error)) }
+                            _ => { resultCh!((false, "Malformed epoch mint accumulator")) }
                           }
-                        } else {
-                          resultCh!(accState)
+                        }
+                      } |
+                      for (@mintResult <- mintResultCh) {
+                        match mintResult {
+                          (true, mintedState) => {
+                            returnCh!((true, mintedState.set("mintedThroughEpoch", epochIdx)))
+                          }
+                          (false, error) => { returnCh!((false, error)) }
+                          _ => { returnCh!((false, "Malformed epoch mint result")) }
                         }
                       }
+                    } else {
+                      returnCh!((false, "Epoch mint frontier gap"))
                     }
                   }
                 } |
 
-                contract mintInitialPhlogistonToPending(@state, @sysAuthToken, returnCh) = {
-                  new mintInitialFold in {
-                    @ListOps!("fold", state.get("pendingInitialPhlogiston").toList(), state, *mintInitialFold, *returnCh) |
-                    contract mintInitialFold(@pk, @accState, resultCh) = {
-                      if (accState.get("mintingHalted").contains(pk)) {
-                        resultCh!(accState.set("pendingInitialPhlogiston", accState.get("pendingInitialPhlogiston").delete(pk)))
-                      } else {
-                        new mintAckCh in {
-                          PoS!("mintPhlogiston", pk, $$initialPhlogiston$$, sysAuthToken, *mintAckCh) |
-                          for (@mintAck <- mintAckCh) {
-                            match mintAck {
-                              true => {
-                                resultCh!(accState.set("pendingInitialPhlogiston", accState.get("pendingInitialPhlogiston").delete(pk)))
-                              }
-                              _ => { resultCh!(accState) }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                } |
               new commitRewards in {
                 contract PoS(@"slash", @deployerId, @blockHash, @targetBondGeneration, @sysAuthToken, returnCh) = {
                   new isValidTokenCh in {
@@ -575,39 +574,35 @@ in {
                                             if (valBond <= 0 or lockedGeneration != targetBondGeneration) {
                                               stateUpdateCh!(state, (false, "slash target has no matching locked stake"))
                                             } else {
-                                              new vaultAddressCh, burnCh in {
-                                                vaultAddressOps!("fromPublicKey", validator, *vaultAddressCh) |
-                                                for (@vaultAddress <- vaultAddressCh) {
-                                                  @SystemVault!("protocolQuarantineAll", validator, targetBondGeneration, vaultAddress, sysAuthToken, *burnCh) |
-                                                  for (@burnResult <- burnCh) {
-                                                    match burnResult {
-                                                      (true, _) => {
-                                                        stateUpdateCh!(
-                                                          state
-                                                            .set("allBonds", state.get("allBonds").delete(validator))
-                                                            .set("pendingWithdrawers", state.get("pendingWithdrawers").delete(validator))
-                                                            .set("withdrawers", state.get("withdrawers").delete(validator))
-                                                            .set("activeValidators", state.get("activeValidators").delete(validator))
-                                                            .set("committedRewards", state.get("committedRewards").delete(validator))
-                                                            .set("pendingInitialPhlogiston", state.get("pendingInitialPhlogiston").delete(validator))
-                                                            .set("mintingHalted", state.get("mintingHalted").add(validator))
-                                                            .set("quarantinedStake", state.get("quarantinedStake").set(
-                                                              validator,
-                                                              (
-                                                                valBond,
-                                                                state.get("committedRewards").getOrElse(validator, 0),
-                                                                targetBondGeneration,
-                                                                lockedOrigin,
-                                                                withdrawalDeadline,
-                                                                state.get("activeValidators").contains(validator)
-                                                              )
-                                                            )),
-                                                          (true, Nil)
-                                                        )
-                                                      }
-                                                      (false, error) => {
-                                                        stateUpdateCh!(state, (false, "validator fuel quarantine failed: " ++ error))
-                                                      }
+                                              new burnCh in {
+                                                @SystemVault!("protocolQuarantineValidatorFuel", validator, targetBondGeneration, sysAuthToken, *burnCh) |
+                                                for (@burnResult <- burnCh) {
+                                                  match burnResult {
+                                                    (true, _) => {
+                                                      stateUpdateCh!(
+                                                        state
+                                                          .set("allBonds", state.get("allBonds").delete(validator))
+                                                          .set("pendingWithdrawers", state.get("pendingWithdrawers").delete(validator))
+                                                          .set("withdrawers", state.get("withdrawers").delete(validator))
+                                                          .set("activeValidators", state.get("activeValidators").delete(validator))
+                                                          .set("committedRewards", state.get("committedRewards").delete(validator))
+                                                          .set("mintingHalted", state.get("mintingHalted").add(validator))
+                                                          .set("quarantinedStake", state.get("quarantinedStake").set(
+                                                            validator,
+                                                            (
+                                                              valBond,
+                                                              state.get("committedRewards").getOrElse(validator, 0),
+                                                              targetBondGeneration,
+                                                              lockedOrigin,
+                                                              withdrawalDeadline,
+                                                              state.get("activeValidators").contains(validator)
+                                                            )
+                                                          )),
+                                                        (true, Nil)
+                                                      )
+                                                    }
+                                                    (false, error) => {
+                                                      stateUpdateCh!(state, (false, "validator fuel quarantine failed: " ++ error))
                                                     }
                                                   }
                                                 }
@@ -728,7 +723,7 @@ in {
                                               (true, _) => {
                                                 new fuelResolutionCh in {
                                                   @SystemVault!(
-                                                    "protocolResolveQuarantine",
+                                                    "protocolResolveValidatorFuel",
                                                     validatorPk,
                                                     quarantineGeneration,
                                                     outcomeTag,
@@ -821,15 +816,7 @@ in {
                           getBlockData!(*blockDataCh) |
                           for (@blockNumber, _, _ <- blockDataCh) {
                             if (blockNumber % $$epochLength$$ != 0) {
-                              new stateProcessCh, initialMintedCh in {
-                                runMVar!(*stateCh, *stateProcessCh, *ackCh) |
-                                for (@state, stateUpdateCh <- stateProcessCh) {
-                                  mintInitialPhlogistonToPending!(state, sysAuthToken, *initialMintedCh) |
-                                  for (@initialMintedState <- initialMintedCh) {
-                                    stateUpdateCh!(initialMintedState, (true, Nil))
-                                  }
-                                }
-                              }
+                              ackCh!((true, Nil))
                             } else {
                               // Epoch change occurs.
                               new payWithdrawer, removeQuarantinedWithdrawers,
@@ -837,7 +824,7 @@ in {
                                   accDepositsDoneCh, commitRewardsCh,
                                   newValidatorsCh, removeQuarantinedCh, currentEpochRewardCh,
                                   commitCurrentEpochRewards, updatedRewardsCh, movePendingWithdrawCh, movePendingWithdrawer,
-                                  initialMintedCh, epochMintedCh
+                                  epochMintedCh
                               in {
                                 PoS!("getCurrentEpochRewards", * currentEpochRewardCh) |
                                 for (@currentRewards <- currentEpochRewardCh) {
@@ -862,17 +849,24 @@ in {
                                             new epochStateWithActiveCh in {
                                               epochStateWithActiveCh!(newRemovedQuantinueState.set("activeValidators", newValidators)) |
                                               for (@epochStateWithActive <- epochStateWithActiveCh) {
-                                                mintInitialPhlogistonToPending!(epochStateWithActive, sysAuthToken, *initialMintedCh) |
-                                                for (@initialMintedState <- initialMintedCh) {
-                                                  mintPhlogistonToValidators!(
-                                                    initialMintedState,
-                                                    $$epochPhlogiston$$,
-                                                    blockNumber / $$epochLength$$,
-                                                    sysAuthToken,
-                                                    *epochMintedCh
-                                                  ) |
-                                                  for (@epochMintedState <- epochMintedCh) {
-                                                    stateUpdateCh!(epochMintedState, (true, Nil))
+                                                mintPhlogistonToValidators!(
+                                                  epochStateWithActive,
+                                                  $$epochPhlogiston$$,
+                                                  blockNumber / $$epochLength$$,
+                                                  sysAuthToken,
+                                                  *epochMintedCh
+                                                ) |
+                                                for (@epochMintResult <- epochMintedCh) {
+                                                  match epochMintResult {
+                                                    (true, epochMintedState) => {
+                                                      stateUpdateCh!(epochMintedState, (true, Nil))
+                                                    }
+                                                    (false, error) => {
+                                                      stateUpdateCh!(state, (false, "Epoch phlogiston mint failed: " ++ error))
+                                                    }
+                                                    _ => {
+                                                      stateUpdateCh!(state, (false, "Malformed epoch mint result"))
+                                                    }
                                                   }
                                                 }
                                               }

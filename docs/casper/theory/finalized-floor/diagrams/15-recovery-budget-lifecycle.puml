@@ -1,0 +1,48 @@
+@startuml
+skinparam backgroundColor #FAFCFF
+skinparam sequence {
+  ArrowColor #25476A
+  LifeLineBorderColor #25476A
+  LifeLineBackgroundColor #EAF4FF
+  ParticipantBorderColor #25476A
+  ParticipantBackgroundColor #DCEEFF
+  ParticipantFontColor #102A43
+  GroupBorderColor #587B9B
+  GroupBackgroundColor #F2F8FD
+}
+
+database "Durable obligation\n(exact key and owners)" as Durable #D8F3DC
+participant "Recovery window\n(capacity and fair queue)" as Window #CFE8FF
+participant "Dispatch handle\n(strong private identity)" as Handle #FFE5B4
+participant "Transport\n(explicit deadline)" as Transport #FFD6E0
+participant "Remote peer" as Peer #FFE8A3
+
+Durable -> Window: register exact key
+Window -> Handle: create fresh identity
+Window -> Window: retain weak identity and lease
+Handle -> Transport: send bounded request
+Transport -> Peer: request exact artifact
+
+alt verified progress or exact resolution
+  Peer --> Transport: authenticated content
+  Transport --> Handle: success
+  Handle -> Window: finish matching identity
+  Window -> Durable: resolve exact obligation when complete
+else transport timeout
+  Transport --> Handle: deadline exceeded
+  Handle -> Window: expire matching identity
+  Window -> Window: apply maximum backoff
+else caller cancellation
+  Handle -> Handle: release strong identity
+  Window -> Window: wait for lease expiry
+  Window -> Window: reclaim weak identity and apply maximum backoff
+else stale completion after replacement
+  Handle -> Window: finish old identity
+  Window --> Handle: reject identity mismatch without mutation
+end
+
+group crash and restart
+  Durable -> Window: reconstruct live exact keys
+  Window -> Window: admit no more than one bounded batch
+end
+@enduml

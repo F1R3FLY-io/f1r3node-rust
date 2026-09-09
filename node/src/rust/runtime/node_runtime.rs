@@ -16,6 +16,9 @@ use crate::rust::configuration::NodeConf;
 use crate::rust::effects::node_discover;
 use crate::rust::instances::proposer_instance::ProposeQueueEntry;
 use crate::rust::node_environment;
+use crate::rust::runtime::runtime_supervision::{
+    abort_and_drain, next_runtime_event, RuntimeEvent,
+};
 
 // Type aliases for repeatable async operations
 pub type CasperLoop =
@@ -154,27 +157,7 @@ impl NodeRuntime {
         // Wrap RPConf in RPConfCell for shared mutable access (allows dynamic IP updates)
         let rp_conf_cell = comm::rust::rp::rp_conf::RPConfCell::new(rp_conf.clone());
 
-        // Create requested blocks tracking
-        let requested_blocks = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
-            models::rust::block_hash::BlockHash,
-            casper::rust::engine::block_retriever::RequestState,
-        >::new()));
-
         info!("RP connections and configuration initialized");
-
-        // Create BlockRetriever
-        let block_retriever = {
-            use casper::rust::engine::block_retriever::BlockRetriever;
-
-            BlockRetriever::new(
-                requested_blocks.clone(),
-                Arc::new(transport.clone()),
-                rp_connections.clone(), // ConnectionsCell is Clone and already wraps Arc
-                rp_conf.clone(),        // BlockRetriever uses RPConf by value
-            )
-        };
-
-        info!("BlockRetriever initialized");
 
         // Create KademliaRPC
         let kademlia_rpc = {
@@ -243,7 +226,6 @@ impl NodeRuntime {
             rp_connections.clone(),
             rp_conf_cell.clone(),
             Arc::new(transport.clone()),
-            block_retriever,
             self.node_conf.clone(),
             event_bus.clone(),
             node_discovery.clone(),
@@ -356,7 +338,9 @@ impl NodeRuntime {
             Arc<tokio::sync::RwLock<casper::rust::state::instances::ProposerState>>,
         >,
         block_processor: casper::rust::blocks::block_processor::BlockProcessor<T>,
-        block_processor_state: Arc<dashmap::DashSet<models::rust::block_hash::BlockHash>>,
+        block_processor_state: Arc<
+            casper::rust::blocks::block_processing_queue::BlockProcessingIdentities,
+        >,
         block_processor_queue_tx: BlockProcessingQueueSender,
         block_processor_queue_rx: BlockProcessingQueueReceiver,
         transport: comm::rust::transport::grpc_transport_client::GrpcTransportClient,
@@ -565,7 +549,8 @@ impl NodeRuntime {
         // Engine initialization (Tier 2: Critical - runs once)
         // started it as a separate task because it is not a long-running task and we want to keep the critical tasks separate.
         // Also running it as a separate task avoids warning log that critical task should run forever.
-        let mut engine_init_handler = Some(tokio::spawn(async move {
+        let mut initializers = JoinSet::new();
+        initializers.spawn(async move {
             info!("Running engine initialization...");
             match engine_init().await {
                 Ok(_) => {
@@ -577,7 +562,7 @@ impl NodeRuntime {
                     Err(eyre::eyre!("Engine init failed: {}", e))
                 }
             }
-        }));
+        });
 
         // === CRITICAL TASKS: Tier 2 - Core Consensus Logic ===
         // Casper loop (Tier 2: Critical - runs indefinitely)
@@ -626,21 +611,10 @@ impl NodeRuntime {
                     trigger_propose_opt,
                 );
 
-                // BlockProcessorInstance::create spawns the processing task and returns a result receiver
-                match instance.create() {
-                    Ok(mut result_rx) => {
-                        // Drain results (we're just logging for now)
-                        while let Some(_result) = result_rx.recv().await {
-                            // Results are logged inside block_processor_instance
-                        }
-                        info!("Block processor instance completed");
-                        Ok(())
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "block processor instance failed");
-                        Err(eyre::eyre!("Block processor failed: {}", e))
-                    }
-                }
+                instance
+                    .run()
+                    .await
+                    .map_err(|error| eyre::eyre!("Block processor failed: {error}"))
             },
         );
 
@@ -764,29 +738,35 @@ impl NodeRuntime {
         let mut shutdown_error = None;
 
         loop {
-            tokio::select! {
-                startup_failure = startup_failure_rx.changed() => {
-                    match startup_failure {
-                        Ok(()) => {
-                            if let Some(error) = startup_failure_rx.borrow().clone() {
-                                tracing::error!(error = %error, "startup validation failed");
-                                shutdown_error = Some(eyre::eyre!("Startup validation failed: {}", error));
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            tracing::error!(error = %error, "startup failure supervisor closed unexpectedly");
-                            shutdown_error = Some(eyre::eyre!(
-                                "Startup failure supervisor closed unexpectedly: {}",
-                                error
-                            ));
+            match next_runtime_event(
+                &mut initializers,
+                &mut critical_tasks,
+                &mut startup_failure_rx,
+                shutdown_signal(),
+            )
+            .await
+            {
+                RuntimeEvent::StartupChanged(startup_failure) => match startup_failure {
+                    Ok(()) => {
+                        if let Some(error) = startup_failure_rx.borrow().clone() {
+                            tracing::error!(error = %error, "startup validation failed");
+                            shutdown_error =
+                                Some(eyre::eyre!("Startup validation failed: {}", error));
                             break;
                         }
                     }
-                }
+                    Err(error) => {
+                        tracing::error!(error = %error, "startup failure supervisor closed unexpectedly");
+                        shutdown_error = Some(eyre::eyre!(
+                            "Startup failure supervisor closed unexpectedly: {}",
+                            error
+                        ));
+                        break;
+                    }
+                },
 
                 // Monitor critical tasks - any failure is fatal
-                Some(result) = critical_tasks.join_next() => {
+                RuntimeEvent::Critical(result) => {
                     match result {
                         Ok(named_result) => {
                             let task_name = named_result.name;
@@ -812,44 +792,29 @@ impl NodeRuntime {
                     }
                 }
 
-                result = async {
-                    match engine_init_handler.take() {
-                        Some(handle) => Some(handle.await),
-                        None => None,
-                    }
-                }, if engine_init_handler.is_some() => {
+                RuntimeEvent::Initialized(result) => {
                     match result {
-                        Some(Ok(Ok(_))) => {
+                        Ok(Ok(_)) => {
                             event_bus_for_seal.seal_startup();
                             continue;
                         }
-                        Some(Ok(Err(e))) => {
+                        Ok(Err(e)) => {
                             event_bus_for_seal.seal_startup();
                             tracing::error!(error = %e, "engine initialization failed");
                             // Engine init failure is critical - trigger shutdown
                             break;
                         }
-                        Some(Err(e)) => {
+                        Err(e) => {
                             tracing::error!(error = %e, "engine initialization task panicked");
                             // Task panic is critical - trigger shutdown
                             break;
-                        }
-                        None => {
-                            // This shouldn't happen due to the guard, but handle it anyway
-                            continue;
                         }
                     }
                 }
 
                 // Graceful shutdown signal (CTRL+C or SIGTERM)
-                _ = shutdown_signal() => {
+                RuntimeEvent::Shutdown => {
                     info!("Received shutdown signal, initiating graceful shutdown");
-                    break;
-                }
-
-                // If all tasks complete (shouldn't happen), exit
-                else => {
-                    tracing::error!("all critical tasks completed unexpectedly — node is shutting down");
                     break;
                 }
             }
@@ -859,9 +824,10 @@ impl NodeRuntime {
         info!("Shutting down all tasks...");
 
         // Step 1: Abort all tasks with 30-second timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            critical_tasks.shutdown().await;
-        })
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            abort_and_drain(&mut initializers, &mut critical_tasks),
+        )
         .await
         {
             Ok(_) => info!("All tasks shut down gracefully"),

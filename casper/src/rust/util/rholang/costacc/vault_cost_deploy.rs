@@ -4,13 +4,28 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{ETuple, Expr, Par};
 use rholang::rust::interpreter::rho_type::{
-    Extractor, RhoBoolean, RhoByteArray, RhoList, RhoNil, RhoNumber, RhoString, RhoTuple2,
+    Extractor, RhoBoolean, RhoByteArray, RhoList, RhoNil, RhoNumber, RhoString,
 };
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum VaultRole {
+    General,
+    ValidatorFuel,
+}
+
+impl VaultRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::ValidatorFuel => "ValidatorFuel",
+        }
+    }
+}
 
 pub fn lifecycle_random(reservation_id: &[u8; 32], phase: u8) -> Blake2b512Random {
     let mut seed = Vec::new();
@@ -23,11 +38,20 @@ pub fn lifecycle_random(reservation_id: &[u8; 32], phase: u8) -> Blake2b512Rando
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VaultAllocation {
     pub address: String,
+    pub role: VaultRole,
     pub amount: i64,
 }
 
 impl VaultAllocation {
     pub fn new(address: String, amount: i64) -> Result<Self, CasperError> {
+        Self::with_role(address, VaultRole::General, amount)
+    }
+
+    pub fn validator_fuel(address: String, amount: i64) -> Result<Self, CasperError> {
+        Self::with_role(address, VaultRole::ValidatorFuel, amount)
+    }
+
+    pub fn with_role(address: String, role: VaultRole, amount: i64) -> Result<Self, CasperError> {
         if amount <= 0 {
             return Err(CasperError::InvalidCostSettlement(
                 "vault allocation must be positive".to_string(),
@@ -35,17 +59,24 @@ impl VaultAllocation {
         }
         rholang::rust::interpreter::util::vault_address::VaultAddress::parse(&address)
             .map_err(CasperError::InvalidCostSettlement)?;
-        Ok(Self { address, amount })
+        Ok(Self {
+            address,
+            role,
+            amount,
+        })
     }
 }
 
 fn canonical_allocations(
     allocations: Vec<VaultAllocation>,
 ) -> Result<Vec<VaultAllocation>, CasperError> {
-    let mut canonical = BTreeMap::<String, i64>::new();
+    let mut canonical = BTreeMap::<(String, VaultRole), i64>::new();
     for allocation in allocations {
-        let allocation = VaultAllocation::new(allocation.address, allocation.amount)?;
-        let amount = canonical.entry(allocation.address).or_default();
+        let allocation =
+            VaultAllocation::with_role(allocation.address, allocation.role, allocation.amount)?;
+        let amount = canonical
+            .entry((allocation.address, allocation.role))
+            .or_default();
         *amount = amount.checked_add(allocation.amount).ok_or_else(|| {
             CasperError::InvalidCostSettlement("vault allocation overflow".to_string())
         })?;
@@ -57,7 +88,11 @@ fn canonical_allocations(
     }
     Ok(canonical
         .into_iter()
-        .map(|(address, amount)| VaultAllocation { address, amount })
+        .map(|((address, role), amount)| VaultAllocation {
+            address,
+            role,
+            amount,
+        })
         .collect())
 }
 
@@ -66,10 +101,17 @@ fn allocation_par(allocations: &[VaultAllocation]) -> Par {
         allocations
             .iter()
             .map(|allocation| {
-                RhoTuple2::create_par((
-                    RhoString::create_par(allocation.address.clone()),
-                    RhoNumber::create_par(allocation.amount),
-                ))
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![
+                            RhoString::create_par(allocation.address.clone()),
+                            RhoString::create_par(allocation.role.as_str().to_string()),
+                            RhoNumber::create_par(allocation.amount),
+                        ],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }])
             })
             .collect(),
     )
@@ -78,12 +120,26 @@ fn allocation_par(allocations: &[VaultAllocation]) -> Par {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VaultSettlement {
     pub address: String,
+    pub role: VaultRole,
     pub burn: i64,
     pub fee: i64,
 }
 
 impl VaultSettlement {
     pub fn new(address: String, burn: i64, fee: i64) -> Result<Self, CasperError> {
+        Self::with_role(address, VaultRole::General, burn, fee)
+    }
+
+    pub fn validator_fuel(address: String, burn: i64) -> Result<Self, CasperError> {
+        Self::with_role(address, VaultRole::ValidatorFuel, burn, 0)
+    }
+
+    pub fn with_role(
+        address: String,
+        role: VaultRole,
+        burn: i64,
+        fee: i64,
+    ) -> Result<Self, CasperError> {
         rholang::rust::interpreter::util::vault_address::VaultAddress::parse(&address)
             .map_err(CasperError::InvalidCostSettlement)?;
         if burn < 0 || fee < 0 {
@@ -94,17 +150,34 @@ impl VaultSettlement {
         burn.checked_add(fee).ok_or_else(|| {
             CasperError::InvalidCostSettlement("vault settlement overflow".to_string())
         })?;
-        Ok(Self { address, burn, fee })
+        if role == VaultRole::ValidatorFuel && fee != 0 {
+            return Err(CasperError::InvalidCostSettlement(
+                "validator fuel cannot pay a client fee".to_string(),
+            ));
+        }
+        Ok(Self {
+            address,
+            role,
+            burn,
+            fee,
+        })
     }
 }
 
 fn canonical_settlements(
     settlements: Vec<VaultSettlement>,
 ) -> Result<Vec<VaultSettlement>, CasperError> {
-    let mut canonical = BTreeMap::<String, (i64, i64)>::new();
+    let mut canonical = BTreeMap::<(String, VaultRole), (i64, i64)>::new();
     for settlement in settlements {
-        let settlement = VaultSettlement::new(settlement.address, settlement.burn, settlement.fee)?;
-        let totals = canonical.entry(settlement.address).or_default();
+        let settlement = VaultSettlement::with_role(
+            settlement.address,
+            settlement.role,
+            settlement.burn,
+            settlement.fee,
+        )?;
+        let totals = canonical
+            .entry((settlement.address, settlement.role))
+            .or_default();
         totals.0 = totals.0.checked_add(settlement.burn).ok_or_else(|| {
             CasperError::InvalidCostSettlement("vault burn total overflow".to_string())
         })?;
@@ -122,7 +195,7 @@ fn canonical_settlements(
     }
     canonical
         .into_iter()
-        .map(|(address, (burn, fee))| VaultSettlement::new(address, burn, fee))
+        .map(|((address, role), (burn, fee))| VaultSettlement::with_role(address, role, burn, fee))
         .collect()
 }
 
@@ -135,6 +208,7 @@ fn settlement_par(settlements: &[VaultSettlement]) -> Par {
                     expr_instance: Some(ExprInstance::ETupleBody(ETuple {
                         ps: vec![
                             RhoString::create_par(settlement.address.clone()),
+                            RhoString::create_par(settlement.role.as_str().to_string()),
                             RhoNumber::create_par(settlement.burn),
                             RhoNumber::create_par(settlement.fee),
                         ],
@@ -190,6 +264,7 @@ impl ApplyCostDeploy {
                 .zip(&settlements)
                 .any(|(allocation, settlement)| {
                     allocation.address != settlement.address
+                        || allocation.role != settlement.role
                         || settlement
                             .burn
                             .checked_add(settlement.fee)
@@ -522,6 +597,45 @@ mod tests {
             Vec::new(),
             address(4),
             Blake2b512Random::create_from_bytes(&[3]),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn custody_roles_remain_distinct_at_one_address() {
+        let payer = address(1);
+        let deploy = ApplyCostDeploy::new(
+            [5; 32],
+            vec![
+                VaultAllocation::new(payer.clone(), 7).unwrap(),
+                VaultAllocation::validator_fuel(payer.clone(), 3).unwrap(),
+            ],
+            vec![
+                VaultSettlement::new(payer.clone(), 5, 1).unwrap(),
+                VaultSettlement::validator_fuel(payer.clone(), 3).unwrap(),
+            ],
+            address(2),
+            Blake2b512Random::create_from_bytes(&[5]),
+        )
+        .unwrap();
+
+        assert_eq!(deploy.allocations.len(), 2);
+        assert_eq!(deploy.settlements.len(), 2);
+        assert_ne!(deploy.allocations[0].role, deploy.allocations[1].role);
+    }
+
+    #[test]
+    fn settlement_roles_must_match_and_fuel_cannot_pay_fees() {
+        let payer = address(1);
+        assert!(
+            VaultSettlement::with_role(payer.clone(), VaultRole::ValidatorFuel, 2, 1,).is_err()
+        );
+        assert!(ApplyCostDeploy::new(
+            [6; 32],
+            vec![VaultAllocation::validator_fuel(payer.clone(), 3).unwrap()],
+            vec![VaultSettlement::new(payer, 3, 0).unwrap()],
+            address(2),
+            Blake2b512Random::create_from_bytes(&[6]),
         )
         .is_err());
     }

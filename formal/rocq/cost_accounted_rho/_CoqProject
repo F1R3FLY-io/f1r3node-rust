@@ -7,7 +7,7 @@
 # Source: cost-accounted-rho.pdf (Meredith)
 # Companion doc: docs/casper/theory/cost-accounted-rho-verification.md
 #
-# 120 modules with kernel-checked theorem bodies. The development is
+# 132 modules with kernel-checked theorem bodies. The development is
 # parameterized over a single
 # hash_process function and 3 structural/cryptographic hypotheses on
 # it; all consensus-critical results (ca_cost_deterministic,
@@ -259,6 +259,11 @@ theories/WalletNaming.v
 # headline theorems are Closed under the global context.
 theories/MintingHalt.v
 
+# Level 4a1b: genesis-only initial allocation and ordinary epoch issuance.
+# The lifecycle model proves that bond, rebond, withdrawal, and slash do not
+# create custody. It also proves active, boundary, halt, and receipt guards.
+theories/BondIssuanceLifecycle.v
+
 # Level 4a8: Stage-D blessed Exchange — the conserving 1:1 token swap (spec
 # "Fee conversion" tex:3061-3084 / DR-4). Depends on TokenConservation +
 # MintingInjection. Proves per-channel + total conservation of the swap, the
@@ -470,6 +475,13 @@ theories/MergeableEvidenceAuthentication.v
 theories/BlockHeapLifecycle.v
 theories/MultiShardConcurrency.v
 theories/DeterministicParallelReduction.v
+theories/CanonicalCustodyAliasing.v
+theories/EpochMintAtomicity.v
+theories/MintedEpochRetention.v
+theories/ValidatorEconomicsLifecycle.v
+theories/ValidatorEconomicsRefinement.v
+theories/ValidatorEconomicsReplay.v
+theories/CheckpointAdmissionRecertification.v
 
 # CA-P-178 — the generic nearness gate near(I,J) on the rho object
 # (continued-gslt-cost-v2 §"The nominal surface" + the R1/R2/R3 premise
@@ -494,3 +506,25 @@ theories/CAAmbientAuthority.v
 # no_leak_stack_inert. Depends on SignatureMonoid + WrappingSubjectReduction.
 # Axiom-free.
 theories/CASection.v
+theories/StateImportClosure.v
+theories/StateImportStorage.v
+theories/StateImportPage.v
+theories/StateImportCodec.v
+theories/StateImportCursor.v
+theories/StateImportTraversal.v
+theories/StateImportStack.v
+theories/StateImportExport.v
+theories/StateImportExecution.v
+theories/StateImportWire.v
+theories/StateImportCold.v
+theories/StateImportEncodedCold.v
+theories/StateImportOccurrence.v
+theories/StateImportOverlay.v
+theories/StateImportReceivedCold.v
+theories/StateImportObservations.v
+theories/StateImportHistoryObservations.v
+theories/StateImportReadTape.v
+theories/StateImportOwnedPage.v
+theories/StateImportScan.v
+theories/StateImportCheckpoint.v
+theories/StateImportRetry.v

@@ -31,7 +31,6 @@ new
   splitAndDeposit,
   prepareTransferBatch,
   depositTransferBatch,
-  protocolQuarantineStore,
   protocolStakeDispositionStore
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
@@ -46,7 +45,6 @@ in {
     new mintCh, vaultMapStore, initVault in {
       // Initializes the vaultMapStore.
       TreeHashMap!("init", 2, *vaultMapStore) |
-      protocolQuarantineStore!({}) |
       protocolStakeDispositionStore!({}) |
       for (@vaultMap <- vaultMapStore) {
         // Called from VaultsGenerator:
@@ -65,11 +63,12 @@ in {
         @MakeMint!(*mintCh) |
         for (mint <- mintCh) {
           // Initializes a vault with given name, address, and purse containing the amount.
-          contract initVault(name, @address, @initialAmount) = {
-            new purseCh in {
-              mint!("makePurse", initialAmount, *purseCh) |
-              for (purse <- purseCh) {
-                _newVault!(*name, address, *purse)
+          contract initVault(name, @address, @initialGeneralAmount, @initialValidatorFuelAmount) = {
+            new generalPurseCh, validatorFuelPurseCh in {
+              mint!("makePurse", initialGeneralAmount, *generalPurseCh) |
+              mint!("makePurse", initialValidatorFuelAmount, *validatorFuelPurseCh) |
+              for (generalPurse <- generalPurseCh & validatorFuelPurse <- validatorFuelPurseCh) {
+                _newVault!(*name, address, *generalPurse, *validatorFuelPurse)
               }
             }
           } |
@@ -182,7 +181,7 @@ in {
                           new mintedPurseCh, depositCh in {
                             mint!("makePurse", amount, *mintedPurseCh) |
                             for (@mintedPurse <- mintedPurseCh) {
-                              @{targetAddress | bundle0{*_systemVault}}!("_costDeposit", mintedPurse, *depositCh) |
+                              @{targetAddress | bundle0{*_systemVault}}!("_costDeposit", "General", mintedPurse, *depositCh) |
                               for (@depositResult <- depositCh) {
                                 retCh!(depositResult)
                               }
@@ -201,6 +200,43 @@ in {
               }
             }
           } |
+          contract SystemVault(@"protocolMintValidatorFuel", @validatorPk, @amount, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid and amount > 0) {
+                  new targetAddressCh in {
+                    VaultAddress!("fromPublicKey", validatorPk, *targetAddressCh) |
+                    for (@targetAddress <- targetAddressCh) {
+                      new targetVaultCh in {
+                        SystemVault!("findOrCreate", targetAddress, *targetVaultCh) |
+                        for (@targetResult <- targetVaultCh) {
+                          match targetResult {
+                            (true, _) => {
+                              new mintedPurseCh, depositCh in {
+                                mint!("makePurse", amount, *mintedPurseCh) |
+                                for (@mintedPurse <- mintedPurseCh) {
+                                  @{targetAddress | bundle0{*_systemVault}}!("_costDeposit", "ValidatorFuel", mintedPurse, *depositCh) |
+                                  for (@depositResult <- depositCh) {
+                                    retCh!(depositResult)
+                                  }
+                                }
+                              }
+                            }
+                            (false, error) => {
+                              retCh!((false, error))
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized or invalid validator fuel mint"))
+                }
+              }
+            }
+          } |
           contract SystemVault(@"protocolBurn", @targetAddress, @amount, @sysAuthToken, retCh) = {
             new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
               sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
@@ -215,7 +251,7 @@ in {
                         match targetResult {
                           (true, _) => {
                             new splitCh in {
-                              @{targetAddress | bundle0{*_systemVault}}!("_costSplit", amount, *splitCh) |
+                              @{targetAddress | bundle0{*_systemVault}}!("_costSplit", "General", amount, *splitCh) |
                               for (@splitResult <- splitCh) {
                                 match splitResult {
                                   [_] => { retCh!((true, Nil)) }
@@ -235,80 +271,36 @@ in {
               }
             }
           } |
-          contract SystemVault(@"protocolQuarantineAll", @validatorPk, @generation, @targetAddress, @sysAuthToken, retCh) = {
+          contract SystemVault(@"protocolQuarantineValidatorFuel", @validatorPk, @generation, @sysAuthToken, retCh) = {
             new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
               sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
               for (@isValid <- isValidTokenCh) {
                 if (isValid) {
-                  for (@quarantines <- protocolQuarantineStore) {
-                    new beginCh in {
-                      match quarantines.get(validatorPk) {
-                        Nil => { beginCh!(Nil) }
-                        ("Pending", storedGeneration, storedAddress, _, _) => {
-                          protocolQuarantineStore!(quarantines) |
-                          if (storedGeneration == generation and storedAddress == targetAddress) {
-                            retCh!((true, Nil))
-                          } else {
-                            retCh!((false, "Conflicting protocol quarantine"))
-                          }
-                        }
-                        ("Resolved", storedGeneration, _, _, _) => {
-                          if (generation > storedGeneration) {
-                            beginCh!(Nil)
-                          } else {
-                            protocolQuarantineStore!(quarantines) |
-                            retCh!((false, "Protocol quarantine generation is not newer"))
-                          }
-                        }
-                        _ => {
-                          protocolQuarantineStore!(quarantines) |
-                          retCh!((false, "Malformed protocol quarantine record"))
-                        }
-                      } |
-                      for (_ <- beginCh) {
+                  new targetAddressCh in {
+                    VaultAddress!("fromPublicKey", validatorPk, *targetAddressCh) |
+                    for (@targetAddress <- targetAddressCh) {
                       new vaultCh in {
                         SystemVault!("find", targetAddress, *vaultCh) |
                         for (@vaultResult <- vaultCh) {
                           match vaultResult {
-                            (true, vault) => {
-                              new balanceCh in {
-                                @vault!("balance", *balanceCh) |
-                                for (@balance <- balanceCh) {
-                                  if (balance == 0) {
-                                    protocolQuarantineStore!(quarantines.set(validatorPk, ("Pending", generation, targetAddress, 0, Nil))) |
-                                    retCh!((true, Nil))
-                                  } else {
-                                    new splitCh in {
-                                      @{targetAddress | bundle0{*_systemVault}}!("_costSplit", balance, *splitCh) |
-                                      for (@splitResult <- splitCh) {
-                                        match splitResult {
-                                          [quarantinedPurse] => {
-                                            protocolQuarantineStore!(quarantines.set(validatorPk, ("Pending", generation, targetAddress, balance, quarantinedPurse))) |
-                                            retCh!((true, Nil))
-                                          }
-                                          _ => {
-                                            protocolQuarantineStore!(quarantines) |
-                                            retCh!((false, "Protocol quarantine failed"))
-                                          }
-                                        }
-                                      }
-                                    }
-                                  }
+                            (true, _) => {
+                              new quarantineCh in {
+                                @{targetAddress | bundle0{*_systemVault}}!("_quarantineValidatorFuel", generation, *quarantineCh) |
+                                for (@quarantineResult <- quarantineCh) {
+                                  retCh!(quarantineResult)
                                 }
                               }
                             }
                             (false, error) => {
-                              protocolQuarantineStore!(quarantines) |
                               retCh!((false, error))
                             }
                           }
                         }
                       }
-                      }
                     }
                   }
                 } else {
-                  retCh!((false, "Unauthorized protocol quarantine"))
+                  retCh!((false, "Unauthorized validator fuel quarantine"))
                 }
               }
             }
@@ -376,12 +368,12 @@ in {
                                   match (sourceVaultResult, penaltyVaultResult) {
                                     ((true, _), (true, _)) => {
                                       new splitCh in {
-                                        @{sourceAddress | bundle0{*_systemVault}}!("_costSplit", amount, *splitCh) |
+                                        @{sourceAddress | bundle0{*_systemVault}}!("_costSplit", "General", amount, *splitCh) |
                                         for (@splitResult <- splitCh) {
                                           match splitResult {
                                             [penaltyPurse] => {
                                               new depositCh in {
-                                                @{penaltyAddress | bundle0{*_systemVault}}!("_costDeposit", penaltyPurse, *depositCh) |
+                                                @{penaltyAddress | bundle0{*_systemVault}}!("_costDeposit", "General", penaltyPurse, *depositCh) |
                                                 for (@depositResult <- depositCh) {
                                                   match depositResult {
                                                     (true, _) => {
@@ -433,7 +425,7 @@ in {
                                   match sourceVaultResult {
                                     (true, _) => {
                                       new splitCh in {
-                                        @{sourceAddress | bundle0{*_systemVault}}!("_costSplit", amount, *splitCh) |
+                                        @{sourceAddress | bundle0{*_systemVault}}!("_costSplit", "General", amount, *splitCh) |
                                         for (@splitResult <- splitCh) {
                                           match splitResult {
                                             [_] => {
@@ -474,162 +466,60 @@ in {
               }
             }
           } |
-          contract SystemVault(@"protocolResolveQuarantine", @validatorPk, @generation, @outcome, @penaltyAddress, @penalty, @sysAuthToken, retCh) = {
+          contract SystemVault(@"protocolResolveValidatorFuel", @validatorPk, @generation, @outcome, @penaltyAddress, @penalty, @sysAuthToken, retCh) = {
             new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
               sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
               for (@isValid <- isValidTokenCh) {
                 if (isValid) {
-                  for (@quarantines <- protocolQuarantineStore) {
-                    match quarantines.get(validatorPk) {
-                      Nil => {
-                        protocolQuarantineStore!(quarantines) |
-                        retCh!((false, "Protocol quarantine not found"))
-                      }
-                      ("Resolved", storedGeneration, storedOutcome, storedPenaltyAddress, storedPenalty) => {
-                        protocolQuarantineStore!(quarantines) |
-                        if (
-                          storedGeneration == generation and
-                          storedOutcome == outcome and
-                          storedPenaltyAddress == penaltyAddress and
-                          storedPenalty == penalty
-                        ) {
-                          retCh!((true, Nil))
-                        } else {
-                          retCh!((false, "Conflicting protocol quarantine resolution"))
-                        }
-                      }
-                      ("Pending", storedGeneration, sourceAddress, amount, quarantinedPurse) => {
-                        if (storedGeneration != generation) {
-                          protocolQuarantineStore!(quarantines) |
-                          retCh!((false, "Protocol quarantine generation mismatch"))
-                        } else {
-                          match outcome {
-                            "Vindicated" => {
-                              if (amount == 0) {
-                                protocolQuarantineStore!(quarantines.set(
-                                  validatorPk,
-                                  ("Resolved", generation, outcome, penaltyAddress, penalty)
-                                )) |
-                                retCh!((true, Nil))
-                              } else {
-                                new sourceVaultCh in {
-                                  SystemVault!("find", sourceAddress, *sourceVaultCh) |
-                                  for (@sourceVaultResult <- sourceVaultCh) {
-                                    match sourceVaultResult {
-                                      (true, _) => {
-                                        new returnCh in {
-                                          @{sourceAddress | bundle0{*_systemVault}}!("_costDeposit", quarantinedPurse, *returnCh) |
-                                          for (@returnResult <- returnCh) {
-                                            match returnResult {
-                                              (true, _) => {
-                                                protocolQuarantineStore!(quarantines.set(
-                                                  validatorPk,
-                                                  ("Resolved", generation, outcome, penaltyAddress, penalty)
-                                                )) |
-                                                retCh!((true, Nil))
-                                              }
-                                              (false, error) => {
-                                                protocolQuarantineStore!(quarantines) |
-                                                retCh!((false, error))
-                                              }
-                                            }
-                                          }
-                                        }
-                                      }
-                                      (false, error) => {
-                                        protocolQuarantineStore!(quarantines) |
-                                        retCh!((false, error))
+                  new targetAddressCh in {
+                    VaultAddress!("fromPublicKey", validatorPk, *targetAddressCh) |
+                    for (@targetAddress <- targetAddressCh) {
+                      new targetVaultCh in {
+                        SystemVault!("find", targetAddress, *targetVaultCh) |
+                        for (@targetVaultResult <- targetVaultCh) {
+                          match targetVaultResult {
+                            (true, _) => {
+                              new resolveFuel in {
+                                contract resolveFuel() = {
+                                  new resolveCh in {
+                                    @{targetAddress | bundle0{*_systemVault}}!(
+                                      "_resolveValidatorFuel",
+                                      generation,
+                                      outcome,
+                                      penaltyAddress,
+                                      penalty,
+                                      *resolveCh
+                                    ) |
+                                    for (@resolveResult <- resolveCh) {
+                                      retCh!(resolveResult)
+                                    }
+                                  }
+                                } |
+                                if (outcome == "Guilty") {
+                                  new penaltyVaultCh in {
+                                    SystemVault!("findOrCreate", penaltyAddress, *penaltyVaultCh) |
+                                    for (@penaltyVaultResult <- penaltyVaultCh) {
+                                      match penaltyVaultResult {
+                                        (true, _) => { resolveFuel!() }
+                                        (false, error) => { retCh!((false, error)) }
                                       }
                                     }
                                   }
+                                } else {
+                                  resolveFuel!()
                                 }
                               }
                             }
-                            "Guilty" => {
-                              if (penalty < 0) {
-                                protocolQuarantineStore!(quarantines) |
-                                retCh!((false, "Invalid fuel penalty"))
-                              } else {
-                                new penaltyAmountCh, sourceVaultCh, penaltyVaultCh in {
-                                  if (penalty >= amount) { penaltyAmountCh!(amount) } else { penaltyAmountCh!(penalty) } |
-                                  SystemVault!("find", sourceAddress, *sourceVaultCh) |
-                                  SystemVault!("find", penaltyAddress, *penaltyVaultCh) |
-                                  for (@penaltyAmount <- penaltyAmountCh &
-                                       @sourceVaultResult <- sourceVaultCh &
-                                       @penaltyVaultResult <- penaltyVaultCh) {
-                                    match (sourceVaultResult, penaltyVaultResult) {
-                                      ((true, _), (true, _)) => {
-                                        new penaltyCh in {
-                                          splitAndDeposit!(quarantinedPurse, penaltyAddress, penaltyAmount, *penaltyCh) |
-                                          for (@penaltyResult <- penaltyCh) {
-                                            match penaltyResult {
-                                              (true, _) => {
-                                                if (amount == penaltyAmount) {
-                                                  protocolQuarantineStore!(quarantines.set(
-                                                    validatorPk,
-                                                    ("Resolved", generation, outcome, penaltyAddress, penalty)
-                                                  )) |
-                                                  retCh!((true, Nil))
-                                                } else {
-                                                  new returnCh in {
-                                                    @{sourceAddress | bundle0{*_systemVault}}!("_costDeposit", quarantinedPurse, *returnCh) |
-                                                    for (@returnResult <- returnCh) {
-                                                      match returnResult {
-                                                        (true, _) => {
-                                                          protocolQuarantineStore!(quarantines.set(
-                                                            validatorPk,
-                                                            ("Resolved", generation, outcome, penaltyAddress, penalty)
-                                                          )) |
-                                                          retCh!((true, Nil))
-                                                        }
-                                                        (false, error) => {
-                                                          protocolQuarantineStore!(quarantines) |
-                                                          retCh!((false, error))
-                                                        }
-                                                      }
-                                                    }
-                                                  }
-                                                }
-                                              }
-                                              (false, error) => {
-                                                protocolQuarantineStore!(quarantines) |
-                                                retCh!((false, error))
-                                              }
-                                            }
-                                          }
-                                        }
-                                      }
-                                      _ => {
-                                        protocolQuarantineStore!(quarantines) |
-                                        retCh!((false, "Fuel resolution vault not found"))
-                                      }
-                                    }
-                                  }
-                                }
-                              }
-                            }
-                            "Burned" => {
-                              protocolQuarantineStore!(quarantines.set(
-                                validatorPk,
-                                ("Resolved", generation, outcome, penaltyAddress, penalty)
-                              )) |
-                              retCh!((true, Nil))
-                            }
-                            _ => {
-                              protocolQuarantineStore!(quarantines) |
-                              retCh!((false, "Unknown protocol quarantine outcome"))
+                            (false, error) => {
+                              retCh!((false, error))
                             }
                           }
                         }
                       }
-                      _ => {
-                        protocolQuarantineStore!(quarantines) |
-                        retCh!((false, "Malformed protocol quarantine record"))
-                      }
                     }
                   }
                 } else {
-                  retCh!((false, "Unauthorized protocol quarantine resolution"))
+                  retCh!((false, "Unauthorized validator fuel resolution"))
                 }
               }
             }
@@ -659,7 +549,7 @@ in {
                           _create!(vaultAddress, *createVault, *vaultCh) |
                           for (vaultRetCh <- createVault) {
                             // Creates System vault and returns on vaultRetCh, consumed within _create contract.
-                            _makeVault!(vaultAddress, 0, *vaultRetCh) |
+                            _makeVault!(vaultAddress, 0, 0, *vaultRetCh) |
                             // Blocks until both the vault is created and set in the store.
                             for (@eitherVault <- vaultCh) {
                               retCh!(eitherVault)
@@ -679,7 +569,7 @@ in {
             new createVault, vaultCh in {
               _create!("1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5", *createVault, *vaultCh) |
               for (vaultRetCh <- createVault) {
-                _makeVault!("1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5", amount, *vaultRetCh) |
+                _makeVault!("1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5", amount, 0, *vaultRetCh) |
                 for (@eitherVault <- vaultCh) {
                   retCh!(eitherVault)
                 }
@@ -708,28 +598,28 @@ in {
             }
           } |
           // Creates a System vault and returns Either on ret.
-          contract _makeVault(@ownerVaultAddress, @initialAmount, ret) = {
-            new vaultAddrCh, eitherVaultAddrCh, purseCh, eitherPurseCh, mkVault in {
-              @Either!("fromNillable", ownerVaultAddress, "Required `vaultAddress` parameter was Nil", *eitherVaultAddrCh) |
-              mint!("makePurse", initialAmount, *purseCh) |
-              @Either!("fromNillable <-", *purseCh, "Couldn't create purse", *eitherPurseCh) |
-              @Either!("map2 <-", *eitherVaultAddrCh, *eitherPurseCh,
-                for (@addr, purse, r <- mkVault) {
-                  new systemVault in {
-                    _newVault!(*systemVault, addr, *purse) |
-                    r!(bundle+{*systemVault})
-                  }
-                },
-                *ret
-              )
+          contract _makeVault(@ownerVaultAddress, @initialGeneralAmount, @initialValidatorFuelAmount, ret) = {
+            new generalPurseCh, validatorFuelPurseCh in {
+              mint!("makePurse", initialGeneralAmount, *generalPurseCh) |
+              mint!("makePurse", initialValidatorFuelAmount, *validatorFuelPurseCh) |
+              for (generalPurse <- generalPurseCh & validatorFuelPurse <- validatorFuelPurseCh) {
+                new systemVault in {
+                  _newVault!(*systemVault, ownerVaultAddress, *generalPurse, *validatorFuelPurse) |
+                  ret!((true, bundle+{*systemVault}))
+                }
+              }
             }
           } |
           // Supplies balance, transfer, and setLog methods on systemVault.
-          contract _newVault(systemVault, @ownVaultAddress, purse) = {
-            new logStore in {
+          contract _newVault(systemVault, @ownVaultAddress, purse, validatorFuelPurse) = {
+            new logStore, validatorFuelState in {
               logStore!(Nil) |
+              validatorFuelState!(("Available", -1, "", "", 0, Nil)) |
               contract systemVault(@"balance", ret) = {
                 purse!("getBalance", *ret)
+              } |
+              contract systemVault(@"validatorFuelBalance", ret) = {
+                validatorFuelPurse!("getBalance", *ret)
               } |
               // Transfers from systemVault to toVaultAddress.
               contract systemVault(@"transfer", @targetAddress, @amount, authKey, ret) = {
@@ -746,6 +636,35 @@ in {
                           }
                         }
                       }
+                    }
+                  }
+                }
+              } |
+              contract systemVault(@"fundValidatorFuel", @targetAddress, @amount, authKey, ret) = {
+                new authKeyValidCh in {
+                  @AuthKey!("check", *authKey, (*_systemVault, ownVaultAddress), *authKeyValidCh) |
+                  for (@authKeyValid <- authKeyValidCh) {
+                    if (authKeyValid and amount > 0) {
+                      new targetVaultCh in {
+                        SystemVault!("findOrCreate", targetAddress, *targetVaultCh) |
+                        for (@targetVaultResult <- targetVaultCh) {
+                          match targetVaultResult {
+                            (true, _) => {
+                              new fundCh in {
+                                @{targetAddress | bundle0{*_systemVault}}!("_fundValidatorFuelFrom", *purse, amount, *fundCh) |
+                                for (@fundResult <- fundCh) {
+                                  ret!(fundResult)
+                                }
+                              }
+                            }
+                            (false, error) => {
+                              ret!((false, error))
+                            }
+                          }
+                        }
+                      }
+                    } else {
+                      ret!((false, "Invalid AuthKey or validator fuel amount"))
                     }
                   }
                 }
@@ -812,29 +731,270 @@ in {
               contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_deposit", depositPurse, retCh) = {
                 _depositTemplate!(*purse, *depositPurse, *retCh)
               } |
-              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_costSplit", @amount, retCh) = {
-                purse!("split", amount, *retCh)
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_costSplit", @role, @amount, retCh) = {
+                match role {
+                  "General" => {
+                    purse!("split", amount, *retCh)
+                  }
+                  "ValidatorFuel" => {
+                    for (@fuelState <- validatorFuelState) {
+                      match fuelState {
+                        ("Available", _, _, _, _, _) => {
+                          new splitCh in {
+                            validatorFuelPurse!("split", amount, *splitCh) |
+                            for (@splitResult <- splitCh) {
+                              validatorFuelState!(fuelState) |
+                              retCh!(splitResult)
+                            }
+                          }
+                        }
+                        _ => {
+                          validatorFuelState!(fuelState) |
+                          retCh!([])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    retCh!([])
+                  }
+                }
               } |
-              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_costDeposit", depositPurse, retCh) = {
-                _depositTemplate!(*purse, *depositPurse, *retCh)
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_costDeposit", @role, depositPurse, retCh) = {
+                match role {
+                  "General" => {
+                    _depositTemplate!(*purse, *depositPurse, *retCh)
+                  }
+                  "ValidatorFuel" => {
+                    for (@fuelState <- validatorFuelState) {
+                      match fuelState {
+                        ("Available", _, _, _, _, _) => {
+                          new depositCh in {
+                            _depositTemplate!(*validatorFuelPurse, *depositPurse, *depositCh) |
+                            for (@depositResult <- depositCh) {
+                              validatorFuelState!(fuelState) |
+                              retCh!(depositResult)
+                            }
+                          }
+                        }
+                        _ => {
+                          validatorFuelState!(fuelState) |
+                          retCh!((false, "Validator fuel is unavailable"))
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    retCh!((false, "Unknown vault custody role"))
+                  }
+                }
+              } |
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_fundValidatorFuelFrom", sourcePurse, @amount, retCh) = {
+                for (@fuelState <- validatorFuelState) {
+                  match fuelState {
+                    ("Available", _, _, _, _, _) => {
+                      new splitCh in {
+                        sourcePurse!("split", amount, *splitCh) |
+                        for (@splitResult <- splitCh) {
+                          match splitResult {
+                            [fundingPurse] => {
+                              new depositCh in {
+                                _depositTemplate!(*validatorFuelPurse, fundingPurse, *depositCh) |
+                                for (@depositResult <- depositCh) {
+                                  validatorFuelState!(fuelState) |
+                                  retCh!(depositResult)
+                                }
+                              }
+                            }
+                            _ => {
+                              validatorFuelState!(fuelState) |
+                              retCh!((false, "Insufficient general custody"))
+                            }
+                          }
+                        }
+                      }
+                    }
+                    _ => {
+                      validatorFuelState!(fuelState) |
+                      retCh!((false, "Validator fuel is unavailable"))
+                    }
+                  }
+                }
+              } |
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_quarantineValidatorFuel", @generation, retCh) = {
+                for (@fuelState <- validatorFuelState) {
+                  match fuelState {
+                    ("Pending", storedGeneration, _, _, _, _) => {
+                      validatorFuelState!(fuelState) |
+                      if (storedGeneration == generation) {
+                        retCh!((true, Nil))
+                      } else {
+                        retCh!((false, "Conflicting validator fuel quarantine"))
+                      }
+                    }
+                    ("Available", storedGeneration, _, _, _, _) => {
+                      if (generation > storedGeneration) {
+                        new balanceCh in {
+                          validatorFuelPurse!("getBalance", *balanceCh) |
+                          for (@balance <- balanceCh) {
+                            if (balance == 0) {
+                              validatorFuelState!(("Pending", generation, "", "", 0, Nil)) |
+                              retCh!((true, Nil))
+                            } else {
+                              new splitCh in {
+                                validatorFuelPurse!("split", balance, *splitCh) |
+                                for (@splitResult <- splitCh) {
+                                  match splitResult {
+                                    [quarantinedPurse] => {
+                                      validatorFuelState!(("Pending", generation, "", "", balance, quarantinedPurse)) |
+                                      retCh!((true, Nil))
+                                    }
+                                    _ => {
+                                      validatorFuelState!(fuelState) |
+                                      retCh!((false, "Validator fuel quarantine failed"))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      } else {
+                        validatorFuelState!(fuelState) |
+                        retCh!((false, "Validator fuel quarantine generation is not newer"))
+                      }
+                    }
+                    _ => {
+                      validatorFuelState!(fuelState) |
+                      retCh!((false, "Malformed validator fuel state"))
+                    }
+                  }
+                }
+              } |
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_resolveValidatorFuel", @generation, @outcome, @penaltyAddress, @penalty, retCh) = {
+                for (@fuelState <- validatorFuelState) {
+                  match fuelState {
+                    ("Available", storedGeneration, storedOutcome, storedPenaltyAddress, storedPenalty, _) => {
+                      validatorFuelState!(fuelState) |
+                      if (
+                        storedGeneration == generation and
+                        storedOutcome == outcome and
+                        storedPenaltyAddress == penaltyAddress and
+                        storedPenalty == penalty
+                      ) {
+                        retCh!((true, Nil))
+                      } else {
+                        retCh!((false, "Conflicting validator fuel resolution"))
+                      }
+                    }
+                    ("Pending", storedGeneration, _, _, amount, quarantinedPurse) => {
+                      if (storedGeneration != generation) {
+                        validatorFuelState!(fuelState) |
+                        retCh!((false, "Validator fuel quarantine generation mismatch"))
+                      } else {
+                        match outcome {
+                          "Vindicated" => {
+                            if (amount == 0) {
+                              validatorFuelState!(("Available", generation, outcome, penaltyAddress, penalty, Nil)) |
+                              retCh!((true, Nil))
+                            } else {
+                              new returnCh in {
+                                _depositTemplate!(*validatorFuelPurse, quarantinedPurse, *returnCh) |
+                                for (@returnResult <- returnCh) {
+                                  match returnResult {
+                                    (true, _) => {
+                                      validatorFuelState!(("Available", generation, outcome, penaltyAddress, penalty, Nil)) |
+                                      retCh!((true, Nil))
+                                    }
+                                    (false, error) => {
+                                      validatorFuelState!(fuelState) |
+                                      retCh!((false, error))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          "Guilty" => {
+                            if (penalty < 0) {
+                              validatorFuelState!(fuelState) |
+                              retCh!((false, "Invalid validator fuel penalty"))
+                            } else {
+                              new penaltyAmountCh in {
+                                if (penalty >= amount) { penaltyAmountCh!(amount) } else { penaltyAmountCh!(penalty) } |
+                                for (@penaltyAmount <- penaltyAmountCh) {
+                                  new penaltyCh in {
+                                    splitAndDeposit!(quarantinedPurse, penaltyAddress, "General", penaltyAmount, *penaltyCh) |
+                                    for (@penaltyResult <- penaltyCh) {
+                                      match penaltyResult {
+                                        (true, _) => {
+                                          if (amount == penaltyAmount) {
+                                            validatorFuelState!(("Available", generation, outcome, penaltyAddress, penalty, Nil)) |
+                                            retCh!((true, Nil))
+                                          } else {
+                                            new returnCh in {
+                                              _depositTemplate!(*validatorFuelPurse, quarantinedPurse, *returnCh) |
+                                              for (@returnResult <- returnCh) {
+                                                match returnResult {
+                                                  (true, _) => {
+                                                    validatorFuelState!(("Available", generation, outcome, penaltyAddress, penalty, Nil)) |
+                                                    retCh!((true, Nil))
+                                                  }
+                                                  (false, error) => {
+                                                    validatorFuelState!(fuelState) |
+                                                    retCh!((false, error))
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                        (false, error) => {
+                                          validatorFuelState!(fuelState) |
+                                          retCh!((false, error))
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          "Burned" => {
+                            validatorFuelState!(("Available", generation, outcome, penaltyAddress, penalty, Nil)) |
+                            retCh!((true, Nil))
+                          }
+                          _ => {
+                            validatorFuelState!(fuelState) |
+                            retCh!((false, "Unknown validator fuel resolution"))
+                          }
+                        }
+                      }
+                    }
+                    _ => {
+                      validatorFuelState!(fuelState) |
+                      retCh!((false, "Malformed validator fuel state"))
+                    }
+                  }
+                }
               }
             }
           } |
           contract reserveAll(@pending, @reserved, retCh) = {
             match pending {
-              [(address, amount) ...tail] => {
-                if (amount > 0) {
+              [(address, role, amount) ...tail] => {
+                if (amount > 0 and (role == "General" or role == "ValidatorFuel")) {
                   new getVaultCh, splitCh in {
                     TreeHashMap!("get", vaultMap, address, *getVaultCh) |
                     for (@vault <- getVaultCh) {
                       if (vault == Nil) {
                         failReservation!(reserved, "Funding vault not found", *retCh)
                       } else {
-                        @{address | bundle0{*_systemVault}}!("_costSplit", amount, *splitCh) |
+                        @{address | bundle0{*_systemVault}}!("_costSplit", role, amount, *splitCh) |
                         for (@splitResult <- splitCh) {
                           match splitResult {
                             [reservedPurse] => {
-                              reserveAll!(tail, reserved ++ [(address, amount, reservedPurse)], *retCh)
+                              reserveAll!(tail, reserved ++ [(address, role, amount, reservedPurse)], *retCh)
                             }
                             _ => {
                               failReservation!(reserved, "Insufficient funds", *retCh)
@@ -855,9 +1015,9 @@ in {
           } |
           contract refundReserved(@reserved, retCh) = {
             match reserved {
-              [(address, _, reservedPurse) ...tail] => {
+              [(address, role, _, reservedPurse) ...tail] => {
                 new depositCh in {
-                  @{address | bundle0{*_systemVault}}!("_costDeposit", reservedPurse, *depositCh) |
+                  @{address | bundle0{*_systemVault}}!("_costDeposit", role, reservedPurse, *depositCh) |
                   for (@depositResult <- depositCh) {
                     match depositResult {
                       (true, _) => {
@@ -892,10 +1052,17 @@ in {
           } |
           contract validateSettlement(@reserved, @charges, retCh) = {
             match reserved {
-              [(reservedAddress, reservedAmount, _) ...reservedTail] => {
+              [(reservedAddress, reservedRole, reservedAmount, _) ...reservedTail] => {
                 match charges {
-                  [(chargeAddress, burn, fee) ...chargeTail] => {
-                    if (reservedAddress == chargeAddress and burn >= 0 and fee >= 0 and burn + fee <= reservedAmount) {
+                  [(chargeAddress, chargeRole, burn, fee) ...chargeTail] => {
+                    if (
+                      reservedAddress == chargeAddress and
+                      reservedRole == chargeRole and
+                      burn >= 0 and
+                      fee >= 0 and
+                      burn + fee <= reservedAmount and
+                      (chargeRole == "General" or (chargeRole == "ValidatorFuel" and fee == 0))
+                    ) {
                       validateSettlement!(reservedTail, chargeTail, *retCh)
                     } else {
                       retCh!((false, "Invalid cost settlement allocation"))
@@ -920,16 +1087,16 @@ in {
           } |
           contract settleReserved(@reserved, @charges, @feeAddress, retCh) = {
             match reserved {
-              [(sourceAddress, reservedAmount, reservedPurse) ...reservedTail] => {
+              [(sourceAddress, sourceRole, reservedAmount, reservedPurse) ...reservedTail] => {
                 match charges {
-                  [(sourceAddress, burn, fee) ...chargeTail] => {
+                  [(sourceAddress, sourceRole, burn, fee) ...chargeTail] => {
                     new feeCh in {
-                      splitAndDeposit!(reservedPurse, feeAddress, fee, *feeCh) |
+                      splitAndDeposit!(reservedPurse, feeAddress, "General", fee, *feeCh) |
                       for (@feeResult <- feeCh) {
                         match feeResult {
                           (true, _) => {
                             new refundCh in {
-                              splitAndDeposit!(reservedPurse, sourceAddress, reservedAmount - burn - fee, *refundCh) |
+                              splitAndDeposit!(reservedPurse, sourceAddress, sourceRole, reservedAmount - burn - fee, *refundCh) |
                               for (@refundResult <- refundCh) {
                                 match refundResult {
                                   (true, _) => {
@@ -959,7 +1126,7 @@ in {
               }
             }
           } |
-          contract splitAndDeposit(purse, @targetAddress, @amount, retCh) = {
+          contract splitAndDeposit(purse, @targetAddress, @targetRole, @amount, retCh) = {
             if (amount == 0) {
               retCh!((true, Nil))
             } else {
@@ -969,7 +1136,7 @@ in {
                   match splitResult {
                     [splitPurse] => {
                       new depositCh in {
-                        @{targetAddress | bundle0{*_systemVault}}!("_costDeposit", splitPurse, *depositCh) |
+                        @{targetAddress | bundle0{*_systemVault}}!("_costDeposit", targetRole, splitPurse, *depositCh) |
                         for (@depositResult <- depositCh) {
                           retCh!(depositResult)
                         }
@@ -1030,7 +1197,7 @@ in {
                     match targetVaultResult {
                       (true, _) => {
                         new depositCh in {
-                          splitAndDeposit!(*reservedPurse, targetAddress, amount, *depositCh) |
+                          splitAndDeposit!(*reservedPurse, targetAddress, "General", amount, *depositCh) |
                           for (@depositResult <- depositCh) {
                             match depositResult {
                               (true, _) => {

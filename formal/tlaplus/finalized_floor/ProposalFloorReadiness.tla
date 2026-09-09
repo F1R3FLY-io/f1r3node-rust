@@ -14,6 +14,9 @@ ASSUME /\ MaxFloor \in Nat \ {0}
             "NonFloorRequests",
             "BypassReadiness",
             "EqualityOnly",
+            "DescendantGate",
+            "ConflictGate",
+            "CancelProposal",
             "NonStrictCandidate",
             "StateRegressiveMaterialize",
             "RetryContextMismatch"
@@ -23,10 +26,7 @@ Nodes == {1, 2}
 ProposalStates == {"Idle", "Deferred", "Created"}
 Reasons == {
   "None",
-  "FloorPending",
-  "FloorRegression",
-  "FloorConflict",
-  "ContextMismatch",
+  "CandidateGate",
   "IncompleteSlots",
   "InactiveProposer",
   "StalePermit"
@@ -63,48 +63,49 @@ VARIABLES
   \* @type: Int -> Bool;
   finalizationRequested,
   \* @type: Int -> Bool;
-  floorDeferralObserved,
+  strictCandidateObserved,
   \* @type: Int -> Bool;
   nonFloorRequestObserved,
   \* @type: Int -> Bool;
-  badMaterializationObserved
+  badMaterializationObserved,
+  \* @type: Int -> Bool;
+  proposalCancelledByFinalizer
 
 vars == <<materializedFloor, candidateFloor, candidateRelation, slotsComplete,
           proposerActive, permitRequired, permitFresh, proposalState,
-          deferralReason, finalizationRequested, floorDeferralObserved,
-          nonFloorRequestObserved, badMaterializationObserved>>
-
-RelationReason(relation) ==
-  CASE relation = "SameContext" -> "None"
-    [] relation = "AheadStrictPreserving" -> "FloorPending"
-    [] relation = "Regression" -> "FloorRegression"
-    [] relation = "Conflict" -> "FloorConflict"
-    [] relation = "SameFloorMismatch" -> "ContextMismatch"
-    [] relation = "AheadStateDropping" -> "FloorConflict"
-    [] relation = "AheadUncertified" -> "FloorConflict"
+          deferralReason, finalizationRequested, strictCandidateObserved,
+          nonFloorRequestObserved, badMaterializationObserved,
+          proposalCancelledByFinalizer>>
 
 ConfiguredRelationReason(relation) ==
   IF Defect = "EqualityOnly" /\ relation # "SameContext"
-  THEN "FloorPending"
-  ELSE IF Defect = "NonStrictCandidate" /\ relation = "AheadUncertified"
-       THEN "FloorPending"
-       ELSE IF Defect = "StateRegressiveMaterialize" /\ relation = "AheadStateDropping"
-            THEN "FloorPending"
-            ELSE IF Defect = "RetryContextMismatch" /\ relation = "SameFloorMismatch"
-                 THEN "FloorPending"
-                 ELSE RelationReason(relation)
+  THEN "CandidateGate"
+  ELSE IF Defect = "DescendantGate" /\ relation = "AheadStrictPreserving"
+       THEN "CandidateGate"
+       ELSE IF Defect = "ConflictGate"
+               /\ relation \in {"Regression", "Conflict", "SameFloorMismatch"}
+            THEN "CandidateGate"
+            ELSE "None"
 
-ExpectedReason(node) ==
+CandidateRequestsFinalization(relation) ==
+  \/ relation = "AheadStrictPreserving"
+  \/ Defect = "NonStrictCandidate" /\ relation = "AheadUncertified"
+  \/ Defect = "StateRegressiveMaterialize" /\ relation = "AheadStateDropping"
+  \/ Defect = "RetryContextMismatch" /\ relation = "SameFloorMismatch"
+
+CertifiedReason(node) ==
   IF permitRequired[node] /\ ~permitFresh[node]
   THEN "StalePermit"
-  ELSE LET relationReason == ConfiguredRelationReason(candidateRelation[node])
-       IN IF relationReason # "None"
-          THEN relationReason
-          ELSE IF ~slotsComplete[node]
-               THEN "IncompleteSlots"
-               ELSE IF ~proposerActive[node]
-                    THEN "InactiveProposer"
-                    ELSE "None"
+  ELSE IF ~slotsComplete[node]
+       THEN "IncompleteSlots"
+       ELSE IF ~proposerActive[node]
+            THEN "InactiveProposer"
+            ELSE "None"
+
+ExpectedReason(node) ==
+  LET certifiedReason == CertifiedReason(node)
+      relationReason == ConfiguredRelationReason(candidateRelation[node])
+  IN IF certifiedReason # "None" THEN certifiedReason ELSE relationReason
 
 Init ==
   /\ materializedFloor = [node \in Nodes |-> 0]
@@ -117,49 +118,71 @@ Init ==
   /\ proposalState = [node \in Nodes |-> "Idle"]
   /\ deferralReason = [node \in Nodes |-> "None"]
   /\ finalizationRequested = [node \in Nodes |-> FALSE]
-  /\ floorDeferralObserved = [node \in Nodes |-> FALSE]
+  /\ strictCandidateObserved = [node \in Nodes |-> FALSE]
   /\ nonFloorRequestObserved = [node \in Nodes |-> FALSE]
   /\ badMaterializationObserved = [node \in Nodes |-> FALSE]
+  /\ proposalCancelledByFinalizer = [node \in Nodes |-> FALSE]
 
 Attempt(node) ==
   /\ proposalState[node] # "Created"
   /\ LET reason == ExpectedReason(node)
          bypass == Defect = "BypassReadiness" /\ reason # "None"
-         schedulesFloor == reason = "FloorPending" /\ Defect # "PendingNoRequest"
-         schedulesNonFloor == reason \in (Reasons \ {"None", "FloorPending"})
-                               /\ Defect = "NonFloorRequests"
      IN
        /\ proposalState' = [proposalState EXCEPT
             ![node] = IF reason = "None" \/ bypass THEN "Created" ELSE "Deferred"]
        /\ deferralReason' = [deferralReason EXCEPT
             ![node] = IF reason = "None" \/ bypass THEN "None" ELSE reason]
-       /\ finalizationRequested' = [finalizationRequested EXCEPT
-            ![node] = @ \/ schedulesFloor \/ schedulesNonFloor]
-       /\ floorDeferralObserved' = [floorDeferralObserved EXCEPT
-            ![node] = @ \/ reason = "FloorPending"]
-       /\ nonFloorRequestObserved' = [nonFloorRequestObserved EXCEPT
-            ![node] = @ \/ schedulesNonFloor]
   /\ UNCHANGED <<materializedFloor, candidateFloor, candidateRelation,
                   slotsComplete, proposerActive, permitRequired, permitFresh,
-                  badMaterializationObserved>>
+                  finalizationRequested, strictCandidateObserved,
+                  nonFloorRequestObserved, badMaterializationObserved,
+                  proposalCancelledByFinalizer>>
+
+ObserveCandidate(node) ==
+  LET relation == candidateRelation[node]
+      strict == relation = "AheadStrictPreserving"
+      schedulesCandidate == CandidateRequestsFinalization(relation)
+                              /\ ~(Defect = "PendingNoRequest" /\ strict)
+      schedulesNonFloor == relation # "AheadStrictPreserving"
+                            /\ relation # "SameContext"
+                            /\ Defect = "NonFloorRequests"
+  IN
+    /\ finalizationRequested' = [finalizationRequested EXCEPT
+         ![node] = @ \/ schedulesCandidate \/ schedulesNonFloor]
+    /\ strictCandidateObserved' = [strictCandidateObserved EXCEPT
+         ![node] = @ \/ strict]
+    /\ nonFloorRequestObserved' = [nonFloorRequestObserved EXCEPT
+         ![node] = @ \/ schedulesNonFloor]
+    /\ UNCHANGED <<materializedFloor, candidateFloor, candidateRelation,
+                    slotsComplete, proposerActive, permitRequired, permitFresh,
+                    proposalState, deferralReason, badMaterializationObserved,
+                    proposalCancelledByFinalizer>>
 
 Materialize(node) ==
   /\ finalizationRequested[node]
-  /\ candidateFloor[node] # materializedFloor[node]
+  /\ (candidateFloor[node] # materializedFloor[node]
+       \/ candidateRelation[node] = "SameFloorMismatch")
   /\ candidateRelation[node] \in {
        "AheadStrictPreserving",
        IF Defect = "NonStrictCandidate" THEN "AheadUncertified" ELSE "AheadStrictPreserving",
-       IF Defect = "StateRegressiveMaterialize" THEN "AheadStateDropping" ELSE "AheadStrictPreserving"
+       IF Defect = "StateRegressiveMaterialize" THEN "AheadStateDropping" ELSE "AheadStrictPreserving",
+       IF Defect = "RetryContextMismatch" THEN "SameFloorMismatch" ELSE "AheadStrictPreserving"
      }
   /\ materializedFloor' = [materializedFloor EXCEPT ![node] = candidateFloor[node]]
   /\ candidateRelation' = [candidateRelation EXCEPT ![node] = "SameContext"]
   /\ finalizationRequested' = [finalizationRequested EXCEPT ![node] = FALSE]
-  /\ proposalState' = [proposalState EXCEPT ![node] = "Idle"]
-  /\ deferralReason' = [deferralReason EXCEPT ![node] = "None"]
+  /\ proposalState' = [proposalState EXCEPT
+       ![node] = IF Defect = "CancelProposal" THEN "Idle" ELSE @]
+  /\ deferralReason' = [deferralReason EXCEPT
+       ![node] = IF Defect = "CancelProposal" THEN "None" ELSE @]
+  /\ strictCandidateObserved' = [strictCandidateObserved EXCEPT ![node] = FALSE]
   /\ badMaterializationObserved' = [badMaterializationObserved EXCEPT
        ![node] = @ \/ candidateRelation[node] # "AheadStrictPreserving"]
+  /\ proposalCancelledByFinalizer' = [proposalCancelledByFinalizer EXCEPT
+       ![node] = @ \/ (proposalState[node] = "Created"
+                         /\ proposalState'[node] # "Created")]
   /\ UNCHANGED <<candidateFloor, slotsComplete, proposerActive,
-                  permitRequired, permitFresh, floorDeferralObserved,
+                  permitRequired, permitFresh,
                   nonFloorRequestObserved>>
 
 CandidateChoiceWellFormed(node, floor, relation) ==
@@ -169,34 +192,39 @@ CandidateChoiceWellFormed(node, floor, relation) ==
        <=> relation \in {"SameContext", "SameFloorMismatch"})
 
 SetCandidate(node, floor, relation) ==
-  /\ proposalState[node] # "Created"
+  /\ ~finalizationRequested[node]
   /\ CandidateChoiceWellFormed(node, floor, relation)
   /\ candidateFloor' = [candidateFloor EXCEPT ![node] = floor]
   /\ candidateRelation' = [candidateRelation EXCEPT ![node] = relation]
-  /\ proposalState' = [proposalState EXCEPT ![node] = "Idle"]
-  /\ deferralReason' = [deferralReason EXCEPT ![node] = "None"]
+  /\ strictCandidateObserved' = [strictCandidateObserved EXCEPT ![node] = FALSE]
   /\ UNCHANGED <<materializedFloor, slotsComplete, proposerActive,
-                  permitRequired, permitFresh, finalizationRequested,
-                  floorDeferralObserved, nonFloorRequestObserved,
-                  badMaterializationObserved>>
+                  permitRequired, permitFresh, proposalState, deferralReason,
+                  finalizationRequested, nonFloorRequestObserved,
+                  badMaterializationObserved, proposalCancelledByFinalizer>>
 
 SetSlots(node, value) ==
   /\ proposalState[node] # "Created"
   /\ value \in BOOLEAN
   /\ slotsComplete' = [slotsComplete EXCEPT ![node] = value]
+  /\ proposalState' = [proposalState EXCEPT ![node] = "Idle"]
+  /\ deferralReason' = [deferralReason EXCEPT ![node] = "None"]
   /\ UNCHANGED <<materializedFloor, candidateFloor, candidateRelation,
-                  proposerActive, permitRequired, permitFresh, proposalState,
-                  deferralReason, finalizationRequested, floorDeferralObserved,
-                  nonFloorRequestObserved, badMaterializationObserved>>
+                  proposerActive, permitRequired, permitFresh,
+                  finalizationRequested, strictCandidateObserved,
+                  nonFloorRequestObserved, badMaterializationObserved,
+                  proposalCancelledByFinalizer>>
 
 SetActive(node, value) ==
   /\ proposalState[node] # "Created"
   /\ value \in BOOLEAN
   /\ proposerActive' = [proposerActive EXCEPT ![node] = value]
+  /\ proposalState' = [proposalState EXCEPT ![node] = "Idle"]
+  /\ deferralReason' = [deferralReason EXCEPT ![node] = "None"]
   /\ UNCHANGED <<materializedFloor, candidateFloor, candidateRelation,
-                  slotsComplete, permitRequired, permitFresh, proposalState,
-                  deferralReason, finalizationRequested, floorDeferralObserved,
-                  nonFloorRequestObserved, badMaterializationObserved>>
+                  slotsComplete, permitRequired, permitFresh,
+                  finalizationRequested, strictCandidateObserved,
+                  nonFloorRequestObserved, badMaterializationObserved,
+                  proposalCancelledByFinalizer>>
 
 SetPermit(node, required, fresh) ==
   /\ proposalState[node] # "Created"
@@ -204,10 +232,13 @@ SetPermit(node, required, fresh) ==
   /\ fresh \in BOOLEAN
   /\ permitRequired' = [permitRequired EXCEPT ![node] = required]
   /\ permitFresh' = [permitFresh EXCEPT ![node] = fresh]
+  /\ proposalState' = [proposalState EXCEPT ![node] = "Idle"]
+  /\ deferralReason' = [deferralReason EXCEPT ![node] = "None"]
   /\ UNCHANGED <<materializedFloor, candidateFloor, candidateRelation,
-                  slotsComplete, proposerActive, proposalState, deferralReason,
-                  finalizationRequested, floorDeferralObserved,
-                  nonFloorRequestObserved, badMaterializationObserved>>
+                  slotsComplete, proposerActive,
+                  finalizationRequested, strictCandidateObserved,
+                  nonFloorRequestObserved, badMaterializationObserved,
+                  proposalCancelledByFinalizer>>
 
 ResetProposal(node) ==
   /\ proposalState[node] = "Created"
@@ -215,11 +246,13 @@ ResetProposal(node) ==
   /\ deferralReason' = [deferralReason EXCEPT ![node] = "None"]
   /\ UNCHANGED <<materializedFloor, candidateFloor, candidateRelation,
                   slotsComplete, proposerActive, permitRequired, permitFresh,
-                  finalizationRequested, floorDeferralObserved,
-                  nonFloorRequestObserved, badMaterializationObserved>>
+                  finalizationRequested, strictCandidateObserved,
+                  nonFloorRequestObserved, badMaterializationObserved,
+                  proposalCancelledByFinalizer>>
 
 Next ==
   \/ \E node \in Nodes : Attempt(node)
+  \/ \E node \in Nodes : ObserveCandidate(node)
   \/ \E node \in Nodes : Materialize(node)
   \/ \E node \in Nodes, floor \in 0..MaxFloor, relation \in Relations :
        SetCandidate(node, floor, relation)
@@ -244,35 +277,43 @@ TypeOK ==
   /\ proposalState \in [Nodes -> ProposalStates]
   /\ deferralReason \in [Nodes -> Reasons]
   /\ finalizationRequested \in [Nodes -> BOOLEAN]
-  /\ floorDeferralObserved \in [Nodes -> BOOLEAN]
+  /\ strictCandidateObserved \in [Nodes -> BOOLEAN]
   /\ nonFloorRequestObserved \in [Nodes -> BOOLEAN]
   /\ badMaterializationObserved \in [Nodes -> BOOLEAN]
+  /\ proposalCancelledByFinalizer \in [Nodes -> BOOLEAN]
 
 Inv_CreationRequiresReadyContext ==
-  \A node \in Nodes : proposalState[node] = "Created" => ExpectedReason(node) = "None"
+  \A node \in Nodes : proposalState[node] = "Created" => CertifiedReason(node) = "None"
 
-Inv_FloorPendingRequestsFinalization ==
+Inv_StrictCandidateRequestsFinalization ==
   \A node \in Nodes :
-    proposalState[node] = "Deferred" /\ deferralReason[node] = "FloorPending"
-      => finalizationRequested[node]
+    strictCandidateObserved[node] => finalizationRequested[node]
 
-Inv_FloorPendingIsStrictStatePreserving ==
+Inv_OnlyStrictCandidatesRequestFinalization ==
   \A node \in Nodes :
-    proposalState[node] = "Deferred" /\ deferralReason[node] = "FloorPending"
-      => candidateRelation[node] = "AheadStrictPreserving"
+    finalizationRequested[node] => candidateRelation[node] = "AheadStrictPreserving"
 
-Inv_NonFloorDeferralDoesNotRequest ==
+Inv_CandidateEvidenceDoesNotGateProposal ==
+  \A node \in Nodes :
+    proposalState[node] = "Deferred" => CertifiedReason(node) # "None"
+
+Inv_NonCandidateEvidenceDoesNotRequestFinalization ==
   \A node \in Nodes : ~nonFloorRequestObserved[node]
 
 Inv_OnlyStrictStatePreservingFloorsMaterialize ==
   \A node \in Nodes : ~badMaterializationObserved[node]
 
+Inv_FinalizerDoesNotCancelProposal ==
+  \A node \in Nodes : ~proposalCancelledByFinalizer[node]
+
 Safety ==
   /\ TypeOK
   /\ Inv_CreationRequiresReadyContext
-  /\ Inv_FloorPendingRequestsFinalization
-  /\ Inv_FloorPendingIsStrictStatePreserving
-  /\ Inv_NonFloorDeferralDoesNotRequest
+  /\ Inv_StrictCandidateRequestsFinalization
+  /\ Inv_OnlyStrictCandidatesRequestFinalization
+  /\ Inv_CandidateEvidenceDoesNotGateProposal
+  /\ Inv_NonCandidateEvidenceDoesNotRequestFinalization
   /\ Inv_OnlyStrictStatePreservingFloorsMaterialize
+  /\ Inv_FinalizerDoesNotCancelProposal
 
 =============================================================================

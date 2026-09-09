@@ -15,7 +15,6 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::time::sleep;
@@ -78,7 +77,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
         estimator: Estimator,
         // Explicit parameters from Scala (in same order as Scala signature)
         block_processing_queue_tx: BlockProcessingQueueSender,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        blocks_in_processing: Arc<BlockProcessingIdentities>,
         casper_shard_conf: CasperShardConf,
         validator_id: Option<ValidatorIdentity>,
         disable_state_exporter: bool,
@@ -142,7 +141,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                 .await?;
 
                 // Scala: Engine.transitionToRunning[F](..., init = ().pure[F], ...)
-                let the_init = Arc::new(|| {
+                let the_init = Arc::new(|_| {
                     Box::pin(async { Ok(()) })
                         as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
                 });
@@ -248,4 +247,4 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisCeremo
 
     fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
 }
-use dashmap::DashSet;
+use crate::rust::blocks::block_processing_queue::BlockProcessingIdentities;

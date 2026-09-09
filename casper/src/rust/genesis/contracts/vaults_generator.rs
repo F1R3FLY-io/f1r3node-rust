@@ -1,6 +1,13 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/contracts/VaultsGenerator.scala
 
-use super::vault::Vault;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct GenesisVaultAllocation {
+    pub vault_address: VaultAddress,
+    pub general_balance: u64,
+    pub validator_fuel_balance: u64,
+}
 
 pub struct VaultsGenerator {
     pub supply: i64,
@@ -10,18 +17,19 @@ pub struct VaultsGenerator {
 impl VaultsGenerator {
     pub fn new(supply: i64, code: String) -> Self { Self { supply, code } }
 
-    pub fn create_from_user_vaults(
-        user_vaults: Vec<Vault>,
+    pub fn create_from_allocations(
+        allocations: Vec<GenesisVaultAllocation>,
         supply: i64,
         is_last_batch: bool,
     ) -> Self {
-        let vault_balance_list = user_vaults
+        let vault_balance_list = allocations
             .iter()
             .map(|v| {
                 format!(
-                    "(\"{}\", {})",
+                    "(\"{}\", {}, {})",
                     v.vault_address.to_base58(),
-                    v.initial_balance
+                    v.general_balance,
+                    v.validator_fuel_balance
                 )
             })
             .collect::<Vec<String>>()
@@ -44,10 +52,10 @@ impl VaultsGenerator {
                     match [{}] {{
                       vaults => {{
                         new iter in {{
-                          contract iter(@[(addr, initialBalance) ... tail]) = {{
+                          contract iter(@[(addr, initialGeneralBalance, initialValidatorFuelBalance) ... tail]) = {{
                           iter!(tail) |
                           new vault, setDoneCh in {{
-                            initVault!(*vault, addr, initialBalance) |
+                            initVault!(*vault, addr, initialGeneralBalance, initialValidatorFuelBalance) |
                             TreeHashMap!("set", vaultMap, addr, *vault, *setDoneCh) |
                             for (_ <- setDoneCh) {{ Nil }}
                           }}

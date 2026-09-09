@@ -22,11 +22,40 @@ fn cache_accepts(serialized: &[Bond], replayed_post_state: &[Bond]) -> bool {
         && serialized_set == replayed_set
 }
 
-fn authority_accepts(sender: &Validator, justifications: &[Validator], floor: &[Bond]) -> bool {
-    let committee = positive_bonds(floor);
+fn canonical_active(bonds: &[Bond], limit: usize) -> BTreeSet<Validator> {
+    positive_bonds(bonds).into_keys().take(limit).collect()
+}
+
+fn active_bonds(bonds: &[Bond], active: &BTreeSet<Validator>) -> BTreeMap<Validator, i64> {
+    positive_bonds(bonds)
+        .into_iter()
+        .filter(|(validator, _)| active.contains(validator))
+        .collect()
+}
+
+fn authority_accepts(
+    sender: &Validator,
+    justifications: &[Validator],
+    floor_bonds: &[Bond],
+    floor_active: &BTreeSet<Validator>,
+) -> bool {
+    let committee = active_bonds(floor_bonds, floor_active);
     let justified = justifications.iter().cloned().collect::<BTreeSet<_>>();
     committee.contains_key(sender)
         && justified == committee.keys().cloned().collect::<BTreeSet<_>>()
+}
+
+fn transition_active(
+    boundary: bool,
+    previous_active: &BTreeSet<Validator>,
+    post_state_bonds: &[Bond],
+    limit: usize,
+) -> BTreeSet<Validator> {
+    if boundary {
+        canonical_active(post_state_bonds, limit)
+    } else {
+        previous_active.clone()
+    }
 }
 
 fn register_post_state_bonds(
@@ -103,17 +132,23 @@ proptest! {
         stake in 1i64..=1_000_000,
     ) {
         let new_validator = vec![new_validator_byte];
-        prop_assume!(!positive_bonds(&floor).contains_key(&new_validator));
+        let floor_active = canonical_active(&floor, floor.len());
+        prop_assume!(!floor_active.contains(&new_validator));
         let mut post_state = floor.clone();
         post_state.push((new_validator.clone(), stake));
-        let justifications = positive_bonds(&floor).keys().cloned().collect::<Vec<_>>();
+        let justifications = floor_active.iter().cloned().collect::<Vec<_>>();
 
         prop_assert!(cache_accepts(&post_state, &post_state));
-        prop_assert!(!authority_accepts(&new_validator, &justifications, &floor));
+        prop_assert!(!authority_accepts(
+            &new_validator,
+            &justifications,
+            &floor,
+            &floor_active,
+        ));
     }
 
     #[test]
-    fn promoted_floor_authorizes_registered_transition_on_later_block(
+    fn certified_activation_boundary_authorizes_selected_validator_on_later_block(
         floor in committee(),
         new_validator_byte in 128u8..=254,
         stake in 1i64..=1_000_000,
@@ -122,15 +157,77 @@ proptest! {
         prop_assume!(!positive_bonds(&floor).contains_key(&new_validator));
         let mut promoted_floor = floor;
         promoted_floor.push((new_validator.clone(), stake));
-        let justifications = positive_bonds(&promoted_floor)
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
+        let promoted_active = canonical_active(&promoted_floor, promoted_floor.len());
+        let justifications = promoted_active.iter().cloned().collect::<Vec<_>>();
 
         prop_assert!(authority_accepts(
             &new_validator,
             &justifications,
             &promoted_floor,
+            &promoted_active,
+        ));
+    }
+
+    #[test]
+    fn off_boundary_bond_is_visible_without_granting_authority(
+        floor in committee(),
+        new_validator_byte in 128u8..=254,
+        stake in 1i64..=1_000_000,
+    ) {
+        let new_validator = vec![new_validator_byte];
+        let floor_active = canonical_active(&floor, floor.len());
+        prop_assume!(!floor_active.contains(&new_validator));
+        let mut post_state = floor.clone();
+        post_state.push((new_validator.clone(), stake));
+        let post_active = transition_active(false, &floor_active, &post_state, post_state.len());
+        let justifications = post_active.iter().cloned().collect::<Vec<_>>();
+
+        prop_assert!(positive_bonds(&post_state).contains_key(&new_validator));
+        prop_assert!(!post_active.contains(&new_validator));
+        prop_assert!(!authority_accepts(
+            &new_validator,
+            &justifications,
+            &post_state,
+            &post_active,
+        ));
+    }
+
+    #[test]
+    fn boundary_selection_is_order_independent_and_capped(
+        bonds in committee(),
+        limit in 0usize..=8,
+    ) {
+        let mut reverse = bonds.clone();
+        reverse.reverse();
+        let selected = canonical_active(&bonds, limit);
+        let reverse_selected = canonical_active(&reverse, limit);
+        let selected_are_positive = selected
+            .iter()
+            .all(|validator| positive_bonds(&bonds).contains_key(validator));
+
+        prop_assert_eq!(&selected, &reverse_selected);
+        prop_assert!(selected.len() <= limit);
+        prop_assert!(selected_are_positive);
+    }
+
+    #[test]
+    fn inactive_positive_bonds_do_not_enter_authority(
+        bonds in committee(),
+        limit in 0usize..=7,
+    ) {
+        prop_assume!(limit < bonds.len());
+        let active = canonical_active(&bonds, limit);
+        let inactive = positive_bonds(&bonds)
+            .into_keys()
+            .find(|validator| !active.contains(validator))
+            .expect("the cap leaves one validator inactive");
+        let justifications = active.iter().cloned().collect::<Vec<_>>();
+
+        prop_assert!(!authority_accepts(
+            &inactive,
+            &justifications,
+            &bonds,
+            &active,
         ));
     }
 
@@ -233,10 +330,11 @@ proptest! {
         head in committee(),
         post_state in committee(),
     ) {
-        let committee = positive_bonds(&floor);
+        let floor_active = canonical_active(&floor, floor.len());
+        let committee = active_bonds(&floor, &floor_active);
         let sender = committee.keys().next().cloned().expect("committee is non-empty");
         let justifications = committee.keys().cloned().collect::<Vec<_>>();
-        let expected = authority_accepts(&sender, &justifications, &floor);
+        let expected = authority_accepts(&sender, &justifications, &floor, &floor_active);
 
         let divergent_head = head
             .into_iter()
@@ -254,13 +352,22 @@ proptest! {
             .collect::<Vec<_>>();
 
         prop_assert!(expected);
-        prop_assert!(!authority_accepts(&sender, &justifications, &divergent_head));
+        prop_assert!(!authority_accepts(
+            &sender,
+            &justifications,
+            &divergent_head,
+            &floor_active,
+        ));
         prop_assert!(!authority_accepts(
             &sender,
             &justifications,
             &divergent_post_state,
+            &floor_active,
         ));
-        prop_assert_eq!(authority_accepts(&sender, &justifications, &floor), expected);
+        prop_assert_eq!(
+            authority_accepts(&sender, &justifications, &floor, &floor_active),
+            expected,
+        );
     }
 
     #[test]
@@ -289,16 +396,32 @@ proptest! {
 
     #[test]
     fn authority_requires_exact_floor_justifications(floor in committee()) {
-        let committee = positive_bonds(&floor);
+        let floor_active = canonical_active(&floor, floor.len());
+        let committee = active_bonds(&floor, &floor_active);
         let sender = committee.keys().next().cloned().expect("committee is non-empty");
         let mut justifications = committee.keys().cloned().collect::<Vec<_>>();
-        prop_assert!(authority_accepts(&sender, &justifications, &floor));
+        prop_assert!(authority_accepts(
+            &sender,
+            &justifications,
+            &floor,
+            &floor_active,
+        ));
 
         justifications.pop();
-        prop_assert!(!authority_accepts(&sender, &justifications, &floor));
+        prop_assert!(!authority_accepts(
+            &sender,
+            &justifications,
+            &floor,
+            &floor_active,
+        ));
 
         let mut extra = committee.keys().cloned().collect::<Vec<_>>();
         extra.push(vec![0xff, 0xff]);
-        prop_assert!(!authority_accepts(&sender, &extra, &floor));
+        prop_assert!(!authority_accepts(
+            &sender,
+            &extra,
+            &floor,
+            &floor_active,
+        ));
     }
 }

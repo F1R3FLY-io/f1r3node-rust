@@ -5,11 +5,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use casper::rust::blocks::block_processing_queue::{
-    BlockAdmissionFailure, BlockProcessingQueueItem, BlockProcessingQueueReceiver,
-    BlockProcessingQueueSender,
+    BlockProcessingIdentities, BlockProcessingQueueItem, BlockProcessingQueueReceiver,
+    BlockProcessingQueueSender, RecoverySignal, RecoveryStopGuard,
 };
-use casper::rust::blocks::block_processor::{BlockProcessor, ValidationFailureDisposition};
+use casper::rust::blocks::block_processor::{
+    AcceptedBlockPublication, BlockProcessor, SettledAdmissionResult, StoredPublicationPreparation,
+    ValidationFailureDisposition,
+};
 use casper::rust::casper::MultiParentCasper;
+use casper::rust::engine::block_retriever::RequestTracking;
 use casper::rust::errors::CasperError;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use casper::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC;
@@ -19,18 +23,27 @@ use casper::rust::metrics_constants::{
 };
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use casper::rust::{ProposeFunction, ProposeRequestKind, ValidBlockProcessing};
+use casper::rust::{ProposeFunction, ValidBlockProcessing};
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
-use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
-use tokio::sync::mpsc;
+
+mod recovery_driver;
+
+#[cfg(test)]
+mod ownership_tests;
+
+#[cfg(test)]
+mod input_closure_tests;
+
+#[cfg(test)]
+mod publication_tests;
+
+const INPUT_CLOSURE_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 const MAX_PARALLEL_BLOCKS_DEFAULT: usize = 2;
 const MAX_PARALLEL_BLOCKS_ENV: &str = "F1R3_MAX_PARALLEL_BLOCKS";
-const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
 const MALLOC_TRIM_EVERY_BLOCKS_DEFAULT: usize = 1;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 static BLOCKS_SINCE_ALLOCATOR_TRIM: AtomicUsize = AtomicUsize::new(0);
@@ -129,26 +142,6 @@ impl Drop for BlockProcessingHeapBoundary {
     fn drop(&mut self) { maybe_trim_allocator_after_block(); }
 }
 
-/// Ensures the in-flight marker is always cleared, even on early-return or
-/// panic.
-struct InFlightBlockGuard {
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
-    hash: BlockHash,
-}
-
-impl InFlightBlockGuard {
-    fn new(blocks_in_processing: Arc<DashSet<BlockHash>>, hash: BlockHash) -> Self {
-        Self {
-            blocks_in_processing,
-            hash,
-        }
-    }
-}
-
-impl Drop for InFlightBlockGuard {
-    fn drop(&mut self) { self.blocks_in_processing.remove(&self.hash); }
-}
-
 struct ActiveBlockProcessingGuard;
 
 impl ActiveBlockProcessingGuard {
@@ -180,7 +173,7 @@ pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
 
     pub block_processor: Arc<BlockProcessor<T>>,
 
-    pub blocks_in_processing: Arc<DashSet<BlockHash>>,
+    pub blocks_in_processing: Arc<BlockProcessingIdentities>,
 
     pub trigger_propose_f: Option<Arc<ProposeFunction>>,
 
@@ -194,7 +187,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
             BlockProcessingQueueSender,
         ),
         block_processor: Arc<BlockProcessor<T>>,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        blocks_in_processing: Arc<BlockProcessingIdentities>,
         trigger_propose_f: Option<Arc<ProposeFunction>>,
     ) -> Self {
         Self {
@@ -207,22 +200,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
         }
     }
 
-    /// Create and start the block processor stream
-    /// Returns a handle that can be used to await the processing task
-    ///
-    /// This is equivalent to Scala's `BlockProcessorInstance.create` method.
-    /// It processes blocks with bounded parallelism.
-    ///
-    /// # Arguments
-    ///
-    /// * `blocks_queue_tx` - Sender to enqueue blocks for processing (for
-    ///   re-enqueuing buffer pendants)
-    pub fn create(
-        self,
-    ) -> Result<mpsc::Receiver<(BlockMessage, ValidBlockProcessing)>, CasperError> {
-        let (result_tx, result_rx) = mpsc::channel(BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY);
-
-        tokio::spawn(async move {
+    pub fn run(self) -> impl std::future::Future<Output = Result<(), CasperError>> + Send {
+        let stop = RecoveryStopGuard(self.block_queue_tx.recovery());
+        async move {
             let Self {
                 mut blocks_queue_rx,
                 block_queue_tx,
@@ -231,281 +211,183 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 trigger_propose_f,
                 max_parallel_blocks,
             } = self;
-
-            tracing::info!(max_parallel_blocks, "Starting bounded block processing");
+            if max_parallel_blocks == 0 {
+                return Err(CasperError::RuntimeError(
+                    "Block worker limit must be positive".into(),
+                ));
+            }
+            let queue = block_queue_tx.downgrade();
+            let control = block_queue_tx.recovery();
+            drop(block_queue_tx);
+            let mut workers = tokio::task::JoinSet::new();
+            let mut services = tokio::task::JoinSet::new();
+            let mut closure_probe = tokio::time::interval_at(
+                tokio::time::Instant::now() + INPUT_CLOSURE_PROBE_INTERVAL,
+                INPUT_CLOSURE_PROBE_INTERVAL,
+            );
+            closure_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let (offers, receiver) = tokio::sync::watch::channel(None);
+            services.spawn(recovery_driver::run(
+                queue.clone(),
+                block_processor.clone(),
+                control.clone(),
+                offers,
+            ));
+            services.spawn(recovery_driver::propose(receiver, trigger_propose_f));
+            let _stop = stop;
             metrics::gauge!(
                 BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
                 "source" => BLOCK_PROCESSOR_METRICS_SOURCE
             )
             .set(max_parallel_blocks as f64);
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(max_parallel_blocks));
-
-            loop {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-                let Some(BlockProcessingQueueItem {
-                    casper,
-                    block,
-                    reservation: admission_reservation,
-                }) = blocks_queue_rx.recv().await
-                else {
-                    break;
-                };
-                block_queue_tx.record_dequeue();
-                let block_processor = block_processor.clone();
-                let blocks_in_processing = blocks_in_processing.clone();
-                let trigger_propose_f = trigger_propose_f.clone();
-                let block_queue_tx = block_queue_tx.clone();
-                let casper = casper.clone();
-                let result_tx = result_tx.clone();
-
-                // Spawn task to process the block
-                tokio::spawn(async move {
-                    let _heap_boundary = BlockProcessingHeapBoundary;
-                    let _active_guard = ActiveBlockProcessingGuard::new();
-                    let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
-                    let block_hash = block.block_hash.clone();
-                    blocks_in_processing.insert(block_hash.clone());
-
-                    let in_flight_guard =
-                        InFlightBlockGuard::new(blocks_in_processing.clone(), block_hash);
-
-                    // Process the block with all its validation steps
-                    let result = process_block_with_steps(
-                        block_processor.clone(),
-                        casper.clone(),
-                        block.clone(),
-                    )
-                    .await;
-
-                    match result {
-                        Ok(BlockProcessOutcome::Processed(block, res)) => {
-                            tracing::info!("Block {} processing finished.", block_str);
-                            if let Err(err) =
-                                block_processor.clear_validation_failures(&block.block_hash)
-                            {
-                                tracing::warn!(
-                                    block = %block_str,
-                                    error = %err,
-                                    "failed to clear validation-failure ledger"
-                                );
-                            }
-                            match result_tx.send((block, res)).await {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    tracing::error!(error = %err, "block processing result send failed")
-                                }
-                            }
-                        }
-                        Ok(BlockProcessOutcome::MissingDependencies) => {
-                            tracing::warn!("Block {} delayed: missing dependencies.", block_str);
-                        }
-                        // Already logged at INFO by the pipeline; a routine
-                        // drop is not a failure.
-                        Ok(BlockProcessOutcome::NotOfInterest)
-                        | Ok(BlockProcessOutcome::Malformed) => {}
-                        Err(e) => {
-                            tracing::error!(block = %block_str, error = %e, "block processing failed");
-                            match block_processor.note_validation_failure(&block.block_hash) {
-                                Ok(ValidationFailureDisposition::Retry) => {}
-                                Ok(ValidationFailureDisposition::PurgeAndQuarantine) => {
-                                    tracing::warn!(
-                                        block = %block_str,
-                                        "hard-failing block purged from buffer after \
-                                         reaching the validation-error attempt cap"
-                                    );
-                                    if let Err(purge_err) =
-                                        block_processor.purge_from_buffer_and_ack(&block).await
-                                    {
-                                        tracing::warn!(
-                                            block = %block_str,
-                                            error = %purge_err,
-                                            "purge after validation-error cap failed"
-                                        );
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::warn!(
-                                        block = %block_str,
-                                        error = %err,
-                                        "failed to record validation failure"
-                                    );
-                                }
-                            }
+            let outcome = loop {
+                if blocks_queue_rx.sender_strong_count() == 0 && blocks_queue_rx.is_empty() {
+                    break Ok(());
+                }
+                tokio::select! {
+                    _ = closure_probe.tick() => {}
+                    service = services.join_next() => {
+                        break match service {
+                            Some(Ok(result)) => result,
+                            Some(Err(error)) => Err(CasperError::RuntimeError(format!("Recovery service failed: {error}"))),
+                            None => Err(CasperError::RuntimeError("Recovery services lost their owner".into())),
+                        };
+                    }
+                    worker = workers.join_next(), if !workers.is_empty() => {
+                        if let Some(Err(error)) = worker {
+                            break Err(CasperError::RuntimeError(format!("Block worker failed: {error}")));
                         }
                     }
-
-                    // Release in-flight marker before scanning dependency-free pendants.
-                    // This avoids suppressing re-enqueue when another task resolves a dependency
-                    // while this task is still in post-processing.
-                    drop(in_flight_guard);
-                    drop(admission_reservation);
-
-                    // Step 6 (from Scala): Get dependency-free blocks from buffer and enqueue them
-                    // Equivalent to: c.getDependencyFreeFromBuffer
-                    // In Scala, if this fails, the stream short-circuits and triggerProposeF won't
-                    // be called
-                    let dependency_scan_guard = block_queue_tx.acquire_dependency_scan().await;
-                    match casper.get_dependency_free_hashes_from_buffer() {
-                        Ok(buffer_pendant_hashes) => {
-                            if !buffer_pendant_hashes.is_empty() {
-                                tracing::info!(
-                                    count = buffer_pendant_hashes.len(),
-                                    "Dependency-free pendants after processing {}",
-                                    block_str,
-                                );
-                            }
-
-                            // Enqueue pendants if we can mark them as queued/in-processing first.
-                            for pendant_hash in buffer_pendant_hashes {
-                                if block_processor
-                                    .is_validation_failure_quarantined(&pendant_hash)
-                                    .unwrap_or(false)
-                                {
-                                    tracing::debug!(
-                                        "Skipping dependency-free pendant {} during \
-                                         validation-failure quarantine",
-                                        PrettyPrinter::build_string_bytes(&pendant_hash)
-                                    );
-                                    continue;
-                                }
-                                if blocks_in_processing.insert(pendant_hash.clone()) {
-                                    let pendant = match casper.block_store().get(&pendant_hash) {
-                                        Ok(Some(block)) => block,
-                                        Ok(None) => {
-                                            blocks_in_processing.remove(&pendant_hash);
-                                            continue;
-                                        }
-                                        Err(error) => {
-                                            blocks_in_processing.remove(&pendant_hash);
-                                            tracing::error!(
-                                                error = %error,
-                                                "Dependency-free pendant load failed"
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                    match block_queue_tx.try_enqueue(casper.clone(), pendant) {
-                                        Ok(()) => tracing::info!(
-                                            "Enqueued dependency-free pendant {}",
-                                            PrettyPrinter::build_string_bytes(&pendant_hash)
-                                        ),
-                                        Err(error)
-                                            if error.failure
-                                                == BlockAdmissionFailure::CountCapacity =>
-                                        {
-                                            blocks_in_processing.remove(&pendant_hash);
-                                            tracing::info!(
-                                                error = %error,
-                                                "Deferred dependency-free pendant {}",
-                                                PrettyPrinter::build_string_bytes(&pendant_hash)
-                                            );
-                                            break;
-                                        }
-                                        Err(error) if error.failure.is_temporary() => {
-                                            blocks_in_processing.remove(&pendant_hash);
-                                            tracing::info!(
-                                                error = %error,
-                                                "Deferred dependency-free pendant {}",
-                                                PrettyPrinter::build_string_bytes(&pendant_hash)
-                                            );
-                                        }
-                                        Err(error) => {
-                                            blocks_in_processing.remove(&pendant_hash);
-                                            tracing::error!(
-                                                error = %error,
-                                                "Dependency-free pendant admission failed"
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    tracing::info!(
-                                        "Skipping dependency-free pendant {} enqueue because it \
-                                         is already marked in-flight",
-                                        PrettyPrinter::build_string_bytes(&pendant_hash)
-                                    );
-                                }
-                            }
-
-                            drop(dependency_scan_guard);
-
-                            // Only call trigger_propose if get_dependency_free_from_buffer
-                            // succeeded and this path is explicitly
-                            // enabled. Heartbeat proposer is the
-                            // default liveness path to avoid propose storms under heavy replay.
-                            if trigger_propose_after_block_processing_enabled() {
-                                if let Some(trigger_propose) = trigger_propose_f {
-                                    // Skip trigger if local validator is not currently bonded.
-                                    // This avoids repeated ReadOnlyMode propose attempts on
-                                    // non-bonded nodes.
-                                    let is_bonded_validator =
-                                        if let Some(validator) = casper.get_validator() {
-                                            match casper.get_snapshot().await {
-                                                Ok(snapshot) => is_finalized_floor_validator(
-                                                    &snapshot.finalized_floor_validators(),
-                                                    &validator.public_key.bytes,
-                                                ),
-                                                Err(err) => {
-                                                    tracing::warn!(
-                                                        "Failed to get Casper snapshot for \
-                                                         trigger-propose bond check: {}",
-                                                        err
-                                                    );
-                                                    false
-                                                }
-                                            }
-                                        } else {
-                                            false
-                                        };
-
-                                    if is_bonded_validator {
-                                        match trigger_propose(ProposeRequestKind::PendingDeploy)
-                                            .await
-                                        {
-                                            Ok(_) => {}
-                                            Err(err) => {
-                                                tracing::error!(error = %err, "propose trigger after block processing failed")
-                                            }
-                                        }
-                                    } else {
-                                        tracing::debug!(
-                                            "Skipping trigger propose after block processing: \
-                                             validator is not bonded"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!(error = %err, "dependency-free block buffer retrieval failed; skipping propose trigger");
-                            // Don't call trigger_propose if get_dependency_free_from_buffer failed
-                        }
+                    item = blocks_queue_rx.recv(), if workers.len() < max_parallel_blocks => {
+                        let Some(item) = item else { break Ok(()); };
+                        queue.record_dequeue(blocks_queue_rx.len());
+                        workers.spawn(process_owned_block(
+                            block_processor.clone(),
+                            item,
+                            blocks_in_processing.clone(),
+                            control.signal(),
+                        ));
                     }
-
-                    metrics::gauge!(
-                        BLOCKS_IN_PROCESSING_SIZE_METRIC,
-                        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-                    )
-                    .set(blocks_in_processing.len() as f64);
-                    if let Some(rss_kb) =
-                        casper::rust::util::rholang::mem_profiler::read_vm_rss_kb_always()
-                    {
-                        metrics::gauge!(
-                            PROCESS_RSS_KB_METRIC,
-                            "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-                        )
-                        .set(rss_kb as f64);
-                    }
-
-                    drop(permit);
-                });
+                }
+            };
+            blocks_queue_rx.close();
+            control.stop();
+            workers.abort_all();
+            services.abort_all();
+            while let Ok(item) = blocks_queue_rx.try_recv() {
+                drop(item);
             }
+            tokio::join!(
+                async { while workers.join_next().await.is_some() {} },
+                async { while services.join_next().await.is_some() {} },
+            );
+            outcome
+        }
+    }
+}
 
-            tracing::info!("Block processing queue closed, stopping processor");
-
-            Result::<(), CasperError>::Ok(())
-        });
-
-        Ok(result_rx)
+async fn process_owned_block<T: TransportLayer + Send + Sync>(
+    processor: Arc<BlockProcessor<T>>,
+    item: BlockProcessingQueueItem,
+    identities: Arc<BlockProcessingIdentities>,
+    recovery: Arc<RecoverySignal>,
+) {
+    let _heap_boundary = BlockProcessingHeapBoundary;
+    let _active_guard = ActiveBlockProcessingGuard::new();
+    let hash = item.block.block_hash.clone();
+    let block = PrettyPrinter::build_string_bytes(&hash);
+    let mut retry_delay = std::time::Duration::from_millis(100);
+    let mut accepted_publication = None;
+    loop {
+        if let Some(evidence) = &accepted_publication {
+            match processor
+                .restore_accepted_publication(item.casper.clone(), &hash, evidence)
+                .await
+            {
+                Ok(()) => break,
+                Err(error) => {
+                    tracing::warn!(%block, %error, "Accepted publication repair failed; retaining worker lease")
+                }
+            }
+            tokio::time::sleep(retry_delay).await;
+            retry_delay = (retry_delay * 2).min(std::time::Duration::from_secs(1));
+            continue;
+        }
+        let result = process_block_with_steps(
+            &processor,
+            &item.casper,
+            &item.block,
+            &mut accepted_publication,
+        )
+        .await;
+        let allow_durable_exit = match result {
+            Ok(BlockProcessOutcome::Processed(status)) => {
+                tracing::info!(%block, ?status, "Block processing finished");
+                if let Err(error) = processor.clear_validation_failures(&hash) {
+                    tracing::warn!(%block, %error, "Validation-failure ledger cleanup failed");
+                }
+                break;
+            }
+            Ok(BlockProcessOutcome::MissingDependencies) => {
+                tracing::warn!(%block, "Block delayed by missing dependencies");
+                true
+            }
+            Ok(BlockProcessOutcome::Quarantined) => true,
+            Ok(
+                BlockProcessOutcome::NotOfInterest
+                | BlockProcessOutcome::Malformed
+                | BlockProcessOutcome::DuplicateDelivery,
+            ) => break,
+            Err(BlockProcessFailure::Local(error)) => {
+                tracing::error!(%block, %error, "Local block processing failed before validation");
+                false
+            }
+            Err(BlockProcessFailure::Validation(error)) => {
+                tracing::error!(%block, %error, "Block processing failed");
+                match processor.note_validation_failure(&hash) {
+                    Ok(ValidationFailureDisposition::Retry) => {}
+                    Ok(ValidationFailureDisposition::RetainAndQuarantine) => {
+                        tracing::warn!(%block, "Block and dependencies retained during validation quarantine");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%block, %error, "Validation failure recording failed")
+                    }
+                }
+                true
+            }
+        };
+        if allow_durable_exit {
+            match processor.retry_ownership(&hash) {
+                Ok(casper::rust::blocks::block_processor::RetryOwnership::Pending) => break,
+                Ok(casper::rust::blocks::block_processor::RetryOwnership::Terminal) => {
+                    if let Err(error) = processor.forget_hash_tracking(&hash) {
+                        tracing::warn!(%block, %error, "Durable handoff request cleanup failed");
+                    }
+                    break;
+                }
+                Ok(casper::rust::blocks::block_processor::RetryOwnership::Missing) => {}
+                Err(error) => tracing::warn!(%block, %error, "Retry ownership lookup failed"),
+            }
+        }
+        if accepted_publication.is_none() {
+            match processor.reopen_after_local_failure(hash.clone()) {
+                Ok(RequestTracking::Tracked) => break,
+                Ok(RequestTracking::AtCapacity | RequestTracking::Quarantined) => {
+                    tracing::warn!(%block, "Retaining worker lease until local publication can succeed");
+                }
+                Err(error) => tracing::warn!(%block, %error, "Retry ownership handoff failed"),
+            }
+        }
+        tokio::time::sleep(retry_delay).await;
+        retry_delay = (retry_delay * 2).min(std::time::Duration::from_secs(1));
+    }
+    drop(item);
+    recovery.request(true);
+    metrics::gauge!(BLOCKS_IN_PROCESSING_SIZE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+        .set(identities.len() as f64);
+    if let Some(rss) = casper::rust::util::rholang::mem_profiler::read_vm_rss_kb_always() {
+        metrics::gauge!(PROCESS_RSS_KB_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+            .set(rss as f64);
     }
 }
 
@@ -514,10 +396,20 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 /// on its dependencies — not failures, and they must never travel the error
 /// channel: an `Err` here means something actually broke.
 enum BlockProcessOutcome {
-    Processed(BlockMessage, ValidBlockProcessing),
+    Processed(ValidBlockProcessing),
+    Quarantined,
     NotOfInterest,
     Malformed,
     MissingDependencies,
+    DuplicateDelivery,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum BlockProcessFailure {
+    #[error(transparent)]
+    Local(#[from] CasperError),
+    #[error("validation operation failed: {0}")]
+    Validation(CasperError),
 }
 
 /// Process a block through all validation steps
@@ -530,34 +422,38 @@ enum BlockProcessOutcome {
 /// 5. Enqueue dependency-free blocks from buffer
 /// 6. Trigger propose if configured
 async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
-    block_processor: Arc<BlockProcessor<T>>,
-    casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
-    block: BlockMessage,
-) -> Result<BlockProcessOutcome, CasperError> {
+    block_processor: &Arc<BlockProcessor<T>>,
+    casper: &Arc<dyn MultiParentCasper + Send + Sync + 'static>,
+    block: &BlockMessage,
+    accepted_publication: &mut Option<AcceptedBlockPublication>,
+) -> Result<BlockProcessOutcome, BlockProcessFailure> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
+    let quarantined = block_processor.is_validation_failure_quarantined(&block.block_hash)?;
+    if quarantined {
+        match block_processor.prepare_stored_publication(casper.clone(), &block.block_hash)? {
+            StoredPublicationPreparation::Terminal => return Ok(BlockProcessOutcome::Quarantined),
+            StoredPublicationPreparation::Missing => {}
+            StoredPublicationPreparation::Accepted {
+                block: stored,
+                evidence,
+            } => {
+                let evidence = accepted_publication.insert(evidence);
+                block_processor
+                    .publish_prepared_block(casper.clone(), &stored, evidence)
+                    .await?;
+                return Ok(BlockProcessOutcome::Quarantined);
+            }
+        }
+    }
 
     // Step 1: Check if block is of interest
     // Equivalent to: blockProcessor.checkIfOfInterest(c, b)
-    let is_of_interest = match block_processor.check_if_of_interest(casper.clone(), &block) {
-        Ok(is_of_interest) => is_of_interest,
-        Err(err) => {
-            block_processor
-                .ack_processed(&block)
-                .await
-                .map_err(|ack_err| {
-                    CasperError::RuntimeError(format!(
-                        "check_if_of_interest failed for {}, and cleanup failed: {}",
-                        block_str, ack_err
-                    ))
-                })?;
-            return Err(err);
-        }
-    };
+    let interest = block_processor.capture_publication_interest(casper.clone(), block)?;
 
-    if !is_of_interest {
+    let Some(interest) = interest else {
         tracing::info!("Block {} is not of interest. Dropped.", block_str);
         block_processor
-            .purge_from_buffer_and_ack(&block)
+            .purge_from_buffer_and_ack(block)
             .await
             .map_err(|err| {
                 CasperError::RuntimeError(format!(
@@ -566,30 +462,19 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
                 ))
             })?;
         return Ok(BlockProcessOutcome::NotOfInterest);
-    }
+    };
 
     // Step 2: Check if well-formed and store
     // Equivalent to: blockProcessor.checkIfWellFormedAndStore(b)
-    let is_well_formed = match block_processor.check_if_well_formed_and_store(&block).await {
-        Ok(is_well_formed) => is_well_formed,
-        Err(err) => {
-            block_processor
-                .ack_processed(&block)
-                .await
-                .map_err(|ack_err| {
-                    CasperError::RuntimeError(format!(
-                        "check_if_well_formed_and_store failed for {}, and cleanup failed: {}",
-                        block_str, ack_err
-                    ))
-                })?;
-            return Err(err);
-        }
-    };
+    let (is_well_formed, evidence) = block_processor
+        .check_and_store_for_publication(casper.clone(), block, interest)
+        .await?;
+    *accepted_publication = evidence;
 
     if !is_well_formed {
         tracing::info!("Block {} is malformed. Dropped.", block_str);
         block_processor
-            .purge_from_buffer_and_ack(&block)
+            .purge_from_buffer_and_ack(block)
             .await
             .map_err(|err| {
                 CasperError::RuntimeError(format!(
@@ -598,6 +483,25 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
                 ))
             })?;
         return Ok(BlockProcessOutcome::Malformed);
+    }
+
+    if quarantined {
+        if let Some(evidence) = accepted_publication.as_ref() {
+            block_processor
+                .restore_accepted_publication(casper.clone(), &block.block_hash, evidence)
+                .await?;
+            return Ok(BlockProcessOutcome::Quarantined);
+        }
+        if block_processor
+            .restore_stored_buffer_ownership(casper.clone(), &block.block_hash)
+            .await?
+        {
+            return Ok(BlockProcessOutcome::Quarantined);
+        }
+        return Err(CasperError::RuntimeError(
+            "Quarantined block body disappeared after storage".to_string(),
+        )
+        .into());
     }
 
     // Step 3: Log started
@@ -611,52 +515,38 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     // validators. The outer loop's pendant scan then re-enqueues whatever was
     // deferred waiting on this block.
     match block_processor
-        .try_admit_settled(casper.clone(), &block)
+        .try_admit_settled(casper.clone(), block)
         .await
     {
-        Ok(true) => {
+        Ok(SettledAdmissionResult::Admitted) => {
             return Ok(BlockProcessOutcome::Processed(
-                block,
                 rspace_plus_plus::rspace::history::Either::Left(
                     casper::rust::block_status::BlockError::AdmittedSettled,
                 ),
             ));
         }
-        Ok(false) => {}
-        Err(err) => {
-            block_processor
-                .ack_processed(&block)
-                .await
-                .map_err(|ack_err| {
-                    CasperError::RuntimeError(format!(
-                        "try_admit_settled failed for {}, and cleanup failed: {}",
-                        block_str, ack_err
-                    ))
-                })?;
-            return Err(err);
+        Ok(SettledAdmissionResult::DuplicateInFlight) => {
+            return Ok(BlockProcessOutcome::DuplicateDelivery);
         }
+        Ok(SettledAdmissionResult::AlreadyAdmitted) => {
+            if let Err(error) = block_processor.ack_processed(block).await {
+                tracing::warn!(
+                    block = %block_str,
+                    error = %error,
+                    "duplicate settled-history delivery acknowledgement failed"
+                );
+            }
+            return Ok(BlockProcessOutcome::DuplicateDelivery);
+        }
+        Ok(SettledAdmissionResult::NotSolicited | SettledAdmissionResult::NotEligible) => {}
+        Err(err) => return Err(err.into()),
     }
 
     // Step 4: Check dependencies with effects
     // Equivalent to: blockProcessor.checkDependenciesWithEffects(c, b)
-    let has_dependencies = match block_processor
-        .check_dependencies_with_effects(casper.clone(), &block)
-        .await
-    {
-        Ok(has_dependencies) => has_dependencies,
-        Err(err) => {
-            block_processor
-                .ack_processed(&block)
-                .await
-                .map_err(|ack_err| {
-                    CasperError::RuntimeError(format!(
-                        "check_dependencies_with_effects failed for {}, and cleanup failed: {}",
-                        block_str, ack_err
-                    ))
-                })?;
-            return Err(err);
-        }
-    };
+    let has_dependencies = block_processor
+        .check_dependencies_with_publication(casper.clone(), block, accepted_publication.as_ref())
+        .await?;
 
     if !has_dependencies {
         tracing::info!("Block {} missing dependencies.", block_str);
@@ -666,30 +556,14 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
 
     // Step 5: Validate block with effects
     // Equivalent to: blockProcessor.validateWithEffects(c, b, None)
-    let validation_result = match block_processor
-        .validate_with_effects(casper.clone(), &block, None)
+    let validation_result = block_processor
+        .validate_with_publication(casper.clone(), block, None, accepted_publication.as_ref())
         .await
-    {
-        Ok(validation_result) => validation_result,
-        Err(err) => {
-            // ensure this block is no longer tracked in the retriever even when validation
-            // fails
-            block_processor
-                .ack_processed(&block)
-                .await
-                .map_err(|ack_err| {
-                    CasperError::RuntimeError(format!(
-                        "validate_with_effects failed for {}, and cleanup failed: {}",
-                        block_str, ack_err
-                    ))
-                })?;
-            return Err(err);
-        }
-    };
+        .map_err(BlockProcessFailure::Validation)?;
 
     tracing::info!("Block {} validated {:?}.", block_str, validation_result);
 
-    Ok(BlockProcessOutcome::Processed(block, validation_result))
+    Ok(BlockProcessOutcome::Processed(validation_result))
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ pub mod interpreter_util;
 pub mod mem_profiler;
 pub mod registry_sig_gen;
 pub mod replay_cache;
+pub(crate) mod replay_cache_state;
 pub mod replay_failure;
 pub mod runtime_manager;
 pub mod supply;

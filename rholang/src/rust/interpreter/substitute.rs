@@ -9,6 +9,7 @@ use models::rhoapi::{
     EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
@@ -30,8 +31,8 @@ use super::accounting::costs::Cost;
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::metering::MeteredMachine;
-use super::unwrap_option_safe;
 use super::util::{prepend_connective, prepend_expr};
+use super::{deterministic_reduction, unwrap_option_safe};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/Substitute.scala
 pub trait SubstituteTrait<A> {
@@ -51,6 +52,31 @@ pub struct Substitute {
 }
 
 impl Substitute {
+    fn reserve_host_work<A: prost::Message>(
+        term: &A,
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let bindings = u64::try_from(env.env_map.len()).map_err(|_| {
+            InterpreterError::BugFoundError(
+                "substitution binding count does not fit in u64".to_string(),
+            )
+        })?;
+        let bytes = u64::try_from(term.encoded_len()).map_err(|_| {
+            InterpreterError::BugFoundError(
+                "substitution byte count does not fit in u64".to_string(),
+            )
+        })?;
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::SubstitutionBindings,
+            HostWorkUnits::new(bindings),
+        )?;
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::SubstitutionBytes,
+            HostWorkUnits::new(bytes),
+        )?;
+        Ok(())
+    }
+
     pub fn substitute_and_charge<A>(
         &self,
         term: &A,
@@ -61,6 +87,7 @@ impl Substitute {
         Self: SubstituteTrait<A>,
         A: Clone + prost::Message,
     {
+        Self::reserve_host_work(term, env)?;
         // scala 'charge' function built in here
         match self.substitute(term.clone(), depth, env) {
             Ok(subst_term) => {
@@ -90,6 +117,7 @@ impl Substitute {
         Self: SubstituteTrait<A>,
         A: Clone + prost::Message,
     {
+        Self::reserve_host_work(term, env)?;
         // scala 'charge' function built in here
         match self.substitute_no_sort(term.clone(), depth, env) {
             Ok(subst_term) => {

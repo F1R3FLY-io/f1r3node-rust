@@ -34,6 +34,7 @@ funding slots, lollipop delegation, exact settlement, replay, and finalization.
 7. [Mergeable evidence authentication](mergeable-evidence-authentication.md)
 8. [Admission-record and runtime-effect alignment](admission-effect-alignment.md)
 9. [Block-heap lifecycle and reclamation](block-heap-lifecycle.md)
+   - [Runtime ownership inventory](runtime-ownership-inventory.md)
 10. [Deploy occurrence and exact state effects](../deploy-occurrence/deploy-occurrence-specification.md)
 11. [Finalized-floor specification](../finalized-floor/finalized-floor-specification.md)
 

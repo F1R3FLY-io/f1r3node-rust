@@ -7,6 +7,7 @@ use std::task::Poll;
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use prost::Message;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
@@ -23,6 +24,7 @@ use tokio::sync::{oneshot, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tokio::task::JoinHandle;
 
 use super::accounting::RuntimeBudget;
+use super::host_work::HostWorkBudget;
 use super::rho_runtime::RhoISpace;
 
 type ParticipantId = CausalPath;
@@ -105,6 +107,8 @@ impl ReductionContext {
     }
 
     pub fn rejoin(&self) { self.session.rejoin(self.participant.clone()); }
+
+    pub fn host_work_budget(&self) -> Option<HostWorkBudget> { self.session.host_work.clone() }
 }
 
 pub fn current() -> Option<ReductionContext> {
@@ -113,6 +117,19 @@ pub fn current() -> Option<ReductionContext> {
     } else {
         REDUCTION_CONTEXT.try_with(Clone::clone).ok()
     }
+}
+
+pub fn reserve_host_work(
+    dimension: HostWorkDimension,
+    units: HostWorkUnits,
+) -> Result<(), HostWorkReservationError> {
+    let Some(context) = current() else {
+        return Ok(());
+    };
+    let Some(budget) = context.host_work_budget() else {
+        return Ok(());
+    };
+    budget.reserve(dimension, units).map(|_| ())
 }
 
 pub async fn scope<T>(context: ReductionContext, future: impl Future<Output = T>) -> T {
@@ -170,12 +187,27 @@ pub async fn root<T>(
     coordinator: ReductionCoordinator,
     future: impl Future<Output = T>,
 ) -> T {
+    root_with_host_work(space, budget, coordinator, None, future).await
+}
+
+pub async fn root_with_host_work<T>(
+    space: RhoISpace,
+    budget: RuntimeBudget,
+    coordinator: ReductionCoordinator,
+    host_work: Option<HostWorkBudget>,
+    future: impl Future<Output = T>,
+) -> T {
     if current().is_some() {
         return future.await;
     }
     let session_id = budget.deploy_id();
     let evaluation_guard = coordinator.enter_evaluation().await;
-    let session = Arc::new(ReductionSession::new(space, budget, evaluation_guard));
+    let session = Arc::new(ReductionSession::new(
+        space,
+        budget,
+        host_work,
+        evaluation_guard,
+    ));
     let context = ReductionContext::root(session.clone(), session_id);
     session.register(CausalPath::new());
     let guard = ParticipantGuard::new(session, CausalPath::new());
@@ -243,6 +275,7 @@ struct SessionState {
 struct ReductionSession {
     space: RhoISpace,
     budget: RuntimeBudget,
+    host_work: Option<HostWorkBudget>,
     state: Mutex<SessionState>,
     evaluation_guard: Mutex<Option<OwnedRwLockReadGuard<()>>>,
 }
@@ -336,11 +369,13 @@ impl ReductionSession {
     fn new(
         space: RhoISpace,
         budget: RuntimeBudget,
+        host_work: Option<HostWorkBudget>,
         evaluation_guard: OwnedRwLockReadGuard<()>,
     ) -> Self {
         Self {
             space,
             budget,
+            host_work,
             state: Mutex::new(SessionState {
                 participants: BTreeMap::new(),
                 intents: BTreeMap::new(),
@@ -960,6 +995,7 @@ mod tests {
     use std::time::Duration;
 
     use models::rhoapi::{CostAuthority, CostRegion};
+    use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsage};
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::rspace::RSpace;
     use tokio::sync::Notify;
@@ -1135,6 +1171,42 @@ mod tests {
             },
         )
         .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_children_share_the_root_host_work_budget() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(16)));
+        root_with_host_work(
+            reducer.space.clone(),
+            RuntimeBudget::new(Cost::create(100, "host work propagation")),
+            ReductionCoordinator::default(),
+            Some(host_work.clone()),
+            async {
+                let parent = current().expect("root reduction context");
+                let children = parent.split(4);
+                let mut handles = Vec::new();
+                for child in children {
+                    handles.push(tokio::spawn(scope(child.clone(), async move {
+                        let _guard = ParticipantGuard::for_context(&child);
+                        reserve_host_work(HostWorkDimension::ReductionSteps, HostWorkUnits::new(1))
+                            .unwrap();
+                    })));
+                }
+                for handle in handles {
+                    handle.await.unwrap();
+                }
+                parent.rejoin();
+            },
+        )
+        .await;
+
+        assert_eq!(
+            host_work.usage(HostWorkDimension::ReductionSteps),
+            HostWorkUsage::new(4)
+        );
     }
 
     #[tokio::test]

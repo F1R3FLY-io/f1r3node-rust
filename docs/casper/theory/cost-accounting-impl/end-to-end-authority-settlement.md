@@ -122,6 +122,36 @@ second mutable lane map would create two sources of truth and could either
 double-charge or disagree with replay, so the earlier unused D0 prototype was
 removed.
 
+### Epoch-close transaction boundary
+
+Epoch issuance uses the same native SystemVault custody as deployment
+settlement. PoS controls eligibility and records one collective mint frontier.
+
+One close-block system deploy can also change rewards, withdrawals, and the
+active validator set. The complete system deploy is one atomic transaction.
+
+Each eligible validator mint succeeds before PoS advances the frontier. The
+first failure stops the fold and returns a failed close.
+
+The runtime then resets the exact pre-close root. The proposer publishes no
+block and can retry from unchanged custody and PoS state.
+
+An amount of zero advances the frontier without calling the positive-only mint
+primitive. A repeated successful close creates no second credit.
+
+Bootstrap accepts epoch zero for direct tests and epoch one for production.
+Later closes must advance exactly one epoch. A gap fails without state change.
+
+Lifecycle transitions preserve the frontier. A validator that becomes active
+after a selected close waits for the next epoch.
+
+This boundary preserves validator concurrency. It adds no network lock and
+does not change Casper voting or finalization.
+
+DR-60 specifies this rule. `EpochMintAtomicity.v` and
+`EpochMintAtomicity.tla` verify failure identity, exact issuance, retry,
+commutation, and play-replay agreement.
+
 ## Governing invariants
 
 Let $`V(a)`$ be available custody in the canonical SystemVault selected for
@@ -591,10 +621,22 @@ Rust regression verifies authorized and unauthorized calls plus independent
 replay equality over the generated genesis state.
 
 At an epoch boundary, PoS selects eligible active validators and invokes the
-authenticated SystemVault protocol-mint path. The `(validator, epoch)` ledger
-makes minting idempotent across replay and multi-parent merge. A halted validator
-is ineligible. A newly bonded validator receives its configured initial protocol
-funding through the same canonical vault path.
+authenticated SystemVault protocol-mint path. The monotonic collective frontier
+makes minting idempotent across replay and multi-parent merge. A halted
+validator is ineligible. Initial validator funding occurs only in genesis.
+
+A later bond transfers existing custody into stake and creates no protocol credit.
+The next eligible epoch can credit only `epoch_phlogiston`. Withdrawal, slash,
+redemption, and rebond do not create an initial grant. Rebond increments the
+validator generation and preserves the same epoch issuance rules.
+
+![Validator issuance lifecycle. Genesis grants initial custody once. Bonding transfers custody into stake. Epoch issuance requires active membership, a boundary, and no halt.](../diagrams/genesis-epoch-validator-issuance.svg)
+
+The Rocq model `BondIssuanceLifecycle.v` proves the lifecycle conservation laws.
+The TLA+ model `BondIssuanceLifecycle.tla` checks validator interleavings and
+replay agreement. Its nine unsafe controls reproduce each excluded issuance
+defect. `MintedEpochRetention.v` and `MintedEpochFrontier.tla` verify the
+bounded frontier and its lifecycle rules.
 
 ## Fees, exchange, and token minting
 
@@ -656,6 +698,20 @@ receives that immutable per-deployment snapshot as an input. It neither looks up
 the registry nor asks a live SystemVault contract for a balance while consuming
 the recorded event log.
 
+The same snapshot contains the proposing validator's role-separated fuel
+balance. The funding certificate identifies the proposer through its validated
+fee-recipient public key.
+
+Snapshot capture occurs before ReplayRSpace receives the recorded trace. The
+snapshot binds the current root, proposer address, and exact nonnegative fuel.
+
+Replay requires one handler charge for each admitted deployment. The final
+atomic SystemVault application debits that charge from actual validator-fuel
+custody.
+
+The snapshot cannot mint or replace custody. A forged balance can pass no final
+settlement, and a root mismatch fails before execution.
+
 This separation follows the existing node architecture. Ordinary RSpace owns
 state observation; ReplayRSpace checks that the committed causal trace is
 consumed exactly. A live balance query through ReplayRSpace would be a new
@@ -692,7 +748,7 @@ following inventory is normative for this refinement.
 | `RuntimeManager` state-bound certification | Root scratch execution at the authenticated merged pre-state, discover only pre-state-backed wallet and located supply, retain the exact finite execution, and reject exhaustion without candidate effects |
 | `acceptance` fixed point | Canonically order candidates, compute physical, quantitative-byte, and fee allocations, remove underfunded candidates monotonically, and bind the retained partition to certificate and witness evidence |
 | proposal runtime | Execute under the certificate's fixed capacity, observe compute and byte events before mutation, hold pending stack transfers privately, and atomically publish the retained root and evidence |
-| replay runtime | Consume immutable per-deploy supply snapshots, rig the causal RSpace trace, recompute event identities, costs, allocations, settlements, and roots, and reject any mismatch |
+| replay runtime | Capture every economic input through ordinary RSpace before trace rigging. Bind authority purses and validator fuel to the deployment root and certified proposer. Consume only recorded events. Recompute costs, allocations, settlements, and roots. Reject every mismatch. |
 | processed-deploy wire model | Carry terminal admission status, authority protocol v8 certificate, byte-schedule identity, exact physical and byte witness, and adjacent roots in `CasperMessage.proto` |
 | block protocol lifecycle | Require Casper protocol version 4 at fresh genesis, proposal, receipt, approved-state replay, and restart; reject legacy or unknown evidence rather than mixing accounting rules |
 | block creator and merge index | Track exact state-effect identity as `(source block hash, execution index)`, retain causal dependencies, apply durable vault and stack deltas, and deterministically reject aggregate overdraw or conflict |

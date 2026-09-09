@@ -179,6 +179,182 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     "Inv_SelectedRehomeSurvivesCandidateFilter is violated" \
     "excluded-branch deploy dropped by raw self-chain filtering"
 
+  for config in \
+    MC_RecoveryBudgetEpisodesLedger \
+    MC_RecoveryBudgetEpisodesWindow \
+    MC_RecoveryBudgetEpisodes \
+    MC_RecoveryBudgetEpisodesLiveness; do
+    log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/MC_RecoveryBudgetEpisodes.tla" >"$log" 2>&1; then
+      pass "TLA+ recovery-budget configuration ${config#MC_RecoveryBudgetEpisodes} is safe and live"
+      rm -f "$log"
+    else
+      fail "TLA+ recovery-budget configuration $config did NOT pass (see $log)"
+    fi
+  done
+
+  recovery_budget_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/MC_RecoveryBudgetEpisodes.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_abandoned_owner_unsafe \
+    "Temporal properties were violated" \
+    "abandoned dispatch ownership"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_active_eviction_unsafe \
+    "Inv_ObligationsStayTracked is violated" \
+    "active recovery eviction"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_attempt_reset_unsafe \
+    "Inv_AttemptsResetOnlyAfterProgress is violated" \
+    "attempt reset without progress"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_bounded_counter_unsafe \
+    "Temporal properties were violated" \
+    "bounded dispatch identity counter"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_charge_without_usage_unsafe \
+    "Inv_UsageMatchesCharges is violated" \
+    "durable charge without budget usage"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_drop_budget_unsafe \
+    "Inv_DurableUsageSurvivesRestart is violated" \
+    "restart budget loss"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_drop_charges_unsafe \
+    "Inv_DurableChargesSurviveRestart is violated" \
+    "restart charge loss"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_duplicate_token_unsafe \
+    "Inv_LiveIdentityIsNotReused is violated" \
+    "live dispatch identity reuse"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_overcapacity_unsafe \
+    "Inv_OverCapacityIsLegacyOnly is violated" \
+    "unapproved recovery-budget overcapacity"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_ownerless_tracked_unsafe \
+    "Inv_TrackedHasOwner is violated" \
+    "ownerless tracked recovery"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_stale_completion_unsafe \
+    "Inv_StaleCompletionIsEffectFree is violated" \
+    "stale dispatch completion"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_unbounded_batch_unsafe \
+    "Inv_BatchIsBounded is violated" \
+    "unbounded recovery dispatch batch"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_uncertified_advance_unsafe \
+    "Inv_CurrentEpisodeCertified is violated" \
+    "uncertified recovery episode advancement"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_usage_without_charge_unsafe \
+    "Inv_UsageMatchesCharges is violated" \
+    "budget usage without durable charge"
+  recovery_budget_negative_control \
+    MC_RecoveryBudgetEpisodes_wrong_key_resolve_unsafe \
+    "Inv_ResolutionUsesRequestedKey is violated" \
+    "wrong-key recovery resolution"
+
+  if tlc_run "$(tlc_metadir request_quarantine_post_gate)" "$RECOVERY_TLA_DIR/MC_RequestQuarantineLifecycle.cfg" "$RECOVERY_TLA_DIR/RequestQuarantineLifecycle.tla" >"$LOG_DIR/request_quarantine_tlc_post.log" 2>&1; then
+    pass "TLA+ quarantine preserves bounded dependency evidence until terminal resolution"
+    rm -f "$LOG_DIR/request_quarantine_tlc_post.log"
+  else
+    fail "TLA+ request quarantine lifecycle did NOT pass (see $LOG_DIR/request_quarantine_tlc_post.log)"
+  fi
+
+  request_quarantine_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/RequestQuarantineLifecycle.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its unsafe transition"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  request_quarantine_negative_control \
+    MC_RequestQuarantineLifecycle_cleanup_unsafe \
+    "Inv_UnresolvedHasEvidence is violated" \
+    "retry-exhaustion cleanup"
+  request_quarantine_negative_control \
+    MC_RequestQuarantineLifecycle_receipt_unsafe \
+    "Inv_UnresolvedHasEvidence is violated" \
+    "receipt cleanup"
+  request_quarantine_negative_control \
+    MC_RequestQuarantineLifecycle_prune_parent_unsafe \
+    "Inv_MissingParentNeverReadiesWaiter is violated" \
+    "missing-parent pruning"
+
+  if tlc_run "$(tlc_metadir settled_ticket_post_gate)" "$RECOVERY_TLA_DIR/MC_SettledTicketTransaction.cfg" "$RECOVERY_TLA_DIR/SettledTicketTransaction.tla" >"$LOG_DIR/settled_ticket_tlc_post.log" 2>&1; then
+    pass "TLA+ settled tickets preserve evidence, budget, durability, and duplicate safety"
+    rm -f "$LOG_DIR/settled_ticket_tlc_post.log"
+  else
+    fail "TLA+ settled-ticket transaction did NOT pass (see $LOG_DIR/settled_ticket_tlc_post.log)"
+  fi
+
+  settled_ticket_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/SettledTicketTransaction.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its unsafe transition"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  settled_ticket_negative_control \
+    MC_SettledTicketTransaction_consume_on_claim_unsafe \
+    "Inv_CommitImpliesDurability is violated" \
+    "claim-time evidence consumption"
+  settled_ticket_negative_control \
+    MC_SettledTicketTransaction_drop_evidence_unsafe \
+    "Inv_PrecommitFailureRetainsEvidence is violated" \
+    "precommit evidence loss"
+  settled_ticket_negative_control \
+    MC_SettledTicketTransaction_validate_duplicate_unsafe \
+    "Inv_DuplicateNeverValidates is violated" \
+    "duplicate ordinary validation"
+  settled_ticket_negative_control \
+    MC_SettledTicketTransaction_keep_reservation_unsafe \
+    "Inv_BudgetMatchesOwnership is violated" \
+    "failed reservation retention"
+  settled_ticket_negative_control \
+    MC_SettledTicketTransaction_restore_after_commit_unsafe \
+    "Inv_DurableCommitIsPermanent is violated" \
+    "postcommit evidence restoration"
+  settled_ticket_negative_control \
+    MC_SettledTicketTransaction_forged_proof_unsafe \
+    "Inv_DurableProofAuthentic is violated" \
+    "forged settled-history proof"
+  settled_ticket_negative_control \
+    MC_SettledTicketTransaction_lost_restart_budget_unsafe \
+    "Inv_BudgetMatchesOwnership is violated" \
+    "lost restart budget"
+
   if tlc_run "$(tlc_metadir deploy_identity_post_gate)" "$RECOVERY_TLA_DIR/MC_DeployIdentitySeparation.cfg" "$RECOVERY_TLA_DIR/DeployIdentitySeparation.tla" >"$LOG_DIR/deploy_identity_tlc_post.log" 2>&1; then
     pass "TLA+ protocol-tagged deploy identities isolate equal byte payloads"
     rm -f "$LOG_DIR/deploy_identity_tlc_post.log"
@@ -578,6 +754,95 @@ fi
 
 if command -v apalache-mc >/dev/null 2>&1; then
   apalache_out="$(mktemp -d "$LOG_DIR/apalache-admission-effect.XXXXXX")"
+  recovery_budget_safe_log="$LOG_DIR/recovery_budget_episodes_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 600 apalache-mc \
+      --out-dir="$apalache_out/recovery-budget-safe" \
+      check \
+      --config=MC_RecoveryBudgetEpisodesApalache.cfg \
+      --length=12 \
+      MC_RecoveryBudgetEpisodes.tla) >"$recovery_budget_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$recovery_budget_safe_log"; then
+    pass "Apalache recovery budgets preserve durable charges and bounded keyed retry state"
+    rm -f "$recovery_budget_safe_log"
+  else
+    fail "Apalache recovery-budget model failed (see $recovery_budget_safe_log)"
+  fi
+
+  recovery_budget_apalache_negative_control() {
+    local config="$1"
+    local invariant="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}_apalache.log"
+    if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+        --out-dir="$apalache_out/$config" \
+        check \
+        --config="${config}.cfg" \
+        --length=8 \
+        MC_RecoveryBudgetEpisodes.tla) >"$log" 2>&1; then
+      fail "$label should produce an Apalache counterexample but passed"
+    elif grep -q "$invariant" "$log" \
+        && grep -qE 'state invariant [0-9]+ violated' "$log" \
+        && grep -q 'The outcome is: Error' "$log"; then
+      pass "$label reproduces its unsafe transition under Apalache"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason under Apalache (see $log)"
+    fi
+  }
+
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_active_eviction_unsafe \
+    Inv_ObligationsStayTracked \
+    "active recovery eviction"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_attempt_reset_unsafe \
+    Inv_AttemptsResetOnlyAfterProgress \
+    "attempt reset without progress"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_charge_without_usage_unsafe \
+    Inv_UsageMatchesCharges \
+    "durable charge without budget usage"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_drop_budget_unsafe \
+    Inv_DurableUsageSurvivesRestart \
+    "restart budget loss"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_drop_charges_unsafe \
+    Inv_DurableChargesSurviveRestart \
+    "restart charge loss"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_duplicate_token_unsafe \
+    Inv_LiveIdentityIsNotReused \
+    "live dispatch identity reuse"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_overcapacity_unsafe \
+    Inv_OverCapacityIsLegacyOnly \
+    "unapproved recovery-budget overcapacity"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_ownerless_tracked_unsafe \
+    Inv_TrackedHasOwner \
+    "ownerless tracked recovery"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_stale_completion_unsafe \
+    Inv_StaleCompletionIsEffectFree \
+    "stale dispatch completion"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_unbounded_batch_unsafe \
+    Inv_BatchIsBounded \
+    "unbounded recovery dispatch batch"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_uncertified_advance_unsafe \
+    Inv_CurrentEpisodeCertified \
+    "uncertified recovery episode advancement"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_usage_without_charge_unsafe \
+    Inv_UsageMatchesCharges \
+    "budget usage without durable charge"
+  recovery_budget_apalache_negative_control \
+    MC_RecoveryBudgetEpisodes_wrong_key_resolve_unsafe \
+    Inv_ResolutionUsesRequestedKey \
+    "wrong-key recovery resolution"
+
   protocol_ingress_safe_log="$LOG_DIR/protocol_deploy_ingress_apalache.log"
   if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
       --out-dir="$apalache_out/protocol-ingress-safe" \
@@ -630,6 +895,107 @@ if command -v apalache-mc >/dev/null 2>&1; then
   fi
 
   recovery_frontier_safe_log="$LOG_DIR/recovery_frontier_coverage_apalache.log"
+
+  request_quarantine_safe_log="$LOG_DIR/request_quarantine_lifecycle_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 600 apalache-mc \
+      --out-dir="$apalache_out/request-quarantine-safe" \
+      check \
+      --config=MC_RequestQuarantineLifecycleApalache.cfg \
+      --length=12 \
+      RequestQuarantineLifecycle.tla) >"$request_quarantine_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$request_quarantine_safe_log"; then
+    pass "Apalache quarantine lifecycle preserves bounded evidence through length 12"
+    rm -f "$request_quarantine_safe_log"
+  else
+    fail "Apalache request quarantine lifecycle failed (see $request_quarantine_safe_log)"
+  fi
+
+  request_quarantine_apalache_negative_control() {
+    local config="$1"
+    local label="$2"
+    local log="$LOG_DIR/${config}_apalache.log"
+    if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+        --out-dir="$apalache_out/$config" \
+        check \
+        --config="${config}.cfg" \
+        --length=4 \
+        RequestQuarantineLifecycle.tla) >"$log" 2>&1; then
+      fail "$label should produce an Apalache counterexample but passed"
+    elif grep -q 'The outcome is: Error' "$log" \
+        && grep -qE 'state invariant [0-9]+ violated' "$log"; then
+      pass "$label reproduces unresolved evidence loss under Apalache"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason under Apalache (see $log)"
+    fi
+  }
+
+  request_quarantine_apalache_negative_control \
+    MC_RequestQuarantineLifecycleCleanupUnsafeApalache \
+    "retry-exhaustion cleanup"
+  request_quarantine_apalache_negative_control \
+    MC_RequestQuarantineLifecycleReceiptUnsafeApalache \
+    "receipt cleanup"
+  request_quarantine_apalache_negative_control \
+    MC_RequestQuarantineLifecyclePruneParentUnsafeApalache \
+    "missing-parent pruning"
+
+  settled_ticket_safe_log="$LOG_DIR/settled_ticket_transaction_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 600 apalache-mc \
+      --out-dir="$apalache_out/settled-ticket-safe" \
+      check \
+      --config=MC_SettledTicketTransactionApalache.cfg \
+      --length=12 \
+      SettledTicketTransaction.tla) >"$settled_ticket_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$settled_ticket_safe_log"; then
+    pass "Apalache settled tickets preserve evidence, budget, durability, and duplicate safety through length 12"
+    rm -f "$settled_ticket_safe_log"
+  else
+    fail "Apalache settled-ticket transaction failed (see $settled_ticket_safe_log)"
+  fi
+
+  settled_ticket_apalache_negative_control() {
+    local config="$1"
+    local label="$2"
+    local log="$LOG_DIR/${config}_apalache.log"
+    if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+        --out-dir="$apalache_out/$config" \
+        check \
+        --config="${config}.cfg" \
+        --length=4 \
+        SettledTicketTransaction.tla) >"$log" 2>&1; then
+      fail "$label should produce an Apalache counterexample but passed"
+    elif grep -q 'The outcome is: Error' "$log" \
+        && grep -qE 'state invariant [0-9]+ violated' "$log"; then
+      pass "$label reproduces its unsafe transition under Apalache"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason under Apalache (see $log)"
+    fi
+  }
+
+  settled_ticket_apalache_negative_control \
+    MC_SettledTicketTransactionConsumeOnClaimUnsafeApalache \
+    "claim-time evidence consumption"
+  settled_ticket_apalache_negative_control \
+    MC_SettledTicketTransactionDropEvidenceUnsafeApalache \
+    "precommit evidence loss"
+  settled_ticket_apalache_negative_control \
+    MC_SettledTicketTransactionValidateDuplicateUnsafeApalache \
+    "duplicate ordinary validation"
+  settled_ticket_apalache_negative_control \
+    MC_SettledTicketTransactionKeepReservationUnsafeApalache \
+    "failed reservation retention"
+  settled_ticket_apalache_negative_control \
+    MC_SettledTicketTransactionRestoreAfterCommitUnsafeApalache \
+    "postcommit evidence restoration"
+  settled_ticket_apalache_negative_control \
+    MC_SettledTicketTransactionForgedProofUnsafeApalache \
+    "forged settled-history proof"
+  settled_ticket_apalache_negative_control \
+    MC_SettledTicketTransactionLostRestartBudgetUnsafeApalache \
+    "lost restart budget"
+
   if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
       --out-dir="$apalache_out/recovery-frontier-safe" \
       check \
@@ -859,6 +1225,10 @@ if command -v cargo >/dev/null 2>&1; then
        && cargo test -p casper --test mod source_aware_rejection_in_secondary_parent_is_authoritative >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && cargo test -p models funding_admission_rejection_roundtrips_as_terminal_non_execution >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && cargo test -p casper --lib rust::merging::block_index::tests >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --lib recovery_budget::tests >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --lib finalization_certificate_retriever::tests >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --lib runtime_state_requester::tests >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --test loom_recovery_budget_episodes >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
        && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/dl_rust_admission.log"; then
     pass "Rust admission and source-aware occurrence reducer units"
     rm -f "$LOG_DIR/dl_rust_admission.log"

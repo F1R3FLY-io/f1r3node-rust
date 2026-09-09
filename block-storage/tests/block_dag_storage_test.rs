@@ -17,6 +17,9 @@ use block_storage::rust::dag::deploy_occurrence_types::{
 #[cfg(feature = "test-internals")]
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::{
@@ -26,12 +29,12 @@ use models::rust::block_implicits::{
 };
 use models::rust::block_metadata::{
     AdmissionRejectionReason, BlockMetadata, CertifiedAdmissionOutcome, CertifiedSenderAuthority,
-    CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    ValidatedSettledHistoryAdmission, CERTIFIED_ADMISSION_PROTOCOL_VERSION,
 };
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, FinalizedFloorCommitment, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, StateEffectId,
+    ProcessedSystemDeploy, StateEffectId, ValidatorBondGeneration,
 };
 use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use models::rust::equivocation_record::EquivocationRecord;
@@ -196,6 +199,41 @@ fn expected_metadata(block: &BlockMessage, intrinsically_invalid: bool) -> Block
         .expect("certified test block metadata")
 }
 
+fn sign_protocol_block(mut block: BlockMessage, key_byte: u8) -> BlockMessage {
+    let algorithm = Secp256k1;
+    let private_key = PrivateKey::from_bytes(&[key_byte; 32]);
+    block.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    block.header.sender_bond_generation = Some(BondGeneration::GENESIS);
+    block.sender = algorithm.to_public(&private_key).bytes;
+    block.sig_algorithm = algorithm.name();
+    block.block_hash = block.computed_block_hash();
+    block.sig = algorithm.sign(&block.block_hash, &private_key.bytes).into();
+    block
+}
+
+fn settled_history_proof(block: &BlockMessage) -> ValidatedSettledHistoryAdmission {
+    let mut citer = block.clone();
+    citer.header.parents_hash_list = vec![block.block_hash.clone()];
+    citer.body.state.block_number = block.body.state.block_number.max(1) + 1;
+    let citer = sign_protocol_block(citer, 0x31);
+    let citer_sender = citer.sender.clone();
+    let mut anchor = block.clone();
+    anchor.body.state.block_number = block.body.state.block_number.max(1);
+    anchor.body.state.bonds = vec![Bond {
+        validator: citer_sender.clone(),
+        stake: 100,
+    }];
+    anchor.body.state.bond_generations = vec![ValidatorBondGeneration {
+        validator: citer_sender.clone(),
+        generation: BondGeneration::GENESIS,
+    }];
+
+    anchor.block_hash = anchor.computed_block_hash();
+
+    ValidatedSettledHistoryAdmission::new(block, &anchor, &citer, BondGeneration::GENESIS, 100)
+        .expect("settled-history proof")
+}
+
 struct TestDagStorage(BlockDagKeyValueStorage);
 
 impl TestDagStorage {
@@ -207,17 +245,20 @@ impl TestDagStorage {
         if matches!(mode, InsertMode::ApprovedGenesis) {
             return self.0.insert(block, mode);
         }
+        if matches!(mode, InsertMode::SettledHistory) {
+            return self
+                .0
+                .insert_settled_history_certified(block, &settled_history_proof(block));
+        }
         let authority = try_certified_sender_authority(block)?;
         let outcome = match mode {
-            InsertMode::Normal | InsertMode::SettledHistory => {
-                CertifiedAdmissionOutcome::accepted(block, &authority)
-            }
+            InsertMode::Normal => CertifiedAdmissionOutcome::accepted(block, &authority),
             InsertMode::Invalid => CertifiedAdmissionOutcome::rejected(
                 block,
                 &authority,
                 AdmissionRejectionReason::InvalidTransaction,
             ),
-            InsertMode::ApprovedGenesis => unreachable!(),
+            InsertMode::ApprovedGenesis | InsertMode::SettledHistory => unreachable!(),
         }
         .expect("test admission outcome");
         self.0.insert_certified(block, mode, &authority, &outcome)
@@ -1906,24 +1947,27 @@ fn dag_storage_settled_history_insert_never_touches_latest_messages() {
         .unwrap();
 
     let unseen_validator = get_random_block_default().sender;
-    let settled = get_random_block(
-        Some(6),
-        Some(live_head.seq_num + 35),
-        None,
-        None,
-        Some(live_head.sender.clone()),
-        None,
-        None,
-        Some(vec![genesis.block_hash.clone()]),
-        None,
-        None,
-        None,
-        Some(vec![Bond {
-            validator: unseen_validator.clone(),
-            stake: 100,
-        }]),
-        None,
-        None,
+    let settled = sign_protocol_block(
+        get_random_block(
+            Some(6),
+            Some(live_head.seq_num + 35),
+            None,
+            None,
+            Some(live_head.sender.clone()),
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            None,
+            None,
+            Some(vec![Bond {
+                validator: unseen_validator.clone(),
+                stake: 100,
+            }]),
+            None,
+            None,
+        ),
+        0x21,
     );
     dag_storage
         .insert(
@@ -2175,6 +2219,7 @@ fn v6_terminal_write_prunes_lifecycle_and_active_occurrence_state_atomically() {
         admission_ruleset_digest: vec![14; 32],
         admission_context_digest: vec![15; 32],
         sender_authority_digest: vec![16; 32],
+        settled_history_admission_digest: Vec::new(),
         is_failed: false,
     };
     let mut rejected_occurrence = occurrence.clone();
@@ -3934,21 +3979,24 @@ fn finalized_ancestry_marking_walk_terminates_at_unheld_parent() {
         );
 
         let make = |number: i64, parents: Vec<BlockHash>| {
-            get_random_block(
-                Some(number),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(parents),
-                None,
-                None,
-                None,
-                Some(vec![]),
-                None,
-                None,
+            sign_protocol_block(
+                get_random_block(
+                    Some(number),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(parents),
+                    None,
+                    None,
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                ),
+                number as u8 + 1,
             )
         };
         let b3 = make(3, vec![below_boundary.block_hash.clone()]);
@@ -3999,21 +4047,24 @@ fn newly_bonded_placeholder_is_the_learned_genesis_on_a_truncated_dag() {
         let dag_storage = TestDagStorage(BlockDagKeyValueStorage::new(&mut kvm).await.unwrap());
 
         let make = |number: i64, parents: Vec<BlockHash>| {
-            get_random_block(
-                Some(number),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(parents),
-                None,
-                None,
-                None,
-                Some(vec![]),
-                None,
-                None,
+            sign_protocol_block(
+                get_random_block(
+                    Some(number),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(parents),
+                    None,
+                    None,
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                ),
+                number as u8 + 11,
             )
         };
 

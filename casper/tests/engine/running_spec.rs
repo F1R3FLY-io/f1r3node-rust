@@ -50,6 +50,26 @@ mod tests {
 
     #[async_trait]
     impl MultiParentCasper for ValidatorAwareNoOpsCasper {
+        fn retry_candidate_count(&self) -> usize { self.inner.retry_candidate_count() }
+
+        fn next_retry_candidate(&self) -> Option<models::rust::block_hash::BlockHash> {
+            self.inner.next_retry_candidate()
+        }
+
+        fn prepare_retry_candidate(
+            &self,
+            hash: &models::rust::block_hash::BlockHash,
+        ) -> Result<casper::rust::casper::RetryCandidate, CasperError> {
+            self.inner.prepare_retry_candidate(hash)
+        }
+
+        fn prepare_startup_candidate(
+            &self,
+            hash: &models::rust::block_hash::BlockHash,
+        ) -> Result<casper::rust::casper::RetryCandidate, CasperError> {
+            self.inner.prepare_startup_candidate(hash)
+        }
+
         async fn fetch_dependencies(&self) -> Result<(), CasperError> {
             self.inner.fetch_dependencies().await
         }
@@ -214,6 +234,23 @@ mod tests {
 
         let signed_block = fixture.validator_id.sign_block(&block_message);
 
+        let receiver = fixture.block_processing_queue_rx.clone();
+        let retriever = fixture.block_retriever.clone();
+        let observer = std::thread::spawn(move || {
+            let mut receiver = receiver.blocking_lock();
+            let item = receiver.blocking_recv().unwrap();
+            let received = retriever
+                .request_states()
+                .get(&item.block.block_hash)
+                .unwrap()
+                .received;
+            assert!(
+                received,
+                "network receipt must precede independent worker visibility"
+            );
+            item
+        });
+
         fixture
             .engine
             .handle(
@@ -223,12 +260,12 @@ mod tests {
             .await
             .unwrap();
 
+        let item = observer.join().unwrap();
+        assert_eq!(item.block.block_hash, signed_block.block_hash);
         // Verify the block was enqueued for processing (following Scala test behavior)
         // This matches the Scala test pattern: getRandomBlock() -> signBlock() -> handle() -> check queue
         assert!(
-            fixture
-                .is_block_in_processing_queue(&signed_block.block_hash)
-                .await,
+            fixture.is_block_admitted(&signed_block.block_hash),
             "Block should be enqueued in processing queue after being handled"
         );
     }
@@ -604,7 +641,7 @@ mod tests {
         );
         let signed_block = fixture.validator_id.sign_block(&block_message);
 
-        for _ in 0..2 {
+        for attempt in 0..2 {
             fixture
                 .engine
                 .handle(
@@ -613,7 +650,22 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            if attempt == 0 {
+                fixture
+                    .block_retriever
+                    .reopen_after_local_failure(signed_block.block_hash.clone())
+                    .unwrap();
+            }
         }
+
+        assert!(
+            !fixture
+                .block_retriever
+                .is_received(signed_block.block_hash.clone())
+                .await
+                .unwrap(),
+            "duplicate network delivery must not acknowledge a reopened request"
+        );
 
         let mut rx = fixture.block_processing_queue_rx.lock().await;
         let mut enqueued = 0usize;

@@ -28,7 +28,7 @@ pub const BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
     "block.requests.capacity-deferred.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
 pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
-pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
+pub const BLOCK_REQUESTS_RETRY_QUARANTINES_METRIC: &str = "block.requests.retry-quarantines";
 pub const FINALIZATION_CERTIFICATE_REQUESTS_TOTAL_METRIC: &str =
     "finalization.certificate.requests.total";
 pub const FINALIZATION_CERTIFICATE_REQUESTS_RETRIES_METRIC: &str =
@@ -58,6 +58,8 @@ pub const PARENT_FRONTIER_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
     "parent-frontier.capacity-deferred.total";
 pub const REPLAY_CACHE_ENTRIES_METRIC: &str = "replay-cache.entries";
 pub const REPLAY_CACHE_RETAINED_BYTES_METRIC: &str = "replay-cache.retained-bytes";
+pub const USER_DEPLOY_EXECUTIONS_METRIC: &str = "runtime.user-deploy.executions";
+pub const USER_DEPLOY_EVALUATION_ATTEMPTS_METRIC: &str = "runtime.user-deploy.evaluation-attempts";
 pub const PROPOSER_QUEUE_PENDING_METRIC: &str = "proposer.queue.pending";
 pub const PROPOSER_QUEUE_REJECTED_TOTAL_METRIC: &str = "proposer.queue.rejected.total";
 pub const INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC: &str = "init.block-message.queue.pending";

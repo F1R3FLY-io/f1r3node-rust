@@ -223,8 +223,26 @@ pub trait Casper {
     fn remove_buffered_hash(&self, _hash: &BlockHash) -> Result<(), CasperError> { Ok(()) }
 }
 
+#[derive(Debug)]
+pub enum RetryCandidate {
+    Absent,
+    WaitingCertificate,
+    MissingBody,
+    MissingMetadata,
+    AlreadyAdmitted,
+    Ready(Box<BlockMessage>),
+}
+
 #[async_trait]
 pub trait MultiParentCasper: Casper + Send + Sync {
+    fn retry_candidate_count(&self) -> usize;
+
+    fn next_retry_candidate(&self) -> Option<BlockHash>;
+
+    fn prepare_retry_candidate(&self, hash: &BlockHash) -> Result<RetryCandidate, CasperError>;
+
+    fn prepare_startup_candidate(&self, hash: &BlockHash) -> Result<RetryCandidate, CasperError>;
+
     async fn fetch_dependencies(&self) -> Result<(), CasperError>;
 
     // This is the weight of faults that have been accumulated so far.
@@ -913,6 +931,31 @@ pub mod test_helpers {
 
     #[async_trait]
     impl MultiParentCasper for TestCasperWithSnapshot {
+        fn retry_candidate_count(&self) -> usize { 0 }
+
+        fn next_retry_candidate(&self) -> Option<BlockHash> { None }
+
+        fn prepare_retry_candidate(
+            &self,
+            _hash: &BlockHash,
+        ) -> Result<RetryCandidate, CasperError> {
+            Ok(RetryCandidate::Absent)
+        }
+
+        fn prepare_startup_candidate(
+            &self,
+            hash: &BlockHash,
+        ) -> Result<RetryCandidate, CasperError> {
+            let Some(block) = self.block_store.get(hash)? else {
+                return Ok(RetryCandidate::MissingBody);
+            };
+            if self.snapshot.dag.contains(hash) {
+                Ok(RetryCandidate::AlreadyAdmitted)
+            } else {
+                Ok(RetryCandidate::Ready(Box::new(block)))
+            }
+        }
+
         async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
 
         fn normalized_initial_fault(&self, _target: &BlockHash) -> Result<f32, CasperError> {

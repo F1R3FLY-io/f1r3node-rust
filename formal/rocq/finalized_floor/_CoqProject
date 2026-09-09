@@ -70,6 +70,7 @@ theories/FundingAdmissionLifecycle.v
 theories/EffectCausalClosure.v
 theories/SettledEffectProbe.v
 theories/StateEffectProvenance.v
+theories/CertifiedReplayAnchor.v
 theories/StateLineageFinality.v
 theories/CertifiedFloorPromotion.v
 theories/SnapshotFloorMaterialization.v
@@ -86,6 +87,8 @@ theories/NodeLocalProductLifting.v
 theories/NodeLocalTemporalLifting.v
 theories/ParallelValidatorConsensus.v
 theories/FinalizationAtomicity.v
+theories/FinalizationLedgerAudit.v
+theories/FinalizationEffectSelection.v
 theories/ProposalFloorReadiness.v
 theories/FinalizerFloorMaterialization.v
 theories/DeployLifecycleFinalization.v
@@ -99,4 +102,18 @@ theories/FinalizationCertificateRetrieval.v
 theories/DependencyMaintenanceRound.v
 theories/WitnessEquivalentCarrier.v
 theories/ObjectiveEvidenceSequenceEligibility.v
+theories/RestoreRetryOwnership.v
+theories/RequestQuarantineLifecycle.v
+theories/SettledTicketTransaction.v
+theories/RecoveryBudgetEpisodes.v
+theories/RecoveryActorService.v
+theories/PayloadReservationCoverage.v
+theories/BufferDurableMembership.v
+theories/BufferRetentionEpoch.v
+theories/BufferCandidateRotation.v
+theories/AdmissionIdentityOwnership.v
+theories/RecoveryPumpControl.v
+theories/InitializerOwnership.v
+theories/StartupSnapshot.v
+theories/StartupCompletion.v
 theories/MainTheorem.v

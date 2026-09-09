@@ -66,6 +66,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Cosigned;
 use models::casper::{
     CostAuthorityBornStackProto, CostAuthorityByteEventProto, CostAuthorityDemandKindProto,
@@ -77,16 +78,21 @@ use models::rhoapi::{CostAuthority, CostSignature, Par};
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
 use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::{
-    allocate_authority_events, allocate_physical_settlement, allocate_quantitative_events,
-    apply_physical_settlement, authority_demand, authority_funding_signatures_for_events,
+    allocate_authority_events, allocate_authority_events_with_custody,
+    allocate_physical_settlement, allocate_physical_settlement_with_host_work,
+    allocate_quantitative_events_with_custody, apply_physical_settlement, authority_demand,
+    authority_funding_signatures_for_events,
+    authority_funding_signatures_for_events_with_host_work,
     authority_funding_signatures_with_presentations, canonical_authority, cost_region,
-    sig_to_cost_signature, verify_physical_settlement, AuthorityBornStack, AuthorityByteEvent,
-    AuthorityByteEventKind, AuthorityCostWitness, AuthorityEvent, AuthorityPhysicalEventDraw,
-    AuthorityPhysicalInventory, AuthorityPhysicalSettlement, DemandBound, FundingCertificate,
-    ResourceMultiset, UnprovableDemand, AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+    physicalize_balance_debit, sig_to_cost_signature, verify_physical_settlement,
+    AuthorityBornStack, AuthorityByteEvent, AuthorityByteEventKind, AuthorityCostWitness,
+    AuthorityEvent, AuthorityPhysicalEventDraw, AuthorityPhysicalInventory,
+    AuthorityPhysicalSettlement, DemandBound, FundingCertificate, ResourceMultiset,
+    UnprovableDemand, AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
 };
 // Re-exported so reservation, settlement, replay, and reporting key every
 // authority lane by the same canonical `Sig::lane_hash` basis.
@@ -102,7 +108,9 @@ use rholang::rust::interpreter::accounting::resource_logic::{
 };
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -130,6 +138,9 @@ pub struct AdmissionOutcome {
     /// `compute_deploys_checkpoint_cosigned` so execution order matches the
     /// order the funding decision was made in.
     pub admitted: Vec<Cosigned<DeployData>>,
+    /// Candidates that remain available because the proposer lacks validator
+    /// fuel for the fixed handler charge at the candidate pre-state.
+    pub deferred: Vec<DeployLookupId>,
     /// The typed identities of gate-rejected deploys.
     pub rejected: Vec<DeployLookupId>,
     /// The per-lane cost debit, keyed by `SigKey` (= `Sig::lane_hash`). The
@@ -246,6 +257,41 @@ pub struct RecomputedDebits {
 }
 
 pub type ReplayPurseSnapshot = BTreeMap<SigKey, supply::PurseInventory>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayValidatorFuelSnapshot {
+    pre_state_root: [u8; 32],
+    fee_address: String,
+    balance: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayStateSnapshot {
+    authority_purses: ReplayPurseSnapshot,
+    validator_fuel: ReplayValidatorFuelSnapshot,
+}
+
+impl ReplayStateSnapshot {
+    pub(crate) fn authority_purses(&self) -> &ReplayPurseSnapshot { &self.authority_purses }
+
+    pub(crate) fn validator_fuel_balance(
+        &self,
+        pre_state_root: [u8; 32],
+        fee_address: &str,
+    ) -> Result<i64, CasperError> {
+        if self.validator_fuel.pre_state_root != pre_state_root {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay validator fuel snapshot is bound to a different pre-state".to_string(),
+            ));
+        }
+        if self.validator_fuel.fee_address != fee_address {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay validator fuel snapshot is bound to a different proposer".to_string(),
+            ));
+        }
+        Ok(self.validator_fuel.balance)
+    }
+}
 
 fn authority_digest(bytes: &[u8], field: &str) -> Result<[u8; 32], CasperError> {
     bytes.try_into().map_err(|_| {
@@ -444,6 +490,15 @@ pub(crate) fn authority_witness_from_proto(
     witness: &CostAuthorityWitnessProto,
     allow_unbound_certificate: bool,
 ) -> Result<AuthorityCostWitness<SigKey>, CasperError> {
+    authority_witness_from_proto_with_host_work(witness, allow_unbound_certificate, None)
+}
+
+pub(crate) fn authority_witness_from_proto_with_host_work(
+    witness: &CostAuthorityWitnessProto,
+    allow_unbound_certificate: bool,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<AuthorityCostWitness<SigKey>, CasperError> {
+    reserve_witness_host_work(witness, host_work)?;
     let certificate_id = if allow_unbound_certificate && witness.certificate_id.is_empty() {
         [0; 32]
     } else {
@@ -560,6 +615,97 @@ pub(crate) fn authority_witness_from_proto(
     Ok(witness)
 }
 
+fn reserve_witness_host_work(
+    witness: &CostAuthorityWitnessProto,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<(), CasperError> {
+    let Some(host_work) = host_work else {
+        return Ok(());
+    };
+    let bytes = u64::try_from(witness.encoded_len()).map_err(|_| {
+        CasperError::InvalidCostSettlement(
+            "authority witness size exceeds the host-work counter range".to_string(),
+        )
+    })?;
+    let fields = witness_field_count(witness)?;
+    for (dimension, units) in [
+        (HostWorkDimension::WitnessBytes, bytes),
+        (HostWorkDimension::WitnessFields, fields),
+        (HostWorkDimension::VerificationBytes, bytes),
+        (HostWorkDimension::VerificationOperations, fields),
+    ] {
+        host_work
+            .reserve(dimension, HostWorkUnits::new(units))
+            .map_err(|_| {
+                CasperError::InvalidCostSettlement(
+                    "host work limit rejected authority witness processing".to_string(),
+                )
+            })?;
+    }
+    Ok(())
+}
+
+fn witness_field_count(witness: &CostAuthorityWitnessProto) -> Result<u64, CasperError> {
+    let mut fields = 14_u64;
+    for event in &witness.events {
+        add_witness_fields(&mut fields, 3)?;
+        add_repeated_witness_fields(&mut fields, event.debit.len(), 3)?;
+        if let Some(authority) = &event.authority {
+            add_repeated_witness_fields(&mut fields, authority.regions.len(), 3)?;
+        }
+    }
+    for resources in [
+        &witness.realized,
+        &witness.settlement,
+        &witness.byte_settlement,
+    ] {
+        add_repeated_witness_fields(&mut fields, resources.len(), 3)?;
+    }
+    for draw in &witness.physical_draws {
+        add_witness_fields(&mut fields, 3)?;
+        add_repeated_witness_fields(&mut fields, draw.balances.len(), 3)?;
+        add_repeated_witness_fields(&mut fields, draw.stack_ids.len(), 1)?;
+    }
+    for birth in &witness.born_stacks {
+        add_witness_fields(&mut fields, 3)?;
+        add_repeated_witness_fields(&mut fields, birth.cells.len(), 1)?;
+    }
+    for event in &witness.byte_events {
+        add_witness_fields(&mut fields, 4)?;
+        if let Some(authority) = &event.authority {
+            add_repeated_witness_fields(&mut fields, authority.regions.len(), 3)?;
+        }
+    }
+    Ok(fields)
+}
+
+fn add_repeated_witness_fields(
+    total: &mut u64,
+    length: usize,
+    fields_per_entry: u64,
+) -> Result<(), CasperError> {
+    let length = u64::try_from(length).map_err(|_| {
+        CasperError::InvalidCostSettlement(
+            "authority witness field count exceeds the host-work counter range".to_string(),
+        )
+    })?;
+    let fields = length.checked_mul(fields_per_entry).ok_or_else(|| {
+        CasperError::InvalidCostSettlement(
+            "authority witness field count exceeds the host-work counter range".to_string(),
+        )
+    })?;
+    add_witness_fields(total, fields)
+}
+
+fn add_witness_fields(total: &mut u64, fields: u64) -> Result<(), CasperError> {
+    *total = total.checked_add(fields).ok_or_else(|| {
+        CasperError::InvalidCostSettlement(
+            "authority witness field count exceeds the host-work counter range".to_string(),
+        )
+    })?;
+    Ok(())
+}
+
 pub(crate) fn authority_witness_to_proto(
     witness: &AuthorityCostWitness<SigKey>,
 ) -> CostAuthorityWitnessProto {
@@ -621,11 +767,9 @@ pub(crate) fn authority_witness_to_proto(
 /// An async per-channel supply-balance reader returning PRESENCE: `Some(n)` iff
 /// a balance datum is resident on `chan` (even `n == 0`), `None` iff the pool is
 /// absent. Absence is interpreted as zero supply. Two implementations keep
-/// the gate's read symmetric across play and replay:
-///   * play (block assembly): [`RuntimeManagerSupplyReader`] over a merged
-///     pre-state HASH via `RuntimeManager::get_data`;
-///   * replay: [`RuntimeOpsSupplyReader`] over the LIVE store already `reset` to
-///     `start_hash`.
+/// the gate's read symmetric across normal-runtime snapshots:
+///   * [`RuntimeManagerSupplyReader`] reads an immutable merged pre-state hash;
+///   * [`RuntimeOpsSupplyReader`] reads an isolated normal runtime at that hash.
 ///
 /// `Send + Sync` so a `&dyn SupplyReader` can be held across an `.await` inside a
 /// `Send` future (the gate runs on the async block-assembly / replay paths).
@@ -652,6 +796,11 @@ pub trait SupplyReader: Send + Sync {
                 + 'a,
         >,
     >;
+
+    fn read_validator_fuel<'a>(
+        &'a self,
+        address: &'a VaultAddress,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<i64, CasperError>> + Send + 'a>>;
 }
 
 fn decode_vault_balance(values: Vec<Par>) -> Result<i64, CasperError> {
@@ -664,6 +813,24 @@ fn decode_vault_balance(values: Vec<Par>) -> Result<i64, CasperError> {
     if balances.next().is_some() {
         return Err(CasperError::InvalidCostSettlement(
             "canonical SystemVault balance query returned multiple integers".to_string(),
+        ));
+    }
+    Ok(balance)
+}
+
+pub(crate) fn decode_validator_fuel_balance(values: &[Par]) -> Result<i64, CasperError> {
+    let mut balances = values.iter().filter_map(RhoNumber::unapply);
+    let balance = balances.next().ok_or_else(|| {
+        CasperError::InvalidCostSettlement("validator fuel query returned no integer".to_string())
+    })?;
+    if balances.next().is_some() {
+        return Err(CasperError::InvalidCostSettlement(
+            "validator fuel query returned multiple integers".to_string(),
+        ));
+    }
+    if balance < 0 {
+        return Err(CasperError::InvalidCostSettlement(
+            "validator fuel balance cannot be negative".to_string(),
         ));
     }
     Ok(balance)
@@ -747,10 +914,36 @@ impl<'rm> SupplyReader for RuntimeManagerSupplyReader<'rm> {
             Ok(inventory)
         })
     }
+
+    fn read_validator_fuel<'a>(
+        &'a self,
+        address: &'a VaultAddress,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<i64, CasperError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let query = Compiler::source_to_adt(
+                &crate::rust::util::rholang::costacc::vault_payer::validator_fuel_balance_query_source(
+                    address,
+                ),
+            )
+            .map_err(CasperError::InterpreterError)?;
+            let values = self
+                .runtime_manager
+                .play_query_par_at_state_strict(query, &self.pre_state_hash)
+                .await?;
+            decode_validator_fuel_balance(&values).map_err(|error| {
+                CasperError::InvalidCostSettlement(format!(
+                    "validator fuel lookup for {} at pre-state {} failed: {}",
+                    address.to_base58(),
+                    hex::encode(&self.pre_state_hash),
+                    error
+                ))
+            })
+        })
+    }
 }
 
-/// Replay-side supply reader over the LIVE hot store already reset to
-/// `start_hash`.
+/// Supply reader over a normal runtime already reset to `start_hash`.
 pub struct RuntimeOpsSupplyReader<'ops> {
     pub runtime_ops: &'ops RuntimeOps,
     pub pre_state_root: [u8; 32],
@@ -783,6 +976,11 @@ impl<'ops> SupplyReader for RuntimeOpsSupplyReader<'ops> {
         >,
     > {
         Box::pin(async move {
+            if self.runtime_ops.runtime.reducer.space.is_replay().await {
+                return Err(CasperError::InvalidCostSettlement(
+                    "authority purse snapshots cannot query an active replay runtime".to_string(),
+                ));
+            }
             let funding =
                 rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(signature)
                     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
@@ -810,6 +1008,38 @@ impl<'ops> SupplyReader for RuntimeOpsSupplyReader<'ops> {
                 ))
             })?);
             Ok(inventory)
+        })
+    }
+
+    fn read_validator_fuel<'a>(
+        &'a self,
+        address: &'a VaultAddress,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<i64, CasperError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if self.runtime_ops.runtime.reducer.space.is_replay().await {
+                return Err(CasperError::InvalidCostSettlement(
+                    "validator fuel snapshots cannot query an active replay runtime".to_string(),
+                ));
+            }
+            let query = Compiler::source_to_adt(
+                &crate::rust::util::rholang::costacc::vault_payer::validator_fuel_balance_query_source(
+                    address,
+                ),
+            )
+            .map_err(CasperError::InterpreterError)?;
+            let values = self
+                .runtime_ops
+                .play_query_par_current_strict(query)
+                .await?;
+            decode_validator_fuel_balance(&values).map_err(|error| {
+                CasperError::InvalidCostSettlement(format!(
+                    "validator fuel lookup for {} at pre-state {} failed: {}",
+                    address.to_base58(),
+                    hex::encode(self.pre_state_root),
+                    error
+                ))
+            })
         })
     }
 }
@@ -902,8 +1132,14 @@ impl PreparedAuthorityReservation {
             }
             stacks.insert(*stack_id, cells[..pop_count].to_vec());
         }
+        let balances = physicalize_balance_debit(
+            &self.certificate.allocation,
+            &self.inventory.balance_custody,
+        )
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         Ok(AuthorityPhysicalInventory {
-            balances: self.certificate.allocation.clone(),
+            balances,
+            balance_custody: self.inventory.balance_custody.clone(),
             stacks,
             born_stacks: BTreeMap::new(),
         })
@@ -927,6 +1163,24 @@ fn insert_signature(
             Ok(())
         }
     }
+}
+
+pub(crate) fn insert_physical_balance(
+    inventory: &mut AuthorityPhysicalInventory<SigKey>,
+    key: SigKey,
+    signature: &CostSignature,
+    balance: u64,
+) -> Result<(), CasperError> {
+    let payer = crate::rust::util::rholang::costacc::vault_payer::vault_payer(signature)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    if payer.lane_key != key {
+        return Err(CasperError::InvalidCostSettlement(
+            "authority lane disagrees with its canonical signature".to_string(),
+        ));
+    }
+    inventory
+        .insert_balance_lane(key, payer.custody_key, balance)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))
 }
 
 fn bounded_authority_events(
@@ -1054,12 +1308,12 @@ pub async fn prepare_authority_reservation(
                 "authority purse balance cannot be negative".to_string(),
             ));
         }
-        if balance > 0 {
-            inventory.balances.0.insert(
-                *key,
-                u64::try_from(balance).expect("non-negative authority balance"),
-            );
-        }
+        insert_physical_balance(
+            &mut inventory,
+            *key,
+            signature,
+            u64::try_from(balance).expect("non-negative authority balance"),
+        )?;
         for stack in purse.stacks {
             if inventory
                 .stacks
@@ -1086,10 +1340,14 @@ pub async fn prepare_authority_reservation(
     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
     let after_cost = inventory
         .balances
-        .checked_sub(&maximum_cost_settlement.balance_debit)
+        .checked_sub(&maximum_cost_settlement.custody_debit)
         .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-    let fee_allocation = allocate_authority_events(std::slice::from_ref(&fee_event), &after_cost)
-        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let fee_settlement = allocate_authority_events_with_custody(
+        std::slice::from_ref(&fee_event),
+        &after_cost,
+        &inventory.balance_custody,
+    )
+    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
     let certificate = FundingCertificate {
         protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
         program_hash,
@@ -1098,7 +1356,7 @@ pub async fn prepare_authority_reservation(
         demand,
         allocation: maximum_cost_settlement.balance_debit.clone(),
         stack_reservations: maximum_cost_settlement.stack_pops.clone(),
-        fee_allocation,
+        fee_allocation: fee_settlement.logical_debit,
         fee_recipient: fee_recipient.to_vec(),
         byte_cost_schedule_version:
             rholang::rust::interpreter::accounting::byte_accounting::BYTE_COST_SCHEDULE_VERSION,
@@ -1129,6 +1387,23 @@ pub async fn prepare_state_bound_authority_reservation(
     supply_reader: &dyn SupplyReader,
     fee_recipient: &[u8],
 ) -> Result<PreparedAuthorityReservation, CasperError> {
+    prepare_state_bound_authority_reservation_with_host_work(
+        deploy,
+        witness,
+        supply_reader,
+        fee_recipient,
+        None,
+    )
+    .await
+}
+
+pub async fn prepare_state_bound_authority_reservation_with_host_work(
+    deploy: &Cosigned<DeployData>,
+    witness: &AuthorityCostWitness<SigKey>,
+    supply_reader: &dyn SupplyReader,
+    fee_recipient: &[u8],
+    host_work: Option<&HostWorkBudget>,
+) -> Result<PreparedAuthorityReservation, CasperError> {
     witness
         .verify_structure()
         .and_then(|_| witness.verify_event_authorities())
@@ -1149,10 +1424,11 @@ pub async fn prepare_state_bound_authority_reservation(
     let fee_event = fee_authority_event(deploy)?;
     let mut funding_events = witness.events.clone();
     funding_events.push(fee_event.clone());
-    let mut signatures = authority_funding_signatures_for_events(
+    let mut signatures = authority_funding_signatures_for_events_with_host_work(
         &funding_events,
         &witness.byte_events,
         &deploy.data().authority_presentations,
+        host_work,
     )
     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
     for birth in &witness.born_stacks {
@@ -1171,12 +1447,12 @@ pub async fn prepare_state_bound_authority_reservation(
                 "authority purse balance cannot be negative".to_string(),
             ));
         }
-        if balance > 0 {
-            inventory.balances.0.insert(
-                *key,
-                u64::try_from(balance).expect("non-negative authority balance"),
-            );
-        }
+        insert_physical_balance(
+            &mut inventory,
+            *key,
+            signature,
+            u64::try_from(balance).expect("non-negative authority balance"),
+        )?;
         for stack in purse.stacks {
             if inventory
                 .stacks
@@ -1206,14 +1482,17 @@ pub async fn prepare_state_bound_authority_reservation(
         }
     }
 
-    let maximum_cost_settlement =
-        allocate_physical_settlement(&witness.events, &signatures, &inventory).map_err(
-            |error| {
-                CasperError::InvalidCostSettlement(format!(
-                    "state-bound physical authority allocation failed: {error}"
-                ))
-            },
-        )?;
+    let maximum_cost_settlement = allocate_physical_settlement_with_host_work(
+        &witness.events,
+        &signatures,
+        &inventory,
+        host_work,
+    )
+    .map_err(|error| {
+        CasperError::InvalidCostSettlement(format!(
+            "state-bound physical authority allocation failed: {error}"
+        ))
+    })?;
     verify_physical_settlement(
         &witness.events,
         &signatures,
@@ -1223,19 +1502,27 @@ pub async fn prepare_state_bound_authority_reservation(
     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
     let after_cost = inventory
         .balances
-        .checked_sub(&maximum_cost_settlement.balance_debit)
+        .checked_sub(&maximum_cost_settlement.custody_debit)
         .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-    let byte_allocation =
-        allocate_quantitative_events(&witness.byte_events, &after_cost).map_err(|error| {
-            CasperError::InvalidCostSettlement(format!(
-                "state-bound quantitative byte allocation failed: {error}"
-            ))
-        })?;
+    let byte_settlement = allocate_quantitative_events_with_custody(
+        &witness.byte_events,
+        &after_cost,
+        &inventory.balance_custody,
+    )
+    .map_err(|error| {
+        CasperError::InvalidCostSettlement(format!(
+            "state-bound quantitative byte allocation failed: {error}"
+        ))
+    })?;
     let after_byte = after_cost
-        .checked_sub(&byte_allocation)
+        .checked_sub(&byte_settlement.custody_debit)
         .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-    let fee_allocation = allocate_authority_events(std::slice::from_ref(&fee_event), &after_byte)
-        .map_err(|error| {
+    let fee_settlement = allocate_authority_events_with_custody(
+        std::slice::from_ref(&fee_event),
+        &after_byte,
+        &inventory.balance_custody,
+    )
+    .map_err(|error| {
         CasperError::InvalidCostSettlement(format!("state-bound fee allocation failed: {error}"))
     })?;
     let born_stack_ids = witness
@@ -1257,19 +1544,20 @@ pub async fn prepare_state_bound_authority_reservation(
         demand: DemandBound::Exact(witness.realized.clone()),
         allocation: maximum_cost_settlement.balance_debit.clone(),
         stack_reservations,
-        fee_allocation,
+        fee_allocation: fee_settlement.logical_debit,
         fee_recipient: fee_recipient.to_vec(),
         byte_cost_schedule_version: witness.byte_cost_schedule_version,
         byte_cost_schedule_digest: witness.byte_cost_schedule_digest,
         byte_cost_bound: witness.byte_cost,
-        byte_allocation,
+        byte_allocation: byte_settlement.logical_debit,
     };
     certificate
-        .verify_with_allocation(
+        .verify_with_custody(
             AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
             program_hash,
             supply_reader.pre_state_root(),
             &inventory.balances,
+            &inventory.balance_custody,
             |_, _| false,
             |demand, allocation| {
                 demand == &witness.realized && allocation == &maximum_cost_settlement.balance_debit
@@ -1715,11 +2003,12 @@ fn group_capacity(shape: GroupShape<SigKey>) -> i64 {
 /// so `admission-fundable ⟹ settlement-safe`. Each drawn pool is `saturating_sub`-
 /// decremented; the caller processes groups in `SigKey` order, so the ledger
 /// evolves deterministically and identically on play and replay.
-fn draw_group_from_ledger(
+fn group_custody_debit(
     shape: GroupShape<SigKey>,
     demand: i64,
-    residual: &mut BTreeMap<SigKey, i64>,
-) {
+    balance_custody: &BTreeMap<SigKey, SigKey>,
+) -> Result<ResourceMultiset<SigKey>, CasperError> {
+    let mut logical = ResourceMultiset::default();
     let draws = <DefaultApportionment as ApportionmentPolicy<RhoGslt>>::apportion(
         &DefaultApportionment,
         shape,
@@ -1729,9 +2018,71 @@ fn draw_group_from_ledger(
         if amount <= 0 {
             continue;
         }
-        let current = *residual.get(&key).unwrap_or(&0);
-        residual.insert(key, current.saturating_sub(amount));
+        let amount = u64::try_from(amount).map_err(|_| {
+            CasperError::InvalidCostSettlement(
+                "authority group debit exceeds the platform range".to_string(),
+            )
+        })?;
+        logical = logical
+            .checked_add(&ResourceMultiset::singleton(key, amount))
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
     }
+    physicalize_balance_debit(&logical, balance_custody)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))
+}
+
+fn physical_residual_view(
+    inventory: &AuthorityPhysicalInventory<SigKey>,
+) -> Result<BTreeMap<SigKey, i64>, CasperError> {
+    inventory
+        .logical_balance_view()
+        .0
+        .into_iter()
+        .map(|(key, amount)| {
+            i64::try_from(amount)
+                .map(|amount| (key, amount))
+                .map_err(|_| {
+                    CasperError::InvalidCostSettlement(
+                        "authority balance exceeds the platform range".to_string(),
+                    )
+                })
+        })
+        .collect()
+}
+
+fn settlement_resources(
+    settlement: &BTreeMap<SigKey, SettlementDebit>,
+) -> Result<ResourceMultiset<SigKey>, CasperError> {
+    settlement
+        .iter()
+        .try_fold(ResourceMultiset::default(), |resources, (key, debit)| {
+            let amount = u64::try_from(debit.amount).map_err(|_| {
+                CasperError::InvalidCostSettlement(
+                    "authority settlement contains a negative debit".to_string(),
+                )
+            })?;
+            resources
+                .checked_add(&ResourceMultiset::singleton(*key, amount))
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))
+        })
+}
+
+fn verify_settlement_custody(
+    cost: &BTreeMap<SigKey, SettlementDebit>,
+    fee: &BTreeMap<SigKey, SettlementDebit>,
+    inventory: &AuthorityPhysicalInventory<SigKey>,
+) -> Result<(), CasperError> {
+    let logical = settlement_resources(cost)?
+        .checked_add(&settlement_resources(fee)?)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    let physical = physicalize_balance_debit(&logical, &inventory.balance_custody)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+    if !inventory.balances.dominates(&physical) {
+        return Err(CasperError::InvalidCostSettlement(
+            "authority settlement exceeds canonical physical custody".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// CONSENSUS-CRITICAL (#12): the EXACT per-component (Split/Join) compound
@@ -1925,13 +2276,22 @@ pub fn authority_purse_signatures(
     deploy: &Cosigned<DeployData>,
     witness: &AuthorityCostWitness<SigKey>,
 ) -> Result<BTreeMap<SigKey, CostSignature>, CasperError> {
+    authority_purse_signatures_with_host_work(deploy, witness, None)
+}
+
+pub fn authority_purse_signatures_with_host_work(
+    deploy: &Cosigned<DeployData>,
+    witness: &AuthorityCostWitness<SigKey>,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<BTreeMap<SigKey, CostSignature>, CasperError> {
     let fee_event = fee_authority_event(deploy)?;
     let mut funding_events = witness.events.clone();
     funding_events.push(fee_event);
-    let mut signatures = authority_funding_signatures_for_events(
+    let mut signatures = authority_funding_signatures_for_events_with_host_work(
         &funding_events,
         &witness.byte_events,
         &deploy.data().authority_presentations,
+        host_work,
     )
     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
     for birth in &witness.born_stacks {
@@ -1946,21 +2306,91 @@ pub async fn replay_purse_snapshot(
     processed: &ProcessedDeploy,
     supply_reader: &dyn SupplyReader,
 ) -> Result<ReplayPurseSnapshot, CasperError> {
+    replay_purse_snapshot_with_host_work(processed, supply_reader, None).await
+}
+
+pub async fn replay_purse_snapshot_with_host_work(
+    processed: &ProcessedDeploy,
+    supply_reader: &dyn SupplyReader,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<ReplayPurseSnapshot, CasperError> {
     let cosigned = processed.to_cosigned().map_err(CasperError::RuntimeError)?;
-    let witness = authority_witness_from_proto(
+    let witness = authority_witness_from_proto_with_host_work(
         processed.authority_cost_witness.as_ref().ok_or_else(|| {
             CasperError::InvalidCostSettlement(
                 "processed deploy is missing its authority witness".to_string(),
             )
         })?,
         false,
+        host_work,
     )?;
-    let signatures = authority_purse_signatures(&cosigned, &witness)?;
+    let signatures = authority_purse_signatures_with_host_work(&cosigned, &witness, host_work)?;
     let mut snapshot = BTreeMap::new();
     for (key, signature) in signatures {
         snapshot.insert(key, supply_reader.read_purse(&signature).await?);
     }
     Ok(snapshot)
+}
+
+pub async fn replay_state_snapshot(
+    processed: &ProcessedDeploy,
+    supply_reader: &dyn SupplyReader,
+) -> Result<ReplayStateSnapshot, CasperError> {
+    replay_state_snapshot_with_host_work(processed, supply_reader, None).await
+}
+
+pub async fn replay_state_snapshot_with_host_work(
+    processed: &ProcessedDeploy,
+    supply_reader: &dyn SupplyReader,
+    host_work: Option<&HostWorkBudget>,
+) -> Result<ReplayStateSnapshot, CasperError> {
+    let pre_state_root: [u8; 32] = processed.pre_state_hash.as_ref().try_into().map_err(|_| {
+        CasperError::InvalidCostSettlement(
+            "replay deploy pre-state root is not Blake2b-256".to_string(),
+        )
+    })?;
+    if supply_reader.pre_state_root() != pre_state_root {
+        return Err(CasperError::InvalidCostSettlement(
+            "replay economic snapshot reader is bound to a different pre-state".to_string(),
+        ));
+    }
+    let certificate = authority_certificate_from_proto(
+        processed
+            .authority_funding_certificate
+            .as_ref()
+            .ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "replay deploy is missing its authority certificate".to_string(),
+                )
+            })?,
+    )?;
+    PublicKey::validate_secp256k1_bytes(&certificate.fee_recipient).map_err(|error| {
+        CasperError::InvalidCostSettlement(format!(
+            "authority certificate fee recipient is invalid: {error}"
+        ))
+    })?;
+    let fee_address =
+        VaultAddress::from_public_key(&PublicKey::from_bytes(&certificate.fee_recipient))
+            .ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "authority certificate fee recipient has no canonical vault".to_string(),
+                )
+            })?;
+    let balance = supply_reader.read_validator_fuel(&fee_address).await?;
+    if balance < 0 {
+        return Err(CasperError::InvalidCostSettlement(
+            "validator fuel balance cannot be negative".to_string(),
+        ));
+    }
+    Ok(ReplayStateSnapshot {
+        authority_purses: replay_purse_snapshot_with_host_work(processed, supply_reader, host_work)
+            .await?,
+        validator_fuel: ReplayValidatorFuelSnapshot {
+            pre_state_root,
+            fee_address: fee_address.to_base58(),
+            balance,
+        },
+    })
 }
 
 pub(crate) fn record_authority_debits(
@@ -2064,12 +2494,12 @@ async fn admit_state_bound_authority(
             ));
         }
         channels.insert(*key, channel);
-        if balance > 0 {
-            physical_inventory.balances.0.insert(
-                *key,
-                u64::try_from(balance).expect("non-negative authority balance"),
-            );
-        }
+        insert_physical_balance(
+            &mut physical_inventory,
+            *key,
+            signature,
+            u64::try_from(balance).expect("non-negative authority balance"),
+        )?;
         for stack in purse.stacks {
             if physical_inventory
                 .stacks
@@ -2112,11 +2542,12 @@ async fn admit_state_bound_authority(
         let cost_draw = physical_settlement.balance_debit.clone();
         let after_cost = physical_inventory
             .balances
-            .checked_sub(&cost_draw)
+            .checked_sub(&physical_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-        let byte_draw = match allocate_quantitative_events(
+        let byte_settlement = match allocate_quantitative_events_with_custody(
             &evidence.authority_witness.byte_events,
             &after_cost,
+            &physical_inventory.balance_custody,
         ) {
             Ok(draw) => draw,
             Err(rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority) => {
@@ -2127,9 +2558,13 @@ async fn admit_state_bound_authority(
             Err(error) => return Err(CasperError::InvalidCostSettlement(error.to_string())),
         };
         let after_byte = after_cost
-            .checked_sub(&byte_draw)
+            .checked_sub(&byte_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-        let fee_draw = match allocate_authority_events(std::slice::from_ref(&fee_event), &after_byte) {
+        let fee_settlement = match allocate_authority_events_with_custody(
+            std::slice::from_ref(&fee_event),
+            &after_byte,
+            &physical_inventory.balance_custody,
+        ) {
             Ok(draw) => draw,
             Err(rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority) => {
                 closed_groups.insert(candidate.sig_key);
@@ -2140,6 +2575,8 @@ async fn admit_state_bound_authority(
                 return Err(CasperError::InvalidCostSettlement(error.to_string()));
             }
         };
+        let byte_draw = byte_settlement.logical_debit;
+        let fee_draw = fee_settlement.logical_debit;
 
         let certified = candidate.certified.as_mut().ok_or_else(|| {
             CasperError::InvalidCostSettlement(
@@ -2153,11 +2590,12 @@ async fn admit_state_bound_authority(
         certified.certificate.fee_allocation = fee_draw.clone();
         certified
             .certificate
-            .verify_with_allocation(
+            .verify_with_custody(
                 AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
                 certified.program_hash,
                 evidence.pre_state_root,
                 &physical_inventory.balances,
+                &physical_inventory.balance_custody,
                 |_, _| false,
                 |bound, allocation| {
                     bound == &evidence.authority_witness.realized && allocation == &cost_draw
@@ -2179,7 +2617,7 @@ async fn admit_state_bound_authority(
         apply_physical_settlement(&mut physical_inventory, &physical_settlement)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         physical_inventory.balances = after_byte
-            .checked_sub(&fee_draw)
+            .checked_sub(&fee_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         for (stack_id, pop_count) in physical_settlement.stack_pops {
             let total = outcome.stack_pops.entry(stack_id).or_default();
@@ -2257,12 +2695,12 @@ impl StateBoundAuthoritySession {
                     "authority purse balance cannot be negative".to_string(),
                 ));
             }
-            if balance > 0 {
-                self.physical_inventory.balances.0.insert(
-                    key,
-                    u64::try_from(balance).expect("non-negative authority balance"),
-                );
-            }
+            insert_physical_balance(
+                &mut self.physical_inventory,
+                key,
+                &signature,
+                u64::try_from(balance).expect("non-negative authority balance"),
+            )?;
             for stack in purse.stacks {
                 if self
                     .physical_inventory
@@ -2289,6 +2727,18 @@ impl StateBoundAuthoritySession {
         pre_state_root: [u8; 32],
         supply_reader: &dyn SupplyReader,
     ) -> Result<bool, CasperError> {
+        self.settle_candidate_with_host_work(deploy, processed, pre_state_root, supply_reader, None)
+            .await
+    }
+
+    pub async fn settle_candidate_with_host_work(
+        &mut self,
+        deploy: &Cosigned<DeployData>,
+        processed: &mut ProcessedDeploy,
+        pre_state_root: [u8; 32],
+        supply_reader: &dyn SupplyReader,
+        host_work: Option<&HostWorkBudget>,
+    ) -> Result<bool, CasperError> {
         let mut witness_proto = processed
             .authority_cost_witness
             .as_ref()
@@ -2304,23 +2754,26 @@ impl StateBoundAuthoritySession {
         if witness_proto.post_state_root.is_empty() {
             witness_proto.post_state_root = vec![0; 32].into();
         }
-        let mut witness = authority_witness_from_proto(&witness_proto, true)?;
+        let mut witness =
+            authority_witness_from_proto_with_host_work(&witness_proto, true, host_work)?;
         witness.pre_state_root = pre_state_root;
         let fee_event = fee_authority_event(deploy)?;
         let mut funding_events = witness.events.clone();
         funding_events.push(fee_event.clone());
-        let signatures = authority_funding_signatures_for_events(
+        let signatures = authority_funding_signatures_for_events_with_host_work(
             &funding_events,
             &witness.byte_events,
             &deploy.data().authority_presentations,
+            host_work,
         )
         .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         self.load_signatures(signatures, supply_reader).await?;
 
-        let physical_settlement = match allocate_physical_settlement(
+        let physical_settlement = match allocate_physical_settlement_with_host_work(
             &witness.events,
             &self.pool_signatures,
             &self.physical_inventory,
+            host_work,
         ) {
             Ok(settlement) => settlement,
             Err(
@@ -2338,9 +2791,13 @@ impl StateBoundAuthoritySession {
         let after_cost = self
             .physical_inventory
             .balances
-            .checked_sub(&cost_draw)
+            .checked_sub(&physical_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-        let byte_draw = match allocate_quantitative_events(&witness.byte_events, &after_cost) {
+        let byte_settlement = match allocate_quantitative_events_with_custody(
+            &witness.byte_events,
+            &after_cost,
+            &self.physical_inventory.balance_custody,
+        ) {
             Ok(draw) => draw,
             Err(
                 rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority,
@@ -2352,11 +2809,12 @@ impl StateBoundAuthoritySession {
             Err(error) => return Err(CasperError::InvalidCostSettlement(error.to_string())),
         };
         let after_byte = after_cost
-            .checked_sub(&byte_draw)
+            .checked_sub(&byte_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-        let fee_draw = match allocate_authority_events(
+        let fee_settlement = match allocate_authority_events_with_custody(
             std::slice::from_ref(&fee_event),
             &after_byte,
+            &self.physical_inventory.balance_custody,
         ) {
             Ok(draw) => draw,
             Err(
@@ -2370,6 +2828,8 @@ impl StateBoundAuthoritySession {
                 return Err(CasperError::InvalidCostSettlement(error.to_string()));
             }
         };
+        let byte_draw = byte_settlement.logical_debit;
+        let fee_draw = fee_settlement.logical_debit;
 
         let canonical = canonical_program_for_deploy(deploy, supply_reader).await?;
         let program_hash: [u8; 32] = Blake2b256::hash(canonical.encode_to_vec())
@@ -2393,11 +2853,12 @@ impl StateBoundAuthoritySession {
             byte_allocation: byte_draw.clone(),
         };
         certificate
-            .verify_with_allocation(
+            .verify_with_custody(
                 AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
                 program_hash,
                 pre_state_root,
                 &self.physical_inventory.balances,
+                &self.physical_inventory.balance_custody,
                 |_, _| false,
                 |bound, allocation| bound == &witness.realized && allocation == &cost_draw,
             )
@@ -2419,7 +2880,7 @@ impl StateBoundAuthoritySession {
         apply_physical_settlement(&mut self.physical_inventory, &physical_settlement)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         self.physical_inventory.balances = after_byte
-            .checked_sub(&fee_draw)
+            .checked_sub(&fee_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         for (stack_id, pop_count) in physical_settlement.stack_pops {
             let total = self.outcome.stack_pops.entry(stack_id).or_default();
@@ -2533,9 +2994,10 @@ async fn state_bound_capacity_from_signatures(
     signatures: &BTreeMap<SigKey, models::rhoapi::CostSignature>,
     supply_reader: &dyn SupplyReader,
 ) -> Result<i64, CasperError> {
-    let mut capacity = 0_i64;
+    let mut inventory = AuthorityPhysicalInventory::default();
+    let mut stack_capacity = 0_i64;
     let mut stack_ids = std::collections::BTreeSet::new();
-    for signature in signatures.values() {
+    for (key, signature) in signatures {
         let purse = supply_reader.read_purse(signature).await?;
         let balance = purse.balance.unwrap_or(0);
         if balance < 0 {
@@ -2543,11 +3005,12 @@ async fn state_bound_capacity_from_signatures(
                 "authority purse balance cannot be negative".to_string(),
             ));
         }
-        capacity = capacity.checked_add(balance).ok_or_else(|| {
-            CasperError::InvalidCostSettlement(
-                "authority-derived execution capacity overflow".to_string(),
-            )
-        })?;
+        insert_physical_balance(
+            &mut inventory,
+            *key,
+            signature,
+            u64::try_from(balance).expect("non-negative authority balance"),
+        )?;
         for stack in purse.stacks {
             if !stack_ids.insert(stack.instance_id) {
                 return Err(CasperError::InvalidCostSettlement(
@@ -2560,14 +3023,27 @@ async fn state_bound_capacity_from_signatures(
                     "authority stack depth exceeds execution capacity range".to_string(),
                 )
             })?;
-            capacity = capacity.checked_add(cells).ok_or_else(|| {
+            stack_capacity = stack_capacity.checked_add(cells).ok_or_else(|| {
                 CasperError::InvalidCostSettlement(
                     "authority-derived execution capacity overflow".to_string(),
                 )
             })?;
         }
     }
-    Ok(capacity)
+    inventory
+        .balances
+        .0
+        .values()
+        .try_fold(stack_capacity, |capacity, balance| {
+            i64::try_from(*balance)
+                .ok()
+                .and_then(|balance| capacity.checked_add(balance))
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "authority-derived execution capacity overflow".to_string(),
+                    )
+                })
+        })
 }
 
 pub async fn state_bound_execution_cap_with_frontier(
@@ -2710,6 +3186,7 @@ where
     }
 
     let mut raw: BTreeMap<SigKey, i64> = BTreeMap::new();
+    let mut physical_inventory = AuthorityPhysicalInventory::default();
     for (key, signature) in &signatures_by_key {
         let balance = supply_reader
             .read_purse(signature)
@@ -2722,6 +3199,12 @@ where
             ));
         }
         raw.insert(*key, balance);
+        insert_physical_balance(
+            &mut physical_inventory,
+            *key,
+            signature,
+            u64::try_from(balance).expect("non-negative authority balance"),
+        )?;
     }
 
     // 6. The LIVE cross-group residual ledger (TM-CA-165): each group's admission
@@ -2731,7 +3214,8 @@ where
     //    against s's FULL balance (cross-group linearity: linear logic admits no
     //    contraction; a token is spent once). Seeded from the raw pre-state
     //    (absent ⇒ 0); evolves identically on play and replay (same SigKey order).
-    let mut remaining: BTreeMap<SigKey, i64> = raw.clone();
+    let initial_inventory = physical_inventory.clone();
+    let mut remaining = physical_residual_view(&physical_inventory)?;
     let decomposition_by_compound = index_decompositions(&decompositions);
 
     // 7. Per-group prefix admission (reject-both), accumulating Σ Δ_s per group.
@@ -2805,7 +3289,23 @@ where
                     )
                     .is_ok()
             });
-            if prefix_open && certificate_valid && logic.is_funded(&cost_plus_fee, residual) {
+            let next_group_total = group_debit
+                .checked_add(group_fee)
+                .and_then(|total| total.checked_add(candidate.certified_upper_bound))
+                .and_then(|total| total.checked_add(FEE_PER_DEPLOY))
+                .ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "authority group reservation overflow".to_string(),
+                    )
+                })?;
+            let custody_debit =
+                group_custody_debit(shape, next_group_total, &physical_inventory.balance_custody)?;
+            let physically_funded = physical_inventory.balances.dominates(&custody_debit);
+            if prefix_open
+                && certificate_valid
+                && logic.is_funded(&cost_plus_fee, residual)
+                && physically_funded
+            {
                 // Admit: consume cost + fee from the residual and preserve their
                 // distinct burn and transfer dispositions.
                 residual = residual
@@ -2831,7 +3331,14 @@ where
         // settlement on every pool, so admission-fundable ⟹ settlement-safe.
         let group_total = group_debit.saturating_add(group_fee);
         if group_total > 0 {
-            draw_group_from_ledger(shape, group_total, &mut remaining);
+            let custody_debit =
+                group_custody_debit(shape, group_total, &physical_inventory.balance_custody)?;
+            physical_inventory.balances =
+                physical_inventory
+                    .balances
+                    .checked_sub(&custody_debit)
+                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+            remaining = physical_residual_view(&physical_inventory)?;
         }
 
         if group_debit > 0 {
@@ -2881,6 +3388,7 @@ where
         &channels_by_key,
         &FlatFeeApportionment,
     );
+    verify_settlement_custody(&outcome.debits, &outcome.fee_debits, &initial_inventory)?;
 
     // Re-impose canonical order on the admitted set: the per-group walk emits
     // each group's prefix in canonical order, but group iteration is by SigKey,
@@ -3093,12 +3601,12 @@ async fn recompute_authority_settlement_debits(
             ));
         }
         channels.insert(*key, channel);
-        if balance > 0 {
-            physical_inventory.balances.0.insert(
-                *key,
-                u64::try_from(balance).expect("non-negative authority balance"),
-            );
-        }
+        insert_physical_balance(
+            &mut physical_inventory,
+            *key,
+            signature,
+            u64::try_from(balance).expect("non-negative authority balance"),
+        )?;
         for stack in purse.stacks {
             if physical_inventory
                 .stacks
@@ -3187,11 +3695,12 @@ async fn recompute_authority_settlement_debits(
             ));
         }
         certificate
-            .verify_with_allocation(
+            .verify_with_custody(
                 AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
                 certificate.program_hash,
                 certificate.pre_state_root,
                 &physical_inventory.balances,
+                &physical_inventory.balance_custody,
                 |_, proof| !proof.is_empty(),
                 |bound, allocation| {
                     bound.dominates(&witness.realized) && allocation.dominates(&cost_draw)
@@ -3204,7 +3713,10 @@ async fn recompute_authority_settlement_debits(
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?
             .checked_add(&certificate.fee_allocation)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-        if !physical_inventory.balances.dominates(&reserved_balances) {
+        let reserved_custody =
+            physicalize_balance_debit(&reserved_balances, &physical_inventory.balance_custody)
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        if !physical_inventory.balances.dominates(&reserved_custody) {
             return Err(CasperError::InvalidCostSettlement(
                 "authority certificate reserves more vault balance than is available".to_string(),
             ));
@@ -3214,10 +3726,15 @@ async fn recompute_authority_settlement_debits(
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         let after_cost = physical_inventory
             .balances
-            .checked_sub(&cost_draw)
+            .checked_sub(&physical_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-        let byte_draw = allocate_quantitative_events(&witness.byte_events, &after_cost)
-            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let byte_settlement = allocate_quantitative_events_with_custody(
+            &witness.byte_events,
+            &after_cost,
+            &physical_inventory.balance_custody,
+        )
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let byte_draw = byte_settlement.logical_debit;
         if byte_draw != witness.byte_settlement || byte_draw != certificate.byte_allocation {
             return Err(CasperError::InvalidCostSettlement(
                 "authority byte allocation differs from the canonical replay allocation"
@@ -3225,10 +3742,15 @@ async fn recompute_authority_settlement_debits(
             ));
         }
         let after_byte = after_cost
-            .checked_sub(&byte_draw)
+            .checked_sub(&byte_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-        let fee_draw = allocate_authority_events(std::slice::from_ref(&fee_event), &after_byte)
-            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let fee_settlement = allocate_authority_events_with_custody(
+            std::slice::from_ref(&fee_event),
+            &after_byte,
+            &physical_inventory.balance_custody,
+        )
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        let fee_draw = fee_settlement.logical_debit;
         if fee_draw != certificate.fee_allocation {
             return Err(CasperError::InvalidCostSettlement(
                 "authority fee allocation differs from the canonical replay allocation".to_string(),
@@ -3240,7 +3762,7 @@ async fn recompute_authority_settlement_debits(
             physical_inventory.born_stacks.remove(&stack_id);
         }
         physical_inventory.balances = after_byte
-            .checked_sub(&fee_draw)
+            .checked_sub(&fee_settlement.custody_debit)
             .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
         for (stack_id, pop_count) in physical_settlement.stack_pops {
             let total = recomputed.stack_pops.entry(stack_id).or_default();
@@ -3444,6 +3966,7 @@ where
     }
 
     let mut raw: BTreeMap<SigKey, i64> = BTreeMap::new();
+    let mut physical_inventory = AuthorityPhysicalInventory::default();
     for (key, signature) in &signatures_by_key {
         let balance = supply_reader
             .read_purse(signature)
@@ -3456,37 +3979,23 @@ where
             ));
         }
         raw.insert(*key, balance);
+        insert_physical_balance(
+            &mut physical_inventory,
+            *key,
+            signature,
+            u64::try_from(balance).expect("non-negative authority balance"),
+        )?;
     }
-    // The LIVE cross-group residual ledger (TM-CA-165) — the SAME ledger the
-    // play-side gate draws (seeded `raw.clone()`, drawn down per group in SigKey
-    // order via `draw_group_from_ledger`). Replay re-runs that pass over the
-    // admitted set to re-verify the gate's CROSS-GROUP admission bound (below).
-    // A multi-sig deploy funds from the cosigners' canonical SystemVaults even
-    // when no combined `Σ⟦And(…)⟧` authority lane exists.
-    let mut remaining: BTreeMap<SigKey, i64> = raw.clone();
+    // Replay reconstructs the live cross-group residual inventory from the
+    // authenticated pre-state. Logical lanes retain certificate attribution.
+    // Canonical SystemVault custody supplies the shared physical capacity.
+    let initial_inventory = physical_inventory.clone();
+    let mut remaining = physical_residual_view(&physical_inventory)?;
     let decomposition_by_compound = index_decompositions(&decompositions);
 
-    // CROSS-GROUP ADMISSIBILITY RE-VERIFICATION (TM-CA-165) — the SUFFICIENT
-    // consensus guarantee against over-admission across DISTINCT cosigner sets
-    // sharing a component SystemVault authority. SUPERSEDES the prior per-group
-    // static-`effective` check (TM-CA-164), which bounded each group independently
-    // and so could not catch two groups jointly over-drawing a shared component
-    // (e.g. `{A,s}` + `{B,s}` each admitted against `s`'s full balance).
-    //
-    // Replay RE-RUNS the gate's LIVE cross-group ledger over the admitted set:
-    // process enforced groups in SigKey order, draw each group's folded cost+fee
-    // DOWN the shared `remaining` ledger (`draw_group_from_ledger`), and reject
-    // (ReplayAdmissionMismatch) any group whose folded demand exceeds the LIVE
-    // effective capacity at its turn. Why this — not the per-pool `debit > balance`
-    // check in `recompute_and_verify_admission` — is what bounds CUMULATIVE demand:
-    // `compute_settlement_debits` residual-caps each pool draw, so an
-    // over-admission is silently absorbed into per-pool debits ≤ balance and the
-    // post-state agrees play↔replay; only re-running the admission ledger detects
-    // it. Identical inputs + SigKey order on play and replay ⇒ no fork; equality is admissible (the gate
-    // guarantees folded demand ≤ capacity, and this check uses the SAME ledger).
-    //
-    // The folded demand covers groups carrying a cost AND/OR a fee (a zero-cost admitted deploy still
-    // carries a fee draw), via the union of `demand_by_group` and `fee_by_group`.
+    // Replay applies each canonical group to the same physical residual inventory.
+    // This check prevents cumulative overdraw across distinct groups and aliases.
+    // The folded demand includes both execution cost and the deployment fee.
     let mut combined_demand: BTreeMap<SigKey, i64> = BTreeMap::new();
     for (key, (_chan, cost)) in &demand_by_group {
         if *cost > 0 {
@@ -3504,7 +4013,9 @@ where
         }
         let shape = group_shape_from(key, &decomposition_by_compound, &remaining);
         let capacity = group_capacity(shape);
-        if *demand > capacity {
+        let custody_debit =
+            group_custody_debit(shape, *demand, &physical_inventory.balance_custody)?;
+        if *demand > capacity || !physical_inventory.balances.dominates(&custody_debit) {
             return Err(CasperError::ReplayFailure(
                 ReplayFailure::replay_admission_mismatch(
                     0,
@@ -3524,7 +4035,11 @@ where
                 ),
             ));
         }
-        draw_group_from_ledger(shape, *demand, &mut remaining);
+        physical_inventory.balances = physical_inventory
+            .balances
+            .checked_sub(&custody_debit)
+            .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+        remaining = physical_residual_view(&physical_inventory)?;
     }
 
     // Keep every positive admitted cost and fee obligation. The funding check
@@ -3569,6 +4084,7 @@ where
         &channels_by_key,
         &FlatFeeApportionment,
     );
+    verify_settlement_custody(&settlement, &fee, &initial_inventory)?;
 
     Ok(RecomputedDebits {
         settlement,
@@ -3595,6 +4111,7 @@ mod tests {
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::{Cosigner, Signed};
     use models::rust::casper::protocol::casper_message::DeployData;
+    use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsage};
     use proptest::prelude::*;
     use rholang::rust::interpreter::accounting::authority::{
         allocate_authority_event_draws, DemandBound, ResourceMultiset,
@@ -3629,14 +4146,20 @@ mod tests {
 
     /// A canned per-channel supply reader keyed by the channel's wire encoding.
     struct MockSupplyReader {
+        pre_state_root: [u8; 32],
         balances: HashMap<Vec<u8>, i64>,
+        vault_balances: HashMap<String, i64>,
+        validator_fuel_balances: HashMap<String, i64>,
         purses: HashMap<Vec<u8>, supply::PurseInventory>,
     }
 
     impl MockSupplyReader {
         fn new() -> Self {
             Self {
+                pre_state_root: [42; 32],
                 balances: HashMap::new(),
+                vault_balances: HashMap::new(),
+                validator_fuel_balances: HashMap::new(),
                 purses: HashMap::new(),
             }
         }
@@ -3663,6 +4186,18 @@ mod tests {
             self.balances.insert(chan.encode_to_vec(), balance);
         }
 
+        fn set_vault_signature(&mut self, signature: &CostSignature, balance: i64) {
+            let payer =
+                crate::rust::util::rholang::costacc::vault_payer::vault_payer(signature).unwrap();
+            self.vault_balances
+                .insert(payer.address.to_base58(), balance);
+        }
+
+        fn set_validator_fuel(&mut self, address: &VaultAddress, balance: i64) {
+            self.validator_fuel_balances
+                .insert(address.to_base58(), balance);
+        }
+
         fn set_stack(&mut self, sig: &Sig, cells: Vec<models::rhoapi::CostSignature>) {
             use prost::Message;
             let chan = supply::supply_channel(sig);
@@ -3685,7 +4220,7 @@ mod tests {
     }
 
     impl SupplyReader for MockSupplyReader {
-        fn pre_state_root(&self) -> [u8; 32] { [42; 32] }
+        fn pre_state_root(&self) -> [u8; 32] { self.pre_state_root }
 
         fn urn_map<'a>(
             &'a self,
@@ -3715,8 +4250,28 @@ mod tests {
                     .unwrap();
             let key = supply::supply_channel(&sig).encode_to_vec();
             let mut inventory = self.purses.get(&key).cloned().unwrap_or_default();
-            inventory.balance = self.balances.get(&key).copied();
+            let payer =
+                crate::rust::util::rholang::costacc::vault_payer::vault_payer(signature).unwrap();
+            inventory.balance = self
+                .vault_balances
+                .get(&payer.address.to_base58())
+                .copied()
+                .or_else(|| self.balances.get(&key).copied());
             Box::pin(async move { Ok(inventory) })
+        }
+
+        fn read_validator_fuel<'a>(
+            &'a self,
+            address: &'a VaultAddress,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<i64, CasperError>> + Send + 'a>,
+        > {
+            let balance = self
+                .validator_fuel_balances
+                .get(&address.to_base58())
+                .copied()
+                .unwrap_or_default();
+            Box::pin(async move { Ok(balance) })
         }
     }
 
@@ -4619,6 +5174,231 @@ mod tests {
 
     fn processed(cosigned: &Cosigned<DeployData>, cost: u64) -> ProcessedDeploy {
         processed_with_bound(cosigned, cost, cost)
+    }
+
+    #[test]
+    fn bounded_witness_decode_matches_unbounded_decode_and_reports_exact_units() {
+        let deploy = cosigned(&n_sends(2), b"bounded-witness", 0, 10);
+        let processed = processed(&deploy, 2);
+        let witness = processed.authority_cost_witness.as_ref().unwrap();
+        let bytes = u64::try_from(witness.encoded_len()).unwrap();
+        let fields = witness_field_count(witness).unwrap();
+        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+
+        let bounded =
+            authority_witness_from_proto_with_host_work(witness, false, Some(&host_work)).unwrap();
+        let unbounded = authority_witness_from_proto(witness, false).unwrap();
+
+        assert_eq!(bounded, unbounded);
+        assert_eq!(
+            host_work.usage(HostWorkDimension::WitnessBytes),
+            HostWorkUsage::new(bytes)
+        );
+        assert_eq!(
+            host_work.usage(HostWorkDimension::WitnessFields),
+            HostWorkUsage::new(fields)
+        );
+        assert_eq!(
+            host_work.usage(HostWorkDimension::VerificationBytes),
+            HostWorkUsage::new(bytes)
+        );
+        assert_eq!(
+            host_work.usage(HostWorkDimension::VerificationOperations),
+            HostWorkUsage::new(fields)
+        );
+    }
+
+    #[test]
+    fn witness_byte_limit_rejects_before_conversion() {
+        let deploy = cosigned(&n_sends(1), b"bounded-witness-rejection", 0, 10);
+        let processed = processed(&deploy, 1);
+        let witness = processed.authority_cost_witness.as_ref().unwrap();
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000));
+        limits.set(HostWorkDimension::WitnessBytes, HostWorkLimit::new(0));
+        let host_work = HostWorkBudget::new(limits);
+
+        let error = authority_witness_from_proto_with_host_work(witness, false, Some(&host_work))
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("host work limit rejected authority witness processing"));
+        assert_eq!(
+            host_work.usage(HostWorkDimension::WitnessBytes),
+            HostWorkUsage::ZERO
+        );
+        assert!(host_work.is_rejected());
+    }
+
+    proptest! {
+        #[test]
+        fn witness_limits_accept_exact_arbitrary_proto_shapes(
+            event_count in 0_usize..17,
+            resource_count in 0_usize..17,
+            draw_count in 0_usize..17,
+            stack_count in 0_usize..17,
+            byte_event_count in 0_usize..17,
+        ) {
+            let witness = CostAuthorityWitnessProto {
+                certificate_id: Bytes::from_static(&[1; 32]),
+                events: vec![CostAuthorityEventProto::default(); event_count],
+                realized: vec![CostAuthorityResourceProto::default(); resource_count],
+                physical_draws: vec![CostAuthorityPhysicalEventDrawProto::default(); draw_count],
+                born_stacks: vec![CostAuthorityBornStackProto::default(); stack_count],
+                byte_events: vec![CostAuthorityByteEventProto::default(); byte_event_count],
+                ..Default::default()
+            };
+            let bytes = u64::try_from(witness.encoded_len()).unwrap();
+            let fields = witness_field_count(&witness).unwrap();
+            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            limits.set(HostWorkDimension::WitnessBytes, HostWorkLimit::new(bytes));
+            limits.set(HostWorkDimension::WitnessFields, HostWorkLimit::new(fields));
+            limits.set(HostWorkDimension::VerificationBytes, HostWorkLimit::new(bytes));
+            limits.set(
+                HostWorkDimension::VerificationOperations,
+                HostWorkLimit::new(fields),
+            );
+            let host_work = HostWorkBudget::new(limits);
+
+            reserve_witness_host_work(&witness, Some(&host_work)).unwrap();
+
+            prop_assert_eq!(
+                host_work.usage(HostWorkDimension::WitnessBytes),
+                HostWorkUsage::new(bytes)
+            );
+            prop_assert_eq!(
+                host_work.usage(HostWorkDimension::WitnessFields),
+                HostWorkUsage::new(fields)
+            );
+            prop_assert_eq!(
+                host_work.usage(HostWorkDimension::VerificationBytes),
+                HostWorkUsage::new(bytes)
+            );
+            prop_assert_eq!(
+                host_work.usage(HostWorkDimension::VerificationOperations),
+                HostWorkUsage::new(fields)
+            );
+            prop_assert!(!host_work.is_rejected());
+        }
+
+        #[test]
+        fn each_witness_dimension_rejects_its_own_boundary(
+            event_count in 0_usize..9,
+            resource_count in 0_usize..9,
+            selected in 0_usize..4,
+        ) {
+            let witness = CostAuthorityWitnessProto {
+                certificate_id: Bytes::from_static(&[1; 32]),
+                events: vec![CostAuthorityEventProto::default(); event_count],
+                realized: vec![CostAuthorityResourceProto::default(); resource_count],
+                ..Default::default()
+            };
+            let bytes = u64::try_from(witness.encoded_len()).unwrap();
+            let fields = witness_field_count(&witness).unwrap();
+            let dimensions = [
+                (HostWorkDimension::WitnessBytes, bytes),
+                (HostWorkDimension::WitnessFields, fields),
+                (HostWorkDimension::VerificationBytes, bytes),
+                (HostWorkDimension::VerificationOperations, fields),
+            ];
+            let (dimension, required) = dimensions[selected];
+            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            limits.set(dimension, HostWorkLimit::new(required - 1));
+            let host_work = HostWorkBudget::new(limits);
+
+            prop_assert!(reserve_witness_host_work(&witness, Some(&host_work)).is_err());
+            prop_assert_eq!(host_work.usage(dimension), HostWorkUsage::ZERO);
+            prop_assert!(host_work.is_rejected());
+        }
+    }
+
+    fn processed_with_fee_recipient(
+        cosigned: &Cosigned<DeployData>,
+        cost: u64,
+    ) -> (ProcessedDeploy, VaultAddress) {
+        let mut processed = processed(cosigned, cost);
+        let recipient = Secp256k1.to_public(&PrivateKey::from_bytes(&[73; 32]));
+        let address = VaultAddress::from_public_key(&recipient).unwrap();
+        let mut certificate = authority_certificate_from_proto(
+            processed.authority_funding_certificate.as_ref().unwrap(),
+        )
+        .unwrap();
+        certificate.fee_recipient = recipient.bytes.to_vec();
+        let mut witness =
+            authority_witness_from_proto(processed.authority_cost_witness.as_ref().unwrap(), false)
+                .unwrap();
+        witness.certificate_id = certificate.certificate_id();
+        processed.authority_funding_certificate =
+            Some(authority_certificate_to_proto(&certificate));
+        processed.authority_cost_witness = Some(authority_witness_to_proto(&witness));
+        (processed, address)
+    }
+
+    #[test]
+    fn validator_fuel_decoder_accepts_one_nonnegative_integer_only() {
+        assert_eq!(
+            decode_validator_fuel_balance(&[RhoNumber::create_par(6)]).unwrap(),
+            6
+        );
+        assert!(decode_validator_fuel_balance(&[]).is_err());
+        assert!(decode_validator_fuel_balance(&[
+            RhoNumber::create_par(6),
+            RhoNumber::create_par(3),
+        ])
+        .is_err());
+        assert!(decode_validator_fuel_balance(&[RhoNumber::create_par(-1)]).is_err());
+    }
+
+    #[tokio::test]
+    async fn replay_state_snapshot_binds_root_proposer_and_exact_fuel() {
+        let deploy = cosigned(&n_sends(1), b"snapshot-binding", 0, 10);
+        let (processed, address) = processed_with_fee_recipient(&deploy, 1);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"snapshot-binding", 2);
+        reader.set_validator_fuel(&address, 6);
+
+        let snapshot = replay_state_snapshot(&processed, &reader).await.unwrap();
+        let address = address.to_base58();
+        assert_eq!(
+            snapshot.validator_fuel_balance([42; 32], &address).unwrap(),
+            6
+        );
+        assert!(!snapshot.authority_purses().is_empty());
+        assert!(snapshot.validator_fuel_balance([41; 32], &address).is_err());
+        assert!(snapshot
+            .validator_fuel_balance([42; 32], "1111wrong-proposer")
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn replay_state_snapshot_rejects_reader_root_mismatch() {
+        let deploy = cosigned(&n_sends(1), b"snapshot-root", 0, 10);
+        let (processed, address) = processed_with_fee_recipient(&deploy, 1);
+        let mut reader = MockSupplyReader::new();
+        reader.pre_state_root = [41; 32];
+        reader.set_validator_fuel(&address, 6);
+
+        let error = replay_state_snapshot(&processed, &reader)
+            .await
+            .expect_err("a mismatched reader root must fail closed");
+        assert!(error
+            .to_string()
+            .contains("reader is bound to a different pre-state"));
+    }
+
+    #[tokio::test]
+    async fn replay_state_snapshot_rejects_negative_validator_fuel() {
+        let deploy = cosigned(&n_sends(1), b"snapshot-negative", 0, 10);
+        let (processed, address) = processed_with_fee_recipient(&deploy, 1);
+        let mut reader = MockSupplyReader::new();
+        reader.set_validator_fuel(&address, -1);
+
+        let error = replay_state_snapshot(&processed, &reader)
+            .await
+            .expect_err("negative validator fuel must fail closed");
+        assert!(error
+            .to_string()
+            .contains("validator fuel balance cannot be negative"));
     }
 
     fn processed_with_byte_cost(
@@ -6181,11 +6961,172 @@ mod tests {
         Cosigned::from_signed_data(data, signers).expect("cosigned envelope from given keypairs")
     }
 
+    fn v6_cosigned_with_keypair(
+        term: &str,
+        keypair: &(PrivateKey, PublicKey),
+        vabn: i64,
+        ts: i64,
+    ) -> Cosigned<DeployData> {
+        let algorithm = Secp256k1;
+        let data = DeployData {
+            term: term.to_string(),
+            language: "rholang".to_string(),
+            time_stamp: ts,
+            valid_after_block_number: vabn,
+            shard_id: "root".to_string(),
+            expiration_timestamp: Some(ts + 1_000),
+            authority_presentations: Vec::new(),
+        };
+        let unsigned = vec![Cosigner {
+            pk: keypair.1.clone(),
+            sig: Bytes::new(),
+            sig_algorithm: Box::new(algorithm.clone()),
+        }];
+        let bitmap = [1_u8];
+        let signing_hash = Cosigned::<DeployData>::envelope_signing_hash_for_presence(
+            &data,
+            &unsigned,
+            1,
+            &bitmap,
+            &algorithm.name(),
+        )
+        .unwrap();
+        let signer = Cosigner {
+            pk: keypair.1.clone(),
+            sig: algorithm.sign(&signing_hash, &keypair.0.bytes).into(),
+            sig_algorithm: Box::new(algorithm),
+        };
+        Cosigned::from_envelope_signed_data_threshold(data, vec![signer], 1).unwrap()
+    }
+
     /// The `Σ⟦Ground(pk)⟧` component-wallet key + `Sig` for a keypair's pubkey.
     fn ground_pool(pk: &PublicKey) -> (Sig, SigKey) {
         let sig = Sig::Ground(pk.bytes.to_vec());
         let key = delta_sigma::sig_key(&sig);
         (sig, key)
+    }
+
+    #[test]
+    fn native_and_protocol_principals_share_one_physical_inventory_balance() {
+        let (_, public_key) = fresh_keypair();
+        let native = CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Ground(
+                public_key.bytes.to_vec(),
+            )),
+        };
+        let mut principal_bytes = Vec::with_capacity(6 + public_key.bytes.len());
+        principal_bytes.extend_from_slice(&1_u16.to_be_bytes());
+        principal_bytes.extend_from_slice(&(public_key.bytes.len() as u32).to_be_bytes());
+        principal_bytes.extend_from_slice(&public_key.bytes);
+        let principal = CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Ground(
+                principal_bytes,
+            )),
+        };
+        let native_key =
+            rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(&native)
+                .unwrap()
+                .lane_hash();
+        let principal_key =
+            rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(&principal)
+                .unwrap()
+                .lane_hash();
+        let native_payer =
+            crate::rust::util::rholang::costacc::vault_payer::vault_payer(&native).unwrap();
+        let principal_payer =
+            crate::rust::util::rholang::costacc::vault_payer::vault_payer(&principal).unwrap();
+        let mut inventory = AuthorityPhysicalInventory::default();
+
+        insert_physical_balance(&mut inventory, native_key, &native, 11).unwrap();
+        insert_physical_balance(&mut inventory, principal_key, &principal, 11).unwrap();
+
+        assert_ne!(native_key, principal_key);
+        assert_eq!(native_payer.address, principal_payer.address);
+        assert_eq!(native_payer.custody_key, principal_payer.custody_key);
+        assert_eq!(inventory.balances.0.len(), 1);
+        assert_eq!(inventory.balances.get(&native_payer.custody_key), 11);
+        assert_eq!(
+            inventory.balance_custody,
+            BTreeMap::from([
+                (native_key, native_payer.custody_key),
+                (principal_key, principal_payer.custody_key),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_and_protocol_v6_deploys_share_one_admission_balance() {
+        let keypair = fresh_keypair();
+        let legacy = cosigned_with_keypairs("@0!(0)", std::slice::from_ref(&keypair), 0, 10);
+        let protocol_v6 = v6_cosigned_with_keypair("@0!(0)", &keypair, 0, 20);
+        let native = CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Ground(
+                keypair.1.bytes.to_vec(),
+            )),
+        };
+        let mut reader = MockSupplyReader::new();
+        reader.set_vault_signature(&native, 2);
+
+        let outcome = admit_by_funding(vec![legacy, protocol_v6], &reader)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.admitted.len(), 1);
+        assert_eq!(outcome.rejected.len(), 1);
+        assert_eq!(
+            outcome
+                .debits
+                .values()
+                .map(|debit| debit.amount)
+                .sum::<i64>(),
+            1
+        );
+        assert_eq!(
+            outcome
+                .fee_debits
+                .values()
+                .map(|debit| debit.amount)
+                .sum::<i64>(),
+            1
+        );
+        let replay = recompute_settlement_debits(outcome.admitted.clone(), &reader)
+            .await
+            .unwrap();
+        assert_eq!(replay.settlement, outcome.debits);
+        assert_eq!(replay.fee, outcome.fee_debits);
+    }
+
+    #[tokio::test]
+    async fn state_bound_capacity_counts_aliased_system_vault_once() {
+        let keypair = fresh_keypair();
+        let native = CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Ground(
+                keypair.1.bytes.to_vec(),
+            )),
+        };
+        let principal = CostSignature {
+            value: Some(models::rhoapi::cost_signature::Value::Ground(
+                accounting::principal_ground_v61(&keypair.1.bytes),
+            )),
+        };
+        let native_key =
+            rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(&native)
+                .unwrap()
+                .lane_hash();
+        let principal_key =
+            rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(&principal)
+                .unwrap()
+                .lane_hash();
+        let signatures = BTreeMap::from([(native_key, native.clone()), (principal_key, principal)]);
+        let mut reader = MockSupplyReader::new();
+        reader.set_vault_signature(&native, 11);
+
+        assert_eq!(
+            state_bound_capacity_from_signatures(&signatures, &reader)
+                .await
+                .unwrap(),
+            11
+        );
     }
 
     /// TM-CA-165 (headline): two DISTINCT cosigner sets `{A,s}` and `{B,s}` share

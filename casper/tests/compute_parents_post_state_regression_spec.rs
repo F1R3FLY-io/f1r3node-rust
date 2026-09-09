@@ -10,6 +10,7 @@ use casper::rust::casper::{
 };
 use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::errors::CasperError;
+use casper::rust::finality::floor_context::FloorContext;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
 use casper::rust::genesis::genesis::Genesis;
@@ -25,7 +26,9 @@ use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, ProcessedDeploy};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, FinalizedFloorCommitment, ProcessedDeploy,
+};
 use models::rust::utils::new_gstring_par;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -894,6 +897,42 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     assert!(!finalized_data.is_empty());
     assert_ne!(covered_data, finalized_data);
     assert_eq!(rebased_data, finalized_data);
+
+    let certified_floor = FinalizedFloorCommitment {
+        floor_hash: side.block_hash.clone(),
+        floor_post_state_hash: side.body.state.post_state_hash.clone(),
+        certificate_digest: Bytes::from(vec![0x71; models::rust::block_hash::LENGTH]),
+        authority_context_digest: Bytes::from(vec![0x72; models::rust::block_hash::LENGTH]),
+    };
+    let certified_context = FloorContext::from_certified_floor(
+        &snapshot.dag,
+        &block_store,
+        std::slice::from_ref(&cover.block_hash),
+        &certified_floor,
+        CURRENT_CASPER_PROTOCOL_VERSION,
+    )
+    .expect("Failed to bind the certified replay floor");
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.clear_block_index_cache();
+    let certified_rebased = compute_parents_post_state(
+        &block_store,
+        vec![cover],
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        Some(&certified_context),
+        None,
+    )
+    .await
+    .expect("Failed to replay from the certified floor");
+    let certified_data = runtime_manager
+        .get_data(certified_rebased.state, &channel)
+        .await
+        .expect("Failed to read the certified-floor replay state");
+    assert_eq!(certified_context.floor.hash, side.block_hash);
+    assert_eq!(certified_data, finalized_data);
 }
 
 #[test]

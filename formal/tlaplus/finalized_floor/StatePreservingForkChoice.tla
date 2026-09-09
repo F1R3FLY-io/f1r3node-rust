@@ -87,6 +87,8 @@ VARIABLES
   hasProposal,
   \* @type: Str -> Str;
   proposalFloor,
+  \* @type: Str -> Str;
+  proposalReplayFloor,
   \* @type: Str -> Set(Str);
   proposalParents,
   \* @type: Str -> Str;
@@ -109,7 +111,7 @@ VARIABLES
   proposedAtFinalizedFloor
 
 vars == <<lfb, certificateKnown, latestKnown, latest, recoveryBacklog,
-  hasProposal, proposalFloor, proposalParents, proposalMain,
+  hasProposal, proposalFloor, proposalReplayFloor, proposalParents, proposalMain,
   proposalExactTips, proposalValidTips, proposalVoteTips, proposalCausalInputs,
   proposalEvidenceRoots, proposalState, proposalRecoveryNarrowed,
   proposedAtFinalizedFloor>>
@@ -195,8 +197,10 @@ ChosenParents(node) ==
   THEN {SelectedMain(node)}
   ELSE DepthRetainedParents(node)
 
+ReplayFloor(node) == IF ProtectFloor THEN lfb[node] ELSE "G"
+
 SemanticCausalInputs(node) ==
-  LiveCausalTips(node) \union (IF ProtectFloor THEN {lfb[node]} ELSE {})
+  LiveCausalTips(node) \union {ReplayFloor(node)}
 
 EvidenceRoots(node) ==
   ExactTips(node) \union (IF OmitFloorEvidenceRoot THEN {} ELSE {lfb[node]})
@@ -230,6 +234,7 @@ RebasedState(node) == ParentState(node)
 ProposalSnapshotChanged(node) ==
   \/ ~hasProposal[node]
   \/ proposalFloor[node] # lfb[node]
+  \/ proposalReplayFloor[node] # ReplayFloor(node)
   \/ proposalParents[node] # ChosenParents(node)
   \/ proposalMain[node] # SelectedMain(node)
   \/ proposalExactTips[node] # ExactTips(node)
@@ -251,6 +256,7 @@ Init ==
   /\ recoveryBacklog = [node \in Nodes |-> FALSE]
   /\ hasProposal = [node \in Nodes |-> FALSE]
   /\ proposalFloor = [node \in Nodes |-> "G"]
+  /\ proposalReplayFloor = [node \in Nodes |-> "G"]
   /\ proposalParents = [node \in Nodes |-> {}]
   /\ proposalMain = [node \in Nodes |-> "G"]
   /\ proposalExactTips = [node \in Nodes |-> {}]
@@ -270,6 +276,7 @@ ApalacheInit ==
   /\ recoveryBacklog = [node \in Nodes |-> FALSE]
   /\ hasProposal = [node \in Nodes |-> FALSE]
   /\ proposalFloor = [node \in Nodes |-> "F"]
+  /\ proposalReplayFloor = [node \in Nodes |-> "F"]
   /\ proposalParents = [node \in Nodes |-> {}]
   /\ proposalMain = [node \in Nodes |-> "F"]
   /\ proposalExactTips = [node \in Nodes |-> {}]
@@ -286,7 +293,7 @@ DeliverCertificate(node, validator) ==
   /\ certificateKnown' =
        [certificateKnown EXCEPT ![node] = @ \union {validator}]
   /\ UNCHANGED <<lfb, latestKnown, latest, recoveryBacklog, hasProposal,
-       proposalFloor, proposalParents, proposalMain, proposalExactTips, proposalValidTips,
+       proposalFloor, proposalReplayFloor, proposalParents, proposalMain, proposalExactTips, proposalValidTips,
        proposalVoteTips, proposalCausalInputs, proposalEvidenceRoots,
        proposalState, proposalRecoveryNarrowed, proposedAtFinalizedFloor>>
 
@@ -295,7 +302,7 @@ DeliverLatest(node, validator) ==
   /\ latestKnown' = [latestKnown EXCEPT ![node] = @ \union {validator}]
   /\ latest' = [latest EXCEPT ![node][validator] = Tip[validator]]
   /\ UNCHANGED <<lfb, certificateKnown, recoveryBacklog, hasProposal,
-       proposalFloor, proposalParents, proposalMain, proposalExactTips, proposalValidTips,
+       proposalFloor, proposalReplayFloor, proposalParents, proposalMain, proposalExactTips, proposalValidTips,
        proposalVoteTips, proposalCausalInputs, proposalEvidenceRoots,
        proposalState, proposalRecoveryNarrowed, proposedAtFinalizedFloor>>
 
@@ -303,7 +310,7 @@ ObserveRecoveryBacklog(node) ==
   /\ ~recoveryBacklog[node]
   /\ recoveryBacklog' = [recoveryBacklog EXCEPT ![node] = TRUE]
   /\ UNCHANGED <<lfb, certificateKnown, latestKnown, latest, hasProposal,
-       proposalFloor, proposalParents, proposalMain, proposalExactTips, proposalValidTips,
+       proposalFloor, proposalReplayFloor, proposalParents, proposalMain, proposalExactTips, proposalValidTips,
        proposalVoteTips, proposalCausalInputs, proposalEvidenceRoots,
        proposalState, proposalRecoveryNarrowed, proposedAtFinalizedFloor>>
 
@@ -312,7 +319,7 @@ Promote(node) ==
   /\ HasCertificate(node)
   /\ lfb' = [lfb EXCEPT ![node] = "F"]
   /\ UNCHANGED <<certificateKnown, latestKnown, latest, recoveryBacklog,
-       hasProposal, proposalFloor, proposalParents, proposalMain,
+       hasProposal, proposalFloor, proposalReplayFloor, proposalParents, proposalMain,
        proposalExactTips, proposalValidTips, proposalVoteTips, proposalCausalInputs,
        proposalEvidenceRoots, proposalState, proposalRecoveryNarrowed,
        proposedAtFinalizedFloor>>
@@ -322,6 +329,7 @@ Propose(node) ==
   /\ ParentSelectionReady(node)
   /\ hasProposal' = [hasProposal EXCEPT ![node] = TRUE]
   /\ proposalFloor' = [proposalFloor EXCEPT ![node] = lfb[node]]
+  /\ proposalReplayFloor' = [proposalReplayFloor EXCEPT ![node] = ReplayFloor(node)]
   /\ proposalParents' = [proposalParents EXCEPT ![node] = ChosenParents(node)]
   /\ proposalMain' = [proposalMain EXCEPT ![node] = SelectedMain(node)]
   /\ proposalExactTips' = [proposalExactTips EXCEPT ![node] = ExactTips(node)]
@@ -371,6 +379,7 @@ TypeOK ==
   /\ recoveryBacklog \in [Nodes -> BOOLEAN]
   /\ hasProposal \in [Nodes -> BOOLEAN]
   /\ proposalFloor \in [Nodes -> {"G", "F"}]
+  /\ proposalReplayFloor \in [Nodes -> {"G", "F"}]
   /\ proposalParents \in [Nodes -> SUBSET Blocks]
   /\ proposalMain \in [Nodes -> Blocks]
   /\ proposalExactTips \in [Nodes -> SUBSET Blocks]
@@ -451,6 +460,10 @@ Inv_ProposalStateIsFloorRebased ==
     hasProposal[node] =>
       proposalState[node] =
         UNION {Active[input] : input \in proposalCausalInputs[node]}
+
+Inv_ReplayUsesCommittedFloor ==
+  \A node \in Nodes :
+    hasProposal[node] => proposalReplayFloor[node] = proposalFloor[node]
 
 Inv_ProposalPreservesSnapshotFloor ==
   \A node \in Nodes :

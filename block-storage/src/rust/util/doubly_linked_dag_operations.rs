@@ -9,7 +9,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 pub struct BlockDependencyDag {
     pub parent_to_child_adjacency_list: HashMap<BlockHashSerde, HashSet<BlockHashSerde>>,
     pub child_to_parent_adjacency_list: HashMap<BlockHashSerde, HashSet<BlockHashSerde>>,
-    pub dependency_free: HashSet<BlockHashSerde>,
+    pub dependency_free: imbl::OrdSet<BlockHashSerde>,
 }
 
 impl BlockDependencyDag {
@@ -17,7 +17,7 @@ impl BlockDependencyDag {
         BlockDependencyDag {
             parent_to_child_adjacency_list: HashMap::new(),
             child_to_parent_adjacency_list: HashMap::new(),
-            dependency_free: HashSet::new(),
+            dependency_free: imbl::OrdSet::new(),
         }
     }
 

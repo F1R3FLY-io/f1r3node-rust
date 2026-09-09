@@ -11,6 +11,7 @@ use models::rhoapi::{
     BindPattern, Bundle, CostAuthority, Expr, ListParWithRandom, Par, TaggedContinuation, Var,
 };
 use models::rust::block_hash::BlockHash;
+use models::rust::host_work::HostWorkLimits;
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::sorted_par_map::SortedParMap;
@@ -39,6 +40,7 @@ use super::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::host_work::{HostWorkBudget, HostWorkReport};
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
 use super::reduce::DebruijnInterpreter;
 use super::registry::registry_bootstrap::ast;
@@ -309,6 +311,87 @@ impl RhoRuntimeImpl {
                 authority_allocation,
             )
             .await;
+        metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
+    pub async fn evaluate_with_host_work(
+        &self,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        limits: HostWorkLimits,
+    ) -> Result<(EvaluateResult, HostWorkReport), InterpreterError> {
+        self.evaluate_with_authority_and_host_work(
+            term,
+            initial_phlo,
+            normalizer_env,
+            rand,
+            None,
+            limits,
+        )
+        .await
+    }
+
+    pub async fn evaluate_with_authority_and_host_work(
+        &self,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        limits: HostWorkLimits,
+    ) -> Result<(EvaluateResult, HostWorkReport), InterpreterError> {
+        let host_work = HostWorkBudget::new(limits);
+        let result = self
+            .evaluate_with_authority_and_host_work_budget(
+                term,
+                initial_phlo,
+                normalizer_env,
+                rand,
+                authority_allocation,
+                host_work.clone(),
+            )
+            .await;
+        let report = host_work.report();
+        result.map(|evaluation| (evaluation, report))
+    }
+
+    pub async fn evaluate_with_authority_and_host_work_budget(
+        &self,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+        rand: Blake2b512Random,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        host_work: HostWorkBudget,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let start = Instant::now();
+        let checkpoint = self.reducer.space.create_soft_checkpoint().await;
+        let interpreter = InterpreterImpl::new(self.cost.clone(), self.merge_chs.clone());
+        let result = if host_work.is_rejected() {
+            Err(InterpreterError::HostWorkRejected)
+        } else {
+            interpreter
+                .inj_attempt_with_host_work(
+                    &self.reducer,
+                    term,
+                    initial_phlo,
+                    normalizer_env,
+                    rand,
+                    authority_allocation,
+                    host_work.clone(),
+                )
+                .await
+        };
+        if host_work.is_rejected() {
+            self.reducer
+                .space
+                .revert_to_soft_checkpoint(checkpoint)
+                .await?;
+        }
         metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         result
