@@ -7127,3 +7127,482 @@ Print Assumptions moving_an_ownerless_dead_byte_stamp_changes_its_hidden_typed_p
 Print Assumptions dropping_the_stamp_after_folding_a_fault_into_direct_metadata_is_not_sound.
 
 End AbsolutePayloadRealization.
+
+Module AbsolutePayloadCheckpointBoundary.
+
+Module A := AbsolutePayloadRealization.
+Module T := PersistentFrameRealization.
+Module F := FocusedRegionOwners.
+Module P := PersistentFocusedOwners.
+Module C := CompactPersistentCheckpoints.
+Module D := PersistentFaultRealization.
+Import CanonicalKeyProtocol IndexedWindowTransport.
+
+Section Storage.
+Context {Span : Type}.
+
+Definition dead_leaf (current : @A.physical_leaf Span) :=
+  match F.path_status_value (A.leaf_metadata current) with F.DeadPath _ _ _ => true | _ => false end.
+
+Definition needs_link (current : @A.checkpoint Span) :=
+  match A.checkpoint_owners current, A.checkpoint_fault current with
+  | [], None => dead_leaf (A.checkpoint_leaf current)
+  | _, _ => true
+  end.
+
+Definition retime position (current : @A.checkpoint Span) :=
+  A.Checkpoint (A.checkpoint_leaf current) (A.checkpoint_owners current)
+    (A.selected_stamp current position) (A.checkpoint_fault current).
+
+Definition plain current position := @A.Checkpoint Span current [] position None.
+
+Record storage := Storage {
+  direct : list (@A.physical_leaf Span);
+  linked : list (@A.checkpoint Span)
+}.
+
+Definition lookup stored address position :=
+  match address with
+  | C.DirectSlot slot => option_map (fun current => plain current position) (nth_error (direct stored) slot)
+  | C.LinkedSlot slot => option_map (retime position) (nth_error (linked stored) slot)
+  end.
+
+Definition publish stored current :=
+  if needs_link current then
+    (Storage (direct stored) (linked stored ++ [current]), C.LinkedSlot (length (linked stored)))
+  else
+    (Storage (direct stored ++ [A.checkpoint_leaf current]) (linked stored), C.DirectSlot (length (direct stored))).
+
+Theorem direct_publication_requires_no_owners_no_fault_and_nondead_metadata current :
+  needs_link current = false <->
+  A.checkpoint_owners current = [] /\ A.checkpoint_fault current = None /\
+  dead_leaf (A.checkpoint_leaf current) = false.
+Proof.
+  destruct current as [leaf owners stamp fault]. unfold needs_link; cbn.
+  destruct owners, fault; cbn; split; intro valid; try discriminate; intuition congruence.
+Qed.
+
+Theorem retiming_preserves_selected_stamp_typed_graph_and_all_nonstamp_fields current first later :
+  A.selected_stamp (retime first current) later = A.selected_stamp current later /\
+  A.selected_graph (retime first current) later = A.selected_graph current later /\
+  A.checkpoint_leaf (retime first current) = A.checkpoint_leaf current /\
+  A.checkpoint_owners (retime first current) = A.checkpoint_owners current /\
+  A.checkpoint_fault (retime first current) = A.checkpoint_fault current.
+Proof.
+  destruct current as [leaf owners stamp fault].
+  unfold retime, A.selected_graph, A.selected_stamp, A.graph_at; cbn.
+  destruct fault; [repeat split; reflexivity|].
+  destruct (F.path_status_value (A.leaf_metadata leaf)); repeat split; reflexivity.
+Qed.
+
+Lemma direct_retiming_is_plain current position :
+  needs_link current = false -> retime position current = plain (A.checkpoint_leaf current) position.
+Proof.
+  rewrite direct_publication_requires_no_owners_no_fault_and_nondead_metadata.
+  destruct current as [leaf owners stamp fault]. cbn. intros [-> [-> nondead]].
+  unfold retime, plain, A.selected_stamp, dead_leaf in *. cbn in *.
+  destruct (F.path_status_value (A.leaf_metadata leaf)); congruence.
+Qed.
+
+Theorem publication_returns_exact_fields_at_the_selected_byte_stamp stored current position :
+  let '(next, address) := publish stored current in
+  lookup next address position = Some (retime position current).
+Proof.
+  unfold publish. destruct (needs_link current) eqn:shape; unfold lookup; cbn.
+  - now rewrite C.last_lookup.
+  - rewrite C.last_lookup. cbn. now rewrite direct_retiming_is_plain.
+Qed.
+
+Definition valid_selected (frames : list (@T.stored_frame Span)) (current : @A.checkpoint Span) position :=
+  let stamp := A.selected_stamp current position in
+  let leaf := A.checkpoint_leaf current in
+  T.physical_tree frames (A.leaf_next leaf) /\
+  Forall (T.owner_realizes frames stamp) (A.checkpoint_owners current) /\
+  match A.leaf_phase leaf with
+  | A.PayloadMarker => A.leaf_payload_start leaf <= stamp /\ stamp < A.payload_end leaf
+  | A.AwaitingMarker _ => stamp = A.payload_end leaf
+  end.
+
+Lemma valid_selected_survives_retiming frames current first later :
+  valid_selected frames (retime first current) later <-> valid_selected frames current later.
+Proof.
+  unfold valid_selected.
+  rewrite (proj1 (retiming_preserves_selected_stamp_typed_graph_and_all_nonstamp_fields current first later)).
+  reflexivity.
+Qed.
+
+Theorem publication_preserves_valid_selected_typed_interpretation frames stored current position :
+  valid_selected frames current position ->
+  let '(next, address) := publish stored current in
+  exists selected,
+    lookup next address position = Some selected /\ valid_selected frames selected position /\
+    A.selected_graph selected position = A.selected_graph current position.
+Proof.
+  intro valid. pose proof (publication_returns_exact_fields_at_the_selected_byte_stamp stored current position) as found.
+  destruct (publish stored current) as [next address]. exists (retime position current).
+  split; [exact found|]. split.
+  - now apply valid_selected_survives_retiming.
+  - exact (proj1 (proj2 (retiming_preserves_selected_stamp_typed_graph_and_all_nonstamp_fields current position position))).
+Qed.
+
+Theorem every_dead_or_fault_checkpoint_retains_its_saved_stamp_in_linked_storage stored current :
+  (exists error, A.checkpoint_fault current = Some error) \/ dead_leaf (A.checkpoint_leaf current) = true ->
+  publish stored current =
+    (Storage (direct stored) (linked stored ++ [current]), C.LinkedSlot (length (linked stored))) /\
+  forall position, lookup (fst (publish stored current)) (snd (publish stored current)) position = Some current.
+Proof.
+  intro frozen.
+  assert (link : needs_link current = true).
+  { destruct current as [leaf owners stamp fault]. unfold needs_link; cbn in *.
+    destruct owners, fault; cbn in *; try reflexivity.
+    destruct frozen as [[error impossible]|dead]; [discriminate|exact dead]. }
+  assert (same : forall position, retime position current = current).
+  { destruct current as [leaf owners stamp fault]. unfold retime, A.selected_stamp; cbn in *.
+    destruct fault; [reflexivity|]. destruct frozen as [[error impossible]|dead]; [discriminate|].
+    unfold dead_leaf in dead. destruct (F.path_status_value (A.leaf_metadata leaf)); try discriminate; reflexivity. }
+  split; [unfold publish; now rewrite link|]. intro position.
+  pose proof (publication_returns_exact_fields_at_the_selected_byte_stamp stored current position) as found.
+  destruct (publish stored current); cbn. now rewrite same in found.
+Qed.
+
+Theorem publication_preserves_every_old_direct_and_linked_lookup stored current address position previous :
+  lookup stored address position = Some previous ->
+  let '(next, _) := publish stored current in lookup next address position = Some previous.
+Proof.
+  destruct stored as [direct linked], address; unfold lookup; cbn;
+    destruct (nth_error _ slot) eqn:found; cbn; try discriminate;
+    intro same; unfold publish; cbn; destruct (needs_link current); unfold lookup; cbn.
+  - now rewrite found.
+  - rewrite (@P.old_lookup_after_append _ direct [A.checkpoint_leaf current] slot p found). exact same.
+  - rewrite (@P.old_lookup_after_append _ linked [current] slot c found). exact same.
+  - now rewrite found.
+Qed.
+
+Theorem ownerless_live_publication_does_not_allocate_a_linked_checkpoint stored current :
+  A.checkpoint_owners current = [] -> A.checkpoint_fault current = None ->
+  dead_leaf (A.checkpoint_leaf current) = false ->
+  let '(next, _) := publish stored current in
+  linked next = linked stored /\ length (direct next) = S (length (direct stored)).
+Proof.
+  intros owners fault live. unfold publish, needs_link. rewrite owners, fault, live. cbn.
+  split; [reflexivity|rewrite length_app; cbn; lia].
+Qed.
+
+End Storage.
+
+Inductive scalar_event :=
+| ObligationStarted (obligation : T.obligation_snapshot)
+| ObligationByte (id : nat) (byte : located_byte) (last : bool).
+
+Theorem native_consumed_subtraction_equals_the_derived_absolute_end start declared stamp :
+  start <= stamp -> stamp <= start + declared ->
+  stamp - start <= declared /\
+  declared - (stamp - start) = start + declared - stamp /\
+  declared - (stamp - start) <= declared.
+Proof. intros started bounded. repeat split; lia. Qed.
+
+Section ScalarBoundaries.
+Context {Span : Type}.
+
+Record birth := Birth {
+  born_leaf : @A.physical_leaf Span;
+  born_clock : nat;
+  born_event : scalar_event
+}.
+
+Record typed_birth := TypedBirth {
+  born_path : @T.semantic_path Span;
+  typed_born_clock : nat;
+  typed_born_event : scalar_event
+}.
+
+Definition start_absolute metadata slot kind tag_source declared start length_source next clock :=
+  let obligation := T.ObligationSnapshot clock kind declared tag_source in
+  Birth (A.PhysicalLeaf metadata slot obligation
+    (match declared with 0 => A.AwaitingMarker length_source | S _ => A.PayloadMarker end) start next)
+    (S clock) (ObligationStarted obligation).
+
+Definition start_typed metadata slot kind tag_source declared start length_source next clock :=
+  let obligation := T.ObligationSnapshot clock kind declared tag_source in
+  TypedBirth (T.SemanticPath metadata (T.InactiveTree slot
+    (T.ObligationPayload obligation
+      (match declared with 0 => T.AwaitingPhase length_source | S _ => T.PayloadPhase declared end) start) next))
+    (S clock) (ObligationStarted obligation).
+
+Theorem absolute_obligation_creation_refines_the_typed_graph_event_and_fresh_clock
+    metadata slot kind tag_source declared start length_source next clock :
+  let actual := start_absolute metadata slot kind tag_source declared start length_source next clock in
+  let reference := start_typed metadata slot kind tag_source declared start length_source next clock in
+  A.realize_leaf start (born_leaf actual) = born_path reference /\
+  born_clock actual = typed_born_clock reference /\ born_event actual = typed_born_event reference /\
+  T.obligation_id (A.leaf_obligation (born_leaf actual)) = clock /\ born_clock actual = S clock.
+Proof.
+  unfold start_absolute, start_typed. destruct declared; cbn [born_leaf born_path born_clock typed_born_clock born_event typed_born_event].
+  - repeat split; reflexivity.
+  - unfold A.realize_leaf, A.realize_phase, A.payload_end; cbn.
+    replace (start + S declared - start) with (S declared) by lia. repeat split; reflexivity.
+Qed.
+
+Theorem zero_length_creation_is_explicitly_pending_at_the_length_source
+    metadata slot kind tag_source start length_source next clock :
+  let created := start_absolute metadata slot kind tag_source 0 start length_source next clock in
+  A.leaf_phase (born_leaf created) = A.AwaitingMarker length_source /\
+  A.realize_phase start (born_leaf created) = T.AwaitingPhase length_source /\
+  born_event created = ObligationStarted (T.ObligationSnapshot clock kind 0 tag_source) /\
+  born_clock created = S clock.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem positive_length_creation_stays_payload_even_when_the_numeric_end_exceeds_a_native_limit
+    metadata slot kind tag_source declared start length_source next clock native_limit :
+  0 < declared -> native_limit < start + declared ->
+  let created := start_absolute metadata slot kind tag_source declared start length_source next clock in
+  A.leaf_phase (born_leaf created) = A.PayloadMarker /\
+  A.payload_end (born_leaf created) = start + declared /\
+  A.realize_phase start (born_leaf created) = T.PayloadPhase declared /\ born_clock created = S clock.
+Proof.
+  intros positive beyond. destruct declared; [lia|]. cbn [start_absolute born_leaf born_clock].
+  unfold A.realize_phase, A.payload_end; cbn.
+  replace (start + S declared - start) with (S declared) by lia. repeat split; reflexivity.
+Qed.
+
+Definition finish_leaf fresh endpoint (current : @A.physical_leaf Span) :=
+  A.PhysicalLeaf (A.leaf_metadata current) fresh (A.leaf_obligation current)
+    (A.AwaitingMarker endpoint) (A.leaf_payload_start current) (A.leaf_next current).
+
+Definition absolute_byte stamp fresh byte current :=
+  match A.leaf_phase current, F.path_status_value (A.leaf_metadata current) with
+  | A.PayloadMarker, F.OpenPath =>
+      if (A.leaf_payload_start current <=? stamp) && (stamp <? A.payload_end current) then
+        let last := S stamp =? A.payload_end current in
+        Some ((if last then finish_leaf fresh (byte_provenance byte) current else current),
+          ObligationByte (T.obligation_id (A.leaf_obligation current)) byte last)
+      else None
+  | _, _ => None
+  end.
+
+Definition typed_byte fresh byte (current : @T.semantic_path Span) :=
+  match F.path_status_value (T.semantic_metadata current), T.semantic_frames current with
+  | F.OpenPath, T.InactiveTree _ (T.ObligationPayload obligation (T.PayloadPhase remaining) start) next =>
+      if 0 <? remaining then
+        let residual := remaining - 1 in
+        let last := residual =? 0 in
+        Some (T.SemanticPath (T.semantic_metadata current)
+          (T.InactiveTree fresh (T.ObligationPayload obligation
+            (if last then T.AwaitingPhase (byte_provenance byte) else T.PayloadPhase residual) start) next),
+          ObligationByte (T.obligation_id obligation) byte last)
+      else None
+  | _, _ => None
+  end.
+
+Definition typed_nonfinal fresh stamp (current : @A.physical_leaf Span) :=
+  T.SemanticPath (A.leaf_metadata current)
+    (T.InactiveTree fresh (T.ObligationPayload (A.leaf_obligation current)
+      (T.PayloadPhase (A.payload_end current - stamp - 1)) (A.leaf_payload_start current)) (A.leaf_next current)).
+
+Theorem nonfinal_scalar_retains_the_physical_leaf_and_refines_the_fresh_typed_frame
+    stamp fresh byte current :
+  A.leaf_phase current = A.PayloadMarker ->
+  F.path_status_value (A.leaf_metadata current) = F.OpenPath ->
+  A.leaf_payload_start current <= stamp -> S stamp < A.payload_end current ->
+  absolute_byte stamp fresh byte current =
+    Some (current, ObligationByte (T.obligation_id (A.leaf_obligation current)) byte false) /\
+  typed_byte fresh byte (A.realize_leaf stamp current) =
+    Some (typed_nonfinal fresh stamp current, ObligationByte (T.obligation_id (A.leaf_obligation current)) byte false) /\
+  T.same_path_semantics (A.realize_leaf (S stamp) current) (typed_nonfinal fresh stamp current).
+Proof.
+  intros phase live started interior.
+  assert (at_start : A.leaf_payload_start current <=? stamp = true) by (apply Nat.leb_le; exact started).
+  assert (within : stamp <? A.payload_end current = true) by (apply Nat.ltb_lt; lia).
+  assert (not_final : S stamp =? A.payload_end current = false) by (apply Nat.eqb_neq; lia).
+  split.
+  - unfold absolute_byte. now rewrite phase, live, at_start, within, not_final.
+  - assert (positive : 0 <? A.payload_end current - stamp = true) by (apply Nat.ltb_lt; lia).
+    assert (residual : A.payload_end current - stamp - 1 =? 0 = false) by (apply Nat.eqb_neq; lia).
+    split.
+    + unfold typed_byte, A.realize_leaf, A.realize_phase. rewrite phase. cbn -[Nat.ltb Nat.leb Nat.eqb Nat.sub].
+      rewrite live, positive, residual. reflexivity.
+    + unfold T.same_path_semantics, A.realize_leaf, A.realize_phase, typed_nonfinal. rewrite phase. cbn.
+      split; [reflexivity|]. f_equal. f_equal. f_equal. lia.
+Qed.
+
+Theorem final_scalar_creates_the_exact_awaiting_frame_at_the_actual_physical_byte
+    stamp fresh byte current :
+  A.leaf_phase current = A.PayloadMarker ->
+  F.path_status_value (A.leaf_metadata current) = F.OpenPath ->
+  A.leaf_payload_start current <= stamp -> S stamp = A.payload_end current ->
+  let next := finish_leaf fresh (byte_provenance byte) current in
+  absolute_byte stamp fresh byte current =
+    Some (next, ObligationByte (T.obligation_id (A.leaf_obligation current)) byte true) /\
+  typed_byte fresh byte (A.realize_leaf stamp current) =
+    Some (A.realize_leaf (S stamp) next, ObligationByte (T.obligation_id (A.leaf_obligation current)) byte true) /\
+  A.leaf_phase next = A.AwaitingMarker (byte_source byte, byte_offset byte) /\
+  A.leaf_obligation next = A.leaf_obligation current /\
+  A.leaf_payload_start next = A.leaf_payload_start current /\ A.leaf_next next = A.leaf_next current.
+Proof.
+  intros phase live started ending. cbn zeta.
+  assert (at_start : A.leaf_payload_start current <=? stamp = true) by (apply Nat.leb_le; exact started).
+  assert (within : stamp <? A.payload_end current = true) by (apply Nat.ltb_lt; lia).
+  assert (last : S stamp =? A.payload_end current = true) by (apply Nat.eqb_eq; exact ending).
+  split.
+  - unfold absolute_byte. now rewrite phase, live, at_start, within, last.
+  - split.
+    + unfold typed_byte, A.realize_leaf, A.realize_phase. rewrite phase. cbn -[Nat.ltb Nat.leb Nat.eqb Nat.sub].
+      rewrite live. replace (A.payload_end current - stamp) with 1 by lia. reflexivity.
+    + repeat split; reflexivity.
+Qed.
+
+Theorem invalid_stamps_and_explicit_pending_phases_never_feed_a_payload_byte stamp fresh byte current :
+  (stamp < A.leaf_payload_start current \/ A.payload_end current <= stamp) ->
+    absolute_byte stamp fresh byte current = None.
+Proof.
+  intro invalid. unfold absolute_byte.
+  destruct (A.leaf_phase current), (F.path_status_value (A.leaf_metadata current)); try reflexivity.
+  destruct invalid as [early|late].
+  - assert (A.leaf_payload_start current <=? stamp = false) by (apply Nat.leb_gt; exact early).
+    now rewrite H.
+  - assert (stamp <? A.payload_end current = false) by (apply Nat.ltb_ge; exact late).
+    now rewrite H, andb_false_r.
+Qed.
+
+Theorem explicit_pending_phase_refuses_even_if_the_stamp_looks_like_live_payload stamp fresh byte current endpoint :
+  A.leaf_phase current = A.AwaitingMarker endpoint -> absolute_byte stamp fresh byte current = None.
+Proof. intro pending. unfold absolute_byte. rewrite pending. destruct (F.path_status_value (A.leaf_metadata current)); reflexivity. Qed.
+
+Theorem consecutive_births_use_distinct_actual_obligation_ids_without_checkpoint_clock_state
+    metadata slot kind tag_source declared start length_source next clock :
+  let first := start_absolute metadata slot kind tag_source declared start length_source next clock in
+  let second := start_absolute metadata slot kind tag_source declared start length_source next (born_clock first) in
+  T.obligation_id (A.leaf_obligation (born_leaf first)) < T.obligation_id (A.leaf_obligation (born_leaf second)) /\
+  born_clock second = clock + 2.
+Proof. cbn. split; lia. Qed.
+
+End ScalarBoundaries.
+
+Inductive private_operation := Resolve | Reject.
+
+Section PrivatePreflight.
+Context {Span : Type}.
+
+Record world := World {
+  world_checkpoints : @storage Span;
+  world_frames : list (@T.stored_frame Span);
+  world_owners : P.owner_arena;
+  world_bytes : list located_byte;
+  world_current : C.address;
+  world_restore : list (C.address * list located_byte);
+  world_clock : nat
+}.
+
+Lemma typed_root_fault_does_not_change_the_private_terminal (path : @T.semantic_path Span) error :
+  T.path_private_terminal (D.kill_typed path error) = T.path_private_terminal path.
+Proof. reflexivity. Qed.
+
+Theorem selected_checkpoint_private_terminal_preserves_phase_id_and_source_even_when_dead
+    (current : @A.checkpoint Span) position :
+  let leaf := A.checkpoint_leaf current in
+  let obligation := A.leaf_obligation leaf in
+  let '(source, offset) := T.obligation_tag_source obligation in
+  T.path_private_terminal (A.selected_graph current position) =
+    P.TerminalObligation (T.obligation_id obligation) source offset
+      (match A.leaf_phase leaf with A.PayloadMarker => false | A.AwaitingMarker _ => true end).
+Proof.
+  cbn zeta. unfold A.selected_graph, A.graph_at.
+  destruct (A.checkpoint_fault current); [rewrite typed_root_fault_does_not_change_the_private_terminal|];
+    unfold A.realize_graph; rewrite T.typed_overlay_private_terminal_is_the_selected_focus_terminal;
+    unfold T.path_private_terminal, A.realize_leaf, A.realize_phase;
+    destruct (A.leaf_phase (A.checkpoint_leaf current)); cbn;
+    destruct (T.obligation_tag_source (A.leaf_obligation (A.checkpoint_leaf current))); reflexivity.
+Qed.
+
+Definition private_preflight operation requested caller current :=
+  match lookup (world_checkpoints current) (world_current current) (length (world_bytes current)) with
+  | None => match operation with Resolve => Some (0, 0) | Reject => Some caller end
+  | Some selected =>
+      let terminal := T.path_private_terminal (A.selected_graph selected (length (world_bytes current))) in
+      match operation with
+      | Resolve => P.resolve_preflight requested terminal
+      | Reject => P.reject_preflight requested caller terminal
+      end
+  end.
+
+Definition guarded_private operation requested caller (accepted : world -> world) current :=
+  match private_preflight operation requested caller current with
+  | Some error => (Some error, current)
+  | None => (None, accepted current)
+  end.
+
+Theorem failed_private_preflight_preserves_the_complete_concrete_world
+    operation requested caller accepted current error :
+  private_preflight operation requested caller current = Some error ->
+  guarded_private operation requested caller accepted current = (Some error, current).
+Proof. intro refused. unfold guarded_private. now rewrite refused. Qed.
+
+Theorem wrong_id_private_operations_return_the_hidden_source_without_mutating_any_world_field
+    operation requested caller accepted current selected :
+  lookup (world_checkpoints current) (world_current current) (length (world_bytes current)) = Some selected ->
+  requested <> T.obligation_id (A.leaf_obligation (A.checkpoint_leaf selected)) ->
+  let '(source, offset) := T.obligation_tag_source (A.leaf_obligation (A.checkpoint_leaf selected)) in
+  private_preflight operation requested caller current = Some (source, offset) /\
+  guarded_private operation requested caller accepted current = (Some (source, offset), current).
+Proof.
+  intros found different.
+  pose proof (@selected_checkpoint_private_terminal_preserves_phase_id_and_source_even_when_dead
+    selected (length (world_bytes current))) as terminal.
+  cbn zeta in terminal |- *.
+  destruct (T.obligation_tag_source (A.leaf_obligation (A.checkpoint_leaf selected))) as [source offset].
+  assert (wrong : requested =? T.obligation_id (A.leaf_obligation (A.checkpoint_leaf selected)) = false)
+    by (apply Nat.eqb_neq; exact different).
+  assert (refused : private_preflight operation requested caller current = Some (source, offset)).
+  { unfold private_preflight. rewrite found. destruct operation; rewrite terminal;
+      unfold P.resolve_preflight, P.reject_preflight; now rewrite wrong. }
+  split; [exact refused|]. now apply failed_private_preflight_preserves_the_complete_concrete_world.
+Qed.
+
+Theorem matching_payload_resolve_is_nonmutating_while_reject_preflight_passes
+    caller accepted current selected :
+  lookup (world_checkpoints current) (world_current current) (length (world_bytes current)) = Some selected ->
+  A.leaf_phase (A.checkpoint_leaf selected) = A.PayloadMarker ->
+  let obligation := A.leaf_obligation (A.checkpoint_leaf selected) in
+  let '(source, offset) := T.obligation_tag_source obligation in
+  private_preflight Resolve (T.obligation_id obligation) caller current = Some (source, offset) /\
+  guarded_private Resolve (T.obligation_id obligation) caller accepted current = (Some (source, offset), current) /\
+  private_preflight Reject (T.obligation_id obligation) caller current = None.
+Proof.
+  intros found payload.
+  pose proof (@selected_checkpoint_private_terminal_preserves_phase_id_and_source_even_when_dead
+    selected (length (world_bytes current))) as terminal.
+  cbn zeta in terminal |- *.
+  destruct (T.obligation_tag_source (A.leaf_obligation (A.checkpoint_leaf selected))) as [source offset].
+  rewrite payload in terminal.
+  assert (refused : private_preflight Resolve (T.obligation_id (A.leaf_obligation (A.checkpoint_leaf selected))) caller current =
+    Some (source, offset)).
+  { unfold private_preflight. rewrite found, terminal. unfold P.resolve_preflight. now rewrite andb_false_r. }
+  split; [exact refused|]. split.
+  - now apply failed_private_preflight_preserves_the_complete_concrete_world.
+  - unfold private_preflight. rewrite found, terminal. unfold P.reject_preflight. now rewrite Nat.eqb_refl.
+Qed.
+
+End PrivatePreflight.
+
+Print Assumptions direct_publication_requires_no_owners_no_fault_and_nondead_metadata.
+Print Assumptions retiming_preserves_selected_stamp_typed_graph_and_all_nonstamp_fields.
+Print Assumptions publication_returns_exact_fields_at_the_selected_byte_stamp.
+Print Assumptions publication_preserves_valid_selected_typed_interpretation.
+Print Assumptions every_dead_or_fault_checkpoint_retains_its_saved_stamp_in_linked_storage.
+Print Assumptions publication_preserves_every_old_direct_and_linked_lookup.
+Print Assumptions ownerless_live_publication_does_not_allocate_a_linked_checkpoint.
+Print Assumptions native_consumed_subtraction_equals_the_derived_absolute_end.
+Print Assumptions absolute_obligation_creation_refines_the_typed_graph_event_and_fresh_clock.
+Print Assumptions zero_length_creation_is_explicitly_pending_at_the_length_source.
+Print Assumptions positive_length_creation_stays_payload_even_when_the_numeric_end_exceeds_a_native_limit.
+Print Assumptions nonfinal_scalar_retains_the_physical_leaf_and_refines_the_fresh_typed_frame.
+Print Assumptions final_scalar_creates_the_exact_awaiting_frame_at_the_actual_physical_byte.
+Print Assumptions invalid_stamps_and_explicit_pending_phases_never_feed_a_payload_byte.
+Print Assumptions explicit_pending_phase_refuses_even_if_the_stamp_looks_like_live_payload.
+Print Assumptions consecutive_births_use_distinct_actual_obligation_ids_without_checkpoint_clock_state.
+Print Assumptions selected_checkpoint_private_terminal_preserves_phase_id_and_source_even_when_dead.
+Print Assumptions failed_private_preflight_preserves_the_complete_concrete_world.
+Print Assumptions wrong_id_private_operations_return_the_hidden_source_without_mutating_any_world_field.
+Print Assumptions matching_payload_resolve_is_nonmutating_while_reject_preflight_passes.
+
+End AbsolutePayloadCheckpointBoundary.

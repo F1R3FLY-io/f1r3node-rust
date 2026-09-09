@@ -2320,3 +2320,54 @@ restore runs or failed-preflight/global-obligation-clock composition. Those
 remain required before activation. Existing compact-checkpoint proofs are
 preserved as history; their ownerless stamp erasure cannot be applied blindly
 to the proposed absolute-payload representation.
+
+#### Absolute payload checkpoint and scalar boundary refinement (2026-09-09)
+
+`AbsolutePayloadCheckpointBoundary` supplies the next twenty model invariants.
+It distinguishes the current byte-history length from the selected graph stamp:
+live checkpoints use the former, whereas failed checkpoints retain the latter.
+Direct storage is reserved for ownerless, unfaulted, nondead states. Other states
+use immutable linked records; publication preserves every prior lookup.
+
+The native residual is declared length minus consumed payload length, computed
+with checked subtraction and conversion. This avoids constructing a widened end
+for each payload observation while allowing every `u64` declared length. The
+scalar model retains the independent countdown transition: nonfinal native steps
+keep one physical frame, while the reference creates a fresh countdown frame.
+Equivalence compares semantic graphs, not physical allocation identities.
+
+The following is the exhaustive exported-invariant binding plan for this module.
+The regression controls are qualified against the countdown implementation;
+production activation and post-change verification must be recorded separately.
+Every theorem name below has the prefix `AbsolutePayloadCheckpointBoundary.`.
+
+| Exported invariant | Executable obligation |
+|---|---|
+| `direct_publication_requires_no_owners_no_fault_and_nondead_metadata` | Generate every owner/fault/status combination and check address class. |
+| `retiming_preserves_selected_stamp_typed_graph_and_all_nonstamp_fields` | Vary selected byte lengths; live graphs retime, failed graphs retain saved time and all other fields. |
+| `publication_returns_exact_fields_at_the_selected_byte_stamp` | Compare published records with the explicit selected-state interpretation. |
+| `publication_preserves_valid_selected_typed_interpretation` | Differentially compare active payloads and held-owner residuals after publication and restore. |
+| `every_dead_or_fault_checkpoint_retains_its_saved_stamp_in_linked_storage` | Append ignored bytes after ownerless rejection or nested failure; verify hidden countdown and saved stamp. |
+| `publication_preserves_every_old_direct_and_linked_lookup` | Recheck all retained handles after arbitrary subsequent publications. |
+| `ownerless_live_publication_does_not_allocate_a_linked_checkpoint` | Assert the linked arena remains unallocated for a sequence of plain live states. |
+| `native_consumed_subtraction_equals_the_derived_absolute_end` | Check native residuals against widened arithmetic, including full-width lengths and historical prefixes. |
+| `absolute_obligation_creation_refines_the_typed_graph_event_and_fresh_clock` | Compare creation metadata, event, selected graph and machine-global next ID with the eager reference. |
+| `zero_length_creation_is_explicitly_pending_at_the_length_source` | Assert immediate pending phase with the exact length-varint endpoint. |
+| `positive_length_creation_stays_payload_even_when_the_numeric_end_exceeds_a_native_limit` | Exercise `u64::MAX` lengths without allocating a declared-size buffer or narrowing the length. |
+| `nonfinal_scalar_retains_the_physical_leaf_and_refines_the_fresh_typed_frame` | Assert unchanged native leaf allocation and identical reference residual, event and continuation at every prefix. |
+| `final_scalar_creates_the_exact_awaiting_frame_at_the_actual_physical_byte` | Assert the final frame's explicit phase, physical source, metadata and continuation. |
+| `invalid_stamps_and_explicit_pending_phases_never_feed_a_payload_byte` | Invalid residual calculations refuse; pending input cannot enter scalar payload feed. |
+| `explicit_pending_phase_refuses_even_if_the_stamp_looks_like_live_payload` | Phase-only private eligibility and edge refusal must not infer phase from residual arithmetic. |
+| `consecutive_births_use_distinct_actual_obligation_ids_without_checkpoint_clock_state` | Historical forks preserve globally fresh obligation IDs rather than restoring an old clock. |
+| `selected_checkpoint_private_terminal_preserves_phase_id_and_source_even_when_dead` | Inspect hidden obligations under failed roots and compare exact ID, phase and tag source. |
+| `failed_private_preflight_preserves_the_complete_concrete_world` | Wrong-phase/ID operations preserve frame, owner and checkpoint arenas, byte histories, restore handles and clock. |
+| `wrong_id_private_operations_return_the_hidden_source_without_mutating_any_world_field` | Both resolve and reject return the hidden tag source without allocation or publication. |
+| `matching_payload_resolve_is_nonmutating_while_reject_preflight_passes` | Early resolve refuses without mutation; rejection remains eligible before payload completion. |
+
+The concrete world model covers refusal before private mutation. Its accepted
+operation is an explicit parameter, not a proof of successful resolution or
+owner settlement. Existing effectful settlement models and differential controls
+remain necessary. Compressed restore and the complete ACT/admission transaction
+are also outside this module; these results do not establish whole-import linear
+complexity. In particular, successful private resolution of an already failed
+root does not revive it and must not retime its hidden graph to ignored bytes.

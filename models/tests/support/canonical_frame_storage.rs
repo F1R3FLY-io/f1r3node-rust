@@ -152,9 +152,29 @@ fn compact_checkpoint_dead_direct_private_operations_preserve_exact_graph() {
     }
 }
 
+struct EagerFrameHistory(FrameHistory);
+
+impl std::ops::Deref for EagerFrameHistory {
+    type Target = FrameHistory;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl std::ops::Index<usize> for EagerFrameHistory {
+    type Output = Frame;
+    fn index(&self, index: usize) -> &Self::Output { &self.0[index] }
+}
+
+impl FrameStore for EagerFrameHistory {
+    type Span = CanonicalBytesHandle;
+
+    fn new() -> Self { Self(FrameHistory::new()) }
+    fn push(&mut self, frame: Frame) -> FrameId { self.0.push(frame) }
+    fn retained_bytes(&self) -> usize { self.0.retained_bytes() }
+}
+
 pub(crate) struct EagerCanonicalPathReducer {
     states: Vec<InnerPath>,
-    machine: CanonicalPathMachine<FrameHistory>,
+    machine: CanonicalPathMachine<EagerFrameHistory>,
 }
 
 impl EagerCanonicalPathReducer {
@@ -184,7 +204,7 @@ impl EagerCanonicalPathReducer {
     pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats {
         CanonicalPathAdmissionStats {
             states: self.states.len(),
-            frames: self.machine.frames.slots.len(),
+            frames: self.machine.frames.0.slots.len(),
             ..self.machine.stats
         }
     }
@@ -1334,12 +1354,10 @@ fn persistent_fault_private_preflight_uses_selected_graph_not_latest_event() {
         let emitted = emitted.unwrap();
         assert_eq!(reducer.machine.next_obligation, emitted.id.0 + 1);
         assert_eq!(reducer.active_obligation(handle), None);
-        assert!(
-            reducer
-                .freeze_completed_obligation(&arena, handle)
-                .unwrap()
-                .is_none()
-        );
+        assert!(reducer
+            .freeze_completed_obligation(&arena, handle)
+            .unwrap()
+            .is_none());
         let original = reducer.states[handle.state.0].clone();
         let error = reducer
             .value(handle, true, CanonicalPathSource::new(99))
@@ -1403,12 +1421,10 @@ fn persistent_fault_private_preflight_uses_selected_graph_not_latest_event() {
                         assert_eq!(reducer.machine.frames.slots, selected_frames);
                         assert_eq!(reducer.machine.next_obligation, selected_clock);
                         assert_eq!(reducer.active_obligation(fork), None);
-                        assert!(
-                            reducer
-                                .freeze_completed_obligation(&arena, fork)
-                                .unwrap()
-                                .is_none()
-                        );
+                        assert!(reducer
+                            .freeze_completed_obligation(&arena, fork)
+                            .unwrap()
+                            .is_none());
                         assert_eq!(
                             reducer.value(fork, true, CanonicalPathSource::new(0)),
                             Some(Err(error))
@@ -1788,6 +1804,234 @@ fn assert_focused_persistent_matches(
     );
 }
 
+#[test]
+fn ownerless_rejected_payload_retains_hidden_countdown_after_dead_bytes() {
+    let mut reference = EagerCanonicalPathReducer::new();
+    let mut focused = CanonicalPathReducer::new();
+    let mut reference_arena = CanonicalBytesArena::new();
+    let mut arena = CanonicalBytesArena::new();
+    let mut expected = reference.root(&reference_arena);
+    let mut actual = focused.root(&arena);
+    for (index, byte) in [EPATHMAP_MAP, 4].into_iter().enumerate() {
+        let located =
+            CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(17, 103 + index * 19));
+        expected = reference
+            .edge(&mut reference_arena, expected, located)
+            .unwrap()
+            .0;
+        actual = focused.edge(&mut arena, actual, located).unwrap().0;
+    }
+    let id = reference.active_obligation(expected).unwrap().obligation.id;
+    let original = actual;
+    expected = reference
+        .reject_obligation(&reference_arena, expected, id, source(53))
+        .unwrap();
+    actual = focused
+        .reject_obligation(&arena, actual, id, source(53))
+        .unwrap();
+    let retained = reference.states[expected.state.0].clone();
+    let clock = reference.machine.next_obligation;
+    for index in 0..32 {
+        let located = CanonicalLocatedByte::new(
+            index,
+            CanonicalByteProvenance::new(91, 997 - index as usize * 7),
+        );
+        expected = reference
+            .edge(&mut reference_arena, expected, located)
+            .unwrap()
+            .0;
+        actual = focused.edge(&mut arena, actual, located).unwrap().0;
+        assert_eq!(reference.states[expected.state.0], retained);
+        assert_eq!(reference.machine.next_obligation, clock);
+        assert_eq!(focused.active_obligation(actual), None);
+        assert_eq!(focused.active_obligation(original).unwrap().remaining, 4);
+        let Frame::Obligation {
+            status: ObligationStatus::Payload { remaining },
+            ..
+        } = &reference.machine.frames[retained.stack.unwrap().0]
+        else {
+            panic!("retained payload")
+        };
+        assert_eq!(*remaining, 4);
+        assert_focused_persistent_matches(
+            &reference,
+            &reference_arena,
+            expected,
+            &focused,
+            &arena,
+            actual,
+        );
+    }
+    let mut mutated = reference.machine.frames.slots.clone();
+    let Frame::Obligation {
+        status: ObligationStatus::Payload { remaining },
+        ..
+    } = &mut mutated[retained.stack.unwrap().0]
+    else {
+        panic!("retained payload")
+    };
+    *remaining = 2;
+    assert_ne!(
+        super::opaque_interior_tests::normalize_graph(retained.clone(), &mutated),
+        super::opaque_interior_tests::normalize_graph(retained, &reference.machine.frames.slots),
+    );
+}
+
+#[test]
+fn scalar_payload_lengths_preserve_exact_boundary_sources_and_fresh_ids() {
+    assert_eq!(
+        std::mem::size_of::<EagerFrameHistory>(),
+        std::mem::size_of::<FrameHistory>()
+    );
+    for length in [0u8, 1, 2, 31, 127] {
+        let mut reference = EagerCanonicalPathReducer::new();
+        let mut focused = CanonicalPathReducer::new();
+        let mut reference_arena = CanonicalBytesArena::new();
+        let mut arena = CanonicalBytesArena::new();
+        let mut expected = reference.root(&reference_arena);
+        let mut actual = focused.root(&arena);
+        for (index, byte) in [EPATHMAP_MAP, length].into_iter().enumerate() {
+            let located =
+                CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(7, 101 + index * 23));
+            let (left, a) = reference
+                .edge(&mut reference_arena, expected, located)
+                .unwrap();
+            let (right, b) = focused.edge(&mut arena, actual, located).unwrap();
+            expected = left;
+            actual = right;
+            assert_eq!(a, b);
+        }
+        let active = reference.active_obligation(expected).unwrap();
+        assert_eq!(active.remaining, u64::from(length));
+        assert_eq!(active.awaiting_resolution, length == 0);
+        assert_eq!(
+            reference.machine.next_obligation,
+            active.obligation.id.0 + 1
+        );
+        for index in 0..length {
+            let located = CanonicalLocatedByte::new(
+                index,
+                CanonicalByteProvenance::new(11 + u32::from(index), 4096 - usize::from(index) * 17),
+            );
+            let (left, a) = reference
+                .edge(&mut reference_arena, expected, located)
+                .unwrap();
+            let (right, b) = focused.edge(&mut arena, actual, located).unwrap();
+            expected = left;
+            actual = right;
+            assert_eq!(a, b);
+            assert_eq!(b, CanonicalPathTransition::ObligationByte {
+                id: active.obligation.id,
+                byte: LocatedPathByte::in_source(
+                    located.byte,
+                    located.provenance.source,
+                    located.provenance.offset
+                ),
+                last: index + 1 == length,
+            });
+            assert_eq!(
+                focused.active_obligation(actual).unwrap().remaining,
+                u64::from(length - index - 1)
+            );
+            assert_focused_persistent_matches(
+                &reference,
+                &reference_arena,
+                expected,
+                &focused,
+                &arena,
+                actual,
+            );
+        }
+        let completed = focused
+            .completed_obligation(&arena, actual)
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.payload.len(), usize::from(length));
+        assert_eq!(
+            completed.payload_end,
+            if length == 0 {
+                CanonicalPathSource::in_source(7, 124)
+            } else {
+                CanonicalPathSource::in_source(
+                    10 + u32::from(length),
+                    4096 - usize::from(length - 1) * 17,
+                )
+            }
+        );
+        assert_focused_persistent_matches(
+            &reference,
+            &reference_arena,
+            expected,
+            &focused,
+            &arena,
+            actual,
+        );
+    }
+}
+
+#[test]
+fn full_width_payload_lengths_keep_exact_residuals_and_historical_forks() {
+    for length in [128, 255, 65_536, u64::MAX - 1, u64::MAX] {
+        let mut reference = EagerCanonicalPathReducer::new();
+        let mut focused = CanonicalPathReducer::new();
+        let mut reference_arena = CanonicalBytesArena::new();
+        let mut arena = CanonicalBytesArena::new();
+        let mut expected = reference.root(&reference_arena);
+        let mut actual = focused.root(&arena);
+        let mut header = vec![EPATHMAP_MAP];
+        prost::encoding::encode_varint(length, &mut header);
+        for (index, byte) in header.into_iter().enumerate() {
+            let located =
+                CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(23, 101 + index * 13));
+            expected = reference
+                .edge(&mut reference_arena, expected, located)
+                .unwrap()
+                .0;
+            actual = focused.edge(&mut arena, actual, located).unwrap().0;
+        }
+        let original = (expected, actual);
+        let id = focused.active_obligation(actual).unwrap().obligation.id;
+        for branch in 0..3 {
+            (expected, actual) = original;
+            for index in 0..17 {
+                let located = CanonicalLocatedByte::new(
+                    index as u8,
+                    CanonicalByteProvenance::new(31 + branch, 901 - index * 11),
+                );
+                expected = reference
+                    .edge(&mut reference_arena, expected, located)
+                    .unwrap()
+                    .0;
+                actual = focused.edge(&mut arena, actual, located).unwrap().0;
+                let progress = focused.active_obligation(actual).unwrap();
+                assert_eq!(progress.obligation.id, id);
+                assert_eq!(progress.remaining, length - index as u64 - 1);
+                assert!(!progress.awaiting_resolution);
+                assert_focused_persistent_matches(
+                    &reference,
+                    &reference_arena,
+                    expected,
+                    &focused,
+                    &arena,
+                    actual,
+                );
+                assert_eq!(
+                    focused.active_obligation(original.1).unwrap().remaining,
+                    length
+                );
+                assert_focused_persistent_matches(
+                    &reference,
+                    &reference_arena,
+                    original.0,
+                    &focused,
+                    &arena,
+                    original.1,
+                );
+            }
+        }
+    }
+}
+
 fn exercise_focused_persistent(bytes: &[u8], resolution_choice: u8, fork_stride: usize) {
     let mut reference = EagerCanonicalPathReducer::new();
     let mut focused = CanonicalPathReducer::new();
@@ -2081,17 +2325,15 @@ fn focused_persistent_outer_refusal_keeps_inner_completion_effects() {
         &focused.machine.frames.slots[..saved_frames.len()],
         saved_frames.as_slice()
     );
-    assert!(
-        focused.machine.frames.slots[saved_frames.len()..]
-            .iter()
-            .any(|frame| {
-                matches!(frame, Frame::Region {
-                    remaining: 2,
-                    phase: RegionPhase::PathLength(_),
-                    ..
-                })
+    assert!(focused.machine.frames.slots[saved_frames.len()..]
+        .iter()
+        .any(|frame| {
+            matches!(frame, Frame::Region {
+                remaining: 2,
+                phase: RegionPhase::PathLength(_),
+                ..
             })
-    );
+        }));
     let mut selected = before.clone();
     selected.fault = Some(CanonicalPathAdmissionError::new(
         CanonicalPathAdmissionErrorKind::Truncated,
@@ -2140,12 +2382,10 @@ fn focused_persistent_shared_prefix_has_no_repeated_ancestor_work() {
                 );
                 current = reducer.edge(&mut arena, current, located).unwrap().0;
                 assert!(reducer.active_obligation(current).is_none());
-                assert!(
-                    reducer
-                        .freeze_completed_obligation(&arena, current)
-                        .unwrap()
-                        .is_none()
-                );
+                assert!(reducer
+                    .freeze_completed_obligation(&arena, current)
+                    .unwrap()
+                    .is_none());
             }
             let prefix = current;
             let saved = reducer.state(prefix);
