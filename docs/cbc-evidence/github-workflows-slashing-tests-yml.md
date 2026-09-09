@@ -6,7 +6,7 @@
 
 **Base revision:** `7034e21683044fb1525d213d5a1ae2e16bbb57c0`
 
-**Candidate identity:** The [manifest](soak-g0-b2-2026-09-08/manifest.json) records the changed files and their content digests.
+**Candidate identity:** The [manifest](soak-g0-b2-2026-09-08/manifest.jsonc) records the changed files and their content digests.
 
 ## RED
 
@@ -78,7 +78,7 @@ The complete nightly suite and Rocq suite were not rerun with real verifiers. No
   "status": "pending",
   "evidence": {
     "kind": "workflow-tests+bounded-model-check",
-    "ref": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.json",
+    "ref": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
     "counterexample": "docs/cbc-evidence/soak-g0-b2-2026-09-08/red.log",
     "detail": "Direct TLC runs establish bounded baseline results. Hosted execution and the complete gate claim remain open."
   },

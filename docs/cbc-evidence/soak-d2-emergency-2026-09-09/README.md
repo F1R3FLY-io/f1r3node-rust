@@ -8,7 +8,7 @@ scope: B7 through B12 local emergency behaviors
 status: pending
 verified_at: null
 waiver: null
-evidence: manifest.json
+evidence: manifest.jsonc
 ```
 
 ## Results

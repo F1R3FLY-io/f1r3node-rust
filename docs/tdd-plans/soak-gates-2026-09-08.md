@@ -36,7 +36,7 @@ behaviors:
         red_exit: 1
         green_exit: 0
         hosted_confirmation: confirmed
-        hosted_evidence: docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.json
+        hosted_evidence: docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc
   - id: B3
     statement: Every required claim identifies its implementation, verification command, evidence identity, and pending obligations.
     priority: must
@@ -70,7 +70,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.jsonc
         test: scripts/bench/test-soak-disk-probe.sh
         red_revision: 80914eedabd3413e174e9fca4fe8bd5c17021cb4
         red_exit: 1
@@ -87,7 +87,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-sample-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-sample-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-disk-sample.sh
         red_revision: 59430d59b45e4640187fd4b0414b03249c431e8f
         red_exit: 1
@@ -104,7 +104,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-disk-active-probe.sh
         red_exit: 1
         formal_red_exit: 12
@@ -118,7 +118,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-disk-record.sh
         red_exit: 1
         formal_red_exit: 12
@@ -132,7 +132,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-guardian-death.sh
         red_exit: 1
         formal_red_exit: 12
@@ -147,7 +147,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-disk-probe-timeout.sh
         red_exit: 1
         formal_red_exit: 12
@@ -161,7 +161,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-disk-diagnostic-deadline.sh
         red_exit: 1
         formal_red_exit: 12
@@ -175,7 +175,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-disk-restart.sh
         red_exit: 1
         formal_red_exit: 12
@@ -189,7 +189,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-stop-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-stop-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-disk-stop-deadline.sh
         red_revision: 3d2aa79048c9da0af09c7771b3f5c3eb3c369414
         red_exit: 1
@@ -204,7 +204,7 @@ behaviors:
     deep_module: false
     done: true
     cycle_log:
-      - evidence: docs/cbc-evidence/soak-d2-boundary-2026-09-09/manifest.json
+      - evidence: docs/cbc-evidence/soak-d2-boundary-2026-09-09/manifest.jsonc
         test: scripts/bench/test-soak-guardian-admission.sh
         red_revision: e6fdd343b84726c29c9ac5fa992cac8b04e0d294
         red_exit: 1

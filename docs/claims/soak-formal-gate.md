@@ -21,6 +21,16 @@ A positive configuration must complete without a verifier error. A negative cont
 
 The `NEGATIVE_CONTROLS` array in `scripts/ci/check-tla-invariants.sh` is the single registry of controls. In the areas listed in `REGISTERED_CONTROL_AREAS`, a pre-fix configuration beside a registered positive that is absent from the registry fails the gate. `scripts/ci/test-check-tla-invariants.sh` reads that array, checks every control against seven outcomes, and checks that the workflow routes pull requests and pushes to the bounded `--soak-pr` tier and scheduled or manual runs to the full list.
 
+## JSONC file migration
+
+The claim inventory and claim-evidence files use JSON with Comments (JSONC). The validator accepts line and block comments through Ruby's existing JSON parser.
+
+The [format regression](../../scripts/ci/test-soak-claim-inventory-jsonc.sh) checks the default filename, explicit paths, comments, malformed input, stale bindings, missing claims, and false discharge.
+
+The CI inventory step runs this regression. Renamed evidence files retain their original bytes. Historical source and raw-artifact paths remain unchanged inside those records.
+
+Documentation references use the new filenames. This migration does not rerun historical verifiers or discharge a claim.
+
 ## Current evidence
 
 See the [gate evidence record](../cbc-evidence/scripts-ci-check-tla-invariants-sh.md).

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INVENTORY="${1:-$ROOT/docs/claims/soak-claim-inventory.json}"
+INVENTORY="${1:-$ROOT/docs/claims/soak-claim-inventory.jsonc}"
 
 ruby -rjson -rdigest - "$ROOT" "$INVENTORY" <<'RUBY'
 root, inventory = ARGV
@@ -35,7 +35,7 @@ require_value(File.file?(inventory), 'Required soak claims lack a candidate-boun
 begin
   data = JSON.parse(File.read(inventory))
 rescue JSON::ParserError => error
-  abort "FAIL: The inventory is not valid JSON: #{error.message}"
+  abort "FAIL: The inventory is not valid JSONC: #{error.message}"
 end
 fields(data, %w[schema_version candidate claims checks evidence gates acceptance], 'Inventory')
 require_value(data['schema_version'] == 1, 'The inventory schema is unsupported.')

@@ -8,7 +8,7 @@ scope: D2 missing post-start samples at admission only
 status: pending
 verified_at: null
 waiver: null
-evidence: manifest.json
+evidence: manifest.jsonc
 ```
 
 ## Result
@@ -58,7 +58,7 @@ The regression requires a completed, non-degraded summary before its behavioral 
 
 ## Retained verification
 
-The [manifest](manifest.json) binds tested inputs, verifier identity, raw records, and complete text logs. GREEN identifies working-tree source hashes, not a new committed revision.
+The [manifest](manifest.jsonc) binds tested inputs, verifier identity, raw records, and complete text logs. GREEN identifies working-tree source hashes, not a new committed revision.
 
 The real bounded tier passed four positive configurations and four exact negative controls. The classifier passed 28 cases, and routing passed six scenarios.
 

@@ -6,7 +6,7 @@
 
 **Base revision:** `43af06dab41ddf81b8dd1fcc5cf9e1303027aab7`
 
-**Candidate identity:** The [manifest](soak-g0-b3-2026-09-08/manifest.json) binds the inventory, checker, workflow, and retained evidence.
+**Candidate identity:** The [manifest](soak-g0-b3-2026-09-08/manifest.jsonc) binds the inventory, checker, workflow, and retained evidence.
 
 ## RED
 
@@ -22,7 +22,7 @@ The public interface is the inventory file. The correction adds the missing reco
 
 ## GREEN
 
-The [inventory](../claims/soak-claim-inventory.json) identifies four required claims and their current input digests. Each claim maps to implementation symbols, baseline checks, evidence identities, and pending obligations.
+The [inventory](../claims/soak-claim-inventory.jsonc) identifies four required claims and their current input digests. Each claim maps to implementation symbols, baseline checks, evidence identities, and pending obligations.
 
 The check records identify commands, configurations, verifier versions or known gaps, assumptions, finite bounds, production tests, and CI jobs.
 
@@ -40,7 +40,7 @@ The checker validates this pending inventory schema only. It is not a general cl
 
 ## Hosted B2 confirmation
 
-The [hosted observation](soak-g0-b3-2026-09-08/hosted-observation.json) records these separate identities:
+The [hosted observation](soak-g0-b3-2026-09-08/hosted-observation.jsonc) records these separate identities:
 
 | Field | Value |
 | --- | --- |
@@ -99,7 +99,7 @@ A digest update does not reverify a model or production behavior. The checker ca
   "status": "pending",
   "evidence": {
     "kind": "inventory-contract-tests+hosted-baseline-observation",
-    "ref": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.json",
+    "ref": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
     "counterexample": "docs/cbc-evidence/soak-g0-b3-2026-09-08/red.log",
     "detail": "Inventory validation is not formal discharge. Hosted baseline verification does not establish required-check enforcement or soak acceptance."
   },

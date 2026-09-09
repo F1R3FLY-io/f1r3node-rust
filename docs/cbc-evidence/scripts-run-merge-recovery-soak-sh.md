@@ -40,11 +40,11 @@ The per-cycle manifests were produced on the source branch and are retained outs
 
 | Manifest | SHA-256 |
 | --- | --- |
-| `soak-d2-probe-2026-09-08/manifest.json` (B5) | `3f1a1697d34f4696f877bcb5138942ecba5a9cd2754f8ad1e43d70a4e05870c7` |
-| `soak-d2-sample-2026-09-09/manifest.json` (B6) | `167d3a6bb8025d2d80615b4c178d0961fd433f83e5840d3aa038336c4bbeb137` |
-| `soak-d2-emergency-2026-09-09/manifest.json` (B7 to B12) | `36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773` |
-| `soak-d2-stop-2026-09-09/manifest.json` (B13) | `1f0ec6ca4b469fbfff33ae939221da8a2845e1bf5744f1c8d54f783aa9b55006` |
-| `soak-d2-boundary-2026-09-09/manifest.json` (B14) | `9ea2de48dcc9e353454a8451453fdb69772d827fdb9a689a26491b130ffae3ae` |
+| `soak-d2-probe-2026-09-08/manifest.jsonc` (B5) | `3f1a1697d34f4696f877bcb5138942ecba5a9cd2754f8ad1e43d70a4e05870c7` |
+| `soak-d2-sample-2026-09-09/manifest.jsonc` (B6) | `167d3a6bb8025d2d80615b4c178d0961fd433f83e5840d3aa038336c4bbeb137` |
+| `soak-d2-emergency-2026-09-09/manifest.jsonc` (B7 to B12) | `36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773` |
+| `soak-d2-stop-2026-09-09/manifest.jsonc` (B13) | `1f0ec6ca4b469fbfff33ae939221da8a2845e1bf5744f1c8d54f783aa9b55006` |
+| `soak-d2-boundary-2026-09-09/manifest.jsonc` (B14) | `9ea2de48dcc9e353454a8451453fdb69772d827fdb9a689a26491b130ffae3ae` |
 
 ## Limits
 

@@ -60,8 +60,8 @@ git rm formal/tlaplus/soak_disk/MC_{SoakDisk,DiskProbeAdmission,DiskSampleValida
 git rm formal/tlaplus/soak_disk/{DiskProbeAdmission,DiskSampleValidation,EmergencyResponse,DiskStopDeadline,GuardianAdmission}.md
 # harness wrappers and aggregators (the harness runs every scenario itself)
 git rm scripts/bench/test-soak-disk-{active-probe,diagnostic-deadline,emergency,probe-timeout,probe,record,restart,sample,stop-deadline}.sh scripts/bench/test-soak-guardian-death.sh scripts/bench/test-soak-guardian-admission.sh
-# digest inventory and its validator (the ci.yml step is already gone)
-git rm docs/claims/soak-claim-inventory.json scripts/ci/test-soak-claim-inventory.sh
+# digest inventory and its validators (the ci.yml steps are already gone)
+git rm docs/claims/soak-claim-inventory.jsonc scripts/ci/test-soak-claim-inventory.sh scripts/ci/test-soak-claim-inventory-jsonc.sh
 # generated evidence (condensed records replace them)
 git rm -r docs/cbc-evidence/soak-g0-2026-09-08 docs/cbc-evidence/soak-g0-b2-2026-09-08 docs/cbc-evidence/soak-g0-b3-2026-09-08 \
   docs/cbc-evidence/soak-d2-probe-2026-09-08 docs/cbc-evidence/soak-d2-sample-2026-09-09 docs/cbc-evidence/soak-d2-emergency-2026-09-09 docs/cbc-evidence/soak-d2-stop-2026-09-09 docs/cbc-evidence/soak-d2-boundary-2026-09-09 \
@@ -73,13 +73,15 @@ git show origin/dev:scripts/bench/collect-soak-metrics.sh > scripts/bench/collec
 git show origin/dev:scripts/bench/write-soak-summary.sh > scripts/bench/write-soak-summary.sh
 ```
 
-After phase two the README paragraph about legacy modules in `formal/tlaplus/soak_disk/README.md` should be removed, and the B3 row in `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md` already explains the inventory's removal.
+After phase two the README paragraph about legacy modules in `formal/tlaplus/soak_disk/README.md` should be removed, and the B3 row in `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md` already explains the inventory's removal. Also remove the "JSONC file migration" section from `docs/claims/soak-formal-gate.md`. It describes the inventory validator, and it arrived with the 2026-09-09 JSONC merge.
 
 ## Merges from the source branch
 
 - 2026-09-09, `e6fdd343b` (B13, bounded stop commands): driver change taken as is. The `DiskStopDeadline` model folded into `SoakDiskGuardian` as `EnforceStopDeadline` with `StopWithinBudget` and `KillFollowsTerm`; the `stop-timeout` scenario added to the harness table; conflicts in the gate, both tests, the harness header, and the gate claim resolved toward this branch; `test-soak-pr-formal-gate.sh` stays deleted.
 
 - 2026-09-09, `3498fa4f3` (B14, guardian death at the admission boundary): driver change taken as is. `GuardianAdmission` folded into `SoakDiskAdmission` as `CheckGuardianAlive` with `AdmissionRequiresGuardian`; `guardian-death-boundary` added to the harness table; the same five conflicts resolved toward this branch.
+
+- 2026-09-09, `37ec7f71d` (JSON to JSONC renames): the 13 evidence manifests, the claim inventory, and the assistant instruction files taken as is. The three conflicts were the inventory steps in `ci.yml`, the B1 pointer in the gate evidence record, and the inventory artifacts plus the open-obligation list in the gate claim. All three resolved toward this branch. The digest tables in the two evidence records now use the `.jsonc` names, and the digests are unchanged. The renamed inventory, the new `test-soak-claim-inventory-jsonc.sh`, and the "JSONC file migration" section stay in the tree and are on the phase-two list.
 
 ## Notes for the source agent
 

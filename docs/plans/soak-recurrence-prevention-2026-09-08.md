@@ -176,7 +176,7 @@ Keep `CLAIM-FINALITY-002` pending. If F1 identifies another stage, create a sepa
 
 The existing formal scripts remain useful regression gates. A successful run of those scripts alone does not complete this inventory.
 
-The [claim inventory](../claims/soak-claim-inventory.json) now records baseline checks and pending obligations. The [B3 evidence](../cbc-evidence/scripts-ci-test-soak-claim-inventory-sh.md) retains inventory validation and hosted B2 confirmation.
+The [claim inventory](../claims/soak-claim-inventory.jsonc) now records baseline checks and pending obligations. The [B3 evidence](../cbc-evidence/scripts-ci-test-soak-claim-inventory-sh.md) retains inventory validation and hosted B2 confirmation.
 
 G0 remains open. Required-check enforcement and the complete acceptance identity are not established.
 
