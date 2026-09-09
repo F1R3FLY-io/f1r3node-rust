@@ -166,6 +166,25 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix:RetainedBreachStopsRestart
 )
 
+# Areas whose expected-violation configurations are all registered. A
+# MC_<Model>_*_pre_fix.cfg beside a registered positive in one of these
+# directories that is absent from NEGATIVE_CONTROLS is a broken registration,
+# not a manual control. Other areas keep manual controls until they opt in
+# (docs/formal-verification.md).
+REGISTERED_CONTROL_AREAS=(carrier_index soak_disk)
+for entry in "${POST_FIX_CONFIGS[@]}"; do
+    area="${entry%%/*}"
+    printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fxq "$area" || continue
+    for cfg in "$TLA_ROOT/$entry"_*_pre_fix.cfg; do
+        [[ -f "$cfg" ]] || continue
+        control="$area/$(basename "$cfg" .cfg)"
+        if ! printf '%s\n' "${NEGATIVE_CONTROLS[@]}" | grep -q "^$control:"; then
+            echo "ERROR: $control exists but is not registered in NEGATIVE_CONTROLS" >&2
+            exit 2
+        fi
+    done
+done
+
 failed=0
 timeouts=0
 violations=0

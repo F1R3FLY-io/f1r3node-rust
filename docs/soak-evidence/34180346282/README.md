@@ -65,5 +65,6 @@ The script passed the 164,253-byte passive summary through `--argjson`. The dash
 | --- | --- |
 | Artifact 10057623626 (851,355,201 bytes, expires 2026-09-22T13:12:31Z) | `3b25041120055e32a49810ec81f762cdbf570af9b2bdba8bf93c14569489a4cc` (matches GitHub's digest) |
 | Workflow-log ZIP | `ec82240393dcfa9f28854207928f32c191374ffe593ab14fcede2ad4dc58571f` (locally computed) |
+| Inspection `manifest.json` (retained outside Git) | `76434f810484fa842b0c772297b513cac034348dd9878c234c453f62b3b6a10e` |
 
 The raw archives, the per-member digest list, the phase and iteration CSV extracts, and the derivation script stay outside Git on the inspecting host. This inspection dispatched, canceled, or restarted no soak and changed no pin, workload, or source.

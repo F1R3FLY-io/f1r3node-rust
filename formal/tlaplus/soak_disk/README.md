@@ -31,6 +31,16 @@ Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192,
 
 ## SoakDiskGuardian: the emergency path
 
+The model follows one iteration from the moment the guardian is watching it to the start of the next segment:
+
+1. The iteration runs. The guardian process is alive, or it crashes and the watcher notices.
+2. A live guardian runs `df` under a deadline. The probe returns promptly with or without a sample, or stalls and returns a valid field only after the deadline.
+3. A sample below the hard floor is a breach. The guardian writes `host-guardian-breach.txt`, then starts `pkill` and `docker kill`. An unavailable sample interrupts the iteration on its own.
+4. Attribution (`df`, `du`, `docker system df`) runs under one aggregate deadline, however many session roots exist.
+5. The segment ends with the marker on disk. The next segment reads it, refuses new work, and records a failure without lowering an existing count.
+
+Each step corresponds to one historical defect and one correction constant. The model does not compose their timing into one deadline, does not confirm that the killed writers stopped, and does not prove that the marker survives a crash. Those remain D2 obligations.
+
 | Model action | Driver behavior |
 | --- | --- |
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
@@ -52,6 +62,10 @@ Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192,
 `MC_SoakDiskGuardian` enables all six corrections. It also checks `TimedOutSampleRejected` and `PriorFailuresPreserved`. It completes with 1140 distinct states.
 
 Clock units: the probe deadline is 3 units (a 2-second timeout plus a 1-second kill grace), a stalled `df` returns at 4 units, and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
+
+## Counterexamples
+
+Counterexamples are not stored. Each pre-fix configuration regenerates its historical counterexample deterministically: TLC explores the same finite state space and reports the named invariant with exit 12. The gate checks that message and exit code, and `scripts/ci/test-check-tla-invariants.sh` checks that the gate rejects every other outcome. A pre-fix configuration that stops violating its invariant is a verification failure, not a success.
 
 ## Limits
 

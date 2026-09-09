@@ -49,6 +49,8 @@ Unchanged on purpose: `scripts/run-merge-recovery-soak.sh`, `test-run-merge-reco
 
 ## Phase two (pending the source agent's confirmation)
 
+The historical manifests are digest-bound in the two `docs/cbc-evidence/*.md` records and the run README before removal, so the source agent's raw store stays verifiable.
+
 Remove the superseded files, then rerun the five checks above:
 
 ```bash

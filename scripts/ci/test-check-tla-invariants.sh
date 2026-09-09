@@ -11,6 +11,9 @@
 #     through the bounded --soak-pr tier and schedule/dispatch through the full
 #     list; the PR tier is a strict subset that still carries every control and
 #     runs under the 2m cap; a baseline violation fails the PR tier.
+#  3. Registration: a pre-fix config beside a registered positive in a
+#     registered area (REGISTERED_CONTROL_AREAS) must appear in the registry;
+#     the same file outside those areas stays a manual control.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -153,4 +156,19 @@ if run_gate pull_request TEST_TLC_TARGET="${baseline##*/}.cfg" TEST_TLC_RESULT=v
     fail 'A violated baseline did not fail the pull-request gate.'
 fi
 
-printf 'PASS: %s negative controls classify exactly; PR/push run the bounded tier and schedule/dispatch run the full tier.\n' "${#CONTROLS[@]}"
+# 3. Registration.
+tla="$WORK/repo/formal/tlaplus"
+planted="$tla/soak_disk/MC_SoakDiskAdmission_planted_pre_fix.cfg"
+cp "$tla/soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix.cfg" "$planted"
+if run_gate gate; then
+    fail 'The gate accepted an unregistered pre-fix configuration in a registered area.'
+fi
+grep -q 'not registered in NEGATIVE_CONTROLS' "$WORK/run.log" ||
+    fail 'The gate failed for a reason other than the unregistered control.'
+rm -f "$planted"
+planted="$tla/replay_liveness/MC_ReplayHotLoop_planted_pre_fix.cfg"
+cp "$tla/replay_liveness/MC_ReplayHotLoop_quadratic_pre_fix.cfg" "$planted"
+run_gate gate || fail 'A manual control outside the registered areas failed the gate.'
+rm -f "$planted"
+
+printf 'PASS: %s negative controls classify exactly; PR/push run the bounded tier and schedule/dispatch run the full tier; unregistered controls are caught.\n' "${#CONTROLS[@]}"

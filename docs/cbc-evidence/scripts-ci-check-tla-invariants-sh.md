@@ -33,6 +33,19 @@ The B1 and B2 tests are merged into `scripts/ci/test-check-tla-invariants.sh`. I
 | `9310ae2ce` | 34232911628 | 102109798473 (Lint) | inventory step passed |
 | `d6aaba962` | 34244231314 and 34244230926 | 102122023044 (Lint) and 102121946596 (TLA+) | passed; artifact 10063312912, SHA-256 `67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0` |
 
+## Historical manifests
+
+Retained outside Git by the agent that ran the cycles. The digests bind that raw store to this record; a regenerated manifest is a new record, not renewed verification.
+
+| Manifest | SHA-256 |
+| --- | --- |
+| `soak-g0-2026-09-08/manifest.json` (B1) | `b4e857a74cf4e091c7cff84a495e0db77d6a5ea3f2234f81078c2bdbe4ce0cde` |
+| `soak-g0-b2-2026-09-08/manifest.json` (B2) | `2e132518c37579b90c0c0a143e0ee553278e4b763562ee3b54eb3f6c1ea68a0e` |
+| `soak-g0-b3-2026-09-08/manifest.json` (B3) | `b73351d1b39df729dcc01014462249ddf456df896bacfa3865f10ea88810c28e` |
+| `soak-g0-b3-2026-09-08/hosted-observation.json` | `0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6` |
+| `g0-hosted-d6aaba962-2026-09-08/manifest.json` | `618bd14f61760e12959e97636a6c7a46a4e8cd2c7f15381859058d305db634c8` |
+| `repin-962effd-2026-09-08/manifest.json` | `3858c683327fd88fff364fb1974adcadc748cea0464d1e26ea0989e406ca3e9e` |
+
 ## Open
 
 - Rulesets `devProtect` (15773875) and `masterProtect` (14299997) require `Lint` only. `TLA+ invariant check` is not required. The classic-protection endpoint returned 403.

@@ -19,7 +19,7 @@ The formal gate must not report success when a required configuration is absent,
 
 A positive configuration must complete without a verifier error. A negative control must produce its specified counterexample: TLC exit 12 and the exact `Error: Invariant <name> is violated.` line. A clean control, a different invariant, a tool error, a timeout, or a missing configuration fails the gate.
 
-The `NEGATIVE_CONTROLS` array in `scripts/ci/check-tla-invariants.sh` is the single registry of controls. `scripts/ci/test-check-tla-invariants.sh` reads that array, checks every control against seven outcomes, and checks that the workflow routes pull requests and pushes to the bounded `--soak-pr` tier and scheduled or manual runs to the full list.
+The `NEGATIVE_CONTROLS` array in `scripts/ci/check-tla-invariants.sh` is the single registry of controls. In the areas listed in `REGISTERED_CONTROL_AREAS`, a pre-fix configuration beside a registered positive that is absent from the registry fails the gate. `scripts/ci/test-check-tla-invariants.sh` reads that array, checks every control against seven outcomes, and checks that the workflow routes pull requests and pushes to the bounded `--soak-pr` tier and scheduled or manual runs to the full list.
 
 ## Current evidence
 

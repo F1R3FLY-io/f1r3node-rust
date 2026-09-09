@@ -32,6 +32,16 @@ Regression suites green on the corrected driver: `test-soak-disk-admission.sh` (
 
 Fixture corrections during the cycles: one B9 driver-suite run failed on a readiness race at the resource CSV assertion, and the fixture now waits for every required telemetry file (30 repetitions passed). The first B5 model attempt exited 75 on a mixed string and numeric sample encoding before any behavioral result and was replaced by uniform sample records.
 
+## Historical manifests
+
+The per-cycle manifests were produced on the source branch and are retained outside Git by the agent that ran the cycles. Their digests bind that raw store to this record. A regenerated manifest with a different digest is a new record, not renewed verification.
+
+| Manifest | SHA-256 |
+| --- | --- |
+| `soak-d2-probe-2026-09-08/manifest.json` (B5) | `3f1a1697d34f4696f877bcb5138942ecba5a9cd2754f8ad1e43d70a4e05870c7` |
+| `soak-d2-sample-2026-09-09/manifest.json` (B6) | `167d3a6bb8025d2d80615b4c178d0961fd433f83e5840d3aa038336c4bbeb137` |
+| `soak-d2-emergency-2026-09-09/manifest.json` (B7 to B12) | `36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773` |
+
 ## Limits
 
 - The model-to-code maps are reviewed abstractions, not refinement proofs of Bash.
