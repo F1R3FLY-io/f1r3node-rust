@@ -1,0 +1,2 @@
+FAIL: Stale guardian progress permitted new work at admission (benchmark-progress-boundary).
+Evidence: [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/b22/production-red-benchmark-progress-boundary

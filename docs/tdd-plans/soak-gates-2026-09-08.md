@@ -293,17 +293,51 @@ behaviors:
     statement: A live guardian without progress causes active benchmark cancellation before fixture release.
     priority: must
     deep_module: false
-    done: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-guardian-progress-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-guardian-progress.sh
+        scenario: benchmark-cancel-stall
+        red_revision: 8ab599e5cbc24d05ba89a6064abdc00acfc98100
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
   - id: B21
     statement: A live guardian without progress causes active iteration cancellation before fixture release.
     priority: must
     deep_module: false
-    done: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-guardian-progress-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-guardian-progress.sh
+        scenario: guardian-stall
+        red_binding: B20-green-source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        reused_model: GuardianProgress
+        hosted_confirmation: pending
+        claim_discharge: pending
   - id: B22
     statement: Stale guardian progress prevents benchmark and iteration admission after a scheduling pause.
     priority: must
     deep_module: false
-    done: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-guardian-progress-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-guardian-progress.sh
+        scenarios: [guardian-progress-boundary, benchmark-progress-boundary]
+        red_binding: B21-green-source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -425,12 +459,18 @@ Seventeen positive configurations, eighteen exact controls, 126 classifier cases
 
 The combined verification command reached its tool limit during release regressions. The remaining checks passed separately, and the partial run remains recorded.
 
+B20–B22 add [guardian progress evidence](../cbc-evidence/soak-d2-guardian-progress-2026-09-09/README.md). Suspended guardians now cause active cancellation and prevent tested stale admission.
+
+Nineteen positive configurations, twenty exact controls, 140 classifier cases, six routing scenarios, and twenty-four emergency scenarios pass.
+
 ## Remaining D2 work
 
 - [x] Verify opening admission at equality, sufficient space, unavailable samples, and disabled disk protection.
 - [x] Cancel stalled benchmark clients after guardian death or a recorded disk breach.
 - [x] Refuse opening and interleaved benchmark admission after guardian death during the probe.
-- [ ] Verify interleaved sample cases, live but stalled guardians, and remaining admission and cancellation faults.
+- [x] Detect suspended guardians during active benchmarks and iterations.
+- [x] Refuse opening benchmark and iteration admission after tested stale-progress pauses.
+- [ ] Verify interleaved sample cases, remaining progress-record faults, later scheduling races, and other admission and cancellation faults.
 
 - [ ] Bound disk hygiene and stop paths outside B13, including detached and uninterruptible command cases.
 - [ ] Verify soft-floor sampling, cleanup outcomes, and guardian events at every admission boundary.

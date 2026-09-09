@@ -1,0 +1,2 @@
+PASS: The guardian fault canceled the stalled benchmark client and preserved failure before fixture release (benchmark-cancel-stall).
+Evidence: [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/production-green
