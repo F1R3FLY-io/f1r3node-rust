@@ -49,6 +49,9 @@ use request_ownership::RequestOwners;
 #[path = "pending_request_owners_spec/retirement.rs"]
 mod retirement;
 
+#[path = "pending_request_owners_spec/activation.rs"]
+mod activation;
+
 async fn last_peer_operation(
     persistent: bool,
 ) -> (

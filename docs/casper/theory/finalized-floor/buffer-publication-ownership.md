@@ -32,7 +32,7 @@ The subsequent retry-selection run passed forty-eight retriever tests, twenty ow
 The next section describes that correction and its formal limits.
 
 These results do not establish whole-branch qualification or complete upstream retry-policy equivalence.
-Quarantine budget renewal still requires upstream alignment.
+The later sections record the implemented retirement and renewal alignment with pinned `dev`.
 The existing component proofs do not establish preservation against independent pruning or composition of every production lock.
 The historical analyses below explain why the earlier abstractions and repairs were insufficient.
 
@@ -95,10 +95,9 @@ The finite clock witness covers a normalized base. Native properties check the c
 This model does not cover peer-membership changes, pending-handoff transitions, restart, or quarantine renewal.
 Those operations retain their separate proof and integration obligations.
 
-## Quarantine renewal: repair plan
+## Quarantine renewal: original repair plan
 
-The storage entry and renewal primitives are implemented and have focused verification evidence.
-The complete owner and maintenance integration remains unfinished.
+This section records the original defect and planned repair. Later sections describe the implemented owner and maintenance integration.
 Pinned `dev` retires active retry tracking when a request exhausts its budget.
 It retains the spent total and starts a ten-second quarantine.
 Retirement clears peer-requery counts and request cooldown tracking.
@@ -109,7 +108,7 @@ The sweep uses the timestamp captured at maintenance entry.
 It does not send a probe. Later recitation can create fresh retry scheduling.
 Recitation after expiry but before the sweep can send an initial request without resetting the spent total.
 
-The feature currently retains the spent total and permits an autonomous probe after expiry.
+Before repair, the feature retained the spent total and permitted an autonomous probe after expiry.
 The original native regression reproduced that difference before repair.
 Its first assertion observed one request where the upstream sweep requires zero.
 Four separate tests now check volatile and durable owners, with independent assertions for probe behavior and budget reset.
@@ -462,6 +461,40 @@ Both public regression tests failed at the incorrect `AtCapacity` result in `qua
 `LocalRequestActivation.tla` then checked 58,968 states and six exact unsafe controls in `run.gXQl6e` before production changed.
 The controls cover incorrect reasons, delayed reclassification, masked storage errors, refused-state mutation, incorrect metrics, and premature lease release.
 The model has two hashes, one active slot, and three clock values. It models the classification boundary, not subsequent receipt writes or complete worker execution.
+
+The native activation matrix covers active ownership, pending policy, capacity, and deadline boundaries.
+Its generated cases include full-width clock and attempt values.
+Public receipt and recovery tests distinguish quarantine from capacity for both durable and volatile ownership.
+The corrupt-policy test requires storage errors through receipt, local recovery, and admission deferral.
+
+| Model invariant | Native evidence |
+|---|---|
+| `Inv_Reason` | The owner matrix checks decision precedence. Public APIs check quarantine refusal and corrupt-policy errors. |
+| `Inv_Preserved` | Refusal checks preserve the exact policy, existing owner identity, and stored policy. |
+| `Inv_Metric` | Public quarantine cases require zero capacity increments. Corrupt-policy errors emit no refusal metric. |
+| `Inv_Capacity` | The matrix checks active counts and the existing active owner at full capacity. |
+| `Inv_Lease` | Actual-worker handoff tests retain the worker lease after either local refusal. |
+
+These tests passed in `activation-matrix.cMcCdp` and `activation-public-fixed.yRGxLy`.
+The generated inputs do not exhaust all concurrent schedules. The model checks delayed reporting within its stated finite bounds.
+
+### Actual producer checks
+
+The queue receipt contract applies to network delivery, ordinary recovery, and startup recovery.
+Queue tests use an independent worker handshake to check receipt completion before visibility.
+Producer tests separately verify that each production caller uses that contract.
+
+Startup tests capture a real pendant snapshot and execute `StartupPass::step` through the presence and admission phases.
+An ordinary retry self-relation is not a substitute for that snapshot.
+Successful publication records receipt before dequeue and retains bytes and identity until the queue item is destroyed.
+Byte rejection preserves the same pending candidate without recording receipt. Releasing the occupied bytes permits one publication.
+A corrupt pending policy prevents publication and releases queue reservations.
+The test then applies the driver's startup failure operation and requires the ticket to report failure.
+The buffered pendant remains present. The test does not replace startup failure with an invented automatic retry.
+
+The startup cases are in `node/src/rust/instances/block_processor_instance/startup_publication_tests.rs`.
+The work log records execution results. Post-step assertions alone do not prove concurrent visibility ordering.
+That ordering depends on the separate queue handshake test and the receipt helper's model correspondence.
 
 ### Renewal model and storage preconditions
 

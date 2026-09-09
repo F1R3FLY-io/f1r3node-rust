@@ -37,6 +37,9 @@ use super::*;
 #[path = "acknowledgment_tests.rs"]
 mod acknowledgment_tests;
 
+#[path = "startup_publication_tests.rs"]
+mod startup_publication_tests;
+
 #[test]
 fn retry_deadlines_preserve_active_demand_without_creating_successors() {
     for startup in [false, true] {

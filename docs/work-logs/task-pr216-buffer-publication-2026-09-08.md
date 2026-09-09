@@ -9,6 +9,51 @@ date: 2026-09-08
 
 ## Current continuation
 
+### September 9: checkpoint and expanded activation checks
+
+Commit `619beb4a4a7ad3f8967d4586daf0f5c552bd150e` records the campaign checkpoint with fifteen enumerated change groups.
+The working tree was clean after that commit. Subsequent changes extend tests without changing production behavior.
+
+`activation-matrix.cMcCdp` passed 37 ownership tests and strict target Clippy.
+The activation matrix covers active ownership, durable pending policy, capacity, and quarantine boundaries.
+Generated cases also exercise full-width clock and attempt values.
+
+`activation-public-fixed.yRGxLy` passed 62 retriever tests and strict Casper library-and-test Clippy.
+Public receipt and recovery checks cover both pending-policy states and both capacity states.
+Quarantine refusal preserves policy and does not increment the capacity metric.
+A corrupt cold policy remains a storage error through receipt, recovery, and admission deferral.
+It creates no active owner, consumes no operation permit, and leaves the corrupt bytes unchanged.
+The captured source hashes matched after validation.
+
+The earlier version of the corrupt-policy test failed compilation because an asynchronous assertion omitted its await.
+The corrected test awaits the operation under its local metrics recorder.
+This was a test compilation error, not evidence of a production defect.
+
+The session for `run.pnPv7F` no longer exists. Its log has no final gate result.
+Matching input hashes alone do not establish completion. A fresh memory-limited full gate replaces that incomplete run.
+Independent plan review identified missing coverage of the actual startup producer's ready-candidate branch.
+The new tests use a captured pendant snapshot and the production `StartupPass::step` method.
+They cover receipt success, repeated byte rejection followed by success, and receipt error followed by startup failure.
+The failure case preserves the buffered pendant and releases all queue reservations.
+The tests do not introduce a new recovery policy or substitute retries for the driver's failure path.
+
+`producers.p93cht` passed four queue receipt tests, five admission tests, and both selected network producer tests.
+The queue suite includes an independent-worker handshake that checks receipt completion before visibility.
+`startup-producer.LomNJJ` passed all thirteen recovery producer tests, including the three new startup cases.
+These new cases found no additional production defect.
+Strict node library-and-test Clippy passed. The captured recovery source hashes matched after both commands.
+
+The replacement full gate, `run.g3NbT0`, exited zero with matching input hashes.
+It passed 30 safe TLA+ configurations and 128 expected counterexamples.
+One counterexample rejects the unsupported current-due requirement rather than an unsafe implementation variant.
+The gate also passed 68 closed-context theorem reports and five independent Rocq kernel checks.
+It ran with a 2 GiB memory ceiling, no swap, and one CPU quota.
+The native commands used a 4 GiB ceiling, no swap, and one build job.
+
+This completes the current local verification batch, not the entire campaign.
+The tracker still requires trusted evidence bindings and the separate upstream pruning decision.
+No source change in this continuation changes consensus policy. The additional tests and documentation are not part of checkpoint `619beb4a4`.
+
 ### September 9: checkpoint preparation and exact refusal reasons
 
 The user requested one descriptive checkpoint commit after a stable local verification point.

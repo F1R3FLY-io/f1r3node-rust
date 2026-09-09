@@ -980,16 +980,82 @@ fn maintenance_snapshot_cannot_overwrite_a_completed_worker_handoff() {
 
 #[test]
 fn inactive_quarantine_is_not_reported_as_capacity_refusal_for_receipt() {
-    assert_inactive_quarantine_refusal(false);
+    for persistent in [false, true] {
+        for occupied in [false, true] {
+            assert_inactive_quarantine_refusal(false, persistent, occupied);
+        }
+    }
+}
+
+#[tokio::test]
+async fn corrupt_pending_policy_is_an_error_not_a_local_refusal() {
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    let mut manager = InMemoryStoreManager::new();
+    let buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut manager)
+        .await
+        .unwrap();
+    let pending = manager
+        .store(CasperBufferKeyValueStorage::PENDING_POLICY_NAMESPACE.into())
+        .await
+        .unwrap();
+    let parents: KeyValueTypedStoreImpl<BlockHashSerde, HashSet<BlockHashSerde>> =
+        KeyValueTypedStoreImpl::new(manager.store("parents-map".into()).await.unwrap());
+    let hash = Bytes::from(vec![46; 32]);
+    buffer
+        .publish_pending_request(
+            BlockHashSerde(hash.clone()),
+            HashSet::new(),
+            HashSet::new(),
+            None,
+            &BlockRetriever::<TransportLayerStub>::initial_policy(1, true),
+        )
+        .unwrap();
+    let key = parents.encode_key(&BlockHashSerde(hash.clone())).unwrap();
+    pending.put(vec![(key.clone(), vec![0])]).unwrap();
+    let mut retriever = retriever();
+    retriever.owners = Arc::new(RequestOwners::new(buffer, 1, 2, RequestData::new));
+    let recorder = metrics_util::debugging::DebuggingRecorder::new();
+    metrics::with_local_recorder(&recorder, || {
+        assert!(retriever.record_received(hash.clone()).is_err());
+        assert!(retriever.reopen_after_local_failure(hash.clone()).is_err());
+    });
+    let mut deferred = Box::pin(retriever.defer_for_admission(hash.clone(), None));
+    assert!(std::future::poll_fn(|cx| {
+        metrics::with_local_recorder(&recorder, || deferred.as_mut().poll(cx))
+    })
+    .await
+    .is_err());
+    assert_eq!(retriever.owners.active_count(), 0);
+    assert_eq!(retriever.owners.available_operations(), 2);
+    assert!(recorder.snapshotter().snapshot().into_vec().is_empty());
+    pending
+        .with_value(&key, &mut |value| {
+            assert_eq!(value, Some([0].as_slice()));
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
 fn inactive_quarantine_is_not_reported_as_capacity_refusal_for_local_recovery() {
-    assert_inactive_quarantine_refusal(true);
+    for persistent in [false, true] {
+        for occupied in [false, true] {
+            assert_inactive_quarantine_refusal(true, persistent, occupied);
+        }
+    }
 }
 
-fn assert_inactive_quarantine_refusal(reopen: bool) {
-    let retriever = retriever();
+fn assert_inactive_quarantine_refusal(reopen: bool, persistent: bool, occupied: bool) {
+    let mut retriever = retriever();
+    retriever.owners = Arc::new(RequestOwners::new(
+        retriever.owners.buffer().clone(),
+        1,
+        2,
+        RequestData::new,
+    ));
     let hash = Bytes::from(vec![44; 32]);
     retriever
         .replace_request_for_test(
@@ -1000,6 +1066,16 @@ fn assert_inactive_quarantine_refusal(reopen: bool) {
         )
         .unwrap();
     let owner = retriever.lookup(&hash).unwrap().unwrap();
+    if persistent {
+        retriever
+            .publish_pending(hash.clone(), HashSet::new(), HashSet::new())
+            .unwrap();
+        retriever
+            .owners
+            .activate(hash.clone(), owner.policy(), RequestData::new)
+            .unwrap()
+            .unwrap();
+    }
     let now = BlockRetriever::<TransportLayerStub>::current_millis();
     assert!(matches!(
         retriever
@@ -1016,21 +1092,32 @@ fn assert_inactive_quarantine_refusal(reopen: bool) {
     ));
     let before = retriever.owners.retry_budget(&hash).unwrap();
     assert_eq!(retriever.owners.active_count(), 0);
-    let outcome = if reopen {
-        retriever.reopen_after_local_failure(hash.clone())
-    } else {
-        retriever.record_received(hash.clone())
+    if occupied {
+        retriever
+            .replace_request_for_test(Bytes::from(vec![45; 32]), state(false, 1, None), 0, 0)
+            .unwrap();
     }
+    let recorder = metrics_util::debugging::DebuggingRecorder::new();
+    let outcome = metrics::with_local_recorder(&recorder, || {
+        if reopen {
+            retriever.reopen_after_local_failure(hash.clone())
+        } else {
+            retriever.record_received(hash.clone())
+        }
+    })
     .unwrap();
     assert_eq!(retriever.owners.retry_budget(&hash).unwrap(), before);
-    assert_eq!(retriever.owners.active_count(), 0);
-    assert!(!retriever.was_requested_as_dependency(&hash).unwrap());
-    assert_ne!(outcome, RequestTracking::Tracked);
-    assert_ne!(
-        outcome,
-        RequestTracking::AtCapacity,
-        "quarantine refusal with free capacity must identify quarantine"
+    assert_eq!(retriever.owners.active_count(), usize::from(occupied));
+    assert_eq!(
+        retriever.was_requested_as_dependency(&hash).unwrap(),
+        persistent
     );
+    assert_eq!(outcome, RequestTracking::Quarantined);
+    for (key, _, _, value) in recorder.snapshotter().snapshot().into_vec() {
+        if key.key().name() == BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC {
+            assert_eq!(value, metrics_util::debugging::DebugValue::Counter(0));
+        }
+    }
 }
 
 #[test]
