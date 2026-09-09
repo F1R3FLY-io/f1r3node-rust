@@ -22,9 +22,9 @@ The baseline and both negative controls are registered in `scripts/ci/check-tla-
 
 Each negative control must exit with TLC code 12 and report its expected invariant violation. A clean control, another invariant violation, or a tool failure fails the gate.
 
-`scripts/ci/test-check-tla-invariants.sh` tests result classification through the real gate with a verifier-process fixture. That fixture is not formal proof evidence.
+`scripts/ci/test-check-tla-invariants.sh` tests result classification and workflow routing through the real gate with a verifier-process fixture. That fixture is not formal proof evidence.
 
-Pull requests and pushes run the carrier baseline, both carrier negative controls, and the replay baseline through `check-tla-invariants.sh --soak-pr`.
+Pull requests and pushes run this baseline and both controls in the bounded tier, `check-tla-invariants.sh --soak-pr`, alongside the replay and soak-disk models.
 
 This tier uses two workers and a fixed two-minute limit per configuration. The workflow allows 15 minutes for the complete job.
 

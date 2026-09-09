@@ -1,4 +1,25 @@
 #!/usr/bin/env bash
+# Runs the real soak driver inside a disposable container (no host mounts, no
+# network, no Docker socket, unprivileged user) against fixture df/docker/poetry
+# commands, one scenario per container. Each scenario is a behavioral check of
+# scripts/run-merge-recovery-soak.sh's disk protection:
+#
+#   band                  hygiene cannot lift free space out of the band -> refuse
+#   missing-boundary      df returns nothing at the boundary probe        -> refuse
+#   missing-after-hygiene df returns nothing after hygiene                -> refuse
+#   malformed-boundary    df prints "16384junk"                           -> refuse
+#   missing-active        df fails while an iteration runs               -> stop it
+#   stalled-active        df prints a field, then stalls past its deadline -> stop it
+#   record-before-stop    the breach record exists before docker kill
+#   guardian-death        the watcher notices a dead guardian             -> stop it
+#   diagnostic-deadline   du stalls on 32 roots; attribution stays bounded
+#   restart-uncounted     a retained breach marker blocks the next segment (failures 0 -> 1)
+#   restart-counted       same, with a prior failure count that stays at 2
+#
+# Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
+#   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
+#   against one image build, each into <evidence-directory>/<scenario>.
+#   Exit 0 = all pass, 1 = a behavioral failure, 2 = the fixture itself broke.
 set -euo pipefail
 
 SOURCE_FILES=(
@@ -7,15 +28,19 @@ SOURCE_FILES=(
     scripts/bench/collect-soak-metrics.sh
     scripts/bench/soak-metrics.json
 )
+SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missing-active
+    stalled-active record-before-stop guardian-death diagnostic-deadline restart-uncounted
+    restart-counted)
 
-SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
-case "$SCENARIO" in
-band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted) ;;
-*)
-    printf 'ERROR: Unknown disk fixture scenario.\n' >&2
+SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
+if [[ "${1:-}" == --scenario ]]; then
+    SCENARIO="${2:?--scenario needs a name}"
+    shift 2
+fi
+if [[ -n "$SCENARIO" && "$SCENARIO" != all ]] && ! printf '%s\n' "${SCENARIOS[@]}" | grep -Fxq "$SCENARIO"; then
+    printf 'ERROR: Unknown disk fixture scenario %s.\n' "$SCENARIO" >&2
     exit 2
-    ;;
-esac
+fi
 
 if [[ "${1:-}" == --inside ]]; then
     trap 'printf "ERROR: The container fixture failed before its behavioral verdict.\n" >&2; exit 2' ERR
@@ -315,7 +340,7 @@ SH
 fi
 
 if (($# > 2)); then
-    printf 'Usage: %s [source-directory] [evidence-directory]\n' "$0" >&2
+    printf 'Usage: %s [--scenario NAME] [source-directory] [evidence-directory]\n' "$0" >&2
     exit 2
 fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -333,6 +358,13 @@ done
 command -v docker >/dev/null
 command -v timeout >/dev/null
 command -v jq >/dev/null
+# The unprivileged container user must be able to read the copied sources.
+# GNU tar sets the modes on the way in; BSD tar (macOS) has no --mode, so the
+# sources' own modes are used there.
+TAR=tar
+command -v gtar >/dev/null && TAR=gtar
+TAR_MODE=()
+"$TAR" --version 2>/dev/null | grep -q GNU && TAR_MODE=(--mode='a+rX')
 CONTAINER=""
 cleanup() {
     if [[ "$CONTAINER" =~ ^[0-9a-f]{64}$ ]]; then
@@ -340,49 +372,87 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
 IMAGE="${SOAK_DISK_TEST_IMAGE:-}"
 if [[ -z "$IMAGE" ]]; then
-    timeout --signal=TERM --kill-after=5 180 docker build \
+    if ! timeout --signal=TERM --kill-after=5 180 docker build \
         --iidfile "$OUTPUT/image-id.txt" - <"$ROOT/scripts/bench/soak-disk-test.Dockerfile" \
-        >"$OUTPUT/image-build.log" 2>&1
+        >"$OUTPUT/image-build.log" 2>&1; then
+        printf 'ERROR: The fixture image did not build; see %s\n' "$OUTPUT/image-build.log" >&2
+        exit 2
+    fi
     IMAGE="$(<"$OUTPUT/image-id.txt")"
 fi
 [[ "$IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 2
 docker image inspect "$IMAGE" >"$OUTPUT/image-inspect.json"
 jq -e '.[0].Config.Volumes == null or (.[0].Config.Volumes | length) == 0' \
     "$OUTPUT/image-inspect.json" >/dev/null
-CONTAINER="$(docker create --pull=never --network none --cap-drop ALL \
-    --security-opt no-new-privileges --pids-limit 128 --memory 256m --cpus 1 \
-    --user 65534:65534 --workdir /case \
-    --env "SOAK_DISK_TEST_SOURCE_SHA=${SOAK_DISK_TEST_SOURCE_SHA:-unknown}" \
-    --env "SOAK_DISK_TEST_SCENARIO=$SCENARIO" \
-    --entrypoint bash "$IMAGE" /case/test.sh --inside)"
-[[ "$CONTAINER" =~ ^[0-9a-f]{64}$ ]] || exit 2
-docker inspect "$CONTAINER" >"$OUTPUT/container-inspect.json"
-jq -e '.[0] | (.Mounts | length) == 0 and .HostConfig.NetworkMode == "none"
-    and .HostConfig.Privileged == false and .HostConfig.PidMode == ""
-    and .Config.User == "65534:65534" and .HostConfig.CapDrop == ["ALL"]
-    and (.HostConfig.SecurityOpt | index("no-new-privileges") != null)' \
-    "$OUTPUT/container-inspect.json" >/dev/null
-tar -C "$SOURCE" --mode='a+rX' -cf - "${SOURCE_FILES[@]}" |
-    docker cp - "$CONTAINER:/case/repo/"
-docker cp "${BASH_SOURCE[0]}" "$CONTAINER:/case/test.sh"
-status=0
-timeout --signal=TERM --kill-after=5 40 docker start -a "$CONTAINER" \
-    >"$OUTPUT/result.txt" 2>&1 || status=$?
-docker inspect "$CONTAINER" >"$OUTPUT/container-finished.json"
-if ! jq -e '.[0].State.Running == false and .[0].State.OOMKilled == false' \
-    "$OUTPUT/container-finished.json" >/dev/null; then
-    printf 'ERROR: The fixture exceeded its container bounds.\n' >&2
-    exit 2
+
+# Runs one scenario in a fresh container; evidence lands in $2. Returns the
+# container's verdict: 0 pass, 1 behavioral failure, 2 fixture error.
+run_scenario() {
+    local scenario="$1" out="$2" status=0 container_status
+    mkdir -p "$out"
+    CONTAINER="$(docker create --pull=never --network none --cap-drop ALL \
+        --security-opt no-new-privileges --pids-limit 128 --memory 256m --cpus 1 \
+        --user 65534:65534 --workdir /case \
+        --env "SOAK_DISK_TEST_SOURCE_SHA=${SOAK_DISK_TEST_SOURCE_SHA:-unknown}" \
+        --env "SOAK_DISK_TEST_SCENARIO=$scenario" \
+        --entrypoint bash "$IMAGE" /case/test.sh --inside)"
+    [[ "$CONTAINER" =~ ^[0-9a-f]{64}$ ]] || return 2
+    docker inspect "$CONTAINER" >"$out/container-inspect.json"
+    jq -e '.[0] | (.Mounts | length) == 0 and .HostConfig.NetworkMode == "none"
+        and .HostConfig.Privileged == false and .HostConfig.PidMode == ""
+        and .Config.User == "65534:65534" and .HostConfig.CapDrop == ["ALL"]
+        and (.HostConfig.SecurityOpt | index("no-new-privileges") != null)' \
+        "$out/container-inspect.json" >/dev/null || return 2
+    "$TAR" -C "$SOURCE" "${TAR_MODE[@]}" -cf - "${SOURCE_FILES[@]}" |
+        docker cp - "$CONTAINER:/case/repo/"
+    docker cp "${BASH_SOURCE[0]}" "$CONTAINER:/case/test.sh"
+    timeout --signal=TERM --kill-after=5 40 docker start -a "$CONTAINER" \
+        >"$out/result.txt" 2>&1 || status=$?
+    docker inspect "$CONTAINER" >"$out/container-finished.json"
+    if ! jq -e '.[0].State.Running == false and .[0].State.OOMKilled == false' \
+        "$out/container-finished.json" >/dev/null; then
+        printf 'ERROR: The fixture exceeded its container bounds (%s).\n' "$scenario" >&2
+        return 2
+    fi
+    container_status="$(jq -r '.[0].State.ExitCode' "$out/container-finished.json")"
+    if [[ "$status" != "$container_status" ]]; then
+        printf 'ERROR: Docker did not return the container verdict (%s).\n' "$scenario" >&2
+        return 2
+    fi
+    docker cp "$CONTAINER:/case/evidence" "$out/evidence"
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    CONTAINER=""
+    printf '%s\n' "$status" >"$out/test-exit.txt"
+    cat "$out/result.txt"
+    return "$status"
+}
+
+if [[ -n "$SCENARIO" && "$SCENARIO" != all ]]; then
+    status=0
+    run_scenario "$SCENARIO" "$OUTPUT" || status=$?
+    printf 'Evidence: %s\n' "$OUTPUT"
+    exit "$status"
 fi
-container_status="$(jq -r '.[0].State.ExitCode' "$OUTPUT/container-finished.json")"
-if [[ "$status" != "$container_status" ]]; then
-    printf 'ERROR: Docker did not return the container verdict.\n' >&2
-    exit 2
-fi
-docker cp "$CONTAINER:/case/evidence" "$OUTPUT/evidence"
-printf '%s\n' "$status" >"$OUTPUT/test-exit.txt"
-cat "$OUTPUT/result.txt"
+
+result=0
+for scenario in "${SCENARIOS[@]}"; do
+    status=0
+    run_scenario "$scenario" "$OUTPUT/$scenario" || status=$?
+    case "$status" in
+    0) ;;
+    1) result=1 ;;
+    *)
+        printf 'ERROR: Scenario %s failed without a behavioral verdict (exit %s).\n' "$scenario" "$status" >&2
+        printf 'Evidence: %s\n' "$OUTPUT"
+        exit 2
+        ;;
+    esac
+done
 printf 'Evidence: %s\n' "$OUTPUT"
-exit "$status"
+if ((result == 0)); then
+    printf 'PASS: All %s isolated disk scenarios passed.\n' "${#SCENARIOS[@]}"
+fi
+exit "$result"

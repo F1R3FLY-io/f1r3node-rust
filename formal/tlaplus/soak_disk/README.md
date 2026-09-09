@@ -1,76 +1,82 @@
-# Soak disk admission
+# Soak disk protection models
 
-## D1 obligation
+Two bounded TLA+ models cover the disk protection in
+[run-merge-recovery-soak.sh](../../../scripts/run-merge-recovery-soak.sh).
+Each model has one gating configuration and one pre-fix configuration per
+historical defect. A pre-fix configuration switches one correction off through
+a Boolean constant and must violate exactly the invariant named below.
 
-With disk protection enabled, the driver must refuse a new iteration when cleanup leaves its valid free-space sample below floor plus band.
+## SoakDiskAdmission: the iteration-boundary decision
 
-This model supports D1 in the [prevention plan](../../../docs/plans/soak-recurrence-prevention-2026-09-08.md). It covers one admission decision, not the full resource claim.
-
-`AdmissionRequiresBand` requires every admission sample to reach the floor-plus-band threshold. `RequireBand` selects the actual comparison expression, not an assumed invariant.
-
-## Production correspondence
-
-| Model action | Production behavior |
+| Model action | Driver behavior |
 | --- | --- |
-| `CheckGuardian` | Read the guardian marker before admission and after cleanup |
-| `ProbeBoundary` | Read `disk_free_mb` before the hygiene decision |
-| `Hygiene` | Run `reclaim_disk_space`, including zero reclamation |
-| `ProbeAfterHygiene` | Read `disk_free_mb` after the guardian check |
-| `Decide` | Compare the new sample against the admission threshold |
-| `Admit` | Increment the iteration count and invoke the external workload command |
-| `GuardianTrip` | Make a guardian marker available for a later check |
-| `PublishRefusal` | Complete local refusal records and the failure summary |
+| `CheckGuardian` | Read the guardian marker before the probe and after hygiene |
+| `ProbeBoundary`, `ProbeAfterHygiene` | `disk_free_mb`: `df` reports the free space, prints a malformed field, or fails |
+| `DecideHygiene` | Run hygiene only when a known sample is below floor plus band |
+| `Hygiene` | `reclaim_disk_space`, which can reclaim nothing |
+| `DecideAfterHygiene` | Refuse a known sample below the threshold |
+| `CheckAdmission` | Refuse a missing sample before starting work |
+| `Admit` | Start the iteration |
+| `PublishRefusal` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary |
 
-The implementation is [run-merge-recovery-soak.sh](../../../scripts/run-merge-recovery-soak.sh). The mapping is a reviewed abstraction, not a mechanized refinement proof of Bash.
+| Constant | Correction | Pre-fix configuration | Expected violation |
+| --- | --- | --- | --- |
+| `RequireBand` | Post-hygiene refusal compares against floor plus band, not the floor | `MC_SoakDiskAdmission_floor_only_pre_fix` | `AdmissionRequiresBand` |
+| `RejectMissing` | A probe that returns nothing cannot admit | `MC_SoakDiskAdmission_missing_sample_pre_fix` | `AdmissionRequiresSample` |
+| `RejectMalformed` | A field such as `16384junk` cannot admit | `MC_SoakDiskAdmission_numeric_prefix_pre_fix` | `AdmissionRequiresValidSample` |
 
-## Configurations
+`MC_SoakDiskAdmission` enables all three corrections. It checks `TypeOK`, the three invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 160 distinct states.
 
-Both configurations start at 7,000 MiB. The floor is 4,096 MiB, and the band is 4,096 MiB.
+Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 
-The finite free-space set is `{7000, 8191, 8192, 8193}`. Cleanup can retain the same value or select a larger value. Cleanup does not always succeed.
+## SoakDiskGuardian: the emergency path
 
-- [MC_SoakDisk.cfg](MC_SoakDisk.cfg) requires the floor-plus-band threshold.
-- [MC_SoakDisk_floor_only_pre_fix.cfg](MC_SoakDisk_floor_only_pre_fix.cfg) uses the historical floor-only comparison.
+| Model action | Driver behavior |
+| --- | --- |
+| `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
+| `StartProbe`, `Tick`, `ProbeReturns` | The guardian runs `df` under `timeout` |
+| `DecideSample` | A timed-out or empty probe supplies no sample |
+| `Detect`, `Record`, `BeginStop` | Write `host-guardian-breach.txt`, then `pkill` and `docker kill` |
+| `AttributionTick`, `CompleteRoot` | `disk_diagnostics_bounded` walks every root under one deadline |
+| `Finish`, `Recover`, `RestartDecision` | The next segment finds the retained marker |
 
-The historical counterexample retains 7,000 MiB through cleanup and admits work. The corrected configuration refuses that admission but permits admission after sufficient reclamation.
+| Constant | Correction | Pre-fix configuration | Expected violation |
+| --- | --- | --- | --- |
+| `DetectDeath` | The watcher treats a dead guardian as a breach | `MC_SoakDiskGuardian_unwatched_pre_fix` | `DeadGuardianRequiresInterrupt` |
+| `RejectUnavailable` | A probe without a sample interrupts the iteration | `MC_SoakDiskGuardian_unavailable_sample_pre_fix` | `InvalidSampleRequiresInterrupt` |
+| `EnforceTimeout` | `df` runs under a deadline and late output is discarded | `MC_SoakDiskGuardian_unbounded_probe_pre_fix` | `ProbeWithinDeadline` |
+| `RecordFirst` | The breach record precedes the stop command | `MC_SoakDiskGuardian_stop_first_pre_fix` | `StopRequiresRecord` |
+| `AggregateDeadline` | Attribution has one budget for all roots | `MC_SoakDiskGuardian_per_root_deadline_pre_fix` | `AttributionWithinBudget` |
+| `PreserveBreach` | A restart keeps the marker and records a failure | `MC_SoakDiskGuardian_cleared_breach_pre_fix` | `RetainedBreachStopsRestart` |
 
-The corrected model checks `TypeOK`, `AdmissionRequiresBand`, `StopPreventsAdmission`, and `RefusalRecorded`. Weak fairness supports eventual admission or completed local refusal through `Completes`.
+`MC_SoakDiskGuardian` enables all six corrections. It also checks `TimedOutSampleRejected` and `PriorFailuresPreserved`. It completes with 1140 distinct states.
 
-## Bounds and exclusions
+Clock units: the probe deadline is 3 units (a 2-second timeout plus a 1-second kill grace), a stalled `df` returns at 4 units, and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
 
-The model assumes valid samples, no external writes during this decision, and completing commands. These assumptions do not establish production timing or resource bounds.
+## Limits
 
-The guardian transition does not model polling intervals, failed kills, or writer termination. A marker can arrive after its last check.
+- The maps are reviewed abstractions of Bash, not refinement proofs.
+- The models assume that local writes complete and that timers fire. They do not bound elapsed time, prove writer termination, or cover crash durability of the marker.
+- The guardian model follows the breach path only. In production a healthy sample returns the guardian to polling.
+- No mandatory CbC attribute is assigned. `CLAIM-SOAK-001` is proposed and unratified. See [soak-disk-protection.md](../../../docs/claims/soak-disk-protection.md).
 
-Local publication does not establish durable storage, crash survival, artifact upload, or retry behavior. D2 must address these obligations separately.
+## Running the checks
 
-The model ends at admission or completed refusal. It does not model later disk growth, inode exhaustion, finalization, or full-duration acceptance.
-
-The proposed `CLAIM-SOAK-001` remains unratified and pending. No mandatory CbC attributes were added.
-
-## Regression commands
-
-Run the production admission regression:
+Both gating configurations and all nine controls are registered in `scripts/ci/check-tla-invariants.sh` and run in the bounded pull-request tier:
 
 ```bash
-bash scripts/bench/test-soak-disk-admission.sh
+TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" bash scripts/ci/check-tla-invariants.sh --soak-pr
 ```
 
-The test builds a digest-pinned fixture image. It runs the driver as an unprivileged container user without host mounts, host networking, or a Docker socket.
-
-The `df`, Docker, and workload commands are external boundary fixtures. The workload fixture writes the driver's `finalize` signal after its first invocation. This bounds historical failure inspection.
-
-The test copies the driver and its required summary and metric helpers without changing their bytes. It records image identity, container isolation, source hashes, and results.
-
-Do not execute the historical driver directly on the host. Its cleanup ignores the newer root overrides.
-
-Run the registered formal configurations:
+The production regressions run the real driver in a disposable container:
 
 ```bash
-RUN_EXHAUSTIVE_TLA=0 TLA_TOOLS_JAR=/path/to/tla2tools.jar \
-  bash scripts/ci/check-tla-invariants.sh --soak-pr
+bash scripts/bench/test-soak-disk-admission.sh                  # every scenario
+bash scripts/bench/test-soak-disk-admission.sh --scenario band  # one scenario
 ```
 
-The gate requires exit 12 and the exact `AdmissionRequiresBand` violation for the negative control. Missing files, tool failures, and timeouts fail the gate.
+Do not run the historical pre-fix driver directly on a host. Its sweep ignores the root overrides.
 
-See the [D1 evidence record](../../../docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md) for revisions, results, and limits.
+Evidence: [docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md](../../../docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md).
+
+The per-cycle modules that preceded these two (`SoakDisk`, `DiskProbeAdmission`, `DiskSampleValidation`, `ActiveDiskProbe`, `DiskEmergencyRecord`, `GuardianSupervision`, `DiskProbeDeadline`, `DiskDiagnosticDeadline`, `DiskBreachRestart`) are unregistered and scheduled for removal. See `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md`.

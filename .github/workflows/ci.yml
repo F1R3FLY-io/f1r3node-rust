@@ -339,17 +339,9 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-workflows.sh
 
-      - name: Verify TLA+ negative-control classification
+      - name: Verify TLA+ gate classification and routing
         shell: bash -euo pipefail {0}
         run: bash scripts/ci/test-check-tla-invariants.sh
-
-      - name: Verify bounded PR formal gate
-        shell: bash -euo pipefail {0}
-        run: bash scripts/ci/test-soak-pr-formal-gate.sh
-
-      - name: Verify soak claim inventory
-        shell: bash -euo pipefail {0}
-        run: bash scripts/ci/test-soak-claim-inventory.sh
 
       - name: Verify coverage summary aggregation
         shell: bash -euo pipefail {0}
@@ -375,21 +367,9 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-merge-recovery-soak.sh
 
-      - name: Verify isolated disk admission
+      - name: Verify isolated disk admission and emergency scenarios
         shell: bash -euo pipefail {0}
         run: bash scripts/bench/test-soak-disk-admission.sh
-
-      - name: Verify isolated disk probe failure
-        shell: bash -euo pipefail {0}
-        run: bash scripts/bench/test-soak-disk-probe.sh
-
-      - name: Verify isolated disk sample validation
-        shell: bash -euo pipefail {0}
-        run: bash scripts/bench/test-soak-disk-sample.sh
-
-      - name: Verify isolated disk emergency behavior
-        shell: bash -euo pipefail {0}
-        run: bash scripts/bench/test-soak-disk-emergency.sh
 
       - name: Verify soak dashboard restoration
         shell: bash -euo pipefail {0}

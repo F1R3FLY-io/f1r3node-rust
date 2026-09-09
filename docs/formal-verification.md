@@ -48,7 +48,7 @@ and reused by every verified area:
 3. **pre-fix regressions** — one deterministic counter-example test per
    historical bug, failing on the pre-fix code (PR-gate)
 4. **loom interleavings** — exhaustive 2-thread model checks (PR-gate)
-5. **TLA+ model check.** Pull requests and pushes run the bounded carrier and replay baselines plus both carrier negative controls.
+5. **TLA+ model check.** Pull requests and pushes run the bounded tier: the carrier, replay, and soak-disk baselines plus every registered negative control.
    Scheduled and manual runs retain the full default configuration list in
    [`scripts/ci/check-tla-invariants.sh`](../scripts/ci/check-tla-invariants.sh).
 6. **Rocq build** — the mechanization must re-verify, axiom-free (PR-gate)
@@ -62,7 +62,7 @@ and reused by every verified area:
 - `MC_<Area>.cfg` — gating config, must stay clean; registered in
   `check-tla-invariants.sh` as `<area>/MC_<Area>`.
 - `MC_<Area>_*_pre_fix.cfg` identifies an expected-violation configuration. The area README specifies its expected invariant.
-  Registered carrier controls run in CI. Other negative controls require manual verification until registered.
+  Registered controls (the `NEGATIVE_CONTROLS` array) run in CI. Other negative controls require manual verification until registered.
 - `formal/<tool>/<area>/README.md` — model↔code table and config table only.
 - Deep treatments (threat models, proofs of the design, test plans) go under
   `docs/casper/theory/<area>/` — the slashing series
@@ -199,4 +199,4 @@ On macOS, install GNU core utilities to provide `gtimeout` for that limit:
 brew install coreutils
 ```
 
-The gate checks the two registered carrier negative controls automatically. Run other expected-violation configurations manually to confirm their counterexamples.
+The gate checks every registered negative control automatically. Run unregistered expected-violation configurations manually to confirm their counterexamples.

@@ -102,15 +102,8 @@ POST_FIX_CONFIGS=(
     recovery_leader/MC_RecoveryLeader
     replay_liveness/MC_ReplayHotLoop
     carrier_index/MC_CarrierIndex
-    soak_disk/MC_SoakDisk
-    soak_disk/MC_DiskProbeAdmission
-    soak_disk/MC_DiskSampleValidation
-    soak_disk/MC_ActiveDiskProbe
-    soak_disk/MC_DiskEmergencyRecord
-    soak_disk/MC_GuardianSupervision
-    soak_disk/MC_DiskProbeDeadline
-    soak_disk/MC_DiskDiagnosticDeadline
-    soak_disk/MC_DiskBreachRestart
+    soak_disk/MC_SoakDiskAdmission
+    soak_disk/MC_SoakDiskGuardian
 )
 
 TLC_WORKERS=auto
@@ -118,15 +111,8 @@ if [[ "$SOAK_PR" == true ]]; then
     POST_FIX_CONFIGS=(
         replay_liveness/MC_ReplayHotLoop
         carrier_index/MC_CarrierIndex
-        soak_disk/MC_SoakDisk
-        soak_disk/MC_DiskProbeAdmission
-        soak_disk/MC_DiskSampleValidation
-        soak_disk/MC_ActiveDiskProbe
-        soak_disk/MC_DiskEmergencyRecord
-        soak_disk/MC_GuardianSupervision
-        soak_disk/MC_DiskProbeDeadline
-        soak_disk/MC_DiskDiagnosticDeadline
-        soak_disk/MC_DiskBreachRestart
+        soak_disk/MC_SoakDiskAdmission
+        soak_disk/MC_SoakDiskGuardian
     )
     TLC_WORKERS=2
 fi
@@ -162,18 +148,22 @@ fi
 # Registered entries are hand-maintained above: a malformed entry or a
 # missing config file is a broken registration, not a skippable condition —
 # a silent SKIP here would let a renamed or deleted model quietly leave CI.
+#
+# NEGATIVE_CONTROLS is the single registry of expected-violation configs:
+# <subdir>/<config>:<invariant>. Each must exit 12 with exactly that invariant;
+# scripts/ci/test-check-tla-invariants.sh reads this list rather than copying it.
 NEGATIVE_CONTROLS=(
     carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
     carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
-    soak_disk/MC_SoakDisk_floor_only_pre_fix:AdmissionRequiresBand
-    soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix:AdmissionRequiresSample
-    soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix:AdmissionRequiresValidSample
-    soak_disk/MC_ActiveDiskProbe_missing_pre_fix:InvalidSampleRequiresInterrupt
-    soak_disk/MC_DiskEmergencyRecord_stop_first_pre_fix:StopRequiresRecord
-    soak_disk/MC_GuardianSupervision_unwatched_pre_fix:DeadGuardianRequiresInterrupt
-    soak_disk/MC_DiskProbeDeadline_unbounded_pre_fix:ProbeWithinDeadline
-    soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix:AttributionWithinBudget
-    soak_disk/MC_DiskBreachRestart_clear_pre_fix:RetainedBreachStopsRestart
+    soak_disk/MC_SoakDiskAdmission_floor_only_pre_fix:AdmissionRequiresBand
+    soak_disk/MC_SoakDiskAdmission_missing_sample_pre_fix:AdmissionRequiresSample
+    soak_disk/MC_SoakDiskAdmission_numeric_prefix_pre_fix:AdmissionRequiresValidSample
+    soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
+    soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
+    soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline
+    soak_disk/MC_SoakDiskGuardian_stop_first_pre_fix:StopRequiresRecord
+    soak_disk/MC_SoakDiskGuardian_per_root_deadline_pre_fix:AttributionWithinBudget
+    soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix:RetainedBreachStopsRestart
 )
 
 failed=0
