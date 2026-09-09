@@ -258,6 +258,37 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B18
+    statement: A guardian fault cancels a stalled benchmark client and preserves the protection failure before fixture release.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-benchmark-supervision-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-benchmark-cancellation.sh
+        red_revision: 59b90568c435a53c04ee357c2f1f669775c5c219
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B19
+    statement: Guardian death during a valid disk probe prevents opening and interleaved benchmark admission.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-benchmark-supervision-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-benchmark-guardian-admission.sh
+        red_binding: B18-green-source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        reused_model: GuardianAdmission
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -371,10 +402,20 @@ Four additional [opening-admission cases](../cbc-evidence/soak-d2-benchmark-case
 
 The expanded fixture preserves the B17 counterexample. The combined emergency suite now passes sixteen scenarios. The formal inventory remains at sixteen positive configurations and controls.
 
+B18 and B19 add [benchmark supervision evidence](../cbc-evidence/soak-d2-benchmark-supervision-2026-09-09/README.md). B18 cancels stalled clients after guardian death or a disk breach.
+
+B19 refuses opening and interleaved benchmark admission when the guardian dies during the disk probe. It reuses the unchanged guardian-admission model and control.
+
+Seventeen positive configurations, eighteen exact controls, 126 classifier cases, six routing scenarios, and twenty emergency scenarios pass.
+
+The combined verification command reached its tool limit during release regressions. The remaining checks passed separately, and the partial run remains recorded.
+
 ## Remaining D2 work
 
 - [x] Verify opening admission at equality, sufficient space, unavailable samples, and disabled disk protection.
-- [ ] Verify interleaved admission, remaining sample faults, and active benchmark supervision.
+- [x] Cancel stalled benchmark clients after guardian death or a recorded disk breach.
+- [x] Refuse opening and interleaved benchmark admission after guardian death during the probe.
+- [ ] Verify interleaved sample cases, live but stalled guardians, and remaining admission and cancellation faults.
 
 - [ ] Bound disk hygiene and stop paths outside B13, including detached and uninterruptible command cases.
 - [ ] Verify soft-floor sampling, cleanup outcomes, and guardian events at every admission boundary.

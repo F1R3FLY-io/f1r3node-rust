@@ -59,6 +59,8 @@ case "$config" in
     MC_BenchmarkBreachAdmission_unchecked_pre_fix.cfg) invariant=RetainedBreachPreventsBenchmark ;;
     MC_BenchmarkDiskAdmission_unchecked_pre_fix.cfg) invariant=BenchmarkRequiresBand ;;
     MC_BenchmarkDiskMonitor_late_pre_fix.cfg) invariant=BenchmarkBreachObserved ;;
+    MC_BenchmarkCancellation_unwatched_death_pre_fix.cfg) invariant=BenchmarkCancellationObserved ;;
+    MC_BenchmarkCancellation_unwatched_breach_pre_fix.cfg) invariant=BenchmarkCancellationObserved ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -97,6 +99,9 @@ pr_configs=(
     soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix
     soak_disk/MC_BenchmarkDiskMonitor
     soak_disk/MC_BenchmarkDiskMonitor_late_pre_fix
+    soak_disk/MC_BenchmarkCancellation
+    soak_disk/MC_BenchmarkCancellation_unwatched_death_pre_fix
+    soak_disk/MC_BenchmarkCancellation_unwatched_breach_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

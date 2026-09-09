@@ -430,7 +430,7 @@ If this run serves release promotion, use the [60h stability soak](../Glossary.m
 
 - [ ] G0: Candidate identity and required-check inventory are complete.
 - [ ] D1: The known disk admission fix has paired historical RED/GREEN evidence.
-- [ ] D2: Emergency response and evidence publication have verified aggregate bounds. B17 adds local opening-benchmark monitoring evidence, not aggregate verification.
+- [ ] D2: Emergency response and evidence publication have verified aggregate bounds. B17–B19 add local benchmark monitoring, cancellation, and admission evidence, not aggregate verification.
 - [ ] O1: End-to-end telemetry and artifact retrieval pass.
 - [ ] F1: Diagnostic evidence identifies the finalization work bound.
 - [ ] F2: The measured production property and matching formal configuration pass after the correction.

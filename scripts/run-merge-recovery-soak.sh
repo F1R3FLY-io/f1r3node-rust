@@ -822,6 +822,17 @@ run_bench_segment() {
 			return 1
 		fi
 	fi
+	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null; }; then
+		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian exited before benchmark admission. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		EARLY_EXIT_REASON="host_protection_breach"
+		DEADLINE=0
+		FAILURES="$((FAILURES + 1))"
+		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		return 1
+	fi
 	BENCH_SEGMENTS="$((BENCH_SEGMENTS + 1))"
 	local segment_dir
 	segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"
@@ -832,8 +843,34 @@ run_bench_segment() {
 		BENCH_RATE="$BENCH_RATE" \
 		SEGMENT_INDEX="$BENCH_SEGMENTS" \
 		SOAK_STARTED_AT="$STARTED_AT" \
-		"$SCRIPT_DIR/bench/run-bench-segment.sh" >"$segment_dir/segment.log" 2>&1
+		timeout --signal=TERM --kill-after=1 "$remaining" \
+		bash -c 'trap "while :; do sleep 1; done" TERM; "$@"' bash \
+		"$SCRIPT_DIR/bench/run-bench-segment.sh" >"$segment_dir/segment.log" 2>&1 &
+	BENCHMARK_PID=$!
+	local interrupted=0
+	while kill -0 "$BENCHMARK_PID" 2>/dev/null; do
+		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+			interrupted=1
+			stop_node_writers -q kill >/dev/null 2>&1 || true
+			kill -TERM "$BENCHMARK_PID" 2>/dev/null || true
+			break
+		fi
+		sleep "${SOAK_GUARDIAN_POLL_SECONDS:-2}"
+	done
+	wait "$BENCHMARK_PID" 2>/dev/null
 	local status=$?
+	BENCHMARK_PID=""
+	if [ "$interrupted" -eq 1 ]; then
+		EARLY_EXIT_REASON="host_protection_breach"
+		DEADLINE=0
+		FAILURES="$((FAILURES + 1))"
+		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		status=1
+	fi
 	if [ "$status" -ne 0 ]; then
 		BENCH_FAILURES="$((BENCH_FAILURES + 1))"
 		printf '%s\n' "$status" >"$segment_dir/exit-code.txt"
@@ -913,12 +950,17 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
 HOST_GUARDIAN_PID=""
+BENCHMARK_PID=""
 ITERATION_PID=""
 ITERATION_TEE_PID=""
 ITERATION_SNAPSHOT_PID=""
 ITERATION_FIFO=""
 cleanup_soak_processes() {
 	[ -z "$HOST_GUARDIAN_PID" ] || kill "$HOST_GUARDIAN_PID" 2>/dev/null || true
+	if [ -n "$BENCHMARK_PID" ]; then
+		kill -TERM "$BENCHMARK_PID" 2>/dev/null || true
+		wait "$BENCHMARK_PID" 2>/dev/null || true
+	fi
 	if [ -n "$ITERATION_PID" ]; then
 		kill "$ITERATION_PID" 2>/dev/null || true
 		pkill -KILL -f 'integration-tests/test/tests/custom/test_load.py' 2>/dev/null || true

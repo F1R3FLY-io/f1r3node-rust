@@ -1,0 +1,5 @@
+PASS: Guardian death during the probe prevented benchmark admission and preserved failure (benchmark-guardian-boundary).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/b19/production-green/benchmark-guardian-boundary
+PASS: Guardian death during the probe prevented benchmark admission and preserved failure (benchmark-guardian-interleaved).
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-cancel-cEJkF60i/b19/production-green/benchmark-guardian-interleaved
+PASS: Both benchmark guardian admission cases passed.
