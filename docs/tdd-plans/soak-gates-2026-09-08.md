@@ -98,6 +98,91 @@ behaviors:
         hosted_confirmation: pending
         model_review: pending
         claim_discharge: pending
+  - id: B7
+    statement: An unavailable disk sample stops an active iteration.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-disk-active-probe.sh
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B8
+    statement: The disk guardian records a breach before requesting a Docker stop.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-disk-record.sh
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B9
+    statement: Observed guardian death stops an active iteration.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-guardian-death.sh
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        fixture_readiness_correction: retained
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B10
+    statement: A stalled disk command cannot supply a valid sample after its timeout.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-disk-probe-timeout.sh
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B11
+    statement: Stalled disk attribution has one aggregate command deadline across session roots.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-disk-diagnostic-deadline.sh
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B12
+    statement: A retained guardian breach prevents new work after segment restart.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-disk-restart.sh
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -118,6 +203,12 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B4: Historical production and formal counterexamples match. The existing admission correction passes both local checks.
 - [x] B5: Missing samples before and after hygiene prevent admission and produce a recorded failure.
 - [x] B6: A field with a numeric prefix followed by text prevents admission and produces a recorded failure.
+- [x] B7: An unavailable active-iteration sample triggers interruption and a breach record.
+- [x] B8: The disk breach record precedes the Docker stop command and does not claim confirmed termination.
+- [x] B9: The iteration watcher detects guardian death and records failure.
+- [x] B10: A probe timeout rejects valid partial output from a stalled command.
+- [x] B11: Stalled attribution stops within an aggregate fixture deadline across 32 session roots.
+- [x] B12: A retained breach prevents restart admission and preserves a failure outcome.
 
 ## Cycle evidence
 
@@ -155,4 +246,22 @@ The one-line correction validates the original field before the existing numeric
 
 D1, B5, and the existing driver suite also pass. The bounded gate passes five positive configurations and five exact negative controls. The classifier covers 35 cases.
 
-B6 completes only this local cycle. Other malformed values, active-iteration response, guardian failure, aggregate deadlines, writer termination, and restart preservation remain pending.
+B6 completes only this local cycle. Other malformed values, active-iteration response, guardian failure, aggregate deadlines, writer termination, and restart preservation remained pending at that point.
+
+B7 through B12 complete six additional local cycles. Their [evidence](../cbc-evidence/soak-d2-emergency-2026-09-09/README.md) retains separate production and formal RED/GREEN pairs.
+
+A driver-suite fixture race required a readiness correction during B9. Two verification commands also reached tool limits. None of these results supplies behavioral RED evidence.
+
+The corrected full driver suite passes. Thirty corrected first-scenario repetitions also pass. The combined formal gate passes 11 positive configurations and 11 exact controls.
+
+## Remaining D2 work
+
+- [ ] Bound stop commands and cleanup commands under their failure cases.
+- [ ] Verify soft-floor sampling, cleanup outcomes, and guardian events at every admission boundary.
+- [ ] Verify active-session and image preservation through the cleanup ownership contract.
+- [ ] Verify confirmed termination and durable evidence publication.
+- [ ] Establish one composed emergency deadline, including iteration shutdown and evidence handling.
+- [ ] Complete numeric-range, status, location, and crash-recovery cases outside the recorded fixture domains.
+- [ ] Obtain D3 writer-growth and reserve evidence, hosted results, and maintainer review.
+
+The completed local cycles do not complete D2 or discharge a claim. O1 and another soak remain on hold.

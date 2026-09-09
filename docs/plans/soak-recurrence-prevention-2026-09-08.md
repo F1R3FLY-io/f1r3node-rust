@@ -269,6 +269,18 @@ Production RED and the exact `AdmissionRequiresValidSample` counterexample prece
 
 This cycle does not verify all malformed values or active-iteration response. The emergency deadline, guardian failure, confirmed termination, durable evidence, and restart obligations remain open.
 
+The [B7–B12 emergency cycles](../cbc-evidence/soak-d2-emergency-2026-09-09/README.md) add six local corrections with matched production and formal counterexamples.
+
+The driver now rejects unavailable active samples, detects active guardian death, and records disk breaches before Docker stop requests. Probe failures invalidate partial output.
+
+Disk attribution has one command-group deadline per invocation. The guardian includes tag preparation and publication in that deadline. This does not bound the complete emergency path.
+
+A retained guardian marker now prevents restart admission. Recovery preserves a failure outcome but does not establish crash durability or exact uncommitted-event counts.
+
+Stop commands, cleanup commands, confirmed termination, and durable publication remain open. Active-session ownership, complete admission fault coverage, and the D3 reserve argument also remain open.
+
+The current bounded gate passes 11 positive configurations and 11 exact controls. Hosted confirmation and maintainer review remain pending. D2 is not complete.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

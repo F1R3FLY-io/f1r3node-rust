@@ -10,7 +10,7 @@ SOURCE_FILES=(
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
 case "$SCENARIO" in
-band | missing-boundary | missing-after-hygiene | malformed-boundary) ;;
+band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted) ;;
 *)
     printf 'ERROR: Unknown disk fixture scenario.\n' >&2
     exit 2
@@ -31,6 +31,29 @@ if [[ "${1:-}" == --inside ]]; then
 #!/usr/bin/env bash
 available=7000
 case "${SOAK_DISK_TEST_SCENARIO:-band}" in
+    stalled-active)
+        if [[ -f /case/evidence/workload-started.txt ]]; then
+            printf 'stalled-active\n' >>/case/evidence/probe-samples.txt
+            stall_after=true
+        fi
+        available=16384
+        ;;
+    guardian-death | restart-uncounted | restart-counted)
+        available=16384
+        ;;
+    record-before-stop)
+        available=16384
+        if [[ -f /case/evidence/workload-started.txt ]]; then
+            available=1024
+        fi
+        ;;
+    missing-active)
+        if [[ -f /case/evidence/workload-started.txt ]]; then
+            printf 'missing-active\n' >>/case/evidence/probe-samples.txt
+            exit 1
+        fi
+        available=16384
+        ;;
     missing-boundary)
         if ! mkdir /case/evidence/startup-probe-seen 2>/dev/null; then
             printf 'missing\n' >>/case/evidence/probe-samples.txt
@@ -57,6 +80,9 @@ esac
 printf 'valid=%s\n' "$available" >>/case/evidence/probe-samples.txt
 printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n'
 printf '/dev/fixture 47000 %s %s 85%% /\n' "$((47000 - available))" "$available"
+if [[ "${stall_after:-false}" == true ]]; then
+    sleep 4
+fi
 SH
     cat >bin/docker <<'SH'
 #!/usr/bin/env bash
@@ -64,14 +90,72 @@ printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
 if [[ "$*" == 'builder prune -af' ]]; then
     touch /case/evidence/hygiene-completed
 fi
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == record-before-stop ]]; then
+    if [[ "$*" == "ps -q --filter name=rnode." ]]; then
+        printf 'disk-fixture\n'
+    elif [[ "$*" == 'kill disk-fixture' ]]; then
+        if [[ -s /case/evidence/output/host-guardian-breach.txt ]]; then
+            cp /case/evidence/output/host-guardian-breach.txt /case/evidence/record-before-stop.txt
+        else
+            printf 'missing\n' >/case/evidence/record-before-stop.txt
+        fi
+        sleep 1
+    fi
+fi
 exit 0
 SH
     cat >bin/poetry <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >/case/evidence/workload-started.txt
+case "${SOAK_DISK_TEST_SCENARIO:-band}" in
+    guardian-death)
+        guardian_pid="$(awk '/^orchestrator host guardian watching/ {print $NF; exit}' /case/evidence/driver.log)"
+        [[ "$guardian_pid" =~ ^[1-9][0-9]*$ ]] || exit 2
+        kill -0 "$guardian_pid" || exit 2
+        kill -KILL "$guardian_pid" || exit 2
+        printf '%s\n' "$guardian_pid" >/case/evidence/guardian-killed.txt
+        sleep 12
+        ;;
+    missing-active | record-before-stop | stalled-active) sleep 12 ;;
+esac
 printf 'finalize\n' >/case/evidence/output/signal
 printf 'The boundary workload fixture completed.\n'
 SH
+    if [[ "$SCENARIO" == restart-uncounted || "$SCENARIO" == restart-counted ]]; then
+        mkdir -p evidence/output
+        prior_failures=0
+        [[ "$SCENARIO" != restart-counted ]] || prior_failures=2
+        printf 'STARTED_AT=%s\nITERATIONS=1\nFAILURES=%s\nBENCH_SEGMENTS=0\nBENCH_FAILURES=0\nSEGMENT=1\n' \
+            "$(date +%s)" "$prior_failures" >evidence/output/.soak-state
+        printf 'A prior guardian detected a disk breach. Termination remains unconfirmed.\n' >evidence/output/host-guardian-breach.txt
+        cp evidence/output/.soak-state evidence/restart-input-state.txt
+        cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt
+    fi
+    observer=""
+    if [[ "$SCENARIO" == diagnostic-deadline ]]; then
+        for n in $(seq 1 32); do mkdir -p "/tmp/test-diagnostic-$n"; done
+        cat >bin/du <<'SH'
+#!/usr/bin/env bash
+touch /case/evidence/diagnostic-started
+while [[ ! -e /case/evidence/release-diagnostic ]]; do sleep 0.05; done
+exec /usr/bin/du "$@"
+SH
+        (
+            for _ in $(seq 1 200); do
+                [[ ! -e evidence/diagnostic-started ]] || break
+                sleep 0.05
+            done
+            [[ -e evidence/diagnostic-started ]] || exit 2
+            sleep 3
+            if [[ -e evidence/output/disk-floor-breach.txt ]]; then
+                printf 'met\n' >evidence/diagnostic-deadline.txt
+            else
+                printf 'exceeded\n' >evidence/diagnostic-deadline.txt
+            fi
+            touch evidence/release-diagnostic
+        ) &
+        observer=$!
+    fi
     chmod +x bin/*
     status=0
     PATH="/case/bin:$PATH" \
@@ -84,6 +168,7 @@ SH
         SOAK_HOST_FREE_FLOOR_MB=0 \
         SOAK_DISK_FREE_FLOOR_MB=4096 \
         SOAK_DISK_HYGIENE_BAND_MB=4096 \
+        SOAK_DISK_DIAGNOSTIC_SECONDS=1 \
         SOAK_TMP_ROOT=/tmp \
         SOAK_RUNNER_ROOT=/case/runner \
         SOAK_RUN_BENCHMARKS=false \
@@ -93,6 +178,7 @@ SH
         timeout --signal=TERM --kill-after=2 20 \
         bash repo/scripts/run-merge-recovery-soak.sh >evidence/driver.log 2>&1 || status=$?
     printf '%s\n' "$status" >evidence/driver-exit.txt
+    [[ -z "$observer" ]] || wait "$observer"
     if [[ "$status" != 0 && "$status" != 1 ]] ||
         [[ ! -s evidence/output/summary.json ]] ||
         ! jq -e 'has("degraded") | not' evidence/output/summary.json >/dev/null; then
@@ -100,6 +186,87 @@ SH
         exit 2
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
+    if [[ "$SCENARIO" == restart-uncounted || "$SCENARIO" == restart-counted ]]; then
+        expected_failures=1
+        [[ "$SCENARIO" != restart-counted ]] || expected_failures=2
+        if [[ -e evidence/workload-started.txt || "$status" != 1 || "$iterations" != 0 ]] ||
+            ! cmp -s evidence/restart-input-breach.txt evidence/output/host-guardian-breach.txt ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e --argjson expected "$expected_failures" '.iterations == 1 and .failures == $expected' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Restart lost the prior guardian breach or admitted new work (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        printf 'PASS: Restart preserved the guardian breach and failure count without new work (%s).\n' "$SCENARIO"
+        exit 0
+    fi
+    if [[ "$SCENARIO" == diagnostic-deadline ]]; then
+        if [[ ! -s evidence/diagnostic-deadline.txt ]] ||
+            ! grep -Fxq 'disk hygiene: 7000MB free -> 7000MB free' evidence/driver.log; then
+            printf 'ERROR: The fixture did not exercise stalled attribution after hygiene.\n' >&2
+            exit 2
+        fi
+        if ! grep -Fxq 'met' evidence/diagnostic-deadline.txt; then
+            printf 'FAIL: Disk attribution exceeded the aggregate fixture deadline.\n' >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || "$iterations" != 0 ]] ||
+            ! jq -e '.iterations == 0 and .failures == 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Bounded attribution lost the admission refusal.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: Stalled attribution stopped within the aggregate fixture deadline across 32 session roots.\n'
+        exit 0
+    fi
+    if [[ "$SCENARIO" == guardian-death ]]; then
+        if [[ ! -s evidence/guardian-killed.txt || ! -s evidence/workload-started.txt ]]; then
+            printf 'ERROR: The fixture did not kill the active guardian.\n' >&2
+            exit 2
+        fi
+        if [[ "$status" != 1 || "$iterations" != 1 || ! -s evidence/output/host-guardian-breach.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 1 and .failures >= 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: The driver completed without a failure after its guardian died.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: The driver recorded guardian death and stopped the active iteration.\n'
+        exit 0
+    fi
+    if [[ "$SCENARIO" == record-before-stop ]]; then
+        if [[ ! -s evidence/workload-started.txt || ! -s evidence/record-before-stop.txt ]] ||
+            ! grep -Fxq 'valid=1024' evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not reach the disk stop command.\n' >&2
+            exit 2
+        fi
+        if grep -Fxq 'missing' evidence/record-before-stop.txt; then
+            printf 'FAIL: The Docker stop command started before the disk breach record existed.\n' >&2
+            exit 1
+        fi
+        if ! grep -Fq 'termination is unconfirmed' evidence/record-before-stop.txt ||
+            [[ "$status" != 1 || "$iterations" != 1 ]] ||
+            ! jq -e '.iterations == 1 and .failures >= 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: The breach record or failure result is incomplete.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: The disk breach record exists before Docker starts the stop command. Termination remains unconfirmed.\n'
+        exit 0
+    fi
+    if [[ "$SCENARIO" == missing-active || "$SCENARIO" == stalled-active ]]; then
+        if [[ ! -s evidence/workload-started.txt ]] ||
+            ! grep -Fxq 'valid=16384' evidence/probe-samples.txt ||
+            ! grep -Fxq "$SCENARIO" evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not exercise the requested active probe fault.\n' >&2
+            exit 2
+        fi
+        if [[ "$status" != 1 || "$iterations" != 1 ]] ||
+            [[ ! -s evidence/output/host-guardian-breach.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 1 and .failures >= 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: The driver did not stop the active iteration after the disk probe fault (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        printf 'PASS: The driver stopped the active iteration after the disk probe fault (%s).\n' "$SCENARIO"
+        exit 0
+    fi
     if [[ "$SCENARIO" != band ]]; then
         sample_kind=missing
         sample_record=missing

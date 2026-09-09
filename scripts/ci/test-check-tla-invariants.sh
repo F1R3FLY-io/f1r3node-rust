@@ -25,6 +25,12 @@ case "$config" in
     MC_SoakDisk_floor_only_pre_fix.cfg) invariant=AdmissionRequiresBand ;;
     MC_DiskProbeAdmission_missing_sample_pre_fix.cfg) invariant=AdmissionRequiresSample ;;
     MC_DiskSampleValidation_numeric_prefix_pre_fix.cfg) invariant=AdmissionRequiresValidSample ;;
+    MC_ActiveDiskProbe_missing_pre_fix.cfg) invariant=InvalidSampleRequiresInterrupt ;;
+    MC_DiskEmergencyRecord_stop_first_pre_fix.cfg) invariant=StopRequiresRecord ;;
+    MC_GuardianSupervision_unwatched_pre_fix.cfg) invariant=DeadGuardianRequiresInterrupt ;;
+    MC_DiskProbeDeadline_unbounded_pre_fix.cfg) invariant=ProbeWithinDeadline ;;
+    MC_DiskDiagnosticDeadline_per_root_pre_fix.cfg) invariant=AttributionWithinBudget ;;
+    MC_DiskBreachRestart_clear_pre_fix.cfg) invariant=RetainedBreachStopsRestart ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 if [[ "$config" == "$TEST_TLC_TARGET" ]]; then
@@ -45,7 +51,13 @@ chmod +x "$WORK/bin/tlc"
 for target in carrier_index/MC_CarrierIndex_dag_first_pre_fix \
     carrier_index/MC_CarrierIndex_read_failure_pre_fix soak_disk/MC_SoakDisk_floor_only_pre_fix \
     soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix \
-    soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix; do
+    soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix \
+    soak_disk/MC_ActiveDiskProbe_missing_pre_fix \
+    soak_disk/MC_DiskEmergencyRecord_stop_first_pre_fix \
+    soak_disk/MC_GuardianSupervision_unwatched_pre_fix \
+    soak_disk/MC_DiskProbeDeadline_unbounded_pre_fix \
+    soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix \
+    soak_disk/MC_DiskBreachRestart_clear_pre_fix; do
     for result in clean wrong-invariant tool-error wrong-exit timeout missing expected; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
         if [[ "$result" == missing ]]; then

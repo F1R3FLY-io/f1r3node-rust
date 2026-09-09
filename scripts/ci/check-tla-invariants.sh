@@ -105,6 +105,12 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_SoakDisk
     soak_disk/MC_DiskProbeAdmission
     soak_disk/MC_DiskSampleValidation
+    soak_disk/MC_ActiveDiskProbe
+    soak_disk/MC_DiskEmergencyRecord
+    soak_disk/MC_GuardianSupervision
+    soak_disk/MC_DiskProbeDeadline
+    soak_disk/MC_DiskDiagnosticDeadline
+    soak_disk/MC_DiskBreachRestart
 )
 
 TLC_WORKERS=auto
@@ -115,6 +121,12 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_SoakDisk
         soak_disk/MC_DiskProbeAdmission
         soak_disk/MC_DiskSampleValidation
+        soak_disk/MC_ActiveDiskProbe
+        soak_disk/MC_DiskEmergencyRecord
+        soak_disk/MC_GuardianSupervision
+        soak_disk/MC_DiskProbeDeadline
+        soak_disk/MC_DiskDiagnosticDeadline
+        soak_disk/MC_DiskBreachRestart
     )
     TLC_WORKERS=2
 fi
@@ -156,6 +168,12 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDisk_floor_only_pre_fix:AdmissionRequiresBand
     soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix:AdmissionRequiresSample
     soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix:AdmissionRequiresValidSample
+    soak_disk/MC_ActiveDiskProbe_missing_pre_fix:InvalidSampleRequiresInterrupt
+    soak_disk/MC_DiskEmergencyRecord_stop_first_pre_fix:StopRequiresRecord
+    soak_disk/MC_GuardianSupervision_unwatched_pre_fix:DeadGuardianRequiresInterrupt
+    soak_disk/MC_DiskProbeDeadline_unbounded_pre_fix:ProbeWithinDeadline
+    soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix:AttributionWithinBudget
+    soak_disk/MC_DiskBreachRestart_clear_pre_fix:RetainedBreachStopsRestart
 )
 
 failed=0

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "soak-recurrence-prevention",
   "candidate": {
-    "base_commit": "59430d59b45e4640187fd4b0414b03249c431e8f",
+    "base_commit": "ac94c17559cab399d42e84e8dd0792f8fe943668",
     "binding": "source-sha256",
     "inputs_sha256": {
       ".github/scripts/check-workflow-invariants.sh": "c25862d66eebe51282ca854da920a75f7553ac27590326a0650dadb1e42d2905",
@@ -53,7 +53,7 @@
       "scripts/bench/test-soak-disk-probe.sh": "41ee399da2c2bbf7a54634a5bbf90087071ecd0e8456dc6478932ca2032dbc41",
       "docs/Glossary.md": "7f161ea8bc9a23728afd3baccff64e08904806fef0c9226dfdece339baef3516",
       "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md": "d1beaad52820cd00d45751153d48d346c83e0ad5a3144753bd6c3796427760f2",
-      "docs/tdd-plans/soak-gates-2026-09-08.md": "a4ae768f2ab3d471243f02057b4652adda3b85fc9797d6eff686dcb99f5c3859",
+      "docs/tdd-plans/soak-gates-2026-09-08.md": "9c6b071244249af07d324291a0dae67439b7652ae9abf0c1910142f23428e6f4",
       "formal/tlaplus/soak_disk/MC_SoakDisk.cfg": "baa1c4153fc8c485d6d15ce267adb601f1585a4e24f0686ff07f3bec8b9894f4",
       "formal/tlaplus/soak_disk/MC_SoakDisk.tla": "3f1c1f5589f430a424efe8c8916f7b725b1bc33bd39e49959ffd3c63d11ab039",
       "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg": "0ee62f80739ff4f03d47555b4cb4550738d909f6a247a66fd62b73ac30051132",
@@ -63,12 +63,12 @@
       "scripts/bench/collect-soak-metrics.sh": "6a04b8aa2b3335012eba6b66793b784c28fbedfd5160844c27e0d8abf01e7554",
       "scripts/bench/soak-disk-test.Dockerfile": "85340de51da31c1ea8ded3c4a20a8e0cf8f85a26b0cfc13ab4b29768d5048aa9",
       "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7",
-      "scripts/bench/test-soak-disk-admission.sh": "9d714ea6d224343cbd43982a5874a7be30dedb5bfc2b7c4606910c32e76464b8",
+      "scripts/bench/test-soak-disk-admission.sh": "6addaf0879aeafacc3f8debf83ee5f4a3f166e397302c8c0124f95be342ee1be",
       "scripts/bench/write-soak-summary.sh": "ed6c53492ab35dd9b2cc82123766e76efec9ea6a7e18b759a034b4a038d8a489",
       "scripts/bench/test-write-soak-summary.sh": "355ac9ebc268e626e99a54a9464aad9ed9b9db9ae8af65e122263acf2d1ddf23",
       ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
       ".github/workflows/_integration-pipeline.yml": "2931f47de27ec73093e3a03a3bb91473203e1e7b7759450b4ebbd71e0098f11d",
-      ".github/workflows/ci.yml": "1da605a19ddcd41519e1fa1900f026bbff86d6b56b0d6c8ab8404ed6f4d09c3d",
+      ".github/workflows/ci.yml": "573aebbd0651ac396928222e6c4c5616c2743ff527396317cdc05954b53ebb96",
       ".github/workflows/merge-recovery-soak.yml": "8e113745d06684ac9bd096f7d0ad52275777bc5df987316e2bd8be7f97891a7d",
       ".github/workflows/slashing-tests.yml": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
       "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "39382399fd484b5d9b670d3ad35af642659df61c6475497a90f5af7dc645f711",
@@ -113,8 +113,8 @@
       "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-replay_liveness-MC_ReplayHotLoop.log": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
       "docs/claims/repeat-deploy-carrier-index-equivalence.md": "16f110d8ebf50d2f39a3fbb45364019684a5118b0a65db106c6d9f5b810230ba",
       "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
-      "docs/claims/soak-formal-gate.md": "441302230674be4e9a5da854b1abe6f7ff87de6bbc434a15a0e85d7ba6814f5e",
-      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "6c38a74b19ef3902757160996eca0dbfb73f28742b9db0d1450b97b7dd0cdbf6",
+      "docs/claims/soak-formal-gate.md": "b17da505568af7fc45481412aa6c9d692d00b82c859f32415461fc28bc6e61ce",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "f30d51c1b8a6aa58d55aa43f31bc58ca80c5f67031ee10d904e4831ac946b0f4",
       "docs/soak-evidence/34180346282/README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
       "docs/soak-evidence/34180346282/archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
       "docs/soak-evidence/34180346282/inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
@@ -139,7 +139,7 @@
       "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "12f5e6ba9d6da2bc2582ab99df05bafb80f2c64425ce84d3af4c063492829924",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "9a99509f62218d768d946e166d4d79711efdce90461d38521d3b666ae2d19235",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -184,14 +184,83 @@
       "formal/tlaplus/replay_liveness/MC_ReplayHotLoop_task_chain_pre_fix.cfg": "7631efee0837f04b4a1c5c2c59b6cbe2f72503c75bd6307be1e4f65f49a1ce91",
       "formal/tlaplus/replay_liveness/ReplayHotLoop.tla": "460651b3d5ac5b58d43fb89bdfeba2d3dd2cab71897de88e8185298e4f4cf2b4",
       "rspace++/src/rspace/replay_rspace.rs": "14c254ef0ac3db29a44313f8da8c7df02576ff113c135dc78650247fa12f1cb5",
-      "scripts/bench/test-run-merge-recovery-soak.sh": "2d0bc41e2945203ea2c75659f9a8f9ee6b6f6538f645945b6247322d2ba4c4b3",
+      "scripts/bench/test-run-merge-recovery-soak.sh": "b2479d5ae1b911225dd8ddf33440d0c613c3e8db716dd373ca54f136a584855f",
       "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
       "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
-      "scripts/ci/check-tla-invariants.sh": "f71d677e44e88e8d89d3f230842b94a84d8539adf1ef7850255af7c4f3ed788a",
-      "scripts/ci/test-check-tla-invariants.sh": "b5cd7eed0e7955177ba26265bf4a214f6a66463d0871386038ae3c9fd15791da",
+      "scripts/ci/check-tla-invariants.sh": "549db404b0727d9b4469f13a21b222e11ed3fc6ec2f6c79f402fb8c40752958a",
+      "scripts/ci/test-check-tla-invariants.sh": "f41d875fef5e94f81091fc050dd09351f44dc77bbd1ef07dab46042efb32a099",
       "scripts/ci/test-soak-claim-inventory.sh": "dbd16e78ab45353585a3beff0942141fd9c6ce9a1f45dccc9392e790b0fb165e",
-      "scripts/ci/test-soak-pr-formal-gate.sh": "03ad83522802113e854d3b60dd83482ce61b6c1f87144f8a4c2ee22e5793d81e",
-      "scripts/run-merge-recovery-soak.sh": "08517b4d896cb430812a6247c17e4a81649e1bea540f48c1dc2ae50b38833631"
+      "scripts/ci/test-soak-pr-formal-gate.sh": "e03c47f362791c3449ceca19dfd46cc0027573514c82b175b724f1f6f600ad2e",
+      "scripts/run-merge-recovery-soak.sh": "2b2e3c8a0bc6971bc52d2cf77bb8667c8e79856d5f3f9ca1561a506ce392e965",
+      "formal/tlaplus/soak_disk/ActiveDiskProbe.tla": "f2654b297ae367fb73144bb20360f6ca9458dbee233507ebf4a9e7f147bca629",
+      "formal/tlaplus/soak_disk/DiskBreachRestart.tla": "d2d97c052bf8ffae5ce9cc162b351c4d8012a6ccfa0b3cd0f7bb6c22d719d4f0",
+      "formal/tlaplus/soak_disk/DiskDiagnosticDeadline.tla": "6a7a5b0239483f525d7add3f12eef697ff4cb64febdb1b3a369aa79ba4f9211b",
+      "formal/tlaplus/soak_disk/DiskEmergencyRecord.tla": "d09098f88cb152fb383af5ea9031a2f2950e3659824e6b30de6ea4e4151354a1",
+      "formal/tlaplus/soak_disk/DiskProbeDeadline.tla": "7382177342665e827aedc2ed00100a24aa57bd63941605e713443bb410443c94",
+      "formal/tlaplus/soak_disk/EmergencyResponse.md": "f2866dc73bd39f7883f06cf870da7f10402cc97f77324df9affbce5ce7b12200",
+      "formal/tlaplus/soak_disk/GuardianSupervision.tla": "95640813563fffdfc63420396a97b6f634f04ec0cb387a8a5aa3adf1d08fd32a",
+      "formal/tlaplus/soak_disk/MC_ActiveDiskProbe.cfg": "3b397eddd3575e71d01e4afd8b18e2785f3527a2c0d8d2cba118d5faec2f0f68",
+      "formal/tlaplus/soak_disk/MC_ActiveDiskProbe.tla": "0ff030fd6c098a0ba452f4088e7e8987cdee7876d29201a91066f5d22a393f1b",
+      "formal/tlaplus/soak_disk/MC_ActiveDiskProbe_missing_pre_fix.cfg": "f7d56b451b002c606904614b3b1d4b315d73be05565a8fac54c81281e67fc095",
+      "formal/tlaplus/soak_disk/MC_ActiveDiskProbe_missing_pre_fix.tla": "78e5bffc939a9f76b6c41fec6f136f5ecd8d734dbe8144201da605d90ea56d88",
+      "formal/tlaplus/soak_disk/MC_DiskBreachRestart.cfg": "2d633e61d498d261576f9cd63047f54111a29ebddd53bae01c6eeffa20286e82",
+      "formal/tlaplus/soak_disk/MC_DiskBreachRestart.tla": "9e63274df5c5f6b882b26421e430f9fb6451c6fbf2b8f5d3470914b91b80214f",
+      "formal/tlaplus/soak_disk/MC_DiskBreachRestart_clear_pre_fix.cfg": "d5dd2a30358b9b5d2a28f54f242ea731a27d066de390e8498001330d9d0c88d3",
+      "formal/tlaplus/soak_disk/MC_DiskBreachRestart_clear_pre_fix.tla": "377027f73d47dbbc2ea5ba0c02549ae73da0296fccedeeadb0ecf409a9bd4e09",
+      "formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline.cfg": "b9e02d7d3324afe0f793efd1e59c3e1f3b723af67de5eefb10e409fb9dfd97fb",
+      "formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline.tla": "83d60458a714cbcb4f52d48a2b8da64571dec3926acd20de95408615d3b8f846",
+      "formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix.cfg": "7355f296bc8fce3217804f1268f11a0c489652664b08e217d45868e06c635426",
+      "formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix.tla": "001e9df620b7e9aa2817c5f1cc677bcccbeeb1130ff4079789c85667673b158d",
+      "formal/tlaplus/soak_disk/MC_DiskEmergencyRecord.cfg": "15a84c562553a44327aeff8cda478884aa12de1b06e8d8a2a362ce4f6f349874",
+      "formal/tlaplus/soak_disk/MC_DiskEmergencyRecord.tla": "105fa41eb100ae2029b4acbcc2303eb8a73f14af7cd6bf0465c0961c32af1683",
+      "formal/tlaplus/soak_disk/MC_DiskEmergencyRecord_stop_first_pre_fix.cfg": "8b0702646e1827e64ac362ebc60c35969f2d53c6d53b40bcc6945b518a5ffd38",
+      "formal/tlaplus/soak_disk/MC_DiskEmergencyRecord_stop_first_pre_fix.tla": "b8c091c8497ffef93cc784848abf953b4cc01c6815ceeb99c9b00b8f2553f494",
+      "formal/tlaplus/soak_disk/MC_DiskProbeDeadline.cfg": "3b2044a45779735392bffac1b4d6b6394c0819ec9cd169207f6b8a4c63b1be3c",
+      "formal/tlaplus/soak_disk/MC_DiskProbeDeadline.tla": "17a9b99b1288cf6ee98e3a088e56043422928ab42c0ebafa9a557151d4a89828",
+      "formal/tlaplus/soak_disk/MC_DiskProbeDeadline_unbounded_pre_fix.cfg": "20adf64b8012a8d170a049094834bef4d6fcaae1f4ab80e21d60d5fb2fe75efa",
+      "formal/tlaplus/soak_disk/MC_DiskProbeDeadline_unbounded_pre_fix.tla": "db06cf357a0e117954155f26bc65041f52b8bfe1d4de5c59f2bd5f2456a4e9eb",
+      "formal/tlaplus/soak_disk/MC_GuardianSupervision.cfg": "a6dcded36d285e6ebc09fdfee35ceb3ad5c241e6e8fb5f67c79e8a305d116b3c",
+      "formal/tlaplus/soak_disk/MC_GuardianSupervision.tla": "1ab0296fc312ea62a6918c59511e044c786739aa888529b9b48c7904c7605057",
+      "formal/tlaplus/soak_disk/MC_GuardianSupervision_unwatched_pre_fix.cfg": "e73755d3604b3500866c6a50f81853af71dfc2dd03de20bbfcb049000141ca62",
+      "formal/tlaplus/soak_disk/MC_GuardianSupervision_unwatched_pre_fix.tla": "a36a9cb42ed20d10f845fe04576c1a4f8a4696aba0f975cb4864c097557291fa",
+      "scripts/bench/test-soak-disk-active-probe.sh": "9e5c50a0bf37cfa1a1b00b6ad2d442e2421fbd3788d82540ab5edb3058474f2b",
+      "scripts/bench/test-soak-disk-diagnostic-deadline.sh": "b44ff741f9d62d2c75cc119e12e70f9cdea9de0d9dec099e993c32e2ade1c955",
+      "scripts/bench/test-soak-disk-emergency.sh": "b5892e70c314d9639550bbecbb417818456ace218b7249d11dd19d15ee8abfdb",
+      "scripts/bench/test-soak-disk-probe-timeout.sh": "872d44a5940e59d7a2457ee0747bd8cca5ad73ba5bc3e20ccacadc090b00e098",
+      "scripts/bench/test-soak-disk-record.sh": "c319c55aa832897d3c6f1d94d8a64bd68ba8dfc644cc1a9a1e4ec464e046be13",
+      "scripts/bench/test-soak-disk-restart.sh": "4dcf6d67505b006c6efe65f0f3f049ee3eeb88421368dc3f71f001800a760842",
+      "scripts/bench/test-soak-guardian-death.sh": "4c875bbf43e8b3133f5d716068541e7f7efb47c8e53234ed410a7dcd89719ea9",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/README.md": "a3d3f62e52a004f3ba2904841bf9d5ccb3d2e54ed422b62957e509fe5b3dc64c",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b10/formal-green.txt": "a89bb41148e568559bf4433e53907f30a3663a73a650387b5832b0f179c5e094",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b10/formal-red.txt": "7a051f83cfbb9aefbeb21f28034745854f8551ee165a6bf9586e8188811e2f3e",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b10/production-green.txt": "b40f4fe7aad53fd52da7c2da493250836d8017ec3fec9b07d7588a243901e3c5",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b10/production-red.txt": "7c71aab3e98129b4196792e4b7927728a9f066ded5186266408a94db60ede764",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b11/formal-green.txt": "75e74fb5b17e1184fba7a4301eb6f50f09c58e7d45c8a8212dafd943cd144fca",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b11/formal-red.txt": "5f796675fe7dc441f94e70cfa13c5fb9f067b2d03506d316472f9ba55c93f616",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b11/production-green.txt": "55ccf2c00a1783d8c61fc95633dd2c6f8b2a66b57cd53b3536dd96775cabf48f",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b11/production-red.txt": "4046247953f7e2fce4f6f865ccf831c0e0fb7972d9962228e97c663ef7a0e565",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b12/formal-green.txt": "b2e26667056acf6339ce50fdae482e7fcba835f3f7940471fdfbc79befc6fe85",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b12/formal-red.txt": "c495ae4268ae5c7e6c6cdd174b2fc3279a5028bff0466d41d7e6a1307920c5e2",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b12/production-green.txt": "51c876b02923708c10e29121bc5ff1c5ad4ee6ad253f4249e4f9b0537a1503cf",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b12/production-red.txt": "6fe5c78dee02c56099ee72d7e265210c046529a03a7ded22ff2ee89a34a6f777",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b7/formal-green.txt": "41a9e4688cd93427f90f446cd9ab08360c18e64bbd9c581f97f1f981e30e6d28",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b7/formal-red.txt": "4b320f3869e5ccf5eb0cacda8f4640bdb9da36fec3587dc48d5f02c62337600e",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b7/production-green.txt": "9117a9286bd84e3bd39d1715f48cf4704cce63341f50a89c676cba5566df4b57",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b7/production-red.txt": "7002285eddb6fe77eefdb1a912fe5b343943c4eec2dd8c260706f81169797776",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b8/formal-green.txt": "9eb24fe2d4094922129b2c9aa37afa5a00d4ed885680869cd8edf03d5795619b",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b8/formal-red.txt": "1a1fbd0e0777deffa43cadfc1b3fa5352c048d10e7ffec4264bc7da0478b4a04",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b8/production-green.txt": "3088947ff6380b5b494cba828b0796a8ec10b7408120700abfd662f556b42086",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b8/production-red.txt": "7cbc88e21ca45328bbf200f703156cb613bdd1395afc64b2bc5a3cdd5e6f1814",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b9/formal-green.txt": "c1b704ae324415bb64c223d349eedbe8cd2c63576266f6062d3a5a4e0a6977db",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b9/formal-red.txt": "0729d3405523076d1f53c6668a49bb635c332bf608620402770379a560a68b25",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b9/production-green.txt": "860fb21bce790361c7f5b27ef12c82eb4e0b9f93ffa0fa9a87917224220b2773",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/b9/production-red.txt": "592654b8125a2d3751fbf0540b715be207ad647ba7a834af0d17d89aff1ad0b1",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/composed-production.txt": "5271c58fb9d2732f7f3aae52fcf4ee0b67b052f92f342b78630dd13382ec56bf",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/composed-tla.txt": "9caa3c7e70376f899db55f69132b46a4fc5ff16d79124de5c1498954f61a94a2",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json": "36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773",
+      "docs/cbc-evidence/soak-d2-emergency-2026-09-09/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7"
     }
   },
   "claims": [
@@ -335,7 +404,8 @@
         "DISK-ADMISSION",
         "DISK-PROBE",
         "DISK-SAMPLE",
-        "BOUNDED-TLA"
+        "BOUNDED-TLA",
+        "DISK-EMERGENCY"
       ],
       "pending_obligations": [
         "The maintainer must ratify the resource claim and any new mandatory CbC attributes.",
@@ -406,7 +476,19 @@
         "formal/tlaplus/soak_disk/MC_DiskProbeAdmission.cfg",
         "formal/tlaplus/soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix.cfg",
         "formal/tlaplus/soak_disk/MC_DiskSampleValidation.cfg",
-        "formal/tlaplus/soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix.cfg"
+        "formal/tlaplus/soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_ActiveDiskProbe.cfg",
+        "formal/tlaplus/soak_disk/MC_ActiveDiskProbe_missing_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskEmergencyRecord.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskEmergencyRecord_stop_first_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_GuardianSupervision.cfg",
+        "formal/tlaplus/soak_disk/MC_GuardianSupervision_unwatched_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskProbeDeadline.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskProbeDeadline_unbounded_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskBreachRestart.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskBreachRestart_clear_pre_fix.cfg"
       ],
       "verifier": {
         "name": "TLC",
@@ -420,7 +502,9 @@
         "The existing production property uses in-memory operation traces.",
         "D1 admission assumes valid samples, completing commands, and no external writes during the modeled decision.",
         "D2 probe admission assumes successful startup and completing probes, cleanup, and local writes.",
-        "D2 sample validation abstracts numeric-prefix conversion and assumes completing commands, cleanup, and local writes."
+        "D2 sample validation abstracts numeric-prefix conversion and assumes completing commands, cleanup, and local writes.",
+        "Emergency models assume completing record writes. Timeout models assume timer service and effective cancellation.",
+        "The separate models do not establish a composed emergency deadline, confirmed termination, or durable publication."
       ],
       "bounds": [
         "Carrier: two signatures, three blocks, watermark zero, and scan start at most two.",
@@ -428,7 +512,8 @@
         "Disk: initial free space 7000 MiB, floor 4096 MiB, band 4096 MiB, and samples 7000, 8191, 8192, 8193 MiB.",
         "D2 probe admission: valid samples 7000, 8192, and 16384 MiB, plus a separate missing sample at either probe.",
         "D2 sample validation: valid samples 7000, 8192, and 16384 MiB, plus a malformed field with numeric prefix 16384.",
-        "Execution: two workers, 120-second configuration timeout, and 60-second kill grace."
+        "Execution: two workers, 120-second configuration timeout, and 60-second kill grace.",
+        "B7 through B12 have 5, 11, 4, 5, 129, and 6 distinct states in their corrected configurations."
       ],
       "expected_results": [
         {
@@ -475,6 +560,60 @@
           "configuration": "MC_DiskSampleValidation_numeric_prefix_pre_fix",
           "exit_code": 12,
           "invariant": "AdmissionRequiresValidSample"
+        },
+        {
+          "configuration": "MC_ActiveDiskProbe",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_ActiveDiskProbe_missing_pre_fix",
+          "exit_code": 12,
+          "invariant": "InvalidSampleRequiresInterrupt"
+        },
+        {
+          "configuration": "MC_DiskEmergencyRecord",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_DiskEmergencyRecord_stop_first_pre_fix",
+          "exit_code": 12,
+          "invariant": "StopRequiresRecord"
+        },
+        {
+          "configuration": "MC_GuardianSupervision",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_GuardianSupervision_unwatched_pre_fix",
+          "exit_code": 12,
+          "invariant": "DeadGuardianRequiresInterrupt"
+        },
+        {
+          "configuration": "MC_DiskProbeDeadline",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_DiskProbeDeadline_unbounded_pre_fix",
+          "exit_code": 12,
+          "invariant": "ProbeWithinDeadline"
+        },
+        {
+          "configuration": "MC_DiskDiagnosticDeadline",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_DiskDiagnosticDeadline_per_root_pre_fix",
+          "exit_code": 12,
+          "invariant": "AttributionWithinBudget"
+        },
+        {
+          "configuration": "MC_DiskBreachRestart",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_DiskBreachRestart_clear_pre_fix",
+          "exit_code": 12,
+          "invariant": "RetainedBreachStopsRestart"
         }
       ],
       "production_tests": [
@@ -499,7 +638,8 @@
         "B2-HOSTED",
         "D1-LOCAL",
         "D2-PROBE-LOCAL",
-        "D2-SAMPLE-LOCAL"
+        "D2-SAMPLE-LOCAL",
+        "D2-EMERGENCY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -523,7 +663,8 @@
         "Workflow parsing and local command execution do not establish GitHub required-check enforcement."
       ],
       "bounds": [
-        "B1 covered 14 classifier cases, D1 covered 21, and B5 covered 28. B6 extends the classifier to 35 cases. Routing covers six scenarios."
+        "B1 covered 14 classifier cases, D1 covered 21, B5 covered 28, and B6 covered 35.",
+        "B7 through B12 extend the classifier to 77 cases. Routing covers six scenarios."
       ],
       "production_tests": [
         {
@@ -547,7 +688,8 @@
         "B2-LOCAL",
         "D1-LOCAL",
         "D2-PROBE-LOCAL",
-        "D2-SAMPLE-LOCAL"
+        "D2-SAMPLE-LOCAL",
+        "D2-EMERGENCY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -586,7 +728,9 @@
         "formal_rerun": false,
         "summary_test_exit": 0,
         "admission_test_exit": 0,
-        "claims_discharged": [],
+        "claims_discharged": [
+
+        ],
         "raw_root": "/home/bf_spark/soak-evidence/f1r3node-rust/summary-format-MaVHlLFE",
         "raw_sha256": {
           "source-sha256.txt": "ca1b1785d840117be1e2d65ce944755490fb4b9c8f8f6c479725ab62a4e51c5c",
@@ -636,7 +780,8 @@
       "evidence_refs": [
         "DISK-INCIDENT",
         "PENDING-PLAN",
-        "D1-LOCAL"
+        "D1-LOCAL",
+        "D2-EMERGENCY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -680,7 +825,8 @@
         "enforcement": "Lint includes the numeric-prefix regression. The formal job includes its positive configuration and exact negative control. Hosted execution remains pending."
       },
       "evidence_refs": [
-        "D2-SAMPLE-LOCAL"
+        "D2-SAMPLE-LOCAL",
+        "D2-EMERGENCY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -727,13 +873,99 @@
       },
       "evidence_refs": [
         "D2-PROBE-LOCAL",
-        "D2-SAMPLE-LOCAL"
+        "D2-SAMPLE-LOCAL",
+        "D2-EMERGENCY-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
         "Confirm hosted execution and obtain maintainer review of the model-to-code map.",
         "Verify other malformed samples, guardian failures, aggregate deadlines, confirmed writer termination, and durable minimal evidence.",
         "This admission sub-obligation does not establish a disk reserve or full-duration acceptance."
+      ]
+    },
+    {
+      "id": "DISK-EMERGENCY",
+      "command": "bash scripts/bench/test-soak-disk-emergency.sh",
+      "configurations": [
+        "scripts/run-merge-recovery-soak.sh",
+        "scripts/bench/test-soak-disk-admission.sh",
+        "scripts/bench/soak-disk-test.Dockerfile",
+        "formal/tlaplus/soak_disk/EmergencyResponse.md",
+        "formal/tlaplus/soak_disk/MC_ActiveDiskProbe.cfg",
+        "formal/tlaplus/soak_disk/MC_ActiveDiskProbe_missing_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskEmergencyRecord.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskEmergencyRecord_stop_first_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_GuardianSupervision.cfg",
+        "formal/tlaplus/soak_disk/MC_GuardianSupervision_unwatched_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskProbeDeadline.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskProbeDeadline_unbounded_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskBreachRestart.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskBreachRestart_clear_pre_fix.cfg"
+      ],
+      "verifier": {
+        "name": "Bash production fixtures and bounded TLC",
+        "version": "The emergency manifest retains source digests, the immutable fixture image, TLC identity, and complete logs."
+      },
+      "assumptions": [
+        "The containers have no host mounts, network, or Docker socket. Their workload commands do not run nodes.",
+        "The timeout models assume timer service and effective cancellation. Local writes complete in the modeled transitions.",
+        "Restart starts with a retained breach marker and a valid state file."
+      ],
+      "bounds": [
+        "Seven fixture scenarios cover six local behaviors. These tests do not establish a composed response deadline.",
+        "The disk probe limit is two seconds with a one-second kill grace.",
+        "Attribution defaults to ten seconds with a one-second kill grace. The fixture uses one second and 32 session roots."
+      ],
+      "production_tests": [
+        {
+          "path": "scripts/bench/test-soak-disk-active-probe.sh",
+          "command": "bash scripts/bench/test-soak-disk-active-probe.sh",
+          "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-disk-record.sh",
+          "command": "bash scripts/bench/test-soak-disk-record.sh",
+          "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-guardian-death.sh",
+          "command": "bash scripts/bench/test-soak-guardian-death.sh",
+          "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-disk-probe-timeout.sh",
+          "command": "bash scripts/bench/test-soak-disk-probe-timeout.sh",
+          "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-disk-diagnostic-deadline.sh",
+          "command": "bash scripts/bench/test-soak-disk-diagnostic-deadline.sh",
+          "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-disk-restart.sh",
+          "command": "bash scripts/bench/test-soak-disk-restart.sh",
+          "result": "local-matched-production-formal-red-green"
+        }
+      ],
+      "ci": {
+        "workflow": ".github/workflows/ci.yml",
+        "job": "lint",
+        "enforcement": "Lint registers the isolated emergency regressions. The formal job registers six additional exact controls. Hosted candidate execution remains pending."
+      },
+      "evidence_refs": [
+        "D2-EMERGENCY-LOCAL"
+      ],
+      "result": "historical-baseline",
+      "pending_obligations": [
+        "Confirm hosted execution and obtain maintainer review of the model-to-code correspondence.",
+        "Bound stop and cleanup commands and verify guardian health at every admission boundary.",
+        "Complete soft-floor, cleanup-outcome, numeric-range, status, and location fault cases.",
+        "Verify active-session and image preservation, confirmed termination, and durable evidence publication.",
+        "Establish one composed emergency deadline, including shutdown and evidence handling.",
+        "Complete crash-recovery accounting and the D3-dependent writer-growth and reserve bounds."
       ]
     }
   ],
@@ -828,6 +1060,16 @@
       "limitations": [
         "The plan states obligations. It is not verifier or workload evidence."
       ]
+    },
+    "D2-EMERGENCY-LOCAL": {
+      "path": "docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.json",
+      "role": "historical-baseline",
+      "identity": "Six local cycles start from ac94c17559cab399d42e84e8dd0792f8fe943668. Intermediate corrections and final inputs use source digests.",
+      "limitations": [
+        "The six separate models are not a composed emergency proof or a mechanized Bash refinement.",
+        "D2 remains incomplete. Termination, durability, ownership, admission coverage, and all-writer bounds remain open.",
+        "Hosted execution, maintainer review, ratification, and acceptance remain pending."
+      ]
     }
   },
   "gates": [
@@ -861,12 +1103,17 @@
         "DISK-ADMISSION",
         "DISK-PROBE",
         "DISK-SAMPLE",
-        "BOUNDED-TLA"
+        "BOUNDED-TLA",
+        "DISK-EMERGENCY"
       ],
       "pending_obligations": [
-        "The missing-sample and numeric-prefix admission cycles pass locally. Confirm hosted execution and maintainer model review.",
-        "Add the remaining emergency fault cases and a model with one aggregate response deadline.",
-        "Verify confirmed writer termination, durable evidence, and the D3-dependent growth and reserve bounds."
+        "B5 through B12 pass their local behavior cycles. D2 is not complete.",
+        "Confirm hosted execution and obtain maintainer review of the model-to-code correspondence.",
+        "Bound stop and cleanup commands and verify guardian health at every admission boundary.",
+        "Complete soft-floor, cleanup-outcome, numeric-range, status, and location fault cases.",
+        "Verify active-session and image preservation, confirmed termination, and durable evidence publication.",
+        "Establish one composed emergency deadline, including shutdown and evidence handling.",
+        "Complete crash-recovery accounting and the D3-dependent writer-growth and reserve bounds."
       ]
     },
     {

@@ -188,6 +188,11 @@ fi
 # of the developer's real /tmp.
 SOAK_TMP_ROOT="${SOAK_TMP_ROOT:-/tmp}"
 SOAK_RUNNER_ROOT="${SOAK_RUNNER_ROOT:-/opt/actions-runner}"
+DISK_DIAGNOSTIC_SECONDS="${SOAK_DISK_DIAGNOSTIC_SECONDS:-10}"
+if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
+	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
+	exit 2
+fi
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
 # session dirs and the runner's _diag all live on the one boot volume, so one
@@ -196,7 +201,8 @@ SOAK_RUNNER_ROOT="${SOAK_RUNNER_ROOT:-/opt/actions-runner}"
 # arithmetic garbage into the guardian.
 disk_free_mb() {
 	local mb
-	mb="$(df -Pm "$OUTPUT_DIR" 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print int($4) }')"
+	mb="$(timeout --signal=TERM --kill-after=1 2 df -Pm "$OUTPUT_DIR" 2>/dev/null |
+		awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print int($4) }')" || return 1
 	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$mb"
 }
@@ -234,7 +240,7 @@ bounded() {
 	local seconds="$1"
 	shift
 	if command -v timeout >/dev/null 2>&1; then
-		timeout "$seconds" "$@"
+		timeout --foreground "$seconds" "$@"
 	else
 		"$@"
 	fi
@@ -256,7 +262,7 @@ disk_usage_roots() {
 	find "$SOAK_TMP_ROOT" -maxdepth 1 -name 'test-*' 2>/dev/null || true
 }
 
-disk_usage_snapshot() {
+disk_usage_snapshot_data() {
 	local root
 	df -Pm "$OUTPUT_DIR" 2>/dev/null || true
 	while IFS= read -r root; do
@@ -295,6 +301,26 @@ disk_usage_tag_summary() {
 			tr -d ' ' | paste -sd '+' - || true)"
 	fi
 	printf '%s\n' "$summary"
+}
+
+disk_diagnostics_bounded() {
+	local definitions
+	definitions="$(
+		declare -p OUTPUT_DIR HARNESS_TELEMETRY_DIRS SOAK_TMP_ROOT SOAK_RUNNER_ROOT
+		declare -f bounded disk_usage_roots disk_usage_snapshot_data disk_usage_tag_summary disk_guardian_diagnostics
+		declare -f guardian_stamp_health_tag || true
+	)"
+	timeout --signal=TERM --kill-after=1 "$DISK_DIAGNOSTIC_SECONDS" \
+		bash -c "$definitions"$'\n''"$@"' bash "$@"
+}
+
+disk_usage_snapshot() {
+	disk_diagnostics_bounded disk_usage_snapshot_data
+}
+
+disk_guardian_diagnostics() {
+	guardian_stamp_health_tag disk-breach "$1" "$(disk_usage_tag_summary)"
+	disk_usage_snapshot_data >"$OUTPUT_DIR/disk-breach-usage.txt" 2>/dev/null || true
 }
 
 # The floor is only as good as the probe behind it: an OUTPUT_DIR that df
@@ -851,7 +877,16 @@ fi
 # breach it SIGKILLs every node process and container, writes a breach
 # marker, and the iteration loop below fails the soak closed.
 HOST_GUARDIAN_BREACH="$OUTPUT_DIR/host-guardian-breach.txt"
-rm -f "$HOST_GUARDIAN_BREACH"
+if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+	EARLY_EXIT_REASON="host_protection_breach"
+	DEADLINE=0
+	if [ "$FAILURES" -eq 0 ]; then FAILURES=1; fi
+	head -1 "$HOST_GUARDIAN_BREACH" >"$OUTPUT_DIR/protection-breach.txt"
+	printf 'host_protection_breach: recovered guardian record: %s\n' \
+		"$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+	persist_soak_state
+	printf 'The previous guardian breach prevents this segment from starting work.\n'
+fi
 HOST_GUARDIAN_PID=""
 ITERATION_PID=""
 ITERATION_TEE_PID=""
@@ -925,7 +960,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 			# Every remote call is deadline-bounded: this function runs while
 			# the host is under memory pressure, and a hung CLI here must not
 			# stall the guardian whose whole job is reacting fast.
-			tags="$(timeout 15 oci --auth instance_principal compute instance get \
+			tags="$(timeout --foreground 15 oci --auth instance_principal compute instance get \
 				--instance-id "$iid" --query 'data."freeform-tags"' \
 				--output json 2>/dev/null)" || return 0
 			# An OCI freeform tag value holds 256 chars; the attribution detail
@@ -936,7 +971,7 @@ tags = json.load(sys.stdin) or {}
 tags["soak-health"] = sys.argv[1][:256]
 print(json.dumps(tags))
 ' "$state:$(date +%s):avail=${avail}MB${detail:+:$detail}")" || return 0
-			timeout 15 oci --auth instance_principal compute instance update \
+			timeout --foreground 15 oci --auth instance_principal compute instance update \
 				--instance-id "$iid" --freeform-tags "$tags" --force \
 				>/dev/null 2>&1 || true
 		}
@@ -951,33 +986,31 @@ print(json.dumps(tags))
 		sample_n=0
 		while :; do
 			sleep 5
-			# Disk twin of the memory floor below (issue #378): same
-			# 3-consecutive-sample soft floor, same single-sample hard floor
-			# at half, same kill-then-marker order, same durable tag last
-			# words. Killing the nodes on a disk breach stops the writers
-			# while the runner still has bytes left for its own _diag log —
-			# on runs 33254400407/33278321865 those bytes ran out and the
-			# breach became a vanished runner instead of a recorded failure.
 			if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 				disk_mb="$(disk_free_mb)"
+				if [ -z "$disk_mb" ]; then
+					printf 'The disk probe is unavailable during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+					pkill -9 -f '/tmp/rnode' 2>/dev/null || true
+					docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
+					exit 0
+				fi
 				if [ -n "$disk_mb" ]; then
 					if [ "$disk_mb" -ge "$DISK_FREE_FLOOR_MB" ]; then
 						disk_over=0
 					else
 						disk_over=$((disk_over + 1))
 						if [ "$disk_mb" -lt "$disk_hard_floor_mb" ] || [ "$disk_over" -ge 3 ]; then
+							printf 'The disk guardian detected %s MiB below floor %s MiB (hard floor %s MiB, consecutive samples %s). Workload termination is unconfirmed.\n' \
+								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" >"$HOST_GUARDIAN_BREACH"
 							pkill -9 -f '/tmp/rnode' 2>/dev/null || true
 							docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
-							printf 'orchestrator disk guardian: host free disk %sMB < floor %sMB (hard floor %sMB, consecutive %s); killed all node processes and containers to protect the runner\n' \
-								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" >"$HOST_GUARDIAN_BREACH"
 							# Who filled it rides in the tag: on weekend runs
 							# 33939315110, 33978505238 and 34056342543 the VM
 							# was gone ~20s after this stamp and the tag was
 							# the only evidence that survived. The full
 							# snapshot follows for the case where the runner
 							# lives long enough to upload it.
-							guardian_stamp_health_tag disk-breach "$disk_mb" "$(disk_usage_tag_summary)"
-							disk_usage_snapshot >"$OUTPUT_DIR/disk-breach-usage.txt" 2>/dev/null || true
+							disk_diagnostics_bounded disk_guardian_diagnostics "$disk_mb" || true
 							exit 0
 						fi
 					fi
@@ -1163,6 +1196,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_SNAPSHOT_PID=$!
 	GUARDIAN_INTERRUPTED=0
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
+		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian exited during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
 		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 			GUARDIAN_INTERRUPTED=1
 			kill -TERM "$ITERATION_PID" 2>/dev/null || true

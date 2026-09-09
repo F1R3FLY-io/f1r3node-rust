@@ -122,13 +122,11 @@ jq -e '
   and .failures == 0
 ' "$TMP/output/.soak-checkpoint-state.json" >/dev/null
 for _ in $(seq 1 20); do
-	[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
+	[ -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv" ] &&
+		[ -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv" ] &&
+		[ -s "$TMP/output/iteration-00001-docker/node-metrics-timeseries.csv" ] &&
 		grep -q 'test.validator1.*12.*1048576.*2.*2.*7' \
 			"$TMP/output/iteration-00001-docker/node-memory-timeseries.tsv" 2>/dev/null && break
-	sleep 0.25
-done
-for _ in $(seq 1 20); do
-	[ -s "$TMP/output/iteration-00001-docker/resource-percore-timeseries.csv" ] && break
 	sleep 0.25
 done
 test -s "$TMP/output/iteration-00001-docker/resource-timeseries.csv"

@@ -171,3 +171,23 @@ The composed bounded gate passes five positive configurations and five exact neg
 This result does not complete D2 or discharge a claim. The model assumes completing commands and local writes. Active-iteration response, guardian failure, aggregate deadlines, termination, durability, and restart preservation remain pending.
 
 No commit, push, hosted run, or soak followed this cycle.
+
+## D2 emergency cycles B7 through B12
+
+The user requested completion of D2. Six further local cycles started from `ac94c1755` and retained each intermediate correction separately.
+
+The corrections cover active sample loss, record ordering, guardian death, probe timeout, aggregate attribution, and retained-breach restart handling.
+
+Each production regression failed before its formal counterexample. Each formal RED reported the required invariant with exit 12 before the corresponding production correction.
+
+All six corrected local behaviors pass. The [evidence package](../cbc-evidence/soak-d2-emergency-2026-09-09/README.md) retains the source identities, traces, and limitations.
+
+A driver-suite failure exposed a fixture readiness race. The corrected fixture waits for every required telemetry file. Thirty repeated first-scenario checks and the full suite pass.
+
+Two combined verification commands reached tool limits. Separate completed runs supply the accepted results. The retained records do not classify those tool limits as behavioral RED.
+
+The combined bounded gate passes 11 positive configurations and 11 exact negative controls. The classifier covers 77 cases, and routing covers six scenarios.
+
+D2 remains incomplete. Stop and cleanup command bounds, confirmed termination, durable publication, full admission coverage, and cleanup ownership still require work.
+
+A composed emergency deadline and the D3-dependent reserve argument remain open. No claim is discharged. No commit, push, hosted run, or soak followed these cycles.
