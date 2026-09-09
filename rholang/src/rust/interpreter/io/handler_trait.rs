@@ -328,6 +328,56 @@ pub trait FsHandler {
     /// shape (via `reply_is_ok` or similar) to compute the byte /
     /// entry count that drives the supplement weight.
     fn post_reply_supplement(_reply: &[Par]) -> Option<Cost> { None }
+
+    /// For verifying handlers (`VERIFYING = true`): determine the
+    /// caller-supplied ConsensusMode from the raw pre-ack args or
+    /// a context lookup (fs_size reads the fd's shadow).  Called
+    /// by the framework's is_replay branch to decide between the
+    /// Oracular tautological echo path and the Consensus
+    /// re-execute + verify path.
+    ///
+    /// Returns None if cmode can't be determined (e.g., bad cmode
+    /// string on fs_stat, unknown fd on fs_size).  In that case
+    /// the framework takes the Oracular path — matches pre-refactor
+    /// behavior where an unresolved cmode on replay tautologically
+    /// echoed `previous`.
+    ///
+    /// Non-verifying handlers do NOT override this; the framework
+    /// skips the call.
+    fn resolve_replay_cmode<'a>(
+        _ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+    ) -> Pin<Box<dyn Future<Output = Option<ConsensusMode>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
+    /// For verifying handlers that journal to the WAL (fs_stat,
+    /// fs_size, fs_exists, fs_entries, etc.): journal the given
+    /// `reply` Par with the handler's WalOp + derived path.
+    /// Called by the framework at:
+    ///   - Leader path: with `fresh_reply` after dispatch.
+    ///   - Consensus follower verify-Success: with `fresh_reply`.
+    ///   - Consensus follower verify-Failure: with the
+    ///     framework-built `consensus_divergence_reply`.
+    ///   - Oracular follower tautological-echo path: with
+    ///     `previous.first()` (matches pre-refactor structural
+    ///     parity — `journal_state_read` self-guards on Oracular
+    ///     so the call is a WAL no-op).
+    ///
+    /// Default: no-op.  Non-journaling handlers skip.
+    ///
+    /// Handlers use `journal_state_read_via_table` internally.
+    /// Cmode determination is handler-specific: fs_size looks up
+    /// the fd's shadow, fs_stat/fs_exists parse cmode from
+    /// `raw_args[2]`.  On unresolved cmode/path the handler
+    /// returns without journaling.
+    fn journal<'a>(
+        _ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+        _reply: &'a Par,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
 }
 
 // ------------------------------------------------------------------
@@ -395,9 +445,12 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///     fs_lock_range, fs_lock_sequential).  Count = 8.
 ///   - S3.4 (2026-09-09): +2 (fs_entries_stream_open,
 ///     fs_entries_stream_next).  Count = 10.  Stream family complete.
+///   - S3.5 (2026-09-09): +3 (fs_size, fs_stat, fs_exists).
+///     Count = 13.  First verifying handlers; framework extended for
+///     the re-execute + verify_reply_hash_matches_cached path.
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 10;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 13;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -451,43 +504,56 @@ pub async fn dispatch_via_trait<H: FsHandler>(
     // deep copy.
     let ack = args[H::ARITY - 1].clone();
 
-    // Step 4: is_replay short-circuit (non-verifying only in S3.1).
+    let raw_pre_ack: &[Par] = &args[..H::ARITY - 1];
+
+    // Step 4: is_replay short-circuit.
     if is_replay {
-        if H::VERIFYING {
-            // Wave-3 S3.5 lands the verifying-replay dispatch (re-
-            // execute + `verify_reply_hash_matches_cached`).  Until
-            // then, a VERIFYING handler must NOT be registered.  This
-            // is a compile-time discipline: only non-verifying
-            // handlers migrate in S3.1–S3.4.  If this panic fires,
-            // a session skipped ahead.
-            unreachable!(
-                "S3.1 framework does not yet dispatch VERIFYING \
-                 handlers; wave-3-plan.md S3.5 extends this branch.  \
-                 Handler `{}` was registered with VERIFYING=true \
-                 before the framework supports it.",
-                H::NAME
-            );
+        // Verifying-follower cmode dispatch (S3.5+, 2026-09-09).
+        // The framework resolves the handler's effective cmode from
+        // raw args + ctx (per-handler via `resolve_replay_cmode`).
+        // Under Oracular / unresolved cmode we take the tautological
+        // echo path — matches the pre-refactor
+        // `if is_replay && mode != Consensus { echo previous }`
+        // short-circuit.  Under Consensus we fall through to
+        // re-execute + verify below.
+        let verifying_consensus_replay = if H::VERIFYING {
+            let replay_cmode =
+                H::resolve_replay_cmode(SyscallCtx::new(fs, &ack), raw_pre_ack).await;
+            replay_cmode == Some(ConsensusMode::Consensus)
+        } else {
+            false
+        };
+
+        if !verifying_consensus_replay {
+            // Non-verifying replay OR verifying Oracular/unresolved
+            // replay.  Run the optional side-effect hook, then
+            // tautologically echo previous.
+            H::on_replay_side_effect(SyscallCtx::new(fs, &ack), raw_pre_ack, &previous).await;
+            // For verifying handlers on the Oracular tautological
+            // path, journal `previous.first()` — matches pre-refactor
+            // structural parity.  journal_state_read self-guards on
+            // Consensus so this is a WAL no-op for Oracular caps.
+            if H::VERIFYING {
+                if let Some(reply_par) = previous.first() {
+                    H::journal(SyscallCtx::new(fs, &ack), raw_pre_ack, reply_par).await;
+                }
+            }
+            // Post-reply supplement charge based on `previous`'s
+            // shape (length-parameterized non-verifying replays like
+            // fs_entries_stream_next use this).
+            if let Some(supp) = H::post_reply_supplement(&previous) {
+                fs.metering.reserve_incremental_primitive(supp)?;
+            }
+            produce(&previous, &ack).await?;
+            return Ok(previous);
         }
-        // Non-verifying replay: run the optional side-effect hook
-        // (fs_close's fd release, fs_entries_stream_next's WAL
-        // journaling, etc.).  See handlers.rs § "Each handler"
-        // step 5.  Hook gets both raw pre-ack args and `previous`
-        // via ctx-bound references so it can journal.
-        H::on_replay_side_effect(SyscallCtx::new(fs, &ack), &args[..H::ARITY - 1], &previous).await;
-        // Post-reply supplement charge based on `previous`'s shape.
-        // Length-parameterized non-verifying replays (e.g.,
-        // fs_entries_stream_next) use this to charge n=1 or n=0.
-        if let Some(supp) = H::post_reply_supplement(&previous) {
-            fs.metering.reserve_incremental_primitive(supp)?;
-        }
-        produce(&previous, &ack).await?;
-        return Ok(previous);
+        // Verifying + Consensus follower — fall through to
+        // re-execute + verify path.
     }
 
-    // Step 5: content parse.  Content-level type mismatches (e.g.,
-    // integer slot got a string Par) produce a normal reply, not an
-    // `illegal_argument_error`.
-    let parsed = match H::parse_content(&args[..H::ARITY - 1]) {
+    // Step 5: content parse.  Content-level type mismatches produce
+    // a normal reply, not an `illegal_argument_error`.
+    let parsed = match H::parse_content(raw_pre_ack) {
         Ok(a) => a,
         Err(boxed_reply) => {
             let out = vec![(*boxed_reply).into_par()];
@@ -496,22 +562,51 @@ pub async fn dispatch_via_trait<H: FsHandler>(
         }
     };
 
-    // Step 6: dispatch.
-    let reply = H::dispatch(SyscallCtx::new(fs, &ack), parsed).await;
-    let out = vec![reply.into_par()];
+    // Step 6: dispatch — runs on the leader path AND on the
+    // Consensus-follower verifying-replay path (that's the point of
+    // "re-execute + verify").
+    let fresh_reply = H::dispatch(SyscallCtx::new(fs, &ack), parsed).await;
+    let fresh_par = fresh_reply.into_par();
 
-    // Step 7: post-reply cost supplement.  Framework charges
-    // `reserve_incremental_primitive` after dispatch and BEFORE
-    // produce, so a budget-exceeded supplement fails the deploy
-    // without publishing the reply to the caller — same pre-refactor
-    // ordering (see e.g. fs_entries_stream_next's inline sequence).
-    if let Some(supp) = H::post_reply_supplement(&out) {
-        fs.metering.reserve_incremental_primitive(supp)?;
+    // Step 7: verify (Consensus follower only) + journal + produce.
+    if is_replay {
+        // Consensus follower verify — compare fresh reply's
+        // stable_hash against leader's cached reply hash extracted
+        // from `previous`.  See verify.rs::verify_reply_hash_matches_
+        // cached + auto-memory `fileio_wal_replay_verification_gap.md`.
+        // D1 = Option A: divergent DEPLOY fails; block still
+        // proceeds.
+        match super::verify::verify_reply_hash_matches_cached(&fresh_par, &previous) {
+            Ok(()) => {
+                H::journal(SyscallCtx::new(fs, &ack), raw_pre_ack, &fresh_par).await;
+                let out = vec![fresh_par];
+                if let Some(supp) = H::post_reply_supplement(&out) {
+                    fs.metering.reserve_incremental_primitive(supp)?;
+                }
+                produce(&out, &ack).await?;
+                Ok(out)
+            }
+            Err(reason) => {
+                let divergence = super::handlers::consensus_divergence_reply(H::NAME, reason);
+                H::journal(SyscallCtx::new(fs, &ack), raw_pre_ack, &divergence).await;
+                let out = vec![divergence];
+                if let Some(supp) = H::post_reply_supplement(&out) {
+                    fs.metering.reserve_incremental_primitive(supp)?;
+                }
+                produce(&out, &ack).await?;
+                Ok(out)
+            }
+        }
+    } else {
+        // Leader path — journal fresh_par, produce it.
+        H::journal(SyscallCtx::new(fs, &ack), raw_pre_ack, &fresh_par).await;
+        let out = vec![fresh_par];
+        if let Some(supp) = H::post_reply_supplement(&out) {
+            fs.metering.reserve_incremental_primitive(supp)?;
+        }
+        produce(&out, &ack).await?;
+        Ok(out)
     }
-
-    // Step 8: produce reply to ack.
-    produce(&out, &ack).await?;
-    Ok(out)
 }
 
 // ------------------------------------------------------------------
@@ -571,6 +666,9 @@ mod tests {
             "fs_lock_sequential",      // S3.3 (2026-09-08)
             "fs_entries_stream_open",  // S3.4 (2026-09-09)
             "fs_entries_stream_next",  // S3.4 (2026-09-09)
+            "fs_size",                 // S3.5 (2026-09-09)
+            "fs_stat",                 // S3.5 (2026-09-09)
+            "fs_exists",               // S3.5 (2026-09-09)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);

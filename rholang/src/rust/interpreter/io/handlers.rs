@@ -193,7 +193,10 @@ where
 /// `err_with_manifest` for DD-RemoveDirReplyShape stay inline —
 /// their reply shape carries the pre-divergence deletion count /
 /// manifest that a caller downstream might inspect.
-fn consensus_divergence_reply(handler_name: &str, reason: impl std::fmt::Display) -> Par {
+pub(super) fn consensus_divergence_reply(
+    handler_name: &str,
+    reason: impl std::fmt::Display,
+) -> Par {
     err(
         FSERR_CONSENSUS_DIVERGENCE,
         format!("{handler_name} follower re-execute diverges from leader: {reason}"),
@@ -2577,119 +2580,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_size weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering.reserve_primitive(costs::fs_size_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_size"));
-        };
-        let [fd_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_size"));
-        };
-        // M-5: look up FileHandle cmode + canon_path so both
-        // is_replay and leader paths can journal symmetrically.
-        // If the fd isn't valid at lookup time, the syscall
-        // will produce FSERR_CLOSED and journal-cmode is None
-        // (no journaling happens).
-        let (jmode, jpath): (Option<ConsensusMode>, Option<PathBuf>) =
-            match RhoNumber::unapply(fd_par) {
-                Some(fd) => {
-                    let meta = self
-                        .handles
-                        .with_mut(fd as u64, |h| (h.cmode, h.canon_path.clone()))
-                        .await;
-                    match meta {
-                        Some((c, p)) => (Some(c), Some(p)),
-                        None => (None, None),
-                    }
-                }
-                None => (None, None),
-            };
-        // Phase 2 (Consensus re-execute + verify, 2026-09-01):
-        // Oracular follower unchanged from M-5's Phase-0 behavior —
-        // consumes the leader's cached reply, since Oracle-mode state
-        // isn't reproducible on the follower's own fs.  Consensus
-        // follower now re-executes fstat against its own shadow fd
-        // and verifies the fresh reply's stable_hash matches the
-        // leader's cached reply hash extracted from `previous`.  See
-        // auto-memory `fileio_wal_replay_verification_gap.md` and
-        // fs_stat's Phase-1 refactor above for the design pattern.
-        if is_replay && jmode != Some(ConsensusMode::Consensus) {
-            // Oracular follower (or unresolved cmode — the fd shadow
-            // wasn't installed, matches pre-Phase-2 tautological path).
-            if let (Some(mode), Some(p)) = (jmode, jpath.clone()) {
-                if let Some(reply_par) = previous.first() {
-                    self.journal_state_read(mode, WalOp::Size, p, reply_par, ack, None);
-                }
-            }
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // Fresh syscall reply — leader (always) and Consensus follower.
-        // Pre-Phase-2 the leader path used an early-return on
-        // raw_fd = None (before journal); folded into the fresh-
-        // reply match arm below.  The pre-Phase-2 non-journal
-        // behavior is preserved by the (jmode, jpath) guard on
-        // `journal_state_read` — a missing shadow-fd yields
-        // jmode = None so the journal call is a no-op regardless.
-        let fresh_reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) => match self.handles.raw_fd(fd as u64).await {
-                Some(file_arc) => {
-                    let r = spawn_blocking(move || {
-                        use std::os::fd::AsRawFd;
-                        let raw_fd = file_arc.as_raw_fd();
-                        unsafe {
-                            let mut sb: libc::stat = std::mem::zeroed();
-                            if libc::fstat(raw_fd, &mut sb) < 0 {
-                                Err(std::io::Error::last_os_error())
-                            } else {
-                                Ok(sb.st_size as u64)
-                            }
-                        }
-                    })
-                    .await;
-                    match r {
-                        Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
-                        Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
-                        Ok(Ok(n)) => ok_u64(n),
-                    }
-                }
-                None => err(FSERR_CLOSED, format!("unknown fd {fd}")),
-            },
-            _ => err(FSERR_BAD_ARG, "expected u64"),
-        };
-        if is_replay {
-            // Consensus follower — Phase 2 re-execute + verify.
-            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
-                Ok(()) => {
-                    if let (Some(mode), Some(p)) = (jmode, jpath) {
-                        self.journal_state_read(mode, WalOp::Size, p, &fresh_reply, ack, None);
-                    }
-                    let out = vec![fresh_reply];
-                    produce(&out, ack).await?;
-                    Ok(out)
-                }
-                Err(reason) => {
-                    let divergence_reply = consensus_divergence_reply("fs_size", reason);
-                    if let (Some(mode), Some(p)) = (jmode, jpath) {
-                        self.journal_state_read(mode, WalOp::Size, p, &divergence_reply, ack, None);
-                    }
-                    let out = vec![divergence_reply];
-                    produce(&out, ack).await?;
-                    Ok(out)
-                }
-            }
-        } else {
-            // Leader path — journal fresh reply, produce it.
-            if let (Some(mode), Some(p)) = (jmode, jpath) {
-                self.journal_state_read(mode, WalOp::Size, p, &fresh_reply, ack, None);
-            }
-            let out = vec![fresh_reply];
-            produce(&out, ack).await?;
-            Ok(out)
-        }
+        dispatch_via_trait::<FsSizeHandler>(self, contract_args).await
     }
 
     // -------------------------------------------------------------------
@@ -2855,148 +2746,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_stat weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering.reserve_primitive(costs::fs_stat_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_stat"));
-        };
-        // Slice 26: `(root, rel, cmode, ack)`.  `cmode` is
-        // `"oracular"` / `"consensus"` and controls whether the
-        // record omits host-transient fields.  On an unrecognized
-        // cmode string we fall back to `self.mode` (Oracular by
-        // default) — this preserves behavior for any caller that
-        // hasn't been updated yet.
-        let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_stat"));
-        };
-        // M-5 fix (2026-08-06): resolve cmode BEFORE the is_replay
-        // short-circuit so both leader + follower can journal
-        // symmetrically.  A bad cmode still short-circuits with
-        // FSERR_BAD_ARG the same way as before (that path
-        // doesn't journal — it's a parse error, not a filesystem
-        // observation).
-        let mode = match resolve_cmode(cmode_par) {
-            Some(m) => m,
-            None => {
-                let out = vec![err(
-                    FSERR_BAD_ARG,
-                    "cmode must be String \"oracular\" or \"consensus\"",
-                )];
-                produce(&out, ack).await?;
-                return Ok(out);
-            }
-        };
-        // Precompute journal path (used by both branches).
-        let journal_path: Option<PathBuf> =
-            match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-                (Some(root), Some(rel)) => {
-                    let mut p = PathBuf::from(root);
-                    if !rel.is_empty() {
-                        p.push(&rel);
-                    }
-                    Some(p)
-                }
-                _ => None,
-            };
-        // Phase 1 (Consensus re-execute + verify, 2026-09-01):
-        // Oracular follower is unchanged from M-5's Phase-0 behavior
-        // — it consumes the leader's cached reply, since Oracle-mode
-        // state isn't reproducible on the follower's own fs.  The
-        // Consensus follower now re-executes the syscall against its
-        // own fs and verifies the fresh reply's stable_hash matches
-        // the leader's cached reply hash extracted from `previous`.
-        // See auto-memory `fileio_wal_replay_verification_gap.md`.
-        if is_replay && mode != ConsensusMode::Consensus {
-            // Oracular follower — Phase-0 tautological branch.
-            // `journal_state_read` self-guards on Consensus so the
-            // call here is a WAL no-op today, kept for structural
-            // parity with the Consensus branch's Success path.
-            if let Some(p) = journal_path.clone() {
-                if let Some(reply_par) = previous.first() {
-                    self.journal_state_read(mode, WalOp::Stat, p, reply_par, ack, None);
-                }
-            }
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // Fresh syscall reply — required by BOTH the leader (always)
-        // and the Consensus follower (Phase 1 re-execute + verify).
-        // Under Shape A, `resolve_or_identity` remaps a Consensus
-        // bundle root (e.g., `/@bundle/target`) to this validator's
-        // on-disk subdir before descent; unregistered roots fall
-        // through to identity resolution (Oracular / raw absolute).
-        let fresh_reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-            (Some(root), Some(rel)) => {
-                let leaf_name = leaf_of(&rel);
-                let root_pb = PathBuf::from(root);
-                let (root_pb, expected_root_id) =
-                    self.handles.root_registry.resolve_or_identity(&root_pb);
-                spawn_blocking_par(move || -> Par {
-                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
-                        Ok(p) => p,
-                        Err(qe) => {
-                            let (code, msg) = quarantine_err_reply(&qe);
-                            return err(code, msg);
-                        }
-                    };
-                    match fstatat_meta(&parent) {
-                        Ok(m) => ok_par(stat_record(&leaf_name, &m, mode)),
-                        Err(e) => err(io_err_code(&e), io_msg_scrub(&e)),
-                    }
-                })
-                .await
-            }
-            _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
-        };
-        if is_replay {
-            // Consensus follower — Phase 1 re-execute + verify.
-            // `verify_reply_hash_matches_cached` compares
-            // stable_hash(fresh_reply) against
-            // stable_hash(previous.first()); RSpace guarantees
-            // `previous.first()` is the leader's play-time reply
-            // verbatim, so its hash equals the `PayloadRef::Hash`
-            // the leader's `journal_state_read` wrote at play time.
-            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
-                Ok(()) => {
-                    // Match — journal the FRESH reply.  Its hash is
-                    // byte-identical to the leader's WAL entry hash,
-                    // preserving the leader/follower WAL byte-identity
-                    // property post-verification (no longer tautological).
-                    if let Some(p) = journal_path {
-                        self.journal_state_read(mode, WalOp::Stat, p, &fresh_reply, ack, None);
-                    }
-                    let out = vec![fresh_reply];
-                    produce(&out, ack).await?;
-                    Ok(out)
-                }
-                Err(reason) => {
-                    // Divergence (D1 = Option A per
-                    // `fileio_wal_replay_verification_gap.md`):
-                    // divergent DEPLOY fails; block still proceeds.
-                    // `journal_state_read` auto-derives the WAL entry's
-                    // outcome to `Failure { code: FSERR_CODE_CONSENSUS_
-                    // DIVERGENCE }` from the reply's error slot.
-                    let divergence_reply = consensus_divergence_reply("fs_stat", reason);
-                    if let Some(p) = journal_path {
-                        self.journal_state_read(mode, WalOp::Stat, p, &divergence_reply, ack, None);
-                    }
-                    let out = vec![divergence_reply];
-                    produce(&out, ack).await?;
-                    Ok(out)
-                }
-            }
-        } else {
-            // Leader path — journal fresh reply, produce it.
-            if let Some(p) = journal_path {
-                self.journal_state_read(mode, WalOp::Stat, p, &fresh_reply, ack, None);
-            }
-            let out = vec![fresh_reply];
-            produce(&out, ack).await?;
-            Ok(out)
-        }
+        dispatch_via_trait::<FsStatHandler>(self, contract_args).await
     }
 
     // -------------------------------------------------------------------
@@ -3013,135 +2763,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_exists weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering.reserve_primitive(costs::fs_exists_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_exists"));
-        };
-        // Consensus ban-lift (2026-09-04): `(root, rel, cmode, ack)`.
-        let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_exists"));
-        };
-        // Resolve cmode BEFORE the is_replay short-circuit so both
-        // leader + follower can journal symmetrically.  Same pattern
-        // as fs_stat (M-5 fix, 2026-08-06).
-        let mode = match resolve_cmode(cmode_par) {
-            Some(m) => m,
-            None => {
-                let out = vec![err(
-                    FSERR_BAD_ARG,
-                    "cmode must be String \"oracular\" or \"consensus\"",
-                )];
-                produce(&out, ack).await?;
-                return Ok(out);
-            }
-        };
-        // Precompute journal path (used by both branches).
-        let journal_path: Option<PathBuf> =
-            match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-                (Some(root), Some(rel)) => {
-                    let mut p = PathBuf::from(root);
-                    if !rel.is_empty() {
-                        p.push(&rel);
-                    }
-                    Some(p)
-                }
-                _ => None,
-            };
-        // Oracular follower: Phase-0 tautological — per-node local FS
-        // state isn't reproducible on the follower's own fs.  Same
-        // shape as fs_stat's Oracular arm.  `journal_state_read`
-        // self-guards on Consensus so the call is a WAL no-op today,
-        // kept for structural parity with the Consensus branch's
-        // Success path.
-        if is_replay && mode != ConsensusMode::Consensus {
-            if let Some(p) = journal_path.clone() {
-                if let Some(reply_par) = previous.first() {
-                    self.journal_state_read(mode, WalOp::Exists, p, reply_par, ack, None);
-                }
-            }
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // Fresh syscall reply — required by BOTH the leader (always)
-        // and the Consensus follower (Phase-5 re-execute + verify).
-        // Semantics preserved from the pre-ban-lift shape:
-        //   - Ok descent + fstatat succeeds        → ok_bool(true)
-        //   - Ok descent + fstatat fails           → ok_bool(false)
-        //   - Descent IoError (not-found / EACCES) → ok_bool(false)
-        //   - Descent quarantine failure           → err(code, msg)
-        //   - Non-String args                      → err(BAD_ARG, ...)
-        let fresh_reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-            (Some(root), Some(rel)) => {
-                let root_pb = PathBuf::from(root);
-                let (root_pb, expected_root_id) =
-                    self.handles.root_registry.resolve_or_identity(&root_pb);
-                spawn_blocking_par(move || -> Par {
-                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
-                        Ok(p) => p,
-                        Err(qe) => {
-                            use super::path::QuarantineError::*;
-                            return match qe {
-                                EscapesRoot | SymlinkComponent | RootIdentityChanged => {
-                                    let (c, m) = quarantine_err_reply(&qe);
-                                    err(c, m)
-                                }
-                                Empty | RootSelf => {
-                                    let (c, m) = quarantine_err_reply(&qe);
-                                    err(c, m)
-                                }
-                                IoError(_, _) => ok_bool(false),
-                            };
-                        }
-                    };
-                    let ok = fstatat_meta(&parent).is_ok();
-                    ok_bool(ok)
-                })
-                .await
-            }
-            _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
-        };
-        if is_replay {
-            // Consensus follower — Phase-5 re-execute + verify.
-            // Same shape as fs_stat's Consensus replay arm.
-            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
-                Ok(()) => {
-                    if let Some(p) = journal_path {
-                        self.journal_state_read(mode, WalOp::Exists, p, &fresh_reply, ack, None);
-                    }
-                    let out = vec![fresh_reply];
-                    produce(&out, ack).await?;
-                    Ok(out)
-                }
-                Err(reason) => {
-                    let divergence_reply = consensus_divergence_reply("fs_exists", reason);
-                    if let Some(p) = journal_path {
-                        self.journal_state_read(
-                            mode,
-                            WalOp::Exists,
-                            p,
-                            &divergence_reply,
-                            ack,
-                            None,
-                        );
-                    }
-                    let out = vec![divergence_reply];
-                    produce(&out, ack).await?;
-                    Ok(out)
-                }
-            }
-        } else {
-            // Leader path — journal fresh reply, produce it.
-            if let Some(p) = journal_path {
-                self.journal_state_read(mode, WalOp::Exists, p, &fresh_reply, ack, None);
-            }
-            let out = vec![fresh_reply];
-            produce(&out, ack).await?;
-            Ok(out)
-        }
+        dispatch_via_trait::<FsExistsHandler>(self, contract_args).await
     }
 
     // -------------------------------------------------------------------
@@ -6103,6 +5725,418 @@ static FS_ENTRIES_STREAM_NEXT_ENTRY: FsHandlerEntry = FsHandlerEntry {
             fs, args,
         ))
     },
+};
+
+// -------------------------------------------------------------------
+// fs_size — (fd) -> [true, nBytes]  (S3.5, 2026-09-09)
+//
+// First verifying handler.  Cmode is fd-based (looked up from the
+// file handle table's shadow).  Consensus follower re-executes fstat
+// and verifies fresh reply's hash against leader's cached hash.
+// Journal keyed on the fd's shadow (cmode, canon_path).
+// -------------------------------------------------------------------
+
+pub struct FsSizeHandler;
+
+pub struct FsSizeArgs {
+    fd: u64,
+}
+
+impl FsHandler for FsSizeHandler {
+    const NAME: &'static str = "fs_size";
+    const ARITY: usize = 2; // (fd, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsSizeArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsSizeArgs, Box<HandlerReply>> {
+        let [fd_par] = args else {
+            return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected u64"));
+        };
+        let fd = RhoNumber::unapply(fd_par)
+            .ok_or_else(|| HandlerReply::boxed_err(FSERR_BAD_ARG, "expected u64"))?;
+        Ok(FsSizeArgs { fd: fd as u64 })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_size_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsSizeArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            match ctx.handles.raw_fd(args.fd).await {
+                Some(file_arc) => {
+                    let r = spawn_blocking(move || {
+                        use std::os::fd::AsRawFd;
+                        let raw_fd = file_arc.as_raw_fd();
+                        unsafe {
+                            let mut sb: libc::stat = std::mem::zeroed();
+                            if libc::fstat(raw_fd, &mut sb) < 0 {
+                                Err(std::io::Error::last_os_error())
+                            } else {
+                                Ok(sb.st_size as u64)
+                            }
+                        }
+                    })
+                    .await;
+                    match r {
+                        Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                        Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
+                        Ok(Ok(n)) => HandlerReply::ok(ok_u64(n)),
+                    }
+                }
+                None => HandlerReply::err(FSERR_CLOSED, format!("unknown fd {}", args.fd)),
+            }
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        // fd-based cmode: read the fd's shadow.  Matches pre-refactor
+        // `handles.with_mut(fd, |h| h.cmode)`.  A missing shadow or
+        // bad fd_par produces None → framework Oracular tautological
+        // path.
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return None;
+            };
+            let fd = RhoNumber::unapply(fd_par)?;
+            ctx.handles.with_mut(fd as u64, |h| h.cmode).await
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        reply: &'a Par,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // Look up (cmode, canon_path) from the fd's shadow.  If the
+        // fd is unknown, no journaling.
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return;
+            };
+            let Some(fd) = RhoNumber::unapply(fd_par) else {
+                return;
+            };
+            if let Some((cmode, path)) = ctx
+                .handles
+                .with_mut(fd as u64, |h| (h.cmode, h.canon_path.clone()))
+                .await
+            {
+                journal_state_read_via_table(
+                    ctx.handles,
+                    cmode,
+                    WalOp::Size,
+                    path,
+                    reply,
+                    ctx.ack,
+                    None,
+                );
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_SIZE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsSizeHandler as FsHandler>::NAME,
+    arity: <FsSizeHandler as FsHandler>::ARITY,
+    verifying: <FsSizeHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsSizeHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_stat — (root, rel, cmode) -> [true, record]  (S3.5, 2026-09-09)
+//
+// Verifying observation.  Cmode is arg-based (raw_args[2]).
+// Consensus follower re-executes fstatat + verifies.  Journal
+// keyed on cmode + PathBuf(root).join(rel).
+// -------------------------------------------------------------------
+
+pub struct FsStatHandler;
+
+pub struct FsStatArgs {
+    root: String,
+    rel: String,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsStatHandler {
+    const NAME: &'static str = "fs_stat";
+    const ARITY: usize = 4; // (root, rel, cmode, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsStatArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsStatArgs, Box<HandlerReply>> {
+        let [root_par, rel_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, String)",
+            ));
+        };
+        // Cmode validation first — matches pre-refactor's specific
+        // "cmode must be String \"oracular\" or \"consensus\"" reply.
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(r), Some(l)) => (r, l),
+            _ => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "expected (String, String, String)",
+                ));
+            }
+        };
+        Ok(FsStatArgs { root, rel, cmode })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_stat_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsStatArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let leaf_name = leaf_of(&args.rel);
+            let root_pb = PathBuf::from(&args.root);
+            let (root_pb, expected_root_id) =
+                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let rel = args.rel;
+            let cmode = args.cmode;
+            let par = spawn_blocking_par(move || -> Par {
+                let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
+                    Ok(p) => p,
+                    Err(qe) => {
+                        let (code, msg) = quarantine_err_reply(&qe);
+                        return err(code, msg);
+                    }
+                };
+                match fstatat_meta(&parent) {
+                    Ok(m) => ok_par(stat_record(&leaf_name, &m, cmode)),
+                    Err(e) => err(io_err_code(&e), io_msg_scrub(&e)),
+                }
+            })
+            .await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        _ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        // Arg-based cmode: raw_args[2] is `cmode_par`.
+        Box::pin(async move {
+            let [_, _, cmode_par] = raw_args else {
+                return None;
+            };
+            resolve_cmode(cmode_par)
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        reply: &'a Par,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let [root_par, rel_par, cmode_par] = raw_args else {
+                return;
+            };
+            let Some(cmode) = resolve_cmode(cmode_par) else {
+                return;
+            };
+            let (Some(root), Some(rel)) =
+                (RhoString::unapply(root_par), RhoString::unapply(rel_par))
+            else {
+                return;
+            };
+            let mut path = PathBuf::from(root);
+            if !rel.is_empty() {
+                path.push(&rel);
+            }
+            journal_state_read_via_table(
+                ctx.handles,
+                cmode,
+                WalOp::Stat,
+                path,
+                reply,
+                ctx.ack,
+                None,
+            );
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_STAT_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsStatHandler as FsHandler>::NAME,
+    arity: <FsStatHandler as FsHandler>::ARITY,
+    verifying: <FsStatHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsStatHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_exists — (root, rel, cmode) -> [true, Bool]  (S3.5, 2026-09-09)
+//
+// Verifying observation.  Same shape as fs_stat — arg-based cmode,
+// journal keyed on cmode + path.  Distinguishes descent-quarantine
+// vs descent-IoError: quarantine surfaces `err(code, msg)`;
+// IoError yields `ok_bool(false)`.
+// -------------------------------------------------------------------
+
+pub struct FsExistsHandler;
+
+pub struct FsExistsArgs {
+    root: String,
+    rel: String,
+    // cmode not stored in Args — dispatch doesn't use it (fstatat's
+    // ok/err drives ok_bool).  Journal + replay_cmode re-resolve
+    // from raw_args.
+}
+
+impl FsHandler for FsExistsHandler {
+    const NAME: &'static str = "fs_exists";
+    const ARITY: usize = 4; // (root, rel, cmode, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsExistsArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsExistsArgs, Box<HandlerReply>> {
+        let [root_par, rel_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, String)",
+            ));
+        };
+        if resolve_cmode(cmode_par).is_none() {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "cmode must be String \"oracular\" or \"consensus\"",
+            ));
+        }
+        let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(r), Some(l)) => (r, l),
+            _ => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "expected (String, String, String)",
+                ));
+            }
+        };
+        Ok(FsExistsArgs { root, rel })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_exists_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsExistsArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let root_pb = PathBuf::from(&args.root);
+            let (root_pb, expected_root_id) =
+                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let rel = args.rel;
+            let par = spawn_blocking_par(move || -> Par {
+                let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
+                    Ok(p) => p,
+                    Err(qe) => {
+                        use super::path::QuarantineError::*;
+                        return match qe {
+                            EscapesRoot | SymlinkComponent | RootIdentityChanged => {
+                                let (c, m) = quarantine_err_reply(&qe);
+                                err(c, m)
+                            }
+                            Empty | RootSelf => {
+                                let (c, m) = quarantine_err_reply(&qe);
+                                err(c, m)
+                            }
+                            IoError(_, _) => ok_bool(false),
+                        };
+                    }
+                };
+                let ok = fstatat_meta(&parent).is_ok();
+                ok_bool(ok)
+            })
+            .await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        _ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [_, _, cmode_par] = raw_args else {
+                return None;
+            };
+            resolve_cmode(cmode_par)
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        reply: &'a Par,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let [root_par, rel_par, cmode_par] = raw_args else {
+                return;
+            };
+            let Some(cmode) = resolve_cmode(cmode_par) else {
+                return;
+            };
+            let (Some(root), Some(rel)) =
+                (RhoString::unapply(root_par), RhoString::unapply(rel_par))
+            else {
+                return;
+            };
+            let mut path = PathBuf::from(root);
+            if !rel.is_empty() {
+                path.push(&rel);
+            }
+            journal_state_read_via_table(
+                ctx.handles,
+                cmode,
+                WalOp::Exists,
+                path,
+                reply,
+                ctx.ack,
+                None,
+            );
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_EXISTS_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsExistsHandler as FsHandler>::NAME,
+    arity: <FsExistsHandler as FsHandler>::ARITY,
+    verifying: <FsExistsHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsExistsHandler>(fs, args)),
 };
 
 // ---------------------------------------------------------------------

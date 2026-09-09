@@ -727,6 +727,27 @@ fn method_body<'a>(src: &'a str, method_signature_prefix: &str) -> Option<&'a st
     Some(&after[..end])
 }
 
+/// Wave-3 helper: inverse of `to_camel_case_handler` — convert
+/// `FsFlushHandler` → `fs_flush`.  Used by
+/// `handlers_top_comment_phase5_verifying_count_matches_actual`
+/// to key the verifying-handler set by snake_case handler name.
+fn camel_handler_to_snake(camel: &str) -> String {
+    // Strip the `Handler` suffix if present.
+    let core = camel.strip_suffix("Handler").unwrap_or(camel);
+    let mut out = String::with_capacity(core.len() + 4);
+    for (i, c) in core.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Wave-3 helper: convert `fs_flush` → `FsFlushHandler`, etc.
 /// Used by `every_fs_handler_charges_its_cost_helper` to locate
 /// the trait-impl block for migrated handlers.
@@ -904,19 +925,23 @@ fn handlers_top_comment_count_matches_actual_handlers() {
 /// count drifted silently when fs_exists's Consensus ban was lifted.
 ///
 /// Count = unique handler fns whose body contains
-/// `match verify_reply_hash_matches_cached`.  `fs_remove_dir` has
-/// TWO verify sites (recursive + non-recursive branches) but counts
-/// once because it's one handler.
+/// `match verify_reply_hash_matches_cached`, plus any migrated
+/// handler (`impl FsHandler for FsXHandler`) that sets
+/// `const VERIFYING: bool = true`.  Wave-3 S3.5 (2026-09-09):
+/// migrated verifying handlers move the verify_reply_hash_matches_
+/// cached call from their inline body into the framework's
+/// `dispatch_via_trait`, so the pin now scans both surfaces.
+///
+/// `fs_remove_dir` has TWO verify sites (recursive + non-recursive
+/// branches) but counts once because it's one handler.
 #[test]
 fn handlers_top_comment_phase5_verifying_count_matches_actual() {
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
 
-    // Extract the set of handler fns whose body region contains
-    // a `match verify_reply_hash_matches_cached` call.  Body region
-    // = from `pub async fn fs_X(` to the next `pub async fn` OR
-    // the end of the impl block.
+    // Pass 1: pre-wave-3 style — scan `pub async fn fs_X` bodies
+    // for the inline `match verify_reply_hash_matches_cached`.
     let mut current_fn: Option<&str> = None;
-    let mut verifying: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut verifying: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for line in src.lines() {
         if let Some(rest) = line.strip_prefix("    pub async fn ") {
             if let Some((name, _)) = rest.split_once('(') {
@@ -925,8 +950,32 @@ fn handlers_top_comment_phase5_verifying_count_matches_actual() {
         }
         if line.contains("match verify_reply_hash_matches_cached") {
             if let Some(name) = current_fn {
-                verifying.insert(name);
+                verifying.insert(name.to_string());
             }
+        }
+    }
+
+    // Pass 2: wave-3 style — scan `impl FsHandler for FsXHandler`
+    // blocks with `const VERIFYING: bool = true`.  Handler struct
+    // `FsXHandler` maps back to `fs_x` (snake_case).
+    let mut cursor = 0usize;
+    while let Some(rel) = src[cursor..].find("impl FsHandler for Fs") {
+        let abs = cursor + rel;
+        let after = &src[abs..];
+        // Handler name: `impl FsHandler for FsXYHandler {` → "fs_x_y".
+        // Extract token between "for " and " {".
+        let struct_tok = after
+            .split_once("for ")
+            .and_then(|(_, rest)| rest.split_once(' '))
+            .map(|(s, _)| s)
+            .unwrap_or("");
+        cursor = abs + "impl FsHandler for ".len();
+        let name_snake = camel_handler_to_snake(struct_tok);
+        // Scan the trait-impl block for `const VERIFYING: bool = true`.
+        let end = after.find("\n}\n").map(|e| e + 3).unwrap_or(after.len());
+        let block = &after[..end];
+        if block.contains("const VERIFYING: bool = true") {
+            verifying.insert(name_snake);
         }
     }
 
