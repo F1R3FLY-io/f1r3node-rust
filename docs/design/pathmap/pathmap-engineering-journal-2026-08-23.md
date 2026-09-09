@@ -7626,6 +7626,106 @@ every fault transition or total retained-memory slope. Saved-stamp and valid
 handle premises remain invariants of the forthcoming caller. No consensus format,
 PathMap dependency or ACT/LMDB comparison result changes here.
 
+### J-109 — 2026-09-09: focused persistent traversal activated with exact historical controls
+
+**IMPLEMENTATION / DECISION.** The production `CanonicalPathReducer` now uses
+immutable linked owners, cached absolute boundaries and a fixed-size historical
+focus instead of walking and rebuilding the complete Region ancestry on every
+byte. `CanonicalPathTopologyAdmission` retains its existing API and now uses this
+implementation. The eager reducer and control adapter were moved under the
+existing `tests/support/canonical_frame_storage.rs`; the old baseline and
+representation-specific fault test still execute that explicit eager reference.
+No decoded key list, `Vec<Par>`, element sort, PathMap fork or new dependency was
+introduced. This is a canonical-byte admission change, not an ACT storage format
+or matching/unification algorithm change.
+
+**ALGORITHM / DERIVED.** For an ordinary edge, append its located byte, advance
+the focused grammar frame, consult cached owner endpoints and complete only due
+owners. Publication captures newly opened Region owners without modifying old
+frames. On refusal, select the pre-step graph at its own stamp and overlay the
+exact root error; retain current bytes and already produced effects. Public dead
+observations remain hidden, but private obligation preflight follows the selected
+physical terminal. Rejection replaces only the root error without frame allocation.
+Private resolution of a dead checkpoint materializes fresh Region cells at its
+saved stamp and calls the shared resolver using current bytes. The global
+obligation clock is never restored with a historical checkpoint.
+
+The implementation reuses the shared byte grammar and completion callbacks.
+The existing PFO/PFR, checked owner projection, selected-fault and state-threaded
+completion proofs precede this implementation. The formal README maps their
+invariants to six added executable tests; this is not a new claim of complete
+arbitrary-input Rust/parser equivalence. A read-only plan review independently
+checked selection, alias safety, private preflight, completion effects and the
+grammar-reachable shallow pending check before cutover.
+
+**MEASURED CORRECTNESS.** The final full models-library run passed **400 tests**,
+zero failures and zero ignores, in 52.79 s of test execution. Its compile-inclusive
+systemd service took 86.098 s and reported **1.4 GiB** peak memory and zero swap.
+Caps were High 4 GiB / Max 6 GiB / CPU 400%, four build jobs and four test threads;
+seed `41315976`. An earlier post-cutover run passed 399 tests before the explicit
+topology adapter differential was added. These durations are correctness-run
+observations, not benchmark estimates.
+The final combined gate also passed 160 closed RPB3 reports, all three kernel
+checks and 97 selected release tests, including all 19 frame-storage tests,
+with zero failures or ignores. Formal subprocesses used High 1 GiB / Max 2 GiB /
+CPU 200% / zero swap; runtime subprocesses used the limits above.
+
+The new controls compare exact events, pending payloads, values, error provenance,
+complete alias-preserving graph normalizations, global obligation IDs and retained
+histories. They include private calls after dead suffixes, wrong IDs, early resolve,
+zero-length obligations, duplicate/nonascending Region paths, invalid UTF-8,
+all five supplied resolution classes, and actual inner completion followed by
+outer refusal. The latter requires the new inner frame to survive even though
+the selected graph rolls back. A production-adapter differential checks explicit
+resolution/rejection, root unwind, finish/underflow/after-root refusals and frozen
+payload provenance after both adapters are dropped. Complete traversal and Drop
+of 20,000 nested Regions pass on a 256 KiB native stack.
+
+**MEASURED WORK AND RETAINED BACKING.** Both controls were rerun from the same
+post-cutover release build. Widths 1/16/128/1,024 and nesting depths 0/1/8/32 retain
+four sibling endpoints. [The complete 32-row counter output](../stack-safety/measurements/persistent-focused-owner-counters-2026-09-09.txt)
+includes all cells, not only wins. The selection also ran one existing shared-prefix
+cursor test: three tests passed in 0.02 s; the service reported 100.3 MiB peak,
+zero swap and 359 ms runtime. Timing was not a primary metric and no idle-core
+or paired-latency claim is inferred from this deterministic counter run.
+
+| Depth, width 1,024 | Eager frames | Focused frames | Eager state + frame backing (B) | Focused state + owner + frame backing (B) |
+|---|---:|---:|---:|---:|
+| 0 | 1,027 | 1,027 | 524,288 | 622,592 |
+| 1 | 2,059 | 1,033 | 868,352 | 623,424 |
+| 8 | 9,423 | 1,075 | 2,932,736 | 624,256 |
+| 32 | 36,531 | 1,219 | 11,190,272 | 629,248 |
+
+At depth 32, eager feed/rebuild counts were 35,440 each; active/completed ancestor
+query counts were 35,568/35,344. Focused repeated ancestor counts and
+materializations were all zero, with 32 retained owners and 1,309 settlement
+checks over 1,190 edges. The handle remains 40 B. Backing figures are actual Vec
+capacity times element size, not RSS or total allocator traffic; byte-arena,
+topology restore-stack and unrelated node storage are excluded from both columns.
+The control adapter makes extra observation calls, but these allocate no states
+or frames; no equal-total-call latency comparison is implied.
+
+**NEGATIVE RESULTS / REMAINING WORK.** At depth zero, measured state-plus-frame
+backing increases **18.75%** because each selected checkpoint now stores owner,
+stamp and fault metadata. At depth 32 it decreases **94.38%**. This is not a
+universal memory or throughput win. Compact checkpoint metadata and the complete
+nested-import time/allocation matrix remain part of task 6018's resource work.
+The first deeper-test compile failed because a `usize` byte length was passed to
+a `u16` fixture helper; the test now uses the native provenance constructor.
+The first work-count run also exposed one unnecessary pending descent per newly
+opened Region. A grammar-reachable direct frame check removed it; the exact
+differentials and work controls then passed. Failed runs are not included as
+passing evidence. The current source does not change wire bytes, hashes, costs,
+or consensus rules, and this checkpoint does not complete ACT/LMDB qualification.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-focused-qualified3-20260909.log` | `5a260649f02e5f237774855013a29c80223e875842f2a1600ff1b866abe4d9a1` |
+| `/tmp/epathmap-focused-default-models-20260909.log` | `cc169b5925499df161124231ec85fa0d9fd78da7c5913f32b1861c340ec3b2ba` |
+| `/tmp/epathmap-focused-paired-counters-20260909.log` | `b50d7bb54c9941985724ba7fa18f728aa98af47c6130dadd37ac55d16f042d54` |
+| `/tmp/epathmap-focused-default-final-20260909.log` | `7d09dd0df42513e0b426e407d31bb01ee7c44ca840ba69dbdafac7c3b43fa22e` |
+| `/tmp/epathmap-focused-default-final-gate-20260909.log` | `404c2478a166fd5a2cf8524783b9133df7335ab74758ca83c5c13617fa1e9e7c` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

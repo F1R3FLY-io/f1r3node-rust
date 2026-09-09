@@ -4,6 +4,300 @@ use proptest::prelude::*;
 
 use super::*;
 
+pub(crate) struct EagerCanonicalPathReducer {
+    states: Vec<InnerPath>,
+    machine: CanonicalPathMachine<FrameHistory>,
+}
+
+impl EagerCanonicalPathReducer {
+    pub(crate) fn new() -> Self {
+        Self {
+            states: vec![InnerPath::new(true)],
+            machine: CanonicalPathMachine::new(),
+        }
+    }
+
+    pub(crate) fn root(&self, arena: &CanonicalBytesArena) -> CanonicalPathReducerHandle {
+        CanonicalPathReducerHandle {
+            state: PathStateId(0),
+            bytes: arena.empty(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_state_bytes(&self) -> usize {
+        self.states.capacity() * std::mem::size_of::<InnerPath>()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_frame_bytes(&self) -> usize { self.machine.frames.retained_bytes() }
+
+    #[cfg(test)]
+    pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats {
+        CanonicalPathAdmissionStats {
+            states: self.states.len(),
+            frames: self.machine.frames.slots.len(),
+            ..self.machine.stats
+        }
+    }
+
+    pub(crate) fn active_obligation(
+        &self,
+        handle: CanonicalPathReducerHandle,
+    ) -> Option<CanonicalPathObligationProgress> {
+        self.machine
+            .active_obligation_in(&self.states[handle.state.0])
+    }
+
+    pub(crate) fn completed_obligation(
+        &self,
+        arena: &CanonicalBytesArena,
+        handle: CanonicalPathReducerHandle,
+    ) -> Result<Option<CanonicalPathCompletedObligation>, CanonicalPathAdmissionError> {
+        self.machine.completed_obligation(
+            &ArenaPathBytes {
+                arena,
+                bytes: handle.bytes,
+            },
+            &self.states[handle.state.0],
+        )
+    }
+    pub(crate) fn freeze_completed_obligation(
+        &self,
+        arena: &CanonicalBytesArena,
+        handle: CanonicalPathReducerHandle,
+    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
+        Ok(self.completed_obligation(arena, handle)?.map(|completed| {
+            FrozenCanonicalPathObligation {
+                obligation: completed.obligation,
+                payload: arena.freeze(completed.payload),
+                payload_end: completed.payload_end,
+            }
+        }))
+    }
+
+    pub(crate) fn edge(
+        &mut self,
+        arena: &mut CanonicalBytesArena,
+        handle: CanonicalPathReducerHandle,
+        located: CanonicalLocatedByte,
+    ) -> Result<(CanonicalPathReducerHandle, CanonicalPathTransition), CanonicalPathAdmissionError>
+    {
+        let current = &self.states[handle.state.0];
+        let byte = self.machine.prepare_edge(current, located)?;
+        let bytes = arena.append(handle.bytes, located).map_err(|_| {
+            CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::SizeOverflow,
+                byte.source,
+            )
+        })?;
+        let (state, transition) =
+            self.machine
+                .advance(&ArenaPathBytes { arena, bytes }, current, byte);
+        let id = PathStateId(self.states.len());
+        self.states.push(state);
+        Ok((CanonicalPathReducerHandle { state: id, bytes }, transition))
+    }
+
+    pub(crate) fn value(
+        &self,
+        handle: CanonicalPathReducerHandle,
+        has_value: bool,
+        source: CanonicalPathSource,
+    ) -> Option<Result<CanonicalPathSummary, CanonicalPathAdmissionError>> {
+        has_value.then(|| {
+            self.machine
+                .finish_path(&self.states[handle.state.0], source)
+        })
+    }
+
+    pub(crate) fn resolve_obligation(
+        &mut self,
+        arena: &CanonicalBytesArena,
+        handle: CanonicalPathReducerHandle,
+        id: CanonicalPathObligationId,
+        resolution: CanonicalPathObligationResolution,
+    ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
+        let state = self.machine.resolved_state(
+            &ArenaPathBytes {
+                arena,
+                bytes: handle.bytes,
+            },
+            &self.states[handle.state.0],
+            id,
+            resolution,
+        )?;
+        let next = PathStateId(self.states.len());
+        self.states.push(state);
+        Ok(CanonicalPathReducerHandle {
+            state: next,
+            bytes: handle.bytes,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reject_obligation(
+        &mut self,
+        arena: &CanonicalBytesArena,
+        handle: CanonicalPathReducerHandle,
+        id: CanonicalPathObligationId,
+        source: CanonicalPathSource,
+    ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
+        let mut state = self.states[handle.state.0].clone();
+        self.machine.reject_path_obligation(
+            &ArenaPathBytes {
+                arena,
+                bytes: handle.bytes,
+            },
+            &mut state,
+            id,
+            source,
+        )?;
+        let next = PathStateId(self.states.len());
+        self.states.push(state);
+        Ok(CanonicalPathReducerHandle {
+            state: next,
+            bytes: handle.bytes,
+        })
+    }
+}
+
+pub(crate) struct EagerCanonicalPathTopologyAdmission {
+    reducer: EagerCanonicalPathReducer,
+    arena: CanonicalBytesArena,
+    current: CanonicalPathReducerHandle,
+    restore: Vec<CanonicalPathReducerHandle>,
+    root_left: bool,
+}
+
+impl Default for EagerCanonicalPathTopologyAdmission {
+    fn default() -> Self { Self::new() }
+}
+
+impl EagerCanonicalPathTopologyAdmission {
+    pub(crate) fn new() -> Self {
+        let arena = CanonicalBytesArena::new();
+        let reducer = EagerCanonicalPathReducer::new();
+        let current = reducer.root(&arena);
+        Self {
+            reducer,
+            arena,
+            current,
+            restore: Vec::new(),
+            root_left: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn stats(&self) -> CanonicalPathAdmissionStats { self.reducer.stats() }
+
+    pub(crate) fn active_obligation(&self) -> Option<CanonicalPathObligationProgress> {
+        self.reducer.active_obligation(self.current)
+    }
+
+    pub(crate) fn freeze_completed_obligation(
+        &self,
+    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
+        self.reducer
+            .freeze_completed_obligation(&self.arena, self.current)
+    }
+
+    pub(crate) fn edge(
+        &mut self,
+        byte: LocatedPathByte,
+    ) -> Result<CanonicalPathTransition, CanonicalPathAdmissionError> {
+        if self.root_left {
+            return Err(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::TopologyAfterRootLeave,
+                byte.source,
+            ));
+        }
+        let previous = self.current;
+        let (current, transition) = self.reducer.edge(
+            &mut self.arena,
+            previous,
+            CanonicalLocatedByte::new(
+                byte.byte,
+                CanonicalByteProvenance::new(byte.source.source, byte.source.offset),
+            ),
+        )?;
+        self.restore.push(previous);
+        self.current = current;
+        Ok(transition)
+    }
+
+    pub(crate) fn leave(
+        &mut self,
+        source: CanonicalPathSource,
+    ) -> Result<CanonicalPathTransition, CanonicalPathAdmissionError> {
+        if let Some(previous) = self.restore.pop() {
+            self.current = previous;
+            return Ok(CanonicalPathTransition::Restored {
+                active_obligation: self.active_obligation(),
+            });
+        }
+        if self.root_left {
+            return Err(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::TopologyUnderflow,
+                source,
+            ));
+        }
+        self.root_left = true;
+        Ok(CanonicalPathTransition::Restored {
+            active_obligation: None,
+        })
+    }
+
+    pub(crate) fn value(
+        &self,
+        has_value: bool,
+        source: CanonicalPathSource,
+    ) -> Option<Result<CanonicalPathSummary, CanonicalPathAdmissionError>> {
+        self.reducer.value(self.current, has_value, source)
+    }
+    pub(crate) fn finish(
+        &self,
+        source: CanonicalPathSource,
+    ) -> Result<(), CanonicalPathAdmissionError> {
+        if let Some(obligation) = self.active_obligation() {
+            return Err(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::UnresolvedObligation,
+                obligation.obligation.tag_source,
+            ));
+        }
+        if !self.root_left || !self.restore.is_empty() {
+            return Err(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::TopologyIncomplete,
+                source,
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn resolve_obligation(
+        &mut self,
+        id: CanonicalPathObligationId,
+        resolution: CanonicalPathObligationResolution,
+    ) -> Result<(), CanonicalPathAdmissionError> {
+        self.current =
+            self.reducer
+                .resolve_obligation(&self.arena, self.current, id, resolution)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reject_obligation(
+        &mut self,
+        id: CanonicalPathObligationId,
+        source: CanonicalPathSource,
+    ) -> Result<(), CanonicalPathAdmissionError> {
+        self.current = self
+            .reducer
+            .reject_obligation(&self.arena, self.current, id, source)?;
+        Ok(())
+    }
+}
+
 impl CanonicalPathStreamReducer {
     pub(crate) fn assert_reference_equivalent(&self, reference: &Self) {
         assert_eq!(
@@ -789,7 +1083,7 @@ fn persistent_topology_shared_prefix_owner_work_baseline() {
                 key.extend_from_slice(&region);
             }
             let located = |byte, offset| LocatedPathByte::in_source(byte, 7, 101 + offset * 13);
-            let mut admission = CanonicalPathTopologyAdmission::new();
+            let mut admission = EagerCanonicalPathTopologyAdmission::new();
             for (offset, byte) in key[..key.len() - 1].iter().copied().enumerate() {
                 admission.edge(located(byte, offset)).unwrap();
                 assert!(admission.freeze_completed_obligation().unwrap().is_none());
@@ -870,7 +1164,7 @@ fn persistent_fault_private_preflight_uses_selected_graph_not_latest_event() {
             &[EPATHMAP, 3, 2, EPATHMAP_MAP, 2]
         };
         let mut arena = CanonicalBytesArena::new();
-        let mut reducer = CanonicalPathReducer::new();
+        let mut reducer = EagerCanonicalPathReducer::new();
         let mut handle = reducer.root(&arena);
         let mut emitted = None;
         for (offset, byte) in key.iter().copied().enumerate() {
@@ -1288,4 +1582,580 @@ fn persistent_owner_capture_forcing_and_drop_use_a_small_native_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+fn assert_focused_persistent_matches(
+    reference: &EagerCanonicalPathReducer,
+    reference_arena: &CanonicalBytesArena,
+    expected: CanonicalPathReducerHandle,
+    focused: &CanonicalPathReducer,
+    focused_arena: &CanonicalBytesArena,
+    actual: CanonicalPathReducerHandle,
+) {
+    assert_eq!(
+        reference.active_obligation(expected),
+        focused.active_obligation(actual)
+    );
+    assert_eq!(
+        reference.completed_obligation(reference_arena, expected),
+        focused.completed_obligation(focused_arena, actual)
+    );
+    for has_value in [false, true] {
+        assert_eq!(
+            reference.value(expected, has_value, source(91)),
+            focused.value(actual, has_value, source(91))
+        );
+    }
+    assert_eq!(
+        reference.machine.next_obligation,
+        focused.machine.next_obligation
+    );
+    assert_eq!(
+        reference_arena
+            .located_bytes(expected.bytes)
+            .collect::<Vec<_>>(),
+        focused_arena
+            .located_bytes(actual.bytes)
+            .collect::<Vec<_>>()
+    );
+    let state = &focused.states[actual.state.0];
+    let mut frames = FrameHistory {
+        slots: focused.machine.frames.slots.clone(),
+    };
+    let mut root = focused.owners.materialize(
+        &mut frames,
+        state.current.clone(),
+        state.owners,
+        state.stamp,
+    );
+    if let Some(error) = state.fault {
+        root.kill(error);
+    }
+    assert_eq!(
+        super::opaque_interior_tests::normalize_graph(root, &frames.slots),
+        super::opaque_interior_tests::normalize_graph(
+            reference.states[expected.state.0].clone(),
+            &reference.machine.frames.slots
+        ),
+    );
+}
+
+fn exercise_focused_persistent(bytes: &[u8], resolution_choice: u8, fork_stride: usize) {
+    let mut reference = EagerCanonicalPathReducer::new();
+    let mut focused = CanonicalPathReducer::new();
+    let mut reference_arena = CanonicalBytesArena::new();
+    let mut focused_arena = CanonicalBytesArena::new();
+    let mut expected = reference.root(&reference_arena);
+    let mut actual = focused.root(&focused_arena);
+    let mut history = vec![(expected, actual)];
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if fork_stride != 0 && offset % fork_stride == 0 {
+            (expected, actual) = history[offset / fork_stride % history.len()];
+        }
+        let located = CanonicalLocatedByte::new(
+            byte,
+            CanonicalByteProvenance::new(17 + offset as u32 % 3, 111 + offset * 19),
+        );
+        let left = reference.edge(&mut reference_arena, expected, located);
+        let right = focused.edge(&mut focused_arena, actual, located);
+        match (left, right) {
+            (Ok((next, event)), Ok((other, observed))) => {
+                assert_eq!(event, observed);
+                expected = next;
+                actual = other;
+                history.push((expected, actual));
+            }
+            (Err(left), Err(right)) => assert_eq!(left, right),
+            mismatch => panic!("edge mismatch: {mismatch:?}"),
+        }
+        assert_focused_persistent_matches(
+            &reference,
+            &reference_arena,
+            expected,
+            &focused,
+            &focused_arena,
+            actual,
+        );
+        assert_focused_private_branches(
+            &mut reference,
+            &reference_arena,
+            expected,
+            &mut focused,
+            &focused_arena,
+            actual,
+        );
+        let pending = reference.active_obligation(expected);
+        if let Some(pending) = pending {
+            let resolution = match resolution_choice % 5 {
+                0 => CanonicalPathObligationResolution::RawPar {
+                    canonical_path_stable: false,
+                },
+                1 => CanonicalPathObligationResolution::RawPar {
+                    canonical_path_stable: true,
+                },
+                2 => CanonicalPathObligationResolution::NestedEpm1 {
+                    mode: NestedEpmMode::Map,
+                    entries_stable: true,
+                },
+                3 => CanonicalPathObligationResolution::NestedEpm1 {
+                    mode: NestedEpmMode::Map,
+                    entries_stable: false,
+                },
+                _ => CanonicalPathObligationResolution::NestedEpm1 {
+                    mode: NestedEpmMode::Set,
+                    entries_stable: false,
+                },
+            };
+            let before = (
+                focused.states.clone(),
+                focused.machine.frames.slots.clone(),
+                focused.owners.entries.clone(),
+                focused.machine.next_obligation,
+            );
+            let left = reference.resolve_obligation(
+                &reference_arena,
+                expected,
+                pending.obligation.id,
+                resolution,
+            );
+            let right = focused.resolve_obligation(
+                &focused_arena,
+                actual,
+                pending.obligation.id,
+                resolution,
+            );
+            match (left, right) {
+                (Ok(next), Ok(other)) => {
+                    expected = next;
+                    actual = other;
+                    history.push((expected, actual));
+                }
+                (Err(left), Err(right)) => {
+                    assert_eq!(left, right);
+                    assert_eq!(
+                        (
+                            focused.states.clone(),
+                            focused.machine.frames.slots.clone(),
+                            focused.owners.entries.clone(),
+                            focused.machine.next_obligation
+                        ),
+                        before
+                    );
+                }
+                mismatch => panic!("resolution mismatch: {mismatch:?}"),
+            }
+            assert_focused_persistent_matches(
+                &reference,
+                &reference_arena,
+                expected,
+                &focused,
+                &focused_arena,
+                actual,
+            );
+        }
+    }
+    for (expected, actual) in history.into_iter().rev() {
+        assert_focused_persistent_matches(
+            &reference,
+            &reference_arena,
+            expected,
+            &focused,
+            &focused_arena,
+            actual,
+        );
+    }
+}
+
+fn assert_focused_private_branches(
+    reference: &mut EagerCanonicalPathReducer,
+    reference_arena: &CanonicalBytesArena,
+    expected: CanonicalPathReducerHandle,
+    focused: &mut CanonicalPathReducer,
+    focused_arena: &CanonicalBytesArena,
+    actual: CanonicalPathReducerHandle,
+) {
+    for id in [
+        CanonicalPathObligationId(reference.machine.next_obligation.saturating_sub(1)),
+        CanonicalPathObligationId(reference.machine.next_obligation),
+    ] {
+        for reject in [false, true] {
+            let before = (
+                focused.states.clone(),
+                focused.machine.frames.slots.clone(),
+                focused.owners.entries.clone(),
+                focused.machine.next_obligation,
+            );
+            let caller = CanonicalPathSource::in_source(73, 811);
+            let resolution = CanonicalPathObligationResolution::NestedEpm1 {
+                mode: NestedEpmMode::Map,
+                entries_stable: true,
+            };
+            let (left, right) = if reject {
+                (
+                    reference.reject_obligation(reference_arena, expected, id, caller),
+                    focused.reject_obligation(focused_arena, actual, id, caller),
+                )
+            } else {
+                (
+                    reference.resolve_obligation(reference_arena, expected, id, resolution),
+                    focused.resolve_obligation(focused_arena, actual, id, resolution),
+                )
+            };
+            match (left, right) {
+                (Ok(next), Ok(other)) => {
+                    assert_focused_persistent_matches(
+                        reference,
+                        reference_arena,
+                        next,
+                        focused,
+                        focused_arena,
+                        other,
+                    );
+                    assert_eq!(focused.states.len(), before.0.len() + 1);
+                    if reject {
+                        assert_eq!(focused.machine.frames.slots, before.1);
+                        assert_eq!(focused.owners.entries, before.2);
+                    }
+                }
+                (Err(left), Err(right)) => {
+                    assert_eq!(left, right);
+                    assert_eq!(focused.states, before.0);
+                    assert_eq!(focused.machine.frames.slots, before.1);
+                    assert_eq!(focused.owners.entries, before.2);
+                }
+                mismatch => panic!("private operation mismatch, reject={reject}: {mismatch:?}"),
+            }
+            assert_eq!(&focused.states[..before.0.len()], before.0.as_slice());
+            assert_eq!(
+                &focused.machine.frames.slots[..before.1.len()],
+                before.1.as_slice()
+            );
+            assert_eq!(
+                &focused.owners.entries[..before.2.len()],
+                before.2.as_slice()
+            );
+            assert_eq!(focused.machine.next_obligation, before.3);
+            assert_focused_persistent_matches(
+                reference,
+                reference_arena,
+                expected,
+                focused,
+                focused_arena,
+                actual,
+            );
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn focused_persistent_generated_bytes_and_historical_forks_match_eager(
+        bytes in proptest::collection::vec(any::<u8>(), 0..128),
+        resolution in 0u8..5,
+        fork_stride in 0usize..17,
+    ) {
+        exercise_focused_persistent(&bytes, resolution, fork_stride);
+    }
+}
+
+#[test]
+fn focused_persistent_nested_frames_and_obligations_match_eager() {
+    for leaf in [
+        vec![GBYTE_ARRAY, 3, 1, 2, 3],
+        vec![ESCAPE, 2, 0xaa, 0xbb],
+        vec![EPATHMAP_MAP, 2, 0xaa, 0xbb],
+        vec![EPATHMAP, 3, 2, EPATHMAP_MAP, 0],
+        vec![EPATHMAP, 5, 4, EPATHMAP, 4, 1, GBOOL_TRUE],
+        vec![EPATHMAP, 4, 1, GBOOL_TRUE, 1, GBOOL_TRUE],
+        vec![EPATHMAP, 4, 1, GBOOL_TRUE, 1, GBOOL_FALSE],
+        vec![EPATHMAP, 4, 1, GBOOL_FALSE, 1, GBOOL_TRUE],
+        vec![GSTRING, 2, 0xc2, 0xff],
+        vec![ELIST, 2, GBOOL_FALSE, GBOOL_TRUE],
+        vec![EPATHMAP, 4, 3, EPATHMAP_MAP, 2, 0xaa],
+        vec![EPATHMAP, 3, 2, EPATHMAP_MAP, 2],
+    ] {
+        let mut bytes = leaf;
+        for _ in 0..8 {
+            for resolution in 0..5 {
+                exercise_focused_persistent(&bytes, resolution, 0);
+                let mut extended = bytes.clone();
+                extended.extend_from_slice(&[0xaf, 0x33, 0x9d]);
+                exercise_focused_persistent(&extended, resolution, 0);
+            }
+            let mut body = Vec::new();
+            prost::encoding::encode_varint(bytes.len() as u64, &mut body);
+            body.extend_from_slice(&bytes);
+            bytes = vec![EPATHMAP];
+            prost::encoding::encode_varint(body.len() as u64, &mut bytes);
+            bytes.extend_from_slice(&body);
+        }
+    }
+}
+
+#[test]
+fn focused_persistent_outer_refusal_keeps_inner_completion_effects() {
+    let key = [EPATHMAP, 5, 4, EPATHMAP, 4, 1, GBOOL_TRUE];
+    let mut focused = CanonicalPathReducer::new();
+    let mut reference = EagerCanonicalPathReducer::new();
+    let mut arena = CanonicalBytesArena::new();
+    let mut reference_arena = CanonicalBytesArena::new();
+    let mut actual = focused.root(&arena);
+    let mut expected = reference.root(&reference_arena);
+    for (offset, byte) in key[..key.len() - 1].iter().copied().enumerate() {
+        let located =
+            CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(19, offset * 17));
+        actual = focused.edge(&mut arena, actual, located).unwrap().0;
+        expected = reference
+            .edge(&mut reference_arena, expected, located)
+            .unwrap()
+            .0;
+    }
+    let before = focused.states[actual.state.0].clone();
+    let saved_frames = focused.machine.frames.slots.clone();
+    let saved_owners = focused.owners.entries.clone();
+    let stamp = before.stamp;
+    let final_byte = CanonicalLocatedByte::new(GBOOL_TRUE, CanonicalByteProvenance::new(29, 719));
+    let (next, event) = focused.edge(&mut arena, actual, final_byte).unwrap();
+    let (other, expected_event) = reference
+        .edge(&mut reference_arena, expected, final_byte)
+        .unwrap();
+    assert_eq!(event, expected_event);
+    assert_eq!(focused.owners.entries, saved_owners);
+    assert_eq!(
+        &focused.machine.frames.slots[..saved_frames.len()],
+        saved_frames.as_slice()
+    );
+    assert!(
+        focused.machine.frames.slots[saved_frames.len()..]
+            .iter()
+            .any(|frame| {
+                matches!(frame, Frame::Region {
+                    remaining: 2,
+                    phase: RegionPhase::PathLength(_),
+                    ..
+                })
+            })
+    );
+    let mut selected = before.clone();
+    selected.fault = Some(CanonicalPathAdmissionError::new(
+        CanonicalPathAdmissionErrorKind::Truncated,
+        CanonicalPathSource::in_source(29, 719),
+    ));
+    assert_eq!(focused.states[next.state.0], selected);
+    assert_eq!(focused.states[actual.state.0], before);
+    assert_eq!(focused.states[next.state.0].stamp, stamp);
+    assert_focused_persistent_matches(&reference, &reference_arena, other, &focused, &arena, next);
+}
+
+fn nested_persistent_key(depth: usize, width: usize) -> Vec<u8> {
+    let mut leaf = vec![GBYTE_ARRAY];
+    prost::encoding::encode_varint(width as u64, &mut leaf);
+    leaf.resize(leaf.len() + width, 0);
+    let mut total = leaf.len();
+    let mut headers = Vec::with_capacity(depth);
+    for _ in 0..depth {
+        let path_length = prost::encoding::encoded_len_varint(total as u64);
+        let region_length = total + path_length;
+        headers.push((region_length, total));
+        total += 1 + prost::encoding::encoded_len_varint(region_length as u64) + path_length;
+    }
+    let mut bytes = Vec::with_capacity(total);
+    for (region_length, path_length) in headers.into_iter().rev() {
+        bytes.push(EPATHMAP);
+        prost::encoding::encode_varint(region_length as u64, &mut bytes);
+        prost::encoding::encode_varint(path_length as u64, &mut bytes);
+    }
+    bytes.extend(leaf);
+    bytes
+}
+
+#[test]
+fn focused_persistent_shared_prefix_has_no_repeated_ancestor_work() {
+    for width in [1usize, 16, 128, 1_024] {
+        for depth in [0usize, 1, 8, 32] {
+            let bytes = nested_persistent_key(depth, width);
+            let mut reducer = CanonicalPathReducer::new();
+            let mut arena = CanonicalBytesArena::new();
+            let mut current = reducer.root(&arena);
+            for (offset, byte) in bytes[..bytes.len() - 1].iter().copied().enumerate() {
+                let located = CanonicalLocatedByte::new(
+                    byte,
+                    CanonicalByteProvenance::new(7, 101 + offset * 13),
+                );
+                current = reducer.edge(&mut arena, current, located).unwrap().0;
+                assert!(reducer.active_obligation(current).is_none());
+                assert!(
+                    reducer
+                        .freeze_completed_obligation(&arena, current)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            let prefix = current;
+            let saved = reducer.states[prefix.state.0].clone();
+            for branch in 0..4u8 {
+                let located = CanonicalLocatedByte::new(
+                    branch,
+                    CanonicalByteProvenance::new(7, 101 + (bytes.len() - 1) * 13),
+                );
+                let endpoint = reducer.edge(&mut arena, prefix, located).unwrap().0;
+                assert!(
+                    reducer
+                        .value(endpoint, true, source(9_999))
+                        .unwrap()
+                        .unwrap()
+                        .canonical_path_stable
+                );
+                assert!(reducer.active_obligation(prefix).is_none());
+                assert_eq!(reducer.states[prefix.state.0], saved);
+            }
+            let stats = reducer.stats();
+            let work = reducer.machine.owner_work.get();
+            assert_eq!(stats.edges, bytes.len() + 3);
+            assert_eq!(stats.states, stats.edges + 1);
+            assert_eq!(stats.region_descents, 0);
+            assert_eq!(work.rebuilds, 0);
+            assert_eq!(work.active_queries, 0);
+            assert_eq!(work.completed_queries, 0);
+            assert_eq!(work.reifications, 0);
+            assert_eq!(reducer.owners.entries.len(), depth);
+            assert!(work.settlements <= stats.edges + 4 * depth);
+            assert!(stats.frames <= 2 * stats.edges);
+            eprintln!(
+                "focused persistent topology: width={width}, depth={depth}, branches=4, encoded={}, edges={}, states={}, frames={}, owners={}, settlements={}, state_and_owner_backing={}, frame_backing={}, handle_bytes={}",
+                bytes.len(),
+                stats.edges,
+                stats.states,
+                stats.frames,
+                reducer.owners.entries.len(),
+                work.settlements,
+                reducer.retained_state_bytes(),
+                reducer.retained_frame_bytes(),
+                std::mem::size_of::<CanonicalPathReducerHandle>()
+            );
+        }
+    }
+}
+
+#[test]
+fn focused_persistent_deep_traversal_and_drop_use_small_native_stack() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let depth = 20_000;
+            let bytes = nested_persistent_key(depth, 1);
+            let mut reducer = CanonicalPathReducer::new();
+            let mut arena = CanonicalBytesArena::new();
+            let mut current = reducer.root(&arena);
+            for (offset, byte) in bytes.iter().copied().enumerate() {
+                current = reducer
+                    .edge(
+                        &mut arena,
+                        current,
+                        CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(13, offset)),
+                    )
+                    .unwrap()
+                    .0;
+            }
+            assert!(
+                reducer
+                    .value(current, true, CanonicalPathSource::new(bytes.len()))
+                    .unwrap()
+                    .unwrap()
+                    .canonical_path_stable
+            );
+            assert_eq!(reducer.owners.entries.len(), depth);
+            assert_eq!(reducer.stats().region_descents, 0);
+            assert_eq!(reducer.machine.owner_work.get().reifications, 0);
+            drop(reducer);
+            drop(arena);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn focused_persistent_topology_resolution_rejection_and_restore_match_eager() {
+    for key in [
+        vec![EPATHMAP, 3, 2, EPATHMAP_MAP, 0],
+        vec![EPATHMAP, 5, 4, EPATHMAP_MAP, 2, 0x31, 0x32],
+        vec![EPATHMAP, 4, 3, EPATHMAP_MAP, 2, 0x31],
+    ] {
+        for reject in [false, true] {
+            let mut actual = CanonicalPathTopologyAdmission::new();
+            let mut expected = EagerCanonicalPathTopologyAdmission::new();
+            let mut frozen = Vec::new();
+            for (offset, byte) in key.iter().copied().enumerate() {
+                let located =
+                    LocatedPathByte::in_source(byte, 31 + offset as u32 % 2, 501 + offset * 29);
+                assert_eq!(actual.edge(located), expected.edge(located));
+                assert_eq!(actual.active_obligation(), expected.active_obligation());
+                if let Some(left) = actual.freeze_completed_obligation().unwrap() {
+                    let right = expected.freeze_completed_obligation().unwrap().unwrap();
+                    assert_eq!(left.obligation, right.obligation);
+                    assert_eq!(left.payload_end, right.payload_end);
+                    let bytes = right.payload.located_bytes().collect::<Vec<_>>();
+                    assert_eq!(left.payload.located_bytes().collect::<Vec<_>>(), bytes);
+                    let id = left.obligation.id;
+                    frozen.push((left, bytes));
+                    if reject {
+                        assert_eq!(
+                            actual.reject_obligation(id, source(707)),
+                            expected.reject_obligation(id, source(707))
+                        );
+                    } else {
+                        let resolution = CanonicalPathObligationResolution::NestedEpm1 {
+                            mode: NestedEpmMode::Map,
+                            entries_stable: true,
+                        };
+                        assert_eq!(
+                            actual.resolve_obligation(id, resolution),
+                            expected.resolve_obligation(id, resolution)
+                        );
+                    }
+                } else {
+                    assert!(expected.freeze_completed_obligation().unwrap().is_none());
+                }
+                assert_focused_persistent_matches(
+                    &expected.reducer,
+                    &expected.arena,
+                    expected.current,
+                    &actual.reducer,
+                    &actual.arena,
+                    actual.current,
+                );
+            }
+            for _ in 0..=key.len() {
+                assert_eq!(actual.leave(source(808)), expected.leave(source(808)));
+                assert_eq!(
+                    actual.value(true, source(909)),
+                    expected.value(true, source(909))
+                );
+                assert_eq!(
+                    actual
+                        .freeze_completed_obligation()
+                        .unwrap()
+                        .map(|p| p.obligation),
+                    expected
+                        .freeze_completed_obligation()
+                        .unwrap()
+                        .map(|p| p.obligation)
+                );
+            }
+            assert_eq!(actual.finish(source(911)), expected.finish(source(911)));
+            assert!(actual.finish(source(911)).is_ok());
+            assert_eq!(actual.leave(source(912)), expected.leave(source(912)));
+            assert_eq!(
+                actual.edge(LocatedPathByte::new(0, 913)),
+                expected.edge(LocatedPathByte::new(0, 913))
+            );
+            drop(actual);
+            drop(expected);
+            for (payload, bytes) in frozen {
+                assert_eq!(payload.payload.located_bytes().collect::<Vec<_>>(), bytes);
+            }
+        }
+    }
 }

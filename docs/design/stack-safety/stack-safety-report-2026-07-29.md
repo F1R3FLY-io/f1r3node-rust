@@ -10354,6 +10354,31 @@ or ignores; that compile-inclusive service reported 1.5 GiB peak and zero swap.
 records qualification. The default persistent reducer remains unchanged until
 state-machine, fault, shared-effect and complete resource bindings pass.
 
+#### 5.33.28 Focused persistent traversal is now the default (2026-09-09, task 6018)
+
+The production persistent reducer now advances a physical focus with immutable
+linked Region owners and cached boundaries. The eager control remains test-only;
+its old measurements are preserved. Six new tests cover generated/forked exact
+graph correspondence, private calls after faults, completion effects, deterministic
+work bounds, 20,000-region traversal/Drop on a 256 KiB stack, and production
+topology resolution/rejection/restoration plus frozen payload lifetime.
+The final full models library passed 400 tests in 52.79 s with no failures or
+ignores. The compile-inclusive capped service reported 1.4 GiB peak and zero swap.
+The final combined gate passed 160 closed RPB3 reports, three kernel checks and
+97 selected release tests, including all 19 frame-storage tests, without failures
+or ignores. Formal checks used a separate 2 GiB hard cap with zero swap.
+
+In the same-build width-1,024/four-sibling counter comparison, depth 32 decreases
+frames from 36,531 to 1,219 and measured state/owner/frame backing from 11,190,272 B
+to 629,248 B (**94.38% lower**). Repeated feed, rebuild, and public pending ancestor
+walks are zero in the focused arm. However, depth-zero backing rises from 524,288 B
+to 622,592 B (**18.75% higher**) because checkpoint metadata is larger. These counts
+exclude the byte arena and restore stack and are not allocator/RSS or throughput
+measurements. The shallow metadata cost and full nested-import resource matrix
+remain open; this does not establish a universal memory win or ACT/LMDB parity.
+[J-109](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-109--2026-09-09-focused-persistent-traversal-activated-with-exact-historical-controls)
+records the complete matrix, formal/property boundary and negative controls.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
