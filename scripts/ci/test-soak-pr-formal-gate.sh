@@ -56,6 +56,7 @@ case "$config" in
     MC_DiskBreachRestart_clear_pre_fix.cfg) invariant=RetainedBreachStopsRestart ;;
     MC_DiskStopDeadline_unbounded_pre_fix.cfg) invariant=StopWithinBudget ;;
     MC_GuardianAdmission_unchecked_pre_fix.cfg) invariant=AdmissionRequiresGuardian ;;
+    MC_BenchmarkBreachAdmission_unchecked_pre_fix.cfg) invariant=RetainedBreachPreventsBenchmark ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -88,6 +89,8 @@ pr_configs=(
     soak_disk/MC_DiskStopDeadline_unbounded_pre_fix
     soak_disk/MC_GuardianAdmission
     soak_disk/MC_GuardianAdmission_unchecked_pre_fix
+    soak_disk/MC_BenchmarkBreachAdmission
+    soak_disk/MC_BenchmarkBreachAdmission_unchecked_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

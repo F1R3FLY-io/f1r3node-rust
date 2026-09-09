@@ -213,6 +213,21 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B15
+    statement: A retained guardian breach prevents the opening benchmark from starting without a state file.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-benchmark-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-benchmark-restart.sh
+        red_revision: 37ec7f71dc077b03d75822bda88547a2fdd018fb
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -241,6 +256,7 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B12: A retained breach prevents restart admission and preserves a failure outcome.
 - [x] B13: Stalled disk stop clients exit before the fixture deadline, and the driver publishes a local failure.
 - [x] B14: Guardian death during a valid boundary probe prevents iteration admission and produces one recorded failure.
+- [x] B15: A retained breach prevents the opening benchmark without a state file and preserves the failure.
 
 ## Cycle evidence
 
@@ -299,6 +315,10 @@ B14 adds a matched cycle for guardian death during the boundary probe. The [evid
 The combined gate now passes 13 positive configurations and 13 exact controls. The classifier covers 91 cases. Nine emergency fixture scenarios pass.
 
 B14 does not cover benchmark admission, live but stalled guardians, or a crash after the final liveness check.
+
+B15 prevents the opening benchmark from bypassing a retained breach when the state file is absent. Its [evidence](../cbc-evidence/soak-d2-benchmark-2026-09-09/README.md) retains matched production and formal results.
+
+The bounded gate passes 14 positive configurations and 14 exact controls. The classifier covers 98 cases. All ten emergency scenarios pass.
 
 ## Remaining D2 work
 

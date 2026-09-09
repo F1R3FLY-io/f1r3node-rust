@@ -841,7 +841,8 @@ mkdir -p "$OUTPUT_DIR"
 # Only on the first segment: this is the run's opening baseline measurement,
 # and repeating it at every resume would add segments the cadence never asked
 # for and skew the run's active-benchmark averages.
-if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ]; then
+if [ "$RUN_BENCHMARKS" = "true" ] && [ "$SEGMENT" -eq 1 ] &&
+	[ ! -s "$OUTPUT_DIR/host-guardian-breach.txt" ]; then
 	run_bench_segment
 	persist_soak_state
 fi

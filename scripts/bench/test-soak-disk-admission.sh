@@ -10,12 +10,15 @@ SOURCE_FILES=(
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
 case "$SCENARIO" in
-band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary) ;;
+band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark) ;;
 *)
     printf 'ERROR: Unknown disk fixture scenario.\n' >&2
     exit 2
     ;;
 esac
+if [[ "$SCENARIO" == restart-benchmark ]]; then
+    SOURCE_FILES+=(scripts/bench/run-bench-segment.sh)
+fi
 
 if [[ "${1:-}" == --inside ]]; then
     trap 'printf "ERROR: The container fixture failed before its behavioral verdict.\n" >&2; exit 2' ERR
@@ -52,7 +55,7 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
             printf 'boundary-guardian-killed=%s\n' "$guardian_pid" >>/case/evidence/probe-samples.txt
         fi
         ;;
-    guardian-death | restart-uncounted | restart-counted)
+    guardian-death | restart-uncounted | restart-counted | restart-benchmark)
         available=16384
         ;;
     record-before-stop | stop-timeout)
@@ -101,6 +104,11 @@ SH
     cat >bin/docker <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == restart-benchmark &&
+    "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench up -d' ]]; then
+    printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
+    exit 1
+fi
 if [[ "$*" == 'builder prune -af' ]]; then
     touch /case/evidence/hygiene-completed
 fi
@@ -156,6 +164,16 @@ SH
         cp evidence/output/.soak-state evidence/restart-input-state.txt
         cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt
     fi
+    duration=30
+    run_benchmarks=false
+    if [[ "$SCENARIO" == restart-benchmark ]]; then
+        duration=700
+        run_benchmarks=true
+        mkdir -p evidence/output node/docker
+        printf 'services: {}\n' >node/docker/shard.yml
+        printf 'A prior guardian detected a disk breach. Termination remains unconfirmed.\n' >evidence/output/host-guardian-breach.txt
+        cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt
+    fi
     observer=""
     if [[ "$SCENARIO" == stop-timeout ]]; then
         (
@@ -208,7 +226,7 @@ SH
     chmod +x bin/*
     status=0
     PATH="/case/bin:$PATH" \
-        SOAK_DURATION_SECONDS=30 \
+        SOAK_DURATION_SECONDS="$duration" \
         SYSTEM_INTEGRATION_DIR=/case/harness \
         SOAK_OUTPUT_DIR=/case/evidence/output \
         SOAK_TARGET_REF=disk-admission-fixture \
@@ -221,7 +239,10 @@ SH
         SOAK_DISK_STOP_SECONDS=1 \
         SOAK_TMP_ROOT=/tmp \
         SOAK_RUNNER_ROOT=/case/runner \
-        SOAK_RUN_BENCHMARKS=false \
+        SOAK_RUN_BENCHMARKS="$run_benchmarks" \
+        SOAK_BENCH_DURATION=1 \
+        SOAK_NODE_REPO_DIR=/case/node \
+        DEPLOYER_KEY=fixture-not-used \
         SOAK_MERGE_EXIT_MIN_SECONDS=0 \
         SOAK_GUARDIAN_POLL_SECONDS=0.05 \
         SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
@@ -247,6 +268,30 @@ SH
             exit 1
         fi
         printf 'PASS: Restart preserved the guardian breach and failure count without new work (%s).\n' "$SCENARIO"
+        exit 0
+    fi
+    if [[ "$SCENARIO" == restart-benchmark ]]; then
+        if ! grep -Fxq 'valid=16384' evidence/probe-samples.txt ||
+            ! cmp -s evidence/restart-input-breach.txt evidence/output/host-guardian-breach.txt; then
+            printf 'ERROR: The fixture lacks the retained breach or valid startup sample.\n' >&2
+            exit 2
+        fi
+        if ! jq -e '.bench_segments == 0' evidence/output/summary.json >/dev/null &&
+            [[ ! -s evidence/benchmark-started.txt ]]; then
+            printf 'ERROR: The benchmark fixture did not reach the Docker boundary.\n' >&2
+            exit 2
+        fi
+        if [[ -s evidence/benchmark-started.txt ]]; then
+            printf 'FAIL: A retained guardian breach allowed the opening benchmark to start.\n' >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Benchmark refusal lost the retained protection failure.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: The retained breach prevented benchmark and iteration admission and preserved the failure.\n'
         exit 0
     fi
     if [[ "$SCENARIO" == stop-timeout ]]; then
