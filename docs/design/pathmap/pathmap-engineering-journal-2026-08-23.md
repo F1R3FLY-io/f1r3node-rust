@@ -7431,6 +7431,46 @@ completed campaign is claimed.
 The reproduction command remains
 `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import`.
 
+### J-105 — 2026-09-09: checked typed-owner projection into the existing scheduler
+
+**FORMAL RESULT.** Five laws connect the typed persistent frame overlay to the
+already verified linked owner scheduler. The projection preserves both absolute
+endpoints, actual enclosing metadata, Region frame slots, declared length, start
+depth, continuation structure and observed previous bytes. A failed observation
+of a present span refuses projection; it is not replaced by an absent or empty
+span. Inner-first typed reification commutes with the linked owner observation,
+and every frame address remains in the same traversal order.
+
+**DESIGN DECISION.** This is a proof/test projection, not a runtime list or byte
+vector. Frame addresses remain distinct from owner-arena addresses. The scheduler
+projection may summarize payloads, but is not the equality authority for typed
+frames: J-104 retains that role. Span validation inside opaque leaf/continuation
+payloads, callback behavior, backing lifetime and fault composition are separate
+contracts. No injective numeric encoding of arbitrary span handles is assumed.
+
+Independent review found no blocker and confirmed these boundaries. The formal
+README records all five extracted implementation/property obligations; they are
+not claimed as five new executed Rust tests. Existing production Rust is unchanged.
+
+**MEASURED QUALIFICATION.** The standalone compile passed 149 closed RPB3 reports
+in 13.396 s, with 618.3 MiB peak memory and zero swap under a 2 GiB systemd hard
+cap. An initial type-inference error was corrected by explicitly typing owner
+entries; that failed attempt is not passing evidence. The first combined-gate
+log stopped after prerequisites and its process was confirmed absent, so it is
+incomplete. The fresh bounded combined gate passed 149 RPB3 closed reports,
+three kernel checks and 88 release runtime tests, with zero failures or ignores.
+Rust caps remained High 4 GiB / Max 6 GiB / CPU 400%, with swap disabled. This
+is focused qualification, not full-workspace CI or new persistent-runtime tests.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-owner-projection2-20260909.log` | `19202f4488f0a0d8bf5a21d7970040320d626bbdf38ba5dfe5a8b209515840e3` |
+| `/tmp/epathmap-owner-projection-gate-resumed-20260909.log` | `13170f66c09e58c25aa31875bde37dbb1042b726c8226c1021b0cab6cd03b4bb` |
+
+Reproduction remains `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import`.
+No new benchmark, persistent memory-slope improvement, consensus change or
+production-equivalent ACT/LMDB comparison is established by this proof bridge.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

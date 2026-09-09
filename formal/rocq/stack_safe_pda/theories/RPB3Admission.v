@@ -5472,3 +5472,141 @@ Print Assumptions typed_materialization_preserves_exact_private_resolve_and_reje
 Print Assumptions capture_from_a_physical_path_copies_the_actual_enclosing_metadata_and_stack.
 
 End PersistentFrameRealization.
+
+Module PersistentOwnerProjection.
+
+Module T := PersistentFrameRealization.
+Module F := FocusedRegionOwners.
+Module P := PersistentFocusedOwners.
+Module S := ReusableFrameOwnership.
+
+Section Projection.
+
+Context {Span : Type}.
+Variable observe_span : Span -> option (list CanonicalKeyProtocol.located_byte).
+Variable summarize_frame : @T.stored_frame Span -> S.frame_metadata.
+
+Definition observe_previous previous :=
+  match previous with
+  | None => Some None
+  | Some span => option_map (@Some (list CanonicalKeyProtocol.located_byte)) (observe_span span)
+  end.
+
+Fixpoint project_slots (tree : @T.frame_tree Span) : S.graph :=
+  match tree with
+  | T.EmptyTree => S.EmptyGraph
+  | T.InactiveTree slot payload next =>
+      S.LinkGraph slot (summarize_frame (T.InactiveFrame payload (T.tree_root next))) (project_slots next)
+  | T.RegionTree slot remaining previous declared_len path_remaining start_depth metadata child next =>
+      S.RegionGraph slot (summarize_frame (T.ActiveRegionFrame remaining previous declared_len
+        path_remaining start_depth (T.RawPath metadata (T.tree_root child)) (T.tree_root next)))
+        (project_slots child) (project_slots next)
+  end.
+
+Fixpoint typed_slots (tree : @T.frame_tree Span) : list nat :=
+  match tree with
+  | T.EmptyTree => []
+  | T.InactiveTree slot _ next => slot :: typed_slots next
+  | T.RegionTree slot _ _ _ _ _ _ child next => slot :: typed_slots child ++ typed_slots next
+  end.
+
+Lemma slot_projection_preserves_all_frame_ids tree : S.graph_slots (project_slots tree) = typed_slots tree.
+Proof. induction tree; cbn; congruence. Qed.
+
+Fixpoint project_tree metadata (tree : @T.frame_tree Span) : option F.path_graph :=
+  match tree with
+  | T.RegionTree slot remaining previous declared_len path_remaining start_depth child_metadata child next =>
+      match observe_previous previous, project_tree child_metadata child with
+      | Some previous_bytes, Some projected_child =>
+          Some (F.RegionGraph (F.RegionMetadata slot metadata previous_bytes declared_len start_depth
+            (project_slots next)) remaining path_remaining projected_child)
+      | _, _ => None
+      end
+  | _ => Some (F.LeafGraph (F.Leaf metadata (project_slots tree)))
+  end.
+
+Definition project_path (path : @T.semantic_path Span) :=
+  project_tree (T.semantic_metadata path) (T.semantic_frames path).
+
+Definition project_owner (owner : @T.held_owner Span) :=
+  option_map (fun previous => F.Owner
+    (F.RegionMetadata (T.held_slot owner) (T.held_metadata owner) previous
+      (T.held_declared_len owner) (T.held_start_depth owner) (project_slots (T.held_next owner)))
+    (T.held_region_end owner) (T.held_path_end owner))
+    (observe_previous (T.held_previous owner)).
+
+Definition owners_match (owners : list (@T.held_owner Span)) (entries : P.owner_entries) :=
+  Forall2 (fun owner entry => project_owner owner = Some (P.cell_owner (snd entry))) owners entries.
+
+Theorem invalid_previous_span_refuses_owner_projection owner span :
+  T.held_previous owner = Some span -> observe_span span = None -> project_owner owner = None.
+Proof. intros previous invalid. unfold project_owner, observe_previous. now rewrite previous, invalid. Qed.
+
+Theorem projected_owner_preserves_exact_scheduler_fields owner projected :
+  project_owner owner = Some projected ->
+  F.owner_region_end projected = T.held_region_end owner /\
+  F.owner_path_end projected = T.held_path_end owner /\
+  F.region_slot (F.owner_metadata projected) = T.held_slot owner /\
+  F.region_owner (F.owner_metadata projected) = T.held_metadata owner /\
+  F.region_declared_length (F.owner_metadata projected) = T.held_declared_len owner /\
+  F.region_start_depth (F.owner_metadata projected) = T.held_start_depth owner /\
+  F.region_next (F.owner_metadata projected) = project_slots (T.held_next owner) /\
+  observe_previous (T.held_previous owner) = Some (F.region_previous (F.owner_metadata projected)).
+Proof.
+  unfold project_owner. destruct (observe_previous (T.held_previous owner)) as [previous|] eqn:observed;
+    cbn; intro same; [|discriminate]. inversion same; subst. repeat split; reflexivity.
+Qed.
+
+Lemma project_wrapped_owner stamp owner child projected_owner projected_child :
+  project_owner owner = Some projected_owner -> project_path child = Some projected_child ->
+  project_path (T.wrap_owner stamp owner child) =
+    Some (F.residual_graph stamp projected_owner projected_child).
+Proof.
+  unfold project_owner. destruct (observe_previous (T.held_previous owner)) as [previous|] eqn:observed;
+    cbn; intros same child_matches; [|discriminate]. inversion same; subst.
+  unfold project_path, T.wrap_owner; cbn [T.semantic_metadata T.semantic_frames project_tree].
+  unfold project_path in child_matches. rewrite observed, child_matches. reflexivity.
+Qed.
+
+Theorem typed_reification_commutes_with_exact_linked_owner_projection stamp focus owners entries projected :
+  owners_match owners entries -> project_path focus = Some projected ->
+  project_path (T.reify_owners stamp focus owners) =
+    Some (F.reify stamp projected (P.projected_owners entries)).
+Proof.
+  intros matches. revert focus projected. induction matches; intros focus projected focused; cbn.
+  - exact focused.
+  - apply IHmatches. eapply project_wrapped_owner; eauto.
+Qed.
+
+Theorem projected_paths_preserve_frame_addresses metadata tree graph :
+  project_tree metadata tree = Some graph -> F.graph_slots graph = typed_slots tree.
+Proof.
+  revert metadata graph. induction tree; intros metadata graph projected.
+  - inversion projected; reflexivity.
+  - inversion projected; subst. cbn. now rewrite slot_projection_preserves_all_frame_ids.
+  - cbn [project_tree] in projected.
+    destruct (observe_previous previous) as [previous_bytes|]; [|discriminate].
+    destruct (project_tree child_metadata tree1) as [child_graph|] eqn:child; [|discriminate].
+    inversion projected; subst. cbn.
+    rewrite slot_projection_preserves_all_frame_ids, (IHtree1 _ _ child). reflexivity.
+Qed.
+
+Theorem typed_overlay_is_the_selected_linked_graph frames stamp focus owners graph arena root entries leaf :
+  T.overlay_realizes frames stamp focus owners graph -> P.linked arena root entries ->
+  owners_match owners entries -> project_path focus = Some (F.LeafGraph leaf) ->
+  project_path graph = Some (P.projected_graph stamp leaf entries).
+Proof.
+  intros overlay linked matches focused.
+  rewrite (T.typed_overlay_derives_exact_logical_graph overlay).
+  now apply typed_reification_commutes_with_exact_linked_owner_projection.
+Qed.
+
+End Projection.
+
+Print Assumptions invalid_previous_span_refuses_owner_projection.
+Print Assumptions projected_owner_preserves_exact_scheduler_fields.
+Print Assumptions typed_reification_commutes_with_exact_linked_owner_projection.
+Print Assumptions projected_paths_preserve_frame_addresses.
+Print Assumptions typed_overlay_is_the_selected_linked_graph.
+
+End PersistentOwnerProjection.

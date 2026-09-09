@@ -290,7 +290,7 @@ epathmap_score_proofs() {
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 144 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 149 \
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
 }

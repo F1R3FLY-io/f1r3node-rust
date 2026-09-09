@@ -1208,6 +1208,37 @@ composition. Private-terminal equality alone does not establish constant-time
 inspection without an already available terminal focus. No new parser, production
 representation or consensus format is introduced by these twelve laws.
 
+#### Checked typed-owner scheduling projection (2026-09-09)
+
+`PersistentOwnerProjection` connects PFR's typed overlay to the existing linked
+owner model without changing either scheduler. `observe_span` is a partial
+observation from a retained span handle to located bytes; invalid observation
+returns `None`, distinct from a valid absent previous span. `summarize_frame`
+supplies scheduling metadata for the older Slots model. It is intentionally not
+assumed injective: typed payload preservation remains PFR's separate contract.
+
+`owners_match` relates an inner-first typed owner list to linked entries by
+pointwise equality with checked projected owners. It preserves frame slots in
+the owner payload; those are not the owner-arena addresses in the entries.
+All active Region children are recursively projected with their actual metadata,
+and continuation structure retains every frame address. The projection is a
+proof/test observation, not a production list or byte-vector allocation.
+
+| Exported theorem | Extracted implementation/property obligation |
+|---|---|
+| `invalid_previous_span_refuses_owner_projection` | Invalid retained span observation refuses projection; never substitute an empty span or absent previous key. |
+| `projected_owner_preserves_exact_scheduler_fields` | Both absolute endpoints, frame slot, enclosing metadata, declared length, start depth, projected continuation and previous located bytes agree exactly. Inspect these independently of arena addresses. |
+| `typed_reification_commutes_with_exact_linked_owner_projection` | Projecting the typed inside-out composition equals reference reification over the corresponding owner entries, including their order. Compare independently projected historical and divergent sibling graphs. |
+| `projected_paths_preserve_frame_addresses` | Every successful path projection preserves the full ordered frame-address traversal, including repeated addresses from shared subtrees; it is not ID erasure. |
+| `typed_overlay_is_the_selected_linked_graph` | A realized typed overlay with a linked matching chain projects to that chain's exact selected graph at its saved stamp. Require the actual focused leaf correspondence. |
+
+These are extracted bindings for the forthcoming persistent runtime, not five
+new executed Rust tests. Successful projection checks previous spans on the
+active owner/Region path; it does not validate every span inside opaque leaf or
+continuation payloads. Exact typed history and backing-lifetime invariants remain
+separate. Callback/classification correspondence, selected-fault composition,
+Rust arithmetic and resource bounds are not implied by a scheduling projection.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to
