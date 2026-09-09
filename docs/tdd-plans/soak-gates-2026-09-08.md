@@ -289,6 +289,21 @@ behaviors:
         reused_model: GuardianAdmission
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B20
+    statement: A live guardian without progress causes active benchmark cancellation before fixture release.
+    priority: must
+    deep_module: false
+    done: false
+  - id: B21
+    statement: A live guardian without progress causes active iteration cancellation before fixture release.
+    priority: must
+    deep_module: false
+    done: false
+  - id: B22
+    statement: Stale guardian progress prevents benchmark and iteration admission after a scheduling pause.
+    priority: must
+    deep_module: false
+    done: false
 ---
 
 # Soak Gate Development Cycles

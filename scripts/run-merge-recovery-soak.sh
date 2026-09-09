@@ -193,6 +193,11 @@ if ! [[ "$DISK_STOP_SECONDS" =~ ^[1-5]$ ]]; then
 	printf 'SOAK_DISK_STOP_SECONDS must be an integer from 1 through 5\n' >&2
 	exit 2
 fi
+GUARDIAN_MAX_SILENCE_SECONDS="${SOAK_GUARDIAN_MAX_SILENCE_SECONDS:-10}"
+if ! [[ "$GUARDIAN_MAX_SILENCE_SECONDS" =~ ^([89]|[12][0-9]|30)$ ]]; then
+	printf 'SOAK_GUARDIAN_MAX_SILENCE_SECONDS must be an integer from 8 through 30\n' >&2
+	exit 2
+fi
 DISK_DIAGNOSTIC_SECONDS="${SOAK_DISK_DIAGNOSTIC_SECONDS:-10}"
 if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
 	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
@@ -210,6 +215,30 @@ disk_free_mb() {
 		awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print int($4) }')" || return 1
 	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$mb"
+}
+
+guardian_clock_seconds() {
+	local uptime _unused
+	read -r uptime _unused </proc/uptime || return 1
+	uptime="${uptime%%.*}"
+	[[ "$uptime" =~ ^[0-9]{1,12}$ ]] || return 1
+	printf '%s\n' "$((10#$uptime))"
+}
+
+guardian_record_progress() {
+	local now
+	now="$(guardian_clock_seconds)" || return 1
+	printf '%s\n' "$now" >"$HOST_GUARDIAN_PROGRESS.tmp" &&
+		mv -f "$HOST_GUARDIAN_PROGRESS.tmp" "$HOST_GUARDIAN_PROGRESS"
+}
+
+guardian_progress_fresh() {
+	local now last
+	now="$(guardian_clock_seconds)" || return 1
+	last="$(<"$HOST_GUARDIAN_PROGRESS")" || return 1
+	[[ "$last" =~ ^[0-9]{1,12}$ ]] || return 1
+	last="$((10#$last))"
+	[ "$last" -le "$now" ] && [ "$((now - last))" -le "$GUARDIAN_MAX_SILENCE_SECONDS" ]
 }
 
 stop_node_writer_commands() {
@@ -822,9 +851,9 @@ run_bench_segment() {
 			return 1
 		fi
 	fi
-	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null; }; then
+	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
 		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The host guardian exited before benchmark admission. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The host guardian failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
 		fi
 		EARLY_EXIT_REASON="host_protection_breach"
 		DEADLINE=0
@@ -851,6 +880,9 @@ run_bench_segment() {
 	while kill -0 "$BENCHMARK_PID" 2>/dev/null; do
 		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
 			printf 'The host guardian exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		if [ -n "$HOST_GUARDIAN_PID" ] && ! guardian_progress_fresh && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian has no recent progress during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
 		fi
 		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 			interrupted=1
@@ -950,6 +982,7 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
 HOST_GUARDIAN_PID=""
+HOST_GUARDIAN_PROGRESS="$OUTPUT_DIR/.host-guardian-progress"
 BENCHMARK_PID=""
 ITERATION_PID=""
 ITERATION_TEE_PID=""
@@ -971,6 +1004,10 @@ cleanup_soak_processes() {
 }
 trap cleanup_soak_processes EXIT
 if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+	if ! guardian_record_progress; then
+		printf 'The host guardian progress record is unavailable. The driver refused work.\n' >&2
+		exit 2
+	fi
 	(
 		# Run 33136185540 (2026-08-28): the kernel OOM killer chose
 		# Runner.Worker while this guardian's 3-sample window was still
@@ -1081,6 +1118,7 @@ print(json.dumps(tags))
 					fi
 				fi
 			fi
+			guardian_record_progress || exit 1
 			if [ "$HOST_FREE_FLOOR_MB" -le 0 ]; then
 				continue
 			fi
@@ -1208,9 +1246,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			break
 		fi
 	fi
-	if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null; then
+	if [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; then
 		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The host guardian exited before iteration admission. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The host guardian failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
 		fi
 		EARLY_EXIT_REASON="host_protection_breach"
 		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
@@ -1282,6 +1320,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
 		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
 			printf 'The host guardian exited during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		if [ -n "$HOST_GUARDIAN_PID" ] && ! guardian_progress_fresh && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian has no recent progress during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
 		fi
 		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 			GUARDIAN_INTERRUPTED=1
