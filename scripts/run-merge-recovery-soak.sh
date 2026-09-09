@@ -196,7 +196,7 @@ SOAK_RUNNER_ROOT="${SOAK_RUNNER_ROOT:-/opt/actions-runner}"
 # arithmetic garbage into the guardian.
 disk_free_mb() {
 	local mb
-	mb="$(df -Pm "$OUTPUT_DIR" 2>/dev/null | awk 'NR == 2 { print int($4) }')"
+	mb="$(df -Pm "$OUTPUT_DIR" 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print int($4) }')"
 	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$mb"
 }

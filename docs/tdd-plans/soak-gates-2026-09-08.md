@@ -81,6 +81,23 @@ behaviors:
         hosted_confirmation: pending
         model_review: pending
         claim_discharge: pending
+  - id: B6
+    statement: Disk admission rejects a field with a numeric prefix followed by text after a valid startup sample.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-sample-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-disk-sample.sh
+        red_revision: 59430d59b45e4640187fd4b0414b03249c431e8f
+        red_exit: 1
+        formal_red_exit: 12
+        green_binding: source-sha256
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        model_review: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -100,6 +117,7 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B3: The claim inventory binds source digests and distinguishes baseline evidence from pending obligations.
 - [x] B4: Historical production and formal counterexamples match. The existing admission correction passes both local checks.
 - [x] B5: Missing samples before and after hygiene prevent admission and produce a recorded failure.
+- [x] B6: A field with a numeric prefix followed by text prevents admission and produces a recorded failure.
 
 ## Cycle evidence
 
@@ -130,3 +148,11 @@ The corrected driver refused both admissions and recorded failure. The corrected
 The first formal attempt stopped on a sample encoding error with exit 75. That attempt is not behavioral RED. The evidence retains it separately.
 
 B5 does not complete D2. Emergency timing, failed guardians, writer termination, durability, and the other fault cases remain pending.
+
+B6 reproduces admission after `df` returns `16384junk` with exit zero. The old parser converts that malformed field to `16384`. The matching formal control violates `AdmissionRequiresValidSample` with exit 12.
+
+The one-line correction validates the original field before the existing numeric conversion. Production GREEN records zero iterations and one failure. Formal GREEN completes with 17 distinct states.
+
+D1, B5, and the existing driver suite also pass. The bounded gate passes five positive configurations and five exact negative controls. The classifier covers 35 cases.
+
+B6 completes only this local cycle. Other malformed values, active-iteration response, guardian failure, aggregate deadlines, writer termination, and restart preservation remain pending.

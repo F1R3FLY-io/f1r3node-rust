@@ -104,6 +104,7 @@ POST_FIX_CONFIGS=(
     carrier_index/MC_CarrierIndex
     soak_disk/MC_SoakDisk
     soak_disk/MC_DiskProbeAdmission
+    soak_disk/MC_DiskSampleValidation
 )
 
 TLC_WORKERS=auto
@@ -113,6 +114,7 @@ if [[ "$SOAK_PR" == true ]]; then
         carrier_index/MC_CarrierIndex
         soak_disk/MC_SoakDisk
         soak_disk/MC_DiskProbeAdmission
+        soak_disk/MC_DiskSampleValidation
     )
     TLC_WORKERS=2
 fi
@@ -153,6 +155,7 @@ NEGATIVE_CONTROLS=(
     carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
     soak_disk/MC_SoakDisk_floor_only_pre_fix:AdmissionRequiresBand
     soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix:AdmissionRequiresSample
+    soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix:AdmissionRequiresValidSample
 )
 
 failed=0

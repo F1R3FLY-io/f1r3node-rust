@@ -155,3 +155,19 @@ The existing D1 and three-scenario driver regressions passed in disposable conta
 The classifier passed 28 cases, and routing passed six scenarios. Workflow, release, repin, collector-extension, and summary regressions also passed.
 
 D2 remains open. This cycle does not prove emergency timing, writer termination, durable evidence, all-writer bounds, or acceptance. No claim was discharged.
+
+## D2 numeric-prefix rejection
+
+The user directed local D2 work before O1. The next cycle reproduces admission after a valid startup sample and a later `16384junk` field.
+
+At `59430d59b`, the production test fails because the driver admits one iteration without recording failure. TLC then reports `AdmissionRequiresValidSample` with exit 12.
+
+The one-line correction adds a digit check before the existing numeric conversion. The corrected trace records zero iterations, one failure, and local refusal evidence. The corrected model completes with 17 distinct states.
+
+The [cycle evidence](../cbc-evidence/soak-d2-sample-2026-09-09/README.md) binds both traces, model inputs, and complete verification logs. D1, B5, and the three-scenario driver suite pass in disposable containers.
+
+The composed bounded gate passes five positive configurations and five exact negative controls. The classifier passes 35 cases, and routing passes six scenarios.
+
+This result does not complete D2 or discharge a claim. The model assumes completing commands and local writes. Active-iteration response, guardian failure, aggregate deadlines, termination, durability, and restart preservation remain pending.
+
+No commit, push, hosted run, or soak followed this cycle.

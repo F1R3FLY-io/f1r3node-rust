@@ -24,6 +24,7 @@ case "$config" in
     MC_CarrierIndex_read_failure_pre_fix.cfg) invariant=AbsenceProofSound ;;
     MC_SoakDisk_floor_only_pre_fix.cfg) invariant=AdmissionRequiresBand ;;
     MC_DiskProbeAdmission_missing_sample_pre_fix.cfg) invariant=AdmissionRequiresSample ;;
+    MC_DiskSampleValidation_numeric_prefix_pre_fix.cfg) invariant=AdmissionRequiresValidSample ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 if [[ "$config" == "$TEST_TLC_TARGET" ]]; then
@@ -43,7 +44,8 @@ chmod +x "$WORK/bin/tlc"
 
 for target in carrier_index/MC_CarrierIndex_dag_first_pre_fix \
     carrier_index/MC_CarrierIndex_read_failure_pre_fix soak_disk/MC_SoakDisk_floor_only_pre_fix \
-    soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix; do
+    soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix \
+    soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix; do
     for result in clean wrong-invariant tool-error wrong-exit timeout missing expected; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
         if [[ "$result" == missing ]]; then

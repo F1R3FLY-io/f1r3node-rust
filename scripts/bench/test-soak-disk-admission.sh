@@ -10,7 +10,7 @@ SOURCE_FILES=(
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
 case "$SCENARIO" in
-band | missing-boundary | missing-after-hygiene) ;;
+band | missing-boundary | missing-after-hygiene | malformed-boundary) ;;
 *)
     printf 'ERROR: Unknown disk fixture scenario.\n' >&2
     exit 2
@@ -35,6 +35,15 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
         if ! mkdir /case/evidence/startup-probe-seen 2>/dev/null; then
             printf 'missing\n' >>/case/evidence/probe-samples.txt
             exit 1
+        fi
+        available=16384
+        ;;
+    malformed-boundary)
+        if ! mkdir /case/evidence/startup-probe-seen 2>/dev/null; then
+            printf 'malformed=16384junk\n' >>/case/evidence/probe-samples.txt
+            printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n'
+            printf '/dev/fixture 47000 30616 16384junk 65%% /\n'
+            exit 0
         fi
         available=16384
         ;;
@@ -92,14 +101,20 @@ SH
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
     if [[ "$SCENARIO" != band ]]; then
+        sample_kind=missing
+        sample_record=missing
+        if [[ "$SCENARIO" == malformed-boundary ]]; then
+            sample_kind=malformed
+            sample_record='malformed=16384junk'
+        fi
         if ! grep -Eq '^valid=(7000|16384)$' evidence/probe-samples.txt ||
-            ! grep -Fxq missing evidence/probe-samples.txt ||
+            ! grep -Fxq "$sample_record" evidence/probe-samples.txt ||
             [[ "$SCENARIO" == missing-after-hygiene && ! -f evidence/hygiene-completed ]]; then
-            printf 'ERROR: The fixture did not exercise a missing post-start disk sample.\n' >&2
+            printf 'ERROR: The fixture did not exercise a %s post-start disk sample.\n' "$sample_kind" >&2
             exit 2
         fi
         if [[ "$iterations" != 0 || -e evidence/workload-started.txt ]]; then
-            printf 'FAIL: A post-start disk sample was missing (%s), but the driver admitted %s iteration(s).\n' "$SCENARIO" "$iterations" >&2
+            printf 'FAIL: A post-start disk sample was %s (%s), but the driver admitted %s iteration(s).\n' "$sample_kind" "$SCENARIO" "$iterations" >&2
             exit 1
         fi
         if [[ "$status" != 1 ]] ||
@@ -107,10 +122,10 @@ SH
             ! grep -Fxq 'host_protection_breach: disk probe unavailable before admission' evidence/output/early-exit.txt ||
             ! grep -Fxq 'The disk probe is unavailable before admission. The driver refused work.' evidence/output/protection-breach.txt ||
             ! jq -e '.iterations == 0 and .failures == 1' evidence/output/summary.json >/dev/null; then
-            printf 'FAIL: Missing-sample refusal lacks the required failure result and evidence.\n' >&2
+            printf 'FAIL: Invalid-sample refusal lacks the required failure result and evidence.\n' >&2
             exit 1
         fi
-        printf 'PASS: A post-start disk sample was missing (%s). No iteration started, and the driver recorded refusal.\n' "$SCENARIO"
+        printf 'PASS: A post-start disk sample was %s (%s). No iteration started, and the driver recorded refusal.\n' "$sample_kind" "$SCENARIO"
         exit 0
     fi
     if ! grep -Fxq 'disk hygiene: 7000MB free -> 7000MB free' evidence/driver.log; then

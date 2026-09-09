@@ -263,6 +263,12 @@ Both production traces failed before the correction. The matching formal control
 
 This result does not establish an emergency deadline, confirmed writer termination, or durable evidence. Hosted execution, model review, and the remaining D2 behaviors stay pending.
 
+The [numeric-prefix cycle](../cbc-evidence/soak-d2-sample-2026-09-09/README.md) completes a second local D2 behavior. The driver now rejects `16384junk` instead of admitting work from its numeric prefix.
+
+Production RED and the exact `AdmissionRequiresValidSample` counterexample precede the one-line correction. Production GREEN records refusal, and formal GREEN completes with 17 distinct states.
+
+This cycle does not verify all malformed values or active-iteration response. The emergency deadline, guardian failure, confirmed termination, durable evidence, and restart obligations remain open.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

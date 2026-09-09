@@ -47,6 +47,7 @@ case "$config" in
     MC_CarrierIndex_read_failure_pre_fix.cfg) invariant=AbsenceProofSound ;;
     MC_SoakDisk_floor_only_pre_fix.cfg) invariant=AdmissionRequiresBand ;;
     MC_DiskProbeAdmission_missing_sample_pre_fix.cfg) invariant=AdmissionRequiresSample ;;
+    MC_DiskSampleValidation_numeric_prefix_pre_fix.cfg) invariant=AdmissionRequiresValidSample ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -61,6 +62,8 @@ pr_configs=(
     soak_disk/MC_SoakDisk_floor_only_pre_fix
     soak_disk/MC_DiskProbeAdmission
     soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix
+    soak_disk/MC_DiskSampleValidation
+    soak_disk/MC_DiskSampleValidation_numeric_prefix_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

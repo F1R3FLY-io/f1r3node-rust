@@ -1,0 +1,2 @@
+FAIL: A post-start disk sample was malformed (malformed-boundary), but the driver admitted 1 iteration(s).
+Evidence: /home/bf_spark/soak-evidence/f1r3node-rust/d2-sample-iAUHCNBW/production-red
