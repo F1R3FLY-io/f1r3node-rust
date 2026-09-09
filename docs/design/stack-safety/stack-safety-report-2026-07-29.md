@@ -10177,6 +10177,32 @@ This completes the finite scheduler model, not the focused runtime or its measur
 resource improvement. Actual slot materialization and transaction binding remain
 required. The persistent backend comparison is unaffected.
 
+#### 5.33.18 Focused owner runtime (2026-09-09, task 6018)
+
+The stream reducer now separates the active leaf from suspended Region owners.
+Cached boundaries and an exact graph stamp avoid revisiting every enclosing
+Region for ordinary bytes or child dispatch. Shared completion/resolution and
+pre-step rollback preserve the original grammar and error locations. Independent
+normalized-graph comparisons check the eager and focused implementations after
+each byte/resolution, including generated nested mutations and post-refusal input.
+
+In the width-1,024/depth-32 repeated-map-child control, J-097's 604,624 parent
+ancestor operations become zero such traversals, with 32 entry queries, 32
+detachments and 3,323 settlement checks. Physical visits remain 3,299. Measured
+frame-plus-owner backing falls from 22,616 to 17,304 bytes in this case; shallow
+cases can instead use more backing because the owner vector has minimum capacity.
+These are parent-operation and retained-capacity observations, not wall-clock,
+allocation-count, isolated-RSS or whole-pipeline complexity results.
+
+[J-099](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-099--2026-09-09-focused-owners-remove-ordinary-ancestor-traversal)
+records the full method, negative results, proof-to-test binding and qualification
+artifacts. Qualification passes 389 models tests, 23 manifest tests and 36 ParBag
+integration tests, including the unchanged depth-4,096 import/ACT case, with zero
+ignored tests. The focused gate passes 86 tests, 104 RPB3 reports and three kernel
+checks; proof results remain conditional on the documented runtime bindings.
+The current task still includes persistent ACT admission composition;
+this result does not close the task or the same-contract LMDB comparison.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

@@ -230,6 +230,9 @@ pub(crate) struct CanonicalPathOwnerWork {
     pub(crate) plans: usize,
     pub(crate) resolutions: usize,
     pub(crate) rebuilds: usize,
+    pub(crate) detachments: usize,
+    pub(crate) reifications: usize,
+    pub(crate) settlements: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,7 +461,25 @@ pub(crate) struct CanonicalPathReducer {
 pub(crate) struct CanonicalPathStreamReducer {
     current: InnerPath,
     consumed: usize,
+    graph_stamp: usize,
+    owners: Vec<FocusedRegionOwner>,
     machine: CanonicalPathMachine<FrameStorage<CanonicalByteRange>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RegionBoundary {
+    end: u128,
+    owner: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FocusedRegionOwner {
+    owner: InnerPath,
+    region_end: u128,
+    path_end: u128,
+    all_boundary: RegionBoundary,
+    path_boundary: RegionBoundary,
+    all_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -902,6 +923,8 @@ impl CanonicalPathStreamReducer {
         Self {
             current: InnerPath::new(true),
             consumed: 0,
+            graph_stamp: 0,
+            owners: Vec::new(),
             machine: CanonicalPathMachine::new(),
         }
     }
@@ -910,7 +933,10 @@ impl CanonicalPathStreamReducer {
     pub(crate) const fn consumed_len(&self) -> usize { self.consumed }
 
     #[cfg(test)]
-    pub(crate) const fn retained_state_bytes(&self) -> usize { std::mem::size_of::<InnerPath>() }
+    pub(crate) fn retained_state_bytes(&self) -> usize {
+        std::mem::size_of::<InnerPath>()
+            + self.owners.capacity() * std::mem::size_of::<FocusedRegionOwner>()
+    }
 
     #[cfg(test)]
     pub(crate) fn owner_work(&self) -> CanonicalPathOwnerWork { self.machine.owner_work.get() }
@@ -934,43 +960,37 @@ impl CanonicalPathStreamReducer {
     pub(crate) fn plan_opaque_interior(&self, input_len: usize) -> Option<OpaqueInteriorPlan> {
         let available = input_len.checked_sub(self.consumed)?;
         let mut bound = u64::try_from(available).unwrap_or(u64::MAX);
-        let mut current = &self.current;
-        loop {
-            if current.status != PathStatus::Open {
+        if let Some(owner) = self.owners.last() {
+            if !owner.all_open {
                 return None;
             }
-            let top = current.stack?;
-            match &self.machine.frames[top.0] {
-                Frame::Region {
-                    remaining,
-                    phase:
-                        RegionPhase::Path {
-                            remaining: path_remaining,
-                            path,
-                            ..
-                        },
-                    ..
-                } => {
-                    #[cfg(test)]
-                    self.machine.record_owner_work(|work| work.plans += 1);
-                    bound = bound.min(*remaining).min(*path_remaining);
-                    current = path;
-                }
-                Frame::Obligation {
-                    obligation,
-                    status: ObligationStatus::Payload { remaining },
-                    ..
-                } => {
-                    let width = usize::try_from(bound.min(*remaining).saturating_sub(1)).ok()?;
-                    return (width != 0).then_some(OpaqueInteriorPlan {
-                        from: self.consumed,
-                        id: obligation.id,
-                        width,
-                    });
-                }
-                _ => return None,
-            }
+            bound = bound.min(
+                u64::try_from(
+                    owner
+                        .all_boundary
+                        .end
+                        .checked_sub(self.graph_stamp as u128)?,
+                )
+                .ok()?,
+            );
         }
+        if self.current.status != PathStatus::Open {
+            return None;
+        }
+        let Frame::Obligation {
+            obligation,
+            status: ObligationStatus::Payload { remaining },
+            ..
+        } = &self.machine.frames[self.current.stack?.0]
+        else {
+            return None;
+        };
+        let width = usize::try_from(bound.min(*remaining).saturating_sub(1)).ok()?;
+        (width != 0).then_some(OpaqueInteriorPlan {
+            from: self.consumed,
+            id: obligation.id,
+            width,
+        })
     }
 
     pub(crate) fn try_advance_opaque_interior(
@@ -989,18 +1009,20 @@ impl CanonicalPathStreamReducer {
             return false;
         }
         let mut current = self.current.clone();
-        self.machine.feed_path::<IndexedPathBytes<'_, '_>>(
-            &mut current,
-            PathAdvance::OpaqueInterior {
-                width: u64::try_from(plan.width)
-                    .expect("a planned width is bounded by a u64 payload"),
-            },
-        );
+        self.machine
+            .feed_path_advance_shallow::<IndexedPathBytes<'_, '_>>(
+                &mut current,
+                &PathAdvance::OpaqueInterior {
+                    width: u64::try_from(plan.width)
+                        .expect("a planned width is bounded by a u64 payload"),
+                },
+            );
         self.machine
             .frames
-            .finish(current.stack == self.current.stack);
+            .finish(self.owners.is_empty() && current.stack == self.current.stack);
         self.current = current;
         self.consumed += plan.width;
+        self.graph_stamp += plan.width;
         self.machine.stats.edges += plan.width;
         self.machine.stats.max_topology_depth =
             self.machine.stats.max_topology_depth.max(self.consumed);
@@ -1044,10 +1066,31 @@ impl CanonicalPathStreamReducer {
                     byte.source,
                 )
             })?;
-        let (current, transition) =
-            self.machine
-                .advance(&IndexedPathBytes { input, consumed }, &self.current, byte);
-        self.current = current;
+        let bytes = IndexedPathBytes { input, consumed };
+        if self.owners.is_empty() && matches!(self.current.status, PathStatus::Dead(_)) {
+            let (current, transition) = self.machine.advance(&bytes, &self.current, byte);
+            self.current = current;
+            self.consumed = consumed;
+            return Ok(transition);
+        }
+        self.machine.stats.edges += 1;
+        self.machine.stats.max_topology_depth = self.machine.stats.max_topology_depth.max(consumed);
+        let mut current = self.current.clone();
+        let transition = if self
+            .owners
+            .last()
+            .is_some_and(|owner| owner.all_boundary.end < consumed as u128)
+        {
+            current.kill(CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::RegionFrameOverrun,
+                byte.source,
+            ));
+            CanonicalPathTransition::Continue
+        } else {
+            self.machine.feed_path_shallow(consumed, &mut current, byte)
+        };
+        let (current, remaining) = self.settle_focus(&bytes, current, consumed, byte.source);
+        self.select_focus(current, remaining, consumed);
         self.consumed = consumed;
         Ok(transition)
     }
@@ -1057,7 +1100,18 @@ impl CanonicalPathStreamReducer {
         has_value: bool,
         source: CanonicalPathSource,
     ) -> Option<Result<CanonicalPathSummary, CanonicalPathAdmissionError>> {
-        has_value.then(|| self.machine.finish_path(&self.current, source))
+        has_value.then(|| {
+            if let Some(owner) = self.owners.first() {
+                self.machine.finish_path_with_pending(
+                    &owner.owner,
+                    source,
+                    self.active_obligation()
+                        .is_some_and(|value| value.awaiting_resolution),
+                )
+            } else {
+                self.machine.finish_path(&self.current, source)
+            }
+        })
     }
 
     pub(crate) fn resolve_obligation(
@@ -1066,16 +1120,251 @@ impl CanonicalPathStreamReducer {
         id: CanonicalPathObligationId,
         resolution: CanonicalPathObligationResolution,
     ) -> Result<(), CanonicalPathAdmissionError> {
-        self.current = self.machine.resolved_state(
-            &IndexedPathBytes {
-                input,
-                consumed: self.consumed,
-            },
-            &self.current,
-            id,
-            resolution,
-        )?;
+        let bytes = IndexedPathBytes {
+            input,
+            consumed: self.consumed,
+        };
+        if self.owners.is_empty() && matches!(self.current.status, PathStatus::Dead(_)) {
+            self.current = self
+                .machine
+                .resolved_state(&bytes, &self.current, id, resolution)?;
+            return Ok(());
+        }
+        let top = self.current.stack.ok_or_else(|| {
+            CanonicalPathAdmissionError::new(
+                CanonicalPathAdmissionErrorKind::UnresolvedObligation,
+                CanonicalPathSource::new(0),
+            )
+        })?;
+        let frame = self.machine.frame(top);
+        let mut current = self.current.clone();
+        self.machine
+            .resolve_leaf_obligation(&mut current, frame, id, resolution)?;
+        let endpoint = CanonicalPathSource::from_provenance(
+            bytes
+                .provenance_at(self.consumed - 1)
+                .expect("a pending child has consumed its length"),
+        );
+        let (current, remaining) = self.settle_focus(&bytes, current, self.graph_stamp, endpoint);
+        self.select_focus(current, remaining, self.graph_stamp);
         Ok(())
+    }
+
+    fn focus_path(&mut self) {
+        while self.current.status == PathStatus::Open {
+            let Some(id) = self.current.stack else { break };
+            let Frame::Region {
+                remaining,
+                phase:
+                    RegionPhase::Path {
+                        remaining: path_remaining,
+                        path,
+                        ..
+                    },
+                ..
+            } = self.machine.frame(id)
+            else {
+                break;
+            };
+            let index = self.owners.len();
+            let region_end = self.graph_stamp as u128 + u128::from(remaining);
+            let path_end = self.graph_stamp as u128 + u128::from(path_remaining);
+            let mut all_boundary = RegionBoundary {
+                end: region_end.min(path_end),
+                owner: index,
+            };
+            let mut path_boundary = RegionBoundary {
+                end: path_end,
+                owner: index,
+            };
+            let mut all_open = self.current.status == PathStatus::Open;
+            if let Some(previous) = self.owners.last() {
+                if previous.all_boundary.end <= all_boundary.end {
+                    all_boundary = previous.all_boundary;
+                }
+                if previous.path_boundary.end < path_boundary.end {
+                    path_boundary = previous.path_boundary;
+                }
+                all_open &= previous.all_open;
+            }
+            self.owners.push(FocusedRegionOwner {
+                owner: self.current.clone(),
+                region_end,
+                path_end,
+                all_boundary,
+                path_boundary,
+                all_open,
+            });
+            let Frame::Region {
+                phase: RegionPhase::Path { path: held, .. },
+                ..
+            } = &mut self.machine.frames.slots[id.0]
+            else {
+                unreachable!()
+            };
+            held.stack = None;
+            self.current = path;
+            #[cfg(test)]
+            self.machine.record_owner_work(|work| work.detachments += 1);
+        }
+    }
+
+    fn materialize_owners(
+        &mut self,
+        mut current: InnerPath,
+        start: usize,
+        end: usize,
+        stamp: usize,
+    ) -> InnerPath {
+        for index in (start..end).rev() {
+            let saved = &self.owners[index];
+            let id = saved
+                .owner
+                .stack
+                .expect("a suspended owner holds its Region slot");
+            let Frame::Region {
+                remaining,
+                phase:
+                    RegionPhase::Path {
+                        remaining: path_remaining,
+                        path,
+                        ..
+                    },
+                ..
+            } = &mut self.machine.frames.slots[id.0]
+            else {
+                unreachable!("a held owner retains its Region metadata")
+            };
+            *remaining = u64::try_from(
+                saved
+                    .region_end
+                    .checked_sub(stamp as u128)
+                    .expect("selected graph stamp precedes its Region end"),
+            )
+            .expect("saved Region residual originated as u64");
+            *path_remaining = u64::try_from(
+                saved
+                    .path_end
+                    .checked_sub(stamp as u128)
+                    .expect("selected graph stamp precedes its path end"),
+            )
+            .expect("saved path residual originated as u64");
+            *path = current;
+            current = saved.owner.clone();
+            #[cfg(test)]
+            self.machine
+                .record_owner_work(|work| work.reifications += 1);
+        }
+        current
+    }
+
+    fn finish_focused_owner(
+        &mut self,
+        bytes: &IndexedPathBytes<'_, '_>,
+        child: &InnerPath,
+        index: usize,
+        stamp: usize,
+        endpoint: CanonicalPathSource,
+    ) -> InnerPath {
+        let saved = &self.owners[index];
+        let mut owner = saved.owner.clone();
+        let id = owner
+            .stack
+            .expect("a suspended owner holds its Region slot");
+        let remaining = u64::try_from(
+            saved
+                .region_end
+                .checked_sub(stamp as u128)
+                .expect("completion stays inside its Region"),
+        )
+        .expect("saved residual originated as u64");
+        let Frame::Region {
+            previous,
+            phase:
+                RegionPhase::Path {
+                    declared_len,
+                    start_depth,
+                    ..
+                },
+            next,
+            ..
+        } = self.machine.frame(id)
+        else {
+            unreachable!()
+        };
+        let checkpoint = self.machine.frames.checkpoint();
+        self.machine.finish_region_path(
+            bytes,
+            &mut owner,
+            child,
+            remaining,
+            declared_len,
+            start_depth,
+            previous,
+            next,
+            endpoint,
+        );
+        self.machine
+            .frames
+            .select(checkpoint, Some(id), owner.stack);
+        owner
+    }
+
+    fn settle_focus(
+        &mut self,
+        bytes: &IndexedPathBytes<'_, '_>,
+        mut current: InnerPath,
+        stamp: usize,
+        endpoint: CanonicalPathSource,
+    ) -> (InnerPath, usize) {
+        let mut remaining = self.owners.len();
+        loop {
+            if matches!(current.status, PathStatus::Dead(_))
+                || self
+                    .machine
+                    .active_obligation_in(&current)
+                    .is_some_and(|value| value.awaiting_resolution)
+                || remaining == 0
+            {
+                return (current, remaining);
+            }
+            #[cfg(test)]
+            self.machine.record_owner_work(|work| work.settlements += 1);
+            let due = self.owners[remaining - 1].path_boundary;
+            if due.end != stamp as u128 {
+                return (current, remaining);
+            }
+            if due.owner + 1 != remaining {
+                current = self.materialize_owners(current, due.owner + 1, remaining, stamp);
+            }
+            current = self.finish_focused_owner(bytes, &current, due.owner, stamp, endpoint);
+            remaining = due.owner;
+        }
+    }
+
+    fn select_focus(&mut self, mut current: InnerPath, remaining: usize, stamp: usize) {
+        if let PathStatus::Dead(error) = current.status {
+            if !self.owners.is_empty() {
+                self.machine.frames.finish(true);
+                current = self.materialize_owners(
+                    self.current.clone(),
+                    0,
+                    self.owners.len(),
+                    self.graph_stamp,
+                );
+                current.kill(error);
+                self.current = current;
+                self.owners.clear();
+                return;
+            }
+        }
+        self.machine
+            .frames
+            .finish(self.owners.is_empty() && current.stack == self.current.stack);
+        self.current = current;
+        self.owners.truncate(remaining);
+        self.graph_stamp = stamp;
+        self.focus_path();
     }
 }
 
@@ -1797,15 +2086,26 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         path: &InnerPath,
         source: CanonicalPathSource,
     ) -> Result<CanonicalPathSummary, CanonicalPathAdmissionError> {
+        self.finish_path_with_pending(
+            path,
+            source,
+            self.active_obligation_in(path)
+                .is_some_and(|o| o.awaiting_resolution),
+        )
+    }
+
+    fn finish_path_with_pending(
+        &self,
+        path: &InnerPath,
+        source: CanonicalPathSource,
+        pending: bool,
+    ) -> Result<CanonicalPathSummary, CanonicalPathAdmissionError> {
         if let PathStatus::Dead(error) = path.status {
             return Err(error);
         }
         if path.stack.is_some() {
             return Err(CanonicalPathAdmissionError::new(
-                if self
-                    .active_obligation_in(path)
-                    .is_some_and(|o| o.awaiting_resolution)
-                {
+                if pending {
                     CanonicalPathAdmissionErrorKind::UnresolvedObligation
                 } else {
                     CanonicalPathAdmissionErrorKind::Truncated

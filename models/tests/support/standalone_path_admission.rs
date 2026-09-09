@@ -119,11 +119,14 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
     let mut history = CanonicalPathReducer::new();
     let mut checkpoint = history.root(&history_arena);
     let mut stream = CanonicalPathStreamReducer::new();
+    let mut reference = CanonicalPathStreamReducer::new();
     let mut successful = 0;
     for (index, byte) in bytes.iter().copied().enumerate() {
         let located = CanonicalLocatedByte::new(byte, origin(index));
         let left = history.edge(&mut history_arena, checkpoint, located);
         let right = stream.edge(&input, located);
+        assert_eq!(right, reference.reference_edge(&input, located));
+        stream.assert_reference_equivalent(&reference);
         match (left, right) {
             (Ok((next, left)), Ok(right)) => {
                 assert_eq!(left, right);
@@ -163,6 +166,11 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
                 );
                 assert_eq!(stream.consumed_len(), consumed_before);
                 assert_eq!(stream.stats(), stats_before);
+                assert_eq!(
+                    stream.edge(&input, located),
+                    reference.reference_edge(&input, located),
+                );
+                stream.assert_reference_equivalent(&reference);
                 let resolution = match left.obligation.kind {
                     CanonicalPathObligationKind::RawParEscape => {
                         CanonicalPathObligationResolution::RawPar {
@@ -182,6 +190,10 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
                 stream
                     .resolve_obligation(&input, right.obligation.id, resolution)
                     .unwrap();
+                reference
+                    .reference_resolve(&input, right.obligation.id, resolution)
+                    .unwrap();
+                stream.assert_reference_equivalent(&reference);
                 successful += 1;
                 assert!(
                     history
@@ -194,6 +206,10 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
             _ => panic!("storage modes disagree about child completion at {index}"),
         }
         let endpoint = CanonicalPathSource::in_source(99, index);
+        assert_eq!(
+            stream.value(true, endpoint),
+            reference.value(true, endpoint)
+        );
         assert_eq!(
             history.value(checkpoint, true, endpoint),
             stream.value(true, endpoint)
@@ -208,6 +224,7 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
     }
     let endpoint = CanonicalPathSource::in_source(99, 800);
     stream.assert_frame_invariants();
+    stream.assert_reference_equivalent(&reference);
     assert_eq!(
         history.value(checkpoint, true, endpoint),
         stream.value(true, endpoint)
@@ -513,6 +530,37 @@ proptest! {
         key.push(0);
         for mode in [NestedEpmMode::Empty, NestedEpmMode::Set, NestedEpmMode::Map] {
             assert_storage_trace(&key, raw_stable, mode, entries_stable);
+        }
+    }
+
+    #[test]
+    fn focused_owner_graph_matches_eager_after_mutated_nested_steps(
+        raw in prop::collection::vec(any::<u8>(), 0..48),
+        depth in 0usize..17,
+        mutation in any::<usize>(),
+        replacement in any::<u8>(),
+        raw_stable in any::<bool>(),
+        entries_stable in any::<bool>(),
+    ) {
+        for mut key in [payload(0x05, &raw), payload(0x0f, &raw), payload(0x10, &raw), raw] {
+            for _ in 0..depth {
+                let mut region = Vec::new();
+                prost::encoding::encode_varint(key.len() as u64, &mut region);
+                region.extend_from_slice(&key);
+                key = payload(0x0d, &region);
+            }
+            let mut changed = key.clone();
+            if !changed.is_empty() {
+                let at = mutation % changed.len();
+                changed[at] = replacement;
+            }
+            key.extend_from_slice(&[0xff, 0, 0xff]);
+            changed.extend_from_slice(&[0xff, 0, 0xff]);
+            for bytes in [&key, &changed] {
+                for mode in [NestedEpmMode::Empty, NestedEpmMode::Set, NestedEpmMode::Map] {
+                    assert_storage_trace(bytes, raw_stable, mode, entries_stable);
+                }
+            }
         }
     }
 }
@@ -901,7 +949,9 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
         );
         for depth in [0, 1, 8, 32] {
             let mut key = payload(0x10, map.trie_snapshot());
+            let mut expected_scalar_descents = 0;
             for _ in 0..depth {
+                expected_scalar_descents += key.len();
                 let mut region = Vec::new();
                 prost::encoding::encode_varint(key.len() as u64, &mut region);
                 region.extend_from_slice(&key);
@@ -931,7 +981,7 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
                 assert_eq!(parent.reducer.stats().bulk_bytes, skipped);
                 let mut scalar = CanonicalPathStreamReducer::new();
                 for byte in parent.input.located_bytes().take(completed_at) {
-                    scalar.edge(&parent.input, byte).unwrap();
+                    scalar.reference_edge(&parent.input, byte).unwrap();
                 }
                 assert_eq!(
                     scalar.active_obligation(),
@@ -942,10 +992,8 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
                     parent.reducer.completed_obligation(&parent.input)
                 );
                 assert_eq!(scalar.stats().edges, parent.reducer.stats().edges);
-                assert_eq!(
-                    scalar.stats().region_descents - parent.reducer.stats().region_descents,
-                    (skipped - 1) * depth
-                );
+                assert_eq!(scalar.stats().region_descents, expected_scalar_descents);
+                assert_eq!(parent.reducer.stats().region_descents, 0);
                 assert_eq!(stats.canonical_path_obligations, 1);
                 let before = parent.reducer.stats();
                 assert!(parent.step(&mut stats).is_err());
@@ -1289,11 +1337,39 @@ fn ordinary_region_work_matrix_tracks_all_owner_walks() {
                         assert_eq!(work.resolutions, 0);
                         assert_eq!(reducer.bulk_bytes, 0);
                         assert_eq!(parent.cursor.bytes_traversed(), key.len());
-                        assert_eq!(work.active_queries, eager_owner_steps);
-                        assert_eq!(work.completed_queries, eager_owner_steps);
-                        assert_eq!(reducer.region_descents, eager_owner_steps);
-                        assert_eq!(work.rebuilds, eager_owner_steps);
+                        let mut reference = CanonicalPathStreamReducer::new();
+                        for byte in parent.input.located_bytes() {
+                            reference.reference_edge(&parent.input, byte).unwrap();
+                            assert!(
+                                reference
+                                    .completed_obligation(&parent.input)
+                                    .unwrap()
+                                    .is_none()
+                            );
+                        }
+                        assert_eq!(reference.owner_work().active_queries, eager_owner_steps);
+                        assert_eq!(reference.owner_work().completed_queries, eager_owner_steps);
+                        assert_eq!(reference.stats().region_descents, eager_owner_steps);
+                        assert_eq!(reference.owner_work().rebuilds, eager_owner_steps);
+                        assert_eq!(
+                            reference.value(true, CanonicalPathSource::new(key.len())),
+                            Some(Ok(result))
+                        );
                     }
+                    assert_eq!(work.active_queries, depth);
+                    assert_eq!(work.completed_queries, 0);
+                    assert_eq!(work.plans, 0);
+                    assert_eq!(work.resolutions, 0);
+                    assert_eq!(reducer.region_descents, 0);
+                    assert_eq!(work.rebuilds, 0);
+                    assert_eq!(work.reifications, 0);
+                    assert_eq!(work.detachments, depth);
+                    assert!(
+                        work.settlements
+                            <= parent.cursor.bytes_traversed()
+                                + stats.canonical_path_resolutions
+                                + depth
+                    );
                     parent.reducer.assert_frame_invariants();
                     let observation = (
                         work,
@@ -1307,7 +1383,7 @@ fn ordinary_region_work_matrix_tracks_all_owner_walks() {
                         first_observation = Some(observation);
                     }
                     println!(
-                        "ordinary region {workload}/{backing}: width={width}, depth={depth}, encoded={}, visits={}, active_queries={}, completed_queries={}, plans={}, resolutions={}, feed_descents={}, rebuilds={}, frame_backing={}",
+                        "ordinary region {workload}/{backing}: width={width}, depth={depth}, encoded={}, visits={}, active_queries={}, completed_queries={}, plans={}, resolutions={}, feed_descents={}, rebuilds={}, detachments={}, reifications={}, settlements={}, state_backing={}, frame_backing={}",
                         key.len(),
                         parent.cursor.bytes_traversed(),
                         work.active_queries,
@@ -1316,6 +1392,10 @@ fn ordinary_region_work_matrix_tracks_all_owner_walks() {
                         work.resolutions,
                         reducer.region_descents,
                         work.rebuilds,
+                        work.detachments,
+                        work.reifications,
+                        work.settlements,
+                        parent.reducer.retained_state_bytes(),
                         parent.reducer.retained_frame_bytes(),
                     );
                 }
@@ -1338,6 +1418,35 @@ fn deep_tuple_admission_and_teardown_use_a_small_stack() {
             assert!(summary.canonical_path_stable);
             assert_eq!(stats.max_frames, 1);
             assert_eq!(stats.canonical_path_bytes_traversed, key.len());
+
+            let depth = 4_096;
+            let mut key = vec![0x03, 0];
+            for _ in 0..depth {
+                let mut region = Vec::new();
+                prost::encoding::encode_varint(key.len() as u64, &mut region);
+                region.extend_from_slice(&key);
+                key = payload(0x0d, &region);
+            }
+            for input in [
+                IndexedByteRegion::from_borrowed(&key, 0, 0),
+                fragmented(&key),
+            ] {
+                let mut reducer = CanonicalPathStreamReducer::new();
+                for byte in input.located_bytes() {
+                    reducer.edge(&input, byte).unwrap();
+                }
+                assert!(
+                    reducer
+                        .value(true, CanonicalPathSource::new(key.len()))
+                        .unwrap()
+                        .unwrap()
+                        .canonical_path_stable
+                );
+                assert_eq!(reducer.owner_work().detachments, depth);
+                assert_eq!(reducer.owner_work().reifications, 0);
+                assert_eq!(reducer.stats().region_descents, 0);
+                reducer.assert_frame_invariants();
+            }
         })
         .unwrap()
         .join()

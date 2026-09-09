@@ -5,12 +5,139 @@ use proptest::prelude::*;
 use super::*;
 
 impl CanonicalPathStreamReducer {
+    pub(crate) fn assert_reference_equivalent(&self, reference: &Self) {
+        assert_eq!(
+            super::opaque_interior_tests::normalized(self),
+            super::opaque_interior_tests::normalized(reference),
+        );
+        assert_eq!(self.active_obligation(), reference.active_obligation());
+    }
+
+    pub(crate) fn reference_edge(
+        &mut self,
+        input: &IndexedByteRegion<'_>,
+        located: CanonicalLocatedByte,
+    ) -> Result<CanonicalPathTransition, CanonicalPathAdmissionError> {
+        assert!(self.owners.is_empty());
+        let byte = self.machine.prepare_edge(&self.current, located)?;
+        let consumed = self
+            .consumed
+            .checked_add(1)
+            .filter(|next| *next <= input.len())
+            .ok_or_else(|| {
+                CanonicalPathAdmissionError::new(
+                    CanonicalPathAdmissionErrorKind::SizeOverflow,
+                    byte.source,
+                )
+            })?;
+        let (current, event) =
+            self.machine
+                .advance(&IndexedPathBytes { input, consumed }, &self.current, byte);
+        self.current = current;
+        self.consumed = consumed;
+        Ok(event)
+    }
+
+    pub(crate) fn reference_resolve(
+        &mut self,
+        input: &IndexedByteRegion<'_>,
+        id: CanonicalPathObligationId,
+        resolution: CanonicalPathObligationResolution,
+    ) -> Result<(), CanonicalPathAdmissionError> {
+        assert!(self.owners.is_empty());
+        self.current = self.machine.resolved_state(
+            &IndexedPathBytes {
+                input,
+                consumed: self.consumed,
+            },
+            &self.current,
+            id,
+            resolution,
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn projected_frame_graph(&self) -> (InnerPath, Vec<Frame<CanonicalByteRange>>) {
+        let mut frames = self.machine.frames.slots.clone();
+        let mut current = self.current.clone();
+        for saved in self.owners.iter().rev() {
+            let id = saved.owner.stack.unwrap();
+            let Frame::Region {
+                remaining,
+                phase:
+                    RegionPhase::Path {
+                        remaining: path_remaining,
+                        path,
+                        ..
+                    },
+                ..
+            } = &mut frames[id.0]
+            else {
+                panic!("held owner must be a Region")
+            };
+            *remaining = u64::try_from(
+                saved
+                    .region_end
+                    .checked_sub(self.graph_stamp as u128)
+                    .unwrap(),
+            )
+            .unwrap();
+            *path_remaining = u64::try_from(
+                saved
+                    .path_end
+                    .checked_sub(self.graph_stamp as u128)
+                    .unwrap(),
+            )
+            .unwrap();
+            *path = current;
+            current = saved.owner.clone();
+        }
+        (current, frames)
+    }
+
     pub(crate) fn assert_frame_invariants(&self) {
         let frames = &self.machine.frames;
         assert!(frames.allocated.is_empty());
         assert!(frames.retired.is_empty());
         let mut seen = vec![false; frames.slots.len()];
         let mut pending: Vec<_> = self.current.stack.into_iter().collect();
+        let mut minimum = None;
+        let mut path_minimum = None;
+        let mut all_open = true;
+        for (index, owner) in self.owners.iter().enumerate() {
+            let id = owner.owner.stack.unwrap();
+            let Frame::Region {
+                phase: RegionPhase::Path { path, .. },
+                ..
+            } = &frames.slots[id.0]
+            else {
+                panic!("a held owner is a Region")
+            };
+            assert!(
+                path.stack.is_none(),
+                "detached slot retains an aliased child"
+            );
+            pending.push(id);
+            let boundary = RegionBoundary {
+                end: owner.region_end.min(owner.path_end),
+                owner: index,
+            };
+            if minimum.is_none_or(|previous: RegionBoundary| boundary.end < previous.end) {
+                minimum = Some(boundary);
+            }
+            let path_boundary = RegionBoundary {
+                end: owner.path_end,
+                owner: index,
+            };
+            if path_minimum.is_none_or(|previous: RegionBoundary| path_boundary.end <= previous.end)
+            {
+                path_minimum = Some(path_boundary);
+            }
+            all_open &= owner.owner.status == PathStatus::Open;
+            assert_eq!(Some(owner.all_boundary), minimum);
+            assert_eq!(Some(owner.path_boundary), path_minimum);
+            assert_eq!(owner.all_open, all_open);
+        }
         while let Some(id) = pending.pop() {
             assert!(
                 !std::mem::replace(&mut seen[id.0], true),
@@ -20,6 +147,18 @@ impl CanonicalPathStreamReducer {
             pending.extend(next(frame));
             pending.extend(child(frame));
         }
+        let (root, projection) = self.projected_frame_graph();
+        let mut projected = vec![false; frames.slots.len()];
+        let mut pending: Vec<_> = root.stack.into_iter().collect();
+        while let Some(id) = pending.pop() {
+            assert!(
+                !std::mem::replace(&mut projected[id.0], true),
+                "projected graph aliases a slot"
+            );
+            pending.extend(next(&projection[id.0]));
+            pending.extend(child(&projection[id.0]));
+        }
+        assert_eq!(projected, seen, "projection changes occupied ownership");
         for id in &frames.free {
             assert!(
                 !std::mem::replace(&mut seen[id.0], true),

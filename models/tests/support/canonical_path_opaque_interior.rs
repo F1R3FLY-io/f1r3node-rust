@@ -14,6 +14,8 @@ type PhysicalSnapshot = (
     Vec<FrameId>,
     u64,
     CanonicalPathAdmissionStats,
+    usize,
+    Vec<FocusedRegionOwner>,
 );
 
 fn origin(index: usize) -> CanonicalByteProvenance {
@@ -103,10 +105,17 @@ fn synthetic(
     }
     reducer.current = path;
     reducer.consumed = from;
+    reducer.graph_stamp = from;
     reducer.machine.next_obligation = 901;
     reducer.machine.stats.edges = from;
     reducer.machine.stats.max_topology_depth = from;
     reducer.machine.frames.finish(false);
+    let initial = (
+        reducer.current.clone(),
+        reducer.machine.frames.slots.clone(),
+    );
+    reducer.focus_path();
+    assert_eq!(reducer.projected_frame_graph(), initial);
     reducer.assert_frame_invariants();
     reducer
 }
@@ -122,16 +131,18 @@ fn physical(reducer: &CanonicalPathStreamReducer) -> PhysicalSnapshot {
         frames.retired.clone(),
         reducer.machine.next_obligation,
         reducer.stats(),
+        reducer.graph_stamp,
+        reducer.owners.clone(),
     )
 }
 
-fn normalized(
+pub(super) fn normalized(
     reducer: &CanonicalPathStreamReducer,
 ) -> (InnerPath, Vec<RangeFrame>, u64, usize, usize, usize) {
     reducer.assert_frame_invariants();
     let mut pending = Vec::new();
     let mut names = BTreeMap::new();
-    let mut root = reducer.current.clone();
+    let (mut root, projection) = reducer.projected_frame_graph();
     if let Some(id) = root.stack {
         names.insert(id.0, 0);
         pending.push(id);
@@ -140,7 +151,7 @@ fn normalized(
     let mut frames = Vec::new();
     let mut at = 0;
     while at < pending.len() {
-        let mut frame = reducer.machine.frames.slots[pending[at].0].clone();
+        let mut frame = projection[pending[at].0].clone();
         let mut rename = |slot: &mut Option<FrameId>| {
             if let Some(id) = *slot {
                 let named = *names.entry(id.0).or_insert_with(|| {
@@ -228,36 +239,17 @@ fn assert_refused(
     reducer.assert_frame_invariants();
 }
 
-fn path_owner(reducer: &CanonicalPathStreamReducer, depth: usize) -> Option<FrameId> {
-    let mut path = &reducer.current;
-    let mut previous = None;
-    for _ in 0..depth {
-        let id = path.stack.unwrap();
-        let Frame::Region {
-            phase: RegionPhase::Path { path: child, .. },
-            ..
-        } = &reducer.machine.frames.slots[id.0]
-        else {
-            panic!("expected an owner path")
-        };
-        previous = Some(id);
-        path = child;
-    }
-    previous
-}
-
 fn set_path_status(reducer: &mut CanonicalPathStreamReducer, depth: usize, status: PathStatus) {
-    if let Some(id) = path_owner(reducer, depth) {
-        let Frame::Region {
-            phase: RegionPhase::Path { path, .. },
-            ..
-        } = &mut reducer.machine.frames.slots[id.0]
-        else {
-            unreachable!()
-        };
-        path.status = status;
+    if let Some(owner) = reducer.owners.get_mut(depth) {
+        owner.owner.status = status;
     } else {
+        assert_eq!(depth, reducer.owners.len());
         reducer.current.status = status;
+    }
+    let mut all_open = true;
+    for owner in &mut reducer.owners {
+        all_open &= owner.owner.status == PathStatus::Open;
+        owner.all_open = all_open;
     }
 }
 

@@ -850,9 +850,9 @@ Algorithm FOCUSED-REGION-STEP(input, focus, owners, graph_stamp)
    protocol. Do not treat Dead as absorbing or replay healthy input prefixes.
 ```
 
-The following complete binding catalogue is required before the focused runtime
-is qualified. Existing scalar controls are evidence about the reference, not
-evidence that the not-yet-implemented focused representation satisfies them.
+The following complete binding catalogue governs focused-runtime qualification.
+The original scalar controls establish the reference; the implemented binding
+and its independent differential checks are described after the scheduler laws.
 
 | ID | Required invariant and executable witness |
 |---|---|
@@ -963,6 +963,28 @@ obligation IDs or owner unwinding. The planned focused traversal will call this
 same helper. No second resolution grammar or focused runtime activation is
 introduced by extracting the helper. The combined runner requires 24 standalone
 tests alongside the existing groups. J-098 records exact qualification artifacts.
+
+#### Implemented focused-owner binding (2026-09-09)
+
+The stream implementation now uses an outer-to-inner owner vector, widened
+Region/path endpoints, opposite-tie prefix caches and a separate graph stamp.
+Reserved Region slots have detached child links. Completion and resolution share
+the original helpers; selected faults reconstruct the immediate pre-step graph
+and resume the existing fault protocol. J-099 records exact scope and measurements.
+
+| Catalogue | Runtime witness |
+|---|---|
+| FRO-01/03/05/08/09 | Independent projected graphs, canonical slot renaming and eager byte/resolution reference after each step; generated nested mutations, boundary controls and post-Dead suffixes retain metadata, clock and provenance comparisons. |
+| FRO-02/04 | Physical selected/free partition, detached-child nonaliasing and independently computed cache minima at every normalized observation; existing synthetic boundary and machine-width controls. |
+| FRO-06/07 | Existing opening-byte, expiry, duplicate-refusal, pending-edge and wrong-ID recovery tests now exercise focused owners; returned-error and no-op checks remain. |
+| FRO-10/12 | Opaque-interior plan/no-op properties, borrowed/frozen transport, retained child spans, persistent scalar-history comparison and tiny-stack tests. |
+| FRO-11 | Eager ordinary-byte control with independent length-sum formula; 64-cell parent resource matrix includes all queries, descents, detachments, reifications, settlement checks and owner-vector capacity. |
+
+The combined runner now requires 25 standalone tests. No extra theorem is
+claimed for this Rust binding: the same 104-report RPB3 theory predates the
+implementation. The properties connect its premises to the actual shared grammar
+and physical representation; they are not exhaustive verification of all Rust
+executions or proof of whole-pipeline linearity.
 
 ## Exact matcher count intervals (2026-09-07)
 

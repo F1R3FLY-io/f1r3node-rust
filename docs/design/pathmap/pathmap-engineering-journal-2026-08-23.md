@@ -7011,6 +7011,101 @@ are still to be implemented and measured against J-097. No avoided ancestor work
 is claimed yet. No PathMap crate change, new dependency, importer/backend
 activation, codec/hash/charge change or ACT/LMDB verdict is introduced here.
 
+### J-099 — 2026-09-09: focused owners remove ordinary ancestor traversal
+
+**IMPLEMENTATION AND FORMAL BINDING.** The stream reducer now keeps the active
+leaf separately from an outer-to-inner vector of suspended Region owners. Each
+owner retains its reserved pool slot and exact metadata. Its child link is
+detached, so the physical ownership graph has no duplicate edge. Absolute ends
+and the graph stamp reconstruct residual lengths; cached all-bound and path-only
+minima preserve the opposite tie rules proved in J-098. Ordinary bytes and opaque
+interiors touch only the focus. Due completions use the unchanged
+`finish_region_path`; child resolution uses `resolve_leaf_obligation`.
+
+Transactions retain the pre-step focus and owner prefix until selection. A
+deferred outer refusal cancels trial allocations/retirements and reconstructs the
+immediately preceding graph at its original stamp. Public consumed bytes and the
+obligation clock retain their established behavior. Subsequent fault operations
+use the original shared protocol. This implements the preverified focused model;
+it does not replace the codec, public persistent fork protocol or PathMap crate.
+
+**DIFFERENTIAL METHOD.** Test-only `reference_edge` and `reference_resolve` drive
+the eager owner implementation directly. Independent projection reconstructs
+logical residuals without calling production reification or cached-minimum
+helpers. Normalization renames only physical slot identifiers. Every compared
+step retains exact path/frame fields, selected graph, obligation clock, consumed
+position, events, stability and error provenance. Generated tests mutate nested
+byte-array, escape, map-obligation and arbitrary-byte paths at depths 0–16, with
+all three map-resolution modes and post-refusal suffixes. Existing boundary,
+wrong-ID, fork and opaque-interior tests remain. The 64-KiB native-stack test is
+extended from 20,000 tuple levels to also exercise 4,096 Region owners on both
+borrowed and fragmented backing, including teardown.
+
+**PARENT-WORK RESULTS.** The same 64-cell workload from J-097 retains an eager
+ordinary-byte reference with an independently calculated ancestor-work formula.
+Focused active-owner queries and detachments each equal enclosing depth;
+completed-query, planning, resolution-descent, feed-descent, rebuild and healthy
+reification counts are zero. Settlement checks are bounded by physical parent
+visits plus child resolutions plus owner depth. At width 1,024 and depth 32:
+
+| Parent workload | J-097 ancestor-operation sum | Focused entry queries | Detachments | Settlement checks | Physical visits |
+|---|---:|---:|---:|---:|---:|
+| Byte array | 141,376 | 32 | 32 | 1,213 | 1,187 |
+| Repeated nested-map children | 604,624 | 32 | 32 | 3,323 | 3,299 |
+
+These are deterministic operation counts, not interchangeable CPU instructions
+or measured speedup factors. Separately dispatched child validation and fixture
+construction are excluded. Borrowed and fragmented results agree. The opaque
+payload control also retains the eager scalar reference: width 8,192 at depth 32
+has 266,224 eager feed descents versus zero focused feed descents, while batching
+still makes 164 physical visits for 8,402 logical bytes.
+
+**SPACE ACCOUNTING.** The probe includes owner-vector capacity, not just frame
+capacity. At width 1,024/depth 32, the byte-array frame backing falls from 22,528
+to 11,056 bytes, but stream state grows from 88 to 6,232 bytes: combined measured
+backing is 22,616 versus 17,288 bytes. For repeated children the new frame backing
+is 11,072 bytes, giving 17,304 combined bytes. This is not a universal space win:
+at depth one the owner vector reserves four slots, adding 768 bytes of state
+backing; depth-zero state remains 88 bytes. Input storage, allocator metadata and
+child-validator memory are outside these capacity figures. No isolated RSS or
+allocation-count claim follows from them.
+
+**INITIAL QUALIFICATION AND CORRECTION.** The first runtime run passed 386 of 388
+tests. Its two failures were old resource expectations that required ancestor
+walks. The correction retains real eager controls and mathematical expectations;
+no semantic assertion was removed. The stronger graph comparison passes all 25
+standalone tests, and all 389 models tests pass before the tiny-stack extension.
+The unchanged formal source has 104 RPB3 reports, including 28 focused capstones;
+the combined proof/runtime gate passes 86 focused tests and three independent
+kernel checks. The prior verified model is not an automatic proof of Rust or of
+the complete admission pipeline. Final-source qualification is recorded below.
+
+| Artifact | SHA-256 |
+|---|---|
+| Initial runtime, including the two resource-expectation failures | `1c9e9b07368bb78bca31833d6add71fcec335662226325ae4f8320c0fe3cd90e` |
+| Strengthened graph comparison, 25 standalone tests | `a9ce04f0a9385750596377bd0e52f77594ef9d5ebff0029170193928e4d34a92` |
+| Full 389-model run before the tiny-stack extension | `ce3ca76c3281fef33800125c1d58a082a92d3ea37eb13b6fc9101ad90b1d400d` |
+| Combined focused proof/runtime gate | `8182b0c20f615ad97a555d62577c6ffbea9eb9306690d57bd0367a1d4adfec4f` |
+| Final 389-model suite, including 4,096 Region owners on 64 KiB | `c8eadcfabbbe784d6d7bd8c4810c81f7130b680c7c5671dae4d3e37715ec5e33` |
+| 23-test manifest and 36-test ParBag integration | `f1bb5f77ad1f87b0d648ff3a74a57d4d55b1c4b01274b15628c291279fa85242` |
+
+**FINAL QUALIFICATION.** All 389 models tests pass on the final source in 55.30
+seconds, including the extended tiny-stack control. All 23 manifest tests and
+36 ParBag integration tests pass, with the unchanged depth-4,096 component import
+and ACT validation case; the ParBag suite takes 297.09 seconds. Zero tests are
+ignored. The models service peaks at 1.3G including compilation; the integration
+service peaks at 1.1G. Both run under `systemd-run` with 4/6-GiB high/hard limits,
+zero swap, four build jobs and four test threads, seed `41315976`. Proof processes
+use 1/2-GiB limits. These elapsed/service-peak observations are qualification
+metadata, not controlled benchmarks. Final independent source review finds no
+blocking issue; it is supporting review, not an additional execution proof.
+
+**SCOPE.** This closes a concrete ancestor-work source in the stream reducer,
+not all resource obligations of tasks 6018/5976. Persistent ACT traversal and its
+remaining admission composition still require qualification. No importer/backend
+activation, accepted-byte rule, hash input, charge or storage format changes.
+The equal-durability end-to-end ACT/LMDB comparison remains pending.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

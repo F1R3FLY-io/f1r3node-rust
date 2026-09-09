@@ -5085,6 +5085,17 @@ at this checkpoint; no production importer, accepted encoding, hash, charge,
 metering or persistence authority is changed. Journal J-097/J-098 and stack-safety
 §5.33.16–17 delimit this supporting refinement within CBR-044, not a new axis change.
 
+The subsequent focused-owner implementation replaces repeated ancestor walks in
+the stream reducer with a detached owner vector, exact residual reconstruction,
+cached boundary selection and shared shallow grammar/completion. Independent
+normalized-graph differentials retain event, global-clock, stability, physical
+provenance and immediate-pre-step rollback observations, including post-Dead
+resolution. J-099 and stack-safety §5.33.18 record resource results and qualification
+scope. This is a representation/work reduction, not a new admission rule or an
+importer activation: accepted encodings, emitted bytes, hash inputs, charges,
+storage metering and persistence authority are unchanged. No new axis movement
+is introduced; full campaign/replay and backend qualification remain separate.
+
 **CBR-044 living implementation continuation (2026-08-25, descriptor-complete codec/admission
 equivalence; pgmcp #6019).** The one descriptor pass now emits a test-only seventh artifact that
 constructs 329 canonical witnesses over all 56 generated messages, every field, five oneofs and all
