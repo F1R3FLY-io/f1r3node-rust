@@ -72,6 +72,9 @@ impl TestContext {
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
             genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
+            genesis_params.proof_of_stake.max_parent_depth,
+            genesis_params.proof_of_stake.deploy_lifespan,
+            genesis_params.proof_of_stake.min_phlo_price,
             required_sigs,
             genesis_params.proof_of_stake.pos_multi_sig_public_keys,
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
@@ -200,6 +203,9 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
         ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -235,6 +241,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
         ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -270,6 +279,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
         ctx.protocol.fault_tolerance_threshold_ppm,
+        ctx.protocol.max_parent_depth,
+        ctx.protocol.deploy_lifespan,
+        ctx.protocol.min_phlo_price,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -309,6 +321,9 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         ctx.protocol.quarantine_length + 1,             // incorrect
         ctx.protocol.number_of_active_validators + 1,   // incorrect
         ctx.protocol.fault_tolerance_threshold_ppm + 1, // incorrect
+        ctx.protocol.max_parent_depth + 1,              // incorrect
+        ctx.protocol.deploy_lifespan + 1,               // incorrect
+        ctx.protocol.min_phlo_price + 1,                // incorrect
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,

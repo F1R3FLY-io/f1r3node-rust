@@ -309,7 +309,7 @@ impl TestFixture {
             }));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
-        let estimator = Estimator::apply(Estimator::UNLIMITED_PARENTS, None);
+        let estimator = Estimator::apply();
 
         // Create NoOpsCasperEffect with comprehensive dependencies from genesis context
         // NoOpsCasperEffect will use the same kvm_blockstorage for its internal block store
@@ -372,7 +372,6 @@ impl TestFixture {
         casper_shard_conf.height_constraint_threshold = i64::MAX;
         casper_shard_conf.deploy_lifespan = 50;
         casper_shard_conf.casper_version = 1;
-        casper_shard_conf.config_version = 1;
         casper_shard_conf.bond_minimum = genesis_params.proof_of_stake.minimum_bond;
         casper_shard_conf.bond_maximum = genesis_params.proof_of_stake.maximum_bond;
         casper_shard_conf.epoch_length = genesis_params.proof_of_stake.epoch_length;
@@ -427,6 +426,9 @@ impl TestFixture {
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
             genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
+            genesis_params.proof_of_stake.max_parent_depth,
+            genesis_params.proof_of_stake.deploy_lifespan,
+            genesis_params.proof_of_stake.min_phlo_price,
             required_sigs,
             genesis_params
                 .proof_of_stake

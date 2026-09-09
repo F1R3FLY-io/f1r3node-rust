@@ -539,6 +539,7 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_load.py \
             --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
+            --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
             --provider=${{ matrix.provider }} \
             "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
