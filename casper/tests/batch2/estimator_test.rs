@@ -154,9 +154,9 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let mut dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, HashMap::new())
+            .tips_with_latest_messages(&mut dag, &genesis, HashMap::new(), i32::MAX, None)
             .await
             .unwrap();
 
@@ -272,9 +272,9 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
             (v2.clone(), b6.block_hash.clone()),
         ]);
 
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_blocks)
+            .tips_with_latest_messages(&mut dag, &genesis, latest_blocks, i32::MAX, None)
             .await
             .unwrap();
 
@@ -396,9 +396,9 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
             (v3.clone(), b7.block_hash.clone()),
         ]);
 
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &genesis, latest_blocks)
+            .tips_with_latest_messages(&mut dag, &genesis, latest_blocks, i32::MAX, None)
             .await
             .unwrap();
 

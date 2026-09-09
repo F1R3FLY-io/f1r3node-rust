@@ -326,7 +326,6 @@ for(@_v <- @"multi-validator-shared") { Nil }
         &snapshot,
         &rm,
         &latest_messages,
-        None,
         Some(&rejected_deploy_buffer),
         None,
         None,

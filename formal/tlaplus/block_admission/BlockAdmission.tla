@@ -75,7 +75,7 @@ CONSTANTS
     MaxBlockBytes,       \* max nondeterministic block size (scaled, e.g. 2)
     ByteCap,             \* retained-bytes budget for queued + in-flight
     CountCap,            \* the mpsc capacity (message count), in force always
-    MaxParallel,         \* semaphore permits (F1R3_MAX_PARALLEL_BLOCKS)
+    MaxParallel,         \* semaphore permits (the compiled MAX_PARALLEL_BLOCKS constant)
     MaxDeliveries,       \* concurrent delivered-but-undecided payloads
     ByteBounded,         \* TRUE = byte-gated admission; FALSE = current design
     DeferralRerequests   \* TRUE = deferred blocks stay requestable (the fix);
