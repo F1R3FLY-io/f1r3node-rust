@@ -8116,6 +8116,54 @@ does not yet exist. No new speedup, allocation reduction, consensus change,
 whole-workspace pass or task-completion claim follows. The measured J-112
 nested-import problem remains open.
 
+### J-114 — 2026-09-09: normalized source-window sharing laws
+
+**VERIFIED MODEL.** `NormalizedSourceSpans` adds ten closed laws to the
+existing RPB3 theory: checked identity/adjacency/bounds, exact located-byte
+concatenation, right-end-anchor preservation, refusal of different backing
+identities, descriptor associativity, direct-root nested subviews, physical
+position preservation, final scalar-byte sharing, and append-only source
+registration. The complete theory now reports 191 closed contexts and passes
+independent kernel checking.
+
+[The source-span invariant catalogue](../../../formal/rocq/stack_safe_pda/README.md#normalized-source-spans-invariant-catalogue-2026-09-09-task-6018)
+lists every required executable binding before implementation. A backing owner
+is not a physical source number or content hash. In particular, equal bytes
+with equal reported offsets do not establish the identity needed for merging.
+
+**DERIVED IMPLEMENTATION REQUIREMENTS.** Retain the original borrowed root and
+checked range, so adjacent views can merge without reconstructing pointers.
+Preserve scalar ACT line bytes as source ranges too: copying the final scalar
+payload byte would split a reusable source window at every nesting layer.
+Conversely, branch-mask-derived edge values need explicit located-byte storage;
+their reported physical offset need not contain their logical byte value.
+
+Source leaves alone are insufficient. Today's freeze builds a complete leaf
+and logical-page index; repeating it for nested obligations would retain the
+metadata slope. General mixed-source payloads therefore need shared normalized
+terminal backings and persistent balanced composition, with subtree splicing
+rather than full leaf-list rebuilding. A source leaf must never wrap another
+indexed region or topology arena. Existing constant-size byte handles,
+page sealing and the direct indexed obligation dispatcher remain reusable.
+Balancing, ownership/release and virtual restoration require their own concrete
+proofs and properties; they are not supplied by these ten window laws.
+
+**EXECUTED EVIDENCE.** The first source-span proof run passed in 19.111 s,
+peak 760.1M; independent kernel checking passed in 16.552 s, peak 342.1M.
+Both used MemoryHigh=1G, MemoryMax=2G, zero swap, CPUQuota=100%, TasksMax=64,
+and RuntimeMaxSec=900. The existing gate now requires 191 closed reports.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/RPB3Admission.v` | `db93528c1d7fd2c2df5db56fff91e2d4bf93ea4ff54c9c87d73df0cfa431fbd5` |
+| `/tmp/epathmap-source-spans-model-20260909.log` | `f81d1ed0b0242634c25d5ca6ea4a5c343fb7a398db1e98e5102e0f31acb04857` |
+| `/tmp/epathmap-source-spans-kernel-20260909.log` | `c56704cdb836442f6400fbc86c32b280998d44f85b1e4a782ad7d3002257574b` |
+
+These results establish the model before the terminal-window implementation.
+They do not close task 6018, establish the balanced composition, or repair the
+measured J-112 import scaling. No production performance or consensus change
+is asserted by this proof checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

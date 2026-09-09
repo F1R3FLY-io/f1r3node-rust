@@ -10479,6 +10479,20 @@ bindings. This is not a runtime repair or new resource improvement: persistent
 source spans, virtual-prefix restoration and joint admission composition remain
 to be proved and implemented before repeating the J-112 benchmark.
 
+#### 5.33.33 Normalized source-window sharing laws (2026-09-09, task 6018)
+
+Ten further laws cover exact coalescing and direct-root subviews, including
+physical provenance and final scalar-byte sharing. The complete RPB3 theory
+now has 191 closed reports and passes independent kernel checking. Proof
+compilation peaked at 760.1M; checking peaked at 342.1M, both with zero swap
+and a 2G hard memory limit.
+
+[J-114](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-114--2026-09-09-normalized-source-window-sharing-laws)
+records the invariant catalogue and the source-identity distinction between
+literal ACT line bytes and derived branch bytes. The current freeze's repeated
+index construction remains a required repair; these source-window proofs do
+not establish whole-admission linearity or a runtime memory improvement.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

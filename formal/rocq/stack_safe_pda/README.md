@@ -2184,3 +2184,44 @@ boundaries, wrong obligation IDs, pending/dead states, retained siblings, inner
 effects before outer refusal, all restore prefixes, and small-stack destruction.
 This catalogue is a list of required bindings, not a claim that the new Rust
 span implementation or its properties already exist.
+
+#### Normalized source spans: invariant catalogue (2026-09-09, task 6018)
+
+`NormalizedSourceSpans` extends the existing indexed-window model with
+checked coalescing, direct-root subview composition, final scalar-byte sharing,
+and append-only backing registration. The model's owner is the identity of an
+immutable backing, **not** a physical provenance source number or an equality
+hash. Byte/provenance equality alone never authorizes coalescing.
+
+| Exported invariant | Required executable property |
+|---|---|
+| `coalescing_accepts_exact_identity_adjacency_and_bounds` | Accept consecutive windows of one immutable backing; refuse gaps, overlaps, reversed order, distinct owners and arithmetic overflow before mutation. |
+| `coalescing_preserves_exact_located_bytes` | Coalesced bytes and every physical position equal concatenation across all split points, including fragmented provenance and empty spans. |
+| `coalescing_preserves_root_validity_and_the_right_end` | The merged range stays inside its root and preserves the right operand's explicit end anchor, including a zero-width right operand. |
+| `different_backing_identity_never_coalesces` | Independently allocated equal contents, repeated source IDs and matching physical offsets do not establish backing identity. |
+| `coalescing_is_associative_without_intermediate_source_layers` | Three adjacent windows coalesce to one original-root view in either grouping, with the same bounds and final anchor. This law concerns the descriptor operation; actual checked merges also require adjacency. |
+| `repeated_subviews_normalize_to_the_original_source` | Nested checked slicing equals direct slicing in owner, offset, width and anchor; increasing view nesting never creates a chain of view descriptors. |
+| `normalized_subviews_preserve_each_physical_position` | Compare every byte position against the parent at the translated logical offset; include discontinuous sources and nonzero physical origins. |
+| `coalesced_boundary_scalar_remains_in_the_original_backing` | Appending a source-aware one-byte final boundary yields the original backing's extended view, exact scalar byte/provenance and endpoint, without a fresh payload page. |
+| `retaining_a_source_preserves_every_existing_backing` | Register new sources and append siblings while retained old windows continue to denote the same immutable backing. |
+| `retained_source_slot_denotes_the_original_root` | Newly retained source IDs resolve to the exact original root; exercise independent equal contents and keep source lifetimes valid after ancestor frame release. |
+
+A byte derived from an ACT branch mask is not necessarily the byte physically
+stored at its reported source offset. Source-aware scalar append must retain
+the logical ACT line offset when the byte is literal. Derived branch bytes
+continue to use explicit located-byte storage. Physical provenance must never
+be inverted to invent a logical source index.
+
+The storage design retains original borrowed root slices plus checked ranges,
+rather than successively shortened slices. Adjacent literal ranges can then
+merge without reconstructing pointers or copying the final scalar byte.
+Frozen page windows retain their existing immutable backing. Completion
+anchors remain separate from payload sharing and must survive empty slices.
+
+This is the terminal-window foundation, not the complete fragmented source
+index. General mixed-source composition must share and splice balanced
+subtrees, preserve constant-size history handles and source lifetimes, avoid
+per-layer flat-index rebuilding, and use stack-safe release. Adding SourceSpan
+leaves while retaining today's whole-payload `freeze` rebuild would not meet
+task 6018. The current coalescing proofs do not establish balancing, native
+allocation bounds, full topology admission, or Rust implementation correctness.

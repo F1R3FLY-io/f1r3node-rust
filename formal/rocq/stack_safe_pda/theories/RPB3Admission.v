@@ -6495,3 +6495,193 @@ Print Assumptions odd_forward_prefix_preserves_the_pending_absent_value.
 Print Assumptions expanded_event_counts_preserve_logical_work.
 
 End CheckedACTLineTransport.
+
+Module NormalizedSourceSpans.
+
+Import CanonicalKeyProtocol IndexedWindowTransport.
+
+Definition adjacent (left right : window) :=
+  (window_owner left =? window_owner right) &&
+  (window_start left + window_width left =? window_start right).
+
+Definition combined (left right : window) :=
+  Window (window_owner left) (window_start left)
+    (window_width left + window_width right) (window_anchor right).
+
+Definition coalesce (limit : nat) (left right : window) : option window :=
+  if adjacent left right &&
+      (window_start left + window_width left + window_width right <=? limit)
+  then Some (combined left right)
+  else None.
+
+Lemma adjacent_exact left right :
+  adjacent left right = true <->
+  window_owner left = window_owner right /\
+  window_start left + window_width left = window_start right.
+Proof. unfold adjacent. rewrite andb_true_iff, !Nat.eqb_eq. reflexivity. Qed.
+
+Lemma split_prefix {A : Type} (input : list A) left right :
+  firstn (left + right) input =
+    firstn left input ++ firstn right (skipn left input).
+Proof.
+  revert input. induction left; intros input; cbn; [reflexivity|].
+  destruct input; cbn; [now rewrite firstn_nil|]. now rewrite IHleft.
+Qed.
+
+Theorem coalescing_accepts_exact_identity_adjacency_and_bounds limit left right result :
+  coalesce limit left right = Some result <->
+  window_owner left = window_owner right /\
+  window_start left + window_width left = window_start right /\
+  window_start left + window_width left + window_width right <= limit /\
+  result = combined left right.
+Proof.
+  unfold coalesce. destruct (adjacent left right &&
+      (window_start left + window_width left + window_width right <=? limit)) eqn:guard.
+  - rewrite andb_true_iff, adjacent_exact, Nat.leb_le in guard.
+    split; [intro accepted; inversion accepted; tauto|intros (_ & _ & _ & ->); reflexivity].
+  - split; [discriminate|]. intros (same & next & fits & ->).
+    assert (adjacent left right = true) by (apply adjacent_exact; tauto).
+    assert (window_start left + window_width left + window_width right <=? limit = true)
+      by (apply Nat.leb_le; exact fits).
+    rewrite H, H0 in guard. discriminate.
+Qed.
+
+Theorem coalescing_preserves_exact_located_bytes limit root left right result :
+  coalesce limit left right = Some result ->
+  window_bytes root result = window_bytes root left ++ window_bytes root right.
+Proof.
+  intro accepted. apply coalescing_accepts_exact_identity_adjacency_and_bounds in accepted.
+  destruct accepted as (same & next & fits & ->).
+  unfold window_bytes, combined; cbn.
+  rewrite split_prefix, skipn_skipn.
+  replace (window_width left + window_start left) with (window_start right) by lia.
+  reflexivity.
+Qed.
+
+Theorem coalescing_preserves_root_validity_and_the_right_end limit root left right result :
+  window_valid root left -> window_valid root right ->
+  coalesce limit left right = Some result ->
+  window_valid root result /\
+  window_end root result = window_end root right /\
+  window_start result + window_width result <= limit.
+Proof.
+  intros [left_owner left_bound] [right_owner right_bound] accepted.
+  apply coalescing_accepts_exact_identity_adjacency_and_bounds in accepted.
+  destruct accepted as (same & next & fits & ->).
+  unfold window_valid, combined, window_end; cbn.
+  split; [split; [exact left_owner|lia]|]. split; [|lia].
+  replace (window_start left + (window_width left + window_width right))
+    with (window_start right + window_width right) by lia.
+  reflexivity.
+Qed.
+
+Theorem different_backing_identity_never_coalesces limit left right :
+  window_owner left <> window_owner right -> coalesce limit left right = None.
+Proof.
+  intro different. unfold coalesce, adjacent.
+  assert (window_owner left =? window_owner right = false) by (apply Nat.eqb_neq; exact different).
+  now rewrite H.
+Qed.
+
+Theorem coalescing_is_associative_without_intermediate_source_layers left middle right :
+  combined (combined left middle) right = combined left (combined middle right).
+Proof. unfold combined; cbn. f_equal; lia. Qed.
+
+Theorem repeated_subviews_normalize_to_the_original_source
+    limit original a b middle c d final :
+  checked_subwindow limit original a b = Some middle ->
+  checked_subwindow limit middle c d = Some final ->
+  checked_subwindow limit original (a + c) (a + d) = Some final.
+Proof.
+  intros outer inner. apply checked_subwindow_exact in outer.
+  destruct outer as (ordered & bounded & fits & ->).
+  apply checked_subwindow_exact in inner. cbn in inner.
+  destruct inner as (inner_ordered & inner_bounded & inner_fits & ->).
+  apply checked_subwindow_exact. repeat split; try lia.
+  f_equal; try lia.
+  destruct (d =? b - a) eqn:inner_end;
+    destruct (b =? window_width original) eqn:outer_end;
+    destruct (a + d =? window_width original) eqn:direct_end; try reflexivity;
+    repeat match goal with
+    | H : (_ =? _) = true |- _ => apply Nat.eqb_eq in H
+    | H : (_ =? _) = false |- _ => apply Nat.eqb_neq in H
+    end; exfalso; lia.
+Qed.
+
+Theorem normalized_subviews_preserve_each_physical_position
+    limit root parent start stop child offset byte :
+  window_valid root parent ->
+  checked_subwindow limit parent start stop = Some child ->
+  offset < stop - start ->
+  nth_error (window_bytes root parent) (start + offset) = Some byte ->
+  window_position root child offset = Some (Position offset (byte_provenance byte) BytePosition).
+Proof.
+  intros valid accepted within found.
+  pose proof (@nested_windows_preserve_owner_bounds_and_exact_slice
+    limit root parent start stop child valid accepted) as [child_valid [_ [_ bytes]]].
+  apply checked_subwindow_exact in accepted.
+  destruct accepted as (ordered & bounded & fits & shape).
+  apply indexed_byte_positions_preserve_exact_physical_provenance.
+  - rewrite shape; cbn; exact within.
+  - rewrite bytes, nth_error_firstn.
+    assert (offset <? stop - start = true) by (apply Nat.ltb_lt; exact within).
+    rewrite H, nth_error_skipn. exact found.
+Qed.
+
+Theorem coalesced_boundary_scalar_remains_in_the_original_backing
+    limit root prefix terminal result byte :
+  window_valid root prefix -> window_valid root terminal ->
+  window_width terminal = 1 ->
+  nth_error (region_bytes root) (window_start terminal) = Some byte ->
+  coalesce limit prefix terminal = Some result ->
+  window_owner result = window_owner prefix /\
+  window_bytes root result = window_bytes root prefix ++ [byte] /\
+  window_end root result = window_end root terminal.
+Proof.
+  intros prefix_valid terminal_valid one found accepted.
+  pose proof (@coalescing_preserves_root_validity_and_the_right_end
+    limit root prefix terminal result prefix_valid terminal_valid accepted)
+    as [_ [same_end _]].
+  pose proof (@coalescing_preserves_exact_located_bytes limit root prefix terminal result accepted)
+    as same_bytes.
+  apply coalescing_accepts_exact_identity_adjacency_and_bounds in accepted.
+  destruct accepted as (_ & _ & _ & ->).
+  split; [reflexivity|]. split; [|exact same_end].
+  rewrite same_bytes. unfold window_bytes at 2. rewrite one.
+  rewrite <- (Nat.add_0_r (window_start terminal)) in found.
+  rewrite <- nth_error_skipn in found.
+  destruct (skipn (window_start terminal) (region_bytes root)) as [|head rest];
+    cbn in found; [discriminate|]. inversion found; subst. reflexivity.
+Qed.
+
+Definition source_slot := nat.
+Definition source_store := list region.
+
+Definition retain_source (stored : source_store) (root : region) :=
+  (stored ++ [root], length stored).
+
+Theorem retaining_a_source_preserves_every_existing_backing stored root slot previous :
+  nth_error stored slot = Some previous ->
+  nth_error (fst (retain_source stored root)) slot = Some previous.
+Proof.
+  intro found. unfold retain_source; cbn.
+  rewrite nth_error_app1; [exact found|].
+  apply nth_error_Some. rewrite found. discriminate.
+Qed.
+
+Theorem retained_source_slot_denotes_the_original_root stored root :
+  nth_error (fst (retain_source stored root)) (snd (retain_source stored root)) = Some root.
+Proof. unfold retain_source; cbn. rewrite nth_error_app2 by lia. rewrite Nat.sub_diag. reflexivity. Qed.
+
+Print Assumptions coalescing_accepts_exact_identity_adjacency_and_bounds.
+Print Assumptions coalescing_preserves_exact_located_bytes.
+Print Assumptions coalescing_preserves_root_validity_and_the_right_end.
+Print Assumptions different_backing_identity_never_coalesces.
+Print Assumptions coalescing_is_associative_without_intermediate_source_layers.
+Print Assumptions repeated_subviews_normalize_to_the_original_source.
+Print Assumptions normalized_subviews_preserve_each_physical_position.
+Print Assumptions coalesced_boundary_scalar_remains_in_the_original_backing.
+Print Assumptions retaining_a_source_preserves_every_existing_backing.
+Print Assumptions retained_source_slot_denotes_the_original_root.
+
+End NormalizedSourceSpans.
