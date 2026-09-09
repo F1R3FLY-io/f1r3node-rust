@@ -285,6 +285,10 @@ The [B14 admission cycle](../cbc-evidence/soak-d2-boundary-2026-09-09/README.md)
 
 The bounded gate now passes 13 positive configurations and 13 exact controls. These results do not confirm writer termination or establish a composed emergency deadline.
 
+The [B15 benchmark cycle](../cbc-evidence/soak-d2-benchmark-2026-09-09/README.md) prevents the opening benchmark from bypassing a retained breach without a state file.
+
+Its production and formal counterexamples precede the correction. The bounded gate now passes 14 positive configurations and 14 exact controls.
+
 Disk hygiene, other stop paths, cleanup ownership, full admission coverage, durable publication, and the D3 reserve argument remain open.
 
 Hosted confirmation and maintainer review remain pending. D2 is not complete.

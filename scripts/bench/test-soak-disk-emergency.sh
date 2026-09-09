@@ -8,9 +8,9 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUTPUT="${2:-$(mktemp -d)}"
 IMAGE="${SOAK_DISK_TEST_IMAGE:-}"
-for test in active-probe record guardian-death probe-timeout diagnostic-deadline restart stop-deadline guardian-admission; do
+for test in active-probe record guardian-death probe-timeout diagnostic-deadline restart stop-deadline guardian-admission benchmark-restart; do
     script="test-soak-disk-$test"
-    [[ "$test" != guardian-death && "$test" != guardian-admission ]] || script="test-soak-$test"
+    [[ "$test" != guardian-death && "$test" != guardian-admission && "$test" != benchmark-restart ]] || script="test-soak-$test"
     SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/$script.sh" \
         "${1:-$ROOT}" "$OUTPUT/$test"
     if [[ -z "$IMAGE" ]]; then

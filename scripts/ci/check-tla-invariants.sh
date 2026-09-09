@@ -159,6 +159,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_missing_sample_pre_fix:AdmissionRequiresSample
     soak_disk/MC_SoakDiskAdmission_numeric_prefix_pre_fix:AdmissionRequiresValidSample
     soak_disk/MC_SoakDiskAdmission_unchecked_guardian_pre_fix:AdmissionRequiresGuardian
+    soak_disk/MC_SoakDiskAdmission_retained_breach_pre_fix:RetainedBreachPreventsBenchmark
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline

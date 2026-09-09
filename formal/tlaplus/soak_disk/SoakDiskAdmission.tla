@@ -1,23 +1,25 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide. Four constants switch the four admission corrections on and off  *)
-(* so that each pre-fix configuration reproduces one historical defect.      *)
+(* decide, after the opening benchmark on the first segment. Five constants  *)
+(* switch the five corrections on and off so that each pre-fix configuration *)
+(* reproduces one historical defect.                                         *)
 EXTENDS Naturals, TLC
 
 CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           RequireBand,     \* post-hygiene refusal compares against floor + band
           RejectMissing,   \* a probe that returns nothing cannot admit
           RejectMalformed, \* a field such as 16384junk cannot admit
-          CheckGuardianAlive \* a dead guardian process cannot admit
+          CheckGuardianAlive, \* a dead guardian process cannot admit
+          CheckRetainedBreach \* a retained breach marker blocks the opening benchmark
 
 ASSUME /\ FloorMiB \in Nat \ {0}
        /\ BandMiB \in Nat
        /\ FreeSamples \subseteq Nat
        /\ InitialFreeMiB \in FreeSamples
        /\ MalformedPrefixMiB \in Nat
-       /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive}
-            \subseteq BOOLEAN
+       /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
+           CheckRetainedBreach} \subseteq BOOLEAN
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
 
@@ -38,17 +40,21 @@ Parse(r) ==
       [] r.kind = "missing"   -> Unknown
 
 VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
-          admissionRaw, admissionSample, stopReason, evidence
+          admissionRaw, admissionSample, stopReason, evidence,
+          retained,  \* a breach marker left behind by the previous run
+          benchmark  \* the opening benchmark was launched
 
 vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
-          admissionRaw, admissionSample, stopReason, evidence>>
+          admissionRaw, admissionSample, stopReason, evidence, retained, benchmark>>
 
 Init ==
-    /\ phase = "guard"
+    /\ phase = "benchmark"
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
-    /\ guardian = FALSE
+    /\ retained \in BOOLEAN
+    /\ guardian = retained
+    /\ benchmark = FALSE
     /\ guardianAlive = TRUE
     /\ admitted = FALSE
     /\ admissionRaw = MissingRaw
@@ -63,6 +69,16 @@ Probe(next) ==
     /\ phase' = next
 
 BelowBand == sample.known /\ sample.mib < FloorMiB + BandMiB
+
+\* The opening benchmark of the first segment (B15): the driver launches it
+\* only when no breach marker was retained from the previous run. The
+\* recovery block that reads the marker runs later, so nothing else guards it.
+Benchmark ==
+    /\ phase = "benchmark"
+    /\ benchmark' = (~CheckRetainedBreach \/ ~retained)
+    /\ phase' = "guard"
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
+                   admissionRaw, admissionSample, stopReason, evidence, retained>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -158,16 +174,18 @@ PublishRefusal ==
     /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason>>
 
-Next == CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
-        \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
-        \/ Admit \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
+Next == Benchmark
+        \/ (/\ CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
+               \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
+               \/ Admit \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
+            /\ UNCHANGED <<retained, benchmark>>)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 TypeOK ==
-    /\ phase \in {"guard", "probe", "boundary-decide", "hygiene", "post-guard",
-                  "post-probe", "post-decide", "admission-check", "admit",
-                  "running", "stopped", "done"}
+    /\ phase \in {"benchmark", "guard", "probe", "boundary-decide", "hygiene",
+                  "post-guard", "post-probe", "post-decide", "admission-check",
+                  "admit", "running", "stopped", "done"}
     /\ free \in FreeSamples
     /\ raw \in RawSamples
     /\ sample \in ParsedSamples
@@ -178,12 +196,15 @@ TypeOK ==
     /\ admissionSample \in ParsedSamples
     /\ stopReason \in {"none", "disk", "probe", "guardian"}
     /\ evidence \in BOOLEAN
+    /\ retained \in BOOLEAN
+    /\ benchmark \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
 AdmissionRequiresSample == admitted => admissionSample.known
 AdmissionRequiresValidSample == admitted => admissionRaw.kind # "malformed"
 AdmissionRequiresGuardian == admitted => guardianAlive
+RetainedBreachPreventsBenchmark == retained => ~benchmark
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
 Completes == <>(admitted \/ (phase = "done" /\ evidence))

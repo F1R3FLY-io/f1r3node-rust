@@ -231,3 +231,23 @@ Formal GREEN completes with four distinct states. The [evidence package](../cbc-
 The combined gate passes 13 positive configurations and 13 exact controls. All nine emergency scenarios and supporting regressions pass.
 
 B14 does not complete D2. Benchmark admission, live but stalled guardians, late crashes, cleanup, termination, durability, and reserve evidence remain open.
+
+## D2 benchmark restart cycle B15
+
+The user pushed `37ec7f71d` and requested the remaining branch work. This cycle starts from that revision and preserves the D2-first order.
+
+Production RED requests the opening benchmark before checking a retained breach. The state file is absent, and the startup sample is valid.
+
+The driver eventually records failure, but that later result does not make benchmark admission safe. The matching formal control violates `RetainedBreachPreventsBenchmark` with exit 12.
+
+The correction adds the retained-marker check to opening benchmark admission. Production GREEN records no benchmarks, no iterations, and one failure.
+
+The corrected model completes with six distinct states. The [B15 package](../cbc-evidence/soak-d2-benchmark-2026-09-09/README.md) retains the matched cycle and source snapshots.
+
+The bounded gate passes 14 positive configurations and 14 exact controls. The classifier covers 98 cases. Ten emergency scenarios and supporting regressions pass.
+
+The first metadata audit detects a hash of its own active build log. The raw archive retains that invalid record separately from behavioral evidence.
+
+D2 remains in progress. Other benchmark admission paths, active benchmark supervision, stalled guardians, cleanup, termination, durability, and reserve evidence remain open.
+
+No commit, push, hosted dispatch, or soak occurs in this cycle.
