@@ -297,6 +297,37 @@ pub trait FsHandler {
         args: Self::Args,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>>;
 
+    /// Optional pre-syscall hook — runs AFTER `parse_content` but
+    /// BEFORE `dispatch` on the leader path + the Consensus-follower
+    /// verifying-replay fall-through path.  Framework SKIPS the hook
+    /// on the Oracular tautological echo path (parse_content isn't
+    /// called on that path either).
+    ///
+    /// Wave-3 S3.7 (2026-09-09) introduced this hook for the
+    /// path-mutation family (fs_chmod / fs_chown / fs_truncate /
+    /// fs_write / fs_rename / fs_copy_file / fs_remove_file /
+    /// fs_remove_dir) — these handlers pre-append a WAL entry with
+    /// a `WalOutcome::Success` placeholder BEFORE running the
+    /// syscall; the placeholder is patched to
+    /// `WalOutcome::Failure { code }` by `journal` after the outcome
+    /// is known (via `finalize_failure_journal_via_table`).
+    ///
+    /// Returns `Err(boxed_reply)` to produce the reply and return
+    /// early (used for `FSERR_QUOTA_EXCEEDED` when the WAL is at
+    /// cap).  Default: no-op `Ok(())`.
+    ///
+    /// Oracular-path skip: pre-refactor Oracular followers DID call
+    /// the pre-syscall journal helpers, but those helpers self-guard
+    /// on Consensus (`_ => Ok(false)`).  Framework skipping the hook
+    /// on Oracular echo preserves byte-identity — the only
+    /// observable difference is fewer fn calls.
+    fn pre_syscall<'a>(
+        _ctx: SyscallCtx<'a>,
+        _args: &'a Self::Args,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Optional side effect on the non-verifying `is_replay` branch
     /// BEFORE the tautological echo of `previous` to ack.  Default:
     /// no-op.
@@ -541,9 +572,14 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///     parameterized cost (fs_read / fs_read_at) or shadow-position
 ///     state advance (fs_read / fs_read_at / fs_seek).  Framework
 ///     extended with `pre_charge_incremental` + `JournalPath` enum.
+///   - S3.7 (2026-09-09): +3 (fs_chown, fs_chmod, fs_truncate).
+///     Count = 19.  Mutation handlers with pre-append WAL journal
+///     via new `pre_syscall` framework hook.  fs_chown is
+///     non-verifying (Consensus banned at parse); fs_chmod +
+///     fs_truncate verify.
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 16;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 19;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -675,6 +711,18 @@ pub async fn dispatch_via_trait<H: FsHandler>(
             return Ok(out);
         }
     };
+
+    // Step 5b: pre-syscall hook.  Wave-3 S3.7 (2026-09-09) — path-
+    // mutation handlers pre-append a WAL entry with a Success
+    // placeholder before the syscall runs; on WAL-cap exhaustion
+    // the handler returns Err(boxed_reply) and the framework
+    // produces the reply + early-returns.  Default no-op for
+    // handlers that don't pre-append.
+    if let Err(early_reply) = H::pre_syscall(SyscallCtx::new(fs, &ack), &parsed).await {
+        let out = vec![(*early_reply).into_par()];
+        produce(&out, &ack).await?;
+        return Ok(out);
+    }
 
     // Step 6: dispatch — runs on the leader path AND on the
     // Consensus-follower verifying-replay path (that's the point of
@@ -808,6 +856,9 @@ mod tests {
             "fs_read",                 // S3.6 (2026-09-09)
             "fs_read_at",              // S3.6 (2026-09-09)
             "fs_seek",                 // S3.6 (2026-09-09)
+            "fs_chown",                // S3.7 (2026-09-09)
+            "fs_chmod",                // S3.7 (2026-09-09)
+            "fs_truncate",             // S3.7 (2026-09-09)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);

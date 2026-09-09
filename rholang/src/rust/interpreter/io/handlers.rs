@@ -1126,7 +1126,16 @@ impl FsProcesses {
             .update_outcome_by_ack_hash(ack_channel_hash(ack), WalOutcome::Failure { code });
     }
 
-    async fn journal_truncate(&self, fd: u64, n: u64, ack: &Par) -> Result<bool, ()> {
+    // Wave-3 S3.7 (2026-09-09): retired now that fs_truncate migrated
+    // to the FsHandler trait.  Free-fn form `journal_truncate_via_
+    // table` is what the trait impl calls via `ctx.handles`.
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_journal_truncate(
+        &self,
+        fd: u64,
+        n: u64,
+        ack: &Par,
+    ) -> Result<bool, ()> {
         let wal_meta = self
             .handles
             .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
@@ -2429,8 +2438,14 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_truncate weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
+        dispatch_via_trait::<FsTruncateHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_truncate_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering.reserve_primitive(costs::fs_truncate_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
@@ -3890,18 +3905,20 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_chmod weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
+        dispatch_via_trait::<FsChmodHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_chmod_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering.reserve_primitive(costs::fs_chmod_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
             return Err(illegal_argument_error("fs_chmod"));
         };
-        // H-29-3 lift (2026-08-26): Consensus caps now journal to
-        // the WAL BEFORE the syscall runs (same pattern as
-        // `journal_write` / `journal_truncate`).  Argument shape
-        // is `(root, rel, bits, cmode, ack)`.
         let [root_par, rel_par, mode_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_chmod"));
         };
@@ -4075,14 +4092,20 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_chown weight at handler entry.
+        dispatch_via_trait::<FsChownHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_chown_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering.reserve_primitive(costs::fs_chown_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
             return Err(illegal_argument_error("fs_chown"));
         };
-        // Slice 26: `(root, rel, owner, group, cmode, ack)`.
         let [root_par, rel_par, owner_par, group_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_chown"));
         };
@@ -6405,6 +6428,516 @@ static FS_SEEK_ENTRY: FsHandlerEntry = FsHandlerEntry {
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsSeekHandler>(fs, args)),
 };
 
+// -------------------------------------------------------------------
+// fs_truncate — (fd, n) -> [true]  (S3.7, 2026-09-09)
+//
+// Verifying mutation, constant cost.  Cmode fd-based.  Pre-appends
+// WAL entry via `journal_truncate_via_table` in `pre_syscall`;
+// finalizes via `finalize_failure_journal_via_table` in `journal`
+// on syscall error or verify-divergence.
+// -------------------------------------------------------------------
+
+pub struct FsTruncateHandler;
+
+pub struct FsTruncateArgs {
+    fd: u64,
+    n: u64,
+}
+
+impl FsHandler for FsTruncateHandler {
+    const NAME: &'static str = "fs_truncate";
+    const ARITY: usize = 3; // (fd, n, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsTruncateArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsTruncateArgs, Box<HandlerReply>> {
+        let [fd_par, n_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, u64)",
+            ));
+        };
+        match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
+            (Some(fd), Some(n)) if n >= 0 => Ok(FsTruncateArgs {
+                fd: fd as u64,
+                n: n as u64,
+            }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, u64)",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_truncate_cost()
+    }
+
+    fn pre_syscall<'a>(
+        ctx: SyscallCtx<'a>,
+        args: &'a FsTruncateArgs,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>,
+    > {
+        // C-29-F1: pre-append WAL entry on BOTH leader and follower.
+        // MAX_TRUNCATE_BYTES gate first so oversize truncates don't
+        // consume a WAL slot for calls that will error out.
+        Box::pin(async move {
+            if args.n > super::MAX_TRUNCATE_BYTES {
+                return Ok(());
+            }
+            if journal_truncate_via_table(ctx.handles, args.fd, args.n, ctx.ack)
+                .await
+                .is_err()
+            {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    "WAL cap exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsTruncateArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            if args.n > super::MAX_TRUNCATE_BYTES {
+                return HandlerReply::err(
+                    FSERR_QUOTA_EXCEEDED,
+                    format!("truncate {} exceeds MAX_TRUNCATE_BYTES", args.n),
+                );
+            }
+            let file_arc = match ctx.handles.raw_fd(args.fd).await {
+                Some(f) => f,
+                None => {
+                    return HandlerReply::err(
+                        FSERR_CLOSED,
+                        format!("unknown fd {}", args.fd as i64),
+                    );
+                }
+            };
+            let n = args.n;
+            let r = spawn_blocking(move || {
+                use std::os::fd::AsRawFd;
+                let raw_fd = file_arc.as_raw_fd();
+                unsafe {
+                    if libc::ftruncate(raw_fd, n as i64) < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+            match r {
+                Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
+                Ok(Ok(())) => HandlerReply::ok(ok_bare()),
+            }
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return None;
+            };
+            let fd = RhoNumber::unapply(fd_par)?;
+            ctx.handles.with_mut(fd as u64, |h| h.cmode).await
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // H-6 finalize: patch the pre-appended Success placeholder to
+        // Failure(code) on syscall error or verify-divergence.  Success
+        // path (no err payload) leaves the placeholder as Success.
+        Box::pin(async move {
+            if path.is_divergence() {
+                finalize_failure_journal_via_table(
+                    ctx.handles,
+                    FSERR_CODE_CONSENSUS_DIVERGENCE,
+                    ctx.ack,
+                );
+            } else {
+                let reply = path.produce_reply();
+                if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+                    finalize_failure_journal_via_table(
+                        ctx.handles,
+                        fserr_to_code(&code_str),
+                        ctx.ack,
+                    );
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_TRUNCATE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsTruncateHandler as FsHandler>::NAME,
+    arity: <FsTruncateHandler as FsHandler>::ARITY,
+    verifying: <FsTruncateHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsTruncateHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_chmod — (root, rel, bits, cmode) -> [true]  (S3.7, 2026-09-09)
+//
+// Verifying path-mutation.  Cmode arg-based.  Pre-appends WAL
+// entry via `journal_path_mutation_single_via_table(WalOp::Chmod,
+// mode_bits=Some(bits))` in `pre_syscall`.
+// -------------------------------------------------------------------
+
+pub struct FsChmodHandler;
+
+pub struct FsChmodArgs {
+    root: String,
+    rel: String,
+    bits: u32,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsChmodHandler {
+    const NAME: &'static str = "fs_chmod";
+    const ARITY: usize = 5; // (root, rel, bits, cmode, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsChmodArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsChmodArgs, Box<HandlerReply>> {
+        let [root_par, rel_par, mode_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, u64<=0o7777, String)",
+            ));
+        };
+        // Cmode validation first — matches pre-refactor specific
+        // "cmode must be..." error message.
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        // Combined args parse — pre-refactor emits the combined
+        // "expected (String, String, u64<=0o7777, String)" on any
+        // single failure.
+        let combined_err = || {
+            HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, u64<=0o7777, String)",
+            )
+        };
+        let root = RhoString::unapply(root_par).ok_or_else(combined_err)?;
+        let rel = RhoString::unapply(rel_par).ok_or_else(combined_err)?;
+        let bits = RhoNumber::unapply(mode_par).ok_or_else(combined_err)?;
+        if !(0..=0o7777).contains(&bits) {
+            return Err(combined_err());
+        }
+        Ok(FsChmodArgs {
+            root,
+            rel,
+            bits: bits as u32,
+            cmode,
+        })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_chmod_cost()
+    }
+
+    fn pre_syscall<'a>(
+        ctx: SyscallCtx<'a>,
+        args: &'a FsChmodArgs,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let canon_path = canonicalize_lexical(&args.root, &args.rel);
+            if journal_path_mutation_single_via_table(
+                ctx.handles,
+                args.cmode,
+                WalOp::Chmod,
+                canon_path,
+                Some(args.bits),
+                None,
+                None,
+                ctx.ack,
+            )
+            .await
+            .is_err()
+            {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    "WAL cap exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsChmodArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let root_pb = PathBuf::from(&args.root);
+            let (root_pb, expected_root_id) =
+                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let rel = args.rel;
+            let bits = args.bits as libc::mode_t;
+            let par = spawn_blocking_par(move || -> Par {
+                let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
+                    Ok(p) => p,
+                    Err(qe) => {
+                        let (c, m) = quarantine_err_reply(&qe);
+                        return err(c, m);
+                    }
+                };
+                let rc = unsafe {
+                    libc::fchmodat(
+                        parent.as_raw_fd(),
+                        parent.leaf_ptr(),
+                        bits,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                };
+                if rc == 0 {
+                    ok_bare()
+                } else {
+                    let e = std::io::Error::last_os_error();
+                    // ENOTSUP / EOPNOTSUPP → FSERR_UNSUPPORTED (Linux
+                    // and some fs don't honor AT_SYMLINK_NOFOLLOW on
+                    // chmod; report UNSUPPORTED rather than silently
+                    // following).
+                    let code = if e.raw_os_error() == Some(libc::ENOTSUP)
+                        || e.raw_os_error() == Some(libc::EOPNOTSUPP)
+                    {
+                        FSERR_UNSUPPORTED
+                    } else {
+                        io_err_code(&e)
+                    };
+                    err(code, io_msg_scrub(&e))
+                }
+            })
+            .await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        _ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [_, _, _, cmode_par] = raw_args else {
+                return None;
+            };
+            resolve_cmode(cmode_par)
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if path.is_divergence() {
+                finalize_failure_journal_via_table(
+                    ctx.handles,
+                    FSERR_CODE_CONSENSUS_DIVERGENCE,
+                    ctx.ack,
+                );
+            } else {
+                let reply = path.produce_reply();
+                if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+                    finalize_failure_journal_via_table(
+                        ctx.handles,
+                        fserr_to_code(&code_str),
+                        ctx.ack,
+                    );
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_CHMOD_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsChmodHandler as FsHandler>::NAME,
+    arity: <FsChmodHandler as FsHandler>::ARITY,
+    verifying: <FsChmodHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsChmodHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_chown — (root, rel, owner, group, cmode) -> [true]  (S3.7)
+//
+// NON-verifying path-mutation.  Consensus BANNED at parse_content
+// with FSERR_UNSUPPORTED (post-2026-09-02 S-2 security review —
+// NSS mapping is host-local).  Oracular-only journal call is a
+// no-op (journal_path_mutation_single_via_table self-guards).
+// -------------------------------------------------------------------
+
+pub struct FsChownHandler;
+
+pub struct FsChownArgs {
+    root: String,
+    rel: String,
+    owner: Option<String>,
+    group: Option<String>,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsChownHandler {
+    const NAME: &'static str = "fs_chown";
+    const ARITY: usize = 6; // (root, rel, owner, group, cmode, ack)
+                            // NON-verifying — the Consensus ban means no verify path ever
+                            // fires (Consensus caps rejected at parse_content).
+
+    type Args = FsChownArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsChownArgs, Box<HandlerReply>> {
+        let [root_par, rel_par, owner_par, group_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, String|Nil, String|Nil, String)",
+            ));
+        };
+        // C-26-F1: fail-closed on unrecognized cmode.
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        // Post-2026-09-02 S-2 review ban: fs_chown + Consensus is
+        // UNSUPPORTED (NSS mapping is host-local, silently divergent).
+        if cmode == ConsensusMode::Consensus {
+            return Err(HandlerReply::boxed_err(
+                FSERR_UNSUPPORTED,
+                "fs_chown: Consensus mode not supported — NSS mapping (owner/group \
+                 name to uid/gid) is host-local and can differ across validators, \
+                 producing silent on-disk divergence that the reply-hash verify \
+                 cannot detect.  Use Oracular mode, or lift this ban by capturing \
+                 resolved uid/gid in the WAL entry with shard-wide NSS coordination.",
+            ));
+        }
+        let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(r), Some(l)) => (r, l),
+            _ => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "expected (String, String, String|Nil, String|Nil, String)",
+                ));
+            }
+        };
+        Ok(FsChownArgs {
+            root,
+            rel,
+            owner: RhoString::unapply(owner_par),
+            group: RhoString::unapply(group_par),
+            cmode,
+        })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_chown_cost()
+    }
+
+    fn pre_syscall<'a>(
+        ctx: SyscallCtx<'a>,
+        args: &'a FsChownArgs,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>,
+    > {
+        // Post-S-2 ban above rules out Consensus, so this call is
+        // Oracular-only and journal_path_mutation_single_via_table
+        // no-ops (returns Ok(false)).  Kept for structural parity
+        // with the other path-mutation handlers.
+        Box::pin(async move {
+            let canon_path = canonicalize_lexical(&args.root, &args.rel);
+            if journal_path_mutation_single_via_table(
+                ctx.handles,
+                args.cmode,
+                WalOp::Chown,
+                canon_path,
+                None,
+                args.owner.clone(),
+                args.group.clone(),
+                ctx.ack,
+            )
+            .await
+            .is_err()
+            {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    "WAL cap exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsChownArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let root_pb = PathBuf::from(&args.root);
+            let (root_pb, expected_root_id) =
+                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let par =
+                chown_impl(&root_pb, args.rel, args.owner, args.group, expected_root_id).await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // fs_chown is non-verifying; framework never invokes
+        // VerifyDivergence path.  finalize_failure_journal fires on
+        // Leader / OracularEcho if reply has an err code.
+        Box::pin(async move {
+            let reply = path.produce_reply();
+            if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+                finalize_failure_journal_via_table(ctx.handles, fserr_to_code(&code_str), ctx.ack);
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_CHOWN_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsChownHandler as FsHandler>::NAME,
+    arity: <FsChownHandler as FsHandler>::ARITY,
+    verifying: <FsChownHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsChownHandler>(fs, args)),
+};
+
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.
 // ---------------------------------------------------------------------
@@ -6525,6 +7058,90 @@ fn journal_state_read_via_table(
         },
         ack_channel_hash(ack),
     );
+}
+
+/// Free-function form of `FsProcesses::finalize_failure_journal`
+/// for wave-3 trait impls (S3.7+).  Patches the pre-appended
+/// WAL entry's outcome from Success placeholder to
+/// `Failure { code }`.  See journal_truncate / journal_path_
+/// mutation_single for the pre-append side.
+fn finalize_failure_journal_via_table(handles: &FileHandleTable, code: u32, ack: &Par) {
+    let _ = handles
+        .wal
+        .update_outcome_by_ack_hash(ack_channel_hash(ack), WalOutcome::Failure { code });
+}
+
+/// Free-function form of `FsProcesses::journal_truncate` for wave-3
+/// trait impls (S3.7+).  Fd-based cmode lookup; self-guards on
+/// Oracular.  Returns `Err(())` on WAL-cap exhaustion.
+async fn journal_truncate_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    n: u64,
+    ack: &Par,
+) -> Result<bool, ()> {
+    let wal_meta = handles
+        .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+        .await;
+    match wal_meta {
+        Some((ConsensusMode::Consensus, canon_path)) => handles
+            .wal
+            .append_with_ack(
+                WalEntry {
+                    op: WalOp::Truncate,
+                    path: canon_path,
+                    extra_path: None,
+                    offset: Some(n),
+                    length: None,
+                    payload_ref: None,
+                    mode_bits: None,
+                    owner: None,
+                    group: None,
+                    outcome: WalOutcome::Success,
+                },
+                ack_channel_hash(ack),
+            )
+            .map(|()| true),
+        _ => Ok(false),
+    }
+}
+
+/// Free-function form of `FsProcesses::journal_path_mutation_single`
+/// for wave-3 trait impls (S3.7+).  Cmode passed by arg (not fd-
+/// based).  Self-guards on Oracular.  Returns `Err(())` on WAL-cap
+/// exhaustion.
+#[allow(clippy::result_unit_err, clippy::too_many_arguments)]
+async fn journal_path_mutation_single_via_table(
+    handles: &FileHandleTable,
+    cmode: ConsensusMode,
+    op: WalOp,
+    canon_path: PathBuf,
+    mode_bits: Option<u32>,
+    owner: Option<String>,
+    group: Option<String>,
+    ack: &Par,
+) -> Result<bool, ()> {
+    if cmode != ConsensusMode::Consensus {
+        return Ok(false);
+    }
+    handles
+        .wal
+        .append_with_ack(
+            WalEntry {
+                op,
+                path: canon_path,
+                extra_path: None,
+                offset: None,
+                length: None,
+                payload_ref: None,
+                mode_bits,
+                owner,
+                group,
+                outcome: WalOutcome::Success,
+            },
+            ack_channel_hash(ack),
+        )
+        .map(|()| true)
 }
 
 /// Free-function form of `FsProcesses::read_impl` for wave-3 trait
