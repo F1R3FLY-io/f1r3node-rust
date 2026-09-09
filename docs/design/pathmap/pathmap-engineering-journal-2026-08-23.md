@@ -7271,6 +7271,58 @@ compiler warnings remain. Reproduction commands are
 with the bounds above. Task 6018 remains open pending the concrete implementation
 refinements listed above; task 5976 is not closed by this checkpoint.
 
+### J-102 — 2026-09-09: persistent cache selection reuses the verified scheduler
+
+**FORMAL RESULT.** Seven additional laws relate cached arena addresses to the
+existing positional scheduler. An exact `nth_error` relation preserves endpoint
+values, opposite tie rules, absence and selected address identity. Strictly
+backward owner links prove that selecting the current root means selecting
+position zero. The concrete fold additionally proves the selected cell's own
+endpoint equals the cache and that the cell is reachable in the historical arena.
+
+The bridge reuses `FocusedRegionOwners.schedule_owners` and its verified cache
+selection. It does not clone owner lists at runtime or introduce another grammar.
+The list projection is a specification device. Distinguish owner-arena addresses,
+owner-chain positions and Region frame slots: completion must retain the existing
+frame-slot identity, never substitute an owner address.
+
+**REQUIRED PREMISE.** Exact cached-due versus scan equivalence requires every
+endpoint to be at least the current graph stamp. Without that condition, an
+earlier expired minimum can hide a later due boundary; endpoints `[4,5]` at
+stamp 5 are a counterexample. Residual reconstruction separately requires Region
+endpoints not to precede the stamp. These are obligations on transitions, not
+unchecked assumptions that authorize production activation.
+
+**PROPERTY BINDING.** The formal README enumerates all seven extracted invariants
+and their implementation properties: arbitrary address gaps/ties, historical
+root reads, exact due/absence translation, chain/arena identity, head selection,
+bounded scans and target endpoint identity. Existing stream and persistent
+reference tests remain; the new linked representation is not implemented yet.
+The independent plan review found no blocker in the six initial laws and requested
+the seventh exact-target corollary, which now compiles. Full completion/pop,
+frame realization, fault coherence/forcing and clock/resource refinements remain
+within task 6018. No production parser, PathMap crate or consensus rule changes.
+
+**MEASURED QUALIFICATION.** The final focused runner passed **127 RPB3 closed
+reports, three kernel checks and 88 runtime tests**, with zero failed or ignored
+tests. The standalone compile of the seven-law extension took 10.737 s and its
+bounded service reported 578.6 MiB peak memory with zero swap. Proof processes
+used High 1 GiB / Max 2 GiB / CPU 200%; the runner's Rust commands retained
+High 4 GiB / Max 6 GiB / CPU 400%, with swap disabled throughout. The 391-test
+full-library result in J-101 remains applicable to unchanged Rust sources;
+it is not counted again as a new full-library run.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-linked-cache-target-20260909.log` | `9ff2dcb863dc58e68dce618ac3d53e3d4407ba429da0d9f0c8a47e6756018139` |
+| `/tmp/epathmap-linked-cache-gate-20260909.log` | `f91d42a6ad301782d557e1428d03aa90d130f6c678d6d5b779991c355e39229c` |
+
+Reproduce with `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import`.
+Initial proof elaboration failures were corrected before these final successful
+runs; none is counted as a pass. Existing compiler warnings remain. These are
+proof/runtime correctness gates, not a persistent-resource or LMDB performance
+verdict. Task 6018 and its parent admission task remain in progress.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

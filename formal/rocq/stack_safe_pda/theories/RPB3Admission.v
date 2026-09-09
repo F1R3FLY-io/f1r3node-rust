@@ -4603,4 +4603,215 @@ Print Assumptions dead_edge_preserves_selected_graph_stamp_and_clock_while_appen
 Print Assumptions fault_forcing_uses_saved_graph_stamp_but_current_suffix_bytes.
 Print Assumptions fault_preflight_causal_controls_distinguish_payload_and_rolled_back_events.
 
+Definition cache_matches (entries : owner_entries)
+    (address_cache : boundary_handle) (position_cache : F.endpoint_cache) : Prop :=
+  match address_cache, position_cache with
+  | None, None => True
+  | Some (ending, address), Some (same_end, position) =>
+      ending = same_end /\ exists cell, nth_error entries position = Some (address, cell)
+  | _, _ => False
+  end.
+
+Fixpoint reference_boundary prefer_new (endpoint : owner_cell -> nat) (entries : owner_entries) :=
+  match entries with
+  | [] => None
+  | (address, cell) :: rest =>
+      choose_boundary prefer_new (endpoint cell) address (reference_boundary prefer_new endpoint rest)
+  end.
+
+Lemma choose_boundary_matches_positional_extension prefer_new endpoint address cell entries
+    address_cache position_cache :
+  cache_matches entries address_cache position_cache ->
+  cache_matches ((address, cell) :: entries)
+    (choose_boundary prefer_new endpoint address address_cache)
+    (F.extend_endpoint_cache prefer_new endpoint position_cache).
+Proof.
+  destruct address_cache as [[ending target]|], position_cache as [[other position]|];
+    cbn [cache_matches]; try contradiction.
+  - intros [same [selected found]]. subst other.
+    unfold choose_boundary, F.extend_endpoint_cache.
+    destruct prefer_new; cbn -[Nat.ltb].
+    + destruct (endpoint <=? ending) eqn:chosen; cbn [cache_matches].
+      * apply Nat.leb_le in chosen. rewrite Nat.min_l by assumption.
+        split; [reflexivity|exists cell; reflexivity].
+      * apply Nat.leb_gt in chosen. rewrite Nat.min_r by lia.
+        split; [reflexivity|exists selected; exact found].
+    + destruct (endpoint <? ending) eqn:chosen; cbn [cache_matches].
+      * apply Nat.ltb_lt in chosen. rewrite Nat.min_l by lia.
+        split; [reflexivity|exists cell; reflexivity].
+      * apply Nat.ltb_ge in chosen. rewrite Nat.min_r by assumption.
+        split; [reflexivity|exists selected; exact found].
+  - intros _. cbn [choose_boundary F.extend_endpoint_cache cache_matches].
+    split; [reflexivity|exists cell; reflexivity].
+Qed.
+
+Theorem address_caches_refine_positional_selection_without_address_arithmetic
+    prefer_new endpoint entries :
+  cache_matches entries (reference_boundary prefer_new endpoint entries)
+    (F.compute_endpoint_cache prefer_new (map (fun entry => endpoint (snd entry)) entries)).
+Proof.
+  induction entries as [|[address cell] rest IH]; cbn; [exact I|].
+  apply choose_boundary_matches_positional_extension. exact IH.
+Qed.
+
+Lemma reference_all_is_generic entries :
+  reference_all entries = reference_boundary false (fun cell => F.owner_bound (cell_owner cell)) entries.
+Proof. induction entries as [|[address cell] rest IH]; cbn; [reflexivity|now rewrite IH]. Qed.
+
+Lemma reference_path_is_generic entries :
+  reference_path entries = reference_boundary true (fun cell => F.owner_path_end (cell_owner cell)) entries.
+Proof. induction entries as [|[address cell] rest IH]; cbn; [reflexivity|now rewrite IH]. Qed.
+
+Definition entry_bounds (entries : owner_entries) := map (fun entry => F.owner_bound (cell_owner (snd entry))) entries.
+Definition entry_endpoints (entries : owner_entries) := map (fun entry => F.owner_path_end (cell_owner (snd entry))) entries.
+
+Lemma scheduled_projection_has_exact_endpoints entries :
+  F.scheduled_bounds (F.schedule_owners (projected_owners entries)) = entry_bounds entries /\
+  F.scheduled_endpoints (F.schedule_owners (projected_owners entries)) = entry_endpoints entries.
+Proof.
+  induction entries as [|[address cell] rest [bounds endpoints]]; [split; reflexivity|].
+  change ((F.owner_bound (cell_owner cell) ::
+      F.scheduled_bounds (F.schedule_owners (projected_owners rest))) =
+      F.owner_bound (cell_owner cell) :: entry_bounds rest /\
+    (F.owner_path_end (cell_owner cell) ::
+      F.scheduled_endpoints (F.schedule_owners (projected_owners rest))) =
+      F.owner_path_end (cell_owner cell) :: entry_endpoints rest).
+  now rewrite bounds, endpoints.
+Qed.
+
+Theorem linked_cached_reads_refine_the_existing_scheduled_owner_caches arena root entries :
+  linked arena root entries ->
+  let scheduled := F.schedule_owners (projected_owners entries) in
+  cache_matches entries (read_all arena root) (F.any_boundary_cache (F.top_caches scheduled)) /\
+  cache_matches entries (read_path arena root) (F.path_boundary_cache (F.top_caches scheduled)).
+Proof.
+  intro valid. cbn zeta.
+  destruct (cached_linked_reads_refine_exact_list_selection valid) as [all [paths _]].
+  destruct (F.valid_cache_projection _ (F.schedule_owners_valid (projected_owners entries))) as [any scheduled_paths].
+  destruct (scheduled_projection_has_exact_endpoints entries) as [bounds endpoints].
+  rewrite all, paths, any, scheduled_paths, bounds, endpoints,
+    reference_all_is_generic, reference_path_is_generic.
+  split; apply address_caches_refine_positional_selection_without_address_arithmetic.
+Qed.
+
+Definition address_due stamp (cache : boundary_handle) :=
+  match cache with Some (ending, address) => if ending =? stamp then Some address else None | None => None end.
+
+Definition translate_position (entries : owner_entries) position :=
+  match position with
+  | None => None
+  | Some index => option_map fst (nth_error entries index)
+  end.
+
+Theorem due_address_is_exactly_the_translated_scheduler_position entries address_cache position_cache stamp :
+  cache_matches entries address_cache position_cache ->
+  address_due stamp address_cache = translate_position entries (F.cached_due stamp position_cache).
+Proof.
+  destruct address_cache as [[ending address]|], position_cache as [[other position]|];
+    cbn [cache_matches]; try contradiction; [|reflexivity].
+  intros [same [cell found]]. subst other.
+  unfold address_due, F.cached_due. destruct (ending =? stamp); [|reflexivity].
+  cbn [translate_position]. now rewrite found.
+Qed.
+
+Lemma linked_entry_lookup arena root entries address cell :
+  linked arena root entries -> In (address, cell) entries -> nth_error arena address = Some cell.
+Proof.
+  intros valid. induction valid; cbn; [contradiction|].
+  intros [same|inside]; [inversion same; subst; assumption|now apply IHvalid].
+Qed.
+
+Theorem selected_cached_address_is_a_reachable_historical_owner arena root entries address_cache
+    position_cache ending address position :
+  linked arena root entries -> cache_matches entries address_cache position_cache ->
+  address_cache = Some (ending, address) -> position_cache = Some (ending, position) ->
+  exists cell, nth_error entries position = Some (address, cell) /\
+    nth_error arena address = Some cell.
+Proof.
+  intros valid matches selected scheduled. subst address_cache position_cache.
+  destruct matches as [_ [cell found]]. exists cell. split; [exact found|].
+  eapply linked_entry_lookup; [exact valid|]. eapply nth_error_In; exact found.
+Qed.
+
+Print Assumptions address_caches_refine_positional_selection_without_address_arithmetic.
+Print Assumptions linked_cached_reads_refine_the_existing_scheduled_owner_caches.
+Print Assumptions due_address_is_exactly_the_translated_scheduler_position.
+Print Assumptions selected_cached_address_is_a_reachable_historical_owner.
+
+Lemma linked_addresses_are_below_parent_bound arena root entries :
+  linked arena root entries -> forall bound,
+  (forall index, root = Some index -> index < bound) ->
+  forall address cell, In (address, cell) entries -> address < bound.
+Proof.
+  intro valid. induction valid as [|index current rest found parents IH backward all paths outer];
+    intros bound bounded address cell inside; [contradiction|].
+  cbn in inside. destruct inside as [same|inside].
+  - inversion same; subst. apply bounded. reflexivity.
+  - pose proof (IH index backward address cell inside) as earlier.
+    pose proof (bounded index eq_refl) as root_bound. lia.
+Qed.
+
+Theorem selected_root_address_is_exactly_position_zero arena root entries position cell :
+  linked arena (Some root) entries ->
+  nth_error entries position = Some (root, cell) -> position = 0.
+Proof.
+  intros valid selected. inversion valid; subst.
+  destruct position; [reflexivity|]. cbn in selected.
+  assert (inside : In (root, cell) rest) by (eapply nth_error_In; exact selected).
+  assert (earlier : root < root).
+  { eapply linked_addresses_are_below_parent_bound; eauto. }
+  lia.
+Qed.
+
+Theorem cached_address_due_refines_exact_scan_under_no_overdue_boundary
+    prefer_new endpoint entries stamp :
+  Forall (fun ending => stamp <= ending) (map (fun entry => endpoint (snd entry)) entries) ->
+  address_due stamp (reference_boundary prefer_new endpoint entries) =
+    translate_position entries
+      (F.scan_due prefer_new stamp (map (fun entry => endpoint (snd entry)) entries)).
+Proof.
+  intro bounds.
+  pose proof (@due_address_is_exactly_the_translated_scheduler_position entries _ _ stamp
+    (address_caches_refine_positional_selection_without_address_arithmetic prefer_new endpoint entries))
+    as translated.
+  rewrite F.computed_cache_selects_exact_scan in translated by exact bounds.
+  exact translated.
+Qed.
+
+Print Assumptions selected_root_address_is_exactly_position_zero.
+Print Assumptions cached_address_due_refines_exact_scan_under_no_overdue_boundary.
+
+Lemma reference_boundary_selects_its_targets_endpoint prefer_new endpoint entries :
+  forall ending address, reference_boundary prefer_new endpoint entries = Some (ending, address) ->
+  exists cell, In (address, cell) entries /\ endpoint cell = ending.
+Proof.
+  induction entries as [|[index cell] rest IH]; intros ending address selected; [discriminate|].
+  cbn [reference_boundary] in selected.
+  destruct (reference_boundary prefer_new endpoint rest) as [[old_end old_address]|] eqn:tail.
+  - unfold choose_boundary in selected.
+    destruct (if prefer_new then endpoint cell <=? old_end else endpoint cell <? old_end).
+    + inversion selected; subst. exists cell. split; [now left|reflexivity].
+    + inversion selected; subst.
+      destruct (IH ending address eq_refl) as [target [inside same]].
+      exists target. split; [now right|exact same].
+  - cbn [choose_boundary] in selected. inversion selected; subst.
+    exists cell. split; [now left|reflexivity].
+Qed.
+
+Theorem concrete_cached_target_has_exact_endpoint_and_arena_identity
+    arena root entries prefer_new endpoint ending address :
+  linked arena root entries ->
+  reference_boundary prefer_new endpoint entries = Some (ending, address) ->
+  exists cell, In (address, cell) entries /\ nth_error arena address = Some cell /\
+    endpoint cell = ending.
+Proof.
+  intros valid selected.
+  destruct (reference_boundary_selects_its_targets_endpoint prefer_new endpoint entries selected)
+    as [cell [inside same]].
+  exists cell. split; [exact inside|]. split; [|exact same].
+  eapply linked_entry_lookup; eauto.
+Qed.
+
+Print Assumptions concrete_cached_target_has_exact_endpoint_and_arena_identity.
+
 End PersistentFocusedOwners.

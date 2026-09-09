@@ -1057,6 +1057,40 @@ do not complete PFO-01–07 or prove the Rust implementation. The combined runne
 requires 120 total RPB3 reports and ten frame-storage tests. J-101 records the
 qualification and precise remaining premises.
 
+#### Persistent cache-to-scheduler correspondence (2026-09-09)
+
+Seven further `PersistentFocusedOwners` laws connect arena addresses to the
+existing positional scheduler. `cache_matches` relates equal cached endpoints
+and a successful `nth_error` lookup from an owner-chain position to an arena
+address. Arena addresses, chain positions and Region frame slots are different
+identities; the proof neither equates them nor assumes contiguous addresses.
+
+| Law | Extracted invariant and required implementation property |
+|---|---|
+| `address_caches_refine_positional_selection_without_address_arithmetic` | Both preferences preserve the selected endpoint and position-to-address mapping. Generate arbitrary address gaps, endpoint orders and ties; compare against the independent positional fold. |
+| `linked_cached_reads_refine_the_existing_scheduled_owner_caches` | Reads from every valid historical root match `schedule_owners` caches, including after forks and append-only extensions. |
+| `due_address_is_exactly_the_translated_scheduler_position` | Equal-stamp filtering preserves `None` and exact selected addresses; no default-valued lookup may substitute for an absent position. |
+| `selected_cached_address_is_a_reachable_historical_owner` | The selected position resolves to the same cell in both the chain and arena. Test non-current roots and intervening unrelated allocations. |
+| `selected_root_address_is_exactly_position_zero` | Strictly backward links exclude aliasing the root with a deeper chain position. Bind head-versus-ancestor scheduler branches to this identity. |
+| `cached_address_due_refines_exact_scan_under_no_overdue_boundary` | With every endpoint at least the current stamp, cached due selection equals the exact reference scan. Include expired-boundary negative controls; this premise cannot be omitted. |
+| `concrete_cached_target_has_exact_endpoint_and_arena_identity` | The actual selected cell has the cached endpoint, not merely a matching arena address. Bind both all-bound and path-bound projections. |
+
+The pure correspondence needs no stamp bound. The scan refinement does: at
+stamp 5, endpoints `[4,5]` have cached minimum 4 and cannot use that minimum to
+select the due endpoint 5. Equal all-bound endpoints retain the outer owner;
+equal path endpoints select the inner owner. `projected_owners` still carries
+unused `None` FRO minimum fields: `schedule_owners` constructs its own valid
+scheduler caches, so no unsupported `F.cache_valid` claim is required.
+
+This table is the complete implementation-property catalogue for these seven
+new laws, not evidence that the persistent Rust representation implements them
+yet. Existing stream cache assertions and persistent fork baselines remain
+reference controls. Before production changes, bind linked completion/pop
+transitions, concrete frame realization, selected-fault/hidden-terminal coherence,
+checked forcing, shared clock effects and resource accounting. A cached lookup
+in this list-based mathematical model does not prove Rust constant-time cost.
+The focused runner now requires 127 RPB3 reports; runtime filters are unchanged.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

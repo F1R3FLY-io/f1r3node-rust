@@ -10241,6 +10241,22 @@ with zero ignores; its bounded service reported 1.3 GiB peak memory and zero
 swap, including compilation. J-101 retains commands and raw-log hashes. These
 checks do not establish a whole-workspace pass or persistent-resource closure.
 
+#### 5.33.21 Persistent cache-to-scheduler proof bridge (2026-09-09, task 6018)
+
+Seven further laws connect cached owner-arena addresses to the existing
+positional scheduler without equating addresses, chain positions or frame slots.
+They establish exact target identity/endpoint, opposite tie rules, historical
+reachability and head selection. Cached due selection agrees with a full scan
+under the explicit no-overdue-boundary premise. The final focused runner passed
+127 RPB3 reports, three kernel checks and 88 runtime tests; Rust sources are
+unchanged from the preceding 391-test full-library checkpoint.
+
+[J-102](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-102--2026-09-09-persistent-cache-selection-reuses-the-verified-scheduler)
+records limits, exact logs and the extracted implementation-property catalogue.
+Linked completion/pop, concrete frame realization, selected-fault coherence,
+checked forcing and resource refinements remain required. This bridge does not
+yet reduce persistent frame growth or complete the ACT/LMDB comparison.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
