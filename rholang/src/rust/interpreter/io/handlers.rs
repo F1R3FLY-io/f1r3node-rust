@@ -729,7 +729,8 @@ impl FsProcesses {
     /// handler.  Pre-RQ-2 this pattern was inlined at 6 sites, each
     /// with an identical `expect("current_deploy_scope RwLock
     /// poisoned")` message.
-    fn current_deploy_scope(&self) -> [u8; 32] {
+    #[cfg(any())]
+    fn _deleted_pre_wave3_current_deploy_scope(&self) -> [u8; 32] {
         *self
             .handles
             .current_deploy_scope
@@ -1343,29 +1344,20 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge the fs_open weight at handler
-        // entry.  Placed BEFORE the argument-shape check on purpose:
-        // the charge is a pure function of the handler identity, so
-        // leader and replay both hit it regardless of arg validity —
-        // giving byte-identical `BillableTokenEvent::Primitive` logs
-        // across validators (a load-bearing consensus invariant under
-        // D3).  On budget exhaustion `?` propagates
-        // `OutOfPhlogistonsError`; the deploy is rejected before any
-        // syscall runs.  See rholang/src/rust/interpreter/io/costs.rs
-        // for the weight table and rholang/tests/fileio_cost_spec.rs
-        // for the golden-value regression pins.
+        dispatch_via_trait::<FsOpenHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_open_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering.reserve_primitive(costs::fs_open_cost())?;
         let Some((produce, is_replay, previous, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
             return Err(illegal_argument_error("fs_open"));
         };
-        // Slice 29 (PB-M-14): `(root, rel, mode, cmode, ack)` — the
-        // cmode arg is stashed in the returned `FileHandle` so
-        // subsequent mutating handlers can journal to the consensus
-        // WAL when the cap is `Consensus`.  Same fail-closed
-        // semantics as the slice-26 cmode threading: invalid cmode
-        // → `FSERR_BAD_ARG`.
         let [root_par, rel_par, mode_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_open"));
         };
@@ -1529,7 +1521,8 @@ impl FsProcesses {
         Ok(out)
     }
 
-    async fn open_impl(
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_open_impl(
         &self,
         root: String,
         rel: String,
@@ -3217,9 +3210,14 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-iii: charge fs_remove_file weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        // Path-mutation constant (2x FS_SYSCALL_CONST: two-endpoint work).
+        dispatch_via_trait::<FsRemoveFileHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_remove_file_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering
             .reserve_primitive(costs::fs_remove_file_cost())?;
         let Some((produce, is_replay, previous, args)) =
@@ -3227,10 +3225,6 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_remove_file"));
         };
-        // H-29-3 lift (2026-08-26): Consensus caps now unlink after
-        // WAL-journaling.  Consensus+locked still returns FSERR_BUSY
-        // per plan §Mode-differentiated invariants (see below).
-        // Argument shape: `(root, rel, cmode, ack)`.
         let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_remove_file"));
         };
@@ -7928,6 +7922,360 @@ static FS_COPY_FILE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsCopyFileHandler>(fs, args)),
 };
 
+// -------------------------------------------------------------------
+// fs_open — (root, rel, mode, cmode) -> [true, fd]  (S3.10)
+//
+// NON-verifying lifecycle.  Most intricate handler (~300 LOC in
+// pre-refactor).  is_replay side-effect installs a shadow
+// FileHandle at the leader's fd so downstream mutating handlers
+// (fs_write / fs_truncate / etc.) can look up (cmode, canon_path)
+// symmetrically.  Under Consensus + non-append mode, the shadow's
+// `file` slot backs a REAL libc::open against the follower's own
+// subdir file — load-bearing for Phase-2 fd-based re-execute ops.
+// Consensus + O_APPEND is rejected leader-side (see dispatch).
+// -------------------------------------------------------------------
+
+pub struct FsOpenHandler;
+
+pub struct FsOpenArgs {
+    root: String,
+    rel: String,
+    mode: String,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsOpenHandler {
+    const NAME: &'static str = "fs_open";
+    const ARITY: usize = 5; // (root, rel, mode, cmode, ack)
+
+    type Args = FsOpenArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsOpenArgs, Box<HandlerReply>> {
+        let [root_par, rel_par, mode_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, String, String)",
+            ));
+        };
+        // Cmode validation first — matches pre-refactor.
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        match (
+            RhoString::unapply(root_par),
+            RhoString::unapply(rel_par),
+            RhoString::unapply(mode_par),
+        ) {
+            (Some(root), Some(rel), Some(mode)) => Ok(FsOpenArgs {
+                root,
+                rel,
+                mode,
+                cmode,
+            }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, String, String)",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_open_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsOpenArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let par =
+                open_impl_via_table(ctx.handles, args.root, args.rel, args.mode, args.cmode).await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn on_replay_side_effect<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        previous: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // C-R1: install a shadow FileHandle at the leader's fd so
+        // downstream replay-branch mutating handlers can look up
+        // (cmode, canon_path).  Phase-2: for Consensus caps, the
+        // shadow's `file` slot backs a REAL libc::open via
+        // safe_open_verified so downstream fd-based re-execute ops
+        // (fs_size / fs_read / etc.) can run on the follower's own
+        // subdir file.  Oracular caps keep the pre-Phase-2
+        // metadata-only shadow (file: None).
+        Box::pin(async move {
+            let Some(fd) = extract_ok_fd(previous) else {
+                return;
+            };
+            let [root_par, rel_par, mode_par, cmode_par] = raw_args else {
+                return;
+            };
+            let (Some(root), Some(rel), Some(mode_str)) = (
+                RhoString::unapply(root_par),
+                RhoString::unapply(rel_par),
+                RhoString::unapply(mode_par),
+            ) else {
+                return;
+            };
+            // Bogus cmode with cached [true, fd] is a leader bug;
+            // fail-closed to Consensus (most restrictive).
+            let cmode = resolve_cmode(cmode_par).unwrap_or(ConsensusMode::Consensus);
+            let intent = parse_open_mode(&mode_str);
+            // Phase-2: real-open under Consensus + non-append.
+            // Under any other combination (Oracular, or Consensus +
+            // append which is rejected leader-side), shadow's `file`
+            // slot is None.
+            let file: Option<std::sync::Arc<std::fs::File>> = if cmode == ConsensusMode::Consensus {
+                match intent {
+                    Some(intent) if !intent.append => {
+                        let root_pb = PathBuf::from(&root);
+                        let (root_pb, expected_root_id) =
+                            ctx.handles.root_registry.resolve_or_identity(&root_pb);
+                        let rel_for_open = rel.clone();
+                        let intent_copy = intent;
+                        let opened = spawn_blocking(move || {
+                            let (flags, mode_bits) = fopen_flags(intent_copy);
+                            super::path::safe_open_verified(
+                                &root_pb,
+                                &rel_for_open,
+                                flags,
+                                mode_bits,
+                                expected_root_id,
+                            )
+                        })
+                        .await;
+                        match opened {
+                            Ok(Ok(f)) => Some(std::sync::Arc::new(f)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let deploy = ctx.current_deploy_scope();
+            let shadow = FileHandle {
+                file,
+                canon_path: canonicalize_lexical(&root, &rel),
+                mode: intent.map(|i| i.mode).unwrap_or(AccessMode::Read),
+                cmode,
+                position: 0,
+                deploy,
+            };
+            // Ignore return: slot already occupied on repeat call →
+            // existing handle wins.  Real divergence surfaces later
+            // via WAL comparison.
+            let _ = ctx.handles.insert_at(fd.as_u64(), shadow).await;
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_OPEN_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsOpenHandler as FsHandler>::NAME,
+    arity: <FsOpenHandler as FsHandler>::ARITY,
+    verifying: <FsOpenHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsOpenHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_remove_file — (root, rel, cmode) -> [true]  (S3.10)
+//
+// Verifying path-mutation.  Consensus+locked: FSERR_BUSY.
+// Oracular+locked: proceeds with log-warn (POSIX rm-while-open
+// semantics).  Uses unlink_leaf_via_dirfd via SafeParent.
+// -------------------------------------------------------------------
+
+pub struct FsRemoveFileHandler;
+
+pub struct FsRemoveFileArgs {
+    root: String,
+    rel: String,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsRemoveFileHandler {
+    const NAME: &'static str = "fs_remove_file";
+    const ARITY: usize = 4; // (root, rel, cmode, ack)
+    const VERIFYING: bool = true;
+
+    type Args = FsRemoveFileArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsRemoveFileArgs, Box<HandlerReply>> {
+        let [root_par, rel_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, String)",
+            ));
+        };
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(root), Some(rel)) => Ok(FsRemoveFileArgs { root, rel, cmode }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String, String)",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_remove_file_cost()
+    }
+
+    fn pre_syscall<'a>(
+        ctx: SyscallCtx<'a>,
+        args: &'a FsRemoveFileArgs,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), Box<HandlerReply>>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let canon_path = canonicalize_lexical(&args.root, &args.rel);
+            if journal_path_mutation_single_via_table(
+                ctx.handles,
+                args.cmode,
+                WalOp::RemoveFile,
+                canon_path,
+                None,
+                None,
+                None,
+                ctx.ack,
+            )
+            .await
+            .is_err()
+            {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_QUOTA_EXCEEDED,
+                    "WAL cap exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsRemoveFileArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let root_pb = PathBuf::from(&args.root);
+            let (root_pb, expected_root_id) =
+                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let lock_registry = ctx.handles.lock_registry.clone();
+            let rel = args.rel;
+            let cmode = args.cmode;
+            let par = spawn_blocking_par(move || -> Par {
+                let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
+                    Ok(p) => p,
+                    Err(qe) => {
+                        let (c, m) = quarantine_err_reply(&qe);
+                        return err(c, m);
+                    }
+                };
+                // Step 6: mode-differentiated unlink gate.
+                let target_dev_inode = target_dev_inode_at(&parent);
+                let target_is_locked = target_dev_inode
+                    .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
+                    .unwrap_or(false);
+                if cmode == ConsensusMode::Consensus && target_is_locked {
+                    return err(
+                        FSERR_BUSY,
+                        "cannot remove: lock held on target (dev, inode)",
+                    );
+                }
+                if cmode == ConsensusMode::Oracular && target_is_locked {
+                    if let Some((dev, ino)) = target_dev_inode {
+                        let n_holders = lock_registry.count_locks((dev, ino));
+                        tracing::warn!(
+                            target: "f1r3fly.fs.oracular",
+                            dev = dev,
+                            ino = ino,
+                            n_holders = n_holders,
+                            "oracular unlink of locked file (dev={}, ino={}) — {} \
+                             holder(s) will observe subsequent errors on path-based \
+                             calls; fd-based calls remain valid until close",
+                            dev,
+                            ino,
+                            n_holders
+                        );
+                    }
+                }
+                match unlink_leaf_via_dirfd(&parent, RemoveKind::File) {
+                    Ok(()) => ok_bare(),
+                    Err(e) => err(io_err_code(&e), io_msg_scrub(&e)),
+                }
+            })
+            .await;
+            HandlerReply::Ok(par)
+        })
+    }
+
+    fn resolve_replay_cmode<'a>(
+        _ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ConsensusMode>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let [_, _, cmode_par] = raw_args else {
+                return None;
+            };
+            resolve_cmode(cmode_par)
+        })
+    }
+
+    fn journal<'a>(
+        ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+        path: JournalPath<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // H-6 finalize — same as fs_chmod / fs_rename / fs_copy_file.
+        Box::pin(async move {
+            if path.is_divergence() {
+                finalize_failure_journal_via_table(
+                    ctx.handles,
+                    FSERR_CODE_CONSENSUS_DIVERGENCE,
+                    ctx.ack,
+                );
+            } else {
+                let reply = path.produce_reply();
+                if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+                    finalize_failure_journal_via_table(
+                        ctx.handles,
+                        fserr_to_code(&code_str),
+                        ctx.ack,
+                    );
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_REMOVE_FILE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsRemoveFileHandler as FsHandler>::NAME,
+    arity: <FsRemoveFileHandler as FsHandler>::ARITY,
+    verifying: <FsRemoveFileHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsRemoveFileHandler>(fs, args)),
+};
+
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.
 // ---------------------------------------------------------------------
@@ -8320,6 +8668,81 @@ async fn journal_path_mutation_single_via_table(
             ack_channel_hash(ack),
         )
         .map(|()| true)
+}
+
+/// Free-function form of `FsProcesses::open_impl` for wave-3
+/// FsOpenHandler.  Semantic behavior identical to the `&self`
+/// wrapper: parse mode → reject Consensus+O_APPEND → resolve
+/// or_identity → safe_open_verified → fstat regular-file check →
+/// insert FileHandle → emit ok_fd or err.
+async fn open_impl_via_table(
+    handles: &FileHandleTable,
+    root: String,
+    rel: String,
+    mode: String,
+    cmode: ConsensusMode,
+) -> Par {
+    let intent = match parse_open_mode(&mode) {
+        Some(i) => i,
+        None => return err(FSERR_BAD_ARG, format!("unknown fopen mode {mode:?}")),
+    };
+    // Consensus + O_APPEND is rejected: append writes get atomically
+    // retargeted to file-end by the kernel; the shadow-position model
+    // doesn't extend cleanly.  Rather than ship a WAL followers can't
+    // replay, reject at open.
+    if cmode == ConsensusMode::Consensus && intent.append {
+        return err(
+            FSERR_BAD_ARG,
+            "append modes (\"a\", \"a+\") are not supported on Consensus caps — \
+             use a non-append mode plus fs_seek(SEEK_END) if append semantics \
+             are required, or open the cap as Oracular",
+        );
+    }
+    let root_pb = PathBuf::from(&root);
+    // Shape A: resolve legacy Oracular through identity fall-through,
+    // Consensus through per-runtime RootIdentityRegistry to the
+    // validator's on-disk staging dir + boot-captured (dev, inode).
+    let (root_pb, expected_root_id) = handles.root_registry.resolve_or_identity(&root_pb);
+    let intent_copy = intent;
+    let rel_for_open = rel.clone();
+    let opened = spawn_blocking(move || {
+        let (flags, mode_bits) = fopen_flags(intent_copy);
+        super::path::safe_open_verified(&root_pb, &rel_for_open, flags, mode_bits, expected_root_id)
+    })
+    .await;
+    let file = match opened {
+        Err(_join_err) => return err(FSERR_IO, "spawn_blocking task failed"),
+        Ok(Err(qe)) => {
+            let (code, msg) = quarantine_err_reply(&qe);
+            return err(code, msg);
+        }
+        Ok(Ok(f)) => f,
+    };
+    // Non-regular-file rejection.  Since we already have the fd
+    // (opened with O_NOFOLLOW), there's no TOCTOU here.
+    let meta = match file.metadata() {
+        Ok(m) => m,
+        Err(e) => return err(io_err_code(&e), io_msg_scrub(&e)),
+    };
+    if !meta.file_type().is_file() {
+        return err(FSERR_UNSUPPORTED, "not a regular file");
+    }
+    let deploy = *handles
+        .current_deploy_scope
+        .read()
+        .expect("current_deploy_scope RwLock poisoned");
+    let handle = FileHandle {
+        file: Some(std::sync::Arc::new(file)),
+        canon_path: canonicalize_lexical(&root, &rel),
+        mode: intent.mode,
+        cmode,
+        position: 0,
+        deploy,
+    };
+    match handles.insert(handle).await {
+        Ok(fd) => ok_fd(Fd::from(fd)),
+        Err(()) => err(FSERR_QUOTA_EXCEEDED, "per-runtime fd cap reached"),
+    }
 }
 
 /// Free-function form of `FsProcesses::read_impl` for wave-3 trait

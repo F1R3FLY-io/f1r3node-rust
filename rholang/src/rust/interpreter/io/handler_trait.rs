@@ -587,9 +587,15 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///     two-event cost (setup + per-entry supplement).  fs_rename +
 ///     fs_copy_file: verifying mutation with 2-path journal via
 ///     new `journal_path_mutation_two_via_table` free-fn.
+///   - S3.10 (2026-09-09): +2 (fs_open, fs_remove_file).  Count =
+///     26.  fs_open: non-verifying lifecycle (most intricate
+///     handler) with on_replay_side_effect installing a shadow
+///     FileHandle + Phase-2 real-open on Consensus caps.
+///     fs_remove_file: verifying path-mutation with lock-registry
+///     gate.
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 24;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 26;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -874,6 +880,8 @@ mod tests {
             "fs_entries",              // S3.9 (2026-09-09)
             "fs_rename",               // S3.9 (2026-09-09)
             "fs_copy_file",            // S3.9 (2026-09-09)
+            "fs_open",                 // S3.10 (2026-09-09)
+            "fs_remove_file",          // S3.10 (2026-09-09)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);
