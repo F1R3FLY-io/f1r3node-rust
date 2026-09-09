@@ -1648,60 +1648,16 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // close — (fd) -> [true]
+    //
+    // Wave-3 S3.2 (2026-09-08) migration: `FsCloseHandler` lives
+    // after the `impl FsProcesses` block.  This wrapper stays until
+    // rho_runtime.rs switchover at S3.12.
     // -------------------------------------------------------------------
     pub async fn fs_close(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_close weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering.reserve_primitive(costs::fs_close_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_close"));
-        };
-        let [fd_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_close"));
-        };
-        if is_replay {
-            // Phase 2 fd-release (Consensus re-execute + verify,
-            // 2026-09-01): the follower's fs_open replay branch now
-            // installs a shadow whose `file` slot backs a REAL OS
-            // fd under Consensus (needed for downstream fd-based
-            // re-execute — fs_size / fs_read / fs_write / etc.).
-            // Pre-Phase-2 the shadow was metadata-only (`file:
-            // None`) so this branch could produce cached reply
-            // without touching the fd table; now it MUST release
-            // the shadow at close time, or the follower would
-            // accumulate OS fds up to MAX_OPEN_FDS across the
-            // runtime's lifetime — a validator processing many
-            // blocks with Consensus fs traffic would eventually
-            // hit FSERR_QUOTA_EXCEEDED on fs_open replay.  The
-            // remove is a pure side-effect: it doesn't touch the
-            // reply Par (still the cached leader reply) nor the
-            // WAL (fs_close doesn't journal).  Symmetric with the
-            // leader path below.
-            if let Some(fd) = RhoNumber::unapply(fd_par) {
-                self.handles.remove(fd as u64).await;
-            }
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) => {
-                // Slice 28 (post-2026-08-06 CRIT-2 fix): fds are
-                // hash-derived u64 bit-patterns; the sign bit
-                // carries information, so we reinterpret the GInt
-                // via `fd as u64` rather than gating on `fd >= 0`.
-                self.handles.remove(fd as u64).await;
-                ok_bare()
-            }
-            _ => err(FSERR_BAD_ARG, "expected GInt fd"),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsCloseHandler>(self, contract_args).await
     }
 
     // -------------------------------------------------------------------
@@ -2646,66 +2602,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_tell weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering.reserve_primitive(costs::fs_tell_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_tell"));
-        };
-        let [fd_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_tell"));
-        };
-        if is_replay {
-            // F-3 (2026-09-04): compile-time link to the fd-position
-            // mutator invariant.  `FdPositionMutator::ALL` is the
-            // authoritative list of handlers that mutate shadow
-            // position; this reference ensures the const-eval guard
-            // in verify.rs is part of this handler's compilation
-            // unit's link footprint.  Runtime overhead: zero (const
-            // pointer read, DCE-eligible).  Compile-time value:
-            // clicking through this identifier lands you at the
-            // invariant that justifies the tautological pass-through
-            // on the next line.
-            let _fd_position_mutator_invariant = super::verify::FdPositionMutator::ALL;
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) => {
-                let file_arc = match self.handles.raw_fd(fd as u64).await {
-                    Some(f) => f,
-                    None => {
-                        let out = vec![err(FSERR_CLOSED, format!("unknown fd {fd}"))];
-                        produce(&out, ack).await?;
-                        return Ok(out);
-                    }
-                };
-                let r = spawn_blocking(move || {
-                    use std::os::fd::AsRawFd;
-                    let raw_fd = file_arc.as_raw_fd();
-                    unsafe {
-                        let pos = libc::lseek(raw_fd, 0, libc::SEEK_CUR);
-                        if pos < 0 {
-                            Err(std::io::Error::last_os_error())
-                        } else {
-                            Ok(pos as u64)
-                        }
-                    }
-                })
-                .await;
-                match r {
-                    Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
-                    Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
-                    Ok(Ok(pos)) => ok_u64(pos),
-                }
-            }
-            _ => err(FSERR_BAD_ARG, "expected u64"),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsTellHandler>(self, contract_args).await
     }
 
     // -------------------------------------------------------------------
@@ -5695,32 +5592,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_release_lock weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering
-            .reserve_primitive(costs::fs_release_lock_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_release_lock"));
-        };
-        let [id_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_release_lock"));
-        };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let reply = match RhoNumber::unapply(id_par) {
-            Some(n) if n >= 0 => match self.handles.lock_registry.release(LockId::from(n as u64)) {
-                Ok(()) => ok_bare(),
-                Err(le) => lock_err_reply(le),
-            },
-            _ => err(FSERR_BAD_ARG, "expected (u64)"),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsReleaseLockHandler>(self, contract_args).await
     }
 
     /// Sweep every positional and sequential lock owned by `holder` from
@@ -5884,6 +5756,230 @@ static FS_FLUSH_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsFlushHandler as FsHandler>::ARITY,
     verifying: <FsFlushHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsFlushHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_tell — (fd) -> [true, pos]  (S3.2, 2026-09-08)
+//
+// Non-verifying (see verify.rs::FdPositionMutator + F-3 comment).
+// The dispatch body preserves the compile-time link to
+// `FdPositionMutator::ALL` that the pre-migration handler kept on
+// its is_replay branch — the reference is now inside dispatch's
+// non-replay path but still in handlers.rs's compilation unit.
+// -------------------------------------------------------------------
+
+pub struct FsTellHandler;
+
+pub struct FsTellArgs {
+    fd: u64,
+}
+
+impl FsHandler for FsTellHandler {
+    const NAME: &'static str = "fs_tell";
+    const ARITY: usize = 2; // (fd, ack)
+
+    type Args = FsTellArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsTellArgs, Box<HandlerReply>> {
+        let [fd_par] = args else {
+            return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected u64"));
+        };
+        let fd = RhoNumber::unapply(fd_par)
+            .ok_or_else(|| HandlerReply::boxed_err(FSERR_BAD_ARG, "expected u64"))?;
+        Ok(FsTellArgs { fd: fd as u64 })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_tell_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsTellArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        // F-3 (2026-09-04) compile-time link — see
+        // verify.rs::FdPositionMutator.  The const-eval guard in
+        // verify.rs is module-scope so it fires regardless of any
+        // reference here; this line is a click-through aid keeping
+        // FdPositionMutator visible from the fs_tell dispatch body.
+        let _fd_position_mutator_invariant = super::verify::FdPositionMutator::ALL;
+        Box::pin(async move {
+            let file_arc = match ctx.handles.raw_fd(args.fd).await {
+                Some(f) => f,
+                None => {
+                    return HandlerReply::err(FSERR_CLOSED, format!("unknown fd {}", args.fd));
+                }
+            };
+            let r = spawn_blocking(move || {
+                use std::os::fd::AsRawFd;
+                let raw_fd = file_arc.as_raw_fd();
+                unsafe {
+                    let pos = libc::lseek(raw_fd, 0, libc::SEEK_CUR);
+                    if pos < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(pos as u64)
+                    }
+                }
+            })
+            .await;
+            match r {
+                Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
+                Ok(Ok(pos)) => HandlerReply::ok(ok_u64(pos)),
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_TELL_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsTellHandler as FsHandler>::NAME,
+    arity: <FsTellHandler as FsHandler>::ARITY,
+    verifying: <FsTellHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsTellHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_close — (fd) -> [true]  (S3.2, 2026-09-08)
+//
+// Non-verifying but with a Phase-2 fd-release side effect on the
+// `is_replay` branch (see `on_replay_side_effect` below).  Pre-
+// Phase-2 the follower's shadow was metadata-only; Phase-2
+// (2026-09-01) backs it with a real OS fd, so failing to release
+// on replay leaks OS fds — validators processing many blocks with
+// Consensus fs traffic would eventually hit FSERR_QUOTA_EXCEEDED
+// on fs_open replay.
+// -------------------------------------------------------------------
+
+pub struct FsCloseHandler;
+
+pub struct FsCloseArgs {
+    fd: u64,
+}
+
+impl FsHandler for FsCloseHandler {
+    const NAME: &'static str = "fs_close";
+    const ARITY: usize = 2; // (fd, ack)
+
+    type Args = FsCloseArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsCloseArgs, Box<HandlerReply>> {
+        let [fd_par] = args else {
+            return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected GInt fd"));
+        };
+        let fd = RhoNumber::unapply(fd_par)
+            .ok_or_else(|| HandlerReply::boxed_err(FSERR_BAD_ARG, "expected GInt fd"))?;
+        // Slice 28 (post-2026-08-06 CRIT-2 fix): fds are hash-
+        // derived u64 bit-patterns; the sign bit carries
+        // information, so reinterpret via `fd as u64` rather than
+        // gating on `fd >= 0`.
+        Ok(FsCloseArgs { fd: fd as u64 })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_close_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsCloseArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            ctx.handles.remove(args.fd).await;
+            HandlerReply::ok(ok_bare())
+        })
+    }
+
+    fn on_replay_side_effect<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // Phase-2 fd-release: opportunistically parse the fd_par
+        // and remove the shadow.  Matches pre-migration behavior
+        // — an unparseable fd_par on replay silently no-ops (the
+        // leader's `previous` reply is still echoed by the
+        // framework).  See handler_trait.rs § on_replay_side_effect
+        // for why we don't parse-then-fail on replay.
+        Box::pin(async move {
+            if let [fd_par, ..] = raw_args {
+                if let Some(fd) = RhoNumber::unapply(fd_par) {
+                    ctx.handles.remove(fd as u64).await;
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_CLOSE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsCloseHandler as FsHandler>::NAME,
+    arity: <FsCloseHandler as FsHandler>::ARITY,
+    verifying: <FsCloseHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsCloseHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_release_lock — (lock_id) -> [true]  (S3.2, 2026-09-08)
+//
+// Non-verifying, pure lock-registry op.  Idempotent: releasing a
+// non-held lock returns FSERR_CLOSED (via `lock_err_reply`).
+// -------------------------------------------------------------------
+
+pub struct FsReleaseLockHandler;
+
+pub struct FsReleaseLockArgs {
+    lock_id: u64,
+}
+
+impl FsHandler for FsReleaseLockHandler {
+    const NAME: &'static str = "fs_release_lock";
+    const ARITY: usize = 2; // (lock_id, ack)
+
+    type Args = FsReleaseLockArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsReleaseLockArgs, Box<HandlerReply>> {
+        let [id_par] = args else {
+            return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected (u64)"));
+        };
+        // Original handler required n >= 0 for the u64 slot (unlike
+        // fd slots which bit-preserve via `as u64`).  Reject negatives
+        // as bad-arg; lock IDs are always non-negative in the
+        // registry's u64 space.
+        let lock_id = match RhoNumber::unapply(id_par) {
+            Some(n) if n >= 0 => n as u64,
+            _ => return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected (u64)")),
+        };
+        Ok(FsReleaseLockArgs { lock_id })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_release_lock_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsReleaseLockArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            match ctx
+                .handles
+                .lock_registry
+                .release(LockId::from(args.lock_id))
+            {
+                Ok(()) => HandlerReply::ok(ok_bare()),
+                Err(le) => HandlerReply::Err(lock_err_reply(le)),
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_RELEASE_LOCK_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsReleaseLockHandler as FsHandler>::NAME,
+    arity: <FsReleaseLockHandler as FsHandler>::ARITY,
+    verifying: <FsReleaseLockHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsReleaseLockHandler>(fs, args)),
 };
 
 // ---------------------------------------------------------------------

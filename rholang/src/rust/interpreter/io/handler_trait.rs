@@ -247,6 +247,36 @@ pub trait FsHandler {
         ctx: SyscallCtx<'a>,
         args: Self::Args,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>>;
+
+    /// Optional side effect on the non-verifying `is_replay` branch
+    /// BEFORE the tautological echo of `previous` to ack.  Default:
+    /// no-op.
+    ///
+    /// The one non-trivial caller today is `fs_close` — Phase-2
+    /// fd-release (2026-09-01, in `docs/consensus-invariants.md`)
+    /// requires the follower's `is_replay` branch to remove its
+    /// shadow fd from the handle table.  Pre-Phase-2 the shadow
+    /// was metadata-only; Phase-2 backs it with a real OS fd
+    /// under Consensus, so failing to release on replay leaks OS
+    /// fds up to MAX_OPEN_FDS across the runtime's lifetime.
+    ///
+    /// Takes the raw pre-ack Par slice (`args[..ARITY-1]`) rather
+    /// than a parsed `Self::Args`.  Rationale: matches the
+    /// pre-refactor `is_replay` branch of the handler bodies,
+    /// which parsed args OPPORTUNISTICALLY on replay (`if let
+    /// Some(fd) = RhoNumber::unapply(fd_par)`) so a follower
+    /// seeing an unparseable arg still echoes `previous` (the
+    /// leader's cached reply) rather than surfacing an
+    /// `FSERR_BAD_ARG` reply that would diverge from what the
+    /// leader produced.  Running parse_content before the
+    /// is_replay short-circuit would flip that behavior — a
+    /// consensus regression.
+    fn on_replay_side_effect<'a>(
+        _ctx: SyscallCtx<'a>,
+        _raw_args: &'a [Par],
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
 }
 
 // ------------------------------------------------------------------
@@ -308,10 +338,11 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///
 /// Wave-3 progression:
 ///   - S3.1 (2026-09-08): +1 (fs_flush).  Count = 1.
-///   - S3.2: +3 (fs_tell, fs_close, fs_release_lock).  Count = 4.
+///   - S3.2 (2026-09-08): +3 (fs_tell, fs_close, fs_release_lock).
+///     Count = 4.
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 1;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 4;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -382,8 +413,11 @@ pub async fn dispatch_via_trait<H: FsHandler>(
                 H::NAME
             );
         }
-        // Non-verifying replay: tautological echo of the leader's
-        // previous output.  See handlers.rs § "Each handler" step 5.
+        // Non-verifying replay: run the optional side-effect hook
+        // (fs_close's fd release, etc.), then tautologically echo
+        // the leader's previous output.  See handlers.rs §
+        // "Each handler" step 5.
+        H::on_replay_side_effect(SyscallCtx::from(fs), &args[..H::ARITY - 1]).await;
         produce(&previous, &ack).await?;
         return Ok(previous);
     }
@@ -444,21 +478,38 @@ mod tests {
         );
     }
 
-    /// Wave-3 S3.1 (2026-09-08): fs_flush was the migration PoC.
-    /// A regression that unregisters the entry OR renames the
-    /// handler fires here — the entry's `name` field must equal
-    /// the pinned literal.
+    /// Wave-3 migration pin: every handler that a wave-3 session
+    /// migrated MUST have an `FS_HANDLERS` entry with its
+    /// spec-canonical name.  A regression that unregisters an
+    /// entry (or renames its `name` field) fires here.  New
+    /// migrations extend the table below.
     #[test]
-    fn fs_flush_migrated_to_handler_trait() {
-        let found = FS_HANDLERS.iter().any(|h| h.name == "fs_flush");
-        assert!(
-            found,
-            "fs_flush FS_HANDLERS entry missing.  Wave-3 S3.1 \
-             (2026-09-08) migrated fs_flush to the FsHandler trait \
-             + registered it in FS_HANDLERS.  A regression here \
-             means either the `#[distributed_slice(FS_HANDLERS)] \
-             static FS_FLUSH_ENTRY` was removed from handlers.rs, \
-             or its `name` field drifted from the literal \"fs_flush\"."
+    fn migrated_handlers_are_registered_in_fs_handlers() {
+        // Update this table at every session that migrates a
+        // handler.  Order matches wave-3-plan.md § Sessions.
+        let migrated: &[&str] = &[
+            "fs_flush",        // S3.1 (2026-09-08)
+            "fs_tell",         // S3.2 (2026-09-08)
+            "fs_close",        // S3.2 (2026-09-08)
+            "fs_release_lock", // S3.2 (2026-09-08)
+        ];
+        for name in migrated {
+            let found = FS_HANDLERS.iter().any(|h| h.name == *name);
+            assert!(
+                found,
+                "FS_HANDLERS entry for `{name}` missing.  A wave-3 \
+                 session migrated this handler but its \
+                 `#[distributed_slice(FS_HANDLERS)] static X_ENTRY` \
+                 was removed from handlers.rs (or its `name` field \
+                 drifted from the spec-canonical literal)."
+            );
+        }
+        assert_eq!(
+            migrated.len(),
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+            "The migrated-handler table above must have the same \
+             length as EXPECTED_MIGRATED_HANDLER_COUNT.  Bump both \
+             when a wave-3 session migrates a new handler."
         );
     }
 
