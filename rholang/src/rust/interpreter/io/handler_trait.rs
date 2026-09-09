@@ -122,9 +122,11 @@ impl HandlerReply {
 // SyscallCtx
 // ------------------------------------------------------------------
 
-/// Borrowed view of the five `FsProcesses` fields a handler body
-/// touches: dispatcher, space, handles, mode, metering.  Constructed
-/// by the framework from `&FsProcesses` and passed to
+/// Borrowed view of the FsProcesses fields a handler body touches:
+/// dispatcher, space, handles, mode, metering — plus the caller's
+/// ack channel (needed by handlers that journal to the WAL, which
+/// keys entries on the ack channel hash).  Constructed by the
+/// framework via `SyscallCtx::new(fs, ack)` and passed to
 /// `FsHandler::dispatch`.
 ///
 /// Sharing shape:
@@ -137,27 +139,35 @@ impl HandlerReply {
 ///     (Arc-based); a handler that needs to move it into a
 ///     `spawn_blocking` closure clones the field.
 ///   - `mode` — `Copy`.
+///   - `ack` — the caller-supplied ack channel Par (last positional
+///     arg).  Used by handlers that journal (WAL keys on
+///     `ack_channel_hash(ack)`).  Non-journaling handlers ignore it.
 pub struct SyscallCtx<'a> {
     pub dispatcher: &'a RhoDispatch,
     pub space: &'a RhoISpace,
     pub handles: &'a FileHandleTable,
     pub mode: ConsensusMode,
     pub metering: &'a MeteredMachine,
+    pub ack: &'a Par,
 }
 
-impl<'a> From<&'a FsProcesses> for SyscallCtx<'a> {
-    fn from(fs: &'a FsProcesses) -> Self {
+impl<'a> SyscallCtx<'a> {
+    /// Framework construction site.  Wave-3 S3.4 (2026-09-08)
+    /// replaced the pre-existing `From<&FsProcesses>` because
+    /// SyscallCtx now also carries the caller's ack channel Par
+    /// (WAL journaling needs it).  The `ack` reference borrows into
+    /// the caller's owned `Par` stashed inside `dispatch_via_trait`.
+    pub fn new(fs: &'a FsProcesses, ack: &'a Par) -> Self {
         SyscallCtx {
             dispatcher: &fs.dispatcher,
             space: &fs.space,
             handles: &fs.handles,
             mode: fs.mode,
             metering: &fs.metering,
+            ack,
         }
     }
-}
 
-impl<'a> SyscallCtx<'a> {
     /// Read the per-runtime "current deploy scope" cell — the same
     /// value `FsProcesses::current_deploy_scope` returns.  Used by
     /// lock-acquire handlers to tag `LockRegistry` entries for
@@ -267,13 +277,19 @@ pub trait FsHandler {
     /// BEFORE the tautological echo of `previous` to ack.  Default:
     /// no-op.
     ///
-    /// The one non-trivial caller today is `fs_close` — Phase-2
-    /// fd-release (2026-09-01, in `docs/consensus-invariants.md`)
-    /// requires the follower's `is_replay` branch to remove its
-    /// shadow fd from the handle table.  Pre-Phase-2 the shadow
-    /// was metadata-only; Phase-2 backs it with a real OS fd
-    /// under Consensus, so failing to release on replay leaks OS
-    /// fds up to MAX_OPEN_FDS across the runtime's lifetime.
+    /// Callers:
+    /// - `fs_close`, `fs_entries_stream_close`: Phase-2 fd-release
+    ///   (2026-09-01, in `docs/consensus-invariants.md`).  Follower
+    ///   removes its shadow fd on replay, matching the leader's
+    ///   post-close state.
+    /// - `fs_entries_stream_open`: shadow-fd INSERT on replay so
+    ///   downstream replay-branch handlers (stream_next / _close)
+    ///   can look up `(cmode, canon_path)` from the leader's cached
+    ///   `[true, fd]` reply.  Uses `previous` (the leader's cached
+    ///   reply, containing the fd) — hence this hook takes both
+    ///   `raw_args` and `previous`.
+    /// - `fs_entries_stream_next`: per-entry cost supplement + WAL
+    ///   journaling on replay, driven by the shape of `previous`.
     ///
     /// Takes the raw pre-ack Par slice (`args[..ARITY-1]`) rather
     /// than a parsed `Self::Args`.  Rationale: matches the
@@ -286,12 +302,32 @@ pub trait FsHandler {
     /// leader produced.  Running parse_content before the
     /// is_replay short-circuit would flip that behavior — a
     /// consensus regression.
+    ///
+    /// Ack is available on `ctx.ack` if the hook needs to journal.
     fn on_replay_side_effect<'a>(
         _ctx: SyscallCtx<'a>,
         _raw_args: &'a [Par],
+        _previous: &'a [Par],
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+
+    /// Optional post-reply cost supplement — for length-parameterized
+    /// handlers (fs_entries, fs_entries_stream_next, and later
+    /// fs_read/fs_write/etc. in S3.5+).  Default: no supplement.
+    ///
+    /// Called by the framework AFTER `dispatch` (or after the
+    /// `is_replay` echo, using `previous` as the reply slice).
+    /// Returns `Some(cost)` to charge via
+    /// `metering.reserve_incremental_primitive`; a failure to
+    /// reserve propagates as `InterpreterError` from
+    /// `dispatch_via_trait`.
+    ///
+    /// `reply` is the caller-facing reply slice — a 1-element
+    /// `&[Par]` containing the reply Par.  Handlers inspect its
+    /// shape (via `reply_is_ok` or similar) to compute the byte /
+    /// entry count that drives the supplement weight.
+    fn post_reply_supplement(_reply: &[Par]) -> Option<Cost> { None }
 }
 
 // ------------------------------------------------------------------
@@ -357,9 +393,11 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///     Count = 4.
 ///   - S3.3 (2026-09-08): +4 (fs_quarantine, fs_entries_stream_close,
 ///     fs_lock_range, fs_lock_sequential).  Count = 8.
+///   - S3.4 (2026-09-09): +2 (fs_entries_stream_open,
+///     fs_entries_stream_next).  Count = 10.  Stream family complete.
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 8;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 10;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -431,10 +469,17 @@ pub async fn dispatch_via_trait<H: FsHandler>(
             );
         }
         // Non-verifying replay: run the optional side-effect hook
-        // (fs_close's fd release, etc.), then tautologically echo
-        // the leader's previous output.  See handlers.rs §
-        // "Each handler" step 5.
-        H::on_replay_side_effect(SyscallCtx::from(fs), &args[..H::ARITY - 1]).await;
+        // (fs_close's fd release, fs_entries_stream_next's WAL
+        // journaling, etc.).  See handlers.rs § "Each handler"
+        // step 5.  Hook gets both raw pre-ack args and `previous`
+        // via ctx-bound references so it can journal.
+        H::on_replay_side_effect(SyscallCtx::new(fs, &ack), &args[..H::ARITY - 1], &previous).await;
+        // Post-reply supplement charge based on `previous`'s shape.
+        // Length-parameterized non-verifying replays (e.g.,
+        // fs_entries_stream_next) use this to charge n=1 or n=0.
+        if let Some(supp) = H::post_reply_supplement(&previous) {
+            fs.metering.reserve_incremental_primitive(supp)?;
+        }
         produce(&previous, &ack).await?;
         return Ok(previous);
     }
@@ -451,9 +496,20 @@ pub async fn dispatch_via_trait<H: FsHandler>(
         }
     };
 
-    // Step 6: dispatch + produce.
-    let reply = H::dispatch(SyscallCtx::from(fs), parsed).await;
+    // Step 6: dispatch.
+    let reply = H::dispatch(SyscallCtx::new(fs, &ack), parsed).await;
     let out = vec![reply.into_par()];
+
+    // Step 7: post-reply cost supplement.  Framework charges
+    // `reserve_incremental_primitive` after dispatch and BEFORE
+    // produce, so a budget-exceeded supplement fails the deploy
+    // without publishing the reply to the caller — same pre-refactor
+    // ordering (see e.g. fs_entries_stream_next's inline sequence).
+    if let Some(supp) = H::post_reply_supplement(&out) {
+        fs.metering.reserve_incremental_primitive(supp)?;
+    }
+
+    // Step 8: produce reply to ack.
     produce(&out, &ack).await?;
     Ok(out)
 }
@@ -513,6 +569,8 @@ mod tests {
             "fs_entries_stream_close", // S3.3 (2026-09-08)
             "fs_lock_range",           // S3.3 (2026-09-08)
             "fs_lock_sequential",      // S3.3 (2026-09-08)
+            "fs_entries_stream_open",  // S3.4 (2026-09-09)
+            "fs_entries_stream_next",  // S3.4 (2026-09-09)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);

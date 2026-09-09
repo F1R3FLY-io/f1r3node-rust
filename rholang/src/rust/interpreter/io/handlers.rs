@@ -1295,42 +1295,7 @@ impl FsProcesses {
         ack: &Par,
         length: Option<u64>,
     ) {
-        if cmode != ConsensusMode::Consensus {
-            return;
-        }
-        let reply_hash: [u8; 32] = {
-            let h = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(reply).bytes();
-            assert_eq!(
-                h.len(),
-                32,
-                "M-5: stable_hash must produce a 32-byte Blake2b256"
-            );
-            let mut buf = [0u8; 32];
-            buf.copy_from_slice(&h);
-            buf
-        };
-        let outcome = if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
-            WalOutcome::Failure {
-                code: fserr_to_code(&code_str),
-            }
-        } else {
-            WalOutcome::Success
-        };
-        let _ = self.handles.wal.append_with_ack(
-            WalEntry {
-                op,
-                path,
-                extra_path: None,
-                offset: None,
-                length,
-                payload_ref: Some(PayloadRef::Hash(reply_hash)),
-                mode_bits: None,
-                owner: None,
-                group: None,
-                outcome,
-            },
-            ack_channel_hash(ack),
-        );
+        journal_state_read_via_table(&self.handles, cmode, op, path, reply, ack, length)
     }
 
     // -------------------------------------------------------------------
@@ -4834,178 +4799,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Charge setup cost.  Weight = fs_entries_stream_cost(0) =
-        // FS_ENTRIES_SETUP = 50 — same as bulk `fs_entries` setup so
-        // the two variants are cost-comparable at open.  The alias
-        // `fs_entries_stream_open_cost` exists to satisfy the per-
-        // handler naming pin in `fileio_cost_spec`.
-        self.metering
-            .reserve_primitive(costs::fs_entries_stream_open_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_entries_stream_open"));
-        };
-        let [root_par, rel_par, cmode_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_entries_stream_open"));
-        };
-        if is_replay {
-            // Shadow-insert at the leader's fd so subsequent replay-
-            // branch handlers (entriesStreamNext, entriesStreamClose)
-            // can look up cmode / canon_path from the DirHandleTable.
-            //
-            // 2026-08-30 review-follow-up: use `extract_ok_fd` (bit-
-            // preserving reinterpret) for the same rationale as
-            // fs_open — see `extract_ok_fd`'s docstring.
-            //
-            // Under the Phase 2 ban (2026-09-01), Consensus-mode
-            // opens are rejected leader-side (see below), so
-            // `extract_ok_fd` on a Consensus-cap open returns None
-            // (cached reply is `[false, FSERR_UNSUPPORTED, ...]`)
-            // and no shadow gets inserted.  Only Oracular streams
-            // reach this shadow-install path.  Kept as metadata-only
-            // shadow (matches the pre-Phase-2 Phase-0 shape) — no
-            // real-open needed since Oracular streams don't
-            // re-execute on the follower.
-            if let Some(fd) = extract_ok_fd(&previous) {
-                if let (Some(root), Some(rel)) =
-                    (RhoString::unapply(root_par), RhoString::unapply(rel_par))
-                {
-                    // Fall back to Consensus on bogus cmode — matches
-                    // fs_open's C-R1 fallback rationale (a bogus cmode
-                    // with a [true, fd] cached reply is definitionally
-                    // a bug; fail-closed to the more restrictive mode).
-                    let cmode = resolve_cmode(cmode_par).unwrap_or(ConsensusMode::Consensus);
-                    let deploy = self.current_deploy_scope();
-                    let shadow =
-                        DirHandle::shadow(canonicalize_lexical(&root, &rel), cmode, deploy);
-                    // Ignore the return: on a fresh follower the slot
-                    // is empty; on a repeat call the existing handle
-                    // wins.  Real divergence surfaces later.
-                    let _ = self
-                        .handles
-                        .dir_handles
-                        .insert_at(fd.as_u64(), shadow)
-                        .await;
-                }
-            }
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // Leader path.
-        let cmode = match resolve_cmode(cmode_par) {
-            Some(m) => m,
-            None => {
-                let out = vec![err(
-                    FSERR_BAD_ARG,
-                    "cmode must be String \"oracular\" or \"consensus\"",
-                )];
-                produce(&out, ack).await?;
-                return Ok(out);
-            }
-        };
-        // Phase 2 ban (Consensus re-execute + verify, 2026-09-01):
-        // Consensus + entriesStream* is UNSUPPORTED.  Reason:
-        // `readdir` iteration order is fs-dependent and not
-        // guaranteed to be stable across per-validator subdirs (D3);
-        // two validators with independently-created copies of the
-        // same logical directory could yield entries in different
-        // orders, tripping spurious CONSENSUS_DIVERGENCE.  Bulk
-        // `fs_entries` avoids this because it sorts.  Under Phase-0
-        // this hazard was invisible (follower consumed cached reply);
-        // Phase 2's re-execute exposes it.  Rather than ship a
-        // Consensus-cap primitive with a non-obvious readdir-order
-        // correctness constraint operators must satisfy externally,
-        // reject at open time and direct users to `fs_entries`.
-        //
-        // Lifting the ban requires either DirIter-level canonical
-        // ordering (buffer + sort, but that breaks the streaming
-        // semantic + per-Next journaling) or a spec change making
-        // operator responsibility for readdir-order stability
-        // explicit.  Slotted for Phase 4/5.
-        if cmode == ConsensusMode::Consensus {
-            let out = vec![err(
-                FSERR_UNSUPPORTED,
-                "entriesStream* is not supported on Consensus caps — readdir order \
-                 is fs-dependent and not stable across per-validator subdirs.  Use \
-                 `fs_entries` (sorted, deterministic across validators) instead.",
-            )];
-            produce(&out, ack).await?;
-            return Ok(out);
-        }
-        let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-            (Some(r), Some(l)) => (r, l),
-            _ => {
-                let out = vec![err(FSERR_BAD_ARG, "expected (String root, String rel)")];
-                produce(&out, ack).await?;
-                return Ok(out);
-            }
-        };
-        let root_pb = PathBuf::from(&root);
-        let (root_pb, expected_root_id) = self.handles.root_registry.resolve_or_identity(&root_pb);
-        let rel_for_open = rel.clone();
-        // safe_descend + openat + fdopendir in a blocking task —
-        // mirrors bulk fs_entries' opening syscall sequence exactly
-        // so TOCTOU-immunity + O_NOFOLLOW semantics carry through.
-        //
-        // Err returns a `Box<Par>` (not bare `Par`) so the enclosing
-        // Result stays pointer-sized — clippy `result_large_err` flags
-        // a naked ~296-byte error variant.
-        let opened = spawn_blocking(move || -> Result<DirIter, Box<Par>> {
-            let parent = match safe_descend_verified(&root_pb, &rel_for_open, expected_root_id) {
-                Ok(p) => p,
-                Err(qe) => {
-                    let (code, msg) = quarantine_err_reply(&qe);
-                    return Err(Box::new(err(code, msg)));
-                }
-            };
-            let dir_fd = unsafe {
-                libc::openat(
-                    parent.as_raw_fd(),
-                    parent.leaf_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if dir_fd < 0 {
-                let e = std::io::Error::last_os_error();
-                return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
-            }
-            // L-3 pattern (fs_entries): F_DUPFD_CLOEXEC on the fd
-            // handed to fdopendir so the DIR*'s underlying fd
-            // carries CLOEXEC atomically.  Close the original.
-            let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
-            unsafe { libc::close(dir_fd) };
-            if read_fd < 0 {
-                let e = std::io::Error::last_os_error();
-                return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
-            }
-            DirIter::from_dir_fd(read_fd)
-                .map_err(|e| Box::new(err(io_err_code(&e), io_msg_scrub(&e))))
-        })
-        .await
-        .unwrap_or_else(|_je| Err(Box::new(err(FSERR_IO, "spawn_blocking task failed"))));
-        let reply = match opened {
-            Ok(iter) => {
-                let deploy = self.current_deploy_scope();
-                let handle = DirHandle::new(iter, canonicalize_lexical(&root, &rel), cmode, deploy);
-                match self.handles.dir_handles.insert(handle).await {
-                    // A-3 (2026-09-03): emit via `ok_fd(Fd::from(...))`
-                    // to enforce the fd-vs-quantity newtype invariant
-                    // at the emission boundary (streamFd is a fd, not
-                    // a quantity).  Wire-identical to the pre-A-3
-                    // `ok_u64(fd)` shape.
-                    Ok(fd) => ok_fd(Fd::from(fd)),
-                    Err(()) => err(
-                        FSERR_QUOTA_EXCEEDED,
-                        "per-runtime dir-stream fd cap reached",
-                    ),
-                }
-            }
-            Err(e_par) => *e_par,
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsEntriesStreamOpenHandler>(self, contract_args).await
     }
 
     /// `entriesStreamNext(streamFd, ack)`.
@@ -5031,138 +4825,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Per-call setup portion of the two-branch charge.  Per-entry
-        // supplement is charged post-reply via
-        // `fs_entries_stream_per_entry_supplement_cost` (n=1 on
-        // `[true, ...]`, n=0 on EOS / error).  The alias
-        // `fs_entries_stream_next_cost` exists to satisfy the per-
-        // handler naming pin in `fileio_cost_spec`.
-        self.metering
-            .reserve_primitive(costs::fs_entries_stream_next_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_entries_stream_next"));
-        };
-        let [fd_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_entries_stream_next"));
-        };
-        // Note (2026-09-01 Phase 2 ban): Consensus + entriesStream*
-        // is rejected at entriesStreamOpen, so under normal flow no
-        // Consensus stream fd ever reaches this handler.  Oracular
-        // caps use the Phase-0 tautological replay path (follower
-        // consumes cached reply); the leader path below runs the
-        // real `readdir` on the DIR*.  If a future change lifts the
-        // ban, this handler needs Phase-2 re-execute + verify
-        // treatment (see git history for the pre-ban shape).
-        if is_replay {
-            // Per-entry supplement charge on the replay branch: n = 1
-            // when the cached reply is `[true, entryRecord]`, else n = 0
-            // (EOS or error).  `reply_is_ok` only checks the head is
-            // `true` — dedicated helper vs. `extract_ok_u64` which
-            // additionally requires the payload to be an int.
-            let n = if reply_is_ok(&previous) { 1 } else { 0 };
-            self.metering.reserve_incremental_primitive(
-                costs::fs_entries_stream_per_entry_supplement_cost(n),
-            )?;
-            // Journal the cached reply if the fd's shadow reports a
-            // Consensus cmode.  Under the Phase 2 ban this branch is
-            // unreachable in normal flow (no Consensus stream fds
-            // exist).  `journal_state_read` self-guards on Consensus
-            // → this call is a WAL no-op for Oracular; kept for
-            // structural parity with the leader path's journal call
-            // and as a load-bearing defense-in-depth site if a future
-            // change lifts the ban without re-adding Phase-2 wiring
-            // here.
-            if let Some(fd) = RhoNumber::unapply(fd_par) {
-                if let Some(handle) = self.handles.dir_handles.get(fd as u64).await {
-                    if let Some(reply_par) = previous.first() {
-                        self.journal_state_read(
-                            handle.cmode,
-                            WalOp::EntriesStreamNext,
-                            handle.canon_path.clone(),
-                            reply_par,
-                            ack,
-                            Some(n),
-                        );
-                    }
-                }
-            }
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // Leader path.
-        let fd = match RhoNumber::unapply(fd_par) {
-            Some(n) => n as u64,
-            None => {
-                let out = vec![err(FSERR_BAD_ARG, "expected GInt streamFd")];
-                produce(&out, ack).await?;
-                return Ok(out);
-            }
-        };
-        // Hold onto the Arc so we can re-consult (cmode, canon_path)
-        // for the post-reply journal call without a second table
-        // lookup.  `handle_opt` is dropped at the end of this fn, so
-        // the Arc keeps the DirHandle alive for the whole path.
-        let handle_opt = self.handles.dir_handles.get(fd).await;
-        let reply = if let Some(handle) = handle_opt.as_ref() {
-            let cmode = handle.cmode;
-            let iter_lock = handle.iter.lock().await;
-            match iter_lock.as_ref() {
-                None => err(
-                    FSERR_CLOSED,
-                    "shadow stream handle has no iterator (leader path only)",
-                ),
-                Some(iter) => {
-                    // Pass the DIR* address across spawn_blocking
-                    // via usize cast (raw pointers are not Send).
-                    // The MutexGuard `iter_lock` is held across the
-                    // .await below, keeping the address live for
-                    // the closure's whole lifetime.
-                    let dirp_addr = iter.as_ptr() as usize;
-                    spawn_blocking_par(move || -> Par {
-                        let dirp = dirp_addr as *mut libc::DIR;
-                        readdir_one_entry(dirp, cmode)
-                    })
-                    .await
-                }
-            }
-        } else {
-            err(FSERR_CLOSED, "stream fd closed or unknown")
-        };
-        // Post-reply supplement charge — same two-branch shape as
-        // fs_entries.  n = 1 on `[true, ...]`, else 0.  Uses
-        // `reserve_incremental_primitive` (not `reserve_primitive`)
-        // because the n=0 case (EOS or error) legitimately produces
-        // a zero-weight cost — `reserve_primitive` returns
-        // `BugFoundError` on zero, which would silently poison the
-        // deploy's EvaluateResult.errors.
-        let n = if reply_is_ok(std::slice::from_ref(&reply)) {
-            1
-        } else {
-            0
-        };
-        self.metering
-            .reserve_incremental_primitive(costs::fs_entries_stream_per_entry_supplement_cost(n))?;
-        // Journal the leader's reply if the handle is a Consensus cap.
-        // `journal_state_read` skips Oracular caps internally.  Under
-        // the Phase 2 ban this WAL-append is unreachable in normal
-        // flow, since Consensus stream opens are rejected at
-        // entriesStreamOpen — but kept as a load-bearing site for the
-        // future case if the ban is lifted with re-execute wiring.
-        if let Some(handle) = handle_opt.as_ref() {
-            self.journal_state_read(
-                handle.cmode,
-                WalOp::EntriesStreamNext,
-                handle.canon_path.clone(),
-                &reply,
-                ack,
-                Some(n),
-            );
-        }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsEntriesStreamNextHandler>(self, contract_args).await
     }
 
     /// `entriesStreamClose(streamFd, ack)`.
@@ -5603,6 +5266,7 @@ impl FsHandler for FsCloseHandler {
     fn on_replay_side_effect<'a>(
         ctx: SyscallCtx<'a>,
         raw_args: &'a [Par],
+        _previous: &'a [Par],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         // Phase-2 fd-release: opportunistically parse the fd_par
         // and remove the shadow.  Matches pre-migration behavior
@@ -5822,6 +5486,7 @@ impl FsHandler for FsEntriesStreamCloseHandler {
     fn on_replay_side_effect<'a>(
         ctx: SyscallCtx<'a>,
         raw_args: &'a [Par],
+        _previous: &'a [Par],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if let [fd_par, ..] = raw_args {
@@ -6092,6 +5757,354 @@ static FS_LOCK_SEQUENTIAL_ENTRY: FsHandlerEntry = FsHandlerEntry {
     },
 };
 
+// -------------------------------------------------------------------
+// fs_entries_stream_open — (root, rel, cmode) -> [true, streamFd]  (S3.4)
+//
+// Non-verifying stream lifecycle.  Complex is_replay:
+// shadow-inserts a DirHandle at the leader's cached fd so
+// downstream replay-branch handlers (stream_next / _close) can
+// look up (cmode, canon_path) from the DirHandleTable.  Consensus
+// caps are banned Phase-2 (readdir order not stable across
+// per-validator subdirs); banned reply is [false, FSERR_UNSUPPORTED,
+// ...] on the leader, so the replay path sees no `[true, fd]` and
+// skips the shadow install.
+// -------------------------------------------------------------------
+
+pub struct FsEntriesStreamOpenHandler;
+
+pub struct FsEntriesStreamOpenArgs {
+    root: String,
+    rel: String,
+    cmode: ConsensusMode,
+}
+
+impl FsHandler for FsEntriesStreamOpenHandler {
+    const NAME: &'static str = "fs_entries_stream_open";
+    const ARITY: usize = 4; // (root, rel, cmode, ack)
+
+    type Args = FsEntriesStreamOpenArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsEntriesStreamOpenArgs, Box<HandlerReply>> {
+        let [root_par, rel_par, cmode_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String root, String rel)",
+            ));
+        };
+        // cmode validation first — matches pre-refactor error-message
+        // ordering (cmode check runs after arity+cmode-Par extraction).
+        let cmode = match resolve_cmode(cmode_par) {
+            Some(m) => m,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "cmode must be String \"oracular\" or \"consensus\"",
+                ));
+            }
+        };
+        // Phase 2 ban (2026-09-01): Consensus + entriesStream* is
+        // UNSUPPORTED.  Reject at open time (see original handler
+        // docstring for the readdir-order rationale).
+        if cmode == ConsensusMode::Consensus {
+            return Err(HandlerReply::boxed_err(
+                FSERR_UNSUPPORTED,
+                "entriesStream* is not supported on Consensus caps — readdir order \
+                 is fs-dependent and not stable across per-validator subdirs.  Use \
+                 `fs_entries` (sorted, deterministic across validators) instead.",
+            ));
+        }
+        // String args extraction (post-cmode check per pre-refactor
+        // control flow — a bogus cmode with valid root/rel produces
+        // the "cmode must be String..." error, not "expected (String
+        // root, String rel)").
+        let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(r), Some(l)) => (r, l),
+            _ => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "expected (String root, String rel)",
+                ));
+            }
+        };
+        Ok(FsEntriesStreamOpenArgs { root, rel, cmode })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_entries_stream_open_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsEntriesStreamOpenArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let root_pb = PathBuf::from(&args.root);
+            let (root_pb, expected_root_id) =
+                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let rel_for_open = args.rel.clone();
+            // safe_descend + openat + fdopendir in a blocking task.
+            // Err returns a Box<Par> so the Result stays pointer-sized.
+            let opened = spawn_blocking(move || -> Result<DirIter, Box<Par>> {
+                let parent = match safe_descend_verified(&root_pb, &rel_for_open, expected_root_id)
+                {
+                    Ok(p) => p,
+                    Err(qe) => {
+                        let (code, msg) = quarantine_err_reply(&qe);
+                        return Err(Box::new(err(code, msg)));
+                    }
+                };
+                let dir_fd = unsafe {
+                    libc::openat(
+                        parent.as_raw_fd(),
+                        parent.leaf_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if dir_fd < 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
+                }
+                // L-3 pattern (fs_entries): F_DUPFD_CLOEXEC on the fd
+                // handed to fdopendir so the DIR*'s underlying fd
+                // carries CLOEXEC atomically.  Close the original.
+                let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
+                unsafe { libc::close(dir_fd) };
+                if read_fd < 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
+                }
+                DirIter::from_dir_fd(read_fd)
+                    .map_err(|e| Box::new(err(io_err_code(&e), io_msg_scrub(&e))))
+            })
+            .await
+            .unwrap_or_else(|_je| Err(Box::new(err(FSERR_IO, "spawn_blocking task failed"))));
+            match opened {
+                Ok(iter) => {
+                    let deploy = ctx.current_deploy_scope();
+                    let handle = DirHandle::new(
+                        iter,
+                        canonicalize_lexical(&args.root, &args.rel),
+                        args.cmode,
+                        deploy,
+                    );
+                    match ctx.handles.dir_handles.insert(handle).await {
+                        // A-3 (2026-09-03): emit via ok_fd(Fd::from(...)).
+                        Ok(fd) => HandlerReply::ok(ok_fd(Fd::from(fd))),
+                        Err(()) => HandlerReply::err(
+                            FSERR_QUOTA_EXCEEDED,
+                            "per-runtime dir-stream fd cap reached",
+                        ),
+                    }
+                }
+                Err(e_par) => HandlerReply::Err(*e_par),
+            }
+        })
+    }
+
+    fn on_replay_side_effect<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        previous: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // Shadow-insert at the leader's fd so subsequent replay-
+        // branch handlers can look up cmode / canon_path.  Only fires
+        // for Oracular streams; Consensus opens are rejected leader-
+        // side so `extract_ok_fd(previous)` returns None and no
+        // shadow gets inserted.
+        Box::pin(async move {
+            if let Some(fd) = extract_ok_fd(previous) {
+                if let [root_par, rel_par, cmode_par, ..] = raw_args {
+                    if let (Some(root), Some(rel)) =
+                        (RhoString::unapply(root_par), RhoString::unapply(rel_par))
+                    {
+                        // Fall back to Consensus on bogus cmode —
+                        // matches fs_open's C-R1 fallback rationale
+                        // (a bogus cmode with a [true, fd] cached
+                        // reply is definitionally a bug; fail-closed
+                        // to the more restrictive mode).
+                        let cmode = resolve_cmode(cmode_par).unwrap_or(ConsensusMode::Consensus);
+                        let deploy = ctx.current_deploy_scope();
+                        let shadow =
+                            DirHandle::shadow(canonicalize_lexical(&root, &rel), cmode, deploy);
+                        let _ = ctx.handles.dir_handles.insert_at(fd.as_u64(), shadow).await;
+                    }
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_ENTRIES_STREAM_OPEN_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsEntriesStreamOpenHandler as FsHandler>::NAME,
+    arity: <FsEntriesStreamOpenHandler as FsHandler>::ARITY,
+    verifying: <FsEntriesStreamOpenHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| {
+        Box::pin(dispatch_via_trait_owned::<FsEntriesStreamOpenHandler>(
+            fs, args,
+        ))
+    },
+};
+
+// -------------------------------------------------------------------
+// fs_entries_stream_next — (streamFd) -> [true, entryRecord]  (S3.4)
+//
+// Non-verifying stream advance.  Two-branch cost (setup +
+// per-entry supplement) matches bulk fs_entries.  WAL journaling
+// on both leader and replay paths for Consensus caps — but under
+// the Phase-2 ban no Consensus stream fd ever reaches here in
+// normal flow.  Journaling kept as load-bearing structural parity
+// for a future ban lift.
+// -------------------------------------------------------------------
+
+pub struct FsEntriesStreamNextHandler;
+
+pub struct FsEntriesStreamNextArgs {
+    fd: u64,
+}
+
+impl FsHandler for FsEntriesStreamNextHandler {
+    const NAME: &'static str = "fs_entries_stream_next";
+    const ARITY: usize = 2; // (streamFd, ack)
+
+    type Args = FsEntriesStreamNextArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsEntriesStreamNextArgs, Box<HandlerReply>> {
+        let [fd_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected GInt streamFd",
+            ));
+        };
+        let fd = RhoNumber::unapply(fd_par)
+            .ok_or_else(|| HandlerReply::boxed_err(FSERR_BAD_ARG, "expected GInt streamFd"))?;
+        Ok(FsEntriesStreamNextArgs { fd: fd as u64 })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_entries_stream_next_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsEntriesStreamNextArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            // Hold onto the Arc so we can re-consult (cmode, canon_path)
+            // for the post-dispatch journal call.
+            let handle_opt = ctx.handles.dir_handles.get(args.fd).await;
+            let reply_par = if let Some(handle) = handle_opt.as_ref() {
+                let cmode = handle.cmode;
+                let iter_lock = handle.iter.lock().await;
+                match iter_lock.as_ref() {
+                    None => err(
+                        FSERR_CLOSED,
+                        "shadow stream handle has no iterator (leader path only)",
+                    ),
+                    Some(iter) => {
+                        // Pass the DIR* address across spawn_blocking
+                        // via usize (raw pointers are not Send).  The
+                        // MutexGuard `iter_lock` is held across the
+                        // .await below, keeping the address live.
+                        let dirp_addr = iter.as_ptr() as usize;
+                        spawn_blocking_par(move || -> Par {
+                            let dirp = dirp_addr as *mut libc::DIR;
+                            readdir_one_entry(dirp, cmode)
+                        })
+                        .await
+                    }
+                }
+            } else {
+                err(FSERR_CLOSED, "stream fd closed or unknown")
+            };
+            // Journal the leader's reply if the handle is Consensus.
+            // `journal_state_read_via_table` self-guards on
+            // Consensus — no-op for Oracular caps.  Under the Phase-2
+            // ban this WAL-append is unreachable in normal flow.
+            if let Some(handle) = handle_opt.as_ref() {
+                let n = if reply_is_ok(std::slice::from_ref(&reply_par)) {
+                    1
+                } else {
+                    0
+                };
+                journal_state_read_via_table(
+                    ctx.handles,
+                    handle.cmode,
+                    WalOp::EntriesStreamNext,
+                    handle.canon_path.clone(),
+                    &reply_par,
+                    ctx.ack,
+                    Some(n),
+                );
+            }
+            // Wrap the Par into HandlerReply.  Success reply is
+            // [true, entryRecord]; EOS is [false, "EOS"]; error is
+            // [false, code, msg].  The framework's post_reply_supplement
+            // classifies via `reply_is_ok` — both variants funnel to
+            // HandlerReply::Ok because the bytes are what matter for
+            // the framework's supplement calc, not the enum tag.
+            HandlerReply::Ok(reply_par)
+        })
+    }
+
+    fn on_replay_side_effect<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        previous: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // Journal the cached reply if the fd's shadow reports a
+        // Consensus cmode.  Under the Phase-2 ban this branch is
+        // unreachable in normal flow (no Consensus stream fds
+        // exist).  Kept for structural parity.
+        Box::pin(async move {
+            if let [fd_par, ..] = raw_args {
+                if let Some(fd) = RhoNumber::unapply(fd_par) {
+                    if let Some(handle) = ctx.handles.dir_handles.get(fd as u64).await {
+                        if let Some(reply_par) = previous.first() {
+                            let n = if reply_is_ok(previous) { 1 } else { 0 };
+                            journal_state_read_via_table(
+                                ctx.handles,
+                                handle.cmode,
+                                WalOp::EntriesStreamNext,
+                                handle.canon_path.clone(),
+                                reply_par,
+                                ctx.ack,
+                                Some(n),
+                            );
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    fn post_reply_supplement(
+        reply: &[Par],
+    ) -> Option<crate::rust::interpreter::accounting::costs::Cost> {
+        // Two-branch supplement matches pre-refactor:
+        //   n = 1 on `[true, entryRecord]`
+        //   n = 0 on EOS `[false, "EOS"]` or error `[false, code, msg]`.
+        // Uses `reserve_incremental_primitive` (framework auto-
+        // dispatches) because the n=0 case legitimately produces a
+        // zero-weight cost — `reserve_primitive` returns BugFoundError
+        // on zero.
+        let n = if reply_is_ok(reply) { 1 } else { 0 };
+        Some(costs::fs_entries_stream_per_entry_supplement_cost(n))
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_ENTRIES_STREAM_NEXT_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsEntriesStreamNextHandler as FsHandler>::NAME,
+    arity: <FsEntriesStreamNextHandler as FsHandler>::ARITY,
+    verifying: <FsEntriesStreamNextHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| {
+        Box::pin(dispatch_via_trait_owned::<FsEntriesStreamNextHandler>(
+            fs, args,
+        ))
+    },
+};
+
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.
 // ---------------------------------------------------------------------
@@ -6162,6 +6175,58 @@ fn holder_id_of(par: &Par) -> HolderId {
 
 /// Phase 8 slice 8a — map a `LockError` from the LockRegistry to
 /// the FSERR reply shape.
+/// Free-function form of `FsProcesses::journal_state_read` for
+/// wave-3 trait impls to call via `ctx.handles.wal`.  Behavior
+/// identical to the `&self` wrapper — same no-op-on-Oracular
+/// short-circuit, same reply-hash + outcome encoding, same
+/// `Wal::append_with_ack` key.
+fn journal_state_read_via_table(
+    handles: &FileHandleTable,
+    cmode: ConsensusMode,
+    op: WalOp,
+    path: PathBuf,
+    reply: &Par,
+    ack: &Par,
+    length: Option<u64>,
+) {
+    if cmode != ConsensusMode::Consensus {
+        return;
+    }
+    let reply_hash: [u8; 32] = {
+        let h = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(reply).bytes();
+        assert_eq!(
+            h.len(),
+            32,
+            "M-5: stable_hash must produce a 32-byte Blake2b256"
+        );
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(&h);
+        buf
+    };
+    let outcome = if let Some(code_str) = extract_err_code(std::slice::from_ref(reply)) {
+        WalOutcome::Failure {
+            code: fserr_to_code(&code_str),
+        }
+    } else {
+        WalOutcome::Success
+    };
+    let _ = handles.wal.append_with_ack(
+        WalEntry {
+            op,
+            path,
+            extra_path: None,
+            offset: None,
+            length,
+            payload_ref: Some(PayloadRef::Hash(reply_hash)),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome,
+        },
+        ack_channel_hash(ack),
+    );
+}
+
 /// Free-function form of the pre-wave-3 `FsProcesses::dev_inode_from_fd`
 /// method.  Takes `&FileHandleTable` directly so both the
 /// `FsProcesses::fs_lock_*` wrappers (retiring at S3.12) and the
