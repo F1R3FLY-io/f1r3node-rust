@@ -157,6 +157,21 @@ impl<'a> From<&'a FsProcesses> for SyscallCtx<'a> {
     }
 }
 
+impl<'a> SyscallCtx<'a> {
+    /// Read the per-runtime "current deploy scope" cell — the same
+    /// value `FsProcesses::current_deploy_scope` returns.  Used by
+    /// lock-acquire handlers to tag `LockRegistry` entries for
+    /// deploy-end sweep.  Sentinel `[0; 32]` = no deploy in flight
+    /// (test / genesis path).
+    pub fn current_deploy_scope(&self) -> [u8; 32] {
+        *self
+            .handles
+            .current_deploy_scope
+            .read()
+            .expect("current_deploy_scope RwLock poisoned")
+    }
+}
+
 // ------------------------------------------------------------------
 // FsHandler trait
 // ------------------------------------------------------------------
@@ -340,9 +355,11 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - S3.1 (2026-09-08): +1 (fs_flush).  Count = 1.
 ///   - S3.2 (2026-09-08): +3 (fs_tell, fs_close, fs_release_lock).
 ///     Count = 4.
+///   - S3.3 (2026-09-08): +4 (fs_quarantine, fs_entries_stream_close,
+///     fs_lock_range, fs_lock_sequential).  Count = 8.
 ///   - ... (see wave-3-plan.md § Sessions).
 ///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 4;
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 8;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -488,10 +505,14 @@ mod tests {
         // Update this table at every session that migrates a
         // handler.  Order matches wave-3-plan.md § Sessions.
         let migrated: &[&str] = &[
-            "fs_flush",        // S3.1 (2026-09-08)
-            "fs_tell",         // S3.2 (2026-09-08)
-            "fs_close",        // S3.2 (2026-09-08)
-            "fs_release_lock", // S3.2 (2026-09-08)
+            "fs_flush",                // S3.1 (2026-09-08)
+            "fs_tell",                 // S3.2 (2026-09-08)
+            "fs_close",                // S3.2 (2026-09-08)
+            "fs_release_lock",         // S3.2 (2026-09-08)
+            "fs_quarantine",           // S3.3 (2026-09-08)
+            "fs_entries_stream_close", // S3.3 (2026-09-08)
+            "fs_lock_range",           // S3.3 (2026-09-08)
+            "fs_lock_sequential",      // S3.3 (2026-09-08)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);

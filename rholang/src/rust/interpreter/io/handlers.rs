@@ -4786,49 +4786,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_quarantine weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering
-            .reserve_primitive(costs::fs_quarantine_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_quarantine"));
-        };
-        let [root_par, rel_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_quarantine"));
-        };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
-            (Some(root), Some(rel)) => {
-                let root_pb = PathBuf::from(&root);
-                let (root_pb, expected_root_id) =
-                    self.handles.root_registry.resolve_or_identity(&root_pb);
-                spawn_blocking_par(move || -> Par {
-                    match safe_descend_verified(&root_pb, &rel, expected_root_id) {
-                        Ok(_) => {
-                            // Return the caller-supplied joined path;
-                            // safe_descend already verified it doesn't
-                            // escape.  This is deterministic (no
-                            // canonicalize call, so no host drift).
-                            ok_string(root_pb.join(&rel).to_string_lossy().into_owned())
-                        }
-                        Err(qe) => {
-                            let (c, m) = quarantine_err_reply(&qe);
-                            err(c, m)
-                        }
-                    }
-                })
-                .await
-            }
-            _ => err(FSERR_BAD_ARG, "expected (String, String)"),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsQuarantineHandler>(self, contract_args).await
     }
 
     // -------------------------------------------------------------------
@@ -5220,38 +5178,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Aliased to `fs_close_cost` semantically (fd release +
-        // closedir).  The alias `fs_entries_stream_close_cost` exists
-        // to satisfy the per-handler naming pin in `fileio_cost_spec`.
-        self.metering
-            .reserve_primitive(costs::fs_entries_stream_close_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_entries_stream_close"));
-        };
-        let [fd_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_entries_stream_close"));
-        };
-        if is_replay {
-            // Also drop the shadow handle so the follower's dir_handles
-            // table converges to the leader's post-close state.
-            if let Some(fd) = RhoNumber::unapply(fd_par) {
-                self.handles.dir_handles.remove(fd as u64).await;
-            }
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) => {
-                self.handles.dir_handles.remove(fd as u64).await;
-                ok_bare()
-            }
-            None => err(FSERR_BAD_ARG, "expected GInt streamFd"),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsEntriesStreamCloseHandler>(self, contract_args).await
     }
 
     // Phase 8 slice 8a — range-lock natives.
@@ -5295,129 +5222,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_lock_range weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering
-            .reserve_primitive(costs::fs_lock_range_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_lock_range"));
-        };
-        // Slice-8b sub-4 arity tightening (2026-08-26): accept only
-        // arity 8 (fd, off, len, mode, holder, cmode, wait, ack)
-        // with `wait: Bool` at slot 7.  The legacy arity-7 (no
-        // `wait`) branch was retired now that every File.rho caller
-        // threads an explicit wait argument.  A stray arity-7
-        // invocation falls to `illegal_argument_error` — mirrors
-        // the sub-2 commit's transitional-shim removal plan.
-        let (fd_par, off_par, len_par, mode_par, holder_par, cmode_par, wait, ack) =
-            match args.as_slice() {
-                [fd, off, len, mode, holder, cmode, wait_par, ack] => {
-                    match RhoBoolean::unapply(wait_par) {
-                        Some(b) => (fd, off, len, mode, holder, cmode, b, ack),
-                        None => {
-                            let out = vec![err(FSERR_BAD_ARG, "fs_lock_range: wait must be Bool")];
-                            produce(&out, ack).await?;
-                            return Ok(out);
-                        }
-                    }
-                }
-                _ => return Err(illegal_argument_error("fs_lock_range")),
-            };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        // cmode validation: rejects bad shapes even though acquire
-        // outcome doesn't currently branch on it — step 4 (WAL) and
-        // step 7 (unlink gate) will.  Fail-closed matches the pattern
-        // of every other cmode-taking native.
-        let _ = match resolve_cmode(cmode_par) {
-            Some(m) => m,
-            None => {
-                let out = vec![err(
-                    FSERR_BAD_ARG,
-                    "cmode must be String \"oracular\" or \"consensus\"",
-                )];
-                produce(&out, ack).await?;
-                return Ok(out);
-            }
-        };
-        let policy = if wait {
-            WaitPolicy::Wait
-        } else {
-            WaitPolicy::Fail
-        };
-        let reply = match (
-            RhoNumber::unapply(fd_par),
-            RhoNumber::unapply(off_par),
-            RhoNumber::unapply(len_par),
-            RhoString::unapply(mode_par),
-            resolve_lock_mode(mode_par),
-        ) {
-            // Slice 28 CRIT-2 pattern: fds are hash-derived u64 bit
-            // patterns; the sign bit carries information, so `fd as
-            // u64` is the reinterpret and we do NOT gate on `fd >= 0`.
-            // (Same fix as `fs_close` line 600.  Pre-fix: ~50% of
-            // seeded fds had the high bit set, so lock acquires
-            // failed intermittently with FSERR_BAD_ARG.  Repro via
-            // `fileio_examples_spec::fileio_lockrange_cross_cap_busy_then_release`.)
-            (Some(fd), Some(off), Some(len), Some(_), Some(lm)) if off >= 0 && len > 0 => {
-                match self.dev_inode_from_fd(fd as u64).await {
-                    Ok(dev_inode) => {
-                        let holder = holder_id_of(holder_par);
-                        // Step 5: read the per-runtime "current deploy
-                        // scope" cell set by WalDeployScope::new at
-                        // deploy entry.  Sentinel [0; 32] means "no
-                        // deploy in flight" (test or genesis path);
-                        // that's safe here — acquire doesn't validate
-                        // the scope, only release_all_for_deploy does.
-                        let deploy = self.current_deploy_scope();
-                        match self.handles.lock_registry.try_acquire_range_wait(
-                            dev_inode, off as u64, len as u64, lm, holder, deploy, policy,
-                        ) {
-                            Ok(AcquireOutcome::Immediate(id)) => ok_u64(id.as_u64()),
-                            Ok(AcquireOutcome::Parked { admit, .. }) => {
-                                // Await admission (release-triggered
-                                // wake) or cancellation (deploy-end
-                                // sweep via WalDeployScope::drop —
-                                // sub-3, or explicit cancel_wait).
-                                //
-                                // Runtime concern (slice-8b sub-3):
-                                // this await lives inside the deploy's
-                                // eval future.  If nothing signals the
-                                // oneshot, the eval future hangs.
-                                // Sub-3's WalDeployScope::drop invokes
-                                // `cancel_all_waiters_for_deploy` at
-                                // deploy end to guarantee no waiter is
-                                // leaked past deploy boundary — see
-                                // that commit for the full lifecycle.
-                                match admit.await {
-                                    Ok(Ok(id)) => ok_u64(id.as_u64()),
-                                    Ok(Err(le)) => lock_err_reply(le),
-                                    // Sender dropped without a signal
-                                    // (registry drop or unusual state
-                                    // sequence) — surface as Cancelled
-                                    // per the AcquireOutcome::Parked
-                                    // docstring.
-                                    Err(_recv_error) => lock_err_reply(LockError::Cancelled),
-                                }
-                            }
-                            Err(le) => lock_err_reply(le),
-                        }
-                    }
-                    Err((code, msg)) => err(code, msg),
-                }
-            }
-            _ => err(
-                FSERR_BAD_ARG,
-                "expected (u64, u64, u64>0, String\"r|w\", Par, String, Bool)",
-            ),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsLockRangeHandler>(self, contract_args).await
     }
 
     /// Acquire the whole-file sequential lock on the file behind `fd`.
@@ -5438,85 +5243,7 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_lock_sequential weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering
-            .reserve_primitive(costs::fs_lock_sequential_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_lock_sequential"));
-        };
-        // Slice-8b sub-4 arity tightening (2026-08-26): accept only
-        // arity 5 (fd, holder, cmode, wait, ack).  The legacy arity-4
-        // branch was retired now that every File.rho caller threads
-        // an explicit wait argument.
-        let (fd_par, holder_par, cmode_par, wait, ack) = match args.as_slice() {
-            [fd, holder, cmode, wait_par, ack] => match RhoBoolean::unapply(wait_par) {
-                Some(b) => (fd, holder, cmode, b, ack),
-                None => {
-                    let out = vec![err(FSERR_BAD_ARG, "fs_lock_sequential: wait must be Bool")];
-                    produce(&out, ack).await?;
-                    return Ok(out);
-                }
-            },
-            _ => return Err(illegal_argument_error("fs_lock_sequential")),
-        };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let _ = match resolve_cmode(cmode_par) {
-            Some(m) => m,
-            None => {
-                let out = vec![err(
-                    FSERR_BAD_ARG,
-                    "cmode must be String \"oracular\" or \"consensus\"",
-                )];
-                produce(&out, ack).await?;
-                return Ok(out);
-            }
-        };
-        let policy = if wait {
-            WaitPolicy::Wait
-        } else {
-            WaitPolicy::Fail
-        };
-        let reply = match RhoNumber::unapply(fd_par) {
-            // Slice 28 CRIT-2 pattern: fds are hash-derived u64 bit
-            // patterns; sign bit carries information, so we reinterpret
-            // via `fd as u64` without gating on `fd >= 0`.  Same fix
-            // as `fs_close` / `fs_lock_range`.  Pre-fix: ~50% of seeded
-            // fds had the high bit set → sequential-lock acquires (all
-            // stream producers, writeByteArray, etc.) failed
-            // intermittently with FSERR_BAD_ARG under real bundle
-            // openFile.
-            Some(fd) => match self.dev_inode_from_fd(fd as u64).await {
-                Ok(dev_inode) => {
-                    let holder = holder_id_of(holder_par);
-                    // Step 5: read per-runtime "current deploy scope" cell.
-                    let deploy = self.current_deploy_scope();
-                    match self
-                        .handles
-                        .lock_registry
-                        .try_acquire_sequential_wait(dev_inode, holder, deploy, policy)
-                    {
-                        Ok(AcquireOutcome::Immediate(id)) => ok_u64(id.as_u64()),
-                        Ok(AcquireOutcome::Parked { admit, .. }) => match admit.await {
-                            Ok(Ok(id)) => ok_u64(id.as_u64()),
-                            Ok(Err(le)) => lock_err_reply(le),
-                            Err(_recv_error) => lock_err_reply(LockError::Cancelled),
-                        },
-                        Err(le) => lock_err_reply(le),
-                    }
-                }
-                Err((code, msg)) => err(code, msg),
-            },
-            _ => err(FSERR_BAD_ARG, "expected (u64, Par, String, Bool)"),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsLockSequentialHandler>(self, contract_args).await
     }
 
     /// Resolve a Rholang-supplied fd to its `(st_dev, st_ino)` pair
@@ -5554,30 +5281,12 @@ impl FsProcesses {
     /// registry ends up keyed on a different inode, only that
     /// caller sees the confusion, and their subsequent reads/writes
     /// on the (now closed) fd will fail with `FSERR_CLOSED` anyway.
-    async fn dev_inode_from_fd(&self, fd: u64) -> Result<(u64, u64), (&'static str, String)> {
-        let Some(file_arc) = self.handles.raw_fd(fd).await else {
-            return Err((FSERR_CLOSED, "fd unknown or shadow handle".to_string()));
-        };
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            let raw = file_arc.as_raw_fd();
-            unsafe {
-                let mut st: libc::stat = std::mem::zeroed();
-                if libc::fstat(raw, &mut st) < 0 {
-                    let e = std::io::Error::last_os_error();
-                    return Err((FSERR_IO, io_msg_scrub(&e)));
-                }
-                #[allow(clippy::unnecessary_cast)]
-                Ok((st.st_dev as u64, st.st_ino as u64))
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = file_arc;
-            Ok((0, 0))
-        }
-    }
+    // Wave-3 S3.3 (2026-09-08): `FsProcesses::dev_inode_from_fd`
+    // was retired now that the two lock handlers migrated to the
+    // FsHandler trait; the free-fn form `dev_inode_from_fd_via_table`
+    // (see module bottom) is what the trait impls call.  If a
+    // future non-trait code path needs it, prefer the free-fn form
+    // — the method wrapper added zero value.
 
     /// Release a previously-acquired lock by id.  Both positional
     /// (`fs_lock_range`) and sequential (`fs_lock_sequential`) locks
@@ -5982,6 +5691,407 @@ static FS_RELEASE_LOCK_ENTRY: FsHandlerEntry = FsHandlerEntry {
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsReleaseLockHandler>(fs, args)),
 };
 
+// -------------------------------------------------------------------
+// fs_quarantine — (rootCanon, rel) -> [true, canonPath]  (S3.3)
+//
+// Non-verifying lifecycle helper: safe_descend_verified inside a
+// spawn_blocking task, echoes the caller-supplied joined path on
+// success (no canonicalize call → no host drift).
+// -------------------------------------------------------------------
+
+pub struct FsQuarantineHandler;
+
+pub struct FsQuarantineArgs {
+    root: String,
+    rel: String,
+}
+
+impl FsHandler for FsQuarantineHandler {
+    const NAME: &'static str = "fs_quarantine";
+    const ARITY: usize = 3; // (rootCanon, rel, ack)
+
+    type Args = FsQuarantineArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsQuarantineArgs, Box<HandlerReply>> {
+        let [root_par, rel_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String)",
+            ));
+        };
+        match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+            (Some(root), Some(rel)) => Ok(FsQuarantineArgs { root, rel }),
+            _ => Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (String, String)",
+            )),
+        }
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_quarantine_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsQuarantineArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let root_pb = PathBuf::from(&args.root);
+            let (root_pb, expected_root_id) =
+                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let rel = args.rel;
+            let par = spawn_blocking_par(move || -> Par {
+                match safe_descend_verified(&root_pb, &rel, expected_root_id) {
+                    Ok(_) => ok_string(root_pb.join(&rel).to_string_lossy().into_owned()),
+                    Err(qe) => {
+                        let (c, m) = quarantine_err_reply(&qe);
+                        err(c, m)
+                    }
+                }
+            })
+            .await;
+            // spawn_blocking_par returns a Par directly — wrap into
+            // HandlerReply based on the pre-refactor semantic
+            // (success = ok_string, failure = err(...)).  Both are
+            // Par-shaped; the framework doesn't need to distinguish
+            // here, but for consistency the trait's Ok/Err split is
+            // preserved by using `HandlerReply::Ok(par)` for all
+            // spawn_blocking replies (the byte-level split lives
+            // inside the returned Par).
+            HandlerReply::Ok(par)
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_QUARANTINE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsQuarantineHandler as FsHandler>::NAME,
+    arity: <FsQuarantineHandler as FsHandler>::ARITY,
+    verifying: <FsQuarantineHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsQuarantineHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_entries_stream_close — (fd) -> [true]  (S3.3)
+//
+// Non-verifying stream lifecycle.  Mirrors fs_close's Phase-2 fd-
+// release pattern: on_replay_side_effect removes the follower's
+// shadow dir_handle so the follower's dir_handles table converges
+// to the leader's post-close state.
+// -------------------------------------------------------------------
+
+pub struct FsEntriesStreamCloseHandler;
+
+pub struct FsEntriesStreamCloseArgs {
+    fd: u64,
+}
+
+impl FsHandler for FsEntriesStreamCloseHandler {
+    const NAME: &'static str = "fs_entries_stream_close";
+    const ARITY: usize = 2; // (fd, ack)
+
+    type Args = FsEntriesStreamCloseArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsEntriesStreamCloseArgs, Box<HandlerReply>> {
+        let [fd_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected GInt streamFd",
+            ));
+        };
+        let fd = RhoNumber::unapply(fd_par)
+            .ok_or_else(|| HandlerReply::boxed_err(FSERR_BAD_ARG, "expected GInt streamFd"))?;
+        Ok(FsEntriesStreamCloseArgs { fd: fd as u64 })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_entries_stream_close_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsEntriesStreamCloseArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            ctx.handles.dir_handles.remove(args.fd).await;
+            HandlerReply::ok(ok_bare())
+        })
+    }
+
+    fn on_replay_side_effect<'a>(
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if let [fd_par, ..] = raw_args {
+                if let Some(fd) = RhoNumber::unapply(fd_par) {
+                    ctx.handles.dir_handles.remove(fd as u64).await;
+                }
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_ENTRIES_STREAM_CLOSE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsEntriesStreamCloseHandler as FsHandler>::NAME,
+    arity: <FsEntriesStreamCloseHandler as FsHandler>::ARITY,
+    verifying: <FsEntriesStreamCloseHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| {
+        Box::pin(dispatch_via_trait_owned::<FsEntriesStreamCloseHandler>(
+            fs, args,
+        ))
+    },
+};
+
+// -------------------------------------------------------------------
+// fs_lock_range — (fd, off, len, mode, holder, cmode, wait)
+//                -> [true, lock_id]  (S3.3)
+//
+// Non-verifying lock acquisition.  Arity-8 tightened by slice-8b
+// sub-4 (2026-08-26).  Pre-refactor validated `wait_par` before
+// the is_replay short-circuit; my framework unifies content parse
+// post-is_replay.  Under determinism assumptions (leader and
+// follower see identical args) both paths produce byte-identical
+// replies — see wave-3 S3.2 commit message.
+// -------------------------------------------------------------------
+
+pub struct FsLockRangeHandler;
+
+pub struct FsLockRangeArgs {
+    fd: u64,
+    offset: u64,
+    length: u64,
+    mode: LockMode,
+    holder: Par,
+    wait_policy: WaitPolicy,
+}
+
+impl FsHandler for FsLockRangeHandler {
+    const NAME: &'static str = "fs_lock_range";
+    const ARITY: usize = 8; // (fd, off, len, mode, holder, cmode, wait, ack)
+
+    type Args = FsLockRangeArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsLockRangeArgs, Box<HandlerReply>> {
+        let [fd_par, off_par, len_par, mode_par, holder_par, cmode_par, wait_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, u64, u64>0, String\"r|w\", Par, String, Bool)",
+            ));
+        };
+        // wait_par first — matches pre-refactor's specific error
+        // message ordering.
+        let wait = match RhoBoolean::unapply(wait_par) {
+            Some(b) => b,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "fs_lock_range: wait must be Bool",
+                ));
+            }
+        };
+        // cmode validation.  The acquire outcome doesn't currently
+        // branch on cmode (step 4 WAL + step 7 unlink gate will);
+        // this rejects bad shapes fail-closed.
+        if resolve_cmode(cmode_par).is_none() {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "cmode must be String \"oracular\" or \"consensus\"",
+            ));
+        }
+        // Combined args validation — matches pre-refactor's
+        // "expected (u64, u64, u64>0, String\"r|w\", Par, String, Bool)"
+        // shape.  Any single failure surfaces the combined message.
+        let combined_err = || {
+            HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, u64, u64>0, String\"r|w\", Par, String, Bool)",
+            )
+        };
+        let fd = RhoNumber::unapply(fd_par).ok_or_else(combined_err)?;
+        let off = RhoNumber::unapply(off_par).ok_or_else(combined_err)?;
+        let len = RhoNumber::unapply(len_par).ok_or_else(combined_err)?;
+        // mode_par must be a String AND resolve to a LockMode.
+        RhoString::unapply(mode_par).ok_or_else(combined_err)?;
+        let lm = resolve_lock_mode(mode_par).ok_or_else(combined_err)?;
+        if !(off >= 0 && len > 0) {
+            return Err(combined_err());
+        }
+        let policy = if wait {
+            WaitPolicy::Wait
+        } else {
+            WaitPolicy::Fail
+        };
+        Ok(FsLockRangeArgs {
+            // Slice 28 CRIT-2: fds are hash-derived u64 bit-patterns;
+            // reinterpret without gating on `fd >= 0`.
+            fd: fd as u64,
+            offset: off as u64,
+            length: len as u64,
+            mode: lm,
+            holder: holder_par.clone(),
+            wait_policy: policy,
+        })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_lock_range_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsLockRangeArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            match dev_inode_from_fd_via_table(ctx.handles, args.fd).await {
+                Ok(dev_inode) => {
+                    let holder = holder_id_of(&args.holder);
+                    let deploy = ctx.current_deploy_scope();
+                    match ctx.handles.lock_registry.try_acquire_range_wait(
+                        dev_inode,
+                        args.offset,
+                        args.length,
+                        args.mode,
+                        holder,
+                        deploy,
+                        args.wait_policy,
+                    ) {
+                        Ok(AcquireOutcome::Immediate(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
+                        Ok(AcquireOutcome::Parked { admit, .. }) => match admit.await {
+                            Ok(Ok(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
+                            Ok(Err(le)) => HandlerReply::Err(lock_err_reply(le)),
+                            Err(_recv_error) => {
+                                HandlerReply::Err(lock_err_reply(LockError::Cancelled))
+                            }
+                        },
+                        Err(le) => HandlerReply::Err(lock_err_reply(le)),
+                    }
+                }
+                Err((code, msg)) => HandlerReply::err(code, msg),
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_LOCK_RANGE_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsLockRangeHandler as FsHandler>::NAME,
+    arity: <FsLockRangeHandler as FsHandler>::ARITY,
+    verifying: <FsLockRangeHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsLockRangeHandler>(fs, args)),
+};
+
+// -------------------------------------------------------------------
+// fs_lock_sequential — (fd, holder, cmode, wait)
+//                     -> [true, lock_id]  (S3.3)
+//
+// Non-verifying sequential-lock acquisition.  Similar shape to
+// fs_lock_range but no offset/length/mode slots.
+// -------------------------------------------------------------------
+
+pub struct FsLockSequentialHandler;
+
+pub struct FsLockSequentialArgs {
+    fd: u64,
+    holder: Par,
+    wait_policy: WaitPolicy,
+}
+
+impl FsHandler for FsLockSequentialHandler {
+    const NAME: &'static str = "fs_lock_sequential";
+    const ARITY: usize = 5; // (fd, holder, cmode, wait, ack)
+
+    type Args = FsLockSequentialArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsLockSequentialArgs, Box<HandlerReply>> {
+        let [fd_par, holder_par, cmode_par, wait_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, Par, String, Bool)",
+            ));
+        };
+        let wait = match RhoBoolean::unapply(wait_par) {
+            Some(b) => b,
+            None => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "fs_lock_sequential: wait must be Bool",
+                ));
+            }
+        };
+        if resolve_cmode(cmode_par).is_none() {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "cmode must be String \"oracular\" or \"consensus\"",
+            ));
+        }
+        let fd = RhoNumber::unapply(fd_par).ok_or_else(|| {
+            HandlerReply::boxed_err(FSERR_BAD_ARG, "expected (u64, Par, String, Bool)")
+        })?;
+        let policy = if wait {
+            WaitPolicy::Wait
+        } else {
+            WaitPolicy::Fail
+        };
+        Ok(FsLockSequentialArgs {
+            // Slice 28 CRIT-2: fds are hash-derived u64 bit-patterns;
+            // reinterpret without gating on `fd >= 0`.
+            fd: fd as u64,
+            holder: holder_par.clone(),
+            wait_policy: policy,
+        })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_lock_sequential_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsLockSequentialArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            match dev_inode_from_fd_via_table(ctx.handles, args.fd).await {
+                Ok(dev_inode) => {
+                    let holder = holder_id_of(&args.holder);
+                    let deploy = ctx.current_deploy_scope();
+                    match ctx.handles.lock_registry.try_acquire_sequential_wait(
+                        dev_inode,
+                        holder,
+                        deploy,
+                        args.wait_policy,
+                    ) {
+                        Ok(AcquireOutcome::Immediate(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
+                        Ok(AcquireOutcome::Parked { admit, .. }) => match admit.await {
+                            Ok(Ok(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
+                            Ok(Err(le)) => HandlerReply::Err(lock_err_reply(le)),
+                            Err(_recv_error) => {
+                                HandlerReply::Err(lock_err_reply(LockError::Cancelled))
+                            }
+                        },
+                        Err(le) => HandlerReply::Err(lock_err_reply(le)),
+                    }
+                }
+                Err((code, msg)) => HandlerReply::err(code, msg),
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_LOCK_SEQUENTIAL_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsLockSequentialHandler as FsHandler>::NAME,
+    arity: <FsLockSequentialHandler as FsHandler>::ARITY,
+    verifying: <FsLockSequentialHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| {
+        Box::pin(dispatch_via_trait_owned::<FsLockSequentialHandler>(
+            fs, args,
+        ))
+    },
+};
+
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.
 // ---------------------------------------------------------------------
@@ -6052,6 +6162,43 @@ fn holder_id_of(par: &Par) -> HolderId {
 
 /// Phase 8 slice 8a — map a `LockError` from the LockRegistry to
 /// the FSERR reply shape.
+/// Free-function form of the pre-wave-3 `FsProcesses::dev_inode_from_fd`
+/// method.  Takes `&FileHandleTable` directly so both the
+/// `FsProcesses::fs_lock_*` wrappers (retiring at S3.12) and the
+/// wave-3 `FsLockRangeHandler` / `FsLockSequentialHandler` trait
+/// impls can share one implementation via `SyscallCtx::handles`.
+///
+/// Semantic behavior identical to the pre-wave-3 method — see its
+/// docstring at the (now-thin) `FsProcesses::dev_inode_from_fd`
+/// wrapper for the concurrent-close race analysis.
+async fn dev_inode_from_fd_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+) -> Result<(u64, u64), (&'static str, String)> {
+    let Some(file_arc) = handles.raw_fd(fd).await else {
+        return Err((FSERR_CLOSED, "fd unknown or shadow handle".to_string()));
+    };
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let raw = file_arc.as_raw_fd();
+        unsafe {
+            let mut st: libc::stat = std::mem::zeroed();
+            if libc::fstat(raw, &mut st) < 0 {
+                let e = std::io::Error::last_os_error();
+                return Err((FSERR_IO, io_msg_scrub(&e)));
+            }
+            #[allow(clippy::unnecessary_cast)]
+            Ok((st.st_dev as u64, st.st_ino as u64))
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file_arc;
+        Ok((0, 0))
+    }
+}
+
 fn lock_err_reply(le: LockError) -> Par {
     match le {
         LockError::Busy => err(FSERR_BUSY, "range lock unavailable"),
@@ -6988,55 +7135,62 @@ mod cmode_tests {
     // ---------------------------------------------------------------
 
     /// **Gap 2a**: pin fs_lock_range's scope-read.
+    ///
+    /// Wave-3 S3.3 (2026-09-08) update: the anchor moved from the
+    /// (now 4-line) `pub async fn fs_lock_range` wrapper to
+    /// `impl FsHandler for FsLockRangeHandler`.  The invariant is
+    /// unchanged: the acquire path MUST read scope via
+    /// `current_deploy_scope` (either the pre-wave-3
+    /// `self.current_deploy_scope()` or the wave-3
+    /// `ctx.current_deploy_scope()`, both of which read the
+    /// `handles.current_deploy_scope` cell).
     #[test]
     fn fs_lock_range_reads_current_deploy_scope() {
         let src = include_str!("handlers.rs");
-        let fn_start = src
-            .find("pub async fn fs_lock_range")
-            .expect("handlers.rs missing fs_lock_range definition");
-        // Window bumped 3KB → 6KB (slice 8b sub-2, 2026-08-12): the
-        // wait:true parking + await + admit dispatch added ~2KB to
-        // the fn body, pushing the current_deploy_scope read past
-        // the old 3KB horizon.
-        let window = &src[fn_start..std::cmp::min(fn_start + 6000, src.len())];
+        let anchor = src
+            .find("impl FsHandler for FsLockRangeHandler")
+            .expect("handlers.rs missing FsLockRangeHandler impl block");
+        let window = &src[anchor..std::cmp::min(anchor + 8000, src.len())];
         assert!(
             window.contains("current_deploy_scope"),
-            "step 5 regression: fs_lock_range must read scope from \
+            "step 5 regression: FsLockRangeHandler must read scope from \
+             ctx.current_deploy_scope() (which reads \
              self.handles.current_deploy_scope — the per-runtime cell \
-             WalDeployScope publishes at deploy entry"
+             WalDeployScope publishes at deploy entry)"
         );
         assert!(
             !window.contains("DeployScope::default()"),
-            "step 5 regression: fs_lock_range must NOT fall back to \
-             DeployScope::default() — that pre-step-5 placeholder path \
-             was removed in step 5.  Under step-5 semantics, an acquire \
-             outside a live WalDeployScope reads the sentinel [0; 32] \
-             cell value; a release_all_for_deploy call using the default \
-             would trip the sentinel-guard assert! in release_all_for_\
-             deploy (commit 6f537099)."
+            "step 5 regression: FsLockRangeHandler must NOT fall back \
+             to DeployScope::default() — that pre-step-5 placeholder \
+             path was removed in step 5.  Under step-5 semantics, an \
+             acquire outside a live WalDeployScope reads the sentinel \
+             [0; 32] cell value; a release_all_for_deploy call using \
+             the default would trip the sentinel-guard assert! in \
+             release_all_for_deploy (commit 6f537099)."
         );
     }
 
     /// **Gap 2b**: pin fs_lock_sequential's scope-read.
+    /// See `fs_lock_range_reads_current_deploy_scope` for the wave-3
+    /// anchor-relocation rationale.
     #[test]
     fn fs_lock_sequential_reads_current_deploy_scope() {
         let src = include_str!("handlers.rs");
-        let fn_start = src
-            .find("pub async fn fs_lock_sequential")
-            .expect("handlers.rs missing fs_lock_sequential definition");
-        // Window bumped 3KB → 5KB (slice 8b sub-2): wait:true
-        // dispatch added ~1KB to the fn body.
-        let window = &src[fn_start..std::cmp::min(fn_start + 5000, src.len())];
+        let anchor = src
+            .find("impl FsHandler for FsLockSequentialHandler")
+            .expect("handlers.rs missing FsLockSequentialHandler impl block");
+        let window = &src[anchor..std::cmp::min(anchor + 6000, src.len())];
         assert!(
             window.contains("current_deploy_scope"),
-            "step 5 regression: fs_lock_sequential must read scope from \
-             self.handles.current_deploy_scope"
+            "step 5 regression: FsLockSequentialHandler must read scope \
+             from ctx.current_deploy_scope() (which reads \
+             self.handles.current_deploy_scope)"
         );
         assert!(
             !window.contains("DeployScope::default()"),
-            "step 5 regression: fs_lock_sequential must NOT fall back to \
-             DeployScope::default() — see fs_lock_range test above for \
-             rationale"
+            "step 5 regression: FsLockSequentialHandler must NOT fall \
+             back to DeployScope::default() — see \
+             fs_lock_range_reads_current_deploy_scope for rationale"
         );
     }
 
@@ -7289,72 +7443,97 @@ mod cmode_tests {
     fn fs_lock_range_accepts_arity_8_with_wait_bool() {
         // Pins the sub-2 arity extension.  Regressions that revert to
         // arity-7-only would trip file_dir_check under sub-4 once
-        // File.rho passes 8 args.  Window bumped to 8KB — the
-        // wait:true parking path adds ~2KB to the fn body over the
-        // pre-slice-8b baseline.
+        // File.rho passes 8 args.
+        //
+        // Wave-3 S3.3 (2026-09-08): anchor moved from the (now 4-
+        // line) `pub async fn fs_lock_range` wrapper to
+        // `impl FsHandler for FsLockRangeHandler`.  The arity check
+        // is now the trait's `ARITY` constant + framework arity
+        // check — plus the destructure inside `parse_content`.  The
+        // `wait_par`-at-slot-7 invariant is preserved by:
+        //   1. `const ARITY: usize = 8` on the handler struct.
+        //   2. `parse_content`'s `[fd_par, off_par, len_par,
+        //      mode_par, holder_par, cmode_par, wait_par]` slice
+        //      destructure (framework strips ack at index 7).
+        //   3. `RhoBoolean::unapply(wait_par)` inside parse_content.
         let src = include_str!("handlers.rs");
-        let fn_start = src
-            .find("pub async fn fs_lock_range")
-            .expect("handlers.rs missing fs_lock_range definition");
-        let window = &src[fn_start..std::cmp::min(fn_start + 8000, src.len())];
+        let anchor = src
+            .find("impl FsHandler for FsLockRangeHandler")
+            .expect("handlers.rs missing FsLockRangeHandler impl block");
+        let window = &src[anchor..std::cmp::min(anchor + 8000, src.len())];
         assert!(
-            window.contains("[fd, off, len, mode, holder, cmode, wait_par, ack]"),
-            "sub-2 regression: fs_lock_range must accept the 8-arg form \
-             with `wait_par` at slot 7"
+            window.contains("const ARITY: usize = 8"),
+            "sub-2 regression: FsLockRangeHandler must have ARITY = 8"
         );
-        // Note: `RhoBoolean::unapply(\n    wait_par,\n)` under
-        // rustfmt — search for the pieces separately.
+        assert!(
+            window
+                .contains("[fd_par, off_par, len_par, mode_par, holder_par, cmode_par, wait_par]"),
+            "sub-2 regression: FsLockRangeHandler::parse_content must \
+             destructure 7 pre-ack args with `wait_par` at slot 6 \
+             (framework strips ack at slot 7)"
+        );
         assert!(
             window.contains("RhoBoolean::unapply(") && window.contains("wait_par"),
-            "sub-2 regression: fs_lock_range must parse wait as RhoBoolean"
+            "sub-2 regression: FsLockRangeHandler must parse wait as \
+             RhoBoolean"
         );
         assert!(
             window.contains("WaitPolicy::Wait") && window.contains("WaitPolicy::Fail"),
-            "sub-2 regression: fs_lock_range must dispatch to \
+            "sub-2 regression: FsLockRangeHandler must dispatch to \
              WaitPolicy based on wait: Bool"
         );
         assert!(
             window.contains("try_acquire_range_wait"),
-            "sub-2 regression: fs_lock_range must use the wait-aware \
+            "sub-2 regression: FsLockRangeHandler must use the wait-aware \
              LockRegistry method"
         );
         assert!(
             window.contains("AcquireOutcome::Parked") && window.contains("admit.await"),
-            "sub-2 regression: fs_lock_range must await the Parked \
+            "sub-2 regression: FsLockRangeHandler must await the Parked \
              admission oneshot"
         );
         assert!(
             window.contains("LockError::Cancelled"),
-            "sub-2 regression: fs_lock_range must surface Cancelled \
+            "sub-2 regression: FsLockRangeHandler must surface Cancelled \
              on oneshot RecvError (registry drop / no signal)"
         );
     }
 
     #[test]
     fn fs_lock_sequential_accepts_arity_5_with_wait_bool() {
+        // Wave-3 S3.3 anchor relocation: see
+        // `fs_lock_range_accepts_arity_8_with_wait_bool` for the
+        // rationale.  Sequential arity is 5 in the pre-refactor sense
+        // (fd, holder, cmode, wait, ack); the trait's ARITY = 5 and
+        // parse_content destructures 4 pre-ack args.
         let src = include_str!("handlers.rs");
-        let fn_start = src
-            .find("pub async fn fs_lock_sequential")
-            .expect("handlers.rs missing fs_lock_sequential definition");
-        let window = &src[fn_start..std::cmp::min(fn_start + 5000, src.len())];
+        let anchor = src
+            .find("impl FsHandler for FsLockSequentialHandler")
+            .expect("handlers.rs missing FsLockSequentialHandler impl block");
+        let window = &src[anchor..std::cmp::min(anchor + 6000, src.len())];
         assert!(
-            window.contains("[fd, holder, cmode, wait_par, ack]"),
-            "sub-2 regression: fs_lock_sequential must accept the 5-arg \
-             form with `wait_par` at slot 4"
+            window.contains("const ARITY: usize = 5"),
+            "sub-2 regression: FsLockSequentialHandler must have ARITY = 5"
+        );
+        assert!(
+            window.contains("[fd_par, holder_par, cmode_par, wait_par]"),
+            "sub-2 regression: FsLockSequentialHandler::parse_content \
+             must destructure 4 pre-ack args with `wait_par` at slot 3"
         );
         assert!(
             window.contains("RhoBoolean::unapply(") && window.contains("wait_par"),
-            "sub-2 regression: fs_lock_sequential must parse wait as RhoBoolean"
+            "sub-2 regression: FsLockSequentialHandler must parse wait \
+             as RhoBoolean"
         );
         assert!(
             window.contains("try_acquire_sequential_wait"),
-            "sub-2 regression: fs_lock_sequential must use the wait-aware \
-             LockRegistry method"
+            "sub-2 regression: FsLockSequentialHandler must use the \
+             wait-aware LockRegistry method"
         );
         assert!(
             window.contains("AcquireOutcome::Parked") && window.contains("admit.await"),
-            "sub-2 regression: fs_lock_sequential must await the Parked \
-             admission oneshot"
+            "sub-2 regression: FsLockSequentialHandler must await the \
+             Parked admission oneshot"
         );
     }
 
