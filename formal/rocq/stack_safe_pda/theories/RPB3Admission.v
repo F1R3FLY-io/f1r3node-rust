@@ -5767,3 +5767,213 @@ Print Assumptions forcing_a_coherent_fault_preserves_exact_typed_observation_and
 Print Assumptions forcing_a_coherent_fault_preserves_hidden_terminal_preflight.
 
 End PersistentFaultRealization.
+
+Module EffectfulLinkedSettlement.
+
+Module F := FocusedRegionOwners.
+Module P := PersistentFocusedOwners.
+
+Section Effects.
+
+Context {World : Type}.
+Variable classify : World -> F.leaf -> F.boundary_view.
+Variable complete : World -> F.region_metadata -> nat -> F.leaf -> World * F.completion_result.
+
+Fixpoint reference stamp source offset world view (entries : P.owner_entries)
+    : World * F.boundary_observation * nat :=
+  match entries with
+  | [] => (world, F.unchanged_boundary view, 0)
+  | (_, cell) :: rest =>
+      match P.positional_command stamp source offset view entries with
+      | P.StopSettlement observed checks => (world, F.unchanged_boundary observed, checks)
+      | P.CompleteSettlement _ owner child =>
+          let '(next_world, outcome) := complete world (F.owner_metadata owner)
+            (F.owner_region_end owner - stamp) child in
+          match outcome with
+          | F.CompletedOwner next =>
+              let '(final_world, observed, checks) := reference stamp source offset next_world
+                (classify next_world next) rest in
+              (final_world, F.note_call (F.region_slot (F.owner_metadata owner)) 1 observed, S checks)
+          | F.RefusedOwner code at_source at_offset =>
+              (next_world, F.note_call (F.region_slot (F.owner_metadata owner)) 0
+                (F.unchanged_boundary (F.BoundaryDead (F.BoundaryRefusal code at_source at_offset))), 1)
+          end
+      end
+  end.
+
+Inductive run arena stamp source offset :
+    World -> option nat -> F.boundary_view -> World -> option nat -> F.boundary_observation -> nat -> Prop :=
+| run_stop world root view observed checks :
+    P.linked_command arena root stamp source offset view = Some (P.StopSettlement observed checks) ->
+    run arena stamp source offset world root view world root (F.unchanged_boundary observed) checks
+| run_refuse world root view parent owner child next_world code at_source at_offset :
+    P.linked_command arena root stamp source offset view = Some (P.CompleteSettlement parent owner child) ->
+    complete world (F.owner_metadata owner) (F.owner_region_end owner - stamp) child =
+      (next_world, F.RefusedOwner code at_source at_offset) ->
+    run arena stamp source offset world root view next_world root
+      (F.note_call (F.region_slot (F.owner_metadata owner)) 0
+        (F.unchanged_boundary (F.BoundaryDead (F.BoundaryRefusal code at_source at_offset)))) 1
+| run_pop world root view parent owner child next_world next final_world final observed checks :
+    P.linked_command arena root stamp source offset view = Some (P.CompleteSettlement parent owner child) ->
+    complete world (F.owner_metadata owner) (F.owner_region_end owner - stamp) child =
+      (next_world, F.CompletedOwner next) ->
+    run arena stamp source offset next_world parent (classify next_world next) final_world final observed checks ->
+    run arena stamp source offset world root view final_world final
+      (F.note_call (F.region_slot (F.owner_metadata owner)) 1 observed) (S checks).
+
+Theorem effectful_linked_traversal_terminates_with_exact_world_trace_and_retained_prefix
+    arena root entries stamp source offset :
+  P.linked arena root entries -> forall world view,
+  let '(final_world, observed, checks) := reference stamp source offset world view entries in
+  exists final,
+    run arena stamp source offset world root view final_world final observed checks /\
+    P.linked arena final (skipn (F.boundary_pops observed) entries).
+Proof.
+  intro valid. induction valid as [|address cell rest found parents IH backward all paths outer];
+    intros world view.
+  - destruct view; exists None;
+      (split; [apply run_stop; reflexivity|rewrite skipn_nil; exact (@P.linked_empty arena)]).
+  - assert (valid : P.linked arena (Some address) ((address, cell) :: rest))
+      by (constructor; assumption).
+    pose proof (@P.linked_dispatch_refines_exact_positional_command arena (Some address)
+      ((address, cell) :: rest) stamp source offset view valid) as command.
+    cbn [reference].
+    destruct view as [error|id| |child].
+    + exists (Some address). split; [apply run_stop; exact command|exact valid].
+    + exists (Some address). split; [apply run_stop; exact command|exact valid].
+    + unfold P.positional_command in command |- *.
+      destruct (F.cached_due stamp (F.path_boundary_cache
+        (F.top_caches (F.schedule_owners (P.projected_owners ((address, cell) :: rest))))))
+        as [[|position]|]; exists (Some address);
+        (split; [apply run_stop; exact command|exact valid]).
+    + unfold P.positional_command in command |- *.
+      destruct (F.cached_due stamp (F.path_boundary_cache
+        (F.top_caches (F.schedule_owners (P.projected_owners ((address, cell) :: rest))))))
+        as [[|position]|].
+      * destruct (complete world (F.owner_metadata (P.cell_owner cell))
+          (F.owner_region_end (P.cell_owner cell) - stamp) child)
+          as [next_world [next|code at_source at_offset]] eqn:completed.
+        -- pose proof (IH next_world (classify next_world next)) as later.
+           destruct (reference stamp source offset next_world (classify next_world next) rest)
+             as [[final_world observed] checks].
+           destruct later as [final [tail retained]]. exists final. split.
+           ++ eapply run_pop; [exact command|exact completed|].
+              now rewrite <- (P.linked_root_is_entry_root parents).
+           ++ exact retained.
+        -- exists (Some address). split; [eapply run_refuse; eauto|exact valid].
+      * exists (Some address). split; [apply run_stop; exact command|exact valid].
+      * exists (Some address). split; [apply run_stop; exact command|exact valid].
+Qed.
+
+Theorem effectful_linked_runs_are_deterministic arena stamp source offset
+    world root view final_world final observed checks :
+  run arena stamp source offset world root view final_world final observed checks ->
+  forall other_world other_final other_observed other_checks,
+    run arena stamp source offset world root view other_world other_final other_observed other_checks ->
+    (final_world, final, observed, checks) = (other_world, other_final, other_observed, other_checks).
+Proof.
+  intro execution. induction execution; intros other_world other_final other_observed other_checks other;
+    inversion other; subst.
+  all: match goal with
+    | left : ?command = Some ?a, right : ?command = Some ?b |- _ =>
+        assert (same : a = b) by congruence; clear right; inversion same; subst; clear same
+    end.
+  all: try congruence.
+  all: match goal with
+    | left : ?callback = (?w1, F.CompletedOwner ?a), right : ?callback = (?w2, F.CompletedOwner ?b) |- _ =>
+        assert (same : (w1, a) = (w2, b)) by congruence;
+        clear right; inversion same; subst; clear same
+    end.
+  match goal with
+    | IH : forall _ _ _ _, run _ _ _ _ _ _ _ _ _ _ _ -> _,
+      tail : run _ _ _ _ _ _ _ _ _ _ _ |- _ =>
+        specialize (IH _ _ _ _ tail); inversion IH; subst; reflexivity
+  end.
+Qed.
+
+Theorem every_effectful_run_refines_reference_world_and_callback_order
+    arena root entries stamp source offset world view final_world final observed checks :
+  P.linked arena root entries ->
+  run arena stamp source offset world root view final_world final observed checks ->
+  reference stamp source offset world view entries = (final_world, observed, checks) /\
+  P.linked arena final (skipn (F.boundary_pops observed) entries).
+Proof.
+  intros valid execution.
+  pose proof (@effectful_linked_traversal_terminates_with_exact_world_trace_and_retained_prefix
+    arena root entries stamp source offset valid world view) as exists_run.
+  destruct (reference stamp source offset world view entries) as [[expected_world expected_observed] expected_checks]
+    eqn:expected.
+  destruct exists_run as [expected_final [expected_run retained]].
+  pose proof (effectful_linked_runs_are_deterministic execution expected_run) as same.
+  inversion same; subst. auto.
+Qed.
+
+Lemma positional_stop_checks_bounded stamp source offset view entries observed checks :
+  P.positional_command stamp source offset view entries = P.StopSettlement observed checks -> checks <= 1.
+Proof.
+  unfold P.positional_command. destruct view; destruct entries as [|[address cell] rest];
+    try (intro same; inversion same; lia).
+  all: destruct (F.cached_due stamp (F.path_boundary_cache
+    (F.top_caches (F.schedule_owners (P.projected_owners ((address, cell) :: rest)))))) as [[|index]|];
+    intro same; inversion same; lia.
+Qed.
+
+Lemma reference_owner_checks_bounded stamp source offset entries : forall world view,
+  let '(_, observed, checks) := reference stamp source offset world view entries in
+  checks <= S (F.boundary_pops observed).
+Proof.
+  induction entries as [|[address cell] rest IH]; intros world view; cbn [reference]; [cbn; lia|].
+  destruct (P.positional_command stamp source offset view ((address, cell) :: rest))
+    as [observed checks|parent owner child] eqn:command.
+  - cbn. eapply positional_stop_checks_bounded; exact command.
+  - destruct (complete world (F.owner_metadata owner) (F.owner_region_end owner - stamp) child)
+      as [next_world [next|code at_source at_offset]] eqn:completed; [|cbn; lia].
+    pose proof (IH next_world (classify next_world next)) as bounded.
+    destruct (reference stamp source offset next_world (classify next_world next) rest)
+      as [[final_world observed] checks]. cbn in bounded |- *. lia.
+Qed.
+
+Theorem effectful_owner_checks_remain_pop_bounded arena root entries stamp source offset
+    world view final_world final observed checks :
+  P.linked arena root entries ->
+  run arena stamp source offset world root view final_world final observed checks ->
+  checks <= S (F.boundary_pops observed).
+Proof.
+  intros valid execution.
+  destruct (every_effectful_run_refines_reference_world_and_callback_order valid execution) as [same retained].
+  pose proof (reference_owner_checks_bounded stamp source offset entries world view) as bounded.
+  now rewrite same in bounded.
+Qed.
+
+End Effects.
+
+Definition control_outer_owner := F.Owner (F.control_metadata 1) 12 9.
+Definition control_outer := P.make_cell [] None control_outer_owner.
+Definition control_inner := P.make_cell [control_outer] (Some 0) (F.Owner (F.control_metadata 2) 9 9).
+Definition control_arena := [control_outer; control_inner].
+Definition control_entries := [(1, control_inner); (0, control_outer)].
+Definition control_classify (_ : nat) := F.completed_control_view.
+Definition control_complete clock metadata remaining child :=
+  (S clock, F.settlement_control_complete metadata remaining child).
+
+Theorem outer_refusal_retains_inner_and_refusing_callback_effects_control :
+  P.linked control_arena (Some 1) control_entries /\
+  reference control_classify control_complete 9 2 31 0 (F.BoundaryCompleted F.control_leaf) control_entries =
+    (2, F.BoundaryObservation (F.BoundaryDead (F.BoundaryRefusal 77 8 91)) 1 [2; 1], 2).
+Proof.
+  split.
+  - pose proof (@P.append_owner_constructs_valid_backward_links_and_exact_caches
+      [] None [] control_outer_owner (@P.linked_empty [])) as outer.
+    change (P.linked [control_outer] (Some 0) [(0, control_outer)]) in outer.
+    exact (@P.append_owner_constructs_valid_backward_links_and_exact_caches
+      [control_outer] (Some 0) [(0, control_outer)] (F.Owner (F.control_metadata 2) 9 9) outer).
+  - reflexivity.
+Qed.
+
+Print Assumptions effectful_linked_traversal_terminates_with_exact_world_trace_and_retained_prefix.
+Print Assumptions effectful_linked_runs_are_deterministic.
+Print Assumptions every_effectful_run_refines_reference_world_and_callback_order.
+Print Assumptions effectful_owner_checks_remain_pop_bounded.
+Print Assumptions outer_refusal_retains_inner_and_refusing_callback_effects_control.
+
+End EffectfulLinkedSettlement.

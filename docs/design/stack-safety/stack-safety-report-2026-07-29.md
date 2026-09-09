@@ -10321,6 +10321,21 @@ records the generated reference-test binding and qualification. The persistent
 treatment, shared resolution effects and total allocation bound remain open;
 these results do not supersede the persistent depth-growth measurements.
 
+#### 5.33.26 State-threaded linked completion (2026-09-09, task 6018)
+
+Five laws extend linked dispatch to stateful completion callbacks, preserving
+the logical effect state, call order and candidate prefix. The abstract owner
+check bound remains successful pops plus one. A checked two-owner control
+retains both callbacks' effects after inner completion and outer refusal.
+Standalone compilation passed 160 closed RPB3 reports with 668.8 MiB peak
+memory and no swap under a 2 GiB hard cap.
+The combined gate separately passed three kernel checks and all 88 selected
+release runtime tests, with no failures or ignores. Rust sources are unchanged
+from the preceding 391-test full-library checkpoint.
+[J-107](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-107--2026-09-09-state-threaded-completion-and-refusal-effects)
+records qualification and the callback/publication/resource realization limits.
+No persistent allocation improvement or production runtime change is claimed.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

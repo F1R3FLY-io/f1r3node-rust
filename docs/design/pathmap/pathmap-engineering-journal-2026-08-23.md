@@ -7524,6 +7524,50 @@ plan; no new independent review of these six final laws is claimed.
 No production Rust, codec, consensus identity, persistence default or ACT/LMDB
 comparison result changes in this proof/property checkpoint.
 
+### J-107 — 2026-09-09: state-threaded completion and refusal effects
+
+**FORMAL RESULT.** Five laws extend the existing linked/positional dispatch
+correspondence to a shared completion callback carrying logical effect state.
+Classification sees the preceding callback's returned state. Every valid finite
+linked chain terminates with the reference state, ordered Region frame-ID call
+trace, pop/check counts and retained candidate prefix. Determinism extends the
+result to every permitted run. No fuel or artificial traversal limit is added.
+
+The dispatch-check bound remains successful pops plus one. A concrete valid
+two-owner control completes the inner owner and refuses the outer owner: the
+effect counter advances twice, the call trace is `[2, 1]`, only one owner pops,
+and both callbacks' effects survive. Selecting the pre-step graph after refusal
+must not silently rewind those effects. Candidate retention and fault publication
+remain distinct operations.
+
+**REALIZATION BOUNDARY.** The logical world contains effects that must agree,
+not physical allocation layouts or intentionally different instrumentation. The
+reference reuses the existing positional command, not a second grammar. Shared
+callback/classification realization, pre-step fault publication and physical
+resource accounting remain required; the model does not claim to prove runtime
+callback costs or a newly state-threaded eager grammar walk. The formal README
+extracts all five implementation/property obligations. There are no new Rust
+tests or production changes in this proof-only slice.
+
+**MEASURED FORMAL QUALIFICATION.** Final compilation passed 160 closed RPB3
+reports in 15.149 s, with 668.8 MiB peak memory and zero swap under High 1 GiB /
+Max 2 GiB / CPU 200%. Initial empty-chain/control proof elaboration failures
+were repaired using existing linked-owner construction laws; failed attempts
+are excluded. The combined gate separately passed 160 closed RPB3 reports,
+three kernel checks and 88 selected release tests, without failures or ignores.
+Rust used High 4 GiB / Max 6 GiB / CPU 400% and swap disabled. Rust sources are
+unchanged from J-106's 391-test library checkpoint; this is a focused rerun,
+not another full-library or workspace CI result. This follows the
+previously reviewed effect-composition requirement; no fresh independent review
+is claimed while the review agent is unavailable.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-effectful-settlement-final-20260909.log` | `2bf0c073fcd7b44782c2f855093c4682836811fbdce30544ea77bc64a320b60d` |
+| `/tmp/epathmap-effectful-settlement-gate-20260909.log` | `7c27058fbda6684a3c2b9574d9945ded3e2d89aba8cad84fd8b34462f77d5e59` |
+
+No consensus rule, codec, backend default or ACT/LMDB measurement changes here.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

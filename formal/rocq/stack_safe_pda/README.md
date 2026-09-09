@@ -1268,6 +1268,38 @@ explicit typed ID-insensitive relation established in PFR, with old lookups prov
 separately. Shared effectful resolution, checked Rust widths, fault construction
 and aggregate resource bounds remain required before persistent runtime cutover.
 
+#### State-threaded linked completion (2026-09-09)
+
+`EffectfulLinkedSettlement` extends the existing dispatch refinement to a
+completion callback that takes and returns a logical `World`. Classification
+uses the world returned by the preceding callback. The finite positional
+reference reuses `PersistentFocusedOwners.positional_command`; the linked
+transition relation reuses `linked_command`. This adds no grammar/parser and
+does not substitute a second runtime scheduler.
+
+The world denotes effects which both implementations must preserve. Physical
+allocation layout and instrumentation counters that intentionally differ are
+not implicitly equated. Their refinement remains separate. Classification is
+a function of the supplied world and leaf; any semantic classification effect
+would need explicit state threading before using this theorem for that effect.
+
+| Exported theorem | Extracted implementation/property obligation |
+|---|---|
+| `effectful_linked_traversal_terminates_with_exact_world_trace_and_retained_prefix` | Every valid finite linked chain has a terminating run matching the state-threaded positional result, exact callback order, pop/check counts and remaining candidate chain. Compare the logical effect state after every callback, not only the final validity. |
+| `effectful_linked_runs_are_deterministic` | The same input world/root/view has one final world, root, observation and check count under the shared deterministic callbacks. Compare repeated runs from independent snapshots. |
+| `every_effectful_run_refines_reference_world_and_callback_order` | All permitted linked runs, not just a constructed witness, match the reference world and ordered Region frame-ID call trace. Frame IDs are distinct from owner-arena addresses. |
+| `effectful_owner_checks_remain_pop_bounded` | Abstract dispatch checks are at most successful pops plus one even when callbacks change the world. Count callback work and physical storage operations separately. |
+| `outer_refusal_retains_inner_and_refusing_callback_effects_control` | A valid two-owner chain increments the logical effect counter twice, calls frames `[2, 1]`, pops only the inner owner and returns the outer refusal. Neither the successful inner effect nor the refusing callback's effect is rewound. |
+
+The reference is the state-threaded positional dispatcher, not a newly proved
+state-threaded version of the original eager grammar walk. Its control selection
+reuses the existing dispatch correspondence; actual callback/classification
+realization and pre-step fault publication must still be composed. The retained
+candidate prefix is not authority to publish it after refusal. These five rows
+are required implementation/property bindings, not five new Rust tests. The
+concrete control is kernel checked. No runtime cost bound for callbacks, model
+list lookup or total persistent allocations follows from the dispatch-check bound.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to
