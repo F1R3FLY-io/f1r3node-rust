@@ -2106,3 +2106,81 @@ in this slice. The new composition tests do not execute COMMs, replay deploys, t
 writer, prove arbitrary-input parser equivalence, resume a durable import session or activate
 the PathMap DAG backend. Those remain their existing required tasks. The absence of a new
 consensus format is not evidence that the entire campaign is consensus-qualified.
+
+#### Checked ACT line transport: invariant catalogue (2026-09-09, task 6018)
+
+J-112 measures repeated ingestion of opaque nested EPathMap bytes. The first
+required refinement is transport across already validated ACT line interiors,
+not a replacement grammar or a singleton-map shortcut. The
+`CheckedACTLineTransport` module in `RPB3Admission.v` models forward and
+reverse spans over an immutable located-byte source. A located byte retains
+both its byte value and its physical source/offset pair.
+
+The scalar reference is deliberately partial: `None` means outside the modeled
+interior, **not** production EOF or a parser error. For forward transport, the
+strict bound excludes the last line byte. That byte, its endpoint value, child
+descent and terminal checks remain with the existing scalar cursor. For reverse
+transport, the bound excludes the line-owning node's final leave; that node need
+not be the root. Each forward byte represents two events, Edge then
+AbsentValue; each reverse byte represents one Leave. Both directions preserve
+exact physical provenance.
+
+The source function is captured by the offer; commit has no source-substitution
+argument. Concrete refinement must bind this function to the cursor-owned
+source at `line.start + index`, with a valid bound and stable, available reads.
+An arbitrary `IndexedByteSource` can use interior mutability; its trait alone
+does not discharge that premise. Existing immutable indexed regions provide
+the intended integration boundary.
+
+| Exported invariant | Required executable property before production acceptance |
+|---|---|
+| `checked_line_expands_to_exact_scalar_events` | At each eligible line in arbitrary branched ACT, compare a bounded commit with exactly twice as many scalar events, including every absent value and its source. |
+| `checked_unwind_expands_to_exact_scalar_leaves` | Compare every bounded reverse span with scalar leaves in descending source-offset order, including partial runs and complete line unwind. |
+| `stale_offer_refuses_without_a_new_cursor` | A detached stale snapshot cannot change selected state. The Rust capability must make cross-cursor use, cursor mutation, or replay while borrowed impossible. |
+| `zero_width_offer_is_refused` | Zero and excessive widths refuse before changing any cursor, counter, reducer store or source descriptor. The excessive-width guard follows from the checked-commit trace and strict bounds. |
+| `rewind_invalidates_an_old_offer` | Compile-fail/API tests establish that a live exclusive span prevents rewind and cannot survive cursor replacement. No runtime generation counter is required. |
+| `every_forward_prefix_keeps_the_final_byte_scalar` | Enumerate every complete edge/value prefix and compare index, phase, next event and retained boundary against scalar traversal. |
+| `every_unwind_prefix_stops_before_the_node_leave` | Enumerate every partial leave run and ensure the node leave, parent stack and sibling transition remain pending. |
+| `committed_forward_preserves_other_topology_authority` | Compare validated plan, inactive frames, remaining children, next-record index, leave index, EPM1 value reader/count, pending endpoint and terminal state. |
+| `committed_unwind_preserves_other_topology_authority` | Preserve the same fields during unwind, including the completed forward line index. |
+| `accepted_commit_has_the_exact_scalar_trace` | For both directions, every successful checked commit has the exact modeled scalar trace and resulting state; failed preflight is nonmutating. |
+| `odd_forward_prefix_preserves_the_pending_absent_value` | At every odd event prefix, compare the LineValue phase, unchanged line index, last source, event count and pending absent value. |
+| `expanded_event_counts_preserve_logical_work` | Forward spans count twice their width and reverse spans once their width. Measure physical source reads separately; avoiding those reads is part of the optimization. |
+
+The model's context is an abstract encoding of the fields listed above; proving
+that this encoding is preserved does not by itself prove the Rust projection.
+Likewise, logical generation is a negative-control device, not a proposed native
+counter. The selected implementation direction is a private, non-Clone,
+non-Copy span capability holding an exclusive mutable borrow of the ACT cursor
+and its source. Drop releases the capability without mutation; commit consumes
+it after width preflight. An analogous EPM1 capability must retain the enclosing
+event/terminal authority. This prevents stale state without adding an artificial
+generation overflow limit or cloning an entire cursor.
+
+```text
+Algorithm CHECKED-INTERIOR-TRANSPORT(cursor, persistent_path)
+1. Borrow a forward-line or reverse-line capability from the validated cursor.
+2. Intersect its width with the persistent path's strict payload/owner bound
+   or compressed restoration run. Never cross a scalar completion boundary.
+3. Preflight source ownership, width arithmetic and both state updates.
+4. Commit both already-preflighted updates; count expanded logical events.
+5. If no span is eligible, release the capability and perform the existing
+   scalar operation with unchanged error and callback ordering.
+```
+
+Steps 2–4 still require the persistent-path composition proof before runtime
+implementation. Remaining proof obligations within task 6018 are source-backed
+append/slice normalization and lifetime preservation; every virtual prefix's
+typed graph and shared aliases; exact compressed restoration with fresh global
+obligation clocks; and joint refusal/first-error/effect ordering. The source
+descriptor must resolve directly to underlying immutable storage, not another
+nested descriptor or a newly generated per-byte index. Forward batching without
+compressed reverse transport would retain the measured depth multiplier.
+
+Qualification must extend beyond the current singleton opaque timing cells:
+branched/shared opaque prefixes, multiple ACT lines and source fragments,
+value-free and malformed interior endpoints, zero/one-byte bounds, tied owner
+boundaries, wrong obligation IDs, pending/dead states, retained siblings, inner
+effects before outer refusal, all restore prefixes, and small-stack destruction.
+This catalogue is a list of required bindings, not a claim that the new Rust
+span implementation or its properties already exist.

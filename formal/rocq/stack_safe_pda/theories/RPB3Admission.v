@@ -6115,3 +6115,383 @@ Print Assumptions plain_publication_allocates_no_linked_checkpoint.
 Print Assumptions linked_publication_retains_the_exact_saved_stamp_focus_and_fault.
 
 End CompactPersistentCheckpoints.
+
+Module CheckedACTLineTransport.
+
+Import CanonicalKeyProtocol IndexedWindowTransport.
+
+Inductive phase := LineEdge | LineValue | LineLeave | Boundary.
+
+Record cursor := Cursor {
+  cursor_identity : nat;
+  cursor_generation : nat;
+  cursor_record : nat;
+  cursor_context : list nat;
+  cursor_length : nat;
+  cursor_index : nat;
+  cursor_phase : phase;
+  cursor_events : nat;
+  cursor_last : option provenance
+}.
+
+Definition phase_eq_dec (x y : phase) : {x = y} + {x <> y}.
+Proof. decide equality. Defined.
+
+Definition cursor_eq_dec (x y : cursor) : {x = y} + {x <> y}.
+Proof.
+  decide equality; try apply Nat.eq_dec; try apply phase_eq_dec;
+    repeat decide equality; apply Nat.eq_dec.
+Defined.
+
+Inductive event :=
+| Edge (value : located_byte)
+| AbsentValue (source : provenance)
+| Leave (source : provenance).
+
+Definition cursor_at (current : cursor) (index : nat) (stage : phase)
+    (events : nat) (last : option provenance) :=
+  Cursor (cursor_identity current) (cursor_generation current)
+    (cursor_record current) (cursor_context current) (cursor_length current)
+    index stage events last.
+
+Definition scalar_next (source : nat -> located_byte) (current : cursor)
+    : option (cursor * event) :=
+  let index := cursor_index current in
+  match cursor_phase current with
+  | LineEdge =>
+      if S index <? cursor_length current then
+        let byte := source index in
+        Some (cursor_at current index LineValue (S (cursor_events current))
+          (Some (byte_provenance byte)), Edge byte)
+      else None
+  | LineValue =>
+      if S index <? cursor_length current then
+        let position := byte_provenance (source index) in
+        Some (cursor_at current (S index) LineEdge (S (cursor_events current))
+          (Some position), AbsentValue position)
+      else None
+  | LineLeave =>
+      if index <? cursor_length current then
+        let position := byte_provenance (source (cursor_length current - S index)) in
+        Some (cursor_at current (S index) LineLeave (S (cursor_events current))
+          (Some position), Leave position)
+      else None
+  | Boundary => None
+  end.
+
+Fixpoint scalar_run source (count : nat) current : option (cursor * list event) :=
+  match count with
+  | 0 => Some (current, [])
+  | S remaining =>
+      match scalar_next source current with
+      | None => None
+      | Some (next, observed) =>
+          option_map (fun '(final, observations) => (final, observed :: observations))
+            (scalar_run source remaining next)
+      end
+  end.
+
+Fixpoint forward_events source (index width : nat) : list event :=
+  match width with
+  | 0 => []
+  | S rest =>
+      Edge (source index) :: AbsentValue (byte_provenance (source index)) ::
+        forward_events source (S index) rest
+  end.
+
+Fixpoint leave_events source (size index width : nat) : list event :=
+  match width with
+  | 0 => []
+  | S rest =>
+      Leave (byte_provenance (source (size - S index))) ::
+        leave_events source size (S index) rest
+  end.
+
+Definition forward source width current :=
+  match width with
+  | 0 => current
+  | S _ => cursor_at current (cursor_index current + width) LineEdge
+      (cursor_events current + 2 * width)
+      (Some (byte_provenance (source (cursor_index current + width - 1))))
+  end.
+
+Definition unwind source width current :=
+  match width with
+  | 0 => current
+  | S _ => cursor_at current (cursor_index current + width) LineLeave
+      (cursor_events current + width)
+      (Some (byte_provenance (source (cursor_length current - (cursor_index current + width)))))
+  end.
+
+Lemma forward_successor source width current :
+  forward source width (forward source 1 current) = forward source (S width) current.
+Proof.
+  destruct width; [reflexivity|].
+  unfold forward, cursor_at; cbn. f_equal; try lia.
+  f_equal. f_equal. f_equal. lia.
+Qed.
+
+Lemma unwind_successor source width current :
+  unwind source width (unwind source 1 current) = unwind source (S width) current.
+Proof.
+  destruct width; [reflexivity|].
+  unfold unwind, cursor_at; cbn. f_equal; try lia.
+  f_equal. f_equal. f_equal. lia.
+Qed.
+
+Lemma one_forward_pair source current :
+  cursor_phase current = LineEdge ->
+  S (cursor_index current) < cursor_length current ->
+  scalar_run source 2 current =
+    Some (forward source 1 current,
+      [Edge (source (cursor_index current));
+       AbsentValue (byte_provenance (source (cursor_index current)))]).
+Proof.
+  intros stage bounded.
+  assert (guard : S (cursor_index current) <? cursor_length current = true)
+    by (apply Nat.ltb_lt; exact bounded).
+  unfold scalar_run, scalar_next. rewrite stage, guard. cbn -[Nat.ltb].
+  rewrite guard. cbn. unfold forward, cursor_at; cbn.
+  replace (cursor_index current + 1 - 1) with (cursor_index current) by lia.
+  replace (cursor_index current + 1) with (S (cursor_index current)) by lia.
+  replace (cursor_events current + 2) with (S (S (cursor_events current))) by lia.
+  reflexivity.
+Qed.
+
+Lemma scalar_run_add source first second current :
+  scalar_run source (first + second) current =
+    match scalar_run source first current with
+    | None => None
+    | Some (middle, prefix) =>
+        option_map (fun '(final, suffix) => (final, prefix ++ suffix))
+          (scalar_run source second middle)
+    end.
+Proof.
+  revert current. induction first; intro current; cbn.
+  - destruct (scalar_run source second current) as [[final suffix]|]; reflexivity.
+  -
+  destruct (scalar_next source current) as [[next observed]|]; cbn; [|reflexivity].
+  rewrite IHfirst.
+  destruct (scalar_run source first next) as [[middle prefix]|]; cbn; [|reflexivity].
+  destruct (scalar_run source second middle) as [[final suffix]|]; reflexivity.
+Qed.
+
+Theorem checked_line_expands_to_exact_scalar_events source width current :
+  cursor_phase current = LineEdge ->
+  cursor_index current + width < cursor_length current ->
+  scalar_run source (2 * width) current =
+    Some (forward source width current, forward_events source (cursor_index current) width).
+Proof.
+  revert current. induction width; intros current stage bounded; [reflexivity|].
+  replace (2 * S width) with (2 + 2 * width) by lia.
+  rewrite scalar_run_add, one_forward_pair by (auto; lia).
+  cbn -[scalar_run forward]. rewrite IHwidth.
+  - cbn -[forward]. rewrite forward_successor. unfold forward, cursor_at; cbn.
+    now replace (cursor_index current + 1) with (S (cursor_index current)) by lia.
+  - reflexivity.
+  - unfold forward, cursor_at; cbn. lia.
+Qed.
+
+Lemma one_leave source current :
+  cursor_phase current = LineLeave ->
+  cursor_index current < cursor_length current ->
+  scalar_next source current =
+    Some (unwind source 1 current,
+      Leave (byte_provenance (source (cursor_length current - S (cursor_index current))))).
+Proof.
+  intros stage bounded. unfold scalar_next. rewrite stage.
+  assert (guard : cursor_index current <? cursor_length current = true)
+    by (apply Nat.ltb_lt; exact bounded).
+  rewrite guard. unfold unwind, cursor_at; cbn.
+  now rewrite !Nat.add_1_r.
+Qed.
+
+Theorem checked_unwind_expands_to_exact_scalar_leaves source width current :
+  cursor_phase current = LineLeave ->
+  cursor_index current + width <= cursor_length current ->
+  scalar_run source width current =
+    Some (unwind source width current,
+      leave_events source (cursor_length current) (cursor_index current) width).
+Proof.
+  revert current. induction width; intros current stage bounded; [reflexivity|].
+  cbn [scalar_run]. rewrite one_leave by (auto; lia).
+  rewrite IHwidth.
+  - cbn -[unwind]. rewrite unwind_successor.
+    unfold unwind, cursor_at; cbn. now rewrite Nat.add_1_r.
+  - reflexivity.
+  - unfold unwind, cursor_at; cbn. lia.
+Qed.
+
+Inductive direction := Forward | Unwind.
+
+Record offer := Offer {
+  offer_origin : cursor;
+  offer_source : nat -> located_byte;
+  offer_direction : direction;
+  offer_width : nat
+}.
+
+Definition guard current request :=
+  if cursor_eq_dec current (offer_origin request) then
+    (0 <? offer_width request) &&
+    match offer_direction request, cursor_phase current with
+    | Forward, LineEdge =>
+        cursor_index current + offer_width request <? cursor_length current
+    | Unwind, LineLeave =>
+        cursor_index current + offer_width request <=? cursor_length current
+    | _, _ => false
+    end
+  else false.
+
+Definition commit current request :=
+  if guard current request then
+    Some (match offer_direction request with
+      | Forward => forward (offer_source request) (offer_width request) current
+      | Unwind => unwind (offer_source request) (offer_width request) current
+      end)
+  else None.
+
+Theorem stale_offer_refuses_without_a_new_cursor current request :
+  current <> offer_origin request -> commit current request = None.
+Proof.
+  intro stale. unfold commit, guard.
+  destruct (cursor_eq_dec current (offer_origin request)); [contradiction|reflexivity].
+Qed.
+
+Theorem zero_width_offer_is_refused current request :
+  offer_width request = 0 -> commit current request = None.
+Proof.
+  intro zero. unfold commit, guard.
+  destruct (cursor_eq_dec current (offer_origin request)); [rewrite zero|]; reflexivity.
+Qed.
+
+Definition rewind current :=
+  Cursor (cursor_identity current) (S (cursor_generation current))
+    (cursor_record current) (cursor_context current) (cursor_length current)
+    0 LineEdge (cursor_events current) (cursor_last current).
+
+Theorem rewind_invalidates_an_old_offer source current mode width :
+  commit (rewind current) (Offer current source mode width) = None.
+Proof.
+  apply stale_offer_refuses_without_a_new_cursor.
+  intro equal. apply (f_equal cursor_generation) in equal. cbn in equal. lia.
+Qed.
+
+Theorem every_forward_prefix_keeps_the_final_byte_scalar source width current prefix :
+  cursor_phase current = LineEdge ->
+  cursor_index current + width < cursor_length current ->
+  prefix <= width ->
+  scalar_run source (2 * prefix) current =
+    Some (forward source prefix current, forward_events source (cursor_index current) prefix) /\
+  cursor_index (forward source prefix current) < cursor_length current.
+Proof.
+  intros stage bounded within. split.
+  - apply checked_line_expands_to_exact_scalar_events; auto; lia.
+  - destruct prefix; unfold forward, cursor_at; cbn; lia.
+Qed.
+
+Theorem every_unwind_prefix_stops_before_the_node_leave source width current prefix :
+  cursor_phase current = LineLeave ->
+  cursor_index current + width <= cursor_length current ->
+  prefix <= width ->
+  scalar_run source prefix current =
+    Some (unwind source prefix current,
+      leave_events source (cursor_length current) (cursor_index current) prefix) /\
+  cursor_index (unwind source prefix current) <= cursor_length current.
+Proof.
+  intros stage bounded within. split.
+  - apply checked_unwind_expands_to_exact_scalar_leaves; auto; lia.
+  - destruct prefix; unfold unwind, cursor_at; cbn; lia.
+Qed.
+
+Theorem committed_forward_preserves_other_topology_authority source width current :
+  cursor_context (forward source width current) = cursor_context current /\
+  cursor_record (forward source width current) = cursor_record current /\
+  cursor_identity (forward source width current) = cursor_identity current /\
+  cursor_generation (forward source width current) = cursor_generation current /\
+  cursor_length (forward source width current) = cursor_length current.
+Proof. destruct width; repeat split; reflexivity. Qed.
+
+Theorem committed_unwind_preserves_other_topology_authority source width current :
+  cursor_context (unwind source width current) = cursor_context current /\
+  cursor_record (unwind source width current) = cursor_record current /\
+  cursor_identity (unwind source width current) = cursor_identity current /\
+  cursor_generation (unwind source width current) = cursor_generation current /\
+  cursor_length (unwind source width current) = cursor_length current.
+Proof. destruct width; repeat split; reflexivity. Qed.
+
+Theorem accepted_commit_has_the_exact_scalar_trace current request next :
+  commit current request = Some next ->
+  match offer_direction request with
+  | Forward =>
+      scalar_run (offer_source request) (2 * offer_width request) current =
+        Some (next, forward_events (offer_source request) (cursor_index current) (offer_width request))
+  | Unwind =>
+      scalar_run (offer_source request) (offer_width request) current =
+        Some (next, leave_events (offer_source request) (cursor_length current)
+          (cursor_index current) (offer_width request))
+  end.
+Proof.
+  unfold commit. destruct (guard current request) eqn:accepted; [|discriminate].
+  intro result. inversion result; subst next.
+  unfold guard in accepted.
+  destruct (cursor_eq_dec current (offer_origin request)); [|discriminate].
+  apply andb_true_iff in accepted. destruct accepted as [positive bound].
+  destruct (offer_direction request) eqn:direction;
+    destruct (cursor_phase current) eqn:stage; try discriminate.
+  - apply checked_line_expands_to_exact_scalar_events; auto. now apply Nat.ltb_lt.
+  - apply checked_unwind_expands_to_exact_scalar_leaves; auto. now apply Nat.leb_le.
+Qed.
+
+Lemma forward_position source width current :
+  cursor_index (forward source width current) = cursor_index current + width /\
+  cursor_events (forward source width current) = cursor_events current + 2 * width /\
+  cursor_length (forward source width current) = cursor_length current.
+Proof. destruct width; unfold forward, cursor_at; cbn; repeat split; lia. Qed.
+
+Theorem odd_forward_prefix_preserves_the_pending_absent_value source width current prefix :
+  cursor_phase current = LineEdge ->
+  cursor_index current + width < cursor_length current ->
+  prefix < width ->
+  scalar_run source (2 * prefix + 1) current =
+    Some (cursor_at current (cursor_index current + prefix) LineValue
+      (S (cursor_events current + 2 * prefix))
+      (Some (byte_provenance (source (cursor_index current + prefix)))),
+      forward_events source (cursor_index current) prefix ++
+        [Edge (source (cursor_index current + prefix))]).
+Proof.
+  intros stage bounded within.
+  rewrite scalar_run_add, checked_line_expands_to_exact_scalar_events by (auto; lia).
+  pose proof (@forward_position source prefix current) as [position [events size]].
+  assert (next_stage : cursor_phase (forward source prefix current) = LineEdge)
+    by (destruct prefix; cbn [forward cursor_at]; assumption || reflexivity).
+  assert (next_guard : S (cursor_index (forward source prefix current)) <?
+      cursor_length (forward source prefix current) = true).
+  { apply Nat.ltb_lt. rewrite position, size. lia. }
+  cbn [scalar_run]. unfold scalar_next. rewrite next_stage, next_guard.
+  cbn -[forward]. rewrite position, events.
+  destruct prefix; cbn [forward cursor_at] in *; reflexivity.
+Qed.
+
+Theorem expanded_event_counts_preserve_logical_work source index size width :
+  length (forward_events source index width) = 2 * width /\
+  length (leave_events source size index width) = width.
+Proof.
+  revert index. induction width; intro index; cbn; [auto|].
+  destruct (IHwidth (S index)); split; lia.
+Qed.
+
+Print Assumptions checked_line_expands_to_exact_scalar_events.
+Print Assumptions checked_unwind_expands_to_exact_scalar_leaves.
+Print Assumptions stale_offer_refuses_without_a_new_cursor.
+Print Assumptions zero_width_offer_is_refused.
+Print Assumptions rewind_invalidates_an_old_offer.
+Print Assumptions every_forward_prefix_keeps_the_final_byte_scalar.
+Print Assumptions every_unwind_prefix_stops_before_the_node_leave.
+Print Assumptions committed_forward_preserves_other_topology_authority.
+Print Assumptions committed_unwind_preserves_other_topology_authority.
+Print Assumptions accepted_commit_has_the_exact_scalar_trace.
+Print Assumptions odd_forward_prefix_preserves_the_pending_absent_value.
+Print Assumptions expanded_event_counts_preserve_logical_work.
+
+End CheckedACTLineTransport.

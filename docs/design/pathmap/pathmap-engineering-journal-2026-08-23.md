@@ -8064,6 +8064,58 @@ lines, malformed interior endpoints, fragmented sources, and descent/unwind.
 A singleton-only shortcut does not satisfy task 6018. This checkpoint changes
 no production codec, consensus bytes, hashes, accounting, or persistence policy.
 
+### J-113 — 2026-09-09: checked ACT line transport, proof-first refinement
+
+**VERIFIED MODEL / REQUIRED IMPLEMENTATION BINDING.** Task 6018 now has a
+`CheckedACTLineTransport` refinement in the existing `RPB3Admission.v`,
+with twelve new closed exported laws. It models each forward byte as Edge
+followed by AbsentValue and each reverse byte as Leave, retaining exact source
+positions and expanded logical event counts. The strict forward bound leaves
+the final line byte scalar; the reverse bound leaves the owning node's final
+leave scalar. Both whole-pair and odd forward prefixes are covered.
+
+The model captures the source in the offer, proves accepted commit-to-scalar
+trace correspondence, and refuses stale/zero-width detached offers. Its
+`None` result denotes departure from the modeled interior, not production
+EOF or a parse error. Its immutable total source premise must be discharged
+by the actual indexed region; arbitrary trait implementations need not satisfy
+it. Preservation of abstract context is not yet a Rust projection theorem.
+
+**PLAN REVIEW.** The reviewed Rust direction is an exclusive-borrow capability,
+not an operational generation counter: a non-Clone, non-Copy offer privately
+borrows its cursor/source, prevents intervening mutation and is consumed by
+commit. Dropping it is nonmutating. This avoids an artificial generation
+overflow limit. The enclosing EPM1 capability must also preserve value-reader,
+terminal and expanded-event authority. Forward and reverse batching are both
+required; optimizing only descent leaves repeated scalar unwind.
+
+[The formal invariant catalogue](../../../formal/rocq/stack_safe_pda/README.md#checked-act-line-transport-invariant-catalogue-2026-09-09-task-6018)
+maps every exported law to required executable properties and spells out
+the concrete context projection. This catalogue precedes runtime changes.
+Source-backed persistent append/slice and lifetimes, virtual-prefix alias
+realization, compressed checkpoint restoration, and joint cursor/reducer
+failure/effect ordering remain required before production integration.
+
+**EXECUTED EVIDENCE.** Rocq reports 181 closed contexts in the complete RPB3
+file, up from 169. Independent `coqchk` reports “Modules were successfully
+checked.” The existing gate now requires 181; its shell syntax check passes.
+The proof service completed in 17.707 s, peak 747.2M; kernel checking took
+15.918 s, peak 349.5M. Both used MemoryHigh=1G, MemoryMax=2G, zero swap,
+CPUQuota=100%, TasksMax=64, and RuntimeMaxSec=900. Earlier iterations failed
+on a reserved identifier, option-composition case, premature unfolding, and
+record-projection reduction; none is counted as a successful verification.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/RPB3Admission.v` | `842cfd2b2a855cd76dfecab4212623bace9577881db41514067a67282d3c083f` |
+| `/tmp/epathmap-act-line-model5-20260909.log` | `b1ba662860786246190fde57921a0f3b2eedf69d819a64ba5d05c5676a1bcd9b` |
+| `/tmp/epathmap-act-line-kernel-20260909.log` | `f316e299ca32ae39a006cff23f429ddcfad01a81ae3b35c0cde1ce8cd36d4ab1` |
+
+These are model/kernel results, not execution of the new Rust transport, which
+does not yet exist. No new speedup, allocation reduction, consensus change,
+whole-workspace pass or task-completion claim follows. The measured J-112
+nested-import problem remains open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

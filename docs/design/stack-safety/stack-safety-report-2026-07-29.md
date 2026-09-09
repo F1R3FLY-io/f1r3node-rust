@@ -10464,6 +10464,21 @@ coordinates, experimental limitations and the required general source-range/
 bulk-ACT refinement. The refinement is not implemented or proved by these
 measurements. Task 6018 remains open; this is not the ACT-versus-LMDB comparison.
 
+#### 5.33.32 Checked ACT forward/reverse transport laws (2026-09-09, task 6018)
+
+The first formal refinement for J-112's nested-import cost is verified:
+twelve new laws relate bounded forward Edge/AbsentValue spans and reverse
+Leave spans to exact scalar traces, including odd prefixes and physical source
+positions. The full RPB3 file produces 181 closed-context reports; independent
+kernel checking passed. Compilation peaked at 747.2M and kernel checking at
+349.5M, both under a 2G hard limit with zero swap.
+
+[J-113](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-113--2026-09-09-checked-act-line-transport-proof-first-refinement)
+records the model boundary, proof hashes and exhaustive required property
+bindings. This is not a runtime repair or new resource improvement: persistent
+source spans, virtual-prefix restoration and joint admission composition remain
+to be proved and implemented before repeating the J-112 benchmark.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
