@@ -341,6 +341,19 @@ pub mod builder {
                 width_cap, FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS,
             ));
         }
+        // I5: the empty-frontier cap's per-validator exemption keys on the
+        // stale-recovery interval; at or below the tick, every validator is
+        // "idle for a full interval" at every tick and the cap never binds.
+        let stale_recovery_min_interval =
+            node_conf.casper.heartbeat_conf.stale_recovery_min_interval;
+        if stale_recovery_min_interval <= check_interval {
+            warnings.push(format!(
+                "casper.heartbeat.stale-recovery-min-interval ({:?}) is at or below \
+                casper.heartbeat.check-interval ({:?}): the recovery exemption opens \
+                every tick and the empty-frontier width cap never binds",
+                stale_recovery_min_interval, check_interval,
+            ));
+        }
         // I4 tail: mpd < deploy-lifespan.
         if max_parent_depth != i32::MAX
             && node_conf.casper.deploy_lifespan <= max_parent_depth as i64
@@ -483,7 +496,7 @@ mod heartbeat_conf_hocon_tests {
         );
 
         assert_eq!(cfg.self_propose_cooldown, Duration::from_secs(3));
-        assert_eq!(cfg.stale_recovery_min_interval, Duration::from_secs(3));
+        assert_eq!(cfg.stale_recovery_min_interval, Duration::from_secs(15));
         assert_eq!(cfg.deploy_finalization_grace, Duration::from_secs(25));
         assert_eq!(cfg.advanced, HeartbeatAdvancedConf::default());
     }
@@ -796,6 +809,48 @@ mod embedded_defaults_tests {
         );
     }
 
+    /// I5: the stale-recovery interval must exceed the heartbeat tick, or
+    /// the empty-frontier cap's per-validator exemption opens every tick.
+    #[test]
+    fn stale_recovery_interval_must_exceed_the_heartbeat_tick() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let shipped = builder::validate_config(&base).expect("shipped geometry must validate");
+        assert!(
+            !shipped
+                .iter()
+                .any(|w| w.contains("stale-recovery-min-interval")),
+            "shipped geometry must be silent on I5, got {shipped:?}"
+        );
+
+        // The boundary: interval == tick is the largest warning value.
+        let mut cfg = base.clone();
+        cfg.casper.heartbeat_conf.stale_recovery_min_interval =
+            cfg.casper.heartbeat_conf.check_interval;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("stale-recovery-min-interval") && w.contains("never binds")),
+            "an interval at the tick must warn, got {warnings:?}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.heartbeat_conf.stale_recovery_min_interval =
+            cfg.casper.heartbeat_conf.check_interval + std::time::Duration::from_millis(1);
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.contains("stale-recovery-min-interval")),
+            "an interval above the tick must not warn, got {warnings:?}"
+        );
+    }
+
     /// I3/I4 width-cap geometry: shipped values pass silently; a cap above
     /// the local max-parent-depth warns (the authoritative judgement runs
     /// against the chain-adopted depth); a cap at or below the hard tier
@@ -910,7 +965,7 @@ mod embedded_defaults_tests {
         assert_eq!(shipped.check_interval, Duration::from_secs(5));
         assert_eq!(shipped.max_lfb_age, Duration::from_secs(5));
         assert_eq!(shipped.self_propose_cooldown, Duration::from_secs(3));
-        assert_eq!(shipped.stale_recovery_min_interval, Duration::from_secs(3));
+        assert_eq!(shipped.stale_recovery_min_interval, Duration::from_secs(15));
         assert_eq!(shipped.finality_progress_timeout, Duration::from_secs(30));
         assert_eq!(shipped.deploy_finalization_grace, Duration::from_secs(25));
         assert_eq!(shipped.advanced.frontier_chase_max_lag, 20);
