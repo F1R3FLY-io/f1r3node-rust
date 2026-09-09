@@ -7106,6 +7106,97 @@ remaining admission composition still require qualification. No importer/backend
 activation, accepted-byte rule, hash input, charge or storage format changes.
 The equal-durability end-to-end ACT/LMDB comparison remains pending.
 
+### J-100 — 2026-09-09: persistent shared-prefix baseline and owner design
+
+**QUESTION.** Does the stream improvement in J-099 also remove persistent ACT
+branch costs? No. `EPathMapFrame` already uses the indexed topology cursor, but
+its `CanonicalPathTopologyAdmission` uses an append-only `FrameHistory` reducer.
+It reconstructs enclosing Region frames per byte and searches owners when Leave
+reports the restored active obligation. Reimplementing the already completed
+indexed-cursor migration would not address this cost.
+
+**BASELINE METHOD.** `persistent_topology_shared_prefix_owner_work_baseline`
+constructs byte-array paths of widths 1/16/128/1,024, wrapped at depths 0/1/8/32.
+Four endpoints share every byte except the last. The test feeds the shared prefix
+once, appends each divergent final byte, checks exact completion and provenance,
+then restores the saved parent. It rechecks all previous endpoint states and byte
+contents after each branch. Leave must allocate no new states or frames. Feed
+descent is predicted independently as the sum of encoded child lengths before
+wrapping, plus three times depth for the additional final-byte branches. Every
+branch restore performs exactly one owner query per enclosing Region.
+
+| Width 1,024, four siblings | Depth 0 | Depth 1 | Depth 8 | Depth 32 |
+|---|---:|---:|---:|---:|
+| Encoded first path bytes | 1,027 | 1,032 | 1,067 | 1,187 |
+| Actual Edge events | 1,030 | 1,035 | 1,070 | 1,190 |
+| Historical states | 1,031 | 1,036 | 1,071 | 1,191 |
+| Historical frames | 1,027 | 2,059 | 9,423 | 36,531 |
+| Feed descents, also rebuilds | 0 | 1,030 | 8,380 | 35,440 |
+| Active-query ancestor steps | 0 | 1,034 | 8,412 | 35,568 |
+| Completed-query ancestor steps | 0 | 1,027 | 8,356 | 35,344 |
+| Ancestor steps across four branch restores | 0 | 4 | 32 | 128 |
+| Frame capacity bytes | 344,064 | 688,128 | 2,752,512 | 11,010,048 |
+
+State backing is 180,224 bytes for those four cells, and a handle remains 40
+bytes. The frame counts expose a depth multiplier despite constant-size handles.
+Counters stop before the final whole-prefix unwind; that unwind is independently
+checked to retain the same state/frame counts. This is a reducer-only control,
+not a measurement of ACT parsing, input-page memory, wall-clock throughput or
+complete RSpace persistence. Test-only endpoint collection does not enter the
+production path. All sixteen cells pass.
+
+**REQUIRED DESIGN FROM INDEPENDENT PLAN REVIEW.** Use fixed-size focused
+historical states with a per-state stamp and an immutable owner-root handle.
+Owner records form an append-only linked arena, retaining parent, widened ends,
+opposite-tie boundary handles and the outermost-owner handle. The outermost cache
+is necessary to avoid replacing byte walks with walks in `value()`. Frames stay
+immutable: never clear a Region child link shared by old checkpoints. Logical
+projection substitutes the selected focus without mutating that historical link.
+The shared shallow grammar, leaf resolution and Region completion remain the
+semantic authority; a narrow storage interface should share scheduling where
+the exclusive and persistent ownership contracts permit it.
+
+**MALFORMED BRANCH REQUIREMENT.** Eagerly materializing every focused fault would
+copy depth-many immutable frames for each invalid sibling. The required design
+therefore retains a fault as an error over the exact pre-step focused graph and
+stamp. Early-Dead edge/value/query observations must refine the existing shared
+behavior without traversing owners. Explicit post-Dead private resolution or
+rejection must still recover the exact nonabsorbing protocol. Wrong-ID/phase
+preflight must precede materialization. This is a proof obligation, not a proven
+or implemented shortcut. Malformed value-free siblings remain in required scope.
+
+**PROOF-TO-TEST PLAN.** Existing focused decomposition, residual, cache and
+settlement laws are reusable. New concrete laws must establish historical arena
+extension, linked-to-list refinement, constant-depth push/pop/root lookup,
+per-checkpoint stamp/byte preservation with globally fresh obligation IDs,
+pre-step rollback after successful pops, focused-fault observation/forcing, and
+exact work/storage accounting. The latest-state projection in
+`ExclusiveCurrentState` does not prove arbitrary old-handle preservation.
+The full seven-part binding catalogue is recorded in the formal README and task
+6018's body, preserving its existing epic reachability. Implement only after
+those laws and their executable invariants are established. Retain this eager
+baseline, add malformed/pending/provenance forks, and qualify actual EPM1 topology
+admission and tiny-stack teardown. Arena page/leaf indexing during freeze remains
+a separate measured obligation; do not claim it disappears with owner walks.
+
+**QUALIFICATION.** This checkpoint changes tests, the gate count and documentation
+only. The nested mutation property now includes the byte-array tag `0x06` in
+addition to URI tag `0x05`, escapes, map obligations and arbitrary bytes; the
+earlier explicit byte-array resource control was already using `0x06`. All 390
+models tests pass, zero ignored, in 54.14 seconds. The baseline service peaks at
+1.4G including compilation; the already-built full suite peaks at 264.9M. Both
+use `systemd-run`, 4/6-GiB limits, zero swap, four jobs/test threads and seed
+`41315976`. These peaks and elapsed times are qualification metadata only.
+
+| Artifact | SHA-256 |
+|---|---|
+| Sixteen-cell persistent shared-prefix baseline | `7e8ce7e8f8e8c001ad78fb3b209189b8bf17e24b8a653b3cf66a8856c0a585ed` |
+| Full 390-model qualification | `38da13e6fb548224ebefa35be06f1147d0794153df75b77f4a08ad4daf6a0297` |
+
+No production behavior, codec, hash, charge, PathMap dependency or persistence
+authority changes in this checkpoint. The persistent focused design remains to
+be proved and implemented; task 6018 and the ACT/LMDB comparison remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -770,3 +770,93 @@ fn frame_storage_committed_reuse_has_fixed_slot_and_retained_byte_plateau() {
         }
     }
 }
+
+#[test]
+fn persistent_topology_shared_prefix_owner_work_baseline() {
+    for width in [1usize, 16, 128, 1_024] {
+        for depth in [0usize, 1, 8, 32] {
+            let mut key = vec![GBYTE_ARRAY];
+            prost::encoding::encode_varint(width as u64, &mut key);
+            key.resize(key.len() + width, 0);
+            let mut expected_descents = 0;
+            for _ in 0..depth {
+                expected_descents += key.len();
+                let mut region = Vec::new();
+                prost::encoding::encode_varint(key.len() as u64, &mut region);
+                region.extend_from_slice(&key);
+                key = vec![EPATHMAP];
+                prost::encoding::encode_varint(region.len() as u64, &mut key);
+                key.extend_from_slice(&region);
+            }
+            let located = |byte, offset| LocatedPathByte::in_source(byte, 7, 101 + offset * 13);
+            let mut admission = CanonicalPathTopologyAdmission::new();
+            for (offset, byte) in key[..key.len() - 1].iter().copied().enumerate() {
+                admission.edge(located(byte, offset)).unwrap();
+                assert!(admission.freeze_completed_obligation().unwrap().is_none());
+            }
+            let prefix = admission.current;
+            let prefix_state = admission.reducer.states[prefix.state.0].clone();
+            let mut endpoints = Vec::new();
+            let mut restore_queries = 0;
+            for branch in 0..4u8 {
+                admission.edge(located(branch, key.len() - 1)).unwrap();
+                assert!(admission.freeze_completed_obligation().unwrap().is_none());
+                let endpoint = admission.current;
+                let summary = admission
+                    .value(true, CanonicalPathSource::new(9_999))
+                    .unwrap()
+                    .unwrap();
+                assert!(summary.canonical_path_stable);
+                endpoints.push((endpoint, admission.reducer.states[endpoint.state.0].clone()));
+                let before = admission.stats();
+                let queries = admission.reducer.machine.owner_work.get().active_queries;
+                assert_eq!(
+                    admission.leave(CanonicalPathSource::new(10_000)).unwrap(),
+                    CanonicalPathTransition::Restored {
+                        active_obligation: None
+                    }
+                );
+                restore_queries +=
+                    admission.reducer.machine.owner_work.get().active_queries - queries;
+                assert_eq!(admission.stats(), before);
+                assert_eq!(admission.current, prefix);
+                assert_eq!(admission.reducer.states[prefix.state.0], prefix_state);
+                for (index, (handle, state)) in endpoints.iter().enumerate() {
+                    assert_eq!(&admission.reducer.states[handle.state.0], state);
+                    let mut expected = key.clone();
+                    *expected.last_mut().unwrap() = index as u8;
+                    assert_eq!(
+                        admission.arena.bytes(handle.bytes).collect::<Vec<_>>(),
+                        expected
+                    );
+                }
+            }
+            let before_unwind = admission.stats();
+            let work = admission.reducer.machine.owner_work.get();
+            assert_eq!(before_unwind.edges, key.len() + 3);
+            assert_eq!(before_unwind.states, before_unwind.edges + 1);
+            assert_eq!(before_unwind.region_descents, expected_descents + 3 * depth);
+            assert_eq!(work.rebuilds, before_unwind.region_descents);
+            assert_eq!(restore_queries, 4 * depth);
+            for _ in 0..key.len() {
+                admission.leave(CanonicalPathSource::new(10_001)).unwrap();
+            }
+            admission.finish(CanonicalPathSource::new(10_002)).unwrap();
+            assert_eq!(admission.stats(), before_unwind);
+            eprintln!(
+                "persistent topology: width={width}, depth={depth}, branches=4, encoded={}, edges={}, states={}, frames={}, feed_descents={}, rebuilds={}, active_queries={}, completed_queries={}, branch_restore_queries={restore_queries}, state_backing={}, frame_backing={}, handle_bytes={}",
+                key.len(),
+                before_unwind.edges,
+                before_unwind.states,
+                before_unwind.frames,
+                before_unwind.region_descents,
+                work.rebuilds,
+                work.active_queries,
+                work.completed_queries,
+                admission.reducer.retained_state_bytes(),
+                admission.reducer.retained_frame_bytes(),
+                std::mem::size_of::<CanonicalPathReducerHandle>()
+            );
+        }
+    }
+}

@@ -986,6 +986,31 @@ implementation. The properties connect its premises to the actual shared grammar
 and physical representation; they are not exhaustive verification of all Rust
 executions or proof of whole-pipeline linearity.
 
+#### Persistent focused-owner refinement requirements (2026-09-09)
+
+J-100 establishes the persistent shared-prefix baseline. The following are new
+required proof/implementation bindings, not completed theorems. Reuse the FRO
+model through a concrete linked-owner refinement; do not substitute latest-state
+equivalence for arbitrary historical-handle preservation.
+
+| ID | Required law and executable witness |
+|---|---|
+| PFO-01 | Appending state, owner and frame cells preserves every old checkpoint's selected graph and byte/provenance handle. Check old endpoints after every divergent sibling, including frames referenced by several states. |
+| PFO-02 | Backward-linked owner nodes and cached all-bound/path-bound/outermost handles refine the existing owner list with exact opposite tie rules. Check links and independent projection after pushes/pops; no mutable shared child detachment. |
+| PFO-03 | Ordinary leaf transitions allocate no ancestor replacement cells. Owner push, pop, root observation and Leave use bounded handle operations. Compare complete eager traces and count owner reads and allocations separately. |
+| PFO-04 | Restoring any historical checkpoint selects its own graph stamp, bytes, metadata and pending obligation without rewinding the global obligation allocator. Fork distinct physical sources and resolve both children in different orders. |
+| PFO-05 | Refusal after successful inner pops selects the immediate pre-step graph and preserves permitted global-clock effects. Require exact graph and error-source comparison, not only final validity. |
+| PFO-06 | A focused fault denotes the exact reified graph with its root error. Edge/value/active/completed observations refine existing early-Dead behavior; checked materialization for private resolve/reject preserves nonabsorbing faults and returned-error nonmutation. Include many malformed value-free siblings, wrong IDs and wrong phases. |
+| PFO-07 | Resource accounting includes historical states, new owner nodes, leaf frames, actual completion work, refusal handling and forced materialization. The bound must not hide depth-many work under ordinary edges, Leave or malformed siblings. Retain the independently predicted eager baseline and integrate actual EPM1 traversal/tiny-stack teardown. |
+
+The chosen representation is an append-only linked owner arena with fixed-size
+focused historical states. `FrameHistory` and existing byte handles remain
+immutable. The outermost-owner cache is required for constant-depth `value()`;
+the fault observation law is required before claiming malformed-topology
+resource closure. Arena freeze page/leaf indexing remains outside this bound.
+The runtime is not implemented at this checkpoint. The combined runner now
+expects nine frame-storage tests, including the persistent baseline.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

@@ -10203,6 +10203,25 @@ checks; proof results remain conditional on the documented runtime bindings.
 The current task still includes persistent ACT admission composition;
 this result does not close the task or the same-contract LMDB comparison.
 
+#### 5.33.19 Persistent shared-prefix baseline (2026-09-09, task 6018)
+
+The persistent ACT topology reducer is separate from the optimized stream
+reducer. A new sixteen-cell control retains four sibling endpoints sharing all
+but their final byte and verifies every older state/byte handle after branching.
+At byte-array width 1,024 and Region depth 32, 1,190 Edge events retain 36,531
+frames with 11,010,048 bytes of frame capacity, plus 180,224 bytes of state
+capacity. Each of feed descent and rebuild records 35,440 owner steps. Four
+branch restores allocate no state/frame cells but still perform 128 ancestor
+query steps. A handle remains 40 bytes; constant handle size alone does not
+establish constant-time restore observations or linear historical frame growth.
+
+[J-100](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-100--2026-09-09-persistent-shared-prefix-baseline-and-owner-design)
+records the baseline, independent formulas and required immutable linked-owner
+design. Malformed siblings require a proved focused-fault observation rule so
+refusal does not reconstruct every ancestor per branch. This is still open,
+not a repaired persistent-resource claim. All 390 models tests pass; no production
+algorithm changes in this baseline/planning checkpoint.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

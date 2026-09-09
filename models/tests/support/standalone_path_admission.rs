@@ -542,7 +542,7 @@ proptest! {
         raw_stable in any::<bool>(),
         entries_stable in any::<bool>(),
     ) {
-        for mut key in [payload(0x05, &raw), payload(0x0f, &raw), payload(0x10, &raw), raw] {
+        for mut key in [payload(0x05, &raw), payload(0x06, &raw), payload(0x0f, &raw), payload(0x10, &raw), raw] {
             for _ in 0..depth {
                 let mut region = Vec::new();
                 prost::encoding::encode_varint(key.len() as u64, &mut region);
