@@ -59,7 +59,13 @@ After this addition, the bounded tier checks five positive configurations and fi
 
 The [D2 emergency cycles](../cbc-evidence/soak-d2-emergency-2026-09-09/README.md) add six positive configurations and six exact negative controls.
 
-The current bounded tier checks 11 positive configurations and 11 exact negative controls. The classifier covers 77 cases. Routing still covers six scenarios.
+After B12, the bounded tier checks 11 positive configurations and 11 exact negative controls. The classifier covers 77 cases.
+
+The [B13 stop cycle](../cbc-evidence/soak-d2-stop-2026-09-09/README.md) adds `MC_DiskStopDeadline` and its `unbounded_pre_fix` control.
+
+The control requires TLC exit 12 and the exact `StopWithinBudget` violation. The current tier passes 12 positive configurations and 12 exact controls.
+
+The classifier covers 84 cases. Routing covers six scenarios. Verification runs execute serially because the current gate shares fixed temporary log paths.
 
 These cycles do not formally prove the shell implementation. They do not establish a residual finalization repair or a disk resource bound.
 

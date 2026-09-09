@@ -277,9 +277,15 @@ Disk attribution has one command-group deadline per invocation. The guardian inc
 
 A retained guardian marker now prevents restart admission. Recovery preserves a failure outcome but does not establish crash durability or exact uncommitted-event counts.
 
-Stop commands, cleanup commands, confirmed termination, and durable publication remain open. Active-session ownership, complete admission fault coverage, and the D3 reserve argument also remain open.
+The [B13 stop cycle](../cbc-evidence/soak-d2-stop-2026-09-09/README.md) bounds each disk stop-command group. It tests Docker clients that ignore `TERM`.
 
-The current bounded gate passes 11 positive configurations and 11 exact controls. Hosted confirmation and maintainer review remain pending. D2 is not complete.
+The first correction returned but left the clients alive. The corrected wrapper preserves its process group until `KILL` and passes the fixture.
+
+The bounded gate now passes 12 positive configurations and 12 exact controls. These results do not confirm writer termination or establish a composed emergency deadline.
+
+Disk hygiene, other stop paths, cleanup ownership, full admission coverage, durable publication, and the D3 reserve argument remain open.
+
+Hosted confirmation and maintainer review remain pending. D2 is not complete.
 
 ### Gate O1: Verify observability before the diagnostic soak
 

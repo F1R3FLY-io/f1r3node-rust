@@ -183,6 +183,21 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B13
+    statement: Stalled disk stop clients cannot prevent local failure publication or remain active past the fixture deadline.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-stop-2026-09-09/manifest.json
+        test: scripts/bench/test-soak-disk-stop-deadline.sh
+        red_revision: 3d2aa79048c9da0af09c7771b3f5c3eb3c369414
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -209,6 +224,7 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B10: A probe timeout rejects valid partial output from a stalled command.
 - [x] B11: Stalled attribution stops within an aggregate fixture deadline across 32 session roots.
 - [x] B12: A retained breach prevents restart admission and preserves a failure outcome.
+- [x] B13: Stalled disk stop clients exit before the fixture deadline, and the driver publishes a local failure.
 
 ## Cycle evidence
 
@@ -254,9 +270,17 @@ A driver-suite fixture race required a readiness correction during B9. Two verif
 
 The corrected full driver suite passes. Thirty corrected first-scenario repetitions also pass. The combined formal gate passes 11 positive configurations and 11 exact controls.
 
+B13 adds a separate matched cycle for stalled disk stop clients. Its [evidence](../cbc-evidence/soak-d2-stop-2026-09-09/README.md) retains the first unsuccessful correction.
+
+The first correction returned but left two clients alive. The corrected timeout wrapper keeps its shell alive for process-group cancellation.
+
+The combined gate now passes 12 positive configurations and 12 exact controls. The classifier covers 84 cases. Eight emergency fixture scenarios pass.
+
+Concurrent verification initially shared fixed temporary log paths. Those runs cannot supply isolated gate evidence. Subsequent serial verification passes.
+
 ## Remaining D2 work
 
-- [ ] Bound stop commands and cleanup commands under their failure cases.
+- [ ] Bound disk hygiene and stop paths outside B13, including detached and uninterruptible command cases.
 - [ ] Verify soft-floor sampling, cleanup outcomes, and guardian events at every admission boundary.
 - [ ] Verify active-session and image preservation through the cleanup ownership contract.
 - [ ] Verify confirmed termination and durable evidence publication.
