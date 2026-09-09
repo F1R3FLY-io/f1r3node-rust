@@ -238,6 +238,20 @@ pub(crate) struct CanonicalPathOwnerWork {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PathStateId(usize);
 
+impl PathStateId {
+    fn new(slot: usize, linked: bool) -> Self {
+        Self(
+            slot.checked_mul(2)
+                .and_then(|value| value.checked_add(usize::from(linked)))
+                .expect("a nonzero-sized checkpoint Vec bounds its tagged slot"),
+        )
+    }
+
+    const fn slot(self) -> usize { self.0 / 2 }
+
+    const fn is_linked(self) -> bool { self.0 & 1 != 0 }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FrameId(usize);
 
@@ -461,8 +475,66 @@ struct PersistentFocusedPath {
     fault: Option<CanonicalPathAdmissionError>,
 }
 
+#[cfg_attr(test, derive(Clone, Debug, PartialEq, Eq))]
+struct PersistentCheckpoints {
+    direct: Vec<InnerPath>,
+    linked: Vec<PersistentFocusedPath>,
+}
+
+impl PersistentCheckpoints {
+    fn new() -> Self {
+        const {
+            assert!(std::mem::size_of::<InnerPath>() >= 2);
+        }
+        const {
+            assert!(std::mem::size_of::<PersistentFocusedPath>() >= 2);
+        }
+        Self {
+            direct: vec![InnerPath::new(true)],
+            linked: Vec::new(),
+        }
+    }
+
+    const fn len(&self) -> usize { self.direct.len() + self.linked.len() }
+
+    fn get(&self, id: PathStateId, stamp: usize) -> PersistentFocusedPath {
+        if id.is_linked() {
+            self.linked[id.slot()].clone()
+        } else {
+            PersistentFocusedPath {
+                current: self.direct[id.slot()].clone(),
+                owners: None,
+                stamp,
+                fault: None,
+            }
+        }
+    }
+
+    fn push(&mut self, state: PersistentFocusedPath) -> PathStateId {
+        if state.owners.is_some() {
+            let id = PathStateId::new(self.linked.len(), true);
+            self.linked.push(state);
+            id
+        } else {
+            let id = PathStateId::new(self.direct.len(), false);
+            let mut current = state.current;
+            if let Some(error) = state.fault {
+                current.kill(error);
+            }
+            self.direct.push(current);
+            id
+        }
+    }
+
+    #[cfg(test)]
+    fn retained_bytes(&self) -> usize {
+        self.direct.capacity() * std::mem::size_of::<InnerPath>()
+            + self.linked.capacity() * std::mem::size_of::<PersistentFocusedPath>()
+    }
+}
+
 pub(crate) struct CanonicalPathReducer {
-    states: Vec<PersistentFocusedPath>,
+    states: PersistentCheckpoints,
     owners: PersistentRegionOwners,
     machine: CanonicalPathMachine<FrameHistory>,
 }
@@ -470,12 +542,7 @@ pub(crate) struct CanonicalPathReducer {
 impl CanonicalPathReducer {
     pub(crate) fn new() -> Self {
         Self {
-            states: vec![PersistentFocusedPath {
-                current: InnerPath::new(true),
-                owners: None,
-                stamp: 0,
-                fault: None,
-            }],
+            states: PersistentCheckpoints::new(),
             owners: PersistentRegionOwners::new(),
             machine: CanonicalPathMachine::new(),
         }
@@ -499,8 +566,12 @@ impl CanonicalPathReducer {
 
     #[cfg(test)]
     pub(crate) fn retained_state_bytes(&self) -> usize {
-        self.states.capacity() * std::mem::size_of::<PersistentFocusedPath>()
+        self.states.retained_bytes()
             + self.owners.entries.capacity() * std::mem::size_of::<PersistentRegionOwner>()
+    }
+
+    fn state(&self, handle: CanonicalPathReducerHandle) -> PersistentFocusedPath {
+        self.states.get(handle.state, handle.bytes.len())
     }
 
     #[cfg(test)]
@@ -555,8 +626,8 @@ impl CanonicalPathReducer {
         &self,
         handle: CanonicalPathReducerHandle,
     ) -> Option<CanonicalPathObligationProgress> {
-        let state = &self.states[handle.state.0];
-        if self.dead_error(state).is_some() {
+        let state = self.state(handle);
+        if self.dead_error(&state).is_some() {
             return None;
         }
         self.machine.active_obligation_in(&state.current)
@@ -567,8 +638,8 @@ impl CanonicalPathReducer {
         arena: &CanonicalBytesArena,
         handle: CanonicalPathReducerHandle,
     ) -> Result<Option<CanonicalPathCompletedObligation>, CanonicalPathAdmissionError> {
-        let state = &self.states[handle.state.0];
-        if self.dead_error(state).is_some() {
+        let state = self.state(handle);
+        if self.dead_error(&state).is_some() {
             return Ok(None);
         }
         self.machine.completed_obligation(
@@ -587,12 +658,12 @@ impl CanonicalPathReducer {
         source: CanonicalPathSource,
     ) -> Option<Result<CanonicalPathSummary, CanonicalPathAdmissionError>> {
         has_value.then(|| {
-            let state = &self.states[handle.state.0];
-            if let Some(error) = self.dead_error(state) {
+            let state = self.state(handle);
+            if let Some(error) = self.dead_error(&state) {
                 return Err(error);
             }
             self.machine.finish_path_with_pending(
-                self.root_path(state),
+                self.root_path(&state),
                 source,
                 self.active_obligation(handle)
                     .is_some_and(|value| value.awaiting_resolution),
@@ -695,7 +766,7 @@ impl CanonicalPathReducer {
         located: CanonicalLocatedByte,
     ) -> Result<(CanonicalPathReducerHandle, CanonicalPathTransition), CanonicalPathAdmissionError>
     {
-        let before = self.states[handle.state.0].clone();
+        let before = self.state(handle);
         let dead = self.dead_error(&before).is_some();
         let byte = if dead {
             LocatedPathByte {
@@ -738,8 +809,7 @@ impl CanonicalPathReducer {
             );
             (self.select(&before, candidate), event)
         };
-        let id = PathStateId(self.states.len());
-        self.states.push(state);
+        let id = self.states.push(state);
         Ok((CanonicalPathReducerHandle { state: id, bytes }, event))
     }
 
@@ -814,7 +884,7 @@ impl CanonicalPathReducer {
         id: CanonicalPathObligationId,
         resolution: CanonicalPathObligationResolution,
     ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
-        let before = self.states[handle.state.0].clone();
+        let before = self.state(handle);
         self.private_preflight(&before, id, true, CanonicalPathSource::new(0))?;
         let bytes = ArenaPathBytes {
             arena,
@@ -849,8 +919,7 @@ impl CanonicalPathReducer {
             self.settle(&bytes, &mut candidate, endpoint);
             self.select(&before, candidate)
         };
-        let next = PathStateId(self.states.len());
-        self.states.push(state);
+        let next = self.states.push(state);
         Ok(CanonicalPathReducerHandle {
             state: next,
             bytes: handle.bytes,
@@ -865,14 +934,13 @@ impl CanonicalPathReducer {
         id: CanonicalPathObligationId,
         source: CanonicalPathSource,
     ) -> Result<CanonicalPathReducerHandle, CanonicalPathAdmissionError> {
-        let mut state = self.states[handle.state.0].clone();
+        let mut state = self.state(handle);
         self.private_preflight(&state, id, false, source)?;
         state.fault = Some(CanonicalPathAdmissionError::new(
             CanonicalPathAdmissionErrorKind::RejectedObligation,
             source,
         ));
-        let next = PathStateId(self.states.len());
-        self.states.push(state);
+        let next = self.states.push(state);
         Ok(CanonicalPathReducerHandle {
             state: next,
             bytes: handle.bytes,

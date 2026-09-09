@@ -7726,6 +7726,108 @@ or consensus rules, and this checkpoint does not complete ACT/LMDB qualification
 | `/tmp/epathmap-focused-default-final-20260909.log` | `7d09dd0df42513e0b426e407d31bb01ee7c44ca840ba69dbdafac7c3b43fa22e` |
 | `/tmp/epathmap-focused-default-final-gate-20260909.log` | `404c2478a166fd5a2cf8524783b9133df7335ab74758ca83c5c13617fa1e9e7c` |
 
+### J-110 — 2026-09-09: compact persistent checkpoints remove shallow backing regression
+
+**HYPOTHESIS / DECISION.** J-109's focused traversal removes repeated ancestor
+work but adds unused owner, stamp and fault fields to every ownerless checkpoint.
+Store ownerless roots and linked checkpoints in separate append-only, directly
+indexed arenas. An ownerless workload should then retain the eager root layout
+without allocating the linked arena. This changes admission bookkeeping only;
+PathMap, ACT/EPM1 bytes, ordering, hashes, costs and consensus rules are unchanged.
+
+**FORMAL MODEL BEFORE IMPLEMENTATION.** `CompactPersistentCheckpoints` in
+`RPB3Admission.v` adds nine closed-context laws. The invariant catalogue was
+written in the formal README before Rust changes. It proves disjoint tagged
+addresses, exact decoding, address fit under the existing non-zero-sized Vec
+allocation bound, ownerless fault/stamp normalization, private-terminal and
+error-replacement preservation, exact publication, historical lookup preservation,
+no linked allocation for plain publication, and literal preservation of linked
+state fields. It proves storage/reification correspondence, not the entire Rust
+parser. The existing transition proofs and eager graph controls remain necessary.
+
+**ALGORITHM / IMPLEMENTATION.**
+
+```text
+Publish(state):
+  if state has an owner:
+    append the complete state to linked checkpoints; return tagged linked slot
+  otherwise:
+    fold any overriding fault into the root status
+    append only that root to direct checkpoints; return tagged direct slot
+
+Restore(handle, current_byte_length):
+  decode its arena tag and slot without traversing owners or searching a map
+  linked: restore all saved fields, including the exact graph stamp and fault
+  direct: restore the root with no owners/fault and current length as unused stamp
+```
+
+The direct stamp is unobservable under graph reification; this is an explicit
+quotient, not preservation of its former numeric value. Linked stamps are not
+normalized. Folding an overriding fault preserves its precedence over an already
+dead root and leaves all physical frames intact for private obligation preflight.
+No shared frame is overwritten and no raw state index is interpreted as a global
+publication sequence. Handles remain 40 B on this host. Independent read-only
+review found no production access missed by the split and no weakened historical
+graph test; its suggested accepted-evidence/dead-root sequence was added.
+
+**MEASURED WORK / RETAINED BACKING.** The same widths 1/16/128/1,024 and depths
+0/1/8/32 as J-109 retain four sibling endpoints. The unchanged eager control and
+compact implementation run in one release build.
+[All 32 raw counter rows](../stack-safety/measurements/persistent-compact-checkpoint-counters-2026-09-09.txt)
+are preserved, including the less favorable small nested cases.
+
+| Depth, width 1,024 | Eager backing (B) | J-109 focused backing (B) | Compact focused backing (B) | Eager / focused frames |
+|---|---:|---:|---:|---:|
+| 0 | 524,288 | 622,592 | 524,288 | 1,027 / 1,027 |
+| 1 | 868,352 | 623,424 | 624,832 | 2,059 / 1,033 |
+| 8 | 2,932,736 | 624,256 | 625,664 | 9,423 / 1,075 |
+| 32 | 11,190,272 | 629,248 | 630,656 | 36,531 / 1,219 |
+
+Backing is actual state, owner and frame Vec capacity multiplied by element size.
+The shallow heap-backing regression is eliminated in this matrix. At depth 32,
+backing remains **94.36% lower** than the eager control; repeated ancestor feeds,
+rebuilds and public pending walks remain zero. The extra arena's capacity rounding
+costs 1,408 B versus J-109 at each shown nonzero depth. Thus this refinement is not
+a claim that every nested checkpoint shape gets smaller than J-109.
+
+**MEASURED VERIFICATION.** The final full models library passed **403 tests**,
+zero failures and zero ignores, in 53.17 s. The compile-inclusive systemd service
+took 85.455 s and reported 1.4 GiB peak, zero swap, with High 4 GiB / Max 6 GiB /
+CPU 400%, four build jobs, four test threads and seed `41315976`. The combined
+gate passed **169 closed RPB3 reports**, three kernel checks and **100 selected
+release tests**, including all 22 storage tests. Formal subprocesses used High
+1 GiB / Max 2 GiB / CPU 200% / zero swap. The initial 22-test counter run passed
+in 0.17 s; its compile-inclusive service took 51.025 s and peaked at 2 GiB,
+zero swap. The final suite includes the additional accepted-evidence sequence;
+the production implementation is unchanged between these counter and final runs.
+
+**FAILED CONTROL / REPAIR.** After the first successful standalone proof, an
+attempted notation modernization used unavailable `Div0.add_mod`. The first
+combined gate therefore failed before runtime tests. A separately logged capped
+proof exposed the exact error; restoring the already-verified `Nat` notation
+made the final gate pass. The gate's command-substitution helper previously
+exited without printing captured compiler diagnostics on failure. Both proof
+compiler and kernel-check helpers now print captured output before returning
+failure. Six lightweight shell controls check failed-command output retention,
+positive acceptance and refusal of incomplete/miscounted output. No failed run
+is counted as passing evidence and no theorem or test threshold was relaxed.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-compact-checkpoint-tests-20260909.log` | `2085cc3cb481feecf9c49e6c8390122e8d2e5b6f6bce5b3ddf5c4bf91b01f59a` |
+| `/tmp/epathmap-compact-checkpoint-final-models-20260909.log` | `28a46dd12406f6f1a7c53d83d8f40c6b8aad3b02ad1276bee3b11655da4106f6` |
+| `/tmp/epathmap-compact-checkpoint-final-gate-20260909.log` | `c6e5f226429873cf71973ca5ba2fa699aea6f75e6ddc5e745d5386ef13aba092` |
+| `/tmp/epathmap-compact-gate-diagnostics-20260909.log` | `204a0ba4dddb785a84fd241c0fbbaffc04e873a98c34283a06d0f50f4e22b8a0` |
+
+**LIMITATIONS / REMAINING WORK.** Fixed reducer headers, byte-arena storage,
+topology restore stacks and unrelated storage are excluded from both backing
+columns. The extra Vec descriptor is fixed overhead (24 B on this host), so
+shallow heap parity does not mean identical total object size or RSS. Test-run
+duration and compile-inclusive service peaks are not latency benchmarks. Full
+nested-import allocation/time scaling and the production-equivalent ACT/LMDB
+comparison remain open. J-109's negative result is preserved as historical
+evidence; this entry supersedes only its shallow checkpoint-backing observation.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

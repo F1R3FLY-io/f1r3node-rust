@@ -4,6 +4,154 @@ use proptest::prelude::*;
 
 use super::*;
 
+#[test]
+fn compact_checkpoint_addresses_preserve_slot_tag_and_native_width() {
+    for slot in [0, 1, 17, (usize::MAX - 1) / 2] {
+        let direct = PathStateId::new(slot, false);
+        let linked = PathStateId::new(slot, true);
+        assert_eq!(direct.slot(), slot);
+        assert_eq!(linked.slot(), slot);
+        assert!(!direct.is_linked());
+        assert!(linked.is_linked());
+        assert_ne!(direct, linked);
+    }
+    assert_eq!(
+        std::mem::size_of::<PathStateId>(),
+        std::mem::size_of::<usize>()
+    );
+    assert_eq!(
+        std::mem::size_of::<CanonicalPathReducerHandle>(),
+        std::mem::size_of::<CanonicalBytesHandle>() + std::mem::size_of::<usize>()
+    );
+    assert!(std::mem::size_of::<InnerPath>() >= 2);
+    assert!(std::mem::size_of::<PersistentFocusedPath>() >= 2);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn compact_checkpoint_publication_preserves_both_historical_arenas(
+        cases in proptest::collection::vec((any::<u16>(), any::<bool>(), any::<bool>()), 0..97),
+    ) {
+        let mut storage = PersistentCheckpoints::new();
+        let mut retained = Vec::new();
+        for (seed, linked, fault) in cases {
+            let current = InnerPath {
+                escape_allowed: seed & 1 != 0,
+                stack: Some(FrameId(seed as usize)),
+                status: if seed & 2 != 0 { PathStatus::Dead(CanonicalPathAdmissionError::new(CanonicalPathAdmissionErrorKind::InvalidUtf8, source(seed))) } else { PathStatus::Open },
+                completed_segments: u64::MAX - seed as u64,
+                first_tag: Some((seed as u8, CanonicalPathSource::in_source(u32::MAX, usize::MAX))),
+                stable: seed & 4 != 0,
+            };
+            let state = PersistentFocusedPath {
+                current,
+                owners: linked.then_some(PersistentRegionOwnerId(seed as usize)),
+                stamp: usize::MAX - seed as usize,
+                fault: fault.then_some(CanonicalPathAdmissionError::new(CanonicalPathAdmissionErrorKind::ReservedTag(seed as u8), CanonicalPathSource::in_source(u32::MAX, usize::MAX))),
+            };
+            let before = storage.clone();
+            let id = storage.push(state.clone());
+            assert_eq!(id.is_linked(), linked);
+            assert_eq!(storage.len(), before.len() + 1);
+            assert_eq!(&storage.direct[..before.direct.len()], before.direct.as_slice());
+            assert_eq!(&storage.linked[..before.linked.len()], before.linked.as_slice());
+            if linked { assert_eq!(storage.direct, before.direct); }
+            else { assert_eq!(storage.linked, before.linked); }
+            retained.push((id, state));
+            for (id, expected) in &retained {
+                for stamp in [0, 7, usize::MAX] {
+                    let actual = storage.get(*id, stamp);
+                    if id.is_linked() { assert_eq!(&actual, expected); }
+                    else {
+                        let mut root = expected.current.clone();
+                        if let Some(error) = expected.fault { root.kill(error); }
+                        assert_eq!(actual, PersistentFocusedPath { current: root, owners: None, stamp, fault: None });
+                    }
+                }
+            }
+        }
+        let mut plain = PersistentCheckpoints::new();
+        for stamp in 0..100 {
+            plain.push(PersistentFocusedPath { current: InnerPath::new(true), owners: None, stamp, fault: None });
+        }
+        assert_eq!(plain.linked.capacity(), 0);
+    }
+}
+
+#[test]
+fn compact_checkpoint_dead_direct_private_operations_preserve_exact_graph() {
+    let mut actual = CanonicalPathReducer::new();
+    let mut expected = EagerCanonicalPathReducer::new();
+    let mut arena = CanonicalBytesArena::new();
+    let mut reference_arena = CanonicalBytesArena::new();
+    let mut right = actual.root(&arena);
+    let mut left = expected.root(&reference_arena);
+    for (offset, byte) in [EPATHMAP, 3, 2, EPATHMAP_MAP, 0].into_iter().enumerate() {
+        let byte = CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(37, offset * 29));
+        right = actual.edge(&mut arena, right, byte).unwrap().0;
+        left = expected.edge(&mut reference_arena, left, byte).unwrap().0;
+    }
+    let id = actual.active_obligation(right).unwrap().obligation.id;
+    let refuse = CanonicalPathObligationResolution::NestedEpm1 {
+        mode: NestedEpmMode::Map,
+        entries_stable: false,
+    };
+    for _ in 0..2 {
+        right = actual
+            .resolve_obligation(&arena, right, id, refuse)
+            .unwrap();
+        left = expected
+            .resolve_obligation(&reference_arena, left, id, refuse)
+            .unwrap();
+        assert_focused_persistent_matches(
+            &expected,
+            &reference_arena,
+            left,
+            &actual,
+            &arena,
+            right,
+        );
+    }
+    assert!(!right.state.is_linked());
+    let linked = actual.states.linked.len();
+    for operation in 0..6 {
+        let byte =
+            CanonicalLocatedByte::new(0x99, CanonicalByteProvenance::new(41, 997 + operation));
+        right = actual.edge(&mut arena, right, byte).unwrap().0;
+        left = expected.edge(&mut reference_arena, left, byte).unwrap().0;
+        assert!(actual.dead_error(&actual.state(right)).is_some());
+        let (a, b) = if operation % 3 == 0 {
+            (
+                actual.reject_obligation(&arena, right, id, source(81)),
+                expected.reject_obligation(&reference_arena, left, id, source(81)),
+            )
+        } else {
+            let resolution = CanonicalPathObligationResolution::NestedEpm1 {
+                mode: NestedEpmMode::Map,
+                entries_stable: operation % 3 == 2,
+            };
+            (
+                actual.resolve_obligation(&arena, right, id, resolution),
+                expected.resolve_obligation(&reference_arena, left, id, resolution),
+            )
+        };
+        right = a.unwrap();
+        left = b.unwrap();
+        assert!(actual.dead_error(&actual.state(right)).is_some());
+        assert!(!right.state.is_linked());
+        assert_eq!(actual.states.linked.len(), linked);
+        assert_focused_persistent_matches(
+            &expected,
+            &reference_arena,
+            left,
+            &actual,
+            &arena,
+            right,
+        );
+    }
+}
+
 pub(crate) struct EagerCanonicalPathReducer {
     states: Vec<InnerPath>,
     machine: CanonicalPathMachine<FrameHistory>,
@@ -1618,7 +1766,7 @@ fn assert_focused_persistent_matches(
             .located_bytes(actual.bytes)
             .collect::<Vec<_>>()
     );
-    let state = &focused.states[actual.state.0];
+    let state = focused.state(actual);
     let mut frames = FrameHistory {
         slots: focused.machine.frames.slots.clone(),
     };
@@ -1825,7 +1973,14 @@ fn assert_focused_private_branches(
                 }
                 mismatch => panic!("private operation mismatch, reject={reject}: {mismatch:?}"),
             }
-            assert_eq!(&focused.states[..before.0.len()], before.0.as_slice());
+            assert_eq!(
+                &focused.states.direct[..before.0.direct.len()],
+                before.0.direct.as_slice()
+            );
+            assert_eq!(
+                &focused.states.linked[..before.0.linked.len()],
+                before.0.linked.as_slice()
+            );
             assert_eq!(
                 &focused.machine.frames.slots[..before.1.len()],
                 before.1.as_slice()
@@ -1911,7 +2066,7 @@ fn focused_persistent_outer_refusal_keeps_inner_completion_effects() {
             .unwrap()
             .0;
     }
-    let before = focused.states[actual.state.0].clone();
+    let before = focused.state(actual);
     let saved_frames = focused.machine.frames.slots.clone();
     let saved_owners = focused.owners.entries.clone();
     let stamp = before.stamp;
@@ -1942,9 +2097,9 @@ fn focused_persistent_outer_refusal_keeps_inner_completion_effects() {
         CanonicalPathAdmissionErrorKind::Truncated,
         CanonicalPathSource::in_source(29, 719),
     ));
-    assert_eq!(focused.states[next.state.0], selected);
-    assert_eq!(focused.states[actual.state.0], before);
-    assert_eq!(focused.states[next.state.0].stamp, stamp);
+    assert_eq!(focused.state(next), selected);
+    assert_eq!(focused.state(actual), before);
+    assert_eq!(focused.state(next).stamp, stamp);
     assert_focused_persistent_matches(&reference, &reference_arena, other, &focused, &arena, next);
 }
 
@@ -1993,7 +2148,7 @@ fn focused_persistent_shared_prefix_has_no_repeated_ancestor_work() {
                 );
             }
             let prefix = current;
-            let saved = reducer.states[prefix.state.0].clone();
+            let saved = reducer.state(prefix);
             for branch in 0..4u8 {
                 let located = CanonicalLocatedByte::new(
                     branch,
@@ -2008,7 +2163,7 @@ fn focused_persistent_shared_prefix_has_no_repeated_ancestor_work() {
                         .canonical_path_stable
                 );
                 assert!(reducer.active_obligation(prefix).is_none());
-                assert_eq!(reducer.states[prefix.state.0], saved);
+                assert_eq!(reducer.state(prefix), saved);
             }
             let stats = reducer.stats();
             let work = reducer.machine.owner_work.get();

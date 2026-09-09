@@ -5977,3 +5977,141 @@ Print Assumptions effectful_owner_checks_remain_pop_bounded.
 Print Assumptions outer_refusal_retains_inner_and_refusing_callback_effects_control.
 
 End EffectfulLinkedSettlement.
+
+Module CompactPersistentCheckpoints.
+
+Module T := PersistentFrameRealization.
+Module P := PersistentFocusedOwners.
+Module F := PersistentFaultRealization.
+
+Inductive address := DirectSlot (slot : nat) | LinkedSlot (slot : nat).
+
+Definition encode_address position :=
+  match position with DirectSlot slot => 2 * slot | LinkedSlot slot => 2 * slot + 1 end.
+
+Theorem encoded_addresses_are_injective left right :
+  encode_address left = encode_address right -> left = right.
+Proof. destruct left, right; cbn; intros same; try (f_equal; lia); lia. Qed.
+
+Theorem encoded_address_recovers_slot_and_tag position :
+  encode_address position / 2 = match position with DirectSlot slot | LinkedSlot slot => slot end /\
+  encode_address position mod 2 = match position with DirectSlot _ => 0 | LinkedSlot _ => 1 end.
+Proof.
+  destruct position; unfold encode_address; split.
+  - replace (2 * slot) with (slot * 2) by lia. apply Nat.div_mul. lia.
+  - replace (2 * slot) with (slot * 2) by lia. apply Nat.mod_mul. lia.
+  - replace (2 * slot + 1) with (1 + slot * 2) by lia.
+    rewrite Nat.div_add; [cbn; lia|lia].
+  - rewrite Nat.add_mod, Nat.mul_mod; cbn; lia.
+Qed.
+
+Theorem tagged_address_fits_existing_nonzero_vector_bound slot element_size byte_limit word_limit :
+  2 <= element_size -> (slot + 1) * element_size <= byte_limit ->
+  byte_limit <= word_limit ->
+  encode_address (DirectSlot slot) < word_limit /\
+  encode_address (LinkedSlot slot) < word_limit.
+Proof. cbn. nia. Qed.
+
+Section Store.
+Context {Span : Type}.
+
+Record checkpoint := Checkpoint {
+  focus : @T.semantic_path Span;
+  owners : list (@T.held_owner Span);
+  stamp : nat;
+  fault : option P.fault_error
+}.
+
+Definition apply_fault (path : @T.semantic_path Span) error :=
+  match error with None => path | Some error => F.kill_typed path error end.
+
+Definition graph current := apply_fault (T.reify_owners (stamp current) (focus current) (owners current)) (fault current).
+
+Definition plain path position := Checkpoint path [] position None.
+
+Definition compact_plain current := apply_fault (focus current) (fault current).
+
+Theorem ownerless_stamp_and_fault_compaction_preserve_exact_typed_graph current position :
+  owners current = [] -> graph (plain (compact_plain current) position) = graph current.
+Proof. destruct current; cbn. intro empty. subst owners0. reflexivity. Qed.
+
+Theorem ownerless_compaction_preserves_private_terminal_and_error_replacement current position error :
+  owners current = [] ->
+  T.path_private_terminal (graph (plain (compact_plain current) position)) = T.path_private_terminal (graph current) /\
+  F.kill_typed (graph (plain (compact_plain current) position)) error = F.kill_typed (graph current) error.
+Proof.
+  intro empty. rewrite (ownerless_stamp_and_fault_compaction_preserve_exact_typed_graph current position empty).
+  split; reflexivity.
+Qed.
+
+Record storage := Storage {
+  direct : list (@T.semantic_path Span);
+  linked : list checkpoint
+}.
+
+Definition lookup stored handle position :=
+  match handle with
+  | DirectSlot slot => option_map (fun path => plain path position) (nth_error (direct stored) slot)
+  | LinkedSlot slot => nth_error (linked stored) slot
+  end.
+
+Definition publish stored current :=
+  match owners current with
+  | [] => (Storage (direct stored ++ [compact_plain current]) (linked stored), DirectSlot (length (direct stored)))
+  | _ :: _ => (Storage (direct stored) (linked stored ++ [current]), LinkedSlot (length (linked stored)))
+  end.
+
+Lemma last_lookup {A : Type} (prefix : list A) value : nth_error (prefix ++ [value]) (length prefix) = Some value.
+Proof. rewrite nth_error_app2; [rewrite Nat.sub_diag; reflexivity|lia]. Qed.
+
+Theorem publication_returns_exact_graph_at_every_current_byte_length stored current position :
+  let '(next, handle) := publish stored current in
+  exists selected, lookup next handle position = Some selected /\ graph selected = graph current.
+Proof.
+  unfold publish. destruct (owners current) as [|owner rest] eqn:shape; cbn [lookup direct linked].
+  - rewrite last_lookup. exists (plain (compact_plain current) position). split; [reflexivity|].
+    now apply ownerless_stamp_and_fault_compaction_preserve_exact_typed_graph.
+  - rewrite last_lookup. exists current. split; reflexivity.
+Qed.
+
+Theorem publication_preserves_every_previous_lookup stored current handle position selected :
+  lookup stored handle position = Some selected ->
+  let '(next, _) := publish stored current in lookup next handle position = Some selected.
+Proof.
+  destruct stored as [direct linked], handle; unfold lookup; cbn.
+  - destruct (nth_error direct slot) eqn:found; cbn; [|discriminate].
+    intro same. unfold publish; cbn. destruct (owners current); unfold lookup; cbn; [|now rewrite found].
+    rewrite (@P.old_lookup_after_append _ direct [compact_plain current] slot s found). exact same.
+  - intro found. unfold publish; cbn. destruct (owners current); unfold lookup; cbn; [exact found|].
+    now apply P.old_lookup_after_append.
+Qed.
+
+Theorem plain_publication_allocates_no_linked_checkpoint stored current :
+  owners current = [] ->
+  let '(next, _) := publish stored current in
+  linked next = linked stored /\ length (direct next) = S (length (direct stored)).
+Proof. intro empty. unfold publish. rewrite empty. cbn. split; [reflexivity|rewrite length_app; cbn; lia]. Qed.
+
+Theorem linked_publication_retains_the_exact_saved_stamp_focus_and_fault stored current :
+  owners current <> [] ->
+  let '(next, handle) := publish stored current in
+  direct next = direct stored /\
+  forall position, lookup next handle position = Some current.
+Proof.
+  intro nonempty. unfold publish. destruct (owners current); [contradiction|]. cbn. split; [reflexivity|].
+  intro position. unfold lookup; cbn. apply last_lookup.
+Qed.
+
+End Store.
+
+Print Assumptions encoded_addresses_are_injective.
+Print Assumptions encoded_address_recovers_slot_and_tag.
+Print Assumptions tagged_address_fits_existing_nonzero_vector_bound.
+Print Assumptions ownerless_stamp_and_fault_compaction_preserve_exact_typed_graph.
+Print Assumptions ownerless_compaction_preserves_private_terminal_and_error_replacement.
+Print Assumptions publication_returns_exact_graph_at_every_current_byte_length.
+Print Assumptions publication_preserves_every_previous_lookup.
+Print Assumptions plain_publication_allocates_no_linked_checkpoint.
+Print Assumptions linked_publication_retains_the_exact_saved_stamp_focus_and_fault.
+
+End CompactPersistentCheckpoints.

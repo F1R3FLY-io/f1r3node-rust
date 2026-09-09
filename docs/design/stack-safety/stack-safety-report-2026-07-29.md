@@ -10379,6 +10379,36 @@ remain open; this does not establish a universal memory win or ACT/LMDB parity.
 [J-109](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-109--2026-09-09-focused-persistent-traversal-activated-with-exact-historical-controls)
 records the complete matrix, formal/property boundary and negative controls.
 
+#### 5.33.29 Compact checkpoint arenas (2026-09-09, task 6018)
+
+Direct root checkpoints now retain only `InnerPath`; linked-owner checkpoints
+retain the complete focus, owner handle, graph stamp and fault. Both arenas are
+append-only and use one tagged native index. Nine new Rocq laws and their
+preimplementation invariant catalogue specify the storage refinement; three
+added tests bind native address layout, mixed historical publication, and private
+accepted/refused resolution plus byte appends after a dead nested state.
+
+The final full models library passed 403 tests with no failures or ignores in
+53.17 s; its compile-inclusive service reported 1.4 GiB peak and zero swap under
+the 6 GiB hard cap. The combined gate passed 169 closed RPB3 reports, three
+kernel checks and 100 selected runtime tests, including all 22 storage tests.
+Proof subprocesses retained their separate 2 GiB hard cap and zero swap. These
+are correctness-run observations, not standalone performance measurements.
+
+The complete 32-row paired work-counter matrix supersedes the shallow backing
+regression in 5.33.28 without deleting that historical observation. At width 1,024,
+depth-zero checkpoint/owner/frame backing is 524,288 B in both the eager and
+compact arms, versus 622,592 B in J-109. At depth 32 it is 630,656 B versus
+11,190,272 B eager (**94.36% lower**), with 1,219 versus 36,531 frames. Separate
+arena capacity rounding adds 1,408 B versus J-109 at the shown nonzero depths.
+The extra fixed Vec descriptor, byte arena and restore stack are outside this
+metric; this is not whole-import RSS or latency evidence. No recursive traversal,
+new depth limit, larger native stack or PathMap change is introduced.
+
+[J-110](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-110--2026-09-09-compact-persistent-checkpoints-remove-shallow-backing-regression)
+records the design, verification and complete measurements. The whole nested-import
+resource matrix and production-equivalent ACT/LMDB qualification remain open.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

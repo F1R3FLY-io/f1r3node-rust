@@ -1380,6 +1380,66 @@ remain explicit. No full arbitrary-input Rust equivalence or complete campaign
 closure follows solely from these tests. J-109 records measured resource results,
 including the shallow checkpoint-storage increase.
 
+#### Compact checkpoint publication model (2026-09-09)
+
+`CompactPersistentCheckpoints` separates directly stored root paths from linked
+owner checkpoints. Both arenas are append-only and addressed by one tagged native
+index, not a lookup map. The plain arena contains only the original `InnerPath`;
+an entirely ownerless workload allocates no linked checkpoint arena. The linked
+arena retains the complete focus, owners, stamp and optional fault from J-109.
+
+For an ownerless checkpoint, reification ignores the stamp. Publication folds
+the optional fault into the root status, preserving all other metadata and the
+physical frame graph. Restoration may therefore use the current byte length as
+the unused stamp. This is a quotient of an unobservable field, not preservation
+of the old numeric stamp. Linked fault stamps remain exact. Private preflight
+still follows the unchanged frame graph even when the root is dead.
+
+| Exported law | Required property binding before acceptance |
+|---|---|
+| `encoded_addresses_are_injective` | Distinct direct/linked slots cannot alias. Exercise both tags, zero and upper encodable slots. |
+| `encoded_address_recovers_slot_and_tag` | Decode returns the exact slot and arena tag; handle size remains native-index plus unchanged byte handle. |
+| `tagged_address_fits_existing_nonzero_vector_bound` | Checked index doubling plus tag fits under the existing non-zero-sized Vec allocation bound. Both element sizes must be at least two bytes; no new input/depth cap. |
+| `ownerless_stamp_and_fault_compaction_preserve_exact_typed_graph` | For every ownerless state, arbitrary restored stamp and optional overriding error, materialized typed graph and metadata remain exact. |
+| `ownerless_compaction_preserves_private_terminal_and_error_replacement` | Hidden terminal and subsequent root-error replacement are unchanged; include already-dead roots and full-width provenance. |
+| `publication_returns_exact_graph_at_every_current_byte_length` | Both publication lanes return handles denoting the exact graph, including old graph stamps with later current bytes. |
+| `publication_preserves_every_previous_lookup` | Interleave publications to both arenas and revisit every historical handle at multiple current byte lengths. Linked owner aliases and fields remain exact. |
+| `plain_publication_allocates_no_linked_checkpoint` | Every plain publication adds exactly one root and no linked entry/capacity; compare shallow backing against the unchanged eager control. |
+| `linked_publication_retains_the_exact_saved_stamp_focus_and_fault` | Linked publication leaves direct storage unchanged and returns all saved fields regardless of supplied current byte length. |
+
+The model proves storage/reification correspondence, not Rust parser execution.
+Transition binding must additionally compare edge/resolve/reject outcomes, frame
+effects, byte provenance and global clocks after normalization. In the shared
+Rust resolver, dead roots are never reopened: leaf resolution advances only an
+Open leaf; owner reconstruction preserves or replaces status with another error.
+Moreover, resolution explicitly establishes the current byte-length stamp before
+any new focus capture. Those caller facts must be exercised by a dead-direct
+resolve/edge/reject sequence and the existing complete differential suite.
+Native layout and resource acceptance require actual measurements after the
+implementation; none follows solely from list-based mathematical storage.
+
+The runtime bindings are now implemented in
+`models/tests/support/canonical_frame_storage.rs`:
+
+- `compact_checkpoint_addresses_preserve_slot_tag_and_native_width` binds the
+  first three laws to both native tags, boundary slots and actual element sizes.
+- `compact_checkpoint_publication_preserves_both_historical_arenas` binds the
+  remaining storage laws through mixed publication histories, all retained
+  handles, three restoration stamps including `usize::MAX`, already-dead roots,
+  overriding faults and full-width provenance. Opaque frame/owner IDs in this
+  storage-only test are not dereferenced; the graph differentials below supply
+  the grammar-reachable binding.
+- `compact_checkpoint_dead_direct_private_operations_preserve_exact_graph`
+  compares actual edge, rejection and both accepting/refusing resolution calls
+  against the unchanged eager implementation after a nested fault. Later bytes
+  and accepted evidence cannot reopen the root or allocate linked checkpoints.
+
+All previous exact graph, obligation-clock, historical arena-prefix, production
+topology and 20,000-region small-stack controls remain active. J-110 records the
+executed gates and full counter matrix, including fixed-header exclusions and
+the deep-workload capacity-rounding cost of separate arenas. These measurements
+do not establish end-to-end admission throughput or allocator/RSS equivalence.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

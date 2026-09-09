@@ -28,7 +28,10 @@ fi
 
 rocq_compile_with_closed_count() {
   local source="$1" expected="$2" description="$3" output actual
-  output="$(tlc_bounded "$coqc_bin" -Q theories StackSafePDA "$source" 2>&1)"
+  if ! output="$(tlc_bounded "$coqc_bin" -Q theories StackSafePDA "$source" 2>&1)"; then
+    printf '%s\n' "$output"
+    return 1
+  fi
   printf '%s\n' "$output"
   actual="$({
     printf '%s\n' "$output" | grep -c '^Closed under the global context$'
@@ -42,7 +45,10 @@ rocq_compile_with_closed_count() {
 rocq_check_modules() {
   local description="$1" output
   shift
-  output="$(tlc_bounded "$coqchk_bin" -Q theories StackSafePDA "$@" 2>&1)"
+  if ! output="$(tlc_bounded "$coqchk_bin" -Q theories StackSafePDA "$@" 2>&1)"; then
+    printf '%s\n' "$output"
+    return 1
+  fi
   printf '%s\n' "$output"
   if ! grep -q '^Modules were successfully checked$' <<<"$output"; then
     echo "stack-safe-pda: Rocq kernel check did not complete for $description" >&2
@@ -290,7 +296,7 @@ epathmap_score_proofs() {
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 160 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 169 \
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
 }
@@ -311,7 +317,7 @@ epathmap_import_runtime() {
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
   rpb3_run_tests 25 --release -j4 --lib standalone_path_admission
   rpb3_run_tests 8 --release -j4 --lib opaque_interior_tests
-  rpb3_run_tests 19 --release -j4 --lib frame_storage_tests
+  rpb3_run_tests 22 --release -j4 --lib frame_storage_tests
   rpb3_run_tests 6 --release -j4 --lib indexed_span_transport
   rpb3_run_tests 5 --release -j4 --lib byte_policy_tests
 }
