@@ -5610,3 +5610,160 @@ Print Assumptions projected_paths_preserve_frame_addresses.
 Print Assumptions typed_overlay_is_the_selected_linked_graph.
 
 End PersistentOwnerProjection.
+
+Module PersistentFaultRealization.
+
+Module T := PersistentFrameRealization.
+Module Q := PersistentOwnerProjection.
+Module F := FocusedRegionOwners.
+Module P := PersistentFocusedOwners.
+Module S := ReusableFrameOwnership.
+
+Section Faults.
+
+Context {Span : Type}.
+Variable observe_span : Span -> option (list CanonicalKeyProtocol.located_byte).
+Variable summarize_frame : @T.stored_frame Span -> S.frame_metadata.
+
+Definition kill_typed (path : @T.semantic_path Span) error :=
+  T.SemanticPath (P.kill_metadata (T.semantic_metadata path) error) (T.semantic_frames path).
+
+Theorem root_error_replacement_commutes_with_checked_projection path graph error :
+  Q.project_path observe_span summarize_frame path = Some graph ->
+  Q.project_path observe_span summarize_frame (kill_typed path error) = Some (P.kill_root graph error).
+Proof.
+  destruct path as [metadata tree]. destruct tree; unfold Q.project_path, kill_typed;
+    cbn [T.semantic_metadata T.semantic_frames Q.project_tree]; intro projected.
+  - inversion projected; reflexivity.
+  - inversion projected; reflexivity.
+  - destruct (Q.observe_previous observe_span previous) as [previous_bytes|]; [|discriminate].
+    destruct (Q.project_tree observe_span summarize_frame child_metadata tree1) as [child_graph|];
+      [|discriminate]. inversion projected; reflexivity.
+Qed.
+
+Lemma killing_preserves_typed_correspondence left right error :
+  T.same_path_semantics left right -> T.same_path_semantics (kill_typed left error) (kill_typed right error).
+Proof. intros [metadata frames]. split; cbn; [now rewrite metadata|exact frames]. Qed.
+
+Record typed_fault := TypedFault {
+  selected_focus : @T.semantic_path Span;
+  selected_owners : list (@T.held_owner Span);
+  selected_stamp : nat;
+  selected_bytes : list CanonicalKeyProtocol.located_byte;
+  current_bytes : list CanonicalKeyProtocol.located_byte;
+  selected_error : P.fault_error
+}.
+
+Definition selected_graph current :=
+  T.reify_owners (selected_stamp current) (selected_focus current) (selected_owners current).
+Definition typed_fault_graph current := kill_typed (selected_graph current) (selected_error current).
+
+Definition coherent frames arena current legacy :=
+  T.physical_tree frames (T.semantic_frames (selected_focus current)) /\
+  Forall (T.owner_realizes frames (selected_stamp current)) (selected_owners current) /\
+  P.linked arena (P.checkpoint_owners (P.fault_saved legacy)) (P.fault_selected_entries legacy) /\
+  Q.owners_match observe_span summarize_frame (selected_owners current) (P.fault_selected_entries legacy) /\
+  Q.project_path observe_span summarize_frame (selected_focus current) =
+    Some (F.LeafGraph (P.checkpoint_focus (P.fault_saved legacy))) /\
+  selected_stamp current = P.checkpoint_stamp (P.fault_saved legacy) /\
+  selected_bytes current = P.checkpoint_bytes (P.fault_saved legacy) /\
+  selected_stamp current = length (selected_bytes current) /\
+  current_bytes current = P.fault_current_bytes legacy /\
+  selected_error current = P.fault_selected_error legacy /\
+  exists suffix, current_bytes current = selected_bytes current ++ suffix.
+
+Theorem coherent_typed_fault_projects_to_exact_selected_legacy_fault frames arena current legacy :
+  coherent frames arena current legacy ->
+  Q.project_path observe_span summarize_frame (typed_fault_graph current) = Some (P.fault_graph legacy).
+Proof.
+  intros [physical [owners [linked [matches [focus [stamp [bytes [stamp_bytes [current_bytes_same [error suffix]]]]]]]]]].
+  unfold typed_fault_graph, P.fault_graph. rewrite <- error, <- stamp.
+  apply root_error_replacement_commutes_with_checked_projection.
+  unfold selected_graph, P.projected_graph.
+  now apply Q.typed_reification_commutes_with_exact_linked_owner_projection.
+Qed.
+
+Definition append_dead_byte current byte :=
+  TypedFault (selected_focus current) (selected_owners current) (selected_stamp current)
+    (selected_bytes current) (current_bytes current ++ [byte]) (selected_error current).
+
+Theorem appending_dead_bytes_preserves_selected_fault_coherence frames arena current legacy byte :
+  coherent frames arena current legacy ->
+  coherent frames arena (append_dead_byte current byte) (P.fault_edge legacy byte).
+Proof.
+  unfold coherent. cbn [append_dead_byte P.fault_edge].
+  intros [physical [owners [linked [matches [focus [stamp [bytes [stamp_bytes [current_same [error [suffix extension]]]]]]]]]]].
+  do 8 (split; [assumption|]).
+  unfold append_dead_byte, P.fault_edge. cbn.
+  split; [now rewrite current_same|]. split; [exact error|].
+  exists (suffix ++ [byte]). now rewrite extension, app_assoc.
+Qed.
+
+Theorem dead_byte_keeps_saved_stamp_and_graph_but_extends_current_provenance current byte :
+  selected_stamp (append_dead_byte current byte) = selected_stamp current /\
+  typed_fault_graph (append_dead_byte current byte) = typed_fault_graph current /\
+  current_bytes (append_dead_byte current byte) = current_bytes current ++ [byte].
+Proof. repeat split; reflexivity. Qed.
+
+Definition force_typed_fault frames current :=
+  let '(next_frames, path) := T.materialize_spine frames (selected_stamp current)
+    (selected_focus current) (selected_owners current) in
+  (next_frames, kill_typed path (selected_error current), current_bytes current).
+
+Theorem forcing_a_coherent_fault_preserves_exact_typed_observation_and_all_historical_cells
+    frames arena current legacy :
+  coherent frames arena current legacy ->
+  let '(next_frames, forced, bytes) := force_typed_fault frames current in
+  exists suffix,
+    next_frames = frames ++ suffix /\ length suffix = length (selected_owners current) /\
+    T.physical_tree next_frames (T.semantic_frames forced) /\
+    T.same_path_semantics forced (typed_fault_graph current) /\
+    bytes = P.fault_current_bytes legacy /\
+    F.path_status_value (T.semantic_metadata forced) = P.dead_status (P.fault_selected_error legacy) /\
+    (forall slot cell, nth_error frames slot = Some cell -> nth_error next_frames slot = Some cell).
+Proof.
+  intros [physical [owners [linked [matches [focus [stamp [bytes [stamp_bytes [current_same [error extension]]]]]]]]]].
+  pose proof (@T.full_spine_materialization_preserves_typed_semantics_and_appends_one_cell_per_owner
+    Span frames (selected_stamp current) (selected_focus current) (selected_owners current) physical owners) as result.
+  unfold force_typed_fault.
+  destruct (T.materialize_spine frames (selected_stamp current) (selected_focus current) (selected_owners current))
+    as [next_frames path].
+  destruct result as [suffix [appended [count [physical_path same]]]].
+  exists suffix. split; [exact appended|]. split; [exact count|].
+  split; [exact physical_path|]. split.
+  - now apply killing_preserves_typed_correspondence.
+  - split; [exact current_same|]. split.
+    + cbn [kill_typed T.semantic_metadata P.kill_metadata]. now rewrite error.
+    + subst next_frames. intros slot cell found. eapply P.old_lookup_after_append; exact found.
+Qed.
+
+Theorem forcing_a_coherent_fault_preserves_hidden_terminal_preflight frames arena current legacy requested caller :
+  coherent frames arena current legacy ->
+  let '(_, forced, _) := force_typed_fault frames current in
+  P.resolve_preflight requested (T.path_private_terminal forced) =
+    P.resolve_preflight requested (T.path_private_terminal (selected_focus current)) /\
+  P.reject_preflight requested caller (T.path_private_terminal forced) =
+    P.reject_preflight requested caller (T.path_private_terminal (selected_focus current)).
+Proof.
+  intro valid.
+  pose proof (forcing_a_coherent_fault_preserves_exact_typed_observation_and_all_historical_cells valid) as result.
+  destruct (force_typed_fault frames current) as [[next_frames forced] bytes].
+  destruct result as [suffix [_ [_ [_ [same rest]]]]].
+  apply T.equal_typed_path_semantics_preserve_private_terminal in same.
+  unfold typed_fault_graph, kill_typed, T.path_private_terminal in same.
+  cbn [T.semantic_frames] in same.
+  change (T.path_private_terminal forced = T.path_private_terminal (selected_graph current)) in same.
+  unfold selected_graph in same. rewrite T.typed_overlay_private_terminal_is_the_selected_focus_terminal in same.
+  now rewrite same.
+Qed.
+
+End Faults.
+
+Print Assumptions root_error_replacement_commutes_with_checked_projection.
+Print Assumptions coherent_typed_fault_projects_to_exact_selected_legacy_fault.
+Print Assumptions appending_dead_bytes_preserves_selected_fault_coherence.
+Print Assumptions dead_byte_keeps_saved_stamp_and_graph_but_extends_current_provenance.
+Print Assumptions forcing_a_coherent_fault_preserves_exact_typed_observation_and_all_historical_cells.
+Print Assumptions forcing_a_coherent_fault_preserves_hidden_terminal_preflight.
+
+End PersistentFaultRealization.

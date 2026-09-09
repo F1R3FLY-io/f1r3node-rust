@@ -10304,6 +10304,23 @@ records qualification and its limits. This proof/test projection does not add
 runtime projection lists or decoded bytes. It does not establish callback
 equivalence, fault composition or new persistent runtime resource measurements.
 
+#### 5.33.25 Selected-fault frame and provenance composition (2026-09-09, task 6018)
+
+Six laws bind the typed historical fault graph to the linked checkpoint, saved
+stamp, extended current bytes and exact root error. Forcing preserves typed
+semantics, old frame lookups and private preflight; dead bytes cannot advance
+saved graph residuals. Standalone compilation passed 155 closed RPB3 reports
+with 646 MiB peak memory and zero swap under a 2 GiB hard cap.
+The combined gate passed three kernel checks and 88 selected release tests;
+the full models library separately passed 391 tests in 56.70 s, with 1.3 GiB
+reported service peak and zero swap. There were no failures or ignored tests
+in those final runs. These are correctness-test resource observations, not
+persistent treatment-versus-control performance measurements.
+[J-106](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-106--2026-09-09-selected-fault-coherence-and-dead-suffix-provenance)
+records the generated reference-test binding and qualification. The persistent
+treatment, shared resolution effects and total allocation bound remain open;
+these results do not supersede the persistent depth-growth measurements.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

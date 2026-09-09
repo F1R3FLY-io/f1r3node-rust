@@ -1239,6 +1239,35 @@ continuation payloads. Exact typed history and backing-lifetime invariants remai
 separate. Callback/classification correspondence, selected-fault composition,
 Rust arithmetic and resource bounds are not implied by a scheduling projection.
 
+#### Selected persistent fault coherence (2026-09-09)
+
+`PersistentFaultRealization` binds a typed saved focus/owner chain to the linked
+checkpoint, graph stamp, located-byte prefix and root error. Coherence requires
+physical focus and held-owner realization, exact checked owner/leaf projection,
+the stamp equal to saved-prefix length, and current bytes extending that prefix.
+This is a selected live-graph checkpoint retained behind a fault, not permission
+to reset its stamp to the length of a later dead-byte suffix.
+
+| Exported theorem | Extracted implementation/property obligation |
+|---|---|
+| `root_error_replacement_commutes_with_checked_projection` | Replacing only root status preserves the projected graph except its exact root error. Do not overwrite child metadata or an obligation's source. |
+| `coherent_typed_fault_projects_to_exact_selected_legacy_fault` | The coherent typed fault corresponds to the selected linked graph, not a partially popped candidate or the latest emitted obligation. Check exact graph and source metadata. |
+| `appending_dead_bytes_preserves_selected_fault_coherence` | Every dead-byte extension retains saved focus, owner chain, stamp, error and prefix while extending current bytes with exact provenance. Fork divergent suffixes from the same historical handle. |
+| `dead_byte_keeps_saved_stamp_and_graph_but_extends_current_provenance` | Dead edges do not advance graph residuals. Compare all saved frame payloads and metadata independently of current byte length. |
+| `forcing_a_coherent_fault_preserves_exact_typed_observation_and_all_historical_cells` | Force at the saved stamp, append one cell per owner, retain the exact typed graph modulo frame IDs and current bytes/root error, and leave all old cells unchanged. |
+| `forcing_a_coherent_fault_preserves_hidden_terminal_preflight` | Private resolve/reject must agree with the status-ignoring selected terminal, including wrong ID, Payload versus Awaiting and distinct fallback source rules. Failed calls must not publish or force frames. |
+
+The existing `persistent_fault_private_preflight_uses_selected_graph_not_latest_event`
+test is the executable reference binding for selected-graph, source, nonmutation
+and dead-suffix behavior. It is not yet a test of the optimized persistent forcing
+implementation. The forcing theorem assumes coherent selection; it does not prove
+the runtime selects that checkpoint on every refusal. Span observation is fixed
+through this model; byte-arena extension must separately preserve old observations.
+Error projection does not erase physical frame IDs. Forced graphs instead use the
+explicit typed ID-insensitive relation established in PFR, with old lookups proved
+separately. Shared effectful resolution, checked Rust widths, fault construction
+and aggregate resource bounds remain required before persistent runtime cutover.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

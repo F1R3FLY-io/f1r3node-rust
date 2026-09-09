@@ -7471,6 +7471,59 @@ Reproduction remains `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-imp
 No new benchmark, persistent memory-slope improvement, consensus change or
 production-equivalent ACT/LMDB comparison is established by this proof bridge.
 
+### J-106 — 2026-09-09: selected-fault coherence and dead-suffix provenance
+
+**FORMAL RESULT.** Six laws compose typed frame preservation with checked linked
+owner projection. Coherence binds the selected focus/owners, saved graph stamp,
+saved located-byte prefix, current prefix extension and exact root error. The
+selected stamp equals the saved prefix length, not the length of a later dead
+suffix. Dead-byte extension preserves this relation. Root-error replacement
+commutes with projection, leaving the selected child graph unchanged.
+
+Forcing uses that saved stamp and current bytes. It appends one physical Region
+per selected owner, preserves exact typed observations modulo internal frame IDs,
+retains the root error and every historical lookup, and preserves the private
+resolve/reject preflight result. Public queries may stop at Dead while private
+resolution still follows its selected hidden Region chain; latest-event caching
+is not an equivalent replacement.
+
+**EXECUTABLE BINDING.** The existing selected-fault reference test now generates
+32 dead-suffix cases for each of two fault shapes: a retained Payload obligation
+and a length-parser state selected after an emitted event was rolled back. Suffixes
+contain up to 64 bytes with independently varied source IDs and offsets. Checks
+compare the full selected path, every retained frame, old state prefixes, exact
+original/current located bytes, global obligation clock, public observations and
+failed private resolution. Existing successful-reject and failure nonmutation
+controls remain. This binds the existing eager runtime, not an unimplemented
+persistent focused treatment; the six extracted invariants are in the formal README.
+
+**LIMITS.** Runtime construction of a coherent fault on every refusal, fixed span
+observation across byte-arena extension, checked integer/allocation bounds, and
+effectful shared resolution remain required. Mathematical forcing counts one
+operation; no whole-parser allocation or timing improvement is claimed. Formal
+proof-script elaboration errors were repaired without weakening the theorem.
+
+**MEASURED FORMAL QUALIFICATION.** Standalone compilation passed 155 closed RPB3
+reports in 13.674 s, with 646 MiB peak memory and zero swap under High 1 GiB /
+Max 2 GiB / CPU 200%. The combined gate passed 155 RPB3 reports, three kernel
+checks and 88 selected release tests without failures or ignores. The full models
+library separately passed all 391 tests in 56.70 s; its service took 89.978 s,
+reported 1.3 GiB peak memory and zero swap. Rust used High 4 GiB / Max 6 GiB /
+CPU 400%, four build jobs and four test threads, with seed `41315976`.
+The initial property-harness build failed because its callback required `Fn`;
+test-only interior borrowing corrected that before both successful runs. That
+failed build is excluded. This implements the previously reviewed composition
+plan; no new independent review of these six final laws is claimed.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-fault-coherence3-20260909.log` | `ee60e720105027edabc12d5aed4ccbfbfab513e539af5a222ec4044c5912e10f` |
+| `/tmp/epathmap-fault-coherence-gate-20260909.log` | `63d2f5c5c35ff46711a72e2118374773f758b67e54b6e41442c638e0aaf00245` |
+| `/tmp/epathmap-fault-models-final-20260909.log` | `c5650aa94e1a196c8c1e53cb17bd283266e541c1359dd945c701322d32d03545` |
+
+No production Rust, codec, consensus identity, persistence default or ACT/LMDB
+comparison result changes in this proof/property checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

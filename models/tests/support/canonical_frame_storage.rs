@@ -931,6 +931,97 @@ fn persistent_fault_private_preflight_uses_selected_graph_not_latest_event() {
                 other => panic!("unexpected selected hidden terminal: {other:?}"),
             }
         }
+        let selected_bytes = arena.located_bytes(handle.bytes).collect::<Vec<_>>();
+        let selected_frames = reducer.machine.frames.slots.clone();
+        let selected_clock = reducer.machine.next_obligation;
+        let shared = std::cell::RefCell::new((&mut reducer, &mut arena));
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+            cases: 32,
+            ..ProptestConfig::default()
+        });
+        runner
+            .run(
+                &proptest::collection::vec((any::<u8>(), 9u32..500, 0usize..8192), 0..65),
+                |suffix| {
+                    let mut shared = shared.borrow_mut();
+                    let (reducer, arena) = &mut *shared;
+                    let retained_states = reducer.states.clone();
+                    let mut fork = handle;
+                    let mut expected_bytes = selected_bytes.clone();
+                    for (byte, source, offset) in suffix {
+                        let located = CanonicalLocatedByte::new(
+                            byte,
+                            CanonicalByteProvenance::new(source, offset),
+                        );
+                        let (next, event) = reducer.edge(arena, fork, located).unwrap();
+                        fork = next;
+                        expected_bytes.push(located);
+                        assert_eq!(event, CanonicalPathTransition::Continue);
+                        assert_eq!(reducer.states[fork.state.0], original);
+                        assert_eq!(reducer.machine.frames.slots, selected_frames);
+                        assert_eq!(reducer.machine.next_obligation, selected_clock);
+                        assert_eq!(reducer.active_obligation(fork), None);
+                        assert!(
+                            reducer
+                                .freeze_completed_obligation(&arena, fork)
+                                .unwrap()
+                                .is_none()
+                        );
+                        assert_eq!(
+                            reducer.value(fork, true, CanonicalPathSource::new(0)),
+                            Some(Err(error))
+                        );
+                        assert_eq!(
+                            reducer.value(fork, false, CanonicalPathSource::new(0)),
+                            None
+                        );
+                    }
+                    assert_eq!(
+                        arena.located_bytes(fork.bytes).collect::<Vec<_>>(),
+                        expected_bytes
+                    );
+                    assert_eq!(
+                        arena.located_bytes(handle.bytes).collect::<Vec<_>>(),
+                        selected_bytes
+                    );
+                    assert_eq!(
+                        &reducer.states[..retained_states.len()],
+                        retained_states.as_slice()
+                    );
+                    let before_failure = (reducer.stats(), reducer.machine.next_obligation);
+                    let refused = reducer
+                        .resolve_obligation(
+                            &arena,
+                            fork,
+                            emitted.id,
+                            CanonicalPathObligationResolution::NestedEpm1 {
+                                mode: NestedEpmMode::Map,
+                                entries_stable: true,
+                            },
+                        )
+                        .unwrap_err();
+                    assert_eq!(
+                        refused,
+                        CanonicalPathAdmissionError::new(
+                            CanonicalPathAdmissionErrorKind::UnresolvedObligation,
+                            if payload_started {
+                                emitted.tag_source
+                            } else {
+                                CanonicalPathSource::new(0)
+                            },
+                        )
+                    );
+                    assert_eq!(
+                        (reducer.stats(), reducer.machine.next_obligation),
+                        before_failure
+                    );
+                    assert_eq!(reducer.machine.frames.slots, selected_frames);
+                    assert_eq!(reducer.states[fork.state.0], original);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        drop(shared);
         let before = (
             reducer.states.clone(),
             reducer.machine.frames.slots.clone(),
