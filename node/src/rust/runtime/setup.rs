@@ -744,6 +744,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                     }
                 } else {
                     warn!("Casper engine present but Casper not initialized yet");
+                    if let Err(err) = engine.on_no_casper_tick().await {
+                        warn!("no-casper tick failed: {}", err);
+                    }
                 }
 
                 // Maintain RequestedBlocks for Casper
