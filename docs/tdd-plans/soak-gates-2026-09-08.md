@@ -64,11 +64,28 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B5
+    statement: Disk admission refuses work when a post-start probe provides no sample.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.json
+        test: scripts/bench/test-soak-disk-probe.sh
+        red_revision: 80914eedabd3413e174e9fca4fe8bd5c17021cb4
+        red_exit: 1
+        formal_red_exit: 12
+        green_binding: source-sha256
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        model_review: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
 
-The user approved the [prevention plan](../plans/soak-recurrence-prevention-2026-09-08.md). This checklist covers G0 and the local D1 cycle without changing consensus behavior or soak workloads.
+The user approved the [prevention plan](../plans/soak-recurrence-prevention-2026-09-08.md). This checklist covers G0, D1, and local D2 fault cases without changing consensus behavior or soak workloads.
 
 ## Boundaries
 
@@ -82,6 +99,7 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B2: Local tests and hosted bounded verification pass. Required-check enforcement remains pending.
 - [x] B3: The claim inventory binds source digests and distinguishes baseline evidence from pending obligations.
 - [x] B4: Historical production and formal counterexamples match. The existing admission correction passes both local checks.
+- [x] B5: Missing samples before and after hygiene prevent admission and produce a recorded failure.
 
 ## Cycle evidence
 
@@ -104,3 +122,11 @@ The first fixture attempt failed before driver execution because of file permiss
 The model checks one admission decision with four possible free-space values. It permits zero reclamation and checks both sufficient-reclamation admission and recorded refusal.
 
 Hosted D1 execution and maintainer review remain pending. G0 is not complete. Inventory validity does not discharge a claim or authorize a soak.
+
+B5 completes one local D2 cycle. Both missing-sample production traces failed before the correction. The matching formal control violated `AdmissionRequiresSample` with exit 12.
+
+The corrected driver refused both admissions and recorded failure. The corrected model completed with 22 distinct states. The existing D1 and driver regressions also passed.
+
+The first formal attempt stopped on a sample encoding error with exit 75. That attempt is not behavioral RED. The evidence retains it separately.
+
+B5 does not complete D2. Emergency timing, failed guardians, writer termination, durability, and the other fault cases remain pending.

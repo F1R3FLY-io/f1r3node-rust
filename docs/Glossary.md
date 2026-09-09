@@ -176,6 +176,12 @@ Disk admission decides whether a soak iteration can start from the latest free-s
 
 **Preferred usage.** Use this term for the iteration-boundary decision. Distinguish it from mid-iteration protection and full-duration disk safety.
 
+### Disk probe
+
+A disk probe reads free space for the soak output filesystem. A missing sample does not establish available space.
+
+**Preferred usage.** Use this term for the measurement operation, not the admission decision or a disk guardian.
+
 ### Disk guardian
 
 The disk guardian monitors free disk during a soak iteration. The disk guardian triggers protection when the configured disk conditions require a stop.

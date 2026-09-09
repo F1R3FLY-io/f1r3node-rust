@@ -1,0 +1,114 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 114 and seed 8989784590134659274 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/MC_DiskProbeAdmission.tla
+Parsing file /home/bf_spark/src/F1r3fly/f1r3node-rust/formal/tlaplus/soak_disk/DiskProbeAdmission.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskProbeAdmission
+Semantic processing of module MC_DiskProbeAdmission
+Starting... (2026-09-08 23:05:53)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-08 23:05:54.
+Progress(7) at 2026-09-08 23:05:55: 25 states generated, 22 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 22 total distinct states at (2026-09-08 23:05:55)
+Finished checking temporal properties in 00s at 2026-09-08 23:05:55
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 3.6E-18
+The coverage statistics at 2026-09-08 23:05:55
+<Init line 18, col 1 to line 18, col 4 of module DiskProbeAdmission>: 1:1
+  line 19, col 5 to line 24, col 23 of module DiskProbeAdmission: 1
+<ProbeBoundary line 26, col 1 to line 26, col 13 of module DiskProbeAdmission>: 4:4
+  line 27, col 8 to line 27, col 31 of module DiskProbeAdmission: 24
+  |line 27, col 8 to line 27, col 12 of module DiskProbeAdmission: 23
+  line 28, col 8 to line 28, col 26 of module DiskProbeAdmission: 4
+  |line 28, col 20 to line 28, col 26 of module DiskProbeAdmission: 1
+  line 29, col 8 to line 29, col 35 of module DiskProbeAdmission: 4
+  line 30, col 8 to line 30, col 68 of module DiskProbeAdmission: 4
+<DecideHygiene line 32, col 1 to line 32, col 13 of module DiskProbeAdmission>: 4:5
+  line 33, col 8 to line 33, col 34 of module DiskProbeAdmission: 28
+  |line 33, col 8 to line 33, col 12 of module DiskProbeAdmission: 23
+  line 34, col 8 to line 34, col 66 of module DiskProbeAdmission: 5
+  |line 34, col 17 to line 34, col 66 of module DiskProbeAdmission: 5
+  ||line 34, col 20 to line 34, col 28 of module DiskProbeAdmission: 5
+  |||line 16, col 14 to line 16, col 80 of module DiskProbeAdmission: 5
+  ||||line 16, col 17 to line 16, col 28 of module DiskProbeAdmission: 5
+  ||||line 16, col 35 to line 16, col 69 of module DiskProbeAdmission: 3
+  ||||line 16, col 76 to line 16, col 80 of module DiskProbeAdmission: 2
+  line 35, col 8 to line 35, col 76 of module DiskProbeAdmission: 5
+<Hygiene line 37, col 1 to line 37, col 7 of module DiskProbeAdmission>: 1:1
+  line 38, col 8 to line 38, col 24 of module DiskProbeAdmission: 24
+  |line 38, col 8 to line 38, col 12 of module DiskProbeAdmission: 23
+  line 39, col 8 to line 39, col 28 of module DiskProbeAdmission: 1
+  line 40, col 8 to line 40, col 76 of module DiskProbeAdmission: 1
+<ProbeAfterHygiene line 42, col 1 to line 42, col 17 of module DiskProbeAdmission>: 4:4
+  line 43, col 8 to line 43, col 27 of module DiskProbeAdmission: 24
+  |line 43, col 8 to line 43, col 12 of module DiskProbeAdmission: 23
+  line 44, col 8 to line 44, col 26 of module DiskProbeAdmission: 4
+  |line 44, col 20 to line 44, col 26 of module DiskProbeAdmission: 1
+  line 45, col 8 to line 45, col 31 of module DiskProbeAdmission: 4
+  line 46, col 8 to line 46, col 68 of module DiskProbeAdmission: 4
+<DecideAfterHygiene line 48, col 1 to line 48, col 18 of module DiskProbeAdmission>: 1:4
+  line 49, col 8 to line 49, col 30 of module DiskProbeAdmission: 27
+  |line 49, col 8 to line 49, col 12 of module DiskProbeAdmission: 23
+  line 50, col 11 to line 50, col 19 of module DiskProbeAdmission: 4
+  |line 16, col 14 to line 16, col 80 of module DiskProbeAdmission: 4
+  ||line 16, col 17 to line 16, col 28 of module DiskProbeAdmission: 4
+  ||line 16, col 35 to line 16, col 69 of module DiskProbeAdmission: 3
+  ||line 16, col 76 to line 16, col 80 of module DiskProbeAdmission: 1
+  line 51, col 16 to line 52, col 38 of module DiskProbeAdmission: 1
+  line 53, col 19 to line 53, col 44 of module DiskProbeAdmission: 3
+  line 54, col 19 to line 54, col 38 of module DiskProbeAdmission: 3
+  line 55, col 8 to line 55, col 64 of module DiskProbeAdmission: 4
+<CheckAdmission line 57, col 1 to line 57, col 14 of module DiskProbeAdmission>: 3:3
+  line 58, col 8 to line 58, col 32 of module DiskProbeAdmission: 26
+  |line 58, col 8 to line 58, col 12 of module DiskProbeAdmission: 23
+  line 59, col 11 to line 59, col 40 of module DiskProbeAdmission: 3
+  line 60, col 16 to line 61, col 39 of module DiskProbeAdmission: 1
+  line 62, col 19 to line 62, col 34 of module DiskProbeAdmission: 2
+  line 63, col 19 to line 63, col 38 of module DiskProbeAdmission: 2
+  line 64, col 8 to line 64, col 64 of module DiskProbeAdmission: 3
+<Admit line 66, col 1 to line 66, col 5 of module DiskProbeAdmission>: 2:2
+  line 67, col 8 to line 67, col 22 of module DiskProbeAdmission: 25
+  |line 67, col 8 to line 67, col 12 of module DiskProbeAdmission: 23
+  line 68, col 8 to line 68, col 23 of module DiskProbeAdmission: 2
+  line 69, col 8 to line 69, col 32 of module DiskProbeAdmission: 2
+  line 70, col 8 to line 70, col 25 of module DiskProbeAdmission: 2
+  line 71, col 8 to line 71, col 49 of module DiskProbeAdmission: 2
+<PublishRefusal line 73, col 1 to line 73, col 14 of module DiskProbeAdmission>: 2:2
+  line 74, col 8 to line 74, col 24 of module DiskProbeAdmission: 25
+  |line 74, col 8 to line 74, col 12 of module DiskProbeAdmission: 23
+  line 75, col 8 to line 75, col 23 of module DiskProbeAdmission: 2
+  line 76, col 8 to line 76, col 22 of module DiskProbeAdmission: 2
+  line 77, col 8 to line 77, col 66 of module DiskProbeAdmission: 2
+<TypeOK line 84, col 1 to line 84, col 6 of module DiskProbeAdmission>
+  line 85, col 5 to line 91, col 27 of module DiskProbeAdmission: 22
+<AdmissionRequiresSample line 93, col 1 to line 93, col 23 of module DiskProbeAdmission>
+  line 93, col 28 to line 93, col 60 of module DiskProbeAdmission: 22
+  |line 93, col 28 to line 93, col 35 of module DiskProbeAdmission: 22
+  |line 93, col 40 to line 93, col 60 of module DiskProbeAdmission: 2
+<AdmissionRequiresBand line 94, col 1 to line 94, col 21 of module DiskProbeAdmission>
+  line 94, col 26 to line 95, col 89 of module DiskProbeAdmission: 22
+  |line 94, col 26 to line 94, col 33 of module DiskProbeAdmission: 22
+  |line 95, col 5 to line 95, col 89 of module DiskProbeAdmission: 2
+<StopPreventsAdmission line 96, col 1 to line 96, col 21 of module DiskProbeAdmission>
+  line 96, col 26 to line 96, col 57 of module DiskProbeAdmission: 22
+  |line 96, col 26 to line 96, col 44 of module DiskProbeAdmission: 22
+  |line 96, col 49 to line 96, col 57 of module DiskProbeAdmission: 4
+<RefusalRecorded line 97, col 1 to line 97, col 15 of module DiskProbeAdmission>
+  line 97, col 20 to line 97, col 81 of module DiskProbeAdmission: 22
+  |line 97, col 20 to line 97, col 33 of module DiskProbeAdmission: 22
+  |line 97, col 38 to line 97, col 81 of module DiskProbeAdmission: 2
+End of statistics.
+25 states generated, 22 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 4).
+Finished in 02s at (2026-09-08 23:05:55)

@@ -1092,6 +1092,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 				break
 			fi
 		fi
+		if [ -z "$DISK_MB" ]; then
+			EARLY_EXIT_REASON="host_protection_breach"
+			printf 'The disk probe is unavailable before admission. The driver refused work.\n' |
+				tee "$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: disk probe unavailable before admission\n' >"$OUTPUT_DIR/early-exit.txt"
+			FAILURES="$((FAILURES + 1))"
+			break
+		fi
 	fi
 	if [ -e "$SIGNAL_FILE" ]; then
 		SIGNAL="$(tr -d '[:space:]' <"$SIGNAL_FILE" 2>/dev/null || true)"

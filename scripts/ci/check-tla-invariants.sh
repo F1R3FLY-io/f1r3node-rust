@@ -103,6 +103,7 @@ POST_FIX_CONFIGS=(
     replay_liveness/MC_ReplayHotLoop
     carrier_index/MC_CarrierIndex
     soak_disk/MC_SoakDisk
+    soak_disk/MC_DiskProbeAdmission
 )
 
 TLC_WORKERS=auto
@@ -111,6 +112,7 @@ if [[ "$SOAK_PR" == true ]]; then
         replay_liveness/MC_ReplayHotLoop
         carrier_index/MC_CarrierIndex
         soak_disk/MC_SoakDisk
+        soak_disk/MC_DiskProbeAdmission
     )
     TLC_WORKERS=2
 fi
@@ -150,6 +152,7 @@ NEGATIVE_CONTROLS=(
     carrier_index/MC_CarrierIndex_dag_first_pre_fix:IndexCompleteForWindow
     carrier_index/MC_CarrierIndex_read_failure_pre_fix:AbsenceProofSound
     soak_disk/MC_SoakDisk_floor_only_pre_fix:AdmissionRequiresBand
+    soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix:AdmissionRequiresSample
 )
 
 failed=0

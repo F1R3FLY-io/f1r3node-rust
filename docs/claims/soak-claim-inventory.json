@@ -2,12 +2,31 @@
   "schema_version": 1,
   "scope": "soak-recurrence-prevention",
   "candidate": {
-    "base_commit": "ce2ccadc79df94bdec1e569172d1367c60bf8338",
+    "base_commit": "80914eedabd3413e174e9fca4fe8bd5c17021cb4",
     "binding": "source-sha256",
     "inputs_sha256": {
-      "docs/Glossary.md": "999a3b92700428364a82abbf9d2089eda4a3708b8762cfc7510f16de54fd69ec",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/README.md": "346c7393a58895258310b3ba1c5de390611598f7cb0071bf348b1f4673759c94",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/composed-tla.txt": "5ff5b904ee438f6593fcca0d2944dad199e864220cfaeb01ce573f5c2d900ecc",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/d1-green.txt": "6bd38a16289989e9b23b6b77b858ea326102369060c1353ade24376c8c2f06d7",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/formal-green.txt": "ee5881b3785b00f789f512df6757154d0b24404994e3c813de356a085cb97aa4",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/formal-red.txt": "0c3a6589a001fd7ce162fbe5daa2bf96d3ffcefc429e867cc58094ec722879bb",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.json": "3f1a1697d34f4696f877bcb5138942ecba5a9cd2754f8ad1e43d70a4e05870c7",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/production-green.txt": "7bc962f62dffdf9d785c6dd7dc7222425735f5bb26b0c83a54166610e52e9c69",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/production-red.txt": "381963438be550f98a2ae07a2b7cd10f5507bbfce3eeaa01e1d7b9b8e6d1920e",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "docs/cbc-evidence/soak-d2-probe-2026-09-08/summary-test.txt": "e5932a2b8042b930bc55b739d26886dc3caaecf5005f99a75d82c431dc6ae133",
+      "formal/tlaplus/soak_disk/DiskProbeAdmission.md": "aa32b96a0636cd26886a4f9084f141ac2abe1890a34d86e891abe8b38116157d",
+      "formal/tlaplus/soak_disk/DiskProbeAdmission.tla": "10cfb218f706803d3afbd0eb8a0fa24e79853ca1e75eab3c3f98fb3435ed000a",
+      "formal/tlaplus/soak_disk/MC_DiskProbeAdmission.cfg": "5aac3830bf5f6642e6c39c18d99ade93cac75b406edd1ebe9f416a1e8ff1e7dd",
+      "formal/tlaplus/soak_disk/MC_DiskProbeAdmission.tla": "8a9738c480e9ab03631d51a1cc7d72bfddaf501ace3ef699631a451a4fae09d2",
+      "formal/tlaplus/soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix.cfg": "7586495c97512de81e52c533de2a43041297c8310dc624f4e4f2373a8e35a302",
+      "formal/tlaplus/soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix.tla": "96100b74a4d889683b51341bcffdb4aad33775435ffe5657672b912dde555f60",
+      "scripts/bench/test-soak-disk-probe.sh": "41ee399da2c2bbf7a54634a5bbf90087071ecd0e8456dc6478932ca2032dbc41",
+      "docs/Glossary.md": "7f161ea8bc9a23728afd3baccff64e08904806fef0c9226dfdece339baef3516",
       "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md": "d1beaad52820cd00d45751153d48d346c83e0ad5a3144753bd6c3796427760f2",
-      "docs/tdd-plans/soak-gates-2026-09-08.md": "5e1703f412781f06a5335475bc3daf6235840880b42617d476f412fe4e5db7fb",
+      "docs/tdd-plans/soak-gates-2026-09-08.md": "09d29ee527db72911ce9c7a95521b3441b0205591c92d4152a9e252452824992",
       "formal/tlaplus/soak_disk/MC_SoakDisk.cfg": "baa1c4153fc8c485d6d15ce267adb601f1585a4e24f0686ff07f3bec8b9894f4",
       "formal/tlaplus/soak_disk/MC_SoakDisk.tla": "3f1c1f5589f430a424efe8c8916f7b725b1bc33bd39e49959ffd3c63d11ab039",
       "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg": "0ee62f80739ff4f03d47555b4cb4550738d909f6a247a66fd62b73ac30051132",
@@ -17,12 +36,12 @@
       "scripts/bench/collect-soak-metrics.sh": "6a04b8aa2b3335012eba6b66793b784c28fbedfd5160844c27e0d8abf01e7554",
       "scripts/bench/soak-disk-test.Dockerfile": "85340de51da31c1ea8ded3c4a20a8e0cf8f85a26b0cfc13ab4b29768d5048aa9",
       "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7",
-      "scripts/bench/test-soak-disk-admission.sh": "c80222f3455d9f0f3374486a911d1c8a2310063479967fcd42a3f8f2b94dfe08",
+      "scripts/bench/test-soak-disk-admission.sh": "1ceba01b43ffb9507f490af58e535143ffcfabd0dbe9a73fb43a7b8b8183a7e9",
       "scripts/bench/write-soak-summary.sh": "ed6c53492ab35dd9b2cc82123766e76efec9ea6a7e18b759a034b4a038d8a489",
       "scripts/bench/test-write-soak-summary.sh": "355ac9ebc268e626e99a54a9464aad9ed9b9db9ae8af65e122263acf2d1ddf23",
       ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
       ".github/workflows/_integration-pipeline.yml": "2931f47de27ec73093e3a03a3bb91473203e1e7b7759450b4ebbd71e0098f11d",
-      ".github/workflows/ci.yml": "c578fb6f1595378a729fe523dcc210ac18bdc281b9097ae86c1c0e99bc1bd925",
+      ".github/workflows/ci.yml": "5dd9b6680a802db6ac150ae5dc6a1b52480f40071ee54c4d1fefc33218e4bf4a",
       ".github/workflows/merge-recovery-soak.yml": "8e113745d06684ac9bd096f7d0ad52275777bc5df987316e2bd8be7f97891a7d",
       ".github/workflows/slashing-tests.yml": "460be11512b1f01f79387d7a3dad6c60d3c45627b5790436f9db6e165eac69fb",
       "block-storage/src/rust/dag/block_dag_key_value_storage.rs": "39382399fd484b5d9b670d3ad35af642659df61c6475497a90f5af7dc645f711",
@@ -67,8 +86,8 @@
       "docs/cbc-evidence/soak-g0-b3-2026-09-08/tlc-replay_liveness-MC_ReplayHotLoop.log": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
       "docs/claims/repeat-deploy-carrier-index-equivalence.md": "16f110d8ebf50d2f39a3fbb45364019684a5118b0a65db106c6d9f5b810230ba",
       "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
-      "docs/claims/soak-formal-gate.md": "f0595ac8da3fd8e79302327fbb2c1d2af723397811c44c7ef0919e531efa5488",
-      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "72c40218f09fa25ae441be8877f43ecc8b44f295f49b25d60e69a099970503c3",
+      "docs/claims/soak-formal-gate.md": "b4684de6f9e301228b0e329fccf318b2450d7b035a90d773bb23a2d03a77552a",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "513fc7d1f13fed521092df553dc260bf67752bcfb528c875ee9c8479fe9ba249",
       "docs/soak-evidence/34180346282/README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
       "docs/soak-evidence/34180346282/archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
       "docs/soak-evidence/34180346282/inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
@@ -93,7 +112,7 @@
       "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "e352c21b2e101ad00a556d3a5274d8c2636a96ee01b64f9f9156fea77ea9f844",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "ca3cf1dc84cb8659013ad7d780b03553ff35ca1f246b59e0a684084e0d8337e2",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -141,11 +160,11 @@
       "scripts/bench/test-run-merge-recovery-soak.sh": "2d0bc41e2945203ea2c75659f9a8f9ee6b6f6538f645945b6247322d2ba4c4b3",
       "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
       "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
-      "scripts/ci/check-tla-invariants.sh": "f347dab7818a92c1e46cace6dc13b08a1df4025a496558a7150ada86318978a3",
-      "scripts/ci/test-check-tla-invariants.sh": "94e0375147320a29930f97497bc789bef4841924d5c8eced49a7630c6b5054a3",
+      "scripts/ci/check-tla-invariants.sh": "951a1c7bf7a83caf4668165edba541f40505f00736bb50688675d3022bf95dc6",
+      "scripts/ci/test-check-tla-invariants.sh": "ab7511dc8a3a5ce1ea711a7e8bac83ddbd987e00f305b81af06d97cb6540780e",
       "scripts/ci/test-soak-claim-inventory.sh": "dbd16e78ab45353585a3beff0942141fd9c6ce9a1f45dccc9392e790b0fb165e",
-      "scripts/ci/test-soak-pr-formal-gate.sh": "0f1099900d0b9538f2e7344f25fca35949b0d7ac877715ec33a09a490cd7b8af",
-      "scripts/run-merge-recovery-soak.sh": "2107899197cc3b676dd01a458c3b67c79708445277d371f7e4ccb45f4cdd4abb"
+      "scripts/ci/test-soak-pr-formal-gate.sh": "a84c7633bfdc6751273cd7e2c3d8e66146945b4ac2d0432b067af8fead465508",
+      "scripts/run-merge-recovery-soak.sh": "d321ede6b1ae80ed0a086b5ca6de9cef8f252bc204ce0ebdee0f43c5b4082087"
     }
   },
   "claims": [
@@ -287,12 +306,13 @@
       ],
       "checks": [
         "DISK-ADMISSION",
+        "DISK-PROBE",
         "BOUNDED-TLA"
       ],
       "pending_obligations": [
         "The maintainer must ratify the resource claim and any new mandatory CbC attributes.",
         "Retain the completed local D1 production and formal RED/GREEN pair without treating it as full resource discharge.",
-        "Confirm hosted D1 execution and obtain maintainer review of the model-to-code correspondence.",
+        "Confirm hosted D1 and D2 probe execution and obtain maintainer review of their model-to-code correspondence.",
         "Prove aggregate response time, confirmed writer termination, and durable minimal evidence during D2.",
         "Identify every writer and justify the common-unit reserve inequality R + G*T + J + M.",
         "Identify and correct the growing consumer during D3.",
@@ -354,7 +374,9 @@
         "formal/tlaplus/carrier_index/MC_CarrierIndex_dag_first_pre_fix.cfg",
         "formal/tlaplus/carrier_index/MC_CarrierIndex_read_failure_pre_fix.cfg",
         "formal/tlaplus/soak_disk/MC_SoakDisk.cfg",
-        "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg"
+        "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskProbeAdmission.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix.cfg"
       ],
       "verifier": {
         "name": "TLC",
@@ -366,12 +388,14 @@
         "Carrier Crash leaves all modeled variables unchanged and does not model durable flush or restart.",
         "Replay completion assumes scheduler fairness.",
         "The existing production property uses in-memory operation traces.",
-        "Disk admission assumes valid samples, completing commands, and no external writes during the modeled decision."
+        "D1 admission assumes valid samples, completing commands, and no external writes during the modeled decision.",
+        "D2 probe admission assumes successful startup and completing probes, cleanup, and local writes."
       ],
       "bounds": [
         "Carrier: two signatures, three blocks, watermark zero, and scan start at most two.",
         "Replay: eight events, indexed replay, inline singleton, and yield interval four.",
         "Disk: initial free space 7000 MiB, floor 4096 MiB, band 4096 MiB, and samples 7000, 8191, 8192, 8193 MiB.",
+        "D2 probe admission: valid samples 7000, 8192, and 16384 MiB, plus a separate missing sample at either probe.",
         "Execution: two workers, 120-second configuration timeout, and 60-second kill grace."
       ],
       "expected_results": [
@@ -401,6 +425,15 @@
           "configuration": "MC_SoakDisk_floor_only_pre_fix",
           "exit_code": 12,
           "invariant": "AdmissionRequiresBand"
+        },
+        {
+          "configuration": "MC_DiskProbeAdmission",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_DiskProbeAdmission_missing_sample_pre_fix",
+          "exit_code": 12,
+          "invariant": "AdmissionRequiresSample"
         }
       ],
       "production_tests": [
@@ -418,12 +451,13 @@
       "ci": {
         "workflow": ".github/workflows/slashing-tests.yml",
         "job": "tla-model-check",
-        "enforcement": "Hosted execution covers earlier carrier and replay inputs. Hosted D1 execution and required-check enforcement remain unconfirmed."
+        "enforcement": "Hosted execution covers earlier carrier and replay inputs. Hosted D1 and D2 probe execution and required-check enforcement remain unconfirmed."
       },
       "evidence_refs": [
         "B2-LOCAL",
         "B2-HOSTED",
-        "D1-LOCAL"
+        "D1-LOCAL",
+        "D2-PROBE-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -447,7 +481,7 @@
         "Workflow parsing and local command execution do not establish GitHub required-check enforcement."
       ],
       "bounds": [
-        "B1 originally covered 14 classifier cases. D1 extends the classifier to 21 cases. Routing still covers six event and failure scenarios."
+        "B1 originally covered 14 classifier cases. D1 extended the classifier to 21 cases, and D2 extends it to 28. Routing covers six scenarios."
       ],
       "production_tests": [
         {
@@ -469,7 +503,8 @@
       "evidence_refs": [
         "B1-LOCAL",
         "B2-LOCAL",
-        "D1-LOCAL"
+        "D1-LOCAL",
+        "D2-PROBE-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -565,9 +600,66 @@
         "D1 has paired local evidence. Hosted execution and maintainer review remain pending.",
         "D2 and D3 require aggregate response and all-writer resource bounds, not just a safe stop."
       ]
+    },
+    {
+      "id": "DISK-PROBE",
+      "command": "bash scripts/bench/test-soak-disk-probe.sh",
+      "configurations": [
+        "scripts/run-merge-recovery-soak.sh",
+        "scripts/bench/test-soak-disk-admission.sh",
+        "scripts/bench/soak-disk-test.Dockerfile",
+        "formal/tlaplus/soak_disk/MC_DiskProbeAdmission.cfg",
+        "formal/tlaplus/soak_disk/MC_DiskProbeAdmission_missing_sample_pre_fix.cfg"
+      ],
+      "verifier": {
+        "name": "Bash production-boundary regression and bounded TLC",
+        "version": "The D2 probe manifest retains the fixture image, package versions, TLC 2.19, Java version, and source digests."
+      },
+      "assumptions": [
+        "Startup obtains a valid sample. A later probe returns no data and exits 1.",
+        "The formal model assumes that commands and local writes complete.",
+        "The disposable fixture has no host mounts, network, or Docker socket. Its workload command does not run nodes."
+      ],
+      "bounds": [
+        "One admission decision, with missing samples before or after hygiene.",
+        "The model permits known samples 7000, 8192, and 16384 MiB and a separate missing sample.",
+        "The fixture uses 256 MiB, one CPU, 128 processes, a 20-second driver cap, and a 40-second container cap."
+      ],
+      "production_tests": [
+        {
+          "path": "scripts/bench/test-soak-disk-probe.sh",
+          "command": "bash scripts/bench/test-soak-disk-probe.sh",
+          "result": "local-matched-production-formal-red-green"
+        }
+      ],
+      "ci": {
+        "workflow": ".github/workflows/ci.yml",
+        "job": "lint",
+        "enforcement": "Lint includes the missing-sample regression. The formal job includes its positive configuration and exact negative control. Hosted execution remains pending."
+      },
+      "evidence_refs": [
+        "D2-PROBE-LOCAL"
+      ],
+      "result": "historical-baseline",
+      "pending_obligations": [
+        "Confirm hosted execution and obtain maintainer review of the model-to-code map.",
+        "Verify other malformed samples, guardian failures, aggregate deadlines, confirmed writer termination, and durable minimal evidence.",
+        "This admission sub-obligation does not establish a disk reserve or full-duration acceptance."
+      ]
     }
   ],
   "evidence": {
+    "D2-PROBE-LOCAL": {
+      "path": "docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.json",
+      "role": "historical-baseline",
+      "identity": "Production RED at 80914eedabd3413e174e9fca4fe8bd5c17021cb4. The manifest binds the local correction by source hashes.",
+      "limitations": [
+        "The cycle covers missing samples at admission, not complete D2 response or resource bounds.",
+        "The initial TLC encoding error is not behavioral RED.",
+        "Hosted execution, model review, claim ratification, and full-duration acceptance remain pending.",
+        "The raw backup is local, not off-host."
+      ]
+    },
     "SETTLED-LEGACY": {
       "path": "docs/cbc-evidence/casper-src-rust-finality-deploy-lifecycle-rs.md",
       "role": "historical-baseline",
@@ -667,10 +759,14 @@
       "id": "D2",
       "status": "pending",
       "checks": [
-        "DISK-ADMISSION"
+        "DISK-ADMISSION",
+        "DISK-PROBE",
+        "BOUNDED-TLA"
       ],
       "pending_obligations": [
-        "Add emergency-response fault tests and a model with one aggregate response deadline."
+        "The missing-sample admission cycle passes locally. Confirm hosted execution and maintainer model review.",
+        "Add the remaining emergency fault cases and a model with one aggregate response deadline.",
+        "Verify confirmed writer termination, durable evidence, and the D3-dependent growth and reserve bounds."
       ]
     },
     {

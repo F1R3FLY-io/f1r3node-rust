@@ -8,6 +8,15 @@ SOURCE_FILES=(
     scripts/bench/soak-metrics.json
 )
 
+SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
+case "$SCENARIO" in
+band | missing-boundary | missing-after-hygiene) ;;
+*)
+    printf 'ERROR: Unknown disk fixture scenario.\n' >&2
+    exit 2
+    ;;
+esac
+
 if [[ "${1:-}" == --inside ]]; then
     trap 'printf "ERROR: The container fixture failed before its behavioral verdict.\n" >&2; exit 2' ERR
     [[ -f /.dockerenv && "$(id -u)" == 65534 && ! -S /var/run/docker.sock ]] || exit 2
@@ -20,12 +29,32 @@ if [[ "${1:-}" == --inside ]]; then
     dpkg-query -W bash coreutils findutils mawk jq procps 2>/dev/null >evidence/packages.txt || true
     cat >bin/df <<'SH'
 #!/usr/bin/env bash
+available=7000
+case "${SOAK_DISK_TEST_SCENARIO:-band}" in
+    missing-boundary)
+        if ! mkdir /case/evidence/startup-probe-seen 2>/dev/null; then
+            printf 'missing\n' >>/case/evidence/probe-samples.txt
+            exit 1
+        fi
+        available=16384
+        ;;
+    missing-after-hygiene)
+        if [[ -f /case/evidence/hygiene-completed ]]; then
+            printf 'missing\n' >>/case/evidence/probe-samples.txt
+            exit 1
+        fi
+        ;;
+esac
+printf 'valid=%s\n' "$available" >>/case/evidence/probe-samples.txt
 printf 'Filesystem 1M-blocks Used Available Capacity Mounted on\n'
-printf '/dev/fixture 47000 40000 7000 85%% /\n'
+printf '/dev/fixture 47000 %s %s 85%% /\n' "$((47000 - available))" "$available"
 SH
     cat >bin/docker <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
+if [[ "$*" == 'builder prune -af' ]]; then
+    touch /case/evidence/hygiene-completed
+fi
 exit 0
 SH
     cat >bin/poetry <<'SH'
@@ -57,12 +86,37 @@ SH
     printf '%s\n' "$status" >evidence/driver-exit.txt
     if [[ "$status" != 0 && "$status" != 1 ]] ||
         [[ ! -s evidence/output/summary.json ]] ||
-        ! grep -Fxq 'disk hygiene: 7000MB free -> 7000MB free' evidence/driver.log ||
         ! jq -e 'has("degraded") | not' evidence/output/summary.json >/dev/null; then
         printf 'ERROR: The fixture did not complete the required driver path.\n' >&2
         exit 2
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
+    if [[ "$SCENARIO" != band ]]; then
+        if ! grep -Eq '^valid=(7000|16384)$' evidence/probe-samples.txt ||
+            ! grep -Fxq missing evidence/probe-samples.txt ||
+            [[ "$SCENARIO" == missing-after-hygiene && ! -f evidence/hygiene-completed ]]; then
+            printf 'ERROR: The fixture did not exercise a missing post-start disk sample.\n' >&2
+            exit 2
+        fi
+        if [[ "$iterations" != 0 || -e evidence/workload-started.txt ]]; then
+            printf 'FAIL: A post-start disk sample was missing (%s), but the driver admitted %s iteration(s).\n' "$SCENARIO" "$iterations" >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! grep -Fxq 'host_protection_breach: disk probe unavailable before admission' evidence/output/early-exit.txt ||
+            ! grep -Fxq 'The disk probe is unavailable before admission. The driver refused work.' evidence/output/protection-breach.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Missing-sample refusal lacks the required failure result and evidence.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: A post-start disk sample was missing (%s). No iteration started, and the driver recorded refusal.\n' "$SCENARIO"
+        exit 0
+    fi
+    if ! grep -Fxq 'disk hygiene: 7000MB free -> 7000MB free' evidence/driver.log; then
+        printf 'ERROR: The fixture did not exercise zero-reclamation hygiene.\n' >&2
+        exit 2
+    fi
     if [[ "$iterations" != 0 || -e evidence/workload-started.txt ]]; then
         printf 'FAIL: Disk hygiene left 7000 MiB below 8192 MiB, but the driver admitted %s iteration(s).\n' "$iterations" >&2
         exit 1
@@ -119,6 +173,7 @@ CONTAINER="$(docker create --pull=never --network none --cap-drop ALL \
     --security-opt no-new-privileges --pids-limit 128 --memory 256m --cpus 1 \
     --user 65534:65534 --workdir /case \
     --env "SOAK_DISK_TEST_SOURCE_SHA=${SOAK_DISK_TEST_SOURCE_SHA:-unknown}" \
+    --env "SOAK_DISK_TEST_SCENARIO=$SCENARIO" \
     --entrypoint bash "$IMAGE" /case/test.sh --inside)"
 [[ "$CONTAINER" =~ ^[0-9a-f]{64}$ ]] || exit 2
 docker inspect "$CONTAINER" >"$OUTPUT/container-inspect.json"

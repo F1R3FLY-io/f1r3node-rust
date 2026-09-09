@@ -257,6 +257,12 @@ System-integration PR #137 bounds its exit-path attribution walks to 10 seconds 
 
 Propose mandatory CbC scope for the driver, verdict/retry logic, and relevant runner exit path. Apply new attributes only after maintainer ratification.
 
+The [missing-sample cycle](../cbc-evidence/soak-d2-probe-2026-09-08/README.md) completes one local D2 behavior. Missing samples before and after hygiene now prevent admission and produce a recorded failure.
+
+Both production traces failed before the correction. The matching formal control violates `AdmissionRequiresSample`. The corrected configuration completed with 22 distinct states.
+
+This result does not establish an emergency deadline, confirmed writer termination, or durable evidence. Hosted execution, model review, and the remaining D2 behaviors stay pending.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

@@ -137,3 +137,21 @@ The final fixture includes the required metric and summary helpers. The existing
 The bounded formal tier now runs three positive configurations and three expected-failure controls. All six passed local classification and actual TLC verification.
 
 The inventory retains pending candidate status. Hosted D1 execution, model review, mandatory-scope ratification, G0 enforcement, and the remaining repair gates stay open.
+
+## D2 missing-sample admission
+
+The user authorized one local D2 cycle after confirming the harness pin and additional cloud quota. No soak or hosted retry followed that authorization.
+
+At `80914eeda`, missing samples before and after hygiene each admitted one iteration. Both traces ended with driver exit zero and no recorded failures.
+
+An eight-line common check now refuses both admissions. Each corrected trace ends with zero iterations, one failure, driver exit one, and local refusal evidence.
+
+The [cycle evidence](../cbc-evidence/soak-d2-probe-2026-09-08/README.md) retains both production traces and the matching `AdmissionRequiresSample` counterexample. The corrected model completed with 22 distinct states.
+
+The first formal attempt failed on a sample encoding error before checking behavior. The record excludes that exit-75 result from behavioral RED.
+
+The existing D1 and three-scenario driver regressions passed in disposable containers. All four positive configurations and four exact controls passed actual bounded TLC verification.
+
+The classifier passed 28 cases, and routing passed six scenarios. Workflow, release, repin, collector-extension, and summary regressions also passed.
+
+D2 remains open. This cycle does not prove emergency timing, writer termination, durable evidence, all-writer bounds, or acceptance. No claim was discharged.
