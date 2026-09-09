@@ -7323,6 +7323,61 @@ runs; none is counted as a pass. Existing compiler warnings remain. These are
 proof/runtime correctness gates, not a persistent-resource or LMDB performance
 verdict. Task 6018 and its parent admission task remain in progress.
 
+### J-103 — 2026-09-09: linked completion loop and exact candidate retention
+
+**FORMAL RESULT.** Five new laws establish a concrete address-based dispatcher
+and its repeated completion/pop protocol. Successful completion follows the
+immutable parent handle; stop/refusal does not scan ancestors. The machine has
+no fuel or artificial depth parameter. Its finite valid chain establishes
+termination. The proof preserves exact eager result, completion-call frame IDs,
+call order, successful-pop count and remaining candidate chain. Determinism
+extends the result from an existing matching run to every permitted run.
+
+The abstract owner-check count is at most successful pops plus one. This is not
+a time bound for list-based model lookup or the completion callback, nor a Rust
+allocation bound. The implementation must bind its constant-time arena lookup,
+shared local completion effects and residual checks separately. The formal README
+extracts the complete five-law implementation-property catalogue.
+
+**SELECTION BOUNDARY.** The retained root denotes the candidate after completed
+pops. If a later outer owner refuses, transaction selection must still restore
+the immediate pre-step graph; candidate retention is not permission to publish a
+partially advanced graph. Existing global-clock/event rules remain unchanged.
+
+**FRAME-REALIZATION FINDING.** The immutable stored graph and its logical focused
+overlay cannot both satisfy ordinary physical realization at identical Region
+slots. The new proof binding must preserve stored cells and static fields while
+deriving logical residual/child overrides. Forcing appends fresh Region cells;
+its semantic correspondence needs explicit ID relocation or ID-insensitive
+equivalence. This is not a consensus identity change: these frame IDs are internal
+parser storage. All six Rust frame variants require exact field binding. Fault
+coherence must retain the saved graph stamp while current bytes extend, and use
+the selected hidden terminal rather than a rolled-back emitted obligation.
+
+No production parser, PathMap dependency, byte codec or consensus rule changes in
+this proof-first slice. Concrete frame/fault realization, materialization and
+global-effect/resource binding remain required before persistent runtime changes.
+
+**MEASURED QUALIFICATION.** Independent review found no blocker in the five laws,
+while confirming the candidate-prefix and abstract-cost boundaries above. The
+final focused runner passed **132 RPB3 closed reports, three kernel checks and
+88 runtime tests**, with zero failures or ignores. The standalone final model
+compile took 11.410 s; its capped service reported 593 MiB peak memory and zero
+swap. Proof bounds were High 1 GiB / Max 2 GiB / CPU 200%; Rust bounds remained
+High 4 GiB / Max 6 GiB / CPU 400%, with swap disabled. Initial proof elaboration
+failures were repaired before these final passes and are not passing evidence.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-linked-settlement-determinism-20260909.log` | `ec3d250ebca8754738f5bbc18af55939df4b244b96f050b67e4606c30745e4d9` |
+| `/tmp/epathmap-linked-settlement-gate-20260909.log` | `7579220ae86886cb128820ee717c4c0ca8cf20c55ba6a68fce6f1202ec584dcc` |
+
+Reproduction uses `bash scripts/check-stack-safe-pda-proofs.sh --epathmap-import`.
+Rust sources are unchanged from J-101's 391-test full-library checkpoint; the
+88-test focused rerun is not another full-library or workspace CI result. No
+new timing benchmark or measured persistent-frame improvement is claimed here.
+Task 6018 and the production-equivalent ACT/LMDB comparison remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

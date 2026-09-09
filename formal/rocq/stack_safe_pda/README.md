@@ -1091,6 +1091,63 @@ checked forcing, shared clock effects and resource accounting. A cached lookup
 in this list-based mathematical model does not prove Rust constant-time cost.
 The focused runner now requires 127 RPB3 reports; runtime filters are unchanged.
 
+#### Linked completion machine and historical frame binding (2026-09-09)
+
+`linked_command` performs one address-based dispatch: existing Dead/Pending and
+empty-root states stop without owner checks; a live root reads one owner and its
+cached due address. No due address stops unfinished, a non-head due address
+refuses as truncated, and a completed child at the head invokes the existing
+local completion authority. An invalid arena root returns `None`; valid linked
+roots are proved to produce the exact positional command.
+
+`linked_settlement` specifies repeated dispatch without a fuel parameter or depth
+cap. A successful completion follows the stored parent; refusal and stop retain
+the current candidate root. Completion calls record the Region **frame slot**,
+not its arena address. Termination is proved by induction over the finite valid
+owner chain. Determinism then strengthens existence of a matching run into an
+all-runs correctness theorem.
+
+| Law | Extracted invariant and implementation-property obligation |
+|---|---|
+| `linked_dispatch_refines_exact_positional_command` | Every valid root chooses the same stop/complete action, parent, owner metadata and child as the positional model. Generate empty/live/Dead/Pending states, arbitrary address gaps, no-due/head/ancestor cases and equal endpoints. |
+| `linked_settlement_terminates_with_exact_observations_checks_and_retained_prefix` | The run terminates with exact result, call order, successful-pop count and check count; the final candidate root denotes exactly the unconsumed chain. Generate multi-pop success, inner success followed by outer refusal, and historical sibling restores. |
+| `linked_settlement_has_eager_semantics_and_pop_bounded_owner_work` | Under no-overdue endpoints, exact eager observations hold and owner checks are at most successful pops plus one. Count dispatch separately from local completion and physical storage costs. |
+| `linked_settlement_is_deterministic` | Fixed arena, input view and completion/classification authorities admit one final root/result/check triple. Repeated runs against immutable historical roots must agree. |
+| `every_linked_run_preserves_eager_result_prefix_and_pop_bounded_checks` | Every permitted linked run has the eager result, work bound and exact retained candidate prefix; this is not only an existential trace claim. |
+
+The prefix is the private **candidate** after successful pops. On a later refusal,
+transaction selection must still choose the immediate pre-step graph and preserve
+the specified global effects; it must not publish the partially popped candidate.
+This model treats local completion/classification as shared pure authorities.
+Their Rust frame allocations, byte comparisons, error sources and global-clock
+effects remain separate realization obligations. The check count does not count
+list-based `nth_error` cost, completion-body work, parsing or physical allocations.
+It therefore is not a whole-runtime complexity theorem.
+
+**Concrete realization requirements from source review.** A logical focused Region
+has new residuals and a new child while its historical slot is immutable. Ordinary
+`Slots.realizes` at that same slot cannot describe both graphs; its root-uniqueness
+theorem rules this out. Use an overlay realization built from exact physical leaf
+and continuation frames, a held historical Region snapshot and checked logical
+child/residual overrides. Bind all six Rust frame variants, not just an opaque
+`grammar_fields` list. A held owner retains exact previous span, declared length,
+start depth and continuation; an existential birth stamp establishes absolute
+endpoints from the stored residuals. Saved enclosing `InnerPath` metadata is not
+stored in the Region frame and must be retained separately.
+
+Checked materialization must append fresh Region cells and preserve old lookups.
+Prove semantic equivalence under explicit frame-ID relocation (or a separately
+defined ID-insensitive equivalence), not literal equality to a reified graph with
+old Region slot IDs. Fault coherence additionally binds the selected owner root,
+saved graph stamp and located-byte prefix extension. Hidden-terminal inspection
+follows Region children regardless of status. After graph-dependent private
+resolution, retain materialized form unless a new focused decomposition is proved.
+These requirements remain within task 6018; no new grammar or dependency is needed.
+
+The five new laws raise the focused runner to 132 RPB3 reports. Existing reference
+runtime controls remain unchanged; the persistent optimized representation and its
+new property bindings are not yet implemented.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

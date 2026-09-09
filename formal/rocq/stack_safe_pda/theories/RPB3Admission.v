@@ -4814,4 +4814,249 @@ Qed.
 
 Print Assumptions concrete_cached_target_has_exact_endpoint_and_arena_identity.
 
+Lemma linked_root_position_classification arena root entries address_cache position_cache stamp :
+  linked arena (Some root) entries -> cache_matches entries address_cache position_cache ->
+  option_map (fun address => address =? root) (address_due stamp address_cache) =
+  option_map (fun position => position =? 0) (F.cached_due stamp position_cache).
+Proof.
+  intros valid matches.
+  destruct address_cache as [[ending address]|], position_cache as [[other position]|];
+    cbn [cache_matches] in matches; try contradiction; [|reflexivity].
+  destruct matches as [same [cell found]]. subst other.
+  unfold address_due, F.cached_due. destruct (ending =? stamp); [|reflexivity].
+  cbn [option_map]. destruct position.
+  - inversion valid; subst. cbn in found. inversion found; subst. now rewrite Nat.eqb_refl.
+  - assert (different : address <> root).
+    { intro same. subst address.
+      pose proof (@selected_root_address_is_exactly_position_zero arena root entries (S position) cell valid found). discriminate. }
+    apply Nat.eqb_neq in different. now rewrite different.
+Qed.
+
+Inductive settlement_command :=
+| StopSettlement (view : F.boundary_view) (checks : nat)
+| CompleteSettlement (parent : option nat) (current : F.owner) (child : F.leaf).
+
+Definition linked_command arena root stamp source offset view : option settlement_command :=
+  match view with
+  | F.BoundaryDead _ | F.BoundaryPending _ => Some (StopSettlement view 0)
+  | _ =>
+      match root with
+      | None => Some (StopSettlement view 0)
+      | Some address =>
+          match nth_error arena address with
+          | None => None
+          | Some cell =>
+              match option_map (fun selected => selected =? address)
+                (address_due stamp (cell_path_boundary cell)) with
+              | None => Some (StopSettlement F.BoundaryUnfinished 1)
+              | Some false => Some (StopSettlement
+                  (F.BoundaryDead (F.BoundaryTruncated source offset)) 1)
+              | Some true =>
+                  match view with
+                  | F.BoundaryCompleted child =>
+                      Some (CompleteSettlement (cell_parent cell) (cell_owner cell) child)
+                  | _ => Some (StopSettlement
+                      (F.BoundaryDead (F.BoundaryTruncated source offset)) 1)
+                  end
+              end
+          end
+      end
+  end.
+
+Definition entry_root (entries : owner_entries) :=
+  match entries with [] => None | (address, _) :: _ => Some address end.
+
+Lemma linked_root_is_entry_root arena root entries :
+  linked arena root entries -> root = entry_root entries.
+Proof. intro valid. destruct valid; reflexivity. Qed.
+
+Definition positional_command stamp source offset view entries :=
+  match view with
+  | F.BoundaryDead _ | F.BoundaryPending _ => StopSettlement view 0
+  | _ => match entries with
+    | [] => StopSettlement view 0
+    | (_, cell) :: rest =>
+        match F.cached_due stamp (F.path_boundary_cache
+          (F.top_caches (F.schedule_owners (projected_owners entries)))) with
+        | None => StopSettlement F.BoundaryUnfinished 1
+        | Some (S _) => StopSettlement (F.BoundaryDead (F.BoundaryTruncated source offset)) 1
+        | Some 0 => match view with
+          | F.BoundaryCompleted child => CompleteSettlement (entry_root rest) (cell_owner cell) child
+          | _ => StopSettlement (F.BoundaryDead (F.BoundaryTruncated source offset)) 1
+          end
+        end
+    end
+  end.
+
+Theorem linked_dispatch_refines_exact_positional_command arena root entries stamp source offset view :
+  linked arena root entries ->
+  linked_command arena root stamp source offset view = Some (positional_command stamp source offset view entries).
+Proof.
+  intro valid. destruct view as [error|id| |child]; try reflexivity;
+    destruct valid as [|address cell rest found parents backward all paths outer]; try reflexivity.
+  all: assert (valid : linked arena (Some address) ((address, cell) :: rest))
+    by (constructor; assumption).
+  all: destruct (linked_cached_reads_refine_the_existing_scheduled_owner_caches valid) as [_ matches].
+  all: pose proof (@linked_root_position_classification arena address ((address, cell) :: rest)
+    _ _ stamp valid matches) as selection.
+  all: unfold read_path, lookup in selection; rewrite found in selection.
+  all: unfold linked_command; rewrite found, selection.
+  all: unfold positional_command.
+  all: destruct (F.cached_due stamp (F.path_boundary_cache
+    (F.top_caches (F.schedule_owners (projected_owners ((address, cell) :: rest))))))
+    as [[|position]|]; try reflexivity.
+  rewrite (linked_root_is_entry_root parents). reflexivity.
+Qed.
+
+Inductive linked_settlement arena classify complete stamp source offset :
+    option nat -> F.boundary_view -> option nat -> F.boundary_observation -> nat -> Prop :=
+| settlement_stop root view observed checks :
+    linked_command arena root stamp source offset view = Some (StopSettlement observed checks) ->
+    linked_settlement arena classify complete stamp source offset root view root
+      (F.unchanged_boundary observed) checks
+| settlement_refuse root view parent current child code at_source at_offset :
+    linked_command arena root stamp source offset view = Some (CompleteSettlement parent current child) ->
+    complete (F.owner_metadata current) (F.owner_region_end current - stamp) child =
+      F.RefusedOwner code at_source at_offset ->
+    linked_settlement arena classify complete stamp source offset root view root
+      (F.note_call (F.region_slot (F.owner_metadata current)) 0
+        (F.unchanged_boundary (F.BoundaryDead (F.BoundaryRefusal code at_source at_offset)))) 1
+| settlement_pop root view parent current child next final observed checks :
+    linked_command arena root stamp source offset view = Some (CompleteSettlement parent current child) ->
+    complete (F.owner_metadata current) (F.owner_region_end current - stamp) child = F.CompletedOwner next ->
+    linked_settlement arena classify complete stamp source offset parent (classify next) final observed checks ->
+    linked_settlement arena classify complete stamp source offset root view final
+      (F.note_call (F.region_slot (F.owner_metadata current)) 1 observed) (S checks).
+
+Print Assumptions linked_dispatch_refines_exact_positional_command.
+
+Theorem linked_settlement_terminates_with_exact_observations_checks_and_retained_prefix
+    arena root entries classify complete stamp source offset :
+  linked arena root entries -> forall view,
+  let scheduled := F.schedule_owners (projected_owners entries) in
+  let observed := F.deepest_due_settlement classify complete stamp source offset view scheduled in
+  exists final,
+    linked_settlement arena classify complete stamp source offset root view final observed
+      (F.settlement_owner_checks classify complete stamp source offset view scheduled) /\
+    linked arena final (skipn (F.boundary_pops observed) entries).
+Proof.
+  intro valid. induction valid as [|address cell rest found parents IH backward all paths outer];
+    intro view; cbn zeta.
+  - destruct view; exists None;
+      (split; [apply settlement_stop; reflexivity|rewrite skipn_nil; exact (@linked_empty arena)]).
+  - assert (valid : linked arena (Some address) ((address, cell) :: rest))
+      by (constructor; assumption).
+    pose proof (@linked_dispatch_refines_exact_positional_command arena (Some address)
+      ((address, cell) :: rest) stamp source offset view valid) as command.
+    destruct view as [error|id| |child].
+    + exists (Some address). split; [apply settlement_stop; exact command|exact valid].
+    + exists (Some address). split; [apply settlement_stop; exact command|exact valid].
+    + cbn [projected_owners map F.schedule_owners F.push_scheduled
+        F.deepest_due_settlement F.settlement_owner_checks F.top_caches F.scheduled_caches].
+      unfold positional_command in command.
+      destruct (F.cached_due stamp (F.path_boundary_cache
+        (F.top_caches (F.schedule_owners (projected_owners ((address, cell) :: rest))))))
+        as [[|position]|] eqn:due;
+        cbn [projected_owners map F.schedule_owners F.push_scheduled F.top_caches F.scheduled_caches] in due;
+        rewrite due; exists (Some address);
+        (split; [apply settlement_stop; exact command|exact valid]).
+    + cbn [projected_owners map F.schedule_owners F.push_scheduled
+        F.deepest_due_settlement F.settlement_owner_checks F.top_caches F.scheduled_caches].
+      unfold positional_command in command.
+      destruct (F.cached_due stamp (F.path_boundary_cache
+        (F.top_caches (F.schedule_owners (projected_owners ((address, cell) :: rest))))))
+        as [[|position]|] eqn:due;
+        cbn [projected_owners map F.schedule_owners F.push_scheduled F.top_caches F.scheduled_caches] in due;
+        rewrite due; cbn [F.scheduled_value F.owner_value snd].
+      * destruct (complete (F.owner_metadata (cell_owner cell))
+          (F.owner_region_end (cell_owner cell) - stamp) child) as [next|code at_source at_offset] eqn:completed.
+        -- destruct (IH (classify next)) as [final [run retained]].
+           exists final. split.
+           ++ eapply settlement_pop; [exact command|exact completed|].
+              now rewrite <- (linked_root_is_entry_root parents).
+           ++ exact retained.
+        -- exists (Some address). split.
+           ++ eapply settlement_refuse; [exact command|exact completed].
+           ++ exact valid.
+      * exists (Some address). split; [apply settlement_stop; exact command|exact valid].
+      * exists (Some address). split; [apply settlement_stop; exact command|exact valid].
+Qed.
+
+Theorem linked_settlement_has_eager_semantics_and_pop_bounded_owner_work
+    arena root entries classify complete stamp source offset view :
+  linked arena root entries ->
+  Forall (fun ending => stamp <= ending) (entry_endpoints entries) ->
+  exists final observed checks,
+    linked_settlement arena classify complete stamp source offset root view final observed checks /\
+    observed = F.eager_unwind classify complete stamp source offset view
+      (F.schedule_owners (projected_owners entries)) /\
+    checks <= S (F.boundary_pops observed) /\
+    linked arena final (skipn (F.boundary_pops observed) entries).
+Proof.
+  intros valid bounds.
+  destruct (@linked_settlement_terminates_with_exact_observations_checks_and_retained_prefix
+    arena root entries classify complete stamp source offset valid view) as [final [run retained]].
+  exists final,
+    (F.deepest_due_settlement classify complete stamp source offset view
+      (F.schedule_owners (projected_owners entries))),
+    (F.settlement_owner_checks classify complete stamp source offset view
+      (F.schedule_owners (projected_owners entries))).
+  split; [exact run|]. split.
+  - apply F.deepest_due_settlement_equals_eager_unwind_under_exact_local_completion.
+    + apply F.schedule_owners_valid.
+    + rewrite (proj2 (scheduled_projection_has_exact_endpoints entries)). exact bounds.
+  - split; [apply F.focused_settlement_checks_are_bounded_by_successful_pops_plus_one|exact retained].
+Qed.
+
+Print Assumptions linked_settlement_terminates_with_exact_observations_checks_and_retained_prefix.
+Print Assumptions linked_settlement_has_eager_semantics_and_pop_bounded_owner_work.
+
+Theorem linked_settlement_is_deterministic arena classify complete stamp source offset
+    root view final observed checks :
+  linked_settlement arena classify complete stamp source offset root view final observed checks ->
+  forall other_final other_observed other_checks,
+    linked_settlement arena classify complete stamp source offset root view
+      other_final other_observed other_checks ->
+    (final, observed, checks) = (other_final, other_observed, other_checks).
+Proof.
+  intro run. induction run; intros other_final other_observed other_checks other;
+    inversion other; subst.
+  all: match goal with
+    | left : ?command = Some ?a, right : ?command = Some ?b |- _ =>
+        assert (same : a = b) by congruence; clear right; inversion same; subst; clear same
+    end.
+  all: try congruence.
+  match goal with
+  | left : ?completion = F.CompletedOwner ?a, right : ?completion = F.CompletedOwner ?b |- _ =>
+      assert (same : a = b) by congruence; subst b; clear right
+  end.
+  match goal with
+  | IH : forall _ _ _, linked_settlement _ _ _ _ _ _ _ _ _ _ _ -> _,
+      tail : linked_settlement _ _ _ _ _ _ _ _ _ _ _ |- _ =>
+      specialize (IH _ _ _ tail); inversion IH; subst; reflexivity
+  end.
+Qed.
+
+Theorem every_linked_run_preserves_eager_result_prefix_and_pop_bounded_checks
+    arena root entries classify complete stamp source offset view final observed checks :
+  linked arena root entries ->
+  Forall (fun ending => stamp <= ending) (entry_endpoints entries) ->
+  linked_settlement arena classify complete stamp source offset root view final observed checks ->
+  observed = F.eager_unwind classify complete stamp source offset view
+    (F.schedule_owners (projected_owners entries)) /\
+  checks <= S (F.boundary_pops observed) /\
+  linked arena final (skipn (F.boundary_pops observed) entries).
+Proof.
+  intros valid bounds run.
+  destruct (@linked_settlement_has_eager_semantics_and_pop_bounded_owner_work
+    arena root entries classify complete stamp source offset view valid bounds)
+    as [expected_final [expected_observed [expected_checks [expected_run properties]]]].
+  pose proof (@linked_settlement_is_deterministic arena classify complete stamp source offset
+    root view final observed checks run expected_final expected_observed expected_checks expected_run) as same.
+  inversion same; subst. exact properties.
+Qed.
+
+Print Assumptions linked_settlement_is_deterministic.
+Print Assumptions every_linked_run_preserves_eager_result_prefix_and_pop_bounded_checks.
+
 End PersistentFocusedOwners.

@@ -10257,6 +10257,22 @@ Linked completion/pop, concrete frame realization, selected-fault coherence,
 checked forcing and resource refinements remain required. This bridge does not
 yet reduce persistent frame growth or complete the ACT/LMDB comparison.
 
+#### 5.33.22 Linked completion loop proof (2026-09-09, task 6018)
+
+Five further laws establish exact linked dispatch, finite completion/pop
+traversal, determinism and all-run equivalence to the eager owner scheduler.
+The retained candidate chain is exact, and abstract owner checks are bounded by
+successful pops plus one. This is not transaction rollback or a bound on the
+completion body, physical frame allocations or model-list lookup costs.
+
+The focused gate passed 132 RPB3 reports, three kernel checks and 88 runtime
+tests, with no failures or ignores. The standalone model compile reported
+593 MiB peak memory and zero swap under its 2 GiB hard cap.
+[J-103](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-103--2026-09-09-linked-completion-loop-and-exact-candidate-retention)
+records exact logs, extracted invariants and the required historical-frame
+overlay/fresh-ID materialization binding. Production Rust is unchanged; the
+persistent frame-growth correction and final ACT/LMDB comparison remain open.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
