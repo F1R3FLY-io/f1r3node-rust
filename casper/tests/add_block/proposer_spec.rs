@@ -107,6 +107,29 @@ impl HeightChecker for OkHeightChecker {
     }
 }
 
+/// Records the selection the proposer asked for, then behaves like
+/// `TestBlockCreator`.
+pub struct SelectionRecordingBlockCreator(
+    pub Arc<std::sync::Mutex<Option<casper::rust::blocks::proposer::proposer::DeploySelection>>>,
+);
+impl BlockCreator for SelectionRecordingBlockCreator {
+    async fn create_block(
+        &mut self,
+        _: &CasperSnapshot,
+        _: &ValidatorIdentity,
+        _: Option<(PrivateKey, String)>,
+        selection: casper::rust::blocks::proposer::proposer::DeploySelection,
+    ) -> Result<BlockCreatorResult, CasperError> {
+        *self.0.lock().unwrap() = Some(selection);
+        use models::rust::block_implicits::get_random_block_default;
+        Ok(BlockCreatorResult::Created(
+            get_random_block_default(),
+            prost::bytes::Bytes::new(),
+            prost::bytes::Bytes::new(),
+        ))
+    }
+}
+
 pub struct TestBlockCreator;
 impl BlockCreator for TestBlockCreator {
     async fn create_block(
@@ -114,7 +137,7 @@ impl BlockCreator for TestBlockCreator {
         _: &CasperSnapshot,
         _: &ValidatorIdentity,
         _: Option<(PrivateKey, String)>,
-        _: bool,
+        _: casper::rust::blocks::proposer::proposer::DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError> {
         use models::rust::block_implicits::get_random_block_default;
         Ok(BlockCreatorResult::Created(
@@ -389,6 +412,59 @@ async fn proposer_should_reject_to_propose_if_synchrony_constraint_not_met() {
             }
             Err(e) => panic!("Unexpected error: {:?}", e),
         }
+    })
+    .await
+}
+
+/// The height constraint must not gate the recovery lane it exists to be
+/// rescued by: on the heartbeat lane the gate degrades to an empty recovery
+/// mint instead of a failure.
+#[tokio::test]
+async fn height_constraint_degrades_to_an_empty_recovery_mint_on_the_recovery_lane() {
+    with_storage(|block_store, block_dag_storage| async move {
+        let runtime_manager = mk_runtime_manager("block-query-response-api-test", None).await;
+        let validator_identity = Arc::new(dummy_validator_identity());
+        let recorded = Arc::new(std::sync::Mutex::new(None));
+
+        let mut proposer = Proposer::new(
+            validator_identity,
+            None,
+            TestCasperSnapshotProvider,
+            AlwaysActiveChecker,
+            OkProposeConstraintStakeChecker,
+            AlwaysTooFarAheadChecker,
+            SelectionRecordingBlockCreator(recorded.clone()),
+            TestBlockValidator,
+            TestProposeEffectHandler,
+            true, // allow_empty_blocks: the heartbeat/recovery lane
+        );
+
+        use std::collections::HashMap;
+
+        use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+
+        let dag_representation = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let casper = Arc::new(NoOpsCasperEffect::new(
+            Some(HashMap::new()),
+            None,
+            Arc::new(runtime_manager),
+            block_store,
+            dag_representation,
+        ));
+
+        let result = proposer.propose(casper, true).await.expect("propose");
+        assert!(
+            result.block_message_opt.is_some(),
+            "the recovery lane must mint a block past the height gate, got {:?}",
+            result.propose_result.propose_status
+        );
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            Some(casper::rust::blocks::proposer::proposer::DeploySelection::RecoveryEmpty),
+            "the minted block must carry no user deploys"
+        );
     })
     .await
 }

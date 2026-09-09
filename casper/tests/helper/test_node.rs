@@ -124,7 +124,11 @@ impl TestNode {
             self.rejected_deploy_buffer.clone(),
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
-            self.allow_empty_blocks,
+            if self.allow_empty_blocks {
+                casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty
+            } else {
+                casper::rust::blocks::proposer::proposer::DeploySelection::Standard
+            },
         )
         .await
     }

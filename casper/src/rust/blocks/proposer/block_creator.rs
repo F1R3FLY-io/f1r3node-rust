@@ -2594,8 +2594,9 @@ pub async fn create(
     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
-    allow_empty_blocks: bool,
+    selection: super::proposer::DeploySelection,
 ) -> Result<BlockCreatorResult, CasperError> {
+    let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
@@ -2671,7 +2672,9 @@ pub async fn create(
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
-    let (user_deploys, _, _) = {
+    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
+        (HashSet::new(), 0usize, false)
+    } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;

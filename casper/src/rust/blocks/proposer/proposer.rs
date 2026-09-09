@@ -70,6 +70,21 @@ pub trait HeightChecker {
     ) -> Result<CheckProposeConstraintsResult, CasperError>;
 }
 
+/// What the created block may carry. `RecoveryEmpty` mints a justification
+/// with no user deploys — the recovery lane's block when finality is stalled
+/// past the height constraint, where a deploy-carrying block would bury its
+/// deploys at a never-finalizing height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeploySelection {
+    Standard,
+    StandardAllowEmpty,
+    RecoveryEmpty,
+}
+
+impl DeploySelection {
+    pub fn allows_empty(&self) -> bool { !matches!(self, DeploySelection::Standard) }
+}
+
 #[allow(async_fn_in_trait)]
 pub trait BlockCreator {
     async fn create_block(
@@ -77,7 +92,7 @@ pub trait BlockCreator {
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
         dummy_deploy_opt: Option<(PrivateKey, String)>,
-        allow_empty_blocks: bool,
+        selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError>;
 }
 
@@ -194,115 +209,127 @@ where
         // check if node is allowed to propose a block
         let constraint_check = self.check_propose_constraints(casper_snapshot).await?;
 
-        match constraint_check {
-            CheckProposeConstraintsResult::Failure(failure) => Ok((
-                ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(failure)),
-                None,
-            )),
-            CheckProposeConstraintsResult::Success => {
-                let block_result = self
-                    .block_creator
-                    .create_block(
-                        casper_snapshot,
-                        &self.validator,
-                        self.dummy_deploy_opt.clone(),
-                        allow_empty_blocks_for_request,
-                    )
+        // The height constraint must not gate the recovery lane it exists to
+        // be rescued by: past the threshold, no proposal can land, so no new
+        // justifications, so the clique never re-forms. An empty recovery
+        // mint carries the justifications without burying deploys at a
+        // never-finalizing height; every other lane keeps the gate.
+        let selection = match constraint_check {
+            CheckProposeConstraintsResult::Failure(
+                CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
+            ) if allow_empty_blocks_for_request => {
+                tracing::info!(
+                    "Height constraint exceeded with recovery eligible: minting an \
+                     empty recovery block instead of failing the recovery lane"
+                );
+                DeploySelection::RecoveryEmpty
+            }
+            CheckProposeConstraintsResult::Failure(failure) => {
+                return Ok((
+                    ProposeResult::failure(ProposeFailure::CheckConstraintsFailure(failure)),
+                    None,
+                ))
+            }
+            CheckProposeConstraintsResult::Success if allow_empty_blocks_for_request => {
+                DeploySelection::StandardAllowEmpty
+            }
+            CheckProposeConstraintsResult::Success => DeploySelection::Standard,
+        };
+
+        let block_result = self
+            .block_creator
+            .create_block(
+                casper_snapshot,
+                &self.validator,
+                self.dummy_deploy_opt.clone(),
+                selection,
+            )
+            .await?;
+
+        match block_result {
+            BlockCreatorResult::NoNewDeploys => {
+                Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
+            }
+            BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
+                // Publish BlockCreated event immediately after block is created (before validation)
+                self.propose_effect_handler.publish_block_created(&block)?;
+
+                let validation_result = casper
+                    .validate_self_created(&block, casper_snapshot, pre_state_hash, post_state_hash)
                     .await?;
 
-                match block_result {
-                    BlockCreatorResult::NoNewDeploys => {
-                        Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
-                    }
-                    BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
-                        // Publish BlockCreated event immediately after block is created (before validation)
-                        self.propose_effect_handler.publish_block_created(&block)?;
-
-                        let validation_result = casper
-                            .validate_self_created(
-                                &block,
-                                casper_snapshot,
-                                pre_state_hash,
-                                post_state_hash,
-                            )
+                match validation_result {
+                    ValidBlockProcessing::Right(valid_status) => {
+                        self.propose_effect_handler
+                            .handle_propose_effect(casper, &block)
                             .await?;
-
-                        match validation_result {
-                            ValidBlockProcessing::Right(valid_status) => {
-                                self.propose_effect_handler
-                                    .handle_propose_effect(casper, &block)
-                                    .await?;
-                                Ok((ProposeResult::success(valid_status), Some(block)))
-                            }
-                            ValidBlockProcessing::Left(invalid_reason) => {
-                                // Some self-validation failures are recoverable races in fast, multi-parent
-                                // proposing: parent selection can become stale, and safety checks can reject
-                                // the candidate by the time validation runs. ContainsExpiredDeploy is in this
-                                // set as a wedge-breaker, not a race: deploy selection excludes block-expired
-                                // deploys, but any residual expiry disagreement with validation must cost one
-                                // skipped propose rather than the permanent BugError retry loop of issue #197
-                                // (the pool is unchanged on this path, so erroring here re-proposes the same
-                                // block forever).
-                                if matches!(
-                                    invalid_reason,
-                                    BlockError::Invalid(InvalidBlock::InvalidParents)
-                                        | BlockError::Invalid(InvalidBlock::InvalidFollows)
-                                        | BlockError::Invalid(
-                                            InvalidBlock::JustificationRegression
-                                        )
-                                        | BlockError::Invalid(InvalidBlock::InvalidBondsCache)
-                                        | BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-                                        | BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
-                                        | BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
-                                ) {
-                                    let recoverable_reason = match &invalid_reason {
-                                        BlockError::Invalid(InvalidBlock::InvalidParents) => {
-                                            "invalid_parents"
-                                        }
-                                        BlockError::Invalid(InvalidBlock::InvalidFollows) => {
-                                            "invalid_follows"
-                                        }
-                                        BlockError::Invalid(InvalidBlock::InvalidBondsCache) => {
-                                            "invalid_bonds_cache"
-                                        }
-                                        BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy) => {
-                                            "invalid_repeat_deploy"
-                                        }
-                                        BlockError::Invalid(
-                                            InvalidBlock::JustificationRegression,
-                                        ) => "justification_regression",
-                                        BlockError::Invalid(
-                                            InvalidBlock::NeglectedInvalidBlock,
-                                        ) => "neglected_invalid_block",
-                                        BlockError::Invalid(
-                                            InvalidBlock::ContainsExpiredDeploy,
-                                        ) => "contains_expired_deploy",
-                                        _ => "other",
-                                    };
-                                    metrics::counter!(
-                                        "propose_recoverable_self_validation_failures_total",
-                                        "source" => "casper_proposer",
-                                        "reason" => recoverable_reason
-                                    )
-                                    .increment(1);
-                                    tracing::info!(
-                                        "Block validation failed with {:?} - \
-                                         proposal conditions no longer met, skipping propose",
-                                        invalid_reason
-                                    );
-                                    return Ok((
-                                        ProposeResult::failure(ProposeFailure::InternalDeployError),
-                                        None,
-                                    ));
+                        Ok((ProposeResult::success(valid_status), Some(block)))
+                    }
+                    ValidBlockProcessing::Left(invalid_reason) => {
+                        // Some self-validation failures are recoverable races in fast, multi-parent
+                        // proposing: parent selection can become stale, and safety checks can reject
+                        // the candidate by the time validation runs. ContainsExpiredDeploy is in this
+                        // set as a wedge-breaker, not a race: deploy selection excludes block-expired
+                        // deploys, but any residual expiry disagreement with validation must cost one
+                        // skipped propose rather than the permanent BugError retry loop of issue #197
+                        // (the pool is unchanged on this path, so erroring here re-proposes the same
+                        // block forever).
+                        if matches!(
+                            invalid_reason,
+                            BlockError::Invalid(InvalidBlock::InvalidParents)
+                                | BlockError::Invalid(InvalidBlock::InvalidFollows)
+                                | BlockError::Invalid(InvalidBlock::JustificationRegression)
+                                | BlockError::Invalid(InvalidBlock::InvalidBondsCache)
+                                | BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
+                                | BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
+                                | BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
+                        ) {
+                            let recoverable_reason = match &invalid_reason {
+                                BlockError::Invalid(InvalidBlock::InvalidParents) => {
+                                    "invalid_parents"
                                 }
+                                BlockError::Invalid(InvalidBlock::InvalidFollows) => {
+                                    "invalid_follows"
+                                }
+                                BlockError::Invalid(InvalidBlock::InvalidBondsCache) => {
+                                    "invalid_bonds_cache"
+                                }
+                                BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy) => {
+                                    "invalid_repeat_deploy"
+                                }
+                                BlockError::Invalid(InvalidBlock::JustificationRegression) => {
+                                    "justification_regression"
+                                }
+                                BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock) => {
+                                    "neglected_invalid_block"
+                                }
+                                BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy) => {
+                                    "contains_expired_deploy"
+                                }
+                                _ => "other",
+                            };
+                            metrics::counter!(
+                                "propose_recoverable_self_validation_failures_total",
+                                "source" => "casper_proposer",
+                                "reason" => recoverable_reason
+                            )
+                            .increment(1);
+                            tracing::info!(
+                                "Block validation failed with {:?} - \
+                                         proposal conditions no longer met, skipping propose",
+                                invalid_reason
+                            );
+                            return Ok((
+                                ProposeResult::failure(ProposeFailure::InternalDeployError),
+                                None,
+                            ));
+                        }
 
-                                // Other validation failures are unexpected and should error
-                                Err(CasperError::RuntimeError(format!(
+                        // Other validation failures are unexpected and should error
+                        Err(CasperError::RuntimeError(format!(
                                     "Validation of self created block failed with reason: {:?}, cancelling propose.",
                                     invalid_reason
                                 )))
-                            }
-                        }
                     }
                 }
             }
@@ -688,7 +715,7 @@ impl BlockCreator for ProductionBlockCreator {
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
         dummy_deploy_opt: Option<(PrivateKey, String)>,
-        allow_empty_blocks: bool,
+        selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError> {
         block_creator::create(
             casper_snapshot,
@@ -698,7 +725,7 @@ impl BlockCreator for ProductionBlockCreator {
             self.rejected_deploy_buffer.clone(),
             &self.runtime_manager,
             &mut self.block_store,
-            allow_empty_blocks,
+            selection,
         )
         .await
     }
