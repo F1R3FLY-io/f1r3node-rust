@@ -782,10 +782,21 @@ pub async fn dispatch_via_trait<H: FsHandler>(
                     },
                 )
                 .await;
-                let out = vec![divergence];
-                if let Some(supp) = H::post_reply_supplement(&out) {
+                // S3.9-F5 (2026-09-09): cost supplement is billed
+                // against the FRESH syscall reply (state_source),
+                // not the divergence reply produced to ack.
+                // Pre-refactor fs_entries computed `n_entries`
+                // from `fresh_reply` BEFORE the verify branch and
+                // charged that same n regardless of verify Ok/Err.
+                // Divergence-path charging against `divergence`
+                // (list_len=0 for err payload) would silently drop
+                // cost witness bytes vs. pre-refactor.  Handlers
+                // that don't override this method (default None)
+                // are unaffected.
+                if let Some(supp) = H::post_reply_supplement(std::slice::from_ref(&fresh_par)) {
                     fs.metering.reserve_incremental_primitive(supp)?;
                 }
+                let out = vec![divergence];
                 produce(&out, &ack).await?;
                 Ok(out)
             }
