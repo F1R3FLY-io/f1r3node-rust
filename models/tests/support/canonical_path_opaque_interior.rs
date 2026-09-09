@@ -140,9 +140,24 @@ pub(super) fn normalized(
     reducer: &CanonicalPathStreamReducer,
 ) -> (InnerPath, Vec<RangeFrame>, u64, usize, usize, usize) {
     reducer.assert_frame_invariants();
+    let (root, projection) = reducer.projected_frame_graph();
+    let (root, frames) = normalize_graph(root, &projection);
+    (
+        root,
+        frames,
+        reducer.machine.next_obligation,
+        reducer.consumed_len(),
+        reducer.stats().edges,
+        reducer.stats().max_topology_depth,
+    )
+}
+
+pub(super) fn normalize_graph<Span: Clone>(
+    mut root: InnerPath,
+    projection: &[Frame<Span>],
+) -> (InnerPath, Vec<Frame<Span>>) {
     let mut pending = Vec::new();
     let mut names = BTreeMap::new();
-    let (mut root, projection) = reducer.projected_frame_graph();
     if let Some(id) = root.stack {
         names.insert(id.0, 0);
         pending.push(id);
@@ -180,14 +195,7 @@ pub(super) fn normalized(
         frames.push(frame);
         at += 1;
     }
-    (
-        root,
-        frames,
-        reducer.machine.next_obligation,
-        reducer.consumed_len(),
-        reducer.stats().edges,
-        reducer.stats().max_topology_depth,
-    )
+    (root, frames)
 }
 
 fn expected_width(from: usize, payload: u64, owners: &[(u64, u64)], input_len: usize) -> usize {

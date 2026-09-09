@@ -1094,3 +1094,198 @@ fn persistent_fault_private_preflight_uses_selected_graph_not_latest_event() {
         }
     }
 }
+
+fn persistent_owner_fixture(layers: &[(u64, u64)], seed: u16) -> (FrameHistory, InnerPath) {
+    let mut history = FrameHistory::new();
+    let mut tail = None;
+    for kind in 0..6 {
+        tail = Some(history.push(frame(kind, seed.wrapping_add(u16::from(kind)), tail)));
+    }
+    let shared_tail = tail;
+    let mut current = InnerPath {
+        escape_allowed: false,
+        stack: tail,
+        status: PathStatus::SplitComplete,
+        completed_segments: u64::from(seed) + 1,
+        first_tag: Some((ESCAPE, source(seed))),
+        stable: false,
+    };
+    for (index, &(remaining, path_remaining)) in layers.iter().enumerate().rev() {
+        let id = history.push(Frame::Region {
+            remaining,
+            previous: Some(CanonicalBytesArena::new().empty()),
+            phase: RegionPhase::Path {
+                declared_len: path_remaining,
+                remaining: path_remaining,
+                start_depth: index + 17,
+                path: current,
+            },
+            next: shared_tail,
+        });
+        current = InnerPath {
+            escape_allowed: index % 2 == 0,
+            stack: Some(id),
+            status: if index % 3 == 0 {
+                PathStatus::Dead(error(seed))
+            } else {
+                PathStatus::Open
+            },
+            completed_segments: index as u64 + 5,
+            first_tag: Some((EPATHMAP, source(seed.wrapping_add(index as u16)))),
+            stable: index % 2 != 0,
+        };
+    }
+    (history, current)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn persistent_owner_capture_and_forcing_preserve_exact_shared_histories(
+        layers in proptest::collection::vec((1u16..1024, 1u16..1024), 1..40),
+        seed in any::<u16>(),
+        advance in any::<u16>(),
+    ) {
+        let layers: Vec<_> = layers.into_iter().map(|(a, b)| (u64::from(a), u64::from(b))).collect();
+        let (mut history, original) = persistent_owner_fixture(&layers, seed);
+        let mut byte_arena = CanonicalBytesArena::new();
+        let mut span = byte_arena.empty();
+        let located: Vec<_> = (0..3).map(|offset| CanonicalLocatedByte::new(
+            (seed as u8).wrapping_add(offset as u8),
+            CanonicalByteProvenance::new(13, usize::from(seed) + offset * 17),
+        )).collect();
+        for byte in &located {
+            span = byte_arena.append(span, *byte).unwrap();
+        }
+        for frame in &mut history.slots {
+            if let Frame::Region { previous, .. } = frame {
+                *previous = Some(span);
+            }
+        }
+        let physical = history.slots.clone();
+        let stamp = usize::from(seed);
+        let mut owners = PersistentRegionOwners::new();
+        let mut focus = original.clone();
+        let mut root = None;
+        let mut roots = Vec::new();
+        while let Some((next, child)) = owners.capture(&history, &focus, root, stamp) {
+            assert_eq!(history.slots, physical);
+            let cell = &owners.entries[next.0];
+            assert_eq!(cell.owner, focus);
+            assert_eq!(cell.parent, root);
+            assert!(cell.parent.is_none_or(|parent| parent.0 < next.0));
+            roots.push(next);
+            let mut all = next;
+            let mut path = next;
+            let mut outermost = next;
+            let mut cursor = cell.parent;
+            while let Some(parent) = cursor {
+                let older = &owners.entries[parent.0];
+                if older.region_end.min(older.path_end) <= owners.entries[all.0].region_end.min(owners.entries[all.0].path_end) {
+                    all = parent;
+                }
+                if older.path_end < owners.entries[path.0].path_end {
+                    path = parent;
+                }
+                outermost = parent;
+                cursor = older.parent;
+            }
+            assert_eq!(cell.all_boundary, RegionBoundary { end: owners.entries[all.0].region_end.min(owners.entries[all.0].path_end), owner: all });
+            assert_eq!(cell.path_boundary, RegionBoundary { end: owners.entries[path.0].path_end, owner: path });
+            assert_eq!(cell.outermost, outermost);
+            root = Some(next);
+            focus = child;
+        }
+        assert_eq!(roots.len(), layers.len());
+        let retained = owners.entries.clone();
+        let k = usize::from(seed) % roots.len();
+        let old = &retained[roots[k].0];
+        let (fork, fork_focus) = owners.capture(&history, &old.owner, old.parent, stamp).unwrap();
+        assert_eq!(&owners.entries[..retained.len()], retained.as_slice());
+        let restored = owners.materialize(&mut history, fork_focus, Some(fork), stamp);
+        assert_eq!(&history.slots[..physical.len()], physical.as_slice());
+        assert_eq!(history.slots.len(), physical.len() + k + 1);
+        assert_eq!(
+            super::opaque_interior_tests::normalize_graph(restored.clone(), &history.slots),
+            super::opaque_interior_tests::normalize_graph(original.clone(), &physical),
+        );
+        let restored_history = history.slots.clone();
+        let width = layers.iter().map(|(a, b)| (*a).min(*b)).min().unwrap();
+        let delta = u64::from(advance) % (width + 1);
+        let mut projected = physical.clone();
+        for owner in &retained {
+            let Frame::Region { remaining, phase: RegionPhase::Path { remaining: path_remaining, .. }, .. } = &mut projected[owner.owner.stack.unwrap().0] else { unreachable!() };
+            *remaining -= delta;
+            *path_remaining -= delta;
+        }
+        let materialized = owners.materialize(&mut history, focus, root, stamp + delta as usize);
+        assert_eq!(history.slots.len(), restored_history.len() + layers.len());
+        assert_eq!(&history.slots[..restored_history.len()], restored_history.as_slice());
+        assert_eq!(
+            super::opaque_interior_tests::normalize_graph(materialized, &history.slots),
+            super::opaque_interior_tests::normalize_graph(original, &projected),
+        );
+        assert_eq!(
+            super::opaque_interior_tests::normalize_graph(restored.clone(), &history.slots),
+            super::opaque_interior_tests::normalize_graph(restored, &restored_history),
+        );
+        let extended = byte_arena.append(span, CanonicalLocatedByte::new(
+            0xff, CanonicalByteProvenance::new(29, 9001),
+        )).unwrap();
+        assert_eq!(byte_arena.located_bytes(span).collect::<Vec<_>>(), located);
+        assert_eq!(byte_arena.located_bytes(extended).count(), located.len() + 1);
+    }
+}
+
+#[test]
+fn persistent_owner_endpoints_preserve_full_width_and_opposite_ties() {
+    let (mut history, original) = persistent_owner_fixture(&[(u64::MAX, u64::MAX); 2], 3);
+    let mut owners = PersistentRegionOwners::new();
+    let (outer, child) = owners
+        .capture(&history, &original, None, usize::MAX)
+        .unwrap();
+    let (inner, focus) = owners
+        .capture(&history, &child, Some(outer), usize::MAX)
+        .unwrap();
+    assert_eq!(owners.entries[inner.0].all_boundary.owner, outer);
+    assert_eq!(owners.entries[inner.0].path_boundary.owner, inner);
+    assert_eq!(
+        owners.entries[inner.0].region_end,
+        usize::MAX as u128 + u128::from(u64::MAX)
+    );
+    let before = history.slots.clone();
+    let restored = owners.materialize(&mut history, focus, Some(inner), usize::MAX);
+    assert_eq!(
+        super::opaque_interior_tests::normalize_graph(restored, &history.slots),
+        super::opaque_interior_tests::normalize_graph(original, &before),
+    );
+}
+
+#[test]
+fn persistent_owner_capture_forcing_and_drop_use_a_small_native_stack() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let depth = 20_000;
+            let (mut history, mut focus) = persistent_owner_fixture(&vec![(1, 1); depth], 7);
+            let original_frames = history.slots.len();
+            let mut owners = PersistentRegionOwners::new();
+            let mut root = None;
+            while let Some((next, child)) = owners.capture(&history, &focus, root, 0) {
+                root = Some(next);
+                focus = child;
+            }
+            assert_eq!(owners.entries.len(), depth);
+            assert_eq!(history.slots.len(), original_frames);
+            let restored = owners.materialize(&mut history, focus, root, 1);
+            assert_eq!(history.slots.len(), original_frames + depth);
+            assert!(restored.stack.is_some());
+            drop(restored);
+            drop(owners);
+            drop(history);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

@@ -7568,6 +7568,64 @@ is claimed while the review agent is unavailable.
 
 No consensus rule, codec, backend default or ACT/LMDB measurement changes here.
 
+### J-108 — 2026-09-09: immutable owner storage implemented and property-bound
+
+**IMPLEMENTATION.** `PersistentRegionOwners` now implements the formally specified
+capture and fresh-cell materialization operations in Rust. Each capture borrows
+an actual Region frame, retains its enclosing path/frame identity, and appends a
+fixed-size owner cell with a backward parent, absolute endpoints, all/path boundary
+caches and outermost handle. Boundary handles are generic over their identity
+type, keeping persistent owner IDs separate from streaming positions and frame IDs.
+
+Capture never clears a historical child stack. Materialization follows parent
+handles inside-out, borrows static fields and span handles from the retained
+Region, checks residual subtraction/conversion, and appends exactly one fresh
+Region per owner. It does not decode keys, sort elements or reconstruct previous
+span content. The default persistent reducer is not switched to this component
+in this checkpoint; traversal/fault/effect integration remains required.
+
+**PROPERTY BINDING.** Three new tests bind the existing PFO/PFR contracts to Rust:
+32 generated owner-chain cases independently scan both caches, check exact capture
+metadata and parent links, fork the owner arena, retain shared continuations,
+advance residuals and compare complete normalized graphs and every historical
+frame. The test reuses the existing normalizer through a generic helper that
+retains alias identity and all payload fields, rather than duplicating an oracle.
+Before final qualification, the previous-span fixture was strengthened from empty
+handles to nonempty located-byte spans, retaining the actual byte arena and
+checking old observations after append. This prevents empty-only fixtures from
+masking replacement of a retained span with an empty handle.
+A full-width case uses `usize::MAX` and `u64::MAX` to check endpoint arithmetic
+and opposite equal-endpoint tie rules. A 20,000-owner case captures, materializes
+and drops all storage on a 256 KiB native stack with exact frame-count assertions.
+
+**MEASURED COMPONENT QUALIFICATION.** The three tests passed with no failures or
+ignores. Their release service took 61.944 s including compilation, reported 2 GiB
+peak memory and zero swap under High 4 GiB / Max 6 GiB / CPU 400%, four jobs and
+four test threads. Test execution itself reported 0.01 s; this is a correctness
+gate duration, not a performance benchmark. Before the nonempty-span strengthening,
+the combined gate passed 160 RPB3 reports, three kernel checks and 91 selected
+release tests, and the full models library passed 394 tests in 53.41 s with
+237.4 MiB reported service peak and zero swap. This latter run reused the build;
+its memory is not comparable to the compile-inclusive 2 GiB service above.
+The final strengthened-fixture full-library run passed all 394 tests in 53.60 s,
+with no failures or ignores; its compile-inclusive service took 86.444 s,
+reported 1.5 GiB peak memory and zero swap. Seed `41315976` was used throughout.
+The formal models and production component did not change during the fixture
+strengthening. No timing/RSS comparison is inferred from these correctness runs.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/epathmap-persistent-owner-storage-20260909.log` | `37ab74754df5837d7f3c434307f4c0e0f536201ee3ca218ea6574f5e1a7d984c` |
+| `/tmp/epathmap-persistent-owner-storage-gate-20260909.log` | `707f29ebd4ad3ab82cd715573cc73085640606967a45f2ed3f83ae609ee64a99` |
+| `/tmp/epathmap-persistent-owner-models-20260909.log` | `2947ffc823e0646be33416e85ff0da6776b3469e13e2eb31d009a00034f4a75c` |
+| `/tmp/epathmap-persistent-owner-span-final-20260909.log` | `68c81745727d41257af4246a10535002d7c9e0056375248a3b97c3c514fa8034` |
+
+**LIMITS.** These tests establish component capture/materialization observations,
+not complete persistent traversal semantics, arbitrary span backing lifetime,
+every fault transition or total retained-memory slope. Saved-stamp and valid
+handle premises remain invariants of the forthcoming caller. No consensus format,
+PathMap dependency or ACT/LMDB comparison result changes here.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

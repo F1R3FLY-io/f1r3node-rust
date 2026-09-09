@@ -10336,6 +10336,24 @@ from the preceding 391-test full-library checkpoint.
 records qualification and the callback/publication/resource realization limits.
 No persistent allocation improvement or production runtime change is claimed.
 
+#### 5.33.27 Immutable persistent owner-storage component (2026-09-09, task 6018)
+
+Rust now implements the verified immutable owner capture and fresh-cell
+materialization component. Three tests passed: generated shared-history/cache
+properties, full-width endpoint/tie controls, and capture/materialization/Drop
+of 20,000 owners on a 256 KiB native stack. Capture appends no Region frames;
+forcing appends one Region per owner and preserves old frames. The release
+service reported 2 GiB peak memory and zero swap under a 6 GiB hard cap, including
+compilation. These are component correctness observations, not a traversal
+benchmark or treatment-versus-control memory result.
+The combined gate passed 160 RPB3 reports, three kernel checks and 91 selected
+release tests. After strengthening the span fixture to retain nonempty located
+bytes, the full models library passed all 394 tests in 53.60 s with no failures
+or ignores; that compile-inclusive service reported 1.5 GiB peak and zero swap.
+[J-108](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-108--2026-09-09-immutable-owner-storage-implemented-and-property-bound)
+records qualification. The default persistent reducer remains unchanged until
+state-machine, fault, shared-effect and complete resource bindings pass.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

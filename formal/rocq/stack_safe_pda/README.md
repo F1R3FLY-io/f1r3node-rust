@@ -1300,6 +1300,42 @@ are required implementation/property bindings, not five new Rust tests. The
 concrete control is kernel checked. No runtime cost bound for callbacks, model
 list lookup or total persistent allocations follows from the dispatch-check bound.
 
+#### Immutable Rust owner-storage binding (2026-09-09)
+
+`PersistentRegionOwners` implements the verified owner-storage operations in
+`canonical_path_admission.rs`. Capture borrows an actual immutable active Region,
+copies its enclosing `InnerPath`, retains its frame handle, and returns the actual
+child. Each new owner stores a backward parent, absolute endpoints, both cached
+boundary handles and the outermost handle. `PersistentRegionOwnerId` distinguishes
+owner-arena identities from frame identities; the existing `RegionBoundary` is
+generic over handle type and remains unchanged for streaming positions.
+
+Materialization follows parent handles inside-out and appends fresh Region cells
+to `FrameHistory`. Static Region fields and previous span handles are borrowed
+from the retained cell, not reconstructed from bytes. Residual subtraction and
+conversion to `u64` are checked against the saved-stamp invariants; the absolute
+sum uses `u128` for a native `usize` stamp plus a `u64` residual. Capture never
+clears the old child's stack. These operations are not yet connected to the
+persistent traversal state machine, so no end-to-end resource correction follows.
+
+| Executed binding target | Formal obligations exercised |
+|---|---|
+| `persistent_owner_capture_and_forcing_preserve_exact_shared_histories` | PFO-01/02 and PFR-01–09/12: generated owner chains, independent linked-cache scans and opposite tie choices, retained metadata/child handles, divergent owner-arena branches, shared continuations, exact full-payload graph normalization, residual advancement, one fresh frame per owner, and unchanged earlier frames/normalized snapshots. |
+| `persistent_owner_endpoints_preserve_full_width_and_opposite_ties` | Capture/materialization at `usize::MAX` with `u64::MAX` residuals; equal endpoints choose the outer all-bound and inner path-bound handles. |
+| `persistent_owner_capture_forcing_and_drop_use_a_small_native_stack` | 20,000 captures and materializations, with exact cell-count assertions and destruction on a 256 KiB native stack. This is a concrete depth witness, not a universal time or RSS theorem. |
+
+The existing opaque-interior graph normalizer is reused generically, preserving
+alias identity through an explicit address-renaming map and retaining all payload
+fields. Production does not use this map or test projection. Generated tests use
+nonempty previous spans with distinct physical provenance and check that appending
+to the byte arena preserves the old span's exact located-byte observation. They use
+all inactive frame variants and active Regions; they deliberately allow shared
+untouched continuations and retained historical child graphs. The active frontier
+still contains distinct held Region slots. Tests cover the component, not every
+real parser transition, fault construction, callback effect, byte-arena lifetime
+or optimized traversal allocation bound. The default persistent reducer remains
+the existing implementation until those integration bindings pass.
+
 ## Exact matcher count intervals (2026-09-07)
 
 Task 5855's required formal child 8339 adds `ParCountIntervals` to

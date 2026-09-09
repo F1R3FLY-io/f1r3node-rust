@@ -467,9 +467,9 @@ pub(crate) struct CanonicalPathStreamReducer {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RegionBoundary {
+struct RegionBoundary<Owner = usize> {
     end: u128,
-    owner: usize,
+    owner: Owner,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -714,6 +714,144 @@ trait FrameStore: std::ops::Index<usize, Output = Frame<Self::Span>> {
 
 struct FrameHistory {
     slots: Vec<Frame>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PersistentRegionOwnerId(usize);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PersistentRegionOwner {
+    owner: InnerPath,
+    parent: Option<PersistentRegionOwnerId>,
+    region_end: u128,
+    path_end: u128,
+    all_boundary: RegionBoundary<PersistentRegionOwnerId>,
+    path_boundary: RegionBoundary<PersistentRegionOwnerId>,
+    outermost: PersistentRegionOwnerId,
+}
+
+struct PersistentRegionOwners {
+    entries: Vec<PersistentRegionOwner>,
+}
+
+impl PersistentRegionOwners {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn capture(
+        &mut self,
+        frames: &FrameHistory,
+        current: &InnerPath,
+        parent: Option<PersistentRegionOwnerId>,
+        stamp: usize,
+    ) -> Option<(PersistentRegionOwnerId, InnerPath)> {
+        let Frame::Region {
+            remaining,
+            phase:
+                RegionPhase::Path {
+                    remaining: path_remaining,
+                    path,
+                    ..
+                },
+            ..
+        } = &frames.slots[current.stack?.0]
+        else {
+            return None;
+        };
+        let id = PersistentRegionOwnerId(self.entries.len());
+        let region_end = stamp as u128 + u128::from(*remaining);
+        let path_end = stamp as u128 + u128::from(*path_remaining);
+        let mut all_boundary = RegionBoundary {
+            end: region_end.min(path_end),
+            owner: id,
+        };
+        let mut path_boundary = RegionBoundary {
+            end: path_end,
+            owner: id,
+        };
+        let outermost = if let Some(parent) = parent {
+            let previous = &self.entries[parent.0];
+            if previous.all_boundary.end <= all_boundary.end {
+                all_boundary = previous.all_boundary;
+            }
+            if previous.path_boundary.end < path_boundary.end {
+                path_boundary = previous.path_boundary;
+            }
+            previous.outermost
+        } else {
+            id
+        };
+        self.entries.push(PersistentRegionOwner {
+            owner: current.clone(),
+            parent,
+            region_end,
+            path_end,
+            all_boundary,
+            path_boundary,
+            outermost,
+        });
+        Some((id, path.clone()))
+    }
+
+    fn materialize(
+        &self,
+        frames: &mut FrameHistory,
+        mut current: InnerPath,
+        mut root: Option<PersistentRegionOwnerId>,
+        stamp: usize,
+    ) -> InnerPath {
+        while let Some(id) = root {
+            let saved = &self.entries[id.0];
+            let held = saved
+                .owner
+                .stack
+                .expect("a captured owner retains its Region frame");
+            let Frame::Region {
+                previous,
+                phase:
+                    RegionPhase::Path {
+                        declared_len,
+                        start_depth,
+                        ..
+                    },
+                next,
+                ..
+            } = &frames.slots[held.0]
+            else {
+                unreachable!("immutable owner history retains its active Region phase")
+            };
+            let frame = Frame::Region {
+                remaining: u64::try_from(
+                    saved
+                        .region_end
+                        .checked_sub(stamp as u128)
+                        .expect("the selected graph stamp precedes the Region end"),
+                )
+                .expect("the selected Region residual originated as u64"),
+                previous: *previous,
+                phase: RegionPhase::Path {
+                    declared_len: *declared_len,
+                    remaining: u64::try_from(
+                        saved
+                            .path_end
+                            .checked_sub(stamp as u128)
+                            .expect("the selected graph stamp precedes the path end"),
+                    )
+                    .expect("the selected path residual originated as u64"),
+                    start_depth: *start_depth,
+                    path: current,
+                },
+                next: *next,
+            };
+            current = saved.owner.clone();
+            current.stack = Some(frames.push(frame));
+            root = saved.parent;
+        }
+        current
+    }
 }
 
 impl std::ops::Index<usize> for FrameHistory {
