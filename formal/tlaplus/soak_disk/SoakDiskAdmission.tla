@@ -1,21 +1,23 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide. Three constants switch the three admission corrections on and     *)
-(* off so that each pre-fix configuration reproduces one historical defect.  *)
+(* decide. Four constants switch the four admission corrections on and off  *)
+(* so that each pre-fix configuration reproduces one historical defect.      *)
 EXTENDS Naturals, TLC
 
 CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           RequireBand,     \* post-hygiene refusal compares against floor + band
           RejectMissing,   \* a probe that returns nothing cannot admit
-          RejectMalformed  \* a field such as 16384junk cannot admit
+          RejectMalformed, \* a field such as 16384junk cannot admit
+          CheckGuardianAlive \* a dead guardian process cannot admit
 
 ASSUME /\ FloorMiB \in Nat \ {0}
        /\ BandMiB \in Nat
        /\ FreeSamples \subseteq Nat
        /\ InitialFreeMiB \in FreeSamples
        /\ MalformedPrefixMiB \in Nat
-       /\ {RequireBand, RejectMissing, RejectMalformed} \subseteq BOOLEAN
+       /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive}
+            \subseteq BOOLEAN
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
 
@@ -35,10 +37,10 @@ Parse(r) ==
                                  ELSE [known |-> TRUE, mib |-> r.mib]
       [] r.kind = "missing"   -> Unknown
 
-VARIABLES phase, free, raw, sample, guardian, admitted,
+VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence
 
-vars == <<phase, free, raw, sample, guardian, admitted,
+vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence>>
 
 Init ==
@@ -47,6 +49,7 @@ Init ==
     /\ raw = MissingRaw
     /\ sample = Unknown
     /\ guardian = FALSE
+    /\ guardianAlive = TRUE
     /\ admitted = FALSE
     /\ admissionRaw = MissingRaw
     /\ admissionSample = Unknown
@@ -68,19 +71,19 @@ CheckGuardian ==
                /\ stopReason' = "guardian"
           ELSE /\ phase' = IF phase = "guard" THEN "probe" ELSE "post-probe"
                /\ UNCHANGED stopReason
-    /\ UNCHANGED <<free, raw, sample, guardian, admitted,
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, evidence>>
 
 ProbeBoundary ==
     /\ phase = "probe"
     /\ Probe("boundary-decide")
-    /\ UNCHANGED <<free, guardian, admitted, admissionRaw, admissionSample,
+    /\ UNCHANGED <<free, guardian, guardianAlive, admitted, admissionRaw, admissionSample,
                    stopReason, evidence>>
 
 DecideHygiene ==
     /\ phase = "boundary-decide"
     /\ phase' = IF BelowBand THEN "hygiene" ELSE "admission-check"
-    /\ UNCHANGED <<free, raw, sample, guardian, admitted,
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
 \* reclaim_disk_space never loses space and does not always recover any.
@@ -88,13 +91,13 @@ Hygiene ==
     /\ phase = "hygiene"
     /\ free' \in {v \in FreeSamples : v >= free}
     /\ phase' = "post-guard"
-    /\ UNCHANGED <<raw, sample, guardian, admitted,
+    /\ UNCHANGED <<raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
 ProbeAfterHygiene ==
     /\ phase = "post-probe"
     /\ Probe("post-decide")
-    /\ UNCHANGED <<free, guardian, admitted, admissionRaw, admissionSample,
+    /\ UNCHANGED <<free, guardian, guardianAlive, admitted, admissionRaw, admissionSample,
                    stopReason, evidence>>
 
 DecideAfterHygiene ==
@@ -104,17 +107,22 @@ DecideAfterHygiene ==
                /\ stopReason' = "disk"
           ELSE /\ phase' = "admission-check"
                /\ UNCHANGED stopReason
-    /\ UNCHANGED <<free, raw, sample, guardian, admitted,
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, evidence>>
 
+\* The common check before work starts: a missing sample, then (B14) a
+\* guardian process that died since the boundary probe.
 CheckAdmission ==
     /\ phase = "admission-check"
     /\ IF RejectMissing /\ ~sample.known
           THEN /\ phase' = "stopped"
                /\ stopReason' = "probe"
+          ELSE IF CheckGuardianAlive /\ ~guardianAlive
+          THEN /\ phase' = "stopped"
+               /\ stopReason' = "guardian"
           ELSE /\ phase' = "admit"
                /\ UNCHANGED stopReason
-    /\ UNCHANGED <<free, raw, sample, guardian, admitted,
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, evidence>>
 
 Admit ==
@@ -123,26 +131,36 @@ Admit ==
     /\ admissionRaw' = raw
     /\ admissionSample' = sample
     /\ phase' = "running"
-    /\ UNCHANGED <<free, raw, sample, guardian, stopReason, evidence>>
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, stopReason, evidence>>
 
 \* The guardian marker can appear at any point before the workload starts.
 GuardianTrip ==
     /\ phase \notin {"running", "stopped", "done"}
     /\ ~guardian
     /\ guardian' = TRUE
-    /\ UNCHANGED <<phase, free, raw, sample, admitted,
+    /\ UNCHANGED <<phase, free, raw, sample, guardianAlive, admitted,
+                   admissionRaw, admissionSample, stopReason, evidence>>
+
+\* The guardian process can die at any point up to the admission check. The
+\* check and the workload start are one step here, as in the B14 model; the
+\* production window between them is not closed by this correction.
+GuardianCrash ==
+    /\ phase \notin {"admit", "running", "stopped", "done"}
+    /\ guardianAlive
+    /\ guardianAlive' = FALSE
+    /\ UNCHANGED <<phase, free, raw, sample, guardian, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
 PublishRefusal ==
     /\ phase = "stopped"
     /\ evidence' = TRUE
     /\ phase' = "done"
-    /\ UNCHANGED <<free, raw, sample, guardian, admitted,
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason>>
 
 Next == CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
         \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
-        \/ Admit \/ GuardianTrip \/ PublishRefusal
+        \/ Admit \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -154,6 +172,7 @@ TypeOK ==
     /\ raw \in RawSamples
     /\ sample \in ParsedSamples
     /\ guardian \in BOOLEAN
+    /\ guardianAlive \in BOOLEAN
     /\ admitted \in BOOLEAN
     /\ admissionRaw \in RawSamples
     /\ admissionSample \in ParsedSamples
@@ -164,6 +183,7 @@ AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
 AdmissionRequiresSample == admitted => admissionSample.known
 AdmissionRequiresValidSample == admitted => admissionRaw.kind # "malformed"
+AdmissionRequiresGuardian == admitted => guardianAlive
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
 Completes == <>(admitted \/ (phase = "done" /\ evidence))

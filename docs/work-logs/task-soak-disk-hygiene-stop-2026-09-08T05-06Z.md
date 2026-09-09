@@ -209,3 +209,25 @@ The current bounded gate passes 12 positive configurations and 12 exact controls
 D2 remains pending. Client exit does not confirm writer termination, durable publication, or the complete emergency deadline. Cleanup, admission coverage, reserve evidence, and maintainer review remain open.
 
 No commit, push, hosted dispatch, or soak occurs in this cycle.
+
+## B13 commit and D2 expansion
+
+The user authorized the B13 commit after staging its final evidence bindings. Commit `e6fdd343b` contains 34 files and preserves the pending gate statuses.
+
+All commit hooks pass. Post-commit verification checks the source, evidence, executable modes, parent, and clean working tree. The local archive also passes verification.
+
+The user then directs continued D2 expansion under the original plan. The other agent handles refactoring. No push or soak follows this commit.
+
+## D2 guardian admission cycle B14
+
+B14 starts from `e6fdd343b`. The fixture kills the guardian while the parent waits for a boundary probe that returns a valid sample.
+
+Production RED admits an iteration. The matching formal control violates `AdmissionRequiresGuardian` with exit 12 before the correction.
+
+The corrected driver checks guardian liveness after the probe and refuses admission. Production GREEN records zero iterations and one protection failure.
+
+Formal GREEN completes with four distinct states. The [evidence package](../cbc-evidence/soak-d2-boundary-2026-09-09/README.md) retains the separate source snapshots and complete logs.
+
+The combined gate passes 13 positive configurations and 13 exact controls. All nine emergency scenarios and supporting regressions pass.
+
+B14 does not complete D2. Benchmark admission, live but stalled guardians, late crashes, cleanup, termination, durability, and reserve evidence remain open.

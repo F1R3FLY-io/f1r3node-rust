@@ -3,7 +3,7 @@
 - **Status:** pending (local RED/GREEN complete; hosted execution and maintainer review open)
 - **Adapter:** embedded
 - **Claim:** [CLAIM-SOAK-001](../claims/soak-disk-protection.md), proposed and unratified
-- **Commit:** e6fdd343b (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b)
+- **Commit:** 3498fa4f3 (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3)
 - **Verified:** locally, 2026-09-08 to 2026-09-09
 
 Each cycle ran the real driver inside a disposable container through `scripts/bench/test-soak-disk-admission.sh` (no host mounts, no network, no Docker socket, UID 65534, 256 MiB, one CPU). `df`, `docker`, and the workload command were fixtures. In every cycle the production regression failed on the pre-fix source, TLC reported the named invariant with exit 12 on the pre-fix configuration, and both passed after the correction.
@@ -20,16 +20,17 @@ Each cycle ran the real driver inside a disposable container through `scripts/be
 | B11 | `du` stalls with 32 session roots | `ac94c1755` waited per root | attribution ends within the aggregate deadline | `per_root_deadline` (`AttributionWithinBudget`) |
 | B12 | Retained marker on restart | `ac94c1755` cleared the marker and admitted work | no new work; failures 0 to 1 and 2 to 2 | `cleared_breach` (`RetainedBreachStopsRestart`) |
 | B13 | `pkill` and `docker kill` stall and ignore TERM | `3d2aa7904` waited on the stop clients | stop bounded by `SOAK_DISK_STOP_SECONDS`; failure published, exit 1 | `unbounded_stop` (`StopWithinBudget`) |
+| B14 | The guardian dies during the boundary probe | `e6fdd343b` admitted 1 iteration | liveness check after the probe; 0 iterations, 1 failure, exit 1 | `unchecked_guardian` (`AdmissionRequiresGuardian`) |
 
 Formal results after the 2026-09-09 consolidation into two modules (the per-cycle originals reported 54, 22, and 17 distinct states for D1, B5, and B6):
 
 | Configuration | Result | Distinct states |
 | --- | --- | ---: |
-| `MC_SoakDiskAdmission` | clean, `Completes` holds | 160 |
+| `MC_SoakDiskAdmission` | clean, `Completes` holds | 320 |
 | `MC_SoakDiskGuardian` | clean | 3144 |
-| ten `*_pre_fix` controls | exit 12 with the expected invariant | 20 to 436 |
+| eleven `*_pre_fix` controls | exit 12 with the expected invariant | 20 to 436 |
 
-Regression suites green on the corrected driver: `test-soak-disk-admission.sh` (12 scenarios), `test-run-merge-recovery-soak.sh` (3 scenarios), `check-tla-invariants.sh --soak-pr` (4 positives, 12 controls, about 25 s).
+Regression suites green on the corrected driver: `test-soak-disk-admission.sh` (13 scenarios), `test-run-merge-recovery-soak.sh` (3 scenarios), `check-tla-invariants.sh --soak-pr` (4 positives, 13 controls, about 25 s).
 
 Fixture corrections during the cycles: one B9 driver-suite run failed on a readiness race at the resource CSV assertion, and the fixture now waits for every required telemetry file (30 repetitions passed). The first B5 model attempt exited 75 on a mixed string and numeric sample encoding before any behavioral result and was replaced by uniform sample records.
 
@@ -43,19 +44,20 @@ The per-cycle manifests were produced on the source branch and are retained outs
 | `soak-d2-sample-2026-09-09/manifest.json` (B6) | `167d3a6bb8025d2d80615b4c178d0961fd433f83e5840d3aa038336c4bbeb137` |
 | `soak-d2-emergency-2026-09-09/manifest.json` (B7 to B12) | `36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773` |
 | `soak-d2-stop-2026-09-09/manifest.json` (B13) | `1f0ec6ca4b469fbfff33ae939221da8a2845e1bf5744f1c8d54f783aa9b55006` |
+| `soak-d2-boundary-2026-09-09/manifest.json` (B14) | `9ea2de48dcc9e353454a8451453fdb69772d827fdb9a689a26491b130ffae3ae` |
 
 ## Limits
 
 - The model-to-code maps are reviewed abstractions, not refinement proofs of Bash.
 - Fixtures replace `df`, `docker`, and the workload. They do not cover every malformed field, exit status, or Docker failure.
 - Local records prove neither durability, upload, nor confirmed writer termination. Fairness is not a time bound.
-- D2 remains open for stop and cleanup command bounds, guardian health at every admission boundary, cleanup ownership, and a composed emergency deadline. D3 must identify the growing consumer.
+- D2 remains open for cleanup command bounds, cleanup ownership, confirmed termination, and a composed emergency deadline. D3 must identify the growing consumer.
 
 ```json
 {
   "artifact": {
     "path": "scripts/run-merge-recovery-soak.sh",
-    "commit": "e6fdd343b",
+    "commit": "3498fa4f3",
     "id": "scripts-run-merge-recovery-soak-sh"
   },
   "claim": "CLAIM-SOAK-001: disk admission refuses missing, malformed, and in-band samples; the guardian records before it stops, survives probe faults and its own death, bounds attribution, and blocks restart after a retained breach.",
@@ -65,7 +67,7 @@ The per-cycle manifests were produced on the source branch and are retained outs
     "kind": "container-regressions+bounded-model-check",
     "ref": "scripts/bench/test-soak-disk-admission.sh (11 scenarios); formal/tlaplus/soak_disk/MC_SoakDiskAdmission.cfg, MC_SoakDiskGuardian.cfg",
     "counterexample": "formal/tlaplus/soak_disk/MC_SoakDiskAdmission_*_pre_fix.cfg, MC_SoakDiskGuardian_*_pre_fix.cfg",
-    "detail": "Ten local RED/GREEN cycles on fix/soak-disk-hygiene-stop. No hosted execution of the container regressions, no maintainer model review, no mandatory-scope ratification, and no acceptance soak."
+    "detail": "Eleven local RED/GREEN cycles on fix/soak-disk-hygiene-stop. No hosted execution of the container regressions, no maintainer model review, no mandatory-scope ratification, and no acceptance soak."
   },
   "waiver": null,
   "verified_at": null

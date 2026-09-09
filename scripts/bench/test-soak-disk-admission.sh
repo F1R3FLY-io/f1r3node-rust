@@ -16,6 +16,7 @@
 #   restart-uncounted     a retained breach marker blocks the next segment (failures 0 -> 1)
 #   restart-counted       same, with a prior failure count that stays at 2
 #   stop-timeout          pkill/docker kill stall; the stop is bounded and the failure still publishes
+#   guardian-death-boundary the guardian dies during the boundary probe -> refuse
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -31,7 +32,7 @@ SOURCE_FILES=(
 )
 SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missing-active
     stalled-active record-before-stop guardian-death diagnostic-deadline restart-uncounted
-    restart-counted stop-timeout)
+    restart-counted stop-timeout guardian-death-boundary)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -63,6 +64,20 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
             stall_after=true
         fi
         available=16384
+        ;;
+    guardian-death-boundary)
+        available=16384
+        if ! mkdir /case/evidence/startup-probe-seen 2>/dev/null &&
+            [[ ! -s /case/evidence/guardian-killed-at-boundary.txt ]]; then
+            guardian_pid="$(awk '/^orchestrator host guardian watching/ {print $NF; exit}' /case/evidence/driver.log)"
+            [[ "$guardian_pid" =~ ^[1-9][0-9]*$ ]] || exit 2
+            kill -KILL "$guardian_pid" || exit 2
+            sleep 0.05
+            guardian_state="$(ps -o stat= -p "$guardian_pid" || true)"
+            [[ -z "$guardian_state" || "$guardian_state" == Z* ]] || exit 2
+            printf '%s\n' "$guardian_pid" >/case/evidence/guardian-killed-at-boundary.txt
+            printf 'boundary-guardian-killed=%s\n' "$guardian_pid" >>/case/evidence/probe-samples.txt
+        fi
         ;;
     guardian-death | restart-uncounted | restart-counted)
         available=16384
@@ -296,6 +311,25 @@ SH
             exit 1
         fi
         printf 'PASS: Stalled attribution stopped within the aggregate fixture deadline across 32 session roots.\n'
+        exit 0
+    fi
+    if [[ "$SCENARIO" == guardian-death-boundary ]]; then
+        if [[ ! -s evidence/guardian-killed-at-boundary.txt ]] ||
+            ! grep -q '^boundary-guardian-killed=' evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not kill the guardian during the boundary probe.\n' >&2
+            exit 2
+        fi
+        if [[ "$iterations" != 0 || -e evidence/workload-started.txt ]]; then
+            printf 'FAIL: The driver admitted an iteration after guardian death during the boundary probe.\n' >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || ! -s evidence/output/host-guardian-breach.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Guardian death before admission lacks a recorded protection failure.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: Guardian death during the boundary probe prevented admission and produced a protection failure.\n'
         exit 0
     fi
     if [[ "$SCENARIO" == guardian-death ]]; then

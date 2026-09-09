@@ -1151,6 +1151,16 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			break
 		fi
 	fi
+	if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null; then
+		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The host guardian exited before iteration admission. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
+		EARLY_EXIT_REASON="host_protection_breach"
+		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		FAILURES="$((FAILURES + 1))"
+		break
+	fi
 	if [ -e "$SIGNAL_FILE" ]; then
 		SIGNAL="$(tr -d '[:space:]' <"$SIGNAL_FILE" 2>/dev/null || true)"
 		# Consumed either way: an unread signal re-fires on every later iteration

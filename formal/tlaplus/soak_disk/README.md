@@ -15,7 +15,8 @@ a Boolean constant and must violate exactly the invariant named below.
 | `DecideHygiene` | Run hygiene only when a known sample is below floor plus band |
 | `Hygiene` | `reclaim_disk_space`, which can reclaim nothing |
 | `DecideAfterHygiene` | Refuse a known sample below the threshold |
-| `CheckAdmission` | Refuse a missing sample before starting work |
+| `CheckAdmission` | Refuse a missing sample, or a dead guardian process, before starting work |
+| `GuardianCrash` | The guardian process dies before the workload starts |
 | `Admit` | Start the iteration |
 | `PublishRefusal` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary |
 
@@ -24,8 +25,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `RequireBand` | Post-hygiene refusal compares against floor plus band, not the floor | `MC_SoakDiskAdmission_floor_only_pre_fix` | `AdmissionRequiresBand` |
 | `RejectMissing` | A probe that returns nothing cannot admit | `MC_SoakDiskAdmission_missing_sample_pre_fix` | `AdmissionRequiresSample` |
 | `RejectMalformed` | A field such as `16384junk` cannot admit | `MC_SoakDiskAdmission_numeric_prefix_pre_fix` | `AdmissionRequiresValidSample` |
+| `CheckGuardianAlive` | A dead guardian process cannot admit | `MC_SoakDiskAdmission_unchecked_guardian_pre_fix` | `AdmissionRequiresGuardian` |
 
-`MC_SoakDiskAdmission` enables all three corrections. It checks `TypeOK`, the three invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 160 distinct states.
+`MC_SoakDiskAdmission` enables all four corrections. It checks `TypeOK`, the four invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 320 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 
@@ -74,6 +76,7 @@ Counterexamples are not stored. Each pre-fix configuration regenerates its histo
 - The maps are reviewed abstractions of Bash, not refinement proofs.
 - The models assume that local writes complete and that timers fire. They do not bound elapsed time, prove writer termination, or cover crash durability of the marker.
 - The guardian model follows the breach path only. In production a healthy sample returns the guardian to polling.
+- In the admission model the guardian liveness check and the workload start are one step. A guardian death inside that production window is not covered.
 - No mandatory CbC attribute is assigned. `CLAIM-SOAK-001` is proposed and unratified. See [soak-disk-protection.md](../../../docs/claims/soak-disk-protection.md).
 
 ## Running the checks
@@ -95,4 +98,4 @@ Do not run the historical pre-fix driver directly on a host. Its sweep ignores t
 
 Evidence: [docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md](../../../docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md).
 
-The per-cycle modules that preceded these two (`SoakDisk`, `DiskProbeAdmission`, `DiskSampleValidation`, `ActiveDiskProbe`, `DiskEmergencyRecord`, `GuardianSupervision`, `DiskProbeDeadline`, `DiskDiagnosticDeadline`, `DiskBreachRestart`, `DiskStopDeadline`) are unregistered and scheduled for removal. See `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md`.
+The per-cycle modules that preceded these two (`SoakDisk`, `DiskProbeAdmission`, `DiskSampleValidation`, `ActiveDiskProbe`, `DiskEmergencyRecord`, `GuardianSupervision`, `DiskProbeDeadline`, `DiskDiagnosticDeadline`, `DiskBreachRestart`, `DiskStopDeadline`, `GuardianAdmission`) are unregistered and scheduled for removal. See `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md`.
