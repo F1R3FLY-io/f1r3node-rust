@@ -57,7 +57,7 @@ impl BlockError {
         use rspace_plus_plus::rspace::errors::{HistoryError, RSpaceError, RootError};
 
         match error {
-            CasperError::BlockNotHeld(hash) => BlockError::Undecidable(hash),
+            CasperError::BlockNotHeld(hash, _) => BlockError::Undecidable(hash),
             // The state twin: a replay that needed a root this node never
             // fetched. The chain is fully typed from rspace up, so absence
             // keeps its name without a string search.
@@ -348,8 +348,10 @@ mod tests {
     fn a_block_not_held_is_undecidable_not_an_exception() {
         let missing = BlockHash::from(b"not-held".to_vec());
 
-        let undecidable =
-            BlockError::from_validation_error(CasperError::BlockNotHeld(missing.clone()));
+        let undecidable = BlockError::from_validation_error(CasperError::BlockNotHeld(
+            missing.clone(),
+            String::new(),
+        ));
         assert_eq!(
             undecidable,
             BlockError::Undecidable(missing),

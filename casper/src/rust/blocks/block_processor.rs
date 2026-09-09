@@ -85,7 +85,10 @@ pub(crate) fn guard_deferral(
 ) -> ValidBlockProcessing {
     match status {
         Either::Left(BlockError::Undecidable(hash)) if approved_block_number == 0 => {
-            Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(hash)))
+            Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(
+                hash,
+                " [genesis-rooted node refuses deferral]".to_string(),
+            )))
         }
         // Same rule for the state artifact: a genesis-rooted node computed or
         // imported every root it ever needed, so a missing one is corruption
@@ -420,18 +423,19 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 // as the absence of a verdict rather than erroring the block out
                 // of the pipeline un-judged and untracked — but only if this node
                 // is entitled to defer at all.
-                Err(CasperError::BlockNotHeld(missing)) => {
+                Err(CasperError::BlockNotHeld(missing, site)) => {
                     let guarded = guard_deferral(
                         Either::Left(BlockError::Undecidable(missing.clone())),
                         self.approved_block_number(casper.clone())?,
                     );
                     if !matches!(guarded, Either::Left(BlockError::Undecidable(_))) {
-                        return Err(CasperError::BlockNotHeld(missing));
+                        return Err(CasperError::BlockNotHeld(missing, site));
                     }
                     tracing::warn!(
-                        "Snapshot for block {} needs {}, which this node does not hold.",
+                        "Snapshot for block {} needs {}, which this node does not hold. Walk:{}",
                         PrettyPrinter::build_string_bytes(&block.block_hash),
-                        PrettyPrinter::build_string_bytes(&missing)
+                        PrettyPrinter::build_string_bytes(&missing),
+                        site.lines().next().unwrap_or("")
                     );
                     let deps = HashSet::from([missing.clone()]);
                     self.dependencies
@@ -1602,7 +1606,7 @@ mod tests {
         assert!(
             matches!(
                 guard_deferral(undecidable(), 0),
-                Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(_)))
+                Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(..)))
             ),
             "a genesis-rooted node has the whole spine, so a missing block is corruption \
              and must be judged — deferring here is an escape hatch for crafted blocks"

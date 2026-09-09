@@ -40,6 +40,7 @@ impl CasperSnapshotProvider for HistoryIncompleteSnapshotProvider {
     ) -> Result<CasperSnapshot, CasperError> {
         Err(CasperError::BlockNotHeld(
             models::rust::block_hash::BlockHash::from(b"below-my-anchor".to_vec()),
+            String::new(),
         ))
     }
 }

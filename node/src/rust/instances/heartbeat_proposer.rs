@@ -6,6 +6,7 @@ use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::casper::{CasperSnapshot, MultiParentCasper};
 use casper::rust::casper_conf::HeartbeatConf;
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::errors::CasperError;
 use casper::rust::heartbeat_signal::{
     install_heartbeat_signal, HeartbeatSignal, HeartbeatSignalRef,
 };
@@ -265,7 +266,7 @@ impl HeartbeatProposer {
                     let deploy_grace_active = deploy_grace_until.is_some();
 
                     match do_heartbeat_check(
-                        casper,
+                        casper.clone(),
                         &*trigger,
                         &validator_identity,
                         &config,
@@ -313,6 +314,26 @@ impl HeartbeatProposer {
                                 delay,
                                 consecutive_failures
                             );
+                        }
+                        // A walk needed a block this node does not hold. Erroring
+                        // every cycle fetches nothing — the check stays dead until
+                        // someone else happens to supply the block. Solicit it, the
+                        // way the block processor's deferral path does, and skip
+                        // the cycle; the propose path already treats the same error
+                        // as "a reason not to propose, not an error to retry".
+                        Err(CasperError::BlockNotHeld(missing, site)) => {
+                            tracing::warn!(
+                                missing = %hex::encode(&missing[..8.min(missing.len())]),
+                                walk = site.lines().next().unwrap_or(""),
+                                "Heartbeat: check needs a block this node does not \
+                                 hold; requesting it from peers and skipping this cycle"
+                            );
+                            if let Err(req_err) = casper.request_block_from_peers(missing).await {
+                                tracing::warn!(
+                                    error = %req_err,
+                                    "Heartbeat: block solicitation failed"
+                                );
+                            }
                         }
                         Err(err) => {
                             tracing::warn!(

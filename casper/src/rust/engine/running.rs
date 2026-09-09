@@ -456,7 +456,12 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             let frontier_number = dag
                 .lookup(&frontier_hash)?
                 .map(|meta| meta.block_number)
-                .ok_or_else(|| CasperError::BlockNotHeld(frontier_hash.clone()))?;
+                .ok_or_else(|| {
+                    CasperError::BlockNotHeld(
+                        frontier_hash.clone(),
+                        " [floor-seed frontier lookup]".to_string(),
+                    )
+                })?;
             Ok(Some(FinalizedFloorSeed {
                 floor_hash: floor.hash,
                 floor_number: floor.block_number,

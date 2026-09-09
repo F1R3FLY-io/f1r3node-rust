@@ -336,7 +336,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         // a node restored from a sync anchor is still filling in below it, and
         // the same request may succeed once it has. 503 tells the caller to
         // retry; the 500 class would say the node is broken.
-        BlockNotHeld(_) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
+        BlockNotHeld(..) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -829,7 +829,7 @@ mod tests {
                     "other_error",
                 ),
                 (
-                    CasperError::BlockNotHeld(vec![0xab].into()),
+                    CasperError::BlockNotHeld(vec![0xab].into(), String::new()),
                     StatusCode::SERVICE_UNAVAILABLE,
                     "block_not_held",
                 ),

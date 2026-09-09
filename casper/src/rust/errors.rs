@@ -34,7 +34,10 @@ pub enum CasperError {
     /// peers have. Carried as a variant rather than a message so the block
     /// processor can request the named block and retry, instead of folding it
     /// into the storage-failure class that becomes a slashable verdict.
-    BlockNotHeld(BlockHash),
+    /// The second field names the walk that tripped (accessor tag, plus the
+    /// caller backtrace when it crossed the storage boundary) — without it,
+    /// "which walk needed this block" is unanswerable from logs.
+    BlockNotHeld(BlockHash, String),
     /// The floor derivation found finalized candidates that are mutually
     /// incompatible (same-height certified siblings with no containment and
     /// no re-merge). Under a BFT threshold (θ ≥ 0) this is impossible
@@ -61,10 +64,13 @@ impl fmt::Display for CasperError {
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
-            CasperError::BlockNotHeld(hash) => write!(
+            CasperError::BlockNotHeld(hash, site) => write!(
                 f,
-                "block not held by this node: {} — its history does not reach that block",
-                PrettyPrinter::build_string_bytes(hash)
+                "block not held by this node: {} — its history does not reach that block{}",
+                PrettyPrinter::build_string_bytes(hash),
+                // The site string may carry a multi-line backtrace (the KvStore
+                // boundary format); Display keeps only the accessor line.
+                site.lines().next().unwrap_or("")
             ),
             // The detail is self-describing ("finalized-floor safety
             // violation: ... — incompatible finalized fork"), and harness
@@ -87,7 +93,7 @@ impl CasperError {
 
         matches!(
             self,
-            CasperError::BlockNotHeld(_)
+            CasperError::BlockNotHeld(..)
                 | CasperError::InterpreterError(InterpreterError::RSpaceError(
                     RSpaceError::HistoryError(HistoryError::RootError(RootError::RootNotFound(_))),
                 ))
@@ -114,7 +120,9 @@ impl From<InterpreterError> for CasperError {
 impl From<KvStoreError> for CasperError {
     fn from(error: KvStoreError) -> Self {
         match error {
-            KvStoreError::MissingBlock { hash, .. } => CasperError::BlockNotHeld(hash),
+            KvStoreError::MissingBlock { hash, context } => {
+                CasperError::BlockNotHeld(hash, context)
+            }
             other => CasperError::KvStoreError(other),
         }
     }
