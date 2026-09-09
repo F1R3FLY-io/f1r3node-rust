@@ -8164,6 +8164,118 @@ They do not close task 6018, establish the balanced composition, or repair the
 measured J-112 import scaling. No production performance or consensus change
 is asserted by this proof checkpoint.
 
+### J-115 — 2026-09-09: shared source-window foundation with unchanged header budget
+
+**IMPLEMENTED COMPONENT.** Borrowed indexed regions retain their original root
+slice and checked logical range. Frozen regions coalesce adjacent windows of
+the same immutable page backing. Neither operation copies payload bytes,
+rebuilds the frozen leaf index, nor chains one view descriptor through another.
+Equal byte contents, source IDs and physical offsets do not establish backing
+identity. The right operand's endpoint remains authoritative, including an empty
+right operand and maximum-width source/offset values.
+
+**VALIDATION AND REPAIR.** Ten new tests cover generated adjacency and located-byte
+equivalence, nested subviews, fragmented frozen ranges, independent equal
+backings, parent release/sibling append, literal boundary sharing, overflow and
+layout. The first focused run passed all ten, but full-library verification
+caught an existing layout guard: the test header had grown from 72 to 80 bytes.
+The guard was not relaxed. Replacing optional full provenance with an optional
+source plus an offset removes the padding cost without sentinels or reduced
+domains. The production mirror remains 64 bytes and the actual test header
+72 bytes on this 64-bit host.
+
+The repaired full release models run passed **415 tests**, zero failures or
+ignores, in 56.24 s. Its compile-inclusive service took 89.252 s and peaked at
+1.4G with zero swap, under MemoryHigh=4G, MemoryMax=6G, CPUQuota=400%, TasksMax=512
+and RuntimeMaxSec=900. Properties used seed `41315976` and four test threads.
+Log `/tmp/epathmap-normalized-layout-models-20260909.log` has SHA-256
+`a7ae8437849a2c1643ee757311ac7823394264d5ea95229789243df02750fde1`.
+The earlier failing full run is retained separately and is not counted as a pass.
+
+**BOUNDARY.** This implements the terminal-window part of J-114. It does not yet
+replace repeated nested admission ingestion with shared balanced composition,
+register mixed source roots, or close J-112's latency/allocation trend. Frozen
+coalescing uses the existing bounded index for endpoint lookup; it does not
+claim a new frozen indexing algorithm. No new dependency, PathMap change,
+canonical-byte format or consensus rule is introduced.
+
+### J-116 — 2026-09-09: absolute payload proofs and ACT reverse-entry refinement
+
+**VERIFIED MODEL.** Fifteen new `AbsolutePayloadRealization` capstones connect
+physical payload markers and selected stamps to the existing typed payload and
+held-owner countdown. They preserve exact private ID/phase/source, historical
+aliases, continuation validity and explicit awaiting endpoints. Two negative
+controls establish why a dead checkpoint must retain its saved stamp, including
+an ownerless state with failure folded directly into metadata. The formal
+README extracts every invariant and required native property before activation.
+
+The ACT cursor tests exposed a concrete phase detail during implementation:
+`next_event` changes zero-child Children to Leave and emits the first reverse
+event in the same call. Offering only at raw Leave missed that first event,
+including the sole line leave of a one-byte path. Four additional laws now
+justify the unobservable reverse-entry transition. A checked commit may take
+that transition only with no pending children, after successful preflight;
+drop or refused width leaves the raw cursor untouched. Endpoint values,
+child descent and the owning node's final leave stay scalar.
+
+**EXECUTED FORMAL EVIDENCE.** The combined theory passed with **210 closed
+reports** in 21.532 s, peak 810.3M, zero swap. Independent kernel checking passed
+in 16.865 s, peak 383.2M, zero swap. Both used MemoryHigh=1G, MemoryMax=2G,
+CPUQuota=100%, TasksMax=64 and RuntimeMaxSec=900.
+
+| Artifact | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/RPB3Admission.v` | `f01a0bd4c343c3243481b64788a63dc0fe47d24b3d2af8df2ccdb23e34d9be27` |
+| `/tmp/act-line-entry-proof-20260909.log` | `2231c6bdee51c414a74e5a2f74cf44b553cc69783337977f3b4fb498c4bda88c` |
+| `/tmp/act-line-entry-kernel-20260909.log` | `7ee477616bce28a58b7b200082dc9b9f42e916247ff23b8a6958fc5b336a1b8d` |
+
+**IMPLEMENTATION BOUNDARY.** The source-bound ACT capability holds one exclusive
+cursor borrow; it allocates no cursor state, performs no byte reads on commit,
+and returns the source range, direction and expanded scalar-event count. Its
+result fields are private, preventing construction of invalid empty results.
+The integrated gate passed all **112 selected models tests**, **six ACT transport
+tests**, three kernel checks, one positive compiler fixture and eight exact-error
+compiler rejection configurations. Its log is
+`/tmp/epathmap-spans-integrated-gate-20260909.log`, SHA-256
+`587db95d262f71d2f2a851757dee5bd3bbf58a641414a46ae1f044425f115ac6`.
+The launcher ran for 242.423 s; its own 42.5M peak excludes the separately capped
+proof/Rust scopes and is not a whole-gate memory peak. The first runtime attempt
+correctly failed its one-byte reverse coverage requirement and is not acceptance
+evidence. The formal-manifest integration selection separately passed **23 tests**,
+zero failures or ignores, with log SHA-256
+`f831f930866ef96c3452759e64b48846e86b444022253979a4c770c0add85110` at
+`/tmp/act-spans-formal-manifest-20260909.log`.
+
+The broader ACT codec selection reported **19 passed, one failed, zero ignored**.
+Its sole failure repeats J-057/PMU-006 in PathMap 0.2.2: constructing value-free
+paths `[1]`, `[2]`, `[3]`, then `[1, 0]` panics on an empty sentinel before
+ACT emission or admission. No case filtering, upstream patch or duplicate task
+was introduced. Tasks 6023/6038 retain this required issue. The preserved log
+`/tmp/act-spans-module-regressions-20260909.log` has SHA-256
+`c49f70f2dfe7c2ea85015abfe4edfb5024200a7beafd82b6005dc6ac28e27353`.
+This broader failure prevents claiming the whole codec suite green.
+
+The source must remain immutable: exclusive cursor ownership alone cannot
+prove arbitrary trait implementations free of interior mutation. Immutable
+indexed regions are the intended production source. An expanded-event count
+overflow refuses only the batch optimization; it must not become an admission
+limit. Enclosing EPM1/path state, values, effects and counters are not yet part
+of a joint commit. The absolute-payload native representation, compressed
+restoration and balanced source composition still require their own bindings.
+No full-import speedup, ACT/LMDB result or campaign completion follows.
+
+**NEXT REQUIRED BINDING.** Read-only implementation review found that the eager
+test reducer currently shares `CanonicalPathMachine` with production. Changing
+both to an absolute payload marker would erase the old countdown oracle. Retain
+a test-only eager countdown policy with the shared non-payload grammar, and
+project the selected active payload using its graph stamp when comparing graphs;
+renaming frame IDs alone would miss changed hidden residuals. Existing assertions
+that all ownerless dead states remain direct must instead verify saved stamps.
+First prove concrete checkpoint selection, scalar zero/nonfinal/final payload
+boundaries and private/failure effects; implement and test that scalar slice
+before enabling persistent bulk advancement or compressed restoration. No extra
+run arena or new handle encoding is required by this design.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

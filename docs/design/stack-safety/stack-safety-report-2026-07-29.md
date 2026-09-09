@@ -10493,6 +10493,41 @@ literal ACT line bytes and derived branch bytes. The current freeze's repeated
 index construction remains a required repair; these source-window proofs do
 not establish whole-admission linearity or a runtime memory improvement.
 
+#### 5.33.34 Source-window implementation and strict transport refinement (2026-09-09, task 6018)
+
+Borrowed and frozen windows now share original immutable backings and coalesce
+checked adjacent ranges without copying bytes or rebuilding frozen indexes.
+The first implementation grew the region header; the full-library layout guard
+caught it. A lossless split optional-anchor representation repairs that cost
+without weakening the guard: mirrored production headers remain 64 bytes and
+actual test headers 72 bytes on this host. The repaired full release models
+library passed **415 tests**, zero failures or ignores, in 56.24 s. Its
+compile-inclusive capped service peaked at 1.4G with zero swap.
+
+Fifteen additional absolute-payload laws and four ACT reverse-entry laws bring
+the RPB3 model to **210 closed reports**, with independent kernel checking.
+Standalone compilation peaked at 810.3M and checking at 383.2M; both used a
+2G hard cap and zero swap. The reverse-entry refinement was prompted by a
+one-byte-line test: a zero-child Children stage must take its unobservable
+transition before the first reverse leave can be batched. Pending child
+descent and node boundaries remain scalar.
+
+[J-115](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-115--2026-09-09-shared-source-window-foundation-with-unchanged-header-budget)
+and [J-116](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-116--2026-09-09-absolute-payload-proofs-and-act-reverse-entry-refinement)
+record the test/proof boundaries and artifacts. These are component results,
+not a new whole-import timing result. Balanced source composition, absolute
+payload runtime binding, compressed restoration and joint EPM1 admission remain
+required; the nested-import slope in 5.33.31 is not yet closed. No codec,
+consensus rule or PathMap dependency changed in this slice.
+
+The integrated gate passed 112 selected model tests, six ACT transport tests,
+three kernel checks and eight exact compiler-rejection controls plus their
+positive control. The formal-manifest selection passed 23 tests. The broader
+ACT codec selection remains red: 19 passed and one reproduced the known
+PMU-006 PathMap empty-sentinel construction panic before ACT emission. Existing
+tasks 6023/6038 retain that issue; neither this component gate nor the source-window
+repair establishes a green full codec suite or campaign closure.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

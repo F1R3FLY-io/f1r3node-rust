@@ -970,6 +970,79 @@ pub struct CanonicalCompactTrieIndexedTopologyCursor<S> {
     state: ValidatedCompactTrieTopologyState,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalCompactTrieLineDirection {
+    Forward,
+    Unwind,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CanonicalCompactTrieLineCommit {
+    source_range: Range<usize>,
+    direction: CanonicalCompactTrieLineDirection,
+    expanded_events: usize,
+}
+
+impl CanonicalCompactTrieLineCommit {
+    pub fn source_range(&self) -> Range<usize> { self.source_range.clone() }
+
+    pub fn direction(&self) -> CanonicalCompactTrieLineDirection { self.direction }
+
+    pub fn expanded_events(&self) -> usize { self.expanded_events }
+
+    pub fn last_source_offset(&self) -> usize {
+        match self.direction {
+            CanonicalCompactTrieLineDirection::Forward => self.source_range.end - 1,
+            CanonicalCompactTrieLineDirection::Unwind => self.source_range.start,
+        }
+    }
+}
+
+pub struct CanonicalCompactTrieLineSpan<'a, S> {
+    cursor: &'a mut CanonicalCompactTrieIndexedTopologyCursor<S>,
+    source_range: Range<usize>,
+    direction: CanonicalCompactTrieLineDirection,
+}
+
+impl<S> CanonicalCompactTrieLineSpan<'_, S> {
+    pub fn source(&self) -> &S { &self.cursor.source }
+
+    pub fn source_range(&self) -> Range<usize> { self.source_range.clone() }
+
+    pub fn direction(&self) -> CanonicalCompactTrieLineDirection { self.direction }
+
+    pub fn commit(self, width: usize) -> Option<CanonicalCompactTrieLineCommit> {
+        if width == 0 || width > self.source_range.len() {
+            return None;
+        }
+        let expanded_events = match self.direction {
+            CanonicalCompactTrieLineDirection::Forward => width.checked_mul(2)?,
+            CanonicalCompactTrieLineDirection::Unwind => width,
+        };
+        let frame = self.cursor.state.stack.last_mut()?;
+        let source_range = match self.direction {
+            CanonicalCompactTrieLineDirection::Forward => {
+                let end = self.source_range.start.checked_add(width)?;
+                let next_index = frame.line_index.checked_add(width)?;
+                frame.line_index = next_index;
+                self.source_range.start..end
+            }
+            CanonicalCompactTrieLineDirection::Unwind => {
+                let start = self.source_range.end.checked_sub(width)?;
+                let next_index = frame.leave_index.checked_add(width)?;
+                frame.leave_index = next_index;
+                frame.stage = DirectTopologyStage::Leave;
+                start..self.source_range.end
+            }
+        };
+        Some(CanonicalCompactTrieLineCommit {
+            source_range,
+            direction: self.direction,
+            expanded_events,
+        })
+    }
+}
+
 impl<S> CanonicalCompactTrieIndexedTopologyCursor<S>
 where S: IndexedByteSource
 {
@@ -983,6 +1056,34 @@ where S: IndexedByteSource
     pub fn source(&self) -> &S { &self.source }
 
     pub fn rewind(&mut self) { self.state.rewind(); }
+
+    pub fn line_span(&mut self) -> Option<CanonicalCompactTrieLineSpan<'_, S>> {
+        let frame = self.state.stack.last()?;
+        let line = self.state.plan.records[frame.record].line_suffix()?;
+        let (source_range, direction) = match frame.stage {
+            DirectTopologyStage::LineEdge => (
+                line.start.checked_add(frame.line_index)?..line.end.checked_sub(1)?,
+                CanonicalCompactTrieLineDirection::Forward,
+            ),
+            DirectTopologyStage::Leave => (
+                line.start..line.end.checked_sub(frame.leave_index)?,
+                CanonicalCompactTrieLineDirection::Unwind,
+            ),
+            DirectTopologyStage::Children if frame.remaining_children == 0 => (
+                line.start..line.end.checked_sub(frame.leave_index)?,
+                CanonicalCompactTrieLineDirection::Unwind,
+            ),
+            _ => return None,
+        };
+        if source_range.is_empty() {
+            return None;
+        }
+        Some(CanonicalCompactTrieLineSpan {
+            cursor: self,
+            source_range,
+            direction,
+        })
+    }
 
     pub fn next_event(
         &mut self,

@@ -6481,6 +6481,99 @@ Proof.
   destruct (IHwidth (S index)); split; lia.
 Qed.
 
+Inductive concrete_reverse_stage :=
+| ChildrenStage (pending : nat)
+| LeaveStage
+| ReverseBoundary.
+
+Definition normalize_reverse_stage stage current :=
+  match stage with
+  | ChildrenStage 0 | LeaveStage =>
+      Some (cursor_at current (cursor_index current) LineLeave
+        (cursor_events current) (cursor_last current))
+  | _ => None
+  end.
+
+Definition concrete_reverse_run source width stage current :=
+  match width with
+  | 0 => Some (stage, current, [])
+  | S _ =>
+      match normalize_reverse_stage stage current with
+      | None => None
+      | Some normalized =>
+          option_map (fun '(next, events) => (LeaveStage, next, events))
+            (scalar_run source width normalized)
+      end
+  end.
+
+Definition concrete_reverse_commit source width stage current :=
+  match normalize_reverse_stage stage current with
+  | None => None
+  | Some normalized =>
+      if (0 <? width) && (cursor_index current + width <=? cursor_length current)
+      then Some (LeaveStage, unwind source width normalized)
+      else None
+  end.
+
+Theorem pending_children_never_admit_reverse_transport source width current pending :
+  concrete_reverse_commit source width (ChildrenStage (S pending)) current = None.
+Proof. reflexivity. Qed.
+
+Theorem reverse_normalization_changes_only_the_unobservable_phase stage current normalized :
+  normalize_reverse_stage stage current = Some normalized ->
+  cursor_phase normalized = LineLeave /\
+  cursor_index normalized = cursor_index current /\
+  cursor_length normalized = cursor_length current /\
+  cursor_context normalized = cursor_context current /\
+  cursor_record normalized = cursor_record current /\
+  cursor_identity normalized = cursor_identity current /\
+  cursor_generation normalized = cursor_generation current /\
+  cursor_events normalized = cursor_events current /\
+  cursor_last normalized = cursor_last current.
+Proof.
+  destruct stage as [[|pending]| |]; cbn; try discriminate;
+    intro accepted; inversion accepted; repeat split; reflexivity.
+Qed.
+
+Theorem accepted_reverse_entry_commit_matches_the_exact_scalar_trace
+    source width stage current next :
+  concrete_reverse_commit source width stage current = Some (LeaveStage, next) ->
+  concrete_reverse_run source width stage current =
+    Some (LeaveStage, next,
+      leave_events source (cursor_length current) (cursor_index current) width).
+Proof.
+  unfold concrete_reverse_commit.
+  destruct (normalize_reverse_stage stage current) as [normalized|] eqn:normalized_at;
+    [|discriminate].
+  destruct ((0 <? width) && (cursor_index current + width <=? cursor_length current))
+    eqn:guard; [|discriminate].
+  intro accepted. inversion accepted; subst next.
+  apply andb_true_iff in guard. destruct guard as [positive bounded].
+  apply Nat.ltb_lt in positive. apply Nat.leb_le in bounded.
+  pose proof (reverse_normalization_changes_only_the_unobservable_phase
+    stage current normalized_at) as [phase [index [size rest]]].
+  destruct width; [lia|]. cbn [concrete_reverse_run]. rewrite normalized_at.
+  rewrite checked_unwind_expands_to_exact_scalar_leaves by (auto; rewrite index, size; exact bounded).
+  cbn. now rewrite index, size.
+Qed.
+
+Theorem reverse_entry_refuses_zero_or_excessive_width_before_normalization
+    source width stage current :
+  width = 0 \/ cursor_length current < cursor_index current + width ->
+  concrete_reverse_commit source width stage current = None.
+Proof.
+  intro invalid. unfold concrete_reverse_commit.
+  destruct (normalize_reverse_stage stage current); [|reflexivity].
+  destruct invalid as [->|excessive]; [reflexivity|].
+  assert (cursor_index current + width <=? cursor_length current = false)
+    by (apply Nat.leb_gt; exact excessive).
+  now rewrite H, andb_false_r.
+Qed.
+
+Print Assumptions pending_children_never_admit_reverse_transport.
+Print Assumptions reverse_normalization_changes_only_the_unobservable_phase.
+Print Assumptions accepted_reverse_entry_commit_matches_the_exact_scalar_trace.
+Print Assumptions reverse_entry_refuses_zero_or_excessive_width_before_normalization.
 Print Assumptions checked_line_expands_to_exact_scalar_events.
 Print Assumptions checked_unwind_expands_to_exact_scalar_leaves.
 Print Assumptions stale_offer_refuses_without_a_new_cursor.
@@ -6685,3 +6778,352 @@ Print Assumptions retaining_a_source_preserves_every_existing_backing.
 Print Assumptions retained_source_slot_denotes_the_original_root.
 
 End NormalizedSourceSpans.
+
+Module AbsolutePayloadRealization.
+
+Module T := PersistentFrameRealization.
+Module F := FocusedRegionOwners.
+Module P := PersistentFocusedOwners.
+Module D := PersistentFaultRealization.
+Module O := StrictOpaqueInterior.
+Import CanonicalKeyProtocol.
+
+Inductive physical_phase := PayloadMarker | AwaitingMarker (endpoint : T.source_location).
+
+Section Payloads.
+Context {Span : Type}.
+
+Record physical_leaf := PhysicalLeaf {
+  leaf_metadata : F.path_metadata;
+  leaf_slot : nat;
+  leaf_obligation : T.obligation_snapshot;
+  leaf_phase : physical_phase;
+  leaf_payload_start : nat;
+  leaf_next : @T.frame_tree Span
+}.
+
+Definition payload_end current :=
+  leaf_payload_start current + T.obligation_payload_len (leaf_obligation current).
+
+Definition realize_phase stamp current :=
+  match leaf_phase current with
+  | PayloadMarker => T.PayloadPhase (payload_end current - stamp)
+  | AwaitingMarker endpoint => T.AwaitingPhase endpoint
+  end.
+
+Definition realize_leaf stamp current :=
+  T.SemanticPath (leaf_metadata current)
+    (T.InactiveTree (leaf_slot current)
+      (T.ObligationPayload (leaf_obligation current) (realize_phase stamp current)
+        (leaf_payload_start current)) (leaf_next current)).
+
+Fixpoint countdown_tree width (tree : @T.frame_tree Span) :=
+  match tree with
+  | T.InactiveTree slot (T.ObligationPayload obligation (T.PayloadPhase remaining) start) next =>
+      T.InactiveTree slot (T.ObligationPayload obligation (T.PayloadPhase (remaining - width)) start) next
+  | T.RegionTree slot remaining previous declared path_remaining start metadata child next =>
+      T.RegionTree slot (remaining - width) previous declared (path_remaining - width) start metadata
+        (countdown_tree width child) next
+  | other => other
+  end.
+
+Definition typed_countdown width current :=
+  T.SemanticPath (T.semantic_metadata current) (countdown_tree width (T.semantic_frames current)).
+
+Fixpoint strict_tree width (tree : @T.frame_tree Span) : Prop :=
+  match tree with
+  | T.InactiveTree _ (T.ObligationPayload _ (T.PayloadPhase remaining) _) _ => width < remaining
+  | T.RegionTree _ remaining _ _ path_remaining _ metadata child _ =>
+      width < remaining /\ width < path_remaining /\
+      F.path_status_value metadata = F.OpenPath /\ strict_tree width child
+  | _ => False
+  end.
+
+Definition strict_graph width current :=
+  F.path_status_value (T.semantic_metadata current) = F.OpenPath /\
+  strict_tree width (T.semantic_frames current).
+
+Definition strict_owner stamp width (owner : @T.held_owner Span) :=
+  F.path_status_value (T.held_metadata owner) = F.OpenPath /\
+  stamp + width < T.held_region_end owner /\ stamp + width < T.held_path_end owner.
+
+Definition strict_window stamp width current owners :=
+  leaf_phase current = PayloadMarker /\
+  F.path_status_value (leaf_metadata current) = F.OpenPath /\
+  leaf_payload_start current <= stamp /\ stamp + width < payload_end current /\
+  Forall (strict_owner stamp width) owners.
+
+Definition realize_graph stamp current owners := T.reify_owners stamp (realize_leaf stamp current) owners.
+
+Theorem physical_payload_realizes_all_existing_typed_obligation_fields stamp current :
+  leaf_phase current = PayloadMarker ->
+  T.semantic_metadata (realize_leaf stamp current) = leaf_metadata current /\
+  T.semantic_frames (realize_leaf stamp current) =
+    T.InactiveTree (leaf_slot current)
+      (T.ObligationPayload (leaf_obligation current) (T.PayloadPhase (payload_end current - stamp))
+        (leaf_payload_start current)) (leaf_next current).
+Proof. intro phase. unfold realize_leaf, realize_phase. rewrite phase. split; reflexivity. Qed.
+
+Lemma leaf_stamp_advance_is_typed_countdown stamp width current :
+  leaf_phase current = PayloadMarker ->
+  realize_leaf (stamp + width) current = typed_countdown width (realize_leaf stamp current).
+Proof.
+  intro phase. unfold realize_leaf, realize_phase, typed_countdown. rewrite phase.
+  cbn. f_equal. f_equal. f_equal. f_equal. lia.
+Qed.
+
+Lemma wrapping_an_owner_commutes_with_typed_countdown stamp width owner current :
+  typed_countdown width (T.wrap_owner stamp owner current) =
+  T.wrap_owner (stamp + width) owner (typed_countdown width current).
+Proof.
+  destruct current. unfold typed_countdown, T.wrap_owner. cbn.
+  f_equal. f_equal; lia.
+Qed.
+
+Lemma owner_spine_commutes_with_typed_countdown stamp width current owners :
+  typed_countdown width (T.reify_owners stamp current owners) =
+  T.reify_owners (stamp + width) (typed_countdown width current) owners.
+Proof.
+  revert current. induction owners; intro current; cbn; [reflexivity|].
+  rewrite IHowners, wrapping_an_owner_commutes_with_typed_countdown. reflexivity.
+Qed.
+
+Theorem absolute_stamp_advance_changes_exactly_the_typed_payload_and_owner_residuals
+    stamp width current owners :
+  leaf_phase current = PayloadMarker ->
+  realize_graph (stamp + width) current owners = typed_countdown width (realize_graph stamp current owners).
+Proof.
+  intro phase. unfold realize_graph. rewrite owner_spine_commutes_with_typed_countdown.
+  now rewrite leaf_stamp_advance_is_typed_countdown.
+Qed.
+
+Lemma strict_owner_spine stamp width current owners :
+  strict_graph width current -> Forall (strict_owner stamp width) owners ->
+  strict_graph width (T.reify_owners stamp current owners).
+Proof.
+  revert current. induction owners as [|owner rest IH]; intros current strict valid; cbn; [exact strict|].
+  inversion valid as [|? ? held tail]; subst. apply IH; [|exact tail].
+  destruct strict as [live bounded]. destruct held as [owner_live [region path]].
+  unfold strict_graph, T.wrap_owner. cbn. split; [exact owner_live|].
+  repeat split; try assumption; lia.
+Qed.
+
+Theorem strict_absolute_window_realizes_a_live_typed_graph stamp width current owners :
+  strict_window stamp width current owners -> strict_graph width (realize_graph stamp current owners).
+Proof.
+  intros [phase [live [started [bounded owners_valid]]]].
+  unfold realize_graph. apply strict_owner_spine; [|exact owners_valid].
+  unfold strict_graph, realize_leaf, realize_phase. rewrite phase. cbn. split; [exact live|lia].
+Qed.
+
+Lemma strict_window_prefix stamp width prefix rest current owners :
+  strict_window stamp width current owners -> prefix + rest <= width ->
+  strict_window (stamp + prefix) rest current owners.
+Proof.
+  intros [phase [live [started [bounded owners_valid]]]] inside.
+  repeat split; try assumption; try lia.
+  eapply Forall_impl; [|exact owners_valid]. intros owner [owner_live [region path]].
+  unfold strict_owner. repeat split; try assumption; lia.
+Qed.
+
+Theorem every_historical_absolute_prefix_retains_all_strict_typed_boundaries
+    stamp width prefix current owners :
+  strict_window stamp width current owners -> prefix <= width ->
+  strict_graph (width - prefix) (realize_graph (stamp + prefix) current owners).
+Proof.
+  intros valid inside. apply strict_absolute_window_realizes_a_live_typed_graph.
+  eapply strict_window_prefix; [exact valid|lia].
+Qed.
+
+Theorem strict_absolute_prefix_preserves_physical_continuations_and_held_owners
+    frames suffix stamp width prefix current owners :
+  strict_window stamp width current owners -> prefix <= width ->
+  T.physical_tree frames (leaf_next current) ->
+  Forall (T.owner_realizes frames stamp) owners ->
+  T.physical_tree (frames ++ suffix) (leaf_next current) /\
+  Forall (T.owner_realizes (frames ++ suffix) (stamp + prefix)) owners /\
+  strict_graph (width - prefix) (realize_graph (stamp + prefix) current owners).
+Proof.
+  intros valid inside continuation held.
+  split; [now apply T.typed_physical_frames_survive_arbitrary_append|]. split.
+  - destruct valid as [_ [_ [_ [_ bounded]]]].
+    rewrite Forall_forall in held, bounded |- *. intros owner present.
+    specialize (held owner present). specialize (bounded owner present).
+    destruct bounded as [_ [region path]]. apply T.owner_realizes_append.
+    pose proof (@T.advancing_a_valid_graph_stamp_preserves_held_cells_and_decreases_residuals
+      Span frames stamp (stamp + prefix) owner held) as advanced.
+    apply advanced; lia.
+  - now apply every_historical_absolute_prefix_retains_all_strict_typed_boundaries.
+Qed.
+
+Theorem absolute_payload_preserves_the_exact_typed_private_terminal stamp current owners :
+  leaf_phase current = PayloadMarker ->
+  let obligation := leaf_obligation current in
+  let '(source, offset) := T.obligation_tag_source obligation in
+  T.path_private_terminal (realize_graph stamp current owners) =
+    P.TerminalObligation (T.obligation_id obligation) source offset false.
+Proof.
+  intro phase. unfold realize_graph. rewrite T.typed_overlay_private_terminal_is_the_selected_focus_terminal.
+  unfold T.path_private_terminal, realize_leaf, realize_phase. rewrite phase. cbn.
+  destruct (T.obligation_tag_source (leaf_obligation current)). reflexivity.
+Qed.
+
+Theorem absolute_payload_private_preflight_keeps_exact_id_phase_and_source
+    stamp current owners requested caller :
+  leaf_phase current = PayloadMarker ->
+  let obligation := leaf_obligation current in
+  let '(source, offset) := T.obligation_tag_source obligation in
+  P.resolve_preflight requested (T.path_private_terminal (realize_graph stamp current owners)) = Some (source, offset) /\
+  P.reject_preflight requested caller (T.path_private_terminal (realize_graph stamp current owners)) =
+    (if requested =? T.obligation_id obligation then None else Some (source, offset)).
+Proof.
+  intro phase. pose proof (@absolute_payload_preserves_the_exact_typed_private_terminal stamp current owners phase) as terminal.
+  cbn zeta in terminal |- *.
+  destruct (T.obligation_tag_source (leaf_obligation current)) as [source offset]. rewrite terminal.
+  unfold P.resolve_preflight, P.reject_preflight. rewrite andb_false_r. split; reflexivity.
+Qed.
+
+Inductive strict_scalar_step : @T.semantic_path Span -> located_byte -> @T.semantic_path Span -> O.event -> Prop :=
+| StrictScalarStep current byte id source offset :
+    strict_graph 1 current ->
+    T.path_private_terminal current = P.TerminalObligation id source offset false ->
+    strict_scalar_step current byte (typed_countdown 1 current) (O.PayloadByte id byte false).
+
+Inductive strict_scalar_run : list located_byte -> @T.semantic_path Span -> @T.semantic_path Span -> list O.event -> Prop :=
+| StrictScalarNil current : strict_scalar_run [] current current []
+| StrictScalarCons byte rest current next final observed observations :
+    strict_scalar_step current byte next observed ->
+    strict_scalar_run rest next final observations ->
+    strict_scalar_run (byte :: rest) current final (observed :: observations).
+
+Theorem strict_absolute_window_refines_repeated_typed_scalar_payload_steps
+    input stamp current owners :
+  strict_window stamp (length input) current owners ->
+  strict_scalar_run input (realize_graph stamp current owners)
+    (realize_graph (stamp + length input) current owners)
+    (map (fun byte => O.PayloadByte (T.obligation_id (leaf_obligation current)) byte false) input).
+Proof.
+  revert stamp. induction input as [|byte rest IH]; intros stamp valid.
+  - cbn. rewrite Nat.add_0_r. constructor.
+  - assert (one : strict_window stamp 1 current owners).
+    { replace stamp with (stamp + 0) by lia. eapply strict_window_prefix; [exact valid|cbn; lia]. }
+    assert (later : strict_window (stamp + 1) (length rest) current owners).
+    { eapply strict_window_prefix; [exact valid|cbn; lia]. }
+    pose proof (IH (stamp + 1) later) as tail.
+    replace (stamp + 1 + length rest) with (stamp + length (byte :: rest)) in tail by (cbn; lia).
+    cbn [map]. eapply StrictScalarCons; [|exact tail].
+    rewrite absolute_stamp_advance_changes_exactly_the_typed_payload_and_owner_residuals by exact (proj1 valid).
+    destruct (T.obligation_tag_source (leaf_obligation current)) as [source offset] eqn:source_is.
+    eapply StrictScalarStep.
+    + now apply strict_absolute_window_realizes_a_live_typed_graph.
+    + pose proof (@absolute_payload_preserves_the_exact_typed_private_terminal stamp current owners (proj1 valid)) as terminal.
+      cbn zeta in terminal.
+      rewrite source_is in terminal. exact terminal.
+Qed.
+
+Record checkpoint := Checkpoint {
+  checkpoint_leaf : physical_leaf;
+  checkpoint_owners : list (@T.held_owner Span);
+  checkpoint_saved_stamp : nat;
+  checkpoint_fault : option P.fault_error
+}.
+
+Definition selected_stamp current byte_length :=
+  match checkpoint_fault current with
+  | Some _ => checkpoint_saved_stamp current
+  | None =>
+      match F.path_status_value (leaf_metadata (checkpoint_leaf current)) with
+      | F.DeadPath _ _ _ => checkpoint_saved_stamp current
+      | _ => byte_length
+      end
+  end.
+
+Definition graph_at stamp current :=
+  let graph := realize_graph stamp (checkpoint_leaf current) (checkpoint_owners current) in
+  match checkpoint_fault current with None => graph | Some error => D.kill_typed graph error end.
+
+Definition selected_graph current byte_length := graph_at (selected_stamp current byte_length) current.
+
+Theorem live_absolute_checkpoint_uses_the_selected_byte_prefix current byte_length :
+  checkpoint_fault current = None ->
+  F.path_status_value (leaf_metadata (checkpoint_leaf current)) = F.OpenPath ->
+  selected_graph current byte_length = graph_at byte_length current.
+Proof. intros no_fault live. unfold selected_graph, selected_stamp. now rewrite no_fault, live. Qed.
+
+Theorem saved_fault_stamp_preserves_the_entire_typed_graph_under_dead_edges current first later error :
+  checkpoint_fault current = Some error ->
+  selected_graph current first = graph_at (checkpoint_saved_stamp current) current /\
+  selected_graph current later = selected_graph current first.
+Proof.
+  intro fault. unfold selected_graph, selected_stamp. rewrite fault. split; reflexivity.
+Qed.
+
+Theorem saved_direct_dead_stamp_is_required_even_without_a_fault_field
+    current first later code source offset :
+  checkpoint_fault current = None ->
+  F.path_status_value (leaf_metadata (checkpoint_leaf current)) = F.DeadPath code source offset ->
+  selected_graph current first = graph_at (checkpoint_saved_stamp current) current /\
+  selected_graph current later = selected_graph current first.
+Proof.
+  intros no_fault dead. unfold selected_graph, selected_stamp. rewrite no_fault, dead. split; reflexivity.
+Qed.
+
+Theorem publishing_any_checkpoint_preserves_every_historical_prefix_and_shared_alias
+    stored suffix slot previous :
+  nth_error stored slot = Some previous ->
+  nth_error (stored ++ suffix) slot = Some previous /\
+  forall byte_length,
+    option_map (fun current => selected_graph current byte_length) (nth_error (stored ++ suffix) slot) =
+    Some (selected_graph previous byte_length).
+Proof.
+  intro found. assert (retained : nth_error (stored ++ suffix) slot = Some previous).
+  { eapply P.old_lookup_after_append; exact found. }
+  split; [exact retained|]. intro byte_length. now rewrite retained.
+Qed.
+
+Theorem explicit_awaiting_phase_keeps_its_original_physical_endpoint stamp later current endpoint :
+  leaf_phase current = AwaitingMarker endpoint ->
+  realize_leaf stamp current = realize_leaf later current /\
+  realize_phase later current = T.AwaitingPhase endpoint.
+Proof.
+  intro pending. unfold realize_leaf, realize_phase. rewrite pending. split; reflexivity.
+Qed.
+
+End Payloads.
+
+Definition control_metadata := F.PathMetadata true F.OpenPath 0 None true.
+Definition control_obligation := T.ObligationSnapshot 17 T.RawParEscape 4 (7, 11).
+Definition control_leaf := @PhysicalLeaf unit control_metadata 3 control_obligation PayloadMarker 5 T.EmptyTree.
+Definition control_fault := P.FaultError 9 7 12.
+Definition control_dead := @Checkpoint unit control_leaf [] 5 (Some control_fault).
+
+Theorem moving_an_ownerless_dead_byte_stamp_changes_its_hidden_typed_payload :
+  graph_at 5 control_dead <> graph_at 7 control_dead /\
+  selected_graph control_dead 5 = selected_graph control_dead 7.
+Proof. split; [discriminate|reflexivity]. Qed.
+
+Theorem dropping_the_stamp_after_folding_a_fault_into_direct_metadata_is_not_sound :
+  let killed := @PhysicalLeaf unit (P.kill_metadata control_metadata control_fault) 3
+    control_obligation PayloadMarker 5 T.EmptyTree in
+  let direct_dead := @Checkpoint unit killed [] 5 None in
+  graph_at 5 direct_dead <> graph_at 7 direct_dead /\
+  selected_graph direct_dead 5 = selected_graph direct_dead 7.
+Proof. split; [discriminate|reflexivity]. Qed.
+
+Print Assumptions physical_payload_realizes_all_existing_typed_obligation_fields.
+Print Assumptions absolute_stamp_advance_changes_exactly_the_typed_payload_and_owner_residuals.
+Print Assumptions strict_absolute_window_realizes_a_live_typed_graph.
+Print Assumptions every_historical_absolute_prefix_retains_all_strict_typed_boundaries.
+Print Assumptions strict_absolute_prefix_preserves_physical_continuations_and_held_owners.
+Print Assumptions absolute_payload_preserves_the_exact_typed_private_terminal.
+Print Assumptions absolute_payload_private_preflight_keeps_exact_id_phase_and_source.
+Print Assumptions strict_absolute_window_refines_repeated_typed_scalar_payload_steps.
+Print Assumptions live_absolute_checkpoint_uses_the_selected_byte_prefix.
+Print Assumptions saved_fault_stamp_preserves_the_entire_typed_graph_under_dead_edges.
+Print Assumptions saved_direct_dead_stamp_is_required_even_without_a_fault_field.
+Print Assumptions publishing_any_checkpoint_preserves_every_historical_prefix_and_shared_alias.
+Print Assumptions explicit_awaiting_phase_keeps_its_original_physical_endpoint.
+Print Assumptions moving_an_ownerless_dead_byte_stamp_changes_its_hidden_typed_payload.
+Print Assumptions dropping_the_stamp_after_folding_a_fault_into_direct_metadata_is_not_sound.
+
+End AbsolutePayloadRealization.

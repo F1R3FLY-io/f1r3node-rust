@@ -296,7 +296,7 @@ epathmap_score_proofs() {
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 191 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 210 \
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
 }
@@ -319,8 +319,57 @@ epathmap_import_runtime() {
   rpb3_run_tests 8 --release -j4 --lib opaque_interior_tests
   rpb3_run_tests 22 --release -j4 --lib frame_storage_tests
   rpb3_run_tests 6 --release -j4 --lib indexed_span_transport
+  rpb3_run_tests 10 --release -j4 --lib normalized_source_spans
   rpb3_run_tests 5 --release -j4 --lib byte_policy_tests
 }
+
+act_line_transport_runtime() {
+  local TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512
+  local target="${CARGO_TARGET_DIR:-$repo_root/target}" fixture case_name expected_code output
+  [[ "$target" = /* ]] || target="$repo_root/$target"
+  fixture="$repo_root/rspace++/tests/compile_fail/act_line_span_borrows.rs"
+  rspace_preparation_run_tests 6 --locked --lib checked_line_transport
+  tlc_bounded cargo build --release --locked -j4 -p rspace_plus_plus --lib --target-dir "$target"
+  local result_dir="$target/verification/act-line-span-borrows"
+  mkdir -p "$result_dir"
+  local compiler=(rustc --edition=2021 --crate-type=lib --emit=metadata
+    --extern "rspace_plus_plus=$target/release/librspace_plus_plus.rlib"
+    -L "dependency=$target/release/deps" "$fixture")
+  if ! output="$(tlc_bounded "${compiler[@]}" -o "$result_dir/positive.rmeta" 2>&1)"; then
+    printf '%s\n' "$output"
+    return 1
+  fi
+  printf '%s\n' "$output"
+  for case_name in live_rewind live_next_event live_replace double_commit clone_offer copy_offer escape_cursor substitute_cursor; do
+    case "$case_name" in
+      live_rewind|live_next_event) expected_code=E0499 ;;
+      live_replace) expected_code=E0506 ;;
+      double_commit) expected_code=E0382 ;;
+      clone_offer) expected_code=E0599 ;;
+      copy_offer) expected_code=E0277 ;;
+      escape_cursor) expected_code=E0515 ;;
+      substitute_cursor) expected_code=E0616 ;;
+    esac
+    if output="$(tlc_bounded "${compiler[@]}" --cfg "$case_name" -o "$result_dir/$case_name.rmeta" 2>&1)"; then
+      printf '%s\n' "$output"
+      echo "stack-safe-pda: ACT span negative control $case_name unexpectedly compiled" >&2
+      return 1
+    fi
+    printf '%s\n' "$output"
+    if ! grep -Fq "error[$expected_code]" <<<"$output"; then
+      echo "stack-safe-pda: ACT span control $case_name did not produce $expected_code" >&2
+      return 1
+    fi
+  done
+  echo "stack-safe-pda: ACT span positive compile and eight exact compiler-rejection controls passed"
+}
+
+if [[ "${1:-}" == "--act-line-transport" ]]; then
+  pushd "$repo_root" >/dev/null
+  act_line_transport_runtime
+  popd >/dev/null
+  exit 0
+fi
 
 if [[ "${1:-}" == "--epathmap-import" ]]; then
   export TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
@@ -336,6 +385,7 @@ if [[ "${1:-}" == "--epathmap-import" ]]; then
   popd >/dev/null
   pushd "$repo_root" >/dev/null
   epathmap_import_runtime
+  act_line_transport_runtime
   popd >/dev/null
   echo "stack-safe-pda: focused Var/EPathMap proof and runtime gates passed"
   exit 0

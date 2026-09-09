@@ -44,9 +44,12 @@ pub(crate) struct IndexedBytePosition {
 enum IndexedByteBacking<'a> {
     Borrowed {
         bytes: &'a [u8],
+        start: usize,
+        len: usize,
         source: u32,
         absolute_start: usize,
-        end_override: Option<CanonicalByteProvenance>,
+        end_source: Option<u32>,
+        end_offset: usize,
     },
     #[cfg(test)]
     Contiguous {
@@ -105,9 +108,12 @@ impl<'a> IndexedByteRegion<'a> {
         Self {
             backing: IndexedByteBacking::Borrowed {
                 bytes,
+                start: 0,
+                len: bytes.len(),
                 source,
                 absolute_start,
-                end_override: None,
+                end_source: None,
+                end_offset: 0,
             },
         }
     }
@@ -148,7 +154,7 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn len(&self) -> usize {
         match &self.backing {
-            IndexedByteBacking::Borrowed { bytes, .. } => bytes.len(),
+            IndexedByteBacking::Borrowed { len, .. } => *len,
             #[cfg(test)]
             IndexedByteBacking::Contiguous { bytes, .. } => bytes.len(),
             #[cfg(test)]
@@ -159,6 +165,86 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn is_empty(&self) -> bool { self.len() == 0 }
 
+    pub(crate) fn try_coalesce(&self, right: &Self) -> Option<Self> {
+        match (&self.backing, &right.backing) {
+            (
+                IndexedByteBacking::Borrowed {
+                    bytes,
+                    start,
+                    len,
+                    source,
+                    absolute_start,
+                    ..
+                },
+                IndexedByteBacking::Borrowed {
+                    bytes: right_bytes,
+                    start: right_start,
+                    len: right_len,
+                    source: right_source,
+                    absolute_start: right_absolute_start,
+                    end_source,
+                    end_offset,
+                },
+            ) => {
+                if !std::ptr::eq(*bytes, *right_bytes)
+                    || source != right_source
+                    || absolute_start != right_absolute_start
+                    || start.checked_add(*len)? != *right_start
+                {
+                    return None;
+                }
+                let len = len.checked_add(*right_len)?;
+                let end = start.checked_add(len)?;
+                if end > bytes.len() {
+                    return None;
+                }
+                absolute_start.checked_add(*start)?;
+                if len != 0 {
+                    absolute_start.checked_add(end - 1)?;
+                }
+                right.position_at(*right_len)?;
+                Some(Self {
+                    backing: IndexedByteBacking::Borrowed {
+                        bytes,
+                        start: *start,
+                        len,
+                        source: *source,
+                        absolute_start: *absolute_start,
+                        end_source: *end_source,
+                        end_offset: *end_offset,
+                    },
+                })
+            }
+            (
+                IndexedByteBacking::Frozen {
+                    root, start, len, ..
+                },
+                IndexedByteBacking::Frozen {
+                    root: right_root,
+                    start: right_start,
+                    len: right_len,
+                    ..
+                },
+            ) => {
+                let left = root.subview(*start..start.checked_add(*len)?)?;
+                let next =
+                    right_root.subview(*right_start..right_start.checked_add(*right_len)?)?;
+                let root = left.try_coalesce(&next)?;
+                let root_end = right.position_at(*right_len)?.physical;
+                let len = root.len();
+                Some(Self {
+                    backing: IndexedByteBacking::Frozen {
+                        root,
+                        start: 0,
+                        len,
+                        root_end,
+                    },
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Form a constant-size subview without traversing or copying its bytes.
     pub(crate) fn subview(&self, range: CanonicalByteRange) -> Option<Self> {
         if range.start > range.end || range.end > self.len() {
@@ -167,19 +253,27 @@ impl<'a> IndexedByteRegion<'a> {
         match &self.backing {
             IndexedByteBacking::Borrowed {
                 bytes,
+                start,
+                len,
                 source,
                 absolute_start,
-                end_override,
-            } => Some(Self {
-                backing: IndexedByteBacking::Borrowed {
-                    bytes: bytes.get(range.start..range.end)?,
-                    source: *source,
-                    absolute_start: absolute_start.checked_add(range.start)?,
-                    end_override: (range.end == bytes.len())
-                        .then_some(*end_override)
-                        .flatten(),
-                },
-            }),
+                end_source,
+                end_offset,
+            } => {
+                let start = start.checked_add(range.start)?;
+                absolute_start.checked_add(start)?;
+                Some(Self {
+                    backing: IndexedByteBacking::Borrowed {
+                        bytes,
+                        start,
+                        len: range.end - range.start,
+                        source: *source,
+                        absolute_start: *absolute_start,
+                        end_source: (range.end == *len).then_some(*end_source).flatten(),
+                        end_offset: if range.end == *len { *end_offset } else { 0 },
+                    },
+                })
+            }
             #[cfg(test)]
             IndexedByteBacking::Contiguous {
                 bytes,
@@ -240,7 +334,14 @@ impl<'a> IndexedByteRegion<'a> {
     ) -> Option<Self> {
         let mut view = self.subview(range)?;
         match &mut view.backing {
-            IndexedByteBacking::Borrowed { end_override, .. } => *end_override = Some(end),
+            IndexedByteBacking::Borrowed {
+                end_source,
+                end_offset,
+                ..
+            } => {
+                *end_source = Some(end.source);
+                *end_offset = end.offset;
+            }
             #[cfg(test)]
             IndexedByteBacking::Contiguous { end: boundary, .. } => *boundary = end,
             #[cfg(test)]
@@ -278,21 +379,23 @@ impl<'a> IndexedByteRegion<'a> {
             IndexedByteBacking::Borrowed {
                 source,
                 absolute_start,
-                end_override,
+                start,
+                end_source,
+                end_offset,
                 ..
             } => {
                 if logical_offset == len {
-                    match end_override {
-                        Some(end) => *end,
+                    match end_source {
+                        Some(source) => CanonicalByteProvenance::new(*source, *end_offset),
                         None => CanonicalByteProvenance::new(
                             *source,
-                            absolute_start.checked_add(logical_offset)?,
+                            absolute_start.checked_add(start.checked_add(logical_offset)?)?,
                         ),
                     }
                 } else {
                     CanonicalByteProvenance::new(
                         *source,
-                        absolute_start.checked_add(logical_offset)?,
+                        absolute_start.checked_add(start.checked_add(logical_offset)?)?,
                     )
                 }
             }
@@ -361,9 +464,12 @@ impl<'a> IndexedByteRegion<'a> {
 
     pub(crate) fn bytes(&self) -> IndexedByteCursor<'a> {
         let inner = match &self.backing {
-            IndexedByteBacking::Borrowed { bytes, .. } => {
-                IndexedByteCursorInner::Borrowed { bytes, at: 0 }
-            }
+            IndexedByteBacking::Borrowed {
+                bytes, start, len, ..
+            } => IndexedByteCursorInner::Borrowed {
+                bytes: &bytes[*start..*start + *len],
+                at: 0,
+            },
             #[cfg(test)]
             IndexedByteBacking::Contiguous { bytes, .. } => IndexedByteCursorInner::Contiguous {
                 region: ProtobufRegion::new(bytes.clone()),
@@ -404,13 +510,17 @@ impl<'a> IndexedByteRegion<'a> {
         let inner = match &self.backing {
             IndexedByteBacking::Borrowed {
                 bytes,
+                start,
+                len,
                 source,
                 absolute_start,
                 ..
             } => IndexedLocatedByteCursorInner::Borrowed {
-                bytes,
+                bytes: &bytes[*start..*start + *len],
                 source: *source,
-                absolute_start: *absolute_start,
+                absolute_start: absolute_start
+                    .checked_add(*start)
+                    .expect("checked borrowed origin"),
                 at: 0,
             },
             #[cfg(test)]
@@ -473,7 +583,9 @@ impl<'a> IndexedByteRegion<'a> {
             return None;
         }
         match &self.backing {
-            IndexedByteBacking::Borrowed { bytes, .. } => bytes.get(logical_offset).copied(),
+            IndexedByteBacking::Borrowed { bytes, start, .. } => {
+                bytes.get(start.checked_add(logical_offset)?).copied()
+            }
             #[cfg(test)]
             IndexedByteBacking::Contiguous { bytes, .. } => bytes.get(logical_offset).copied(),
             #[cfg(test)]
@@ -539,7 +651,14 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
 
     fn contiguous_range(&self, range: std::ops::Range<usize>) -> Option<&[u8]> {
         match &self.backing {
-            IndexedByteBacking::Borrowed { bytes, .. } => bytes.get(range),
+            IndexedByteBacking::Borrowed {
+                bytes, start, len, ..
+            } => {
+                if range.start > range.end || range.end > *len {
+                    return None;
+                }
+                bytes.get(start.checked_add(range.start)?..start.checked_add(range.end)?)
+            }
             #[cfg(test)]
             IndexedByteBacking::Contiguous { bytes, .. } => bytes.get(range),
             #[cfg(test)]
@@ -565,8 +684,16 @@ impl rspace_plus_plus::rspace::pathmap_codec::IndexedByteSource for IndexedByteR
             return false;
         }
         match &self.backing {
-            IndexedByteBacking::Borrowed { bytes, .. } => {
-                let Some(source) = bytes.get(start..end) else {
+            IndexedByteBacking::Borrowed {
+                bytes,
+                start: root_start,
+                ..
+            } => {
+                let Some(source) = root_start
+                    .checked_add(start)
+                    .zip(root_start.checked_add(end))
+                    .and_then(|(start, end)| bytes.get(start..end))
+                else {
                     return false;
                 };
                 output.copy_from_slice(source);
@@ -1550,6 +1677,10 @@ impl<'a> IndexedCanonicalFieldCursor<'a> {
 #[cfg(test)]
 #[path = "../../../tests/support/indexed_span_transport.rs"]
 mod indexed_span_transport;
+
+#[cfg(test)]
+#[path = "../../../tests/support/normalized_source_spans.rs"]
+mod normalized_source_spans;
 
 #[cfg(test)]
 mod tests {

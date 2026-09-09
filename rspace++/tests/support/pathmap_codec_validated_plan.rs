@@ -12,6 +12,7 @@ use super::{
     validate_direct_canonical_act,
 };
 
+#[derive(Clone)]
 struct FragmentedSource {
     chunks: Vec<Vec<u8>>,
     starts: Vec<usize>,
@@ -514,4 +515,293 @@ fn wide_dense_topology_is_stack_safe_on_a_small_native_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+mod checked_line_transport {
+    use super::super::{
+        CanonicalCompactTrieLineDirection as Direction, DirectTopologyStage, ValidatedActPlan,
+        ValidatedCompactTrieTopologyState,
+    };
+    use super::*;
+
+    type Cursor = CanonicalCompactTrieIndexedTopologyCursor<FragmentedSource>;
+
+    fn fork(cursor: &Cursor) -> Cursor {
+        Cursor {
+            source: cursor.source.clone(),
+            state: ValidatedCompactTrieTopologyState {
+                plan: ValidatedActPlan {
+                    empty: cursor.state.plan.empty,
+                    records: cursor.state.plan.records.clone(),
+                    value_summary: cursor.state.plan.value_summary,
+                    counters: cursor.state.plan.counters,
+                },
+                next_record: cursor.state.next_record,
+                stack: cursor.state.stack.clone(),
+                event_counters: cursor.state.event_counters,
+            },
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct State {
+        empty: bool,
+        next_record: usize,
+        records: Vec<(usize, u64, usize, usize, usize, usize, u16, u8, u8)>,
+        frames: Vec<(usize, usize, usize, usize, u8)>,
+        summary: super::super::CanonicalCompactTrieValueSummary,
+    }
+
+    fn state(cursor: &Cursor) -> State {
+        State {
+            empty: cursor.state.plan.empty,
+            next_record: cursor.state.next_record,
+            records: cursor
+                .state
+                .plan
+                .records
+                .iter()
+                .map(|record| {
+                    (
+                        record.node_id,
+                        record.value,
+                        record.value_source_offset,
+                        record.line_start,
+                        record.line_len,
+                        record.incoming_source_offset,
+                        record.child_count,
+                        record.incoming_byte,
+                        record.flags,
+                    )
+                })
+                .collect(),
+            frames: cursor
+                .state
+                .stack
+                .iter()
+                .map(|frame| {
+                    (
+                        frame.record,
+                        frame.remaining_children,
+                        frame.line_index,
+                        frame.leave_index,
+                        frame.stage as u8,
+                    )
+                })
+                .collect(),
+            summary: cursor.value_summary(),
+        }
+    }
+
+    fn check_every_prefix(bytes: &[u8], seed: u64) -> (usize, usize) {
+        let mut cursor = Cursor::from_source(FragmentedSource::new(bytes, seed)).unwrap();
+        let mut forward = 0;
+        let mut unwind = 0;
+        loop {
+            let before = state(&cursor);
+            let counters = cursor.work_counters();
+            let offer = cursor
+                .line_span()
+                .map(|span| (span.source_range(), span.direction()));
+            assert_eq!(state(&cursor), before, "offering and dropping is nonmutating");
+            assert_eq!(cursor.work_counters(), counters);
+            if let Some((range, direction)) = offer {
+                assert!(!range.is_empty());
+                for invalid in [0, range.len() + 1, usize::MAX] {
+                    assert!(cursor.line_span().unwrap().commit(invalid).is_none());
+                    assert_eq!(state(&cursor), before);
+                    assert_eq!(cursor.work_counters(), counters);
+                }
+                for width in 1..=range.len() {
+                    let mut fast = fork(&cursor);
+                    let mut scalar = fork(&cursor);
+                    let records = fast.state.plan.records.as_ptr();
+                    let source = &fast.source as *const FragmentedSource;
+                    let span = fast.line_span().unwrap();
+                    assert_eq!(span.source() as *const FragmentedSource, source);
+                    let committed = span.commit(width).unwrap();
+                    assert_eq!(committed.direction, direction);
+                    let expanded = match direction {
+                        Direction::Forward => {
+                            forward += 1;
+                            let expected_range = range.start..range.start + width;
+                            assert_eq!(committed.source_range, expected_range);
+                            for offset in expected_range {
+                                assert_eq!(
+                                    scalar.next_event().unwrap(),
+                                    Some(CanonicalCompactTrieTopologyEvent::Edge {
+                                        byte: bytes[offset],
+                                        source_offset: offset,
+                                    },)
+                                );
+                                assert!(
+                                    scalar.line_span().is_none(),
+                                    "odd prefix retains LineValue"
+                                );
+                                assert_eq!(
+                                    scalar.next_event().unwrap(),
+                                    Some(CanonicalCompactTrieTopologyEvent::Value {
+                                        value: None,
+                                        source_offset: offset,
+                                    },)
+                                );
+                            }
+                            assert_eq!(committed.last_source_offset(), range.start + width - 1);
+                            width * 2
+                        }
+                        Direction::Unwind => {
+                            unwind += 1;
+                            let expected_range = range.end - width..range.end;
+                            assert_eq!(committed.source_range, expected_range);
+                            for offset in expected_range.rev() {
+                                assert_eq!(
+                                    scalar.next_event().unwrap(),
+                                    Some(CanonicalCompactTrieTopologyEvent::Leave {
+                                        source_offset: offset
+                                    },)
+                                );
+                            }
+                            assert_eq!(committed.last_source_offset(), range.end - width);
+                            width
+                        }
+                    };
+                    assert_eq!(committed.expanded_events, expanded);
+                    assert_eq!(fast.state.plan.records.as_ptr(), records);
+                    assert_eq!(state(&fast), state(&scalar));
+                    assert_eq!(fast.work_counters(), counters, "commit performs no byte reads");
+                    let mut expected_counters = counters;
+                    if direction == Direction::Forward {
+                        expected_counters.event_line_source_reads += width;
+                    }
+                    assert_eq!(scalar.work_counters(), expected_counters);
+                    assert_eq!(fast.next_event().unwrap(), scalar.next_event().unwrap());
+                    assert_eq!(state(&fast), state(&scalar), "next scalar boundary remains exact");
+                }
+            }
+            if cursor.next_event().unwrap().is_none() {
+                assert!(cursor.line_span().is_none());
+                break;
+            }
+        }
+        (forward, unwind)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn arbitrary_branched_fragmented_images_match_every_scalar_prefix(
+            operations in proptest::collection::vec((
+                proptest::collection::vec(any::<u8>(), 1..25),
+                prop_oneof![Just(None), any::<u64>().prop_map(Some)],
+            ), 0..12),
+            seed in 1u64..u64::MAX,
+        ) {
+            check_every_prefix(&writer_image_from_operations(&operations), seed);
+        }
+    }
+
+    #[test]
+    fn shared_lines_values_and_valueless_branches_preserve_all_boundaries() {
+        let bytes = writer_image_from_operations(&[
+            (b"shared/branch/a/tail".to_vec(), Some(3)),
+            (b"shared/branch/b/tail".to_vec(), None),
+            (b"shared/branch".to_vec(), Some(7)),
+            (b"other/prefix/a".to_vec(), Some(11)),
+            (b"other/prefix/b".to_vec(), None),
+        ]);
+        let (forward, unwind) = check_every_prefix(&bytes, 17);
+        assert!(forward > 0 && unwind > 0);
+    }
+
+    #[test]
+    fn empty_and_one_byte_lines_never_skip_final_values_or_node_leaves() {
+        check_every_prefix(&canonical_image([]), 13);
+        let (forward, unwind) = check_every_prefix(&canonical_image([(vec![19], 7)]), 19);
+        assert_eq!(forward, 0);
+        assert_eq!(unwind, 1);
+    }
+
+    #[test]
+    fn dropped_offer_allows_rewind_and_a_fresh_exact_traversal() {
+        let bytes = canonical_image([(b"abcdef".to_vec(), 7)]);
+        let mut cursor = Cursor::from_source(FragmentedSource::new(&bytes, 11)).unwrap();
+        let before = new_topology(&bytes);
+        cursor.next_event().unwrap();
+        let offered = cursor.line_span().unwrap().source_range();
+        assert!(!offered.is_empty());
+        cursor.rewind();
+        let actual: Vec<_> = std::iter::from_fn(|| cursor.next_event().unwrap()).collect();
+        assert_eq!(actual, before);
+    }
+
+    #[test]
+    fn repeated_partial_commits_keep_endpoint_and_parent_leave_scalar() {
+        let bytes = canonical_image([(vec![31; 4096], 23)]);
+        let mut cursor = Cursor::from_source(FragmentedSource::new(&bytes, 7)).unwrap();
+        let expected = new_topology(&bytes);
+        let mut events = Vec::new();
+        let mut skipped = 0;
+        loop {
+            if let Some(span) = cursor.line_span() {
+                let width = span.source_range().len().min(17);
+                let direction = span.direction();
+                let committed = span.commit(width).unwrap();
+                skipped += committed.expanded_events;
+                match direction {
+                    Direction::Forward => {
+                        for offset in committed.source_range {
+                            events.push(CanonicalCompactTrieTopologyEvent::Edge {
+                                byte: bytes[offset],
+                                source_offset: offset,
+                            });
+                            events.push(CanonicalCompactTrieTopologyEvent::Value {
+                                value: None,
+                                source_offset: offset,
+                            });
+                        }
+                    }
+                    Direction::Unwind => {
+                        for offset in committed.source_range.rev() {
+                            events.push(CanonicalCompactTrieTopologyEvent::Leave {
+                                source_offset: offset,
+                            });
+                        }
+                    }
+                }
+            } else if let Some(event) = cursor.next_event().unwrap() {
+                events.push(event);
+            } else {
+                break;
+            }
+        }
+        assert_eq!(events, expected);
+        assert!(skipped >= 2 * 4095);
+        assert_eq!(cursor.work_counters().event_line_source_reads, 1);
+        assert!(cursor.state.stack.is_empty());
+    }
+
+    #[test]
+    fn boundary_phases_and_pending_children_never_offer_a_span() {
+        let bytes = canonical_image([(b"ab".to_vec(), 7)]);
+        let mut cursor = Cursor::from_source(FragmentedSource::new(&bytes, 3)).unwrap();
+        loop {
+            let stage = cursor.state.stack.last().map(|frame| frame.stage);
+            if matches!(
+                stage,
+                None | Some(DirectTopologyStage::Value | DirectTopologyStage::LineValue)
+            ) {
+                assert!(cursor.line_span().is_none());
+            }
+            if matches!(stage, Some(DirectTopologyStage::Children)) {
+                let pending = cursor.state.stack.last().unwrap().remaining_children;
+                if pending > 0 {
+                    assert!(cursor.line_span().is_none());
+                }
+            }
+            if cursor.next_event().unwrap().is_none() {
+                break;
+            }
+        }
+    }
 }

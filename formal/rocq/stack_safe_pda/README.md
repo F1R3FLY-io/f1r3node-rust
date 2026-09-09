@@ -2225,3 +2225,98 @@ per-layer flat-index rebuilding, and use stack-safe release. Adding SourceSpan
 leaves while retaining today's whole-payload `freeze` rebuild would not meet
 task 6018. The current coalescing proofs do not establish balancing, native
 allocation bounds, full topology admission, or Rust implementation correctness.
+
+#### Source-window implementation and reverse-entry bindings (2026-09-09)
+
+The terminal-window implementation now retains original borrowed roots and
+normalized frozen windows. The ten `normalized_source_spans` tests bind the
+preceding catalogue: three generated properties compare located-byte oracles,
+adjacency and nested subviews; six semantic controls cover equal-but-distinct
+backings, empty/end anchors, final literal bytes, frozen inner/outer offsets,
+retained siblings after parent release and overflow; one layout witness checks
+the production mirror separately from the test-only backing variants.
+The retention controls exercise existing backing lifetime and arena append,
+not the future mixed-source registration/composition implementation.
+
+Splitting the optional borrowed end anchor into `Option<u32>` source and `usize`
+offset avoids padding in an optional full provenance record. It uses no sentinel
+and preserves every source/offset value. The existing 72-byte test-layout guard
+is unchanged; the production mirror remains 64 bytes on the measured host.
+The full release models library passed 415 tests without failures or ignores.
+
+The ACT cursor has one unobservable reverse-entry transition: a line in the
+Children stage with zero pending children becomes Leave before emitting its
+first reverse byte. The concrete phase projection maps both such Children
+and raw Leave to the model's LineLeave, using `leave_index`. Pending children
+remain ineligible. The raw tag is excluded from preserved abstract context;
+remaining children, completed forward index, plan, next-record position and
+inactive frames remain included. Accepted positive commits must match the
+entire raw scalar post-state, not merely this abstract projection.
+
+| Additional exported ACT invariant | Executable binding |
+|---|---|
+| `pending_children_never_admit_reverse_transport` | Check that Children with pending descent never offers a reverse span, including branched shared-prefix images. |
+| `reverse_normalization_changes_only_the_unobservable_phase` | Snapshot every record, frame and cursor field around offer/drop/refusal; accepted reverse entry changes only leave index and raw stage. |
+| `accepted_reverse_entry_commit_matches_the_exact_scalar_trace` | Compare every positive reverse width against scalar calls, including the first and only leave of a one-byte line. |
+| `reverse_entry_refuses_zero_or_excessive_width_before_normalization` | Zero, oversized and full-width invalid requests preserve raw Children as well as counters and all retained authority. |
+
+The six tests under `checked_line_transport` bind these and the original twelve
+ACT transport laws to the cursor-local implementation. They compare every
+eligible prefix, odd forward prefixes, complete and partial reverse runs,
+exact source offsets, next scalar events and complete raw cursor state.
+The compiler fixture `rspace++/tests/compile_fail/act_line_span_borrows.rs`
+has a positive released-borrow control and eight negative configurations:
+live rewind, live next-event, cursor replacement, double commit, Clone, Copy,
+escaping the cursor and substituting another cursor. The verification script
+requires the expected Rust error code for each negative control; an unrelated
+compiler failure cannot satisfy it. No generation counter or runtime lock is
+introduced. An overflowing expanded-event count refuses batching, not input
+admission; scalar handling remains available.
+
+These laws require immutable source interpretation. The owned indexed source
+cannot be substituted through the capability, but arbitrary interior-mutating
+`IndexedByteSource` implementations do not automatically satisfy immutability.
+The intended production composition uses immutable `IndexedByteRegion` roots.
+The ACT capability is not yet an EPM1/path transaction: enclosing value-reader,
+event counters, private effects and restore state require their joint proof.
+
+#### Absolute payload realization: preimplementation invariant catalogue (2026-09-09)
+
+`AbsolutePayloadRealization` retains the typed countdown reference while modeling
+a physical payload marker whose remaining length is its absolute end minus the
+selected graph stamp. The end is payload start plus declared payload length.
+Awaiting resolution retains an explicit physical endpoint; equality with the
+payload end does not manufacture the awaiting phase. A saved stamp remains
+necessary after failure, even for ownerless states whose fault has been folded
+into metadata. Otherwise later ignored bytes change hidden typed residuals.
+
+All fifteen exported invariants below are prefixed `AbsolutePayloadRealization.`.
+They are proved model obligations, not claims that the new native representation
+or its required properties have been implemented.
+
+| Exported invariant | Required native property |
+|---|---|
+| `physical_payload_realizes_all_existing_typed_obligation_fields` | Reify exact obligation ID, kind, declared length, tag provenance, payload start, continuation and metadata from the physical marker. |
+| `absolute_stamp_advance_changes_exactly_the_typed_payload_and_owner_residuals` | Compare advanced leaf and every held owner with the independent typed countdown; all other fields remain identical. |
+| `strict_absolute_window_realizes_a_live_typed_graph` | Intersect the payload, Region and path bounds before batching; refuse crossing any boundary. |
+| `every_historical_absolute_prefix_retains_all_strict_typed_boundaries` | Restore every prefix of a shared span and compare all residuals, including zero-width prefixes and strict final-byte exclusion. |
+| `strict_absolute_prefix_preserves_physical_continuations_and_held_owners` | Append frames and siblings, then verify original continuation identities and held-owner realization at every retained stamp. |
+| `absolute_payload_preserves_the_exact_typed_private_terminal` | Verify exact private phase, obligation ID and tag source for arbitrary held-owner depth. |
+| `absolute_payload_private_preflight_keeps_exact_id_phase_and_source` | Wrong-ID and wrong-phase resolve/reject preserve exact errors and preflight state, including partial payloads. |
+| `strict_absolute_window_refines_repeated_typed_scalar_payload_steps` | Differentially compare each located byte and callback event with typed scalar payload steps, excluding completion. |
+| `live_absolute_checkpoint_uses_the_selected_byte_prefix` | Fault-free live checkpoints select each byte-prefix length without storing a replacement frame per byte. |
+| `saved_fault_stamp_preserves_the_entire_typed_graph_under_dead_edges` | Appending bytes after a deferred fault preserves its saved graph, hidden residuals and provenance. |
+| `saved_direct_dead_stamp_is_required_even_without_a_fault_field` | Repeat the previous property after failure is represented directly in path metadata with no separate fault field. |
+| `publishing_any_checkpoint_preserves_every_historical_prefix_and_shared_alias` | Append arbitrary new checkpoints while every previous ID and byte-prefix alias reifies identically. |
+| `explicit_awaiting_phase_keeps_its_original_physical_endpoint` | Advancing unrelated bytes never changes an explicit awaiting endpoint or invents a phase transition. |
+| `moving_an_ownerless_dead_byte_stamp_changes_its_hidden_typed_payload` | A negative control that substitutes current byte length for the saved stamp must detect changed hidden payload state. |
+| `dropping_the_stamp_after_folding_a_fault_into_direct_metadata_is_not_sound` | The corresponding negative control must fail for direct ownerless Dead metadata, not just separately stored faults. |
+
+The model uses unbounded natural arithmetic. Native widened endpoint arithmetic,
+checked address conversion and batch refusal require separate executable binding.
+The typed strict-step relation deliberately covers only nonfinal payload bytes;
+it is not a proof of the full parser grammar, completion callbacks, compressed
+restore runs or failed-preflight/global-obligation-clock composition. Those
+remain required before activation. Existing compact-checkpoint proofs are
+preserved as history; their ownerless stamp erasure cannot be applied blindly
+to the proposed absolute-payload representation.

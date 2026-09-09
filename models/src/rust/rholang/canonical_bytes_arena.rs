@@ -899,6 +899,25 @@ impl FrozenCanonicalBytes {
         self.inner.subview(range).map(|inner| Self { inner })
     }
 
+    pub(crate) fn try_coalesce(&self, right: &Self) -> Option<Self> {
+        if !Arc::ptr_eq(&self.inner.data, &right.inner.data)
+            || self.inner.start.checked_add(self.inner.len)? != right.inner.start
+        {
+            return None;
+        }
+        let len = self.inner.len.checked_add(right.inner.len)?;
+        if self.inner.start.checked_add(len)? > self.inner.data.len {
+            return None;
+        }
+        Some(Self {
+            inner: PageFrozenBytes {
+                data: Arc::clone(&self.inner.data),
+                start: self.inner.start,
+                len,
+            },
+        })
+    }
+
     /// Random byte lookup. At most `BLOCK_BYTES` leaf records are inspected.
     pub(crate) fn byte_at(&self, logical_offset: usize) -> Option<u8> {
         self.inner.byte_at(logical_offset)
