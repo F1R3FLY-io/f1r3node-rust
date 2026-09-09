@@ -136,7 +136,7 @@ mod tests {
         let term = format!(
             r#"
             new op(`rho:io:fs:native:1.0.0/open`), ret in {{
-              op!("{root}", "f.bin", "rw", "oracular", *ret) |
+              op!("{root}", "f.bin", "r+", "oracular", *ret) |
               for (@r <- ret) {{ @"out"!(r) }}
             }}
             "#,
@@ -156,7 +156,7 @@ mod tests {
             new op(`rho:io:fs:native:1.0.0/open`),
                 cl(`rho:io:fs:native:1.0.0/close`),
                 oret, cret in {{
-              op!("{root}", "f.bin", "rw", "oracular", *oret) |
+              op!("{root}", "f.bin", "r+", "oracular", *oret) |
               for (@[true, fd] <- oret) {{
                 cl!(fd, *cret) |
                 for (@r <- cret) {{ @"out"!(r) }}
@@ -225,7 +225,7 @@ mod tests {
             new op(`rho:io:fs:native:1.0.0/open`),
                 wr(`rho:io:fs:native:1.0.0/write`),
                 oret, wret in {{
-              op!("{root}", "f.bin", "rw", "oracular", *oret) |
+              op!("{root}", "f.bin", "r+", "oracular", *oret) |
               for (@[true, fd] <- oret) {{
                 wr!(fd, "ab".hexToBytes(), *wret) |
                 for (@r <- wret) {{ @"out"!(r) }}
@@ -248,7 +248,7 @@ mod tests {
             new op(`rho:io:fs:native:1.0.0/open`),
                 wr(`rho:io:fs:native:1.0.0/writeAt`),
                 oret, wret in {{
-              op!("{root}", "f.bin", "rw", "oracular", *oret) |
+              op!("{root}", "f.bin", "r+", "oracular", *oret) |
               for (@[true, fd] <- oret) {{
                 wr!(fd, 4, "cd".hexToBytes(), *wret) |
                 for (@r <- wret) {{ @"out"!(r) }}
@@ -271,7 +271,7 @@ mod tests {
             new op(`rho:io:fs:native:1.0.0/open`),
                 sk(`rho:io:fs:native:1.0.0/seek`),
                 oret, sret in {{
-              op!("{root}", "f.bin", "rw", "oracular", *oret) |
+              op!("{root}", "f.bin", "r+", "oracular", *oret) |
               for (@[true, fd] <- oret) {{
                 sk!(fd, 4, "set", *sret) |
                 for (@r <- sret) {{ @"out"!(r) }}
@@ -294,7 +294,7 @@ mod tests {
             new op(`rho:io:fs:native:1.0.0/open`),
                 tl(`rho:io:fs:native:1.0.0/tell`),
                 oret, tret in {{
-              op!("{root}", "f.bin", "rw", "oracular", *oret) |
+              op!("{root}", "f.bin", "r+", "oracular", *oret) |
               for (@[true, fd] <- oret) {{
                 tl!(fd, *tret) |
                 for (@r <- tret) {{ @"out"!(r) }}
@@ -340,7 +340,7 @@ mod tests {
             new op(`rho:io:fs:native:1.0.0/open`),
                 tr(`rho:io:fs:native:1.0.0/truncate`),
                 oret, tret in {{
-              op!("{root}", "f.bin", "rw", "oracular", *oret) |
+              op!("{root}", "f.bin", "r+", "oracular", *oret) |
               for (@[true, fd] <- oret) {{
                 tr!(fd, 8, *tret) |
                 for (@r <- tret) {{ @"out"!(r) }}
@@ -363,7 +363,7 @@ mod tests {
             new op(`rho:io:fs:native:1.0.0/open`),
                 fl(`rho:io:fs:native:1.0.0/flush`),
                 oret, fret in {{
-              op!("{root}", "f.bin", "rw", "oracular", *oret) |
+              op!("{root}", "f.bin", "r+", "oracular", *oret) |
               for (@[true, fd] <- oret) {{
                 fl!(fd, *fret) |
                 for (@r <- fret) {{ @"out"!(r) }}
