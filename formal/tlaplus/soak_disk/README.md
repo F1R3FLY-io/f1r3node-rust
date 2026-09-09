@@ -10,7 +10,7 @@ a Boolean constant and must violate exactly the invariant named below.
 
 | Model action | Driver behavior |
 | --- | --- |
-| `Benchmark` | Launch the opening benchmark on the first segment only when no breach marker was retained and a known sample is at or above floor plus band |
+| `Benchmark` | Launch the opening benchmark on the first segment only when no breach marker was retained and a known sample is at or above floor plus band. A guardian started first records a disk fall during the benchmark and asks for a stop |
 | `CheckGuardian` | Read the guardian marker before the probe and after hygiene |
 | `ProbeBoundary`, `ProbeAfterHygiene` | `disk_free_mb`: `df` reports the free space, prints a malformed field, or fails |
 | `DecideHygiene` | Run hygiene only when a known sample is below floor plus band |
@@ -29,8 +29,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `CheckGuardianAlive` | A dead guardian process cannot admit | `MC_SoakDiskAdmission_unchecked_guardian_pre_fix` | `AdmissionRequiresGuardian` |
 | `CheckRetainedBreach` | A retained breach marker blocks the opening benchmark | `MC_SoakDiskAdmission_retained_breach_pre_fix` | `RetainedBreachPreventsBenchmark` |
 | `CheckDiskBand` | The opening benchmark needs a sample at or above floor plus band | `MC_SoakDiskAdmission_benchmark_band_pre_fix` | `BenchmarkRequiresBand` |
+| `MonitorOpening` | The guardian starts before the opening benchmark, so a fall below the hard floor during it is recorded and stopped | `MC_SoakDiskAdmission_late_guardian_pre_fix` | `BenchmarkBreachObserved` |
 
-`MC_SoakDiskAdmission` enables all six corrections. It checks `TypeOK`, the six invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 996 distinct states.
+`MC_SoakDiskAdmission` enables all seven corrections. It checks `TypeOK`, the seven invariants above, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 1014 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 

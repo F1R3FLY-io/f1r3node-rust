@@ -243,6 +243,21 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B17
+    statement: The disk guardian observes a hard-floor breach while the opening benchmark remains active.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-benchmark-disk-monitor.sh
+        red_revision: 6e0b50f26be19f295c59eb233ac6eea297b9a72b
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -273,6 +288,8 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B14: Guardian death during a valid boundary probe prevents iteration admission and produces one recorded failure.
 - [x] B15: A retained breach prevents the opening benchmark without a state file and preserves the failure.
 - [x] B16: A 7000 MiB sample prevents opening benchmark admission below the 8192 MiB threshold and records one protection failure.
+
+- [x] B17: The guardian records a hard-floor breach and requests a stop before the opening benchmark returns.
 
 ## Cycle evidence
 
@@ -342,9 +359,22 @@ Production GREEN refuses both benchmark and iteration admission and records one 
 
 The bounded gate passes 15 positive configurations and 15 exact controls. The classifier covers 105 cases. All eleven emergency scenarios pass.
 
+B17 moves opening benchmark execution after guardian startup. Its [evidence](../cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/README.md) retains the unobserved breach and five-state corrected model.
+
+Sixteen positive configurations, sixteen exact controls, 112 classifier cases, six routing scenarios, and twelve emergency scenarios pass.
+
+The first fixture attempt lacked executable snapshot modes and returned a degraded summary. That setup failure does not supply behavioral RED.
+
+B17 covers this local monitoring path only. Guardian failure, benchmark cancellation, writer termination, durable publication, and the composed deadline remain open.
+
+Four additional [opening-admission cases](../cbc-evidence/soak-d2-benchmark-cases-2026-09-09/README.md) pass without a production correction. These results extend coverage, not the repair-cycle count.
+
+The expanded fixture preserves the B17 counterexample. The combined emergency suite now passes sixteen scenarios. The formal inventory remains at sixteen positive configurations and controls.
+
 ## Remaining D2 work
 
-- [ ] Verify other benchmark sample cases, interleaved admission, and active benchmark supervision.
+- [x] Verify opening admission at equality, sufficient space, unavailable samples, and disabled disk protection.
+- [ ] Verify interleaved admission, remaining sample faults, and active benchmark supervision.
 
 - [ ] Bound disk hygiene and stop paths outside B13, including detached and uninterruptible command cases.
 - [ ] Verify soft-floor sampling, cleanup outcomes, and guardian events at every admission boundary.

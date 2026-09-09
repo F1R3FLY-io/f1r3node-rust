@@ -1,9 +1,9 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Six constants   *)
-(* switch the six corrections on and off so that each pre-fix configuration  *)
-(* reproduces one historical defect.                                         *)
+(* decide, after the opening benchmark on the first segment. Seven constants *)
+(* switch the seven corrections on and off so that each pre-fix              *)
+(* configuration reproduces one historical defect.                           *)
 EXTENDS Naturals, TLC
 
 CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
@@ -12,7 +12,8 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           RejectMalformed, \* a field such as 16384junk cannot admit
           CheckGuardianAlive, \* a dead guardian process cannot admit
           CheckRetainedBreach, \* a retained breach marker blocks the opening benchmark
-          CheckDiskBand \* the opening benchmark needs a sample at or above floor + band
+          CheckDiskBand, \* the opening benchmark needs a sample at or above floor + band
+          MonitorOpening \* the guardian is started before the opening benchmark
 
 ASSUME /\ FloorMiB \in Nat \ {0}
        /\ BandMiB \in Nat
@@ -20,7 +21,7 @@ ASSUME /\ FloorMiB \in Nat \ {0}
        /\ InitialFreeMiB \in FreeSamples
        /\ MalformedPrefixMiB \in Nat
        /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
-           CheckRetainedBreach, CheckDiskBand} \subseteq BOOLEAN
+           CheckRetainedBreach, CheckDiskBand, MonitorOpening} \subseteq BOOLEAN
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
 
@@ -44,11 +45,13 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence,
           retained,  \* a breach marker left behind by the previous run
           benchmark, \* the opening benchmark was launched
-          benchmarkSample \* the disk sample read before the benchmark decision
+          benchmarkSample, \* the disk sample read before the benchmark decision
+          benchmarkFault,  \* the disk fell below the hard floor during the benchmark
+          benchmarkObserved \* a watching guardian recorded that fall and asked for a stop
 
 vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence, retained, benchmark,
-          benchmarkSample>>
+          benchmarkSample, benchmarkFault, benchmarkObserved>>
 
 Init ==
     /\ phase = "benchmark"
@@ -59,6 +62,8 @@ Init ==
     /\ guardian = retained
     /\ benchmark = FALSE
     /\ benchmarkSample = Unknown
+    /\ benchmarkFault = FALSE
+    /\ benchmarkObserved = FALSE
     /\ guardianAlive = TRUE
     /\ admitted = FALSE
     /\ admissionRaw = MissingRaw
@@ -80,23 +85,31 @@ BelowBand == sample.known /\ sample.mib < FloorMiB + BandMiB
 \* refuses, recording a protection failure, unless a known sample is at or
 \* above floor + band. The benchmark-time sample ranges over every raw sample;
 \* the boundary decision that follows starts from InitialFreeMiB, since the
-\* benchmark itself consumes space.
+\* benchmark itself consumes space. B17: while an admitted benchmark runs, the
+\* disk may fall below the hard floor; only a guardian started before the
+\* benchmark observes that, records the marker, and asks for a stop.
 Benchmark ==
     /\ phase = "benchmark"
     /\ IF CheckRetainedBreach /\ retained
           THEN /\ benchmark' = FALSE
                /\ benchmarkSample' = Unknown
+               /\ benchmarkFault' = FALSE
+               /\ benchmarkObserved' = FALSE
                /\ phase' = "guard"
-               /\ UNCHANGED stopReason
-          ELSE \E r \in RawSamples :
+               /\ UNCHANGED <<stopReason, guardian>>
+          ELSE \E r \in RawSamples, fault \in BOOLEAN :
                LET s == Parse(r)
                    ok == ~CheckDiskBand \/ (s.known /\ s.mib >= FloorMiB + BandMiB)
+                   observed == ok /\ fault /\ MonitorOpening
                IN /\ benchmarkSample' = s
                   /\ benchmark' = ok
+                  /\ benchmarkFault' = (ok /\ fault)
+                  /\ benchmarkObserved' = observed
+                  /\ guardian' = (guardian \/ observed)
                   /\ phase' = IF ok THEN "guard" ELSE "stopped"
                   /\ stopReason' = IF ok THEN stopReason
                                    ELSE IF s.known THEN "disk" ELSE "probe"
-    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
+    /\ UNCHANGED <<free, raw, sample, guardianAlive, admitted,
                    admissionRaw, admissionSample, evidence, retained>>
 
 CheckGuardian ==
@@ -197,7 +210,8 @@ Next == Benchmark
         \/ (/\ CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
                \/ Admit \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
-            /\ UNCHANGED <<retained, benchmark, benchmarkSample>>)
+            /\ UNCHANGED <<retained, benchmark, benchmarkSample, benchmarkFault,
+                           benchmarkObserved>>)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -218,6 +232,8 @@ TypeOK ==
     /\ retained \in BOOLEAN
     /\ benchmark \in BOOLEAN
     /\ benchmarkSample \in ParsedSamples
+    /\ benchmarkFault \in BOOLEAN
+    /\ benchmarkObserved \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -227,6 +243,7 @@ AdmissionRequiresGuardian == admitted => guardianAlive
 RetainedBreachPreventsBenchmark == retained => ~benchmark
 BenchmarkRequiresBand ==
     benchmark => benchmarkSample.known /\ benchmarkSample.mib >= FloorMiB + BandMiB
+BenchmarkBreachObserved == benchmarkFault => benchmarkObserved /\ guardian
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
 Completes == <>(admitted \/ (phase = "done" /\ evidence))

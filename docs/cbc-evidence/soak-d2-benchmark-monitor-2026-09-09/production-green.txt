@@ -1,0 +1,2 @@
+PASS: The guardian recorded the benchmark disk breach and requested a stop before benchmark return.
+Evidence: [EVIDENCE_ROOT]/d2-benchmark-monitor-wD4Bp96f/production-green
