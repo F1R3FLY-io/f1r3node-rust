@@ -115,6 +115,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_GuardianAdmission
     soak_disk/MC_BenchmarkBreachAdmission
     soak_disk/MC_BenchmarkDiskAdmission
+    soak_disk/MC_BenchmarkDiskMonitor
 )
 
 TLC_WORKERS=auto
@@ -135,6 +136,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_GuardianAdmission
         soak_disk/MC_BenchmarkBreachAdmission
         soak_disk/MC_BenchmarkDiskAdmission
+        soak_disk/MC_BenchmarkDiskMonitor
     )
     TLC_WORKERS=2
 fi
@@ -186,6 +188,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_GuardianAdmission_unchecked_pre_fix:AdmissionRequiresGuardian
     soak_disk/MC_BenchmarkBreachAdmission_unchecked_pre_fix:RetainedBreachPreventsBenchmark
     soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix:BenchmarkRequiresBand
+    soak_disk/MC_BenchmarkDiskMonitor_late_pre_fix:BenchmarkBreachObserved
 )
 
 failed=0

@@ -4,7 +4,7 @@
   "schema_version": 1,
   "scope": "soak-recurrence-prevention",
   "candidate": {
-    "base_commit": "7f0f46923d9d972a95625fb3b8cdfc2ca2a8fc0c",
+    "base_commit": "6e0b50f26be19f295c59eb233ac6eea297b9a72b",
     "binding": "source-sha256",
     "inputs_sha256": {
       ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
@@ -132,7 +132,7 @@
       "docs/claims/repeat-deploy-carrier-index-equivalence.md": "16f110d8ebf50d2f39a3fbb45364019684a5118b0a65db106c6d9f5b810230ba",
       "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
       "docs/claims/soak-formal-gate.md": "027d529ad36da3fbc704df91789401755b9a5d948409e04f946d7c5fc01f7dee",
-      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "cec38ccd3d253d0879f6976177e1f0c4ba381e329aabdd29848943a230a9ec25",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "4ac62f6257f4541fb420aa306560c8c062ef88ab75fd44cfee92d59fdabb5a43",
       "docs/soak-evidence/34180346282/README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
       "docs/soak-evidence/34180346282/archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
       "docs/soak-evidence/34180346282/inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
@@ -157,8 +157,8 @@
       "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
-      "docs/tdd-plans/soak-gates-2026-09-08.md": "16e1d8433417dc9e823aeb11d011ee1ebedcc646f8c4134806b568250eb8377b",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "82d0e1200c21f41ab192a66f0128b2eb8675ca43a7071debf74711a430060e62",
+      "docs/tdd-plans/soak-gates-2026-09-08.md": "d7cbb20d78e3533b90644adb3b9a0be47758ad1b805ab13c5551b7ec2d40d09a",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "36f7e3b4618d1e9fdad0350f7f22c5705f87c199a0444c2a1cddc21b073387c5",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -267,9 +267,9 @@
       "scripts/bench/test-extend-issue24-metrics.sh": "52cc1b8ac82a395ca187de577d28276ad79798ed6132b3289d3b4b6957dbc34d",
       "scripts/bench/test-run-merge-recovery-soak.sh": "b2479d5ae1b911225dd8ddf33440d0c613c3e8db716dd373ca54f136a584855f",
       "scripts/bench/test-soak-disk-active-probe.sh": "9e5c50a0bf37cfa1a1b00b6ad2d442e2421fbd3788d82540ab5edb3058474f2b",
-      "scripts/bench/test-soak-disk-admission.sh": "65b95fc38f22561da39fdb8daf7f9b3e44f17c22b0055ab969da569b2f02edf0",
+      "scripts/bench/test-soak-disk-admission.sh": "02250456e708ada36438943123daa82a410848ed653b86a4b04b019af3753f05",
       "scripts/bench/test-soak-disk-diagnostic-deadline.sh": "b44ff741f9d62d2c75cc119e12e70f9cdea9de0d9dec099e993c32e2ade1c955",
-      "scripts/bench/test-soak-disk-emergency.sh": "25337d1487bf80a2d159e033337f06cd34b8789becf05e77df1281fda9eb59bc",
+      "scripts/bench/test-soak-disk-emergency.sh": "02f74fbfbfc91e15563c9dfb4e230296923053105bd0b0687aa002892de1704f",
       "scripts/bench/test-soak-disk-probe-timeout.sh": "872d44a5940e59d7a2457ee0747bd8cca5ad73ba5bc3e20ccacadc090b00e098",
       "scripts/bench/test-soak-disk-probe.sh": "41ee399da2c2bbf7a54634a5bbf90087071ecd0e8456dc6478932ca2032dbc41",
       "scripts/bench/test-soak-disk-record.sh": "c319c55aa832897d3c6f1d94d8a64bd68ba8dfc644cc1a9a1e4ec464e046be13",
@@ -281,13 +281,13 @@
       "scripts/bench/write-soak-summary.sh": "ed6c53492ab35dd9b2cc82123766e76efec9ea6a7e18b759a034b4a038d8a489",
       "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
       "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
-      "scripts/ci/check-tla-invariants.sh": "3bc071ba00b60de3dbb258a4cf94758aeb717f13e312233a6a448453414e8bb8",
-      "scripts/ci/test-check-tla-invariants.sh": "5c88510f5f3eddb28fad1d888d8f42b030433affc9f3e2853053b483ab439f3e",
+      "scripts/ci/check-tla-invariants.sh": "246f8acf9157c141fb08cbcf946ac03d730083661372481eb54d13dfec866a32",
+      "scripts/ci/test-check-tla-invariants.sh": "f8bdd0e1c68406348ae754d234b045214e693883df2ef7ee3c3623a220ce588f",
       "scripts/ci/test-soak-claim-inventory-jsonc.sh": "b6ba3dcd5a81ef37698bd10cb6ca4058afccfdf9d0bf0273530a865202c691db",
       "scripts/ci/test-soak-claim-inventory.sh": "8bcbdb5ec7ab008ec9057ba07f03c425bd6e9237c915340ba7957681b5d7f3d4",
-      "scripts/ci/test-soak-pr-formal-gate.sh": "4a782771efd023ac5558662fdfd74708023a8688d33e3d689042c7db10b019b0",
+      "scripts/ci/test-soak-pr-formal-gate.sh": "7a1b4edffd73cff36ee30fd304879639a5a5d1a8db6838b1c6b5d3df749ad6ef",
       "scripts/repin-system-integration.sh": "762e421890952bc4c84ac7f1c4a844356edefe4786cf86e65e12f21590018a06",
-      "scripts/run-merge-recovery-soak.sh": "17e4ddf70ea28d2f5c1635089ab9af4cbc44c291993989a603fc845dabb33eac",
+      "scripts/run-merge-recovery-soak.sh": "a546910b15f587031fc02dfb8d5a1cc3d5a52abec3f893ad82f8250fbc928507",
       "scripts/test-repin-system-integration.sh": "cf238a85019b74c232106fbcd2c357f09095d01f65f40bd8941e30e99f57c104",
       "formal/tlaplus/soak_disk/GuardianAdmission.md": "b66d1b0bdfc57b75778c5969356131fa40f97d328bddd0682deb236557ec05ef",
       "formal/tlaplus/soak_disk/GuardianAdmission.tla": "20033b702594dc615b100656b7abe3943088f7babd6a2916b63b04438bd69e4f",
@@ -346,7 +346,37 @@
       "formal/tlaplus/soak_disk/MC_BenchmarkDiskAdmission.tla": "078a8f51295a35abc67e1cb8ed99516437e2a374ddbd08f6686ffd9e50b2dc05",
       "formal/tlaplus/soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix.cfg": "6949ee0691bed0aaf796dee415e11b81bc11e37dd41212183e8e7f4014d85674",
       "formal/tlaplus/soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix.tla": "b98ab4a0c7a0b53f5750f3f6151dc37448dc2f29095eb72d6e8d03bc25e33078",
-      "scripts/bench/test-soak-benchmark-disk-admission.sh": "bb19d571249b825c1f16fb017e5a4266caaf0f6648a51732b1408dadb2f74d29"
+      "scripts/bench/test-soak-benchmark-disk-admission.sh": "bb19d571249b825c1f16fb017e5a4266caaf0f6648a51732b1408dadb2f74d29",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/README.md": "9eec5481d56198d9a1a01d5bdda984494c34db443793d562d5fdcb2e89567b04",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/composed-tla.txt": "ce1588b06d206f38ac27a77cd64815bd53f50999d40551f8ab0d82365f7c2341",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/emergency.txt": "55c5083188915534cb30ff3c57f98d3da4d002e54e70b2055d1cdd4e63897455",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/formal-green.txt": "76848c645d64bea9c6f2e8e1dcebddd1b08065e87e1b3f5e81c798bf2e8950ae",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/formal-red.txt": "2ce4c801722e076932e3fae696d5be9ee9c183cd93d48565d720c8fdab8ee598",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/manifest.jsonc": "79b4505f9dbe2a7f2341430356ac63b75c1c5956244c83cfa66b7dfbbaca7323",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/production-green.txt": "7a66a2babc0b80a3a0c4604f143505a937e4a50a1af0fd2cb6328db3aaf56250",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/production-red.txt": "3a48d51d64481b53b2f611a46db73a227950829a3ebd29aa7ca2ba528f31e83a",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/regressions.txt": "b54774b2533666ef367cdf043ce398232071a8a98f6a94f5966fef91ed6ed40a",
+      "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "formal/tlaplus/soak_disk/BenchmarkDiskMonitor.md": "966130b98dc5f4cfdbf2238c56349f3c6760197b203a06e23cd1eefe13b69ea3",
+      "formal/tlaplus/soak_disk/BenchmarkDiskMonitor.tla": "4799ede36f318bf6a3f480df4e7f8fc31f78ecb62c68174cd69f0d0b2b111c0e",
+      "formal/tlaplus/soak_disk/MC_BenchmarkDiskMonitor.cfg": "cc127f42129fda20ffb7f3b5c319e3559ff75474688a67f59f68bd3ac5e57d9f",
+      "formal/tlaplus/soak_disk/MC_BenchmarkDiskMonitor.tla": "2a9829f0b94ec6835744797ab2b918dc767e1f2ca1015c06e217530caeacd806",
+      "formal/tlaplus/soak_disk/MC_BenchmarkDiskMonitor_late_pre_fix.cfg": "236f65e42b951a15ac8914079e77c2af1426a7a1d5c8bd6445efc6b66bb926a8",
+      "formal/tlaplus/soak_disk/MC_BenchmarkDiskMonitor_late_pre_fix.tla": "33d90f7eb97597bc75a88a574df47af5546d92a421bc071cd8f343b5b7050304",
+      "scripts/bench/test-soak-benchmark-disk-monitor.sh": "7c10dcad2c11182e0b8393ab364c374740d4e810ba599194e66db105a49daa44",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/README.md": "8476e9086065a0c9cb418122101187326150c5bc6577e7f4ecb4cc5cc7819cae",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/b17-red.txt": "f98ab83f6e790d509c01e2de5d852fd06beb91c4d3d271286f51fe021036fdae",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/cases.txt": "bff795351b0bb3250da9ee772c5383c8648ed915fb919665d9b177914486d445",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/composed-tla.txt": "e8a884882d431d8442b5ba376a98401deb6f380cdc41650b945ab3bf5a071418",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/emergency.txt": "43381228a9694d628c36fb853ad81e94a3c3544311721b0cd84393b4f78f43df",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/manifest.jsonc": "c7671619622336d2ca493ea5b7597414b28f18a43bb5e4b3a659c50c9565661b",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/regressions.txt": "b54774b2533666ef367cdf043ce398232071a8a98f6a94f5966fef91ed6ed40a",
+      "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "scripts/bench/test-soak-benchmark-admission-cases.sh": "4bb08b0764eb6b8202875d275650d8e7a28e5f586bb43d3a87ac8c2bc9ccc742"
     }
   },
   "claims": [
@@ -582,7 +612,9 @@
         "formal/tlaplus/soak_disk/MC_BenchmarkBreachAdmission.cfg",
         "formal/tlaplus/soak_disk/MC_BenchmarkBreachAdmission_unchecked_pre_fix.cfg",
         "formal/tlaplus/soak_disk/MC_BenchmarkDiskAdmission.cfg",
-        "formal/tlaplus/soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix.cfg"
+        "formal/tlaplus/soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_BenchmarkDiskMonitor.cfg",
+        "formal/tlaplus/soak_disk/MC_BenchmarkDiskMonitor_late_pre_fix.cfg"
       ],
       "verifier": {
         "name": "TLC",
@@ -599,7 +631,8 @@
         "D2 sample validation abstracts numeric-prefix conversion and assumes completing commands, cleanup, and local writes.",
         "Emergency models assume completing record writes. Timeout models assume timer service and effective cancellation.",
         "The separate models do not establish a composed emergency deadline, confirmed termination, or durable publication.",
-        "B16 assumes stable valid samples and completing local writes. Its production fixture covers only the low-space opening path."
+        "B16 assumes stable valid samples and completing local writes. Its production fixture covers only the low-space opening path.",
+        "B17 assumes a completing guardian sample, local record, and stop request before benchmark return. It does not establish a composed deadline."
       ],
       "bounds": [
         "Carrier: two signatures, three blocks, watermark zero, and scan start at most two.",
@@ -612,7 +645,8 @@
         "B13 has five distinct states. Abstract cancellation ticks do not establish a wall-clock emergency bound.",
         "B14 has four distinct states. Its atomic admission decision does not model a later crash or a live but stalled guardian.",
         "B15 has six distinct states. Its retained marker does not change during the opening benchmark decision.",
-        "B16 has 12 distinct states. Samples are 7000, 8192, and 16384 MiB, with a 4096 MiB floor and band."
+        "B16 has 12 distinct states. Samples are 7000, 8192, and 16384 MiB, with a 4096 MiB floor and band.",
+        "B17 has five distinct states. Available space changes from 16384 to 1024 MiB, below the 2048 MiB hard floor."
       ],
       "expected_results": [
         {
@@ -749,6 +783,15 @@
           "configuration": "MC_BenchmarkDiskAdmission_unchecked_pre_fix",
           "exit_code": 12,
           "invariant": "BenchmarkRequiresBand"
+        },
+        {
+          "configuration": "MC_BenchmarkDiskMonitor",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_BenchmarkDiskMonitor_late_pre_fix",
+          "exit_code": 12,
+          "invariant": "BenchmarkBreachObserved"
         }
       ],
       "production_tests": [
@@ -778,7 +821,9 @@
         "D2-STOP-LOCAL",
         "D2-BOUNDARY-LOCAL",
         "D2-BENCHMARK-LOCAL",
-        "D2-BENCHMARK-BAND-LOCAL"
+        "D2-BENCHMARK-BAND-LOCAL",
+        "D2-BENCHMARK-MONITOR-LOCAL",
+        "D2-BENCHMARK-CASES-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -807,7 +852,8 @@
         "B13 extends the classifier to 84 cases. Routing still covers six scenarios.",
         "B14 extends the classifier to 91 cases. Routing still covers six scenarios.",
         "B15 extends the classifier to 98 cases. Routing still covers six scenarios.",
-        "B16 extends the classifier to 105 cases. Routing still covers six scenarios."
+        "B16 extends the classifier to 105 cases. Routing still covers six scenarios.",
+        "B17 extends the classifier to 112 cases. Routing still covers six scenarios."
       ],
       "production_tests": [
         {
@@ -836,7 +882,9 @@
         "D2-STOP-LOCAL",
         "D2-BOUNDARY-LOCAL",
         "D2-BENCHMARK-LOCAL",
-        "D2-BENCHMARK-BAND-LOCAL"
+        "D2-BENCHMARK-BAND-LOCAL",
+        "D2-BENCHMARK-MONITOR-LOCAL",
+        "D2-BENCHMARK-CASES-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -932,7 +980,9 @@
         "D2-STOP-LOCAL",
         "D2-BOUNDARY-LOCAL",
         "D2-BENCHMARK-LOCAL",
-        "D2-BENCHMARK-BAND-LOCAL"
+        "D2-BENCHMARK-BAND-LOCAL",
+        "D2-BENCHMARK-MONITOR-LOCAL",
+        "D2-BENCHMARK-CASES-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -981,7 +1031,9 @@
         "D2-STOP-LOCAL",
         "D2-BOUNDARY-LOCAL",
         "D2-BENCHMARK-LOCAL",
-        "D2-BENCHMARK-BAND-LOCAL"
+        "D2-BENCHMARK-BAND-LOCAL",
+        "D2-BENCHMARK-MONITOR-LOCAL",
+        "D2-BENCHMARK-CASES-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1033,7 +1085,9 @@
         "D2-STOP-LOCAL",
         "D2-BOUNDARY-LOCAL",
         "D2-BENCHMARK-LOCAL",
-        "D2-BENCHMARK-BAND-LOCAL"
+        "D2-BENCHMARK-BAND-LOCAL",
+        "D2-BENCHMARK-MONITOR-LOCAL",
+        "D2-BENCHMARK-CASES-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1074,7 +1128,10 @@
         "scripts/bench/run-bench-segment.sh",
         "formal/tlaplus/soak_disk/MC_BenchmarkDiskAdmission.cfg",
         "formal/tlaplus/soak_disk/MC_BenchmarkDiskAdmission_unchecked_pre_fix.cfg",
-        "formal/tlaplus/soak_disk/BenchmarkDiskAdmission.md"
+        "formal/tlaplus/soak_disk/BenchmarkDiskAdmission.md",
+        "formal/tlaplus/soak_disk/MC_BenchmarkDiskMonitor.cfg",
+        "formal/tlaplus/soak_disk/MC_BenchmarkDiskMonitor_late_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/BenchmarkDiskMonitor.md"
       ],
       "verifier": {
         "name": "Bash production fixtures and bounded TLC",
@@ -1084,10 +1141,12 @@
         "The containers have no host mounts, network, or Docker socket. Their workload commands do not run nodes.",
         "The timeout models assume timer service and effective cancellation. Local writes complete in the modeled transitions.",
         "B12 uses a retained breach and valid state file. B15 omits the state file before the opening benchmark.",
-        "B16 starts without a retained marker. Its sample stays at 7000 MiB, and its Docker fixture starts no node writers."
+        "B16 starts without a retained marker. Its sample stays at 7000 MiB, and its Docker fixture starts no node writers.",
+        "B17 holds the benchmark Docker startup command for eight seconds. The real guardian retains its five-second sampling interval. No node writers start.",
+        "Opening admission cases cover 8192 MiB equality, 16384 MiB sufficiency, unavailable samples, and disabled disk protection. The Docker fixture starts no nodes."
       ],
       "bounds": [
-        "Eleven fixture scenarios cover ten local behaviors. These tests do not establish a composed response deadline.",
+        "Sixteen fixture scenarios cover eleven matched local behaviors and four additional admission cases. They do not establish a composed response deadline.",
         "The disk probe limit is two seconds with a one-second kill grace.",
         "Attribution defaults to ten seconds with a one-second kill grace. The fixture uses one second and 32 session roots.",
         "Each disk stop group defaults to two seconds plus one second of kill grace. B13 uses a one-second budget and a five-second observation."
@@ -1142,6 +1201,16 @@
           "path": "scripts/bench/test-soak-benchmark-disk-admission.sh",
           "command": "bash scripts/bench/test-soak-benchmark-disk-admission.sh",
           "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-benchmark-disk-monitor.sh",
+          "command": "bash scripts/bench/test-soak-benchmark-disk-monitor.sh",
+          "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-benchmark-admission-cases.sh",
+          "command": "bash scripts/bench/test-soak-benchmark-admission-cases.sh",
+          "result": "local-production-characterization-green-no-additional-correction"
         }
       ],
       "ci": {
@@ -1154,7 +1223,9 @@
         "D2-STOP-LOCAL",
         "D2-BOUNDARY-LOCAL",
         "D2-BENCHMARK-LOCAL",
-        "D2-BENCHMARK-BAND-LOCAL"
+        "D2-BENCHMARK-BAND-LOCAL",
+        "D2-BENCHMARK-MONITOR-LOCAL",
+        "D2-BENCHMARK-CASES-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1166,7 +1237,8 @@
         "Complete crash-recovery accounting and the D3-dependent writer-growth and reserve bounds.",
         "Extend B14 beyond observed guardian death during the iteration-boundary probe. Benchmark admission, live but stalled guardians, and later crashes remain open.",
         "Extend B15 beyond a stable retained marker before the opening benchmark. Later marker changes, unreadable metadata, and active benchmark supervision remain open.",
-        "Extend B16 beyond low-space opening admission. Other sample cases, interleaved admission, and active benchmark supervision remain open."
+        "Opening admission now covers equality, sufficient space, unavailable samples, and disabled protection. Other sample faults, interleaved admission, and active supervision remain open.",
+        "Extend B17 beyond a completing guardian during the opening benchmark. Guardian progress, parent cancellation, writer termination, and durability remain open."
       ]
     }
   ],
@@ -1316,6 +1388,28 @@
         "The model checks three stable valid samples and assumes completing local writes. It does not establish Bash refinement or an emergency deadline.",
         "D2, hosted confirmation, maintainer review, claim ratification, and acceptance remain pending."
       ]
+    },
+    "D2-BENCHMARK-MONITOR-LOCAL": {
+      "path": "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/manifest.jsonc",
+      "role": "historical-baseline",
+      "identity": "B17 starts from 6e0b50f26be19f295c59eb233ac6eea297b9a72b. Source digests bind its local production and formal RED/GREEN evidence.",
+      "limitations": [
+        "The production fixture covers one hard-floor breach while opening benchmark startup remains active for eight seconds.",
+        "The Docker fixture records a stop request but starts no node writers. It returns through fixture release, not parent cancellation.",
+        "The model assumes a completing guardian observation before benchmark return. It does not establish Bash refinement, scheduling bounds, or durability.",
+        "D2, hosted confirmation, maintainer review, claim ratification, and acceptance remain pending."
+      ]
+    },
+    "D2-BENCHMARK-CASES-LOCAL": {
+      "path": "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/manifest.jsonc",
+      "role": "historical-baseline",
+      "identity": "Four opening-admission cases pass after B17 without another production correction. Source digests bind fresh production coverage and serial composed regressions.",
+      "limitations": [
+        "These cases add coverage, not a new RED/GREEN repair cycle.",
+        "The Docker fixture records admission and returns failure without starting nodes.",
+        "Interleaved admission, guardian failure, benchmark cancellation, cleanup, termination, durability, and the composed deadline remain open.",
+        "D2, hosted checks, maintainer review, writer-growth reserve, and acceptance remain pending."
+      ]
     }
   },
   "gates": [
@@ -1353,7 +1447,7 @@
         "DISK-EMERGENCY"
       ],
       "pending_obligations": [
-        "B5 through B16 pass their local behavior cycles. D2 is not complete.",
+        "B5 through B17 pass their local behavior cycles. D2 is not complete.",
         "Confirm hosted execution and obtain maintainer review of the model-to-code correspondence.",
         "Bound disk hygiene and stop paths outside B13, and verify guardian health at every admission boundary.",
         "Complete soft-floor, cleanup-outcome, numeric-range, status, and location fault cases.",

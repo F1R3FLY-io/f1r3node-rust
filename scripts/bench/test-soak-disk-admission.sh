@@ -10,13 +10,13 @@ SOURCE_FILES=(
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
 case "$SCENARIO" in
-band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark | benchmark-band) ;;
+band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark | benchmark-band | benchmark-active-disk | benchmark-equal | benchmark-sufficient | benchmark-missing | benchmark-disabled) ;;
 *)
     printf 'ERROR: Unknown disk fixture scenario.\n' >&2
     exit 2
     ;;
 esac
-if [[ "$SCENARIO" == restart-benchmark || "$SCENARIO" == benchmark-band ]]; then
+if [[ "$SCENARIO" == restart-benchmark || "$SCENARIO" == benchmark-* ]]; then
     SOURCE_FILES+=(scripts/bench/run-bench-segment.sh)
 fi
 
@@ -55,8 +55,17 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
             printf 'boundary-guardian-killed=%s\n' "$guardian_pid" >>/case/evidence/probe-samples.txt
         fi
         ;;
-    guardian-death | restart-uncounted | restart-counted | restart-benchmark)
+    benchmark-equal)
+        available=8192
+        ;;
+    guardian-death | restart-uncounted | restart-counted | restart-benchmark | benchmark-sufficient)
         available=16384
+        ;;
+    benchmark-active-disk)
+        available=16384
+        if [[ -e /case/evidence/benchmark-started.txt && ! -e /case/evidence/benchmark-returned.txt ]]; then
+            available=1024
+        fi
         ;;
     record-before-stop | stop-timeout)
         available=16384
@@ -71,7 +80,7 @@ case "${SOAK_DISK_TEST_SCENARIO:-band}" in
         fi
         available=16384
         ;;
-    missing-boundary)
+    missing-boundary | benchmark-missing)
         if ! mkdir /case/evidence/startup-probe-seen 2>/dev/null; then
             printf 'missing\n' >>/case/evidence/probe-samples.txt
             exit 1
@@ -105,10 +114,34 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
 if [[ ( "${SOAK_DISK_TEST_SCENARIO:-band}" == restart-benchmark ||
-    "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-band ) &&
+    ( "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-* &&
+    "${SOAK_DISK_TEST_SCENARIO:-band}" != benchmark-active-disk ) ) &&
     "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench up -d' ]]; then
     printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
     exit 1
+fi
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-active-disk ]]; then
+    case "$*" in
+        'compose -f /case/node/docker/shard.yml -p soak-bench up -d')
+            printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
+            printf 'available=1024\n' >/case/evidence/benchmark-disk-fault.txt
+            sleep 8
+            if [[ -s /case/evidence/stop-during-benchmark.txt ]]; then
+                printf 'recorded\n' >/case/evidence/benchmark-observation.txt
+            else
+                printf 'missing\n' >/case/evidence/benchmark-observation.txt
+            fi
+            touch /case/evidence/benchmark-returned.txt
+            exit 1
+            ;;
+        'ps -q --filter name=rnode.') printf 'disk-fixture\n' ;;
+        'kill disk-fixture')
+            if [[ ! -e /case/evidence/benchmark-returned.txt &&
+                -s /case/evidence/output/host-guardian-breach.txt ]]; then
+                cp /case/evidence/output/host-guardian-breach.txt /case/evidence/stop-during-benchmark.txt
+            fi
+            ;;
+    esac
 fi
 if [[ "$*" == 'builder prune -af' ]]; then
     touch /case/evidence/hygiene-completed
@@ -166,8 +199,10 @@ SH
         cp evidence/output/host-guardian-breach.txt evidence/restart-input-breach.txt
     fi
     duration=30
+    disk_floor=4096
+    [[ "$SCENARIO" != benchmark-disabled ]] || disk_floor=0
     run_benchmarks=false
-    if [[ "$SCENARIO" == restart-benchmark || "$SCENARIO" == benchmark-band ]]; then
+    if [[ "$SCENARIO" == restart-benchmark || "$SCENARIO" == benchmark-* ]]; then
         duration=700
         run_benchmarks=true
         mkdir -p evidence/output node/docker
@@ -236,7 +271,7 @@ SH
         SOAK_TARGET_SHA="${SOAK_DISK_TEST_SOURCE_SHA:-unknown}" \
         SOAK_RSS_CEILING_MB=0 \
         SOAK_HOST_FREE_FLOOR_MB=0 \
-        SOAK_DISK_FREE_FLOOR_MB=4096 \
+        SOAK_DISK_FREE_FLOOR_MB="$disk_floor" \
         SOAK_DISK_HYGIENE_BAND_MB=4096 \
         SOAK_DISK_DIAGNOSTIC_SECONDS=1 \
         SOAK_DISK_STOP_SECONDS=1 \
@@ -297,6 +332,44 @@ SH
         printf 'PASS: The retained breach prevented benchmark and iteration admission and preserved the failure.\n'
         exit 0
     fi
+    if [[ "$SCENARIO" == benchmark-missing ]]; then
+        if ! grep -Fxq 'valid=16384' evidence/probe-samples.txt ||
+            ! grep -Fxq 'missing' evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not exercise an unavailable benchmark sample.\n' >&2
+            exit 2
+        fi
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt || -e evidence/benchmark-started.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! grep -Fq 'benchmark disk sample unavailable MiB' evidence/output/early-exit.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: An unavailable benchmark sample did not refuse all later work and record one failure.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: An unavailable opening benchmark sample refused work and recorded one protection failure.\n'
+        exit 0
+    fi
+    if [[ "$SCENARIO" == benchmark-equal || "$SCENARIO" == benchmark-sufficient || "$SCENARIO" == benchmark-disabled ]]; then
+        expected_sample=8192
+        [[ "$SCENARIO" != benchmark-sufficient ]] || expected_sample=16384
+        if [[ "$SCENARIO" != benchmark-disabled ]]; then
+            if ! grep -Fxq "valid=$expected_sample" evidence/probe-samples.txt; then
+                printf 'ERROR: The fixture lacks its expected benchmark sample.\n' >&2
+                exit 2
+            fi
+        elif ! grep -Fq 'disk free floor=0MB' evidence/driver.log ||
+            grep -q '^orchestrator host guardian watching' evidence/driver.log; then
+            printf 'ERROR: The fixture did not disable both guardian protection floors.\n' >&2
+            exit 2
+        fi
+        if [[ "$status" != 0 || "$iterations" != 1 || ! -s evidence/benchmark-started.txt || ! -s evidence/workload-started.txt ||
+            -e evidence/output/host-guardian-breach.txt ]] ||
+            ! jq -e '.iterations == 1 and .failures == 0 and .bench_segments == 1 and .bench_failures == 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: An allowed opening benchmark admission changed (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        printf 'PASS: Opening benchmark admission preserved the allowed path (%s).\n' "$SCENARIO"
+        exit 0
+    fi
     if [[ "$SCENARIO" == benchmark-band ]]; then
         if ! grep -Fxq 'valid=7000' evidence/probe-samples.txt ||
             [[ -e evidence/output/host-guardian-breach.txt ]]; then
@@ -320,6 +393,28 @@ SH
             exit 1
         fi
         printf 'PASS: The 7000 MiB sample prevented benchmark and iteration admission and recorded one protection failure.\n'
+        exit 0
+    fi
+    if [[ "$SCENARIO" == benchmark-active-disk ]]; then
+        if [[ ! -s evidence/benchmark-started.txt || ! -e evidence/benchmark-returned.txt ]] ||
+            ! grep -Fxq 'available=1024' evidence/benchmark-disk-fault.txt ||
+            ! grep -Fxq 'valid=16384' evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not exercise the active benchmark disk fault.\n' >&2
+            exit 2
+        fi
+        if ! grep -Fxq 'recorded' evidence/benchmark-observation.txt; then
+            printf 'FAIL: The opening benchmark returned without a guardian record and stop request for its disk fault.\n' >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt ]] ||
+            ! grep -Fxq 'valid=1024' evidence/probe-samples.txt ||
+            ! grep -Fq '1024 MiB below floor 4096 MiB' evidence/stop-during-benchmark.txt ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 1 and .bench_failures == 1' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Active benchmark protection lost the failure or admitted later work.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: The guardian recorded the benchmark disk breach and requested a stop before benchmark return.\n'
         exit 0
     fi
     if [[ "$SCENARIO" == stop-timeout ]]; then

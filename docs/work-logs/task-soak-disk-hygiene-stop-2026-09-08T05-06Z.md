@@ -273,3 +273,51 @@ Published logs replace the local raw-root prefix with a documented placeholder. 
 B16 covers low-space opening admission only. Other sample cases, interleaved admission, active supervision, guardian progress, cleanup, termination, durability, and reserve evidence remain open.
 
 D2 and acceptance remain pending. The workload and 45-second finalization wait remain unchanged. No commit, push, hosted dispatch, or soak occurs in B16.
+
+## Remaining D2 scope and cycle B17
+
+The user confirmed the remaining D2 implementation scope after commit `6e0b50f26`. This approval does not authorize a commit or soak dispatch.
+
+No peer was available for coordination. The other agent retains refactoring ownership. This work uses narrow behavior changes in the existing driver and fixtures.
+
+B17 checks disk monitoring during the opening benchmark. The baseline driver starts that benchmark before it creates the guardian.
+
+The isolated fixture will change available space from 16384 MiB to 1024 MiB while benchmark startup remains active. It starts no nodes.
+
+Production RED returned without a breach record or stop request during benchmark execution. It then admitted one iteration and recorded no protection failure.
+
+The matching formal control violated `BenchmarkBreachObserved` with exit 12. Both RED results preceded the production correction.
+
+The correction moves the existing opening benchmark block after guardian startup. Production GREEN records the breach and stop request before benchmark return.
+
+The corrected driver admits no later iteration and records one protection failure. Formal GREEN completes with five distinct states.
+
+Sixteen positive configurations, sixteen exact controls, 112 classifier cases, six routing scenarios, and twelve emergency scenarios pass. Supporting regressions also pass.
+
+An initial fixture edit had an ambiguous text match. The first fixture run lacked executable snapshot modes and returned a degraded summary.
+
+Both setup failures remain in the raw archive. Neither failure supplies behavioral RED. Corrected baseline permissions match the Git modes without changing source bytes.
+
+The [B17 package](../cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/README.md) retains source snapshots, original logs, and published digests. Verification runs execute serially.
+
+The model assumes a completing guardian sample before benchmark return. It does not prove guardian progress, benchmark cancellation, writer termination, or durable publication.
+
+D2 and acceptance remain pending. No commit, push, hosted dispatch, or soak occurs in B17.
+
+## Additional opening benchmark admission coverage
+
+Four additional production cases pass without another driver correction. They check 8192 MiB equality, 16384 MiB sufficiency, an unavailable sample, and disabled disk protection.
+
+The unavailable sample refuses all work and records one protection failure. The other cases reach the benchmark Docker boundary and preserve subsequent iteration admission.
+
+The Docker fixture deliberately returns failure without starting nodes. These cases do not assert successful benchmarks or finalization.
+
+The expanded fixture still detects B17 on its frozen baseline. Sixteen positive configurations, sixteen exact controls, 112 classifier cases, and sixteen emergency scenarios pass.
+
+Routing and supporting regressions also pass. The [coverage package](../cbc-evidence/soak-d2-benchmark-cases-2026-09-09/README.md) retains fresh source snapshots and original logs.
+
+B17 remains immutable historical evidence. Its earlier fixture and driver bindings refer to its retained snapshot, not the expanded fixture.
+
+This coverage is not a new RED/GREEN repair cycle. Interleaved admission, guardian failure, benchmark cancellation, cleanup, termination, durability, and reserve obligations remain open.
+
+D2 and acceptance remain pending. No commit, push, hosted dispatch, or soak occurs.
