@@ -51,6 +51,10 @@ use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
 use super::dir_handle_table::{DirHandle, DirIter};
 use super::errors::*;
 use super::handle_table::{FileHandle, FileHandleTable};
+use super::handler_trait::{
+    dispatch_via_trait, dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerReply,
+    SyscallCtx, FS_HANDLERS,
+};
 // C-R1 review fix: `extract_ok_fd` is used from fs_open's is_replay
 // branch to reconstruct the leader's returned fd for shadow-handle
 // insertion.
@@ -698,7 +702,7 @@ impl FsProcesses {
         }
     }
 
-    fn is_contract_call(&self) -> ContractCall {
+    pub(super) fn is_contract_call(&self) -> ContractCall {
         ContractCall {
             space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
@@ -2966,59 +2970,19 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // flush — (fd) -> [true]  (fsync: data + metadata)
+    //
+    // Wave-3 S3.1 (2026-09-08) PoC migration: dispatch through the
+    // `FsHandler` trait via `dispatch_via_trait`.  The handler body
+    // lives at `impl FsHandler for FsFlushHandler` (below, after the
+    // `impl FsProcesses` block).  This wrapper is kept because
+    // `rho_runtime.rs` still dispatches through `sp.fs.fs_flush(args)`
+    // until wave-3 S3.12 switches to a `FS_HANDLERS` walk.
     // -------------------------------------------------------------------
     pub async fn fs_flush(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_flush weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
-        self.metering.reserve_primitive(costs::fs_flush_cost())?;
-        let Some((produce, is_replay, previous, args)) =
-            self.is_contract_call().unapply(contract_args)
-        else {
-            return Err(illegal_argument_error("fs_flush"));
-        };
-        let [fd_par, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("fs_flush"));
-        };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
-        let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) => {
-                let file_arc = match self.handles.raw_fd(fd as u64).await {
-                    Some(f) => f,
-                    None => {
-                        let out = vec![err(FSERR_CLOSED, format!("unknown fd {fd}"))];
-                        produce(&out, ack).await?;
-                        return Ok(out);
-                    }
-                };
-                let r = spawn_blocking(move || {
-                    use std::os::fd::AsRawFd;
-                    let raw_fd = file_arc.as_raw_fd();
-                    unsafe {
-                        if libc::fsync(raw_fd) < 0 {
-                            Err(std::io::Error::last_os_error())
-                        } else {
-                            Ok(())
-                        }
-                    }
-                })
-                .await;
-                match r {
-                    Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
-                    Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
-                    Ok(Ok(())) => ok_bare(),
-                }
-            }
-            _ => err(FSERR_BAD_ARG, "expected u64"),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+        dispatch_via_trait::<FsFlushHandler>(self, contract_args).await
     }
 
     // -------------------------------------------------------------------
@@ -5828,6 +5792,99 @@ impl FsProcesses {
         Ok(out)
     }
 }
+
+// =====================================================================
+// FsHandler trait migrations (wave 3, per FIPS/.../wave-3-plan.md)
+// =====================================================================
+//
+// Each migrated handler contributes:
+//   1. A `pub struct FsXHandler;` marker type (no fields).
+//   2. `impl FsHandler for FsXHandler` — parse_content, cost, dispatch.
+//   3. `#[linkme::distributed_slice(FS_HANDLERS)] static FS_X_ENTRY`
+//      — one entry per handler in the distributed slice consumed by
+//      rho_runtime.rs (post-S3.12).
+//
+// The corresponding `pub async fn fs_x(&self, ...)` method inside the
+// `impl FsProcesses` block above collapses to a one-line
+// `dispatch_via_trait::<FsXHandler>(self, contract_args).await`
+// wrapper, kept for `rho_runtime.rs` compatibility until the S3.12
+// switchover.
+
+// -------------------------------------------------------------------
+// fs_flush — (fd) -> [true]  (fsync: data + metadata)
+// -------------------------------------------------------------------
+
+pub struct FsFlushHandler;
+
+pub struct FsFlushArgs {
+    fd: u64,
+}
+
+impl FsHandler for FsFlushHandler {
+    const NAME: &'static str = "fs_flush";
+    const ARITY: usize = 2; // (fd, ack)
+                            // VERIFYING defaults to false — fs_flush is a non-verifying
+                            // handler.  See handlers.rs top-comment § "The 15 verifying
+                            // handlers" for the verify matrix.
+
+    type Args = FsFlushArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsFlushArgs, Box<HandlerReply>> {
+        let [fd_par] = args else {
+            // Unreachable in practice: framework's ARITY check runs
+            // first and rejects with `illegal_argument_error(NAME)`.
+            // Kept for future-proofing (a caller path that bypasses
+            // the arity check would land here).
+            return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected u64"));
+        };
+        let fd = RhoNumber::unapply(fd_par)
+            .ok_or_else(|| HandlerReply::boxed_err(FSERR_BAD_ARG, "expected u64"))?;
+        Ok(FsFlushArgs { fd: fd as u64 })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_flush_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsFlushArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let file_arc = match ctx.handles.raw_fd(args.fd).await {
+                Some(f) => f,
+                None => {
+                    return HandlerReply::err(FSERR_CLOSED, format!("unknown fd {}", args.fd));
+                }
+            };
+            let r = spawn_blocking(move || {
+                use std::os::fd::AsRawFd;
+                let raw_fd = file_arc.as_raw_fd();
+                unsafe {
+                    if libc::fsync(raw_fd) < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+            match r {
+                Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
+                Ok(Ok(())) => HandlerReply::ok(ok_bare()),
+            }
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_FLUSH_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsFlushHandler as FsHandler>::NAME,
+    arity: <FsFlushHandler as FsHandler>::ARITY,
+    verifying: <FsFlushHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsFlushHandler>(fs, args)),
+};
 
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.

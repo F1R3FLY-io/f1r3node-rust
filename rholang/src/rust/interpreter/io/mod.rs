@@ -20,6 +20,7 @@ pub mod costs;
 pub mod dir_handle_table;
 pub mod errors;
 pub mod handle_table;
+pub mod handler_trait;
 pub mod handlers;
 pub mod lock;
 pub mod mode;
