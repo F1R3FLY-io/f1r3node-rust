@@ -57,6 +57,11 @@ pub trait Engine: Send + Sync {
         Ok(false)
     }
 
+    /// Called by the casper loop on each tick while this engine has no
+    /// Casper instance, so an engine waiting on pushed ceremony messages
+    /// can pull when the push window was missed.
+    async fn on_no_casper_tick(&self) -> Result<(), CasperError> { Ok(()) }
+
     /// Returns the casper instance as an Arc if this engine wraps one.
     /// Returns None for engines that don't have casper (NoopEngine, Initializing, etc.)
     /// The Arc allows ownership transfer and use across async boundaries.
