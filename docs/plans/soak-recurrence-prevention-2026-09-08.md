@@ -315,7 +315,13 @@ B27 replaces destructive Docker hygiene with read-only inspection. B28 confirms 
 
 The crash fixture supervisor stops the surviving Docker writer before restart. This action is not production crash-time shutdown evidence.
 
-Safe reclamation, ownership-safe stops, other shutdown paths, additional crash windows, power-loss durability, and complete deadline and reserve arguments remain open.
+The [B30–B31 stop cycles](../cbc-evidence/soak-d2-owned-stop-2026-09-10/README.md) preserve unrelated Docker writers and retain one tested failed-stop outcome.
+
+B30 covers the shared Docker stop helper after wrapper-based `run` and Compose creation. B31 records unconfirmed termination after a rejected exit stop.
+
+Host-process ownership, memory-pressure paths, other launch forms, late creation, safe reclamation, storage faults, and other shutdown paths remain open.
+
+Complete deadline and reserve arguments, hosted checks, and maintainer review remain open. D2 is not complete.
 
 ### Gate O1: Verify observability before the diagnostic soak
 

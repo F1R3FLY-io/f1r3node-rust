@@ -466,6 +466,15 @@ budget classes in the formal-verification stack entry).
   [02-glossary-and-notation.md](casper/theory/slashing/design/02-glossary-and-notation.md)
   until the planned unification lands.
 
+## Docker owner label
+
+The **Docker owner label** associates a container with the driver instance that creates it through the workload Docker wrapper.
+The label key is `io.f1r3fly.soak.owner`.
+
+**Preferred usage:** Use this term for creation metadata that the shared Docker stop helper checks before selecting a container.
+Do not use a name prefix or fixture label as a substitute.
+The label is not authorization against an actor who can control Docker or forge metadata.
+
 ## Maintenance
 
 - Update this file before merging code or documentation that introduces a
