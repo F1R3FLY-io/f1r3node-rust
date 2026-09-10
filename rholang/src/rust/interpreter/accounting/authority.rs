@@ -737,14 +737,32 @@ fn allocate_event_options_with_custody(
         available: ResourceMultiset<[u8; 32]>,
     }
 
-    if options.iter().flatten().any(|option| {
-        option
-            .0
-            .keys()
-            .any(|lane| !balance_custody.contains_key(lane))
-    }) {
+    // authority_funding_options emits alternatives per event, including a
+    // Compound-signature option whose lane_hash need not appear in
+    // balance_custody (compound lanes are only fundable when the operator
+    // explicitly maps them).  Filter each event's alternatives down to those
+    // whose lanes are all present in balance_custody.  If an event has no
+    // fundable alternative left, the caller cannot physically settle it and
+    // we surface UnknownPhysicalCustody as before.
+    let filtered_options: Vec<Vec<ResourceMultiset<[u8; 32]>>> = options
+        .iter()
+        .map(|event_options| {
+            event_options
+                .iter()
+                .filter(|option| {
+                    option
+                        .0
+                        .keys()
+                        .all(|lane| balance_custody.contains_key(lane))
+                })
+                .cloned()
+                .collect()
+        })
+        .collect();
+    if filtered_options.iter().any(|alts| alts.is_empty()) {
         return Err(AuthorityError::UnknownPhysicalCustody);
     }
+    let options = filtered_options.as_slice();
 
     let mut frames = vec![Frame {
         index: 0,
