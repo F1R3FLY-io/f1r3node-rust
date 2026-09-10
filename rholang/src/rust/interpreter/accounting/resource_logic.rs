@@ -528,45 +528,11 @@ mod resource_logic_conformance {
             right: 1
         }]);
     }
-
-    #[test]
-    fn mettail_rust_is_not_a_cargo_dependency() {
-        use std::path::{Path, PathBuf};
-
-        fn collect_manifests(dir: &Path, out: &mut Vec<PathBuf>) {
-            let entries = std::fs::read_dir(dir).expect("read workspace directory");
-            for entry in entries {
-                let entry = entry.expect("read directory entry");
-                let path = entry.path();
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if path.is_dir() {
-                    if name == ".git" || name == "target" {
-                        continue;
-                    }
-                    collect_manifests(&path, out);
-                } else if name == "Cargo.toml" {
-                    out.push(path);
-                }
-            }
-        }
-
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("workspace root");
-        let mut manifests = Vec::new();
-        collect_manifests(workspace, &mut manifests);
-
-        for manifest in manifests {
-            let content = std::fs::read_to_string(&manifest).expect("read Cargo.toml");
-            assert!(
-                !content.contains("mettail-rust") && !content.contains("mettail_rust"),
-                "MeTTaIL must remain an adapter over GSLT/OSLF, not a workspace Cargo dependency: {}",
-                manifest.display()
-            );
-        }
-    }
 }
+
+#[cfg(test)]
+#[path = "resource_logic/dependency_policy.rs"]
+mod frontend_dependency_policy;
 
 #[cfg(test)]
 mod apportionment_conformance {

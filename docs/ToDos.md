@@ -48,6 +48,26 @@ mr_status:
 ### F1R3Lang: frontend admission boundary
 
 ```yaml
+id: mettail-m1-direct-composition-contract
+status: review
+claimed_by: codex-f1r3lang
+branch: feature/f1r3lang-mettail-only
+scope: Direct application composition with independent node core libraries
+acceptance:
+  - Resolved normal/build package graph permits only the designated application bridge entry
+  - Core back edges, transitive aliases, missing composition and cycles reject
+  - Component independence is proved before changing the executable gate
+  - Public routes remain unchanged until checked preparation and provider integration pass
+next_steps:
+  - Complete independent exact-commit review
+  - Connect failure-safe public whole-body preparation through the existing lowerer
+```
+
+Neutral source-family extraction and graph replay remain required subsequent
+milestone work. The direct revision retains public admission, caller imports,
+resource limits, FLT predicates and the existing funded execution boundary.
+
+```yaml
 id: mettail-regex-flt-reduce-observe-wire-validation
 status: in_progress
 claimed_by: codex-f1r3lang

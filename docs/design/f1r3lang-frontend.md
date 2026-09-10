@@ -169,14 +169,36 @@ adapter until the separately gated cutover. Moving that call from
 `interpreter.rs` to `frontend.rs` updates the baseline reference-file inventory
 without changing historical source digests or weakening its check.
 
-## Neutral frontend and language services
+## Direct frontend composition and language services
 
 The existing MeTTaIL lowerer emits node-specific `Par` values using an explicit
 worklist. That is reusable lowering logic, but it is not yet a node-independent
-frontend. Factor its structural emission through a target interface and a
-neutral Rholang intermediate representation (IR), then reuse it in the node
-adapter. Neither serialized `Par` hidden in an opaque field nor a renamed
-`Par` constitutes a neutral IR.
+frontend. The first functional revision composes that existing lowerer at the
+upper node application, under checked public whole-body preparation. It returns
+owned normalized `Par` plus required fold and guard descriptors to the existing
+prepared-program handoff. It does not introduce a second lowerer or evaluator.
+Failure must leave no artifact or auxiliary state; actual caller imports,
+resolver, options and preparation limits remain explicit inputs.
+
+The application may depend on the MeTTaIL runtime bridge. Core libraries must
+not reach MeTTaIL or the application through normal or build dependencies.
+The resolved Cargo graph gate checks this boundary and package acyclicity with
+all features enabled, using package identities and canonical manifest locations
+instead of dependency spelling. The approved sibling checkout is anchored independently of the
+dependency under inspection; selecting a different runtime checkout cannot
+redefine the protected package set. This development gate uses the isolated
+workspace layout; a release pin must supply its reviewed equivalent identity.
+Development-only edges are not production dependencies; their exclusion does
+not permit a normal or proc-macro back edge.
+The `mettail-frontend` composition feature enables only the required bridge
+surface, not its source-oracle or demonstration defaults. Adding the dependency
+does not activate source routes.
+
+Subsequent work factors structural emission through the shared target interface
+and a neutral Rholang intermediate representation (IR). Neither serialized
+`Par` hidden in an opaque field nor a renamed `Par` constitutes a neutral IR.
+This remains required campaign work, but is not a prerequisite for the direct
+functional revision. No direct-path safety or funding check is deferred.
 
 The adapter must preserve binders, collection shape and mode, connective flags,
 source occurrences, structural FLT holes, canonical protobuf bytes and

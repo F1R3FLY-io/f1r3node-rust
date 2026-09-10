@@ -6,6 +6,7 @@ publish = false
 
 [features]
 default = []
+mettail-frontend = ["dep:mettail-rholang-runtime"]
 schnorr_secp256k1_experimental = [
     "crypto/schnorr_secp256k1_experimental",
     "casper/schnorr_secp256k1_experimental",
@@ -16,6 +17,7 @@ schnorr_secp256k1_experimental = [
 doctest = false
 
 [dependencies]
+mettail-rholang-runtime = { package = "rholang-runtime", path = "../../mettail-module-dev/mettail-rust/rholang-runtime", optional = true, default-features = false, features = ["rholang-runtime"] }
 models = { path = "../models" }
 crypto = { path = "../crypto" }
 rholang = { path = "../rholang" }
