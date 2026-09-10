@@ -7815,3 +7815,567 @@ Print Assumptions reused_scalar_publishes_only_the_byte_and_exact_restore_predec
 Print Assumptions every_reused_byte_handle_selects_the_existing_published_state.
 
 End PersistentOpaqueStateReuse.
+
+Module CompressedScalarUndo.
+
+Import CanonicalKeyProtocol IndexedWindowTransport.
+
+Record handle := Handle {
+  handle_state : CompactPersistentCheckpoints.address;
+  handle_span : window
+}.
+
+Definition depth current := window_width (handle_span current).
+
+Definition shorter current width :=
+  Handle (handle_state current)
+    (Window (window_owner (handle_span current)) (window_start (handle_span current)) width None).
+
+Lemma shorter_depth current width : depth (shorter current width) = width.
+Proof. reflexivity. Qed.
+
+Lemma shorter_state current width : handle_state (shorter current width) = handle_state current.
+Proof. reflexivity. Qed.
+
+Record run := Run {
+  latest : handle;
+  first_depth : nat
+}.
+
+Definition same_state left right :=
+  CompactPersistentCheckpoints.encode_address (handle_state left) =?
+  CompactPersistentCheckpoints.encode_address (handle_state right).
+
+Lemma same_state_exact left right :
+  same_state left right = true <-> handle_state left = handle_state right.
+Proof.
+  unfold same_state. rewrite Nat.eqb_eq.
+  split; [apply CompactPersistentCheckpoints.encoded_addresses_are_injective|now intros ->].
+Qed.
+
+Definition remember previous history :=
+  match history with
+  | [] => [Run previous (depth previous)]
+  | first :: rest =>
+      if same_state previous (latest first)
+      then Run previous (first_depth first) :: rest
+      else Run previous (depth previous) :: history
+  end.
+
+Record pop_result := PopResult {
+  restored : handle;
+  remaining_runs : list run;
+  prefix_slices : nat
+}.
+
+Definition pop history :=
+  match history with
+  | [] => None
+  | first :: rest =>
+      Some (if depth (latest first) =? first_depth first
+        then PopResult (latest first) rest 0
+        else PopResult (latest first)
+          (Run (shorter (latest first) (depth (latest first) - 1)) (first_depth first) :: rest) 1)
+  end.
+
+Definition observation := (CompactPersistentCheckpoints.address * list located_byte)%type.
+
+Fixpoint descending state bytes count : list observation :=
+  match count with
+  | 0 => []
+  | S remaining =>
+      (state, bytes) :: descending state (firstn (length bytes - 1) bytes) remaining
+  end.
+
+Inductive scalar_chain : list located_byte -> list observation -> Prop :=
+| ChainRoot : scalar_chain [] []
+| ChainEdge state prefix byte history :
+    scalar_chain prefix history ->
+    scalar_chain (prefix ++ [byte]) ((state, prefix) :: history).
+
+Lemma scalar_chain_head current state prefix history :
+  scalar_chain current ((state, prefix) :: history) ->
+  (exists byte, current = prefix ++ [byte]) /\ scalar_chain prefix history.
+Proof. intro chain. inversion chain; subst. split; [eauto|assumption]. Qed.
+
+Lemma trim_app_single (bytes : list located_byte) byte :
+  firstn (length (bytes ++ [byte]) - 1) (bytes ++ [byte]) = bytes.
+Proof.
+  rewrite length_app. cbn [length].
+  replace (length bytes + 1 - 1) with (length bytes) by lia.
+  rewrite firstn_app, firstn_all, Nat.sub_diag. cbn. now rewrite app_nil_r.
+Qed.
+
+Section Bytes.
+Variable roots : nat -> region.
+
+Definition bytes current :=
+  window_bytes (roots (window_owner (handle_span current))) (handle_span current).
+
+Definition valid_handle current :=
+  window_valid (roots (window_owner (handle_span current))) (handle_span current).
+
+Definition observe current : observation := (handle_state current, bytes current).
+
+Definition valid_run current :=
+  valid_handle (latest current) /\ first_depth current <= depth (latest current).
+
+Definition valid_history := Forall valid_run.
+
+Lemma make_run_valid current first :
+  valid_handle current -> first <= depth current -> valid_run (Run current first).
+Proof. intros valid bounded. split; assumption. Qed.
+
+Definition expand_run current :=
+  descending (handle_state (latest current)) (bytes (latest current))
+    (S (depth (latest current) - first_depth current)).
+
+Fixpoint expand history :=
+  match history with [] => [] | first :: rest => expand_run first ++ expand rest end.
+
+Lemma handle_length current :
+  valid_handle current -> length (bytes current) = depth current.
+Proof. apply valid_window_length. Qed.
+
+Lemma shorter_is_valid current width :
+  valid_handle current -> width <= depth current -> valid_handle (shorter current width).
+Proof.
+  destruct current as [state [owner start count anchor]].
+  unfold valid_handle, shorter, depth, window_valid; cbn.
+  intros [same bounded] within. split; [exact same|lia].
+Qed.
+
+Lemma shorter_bytes current width :
+  width <= depth current -> bytes (shorter current width) = firstn width (bytes current).
+Proof.
+  destruct current as [state [owner start count anchor]].
+  unfold bytes, shorter, depth, window_bytes; cbn.
+  intro within. now rewrite firstn_firstn, Nat.min_l.
+Qed.
+
+Theorem strict_shortening_is_the_existing_checked_source_window current width limit :
+  width < depth current -> window_start (handle_span current) + width <= limit ->
+  checked_subwindow limit (handle_span current) 0 width =
+    Some (handle_span (shorter current width)).
+Proof.
+  intros strict fits. unfold depth in strict. apply checked_subwindow_exact.
+  split; [lia|]. split; [lia|]. split; [exact fits|].
+  unfold shorter; cbn.
+  assert (width =? window_width (handle_span current) = false) by
+    (apply Nat.eqb_neq; unfold depth in strict; lia).
+  rewrite H, Nat.add_0_r, Nat.sub_0_r. reflexivity.
+Qed.
+
+Theorem zero_prefix_normalization_is_observational current :
+  bytes (shorter current 0) = [].
+Proof. rewrite shorter_bytes by lia. reflexivity. Qed.
+
+Lemma expand_cons first rest :
+  expand (first :: rest) =
+    observe (latest first) ::
+      (descending (handle_state (latest first))
+        (firstn (length (bytes (latest first)) - 1) (bytes (latest first)))
+        (depth (latest first) - first_depth first) ++ expand rest).
+Proof. reflexivity. Qed.
+
+Theorem compressed_emptiness_is_exact history :
+  expand history = [] <-> history = [].
+Proof.
+  destruct history as [|first rest]; [tauto|].
+  rewrite expand_cons. split; discriminate.
+Qed.
+
+Theorem remembering_refines_exact_scalar_predecessor_push previous history :
+  valid_handle previous -> valid_history history ->
+  scalar_chain (bytes previous) (expand history) ->
+  expand (remember previous history) = observe previous :: expand history /\
+  valid_history (remember previous history).
+Proof.
+  intros valid history_valid chain.
+  destruct history as [|first rest].
+  - cbn [remember expand]. unfold expand_run. cbn [latest first_depth].
+    rewrite Nat.sub_diag. cbn [descending app].
+    split; [reflexivity|]. constructor; [apply make_run_valid; [exact valid|lia]|constructor].
+  - inversion history_valid as [|? ? first_valid rest_valid]; subst.
+    destruct first_valid as [latest_valid lower].
+    rewrite expand_cons in chain.
+    apply scalar_chain_head in chain.
+    destruct chain as [[byte extension] tail_chain].
+    assert (next_depth : depth previous = S (depth (latest first))).
+    { rewrite <- (handle_length valid), extension, length_app,
+        (handle_length latest_valid). cbn. lia. }
+    cbn [remember]. destruct (same_state previous (latest first)) eqn:same.
+    + apply same_state_exact in same.
+      split.
+      * cbn [expand]. unfold expand_run. cbn [latest first_depth].
+        replace (depth previous - first_depth first) with
+          (S (depth (latest first) - first_depth first)) by lia.
+        cbn [descending app]. unfold observe.
+        rewrite extension, same, trim_app_single. reflexivity.
+      * constructor; [apply make_run_valid; [exact valid|lia]|exact rest_valid].
+    + split.
+      * cbn [expand]. unfold expand_run. cbn [latest first_depth].
+        rewrite Nat.sub_diag. reflexivity.
+      * constructor; [apply make_run_valid; [exact valid|lia]|exact history_valid].
+Qed.
+
+Theorem popping_refines_exact_scalar_head_and_tail history result :
+  valid_history history -> pop history = Some result ->
+  expand history = observe (restored result) :: expand (remaining_runs result) /\
+  valid_handle (restored result) /\ valid_history (remaining_runs result) /\
+  prefix_slices result <= 1.
+Proof.
+  intros history_valid popped.
+  destruct history as [|first rest]; [discriminate|].
+  inversion history_valid as [|? ? first_valid rest_valid]; subst.
+  destruct first_valid as [latest_valid lower].
+  cbn [pop] in popped.
+  destruct (depth (latest first) =? first_depth first) eqn:boundary;
+    inversion popped; subst result; cbn [restored remaining_runs prefix_slices].
+  - apply Nat.eqb_eq in boundary. split.
+    + cbn [expand]. unfold expand_run. rewrite boundary, Nat.sub_diag. reflexivity.
+    + split; [exact latest_valid|]. split; [exact rest_valid|lia].
+  - apply Nat.eqb_neq in boundary.
+    assert (positive : 0 < depth (latest first)) by lia.
+    split.
+    + rewrite expand_cons. cbn [expand]. unfold expand_run. cbn [latest first_depth].
+      unfold observe. rewrite shorter_bytes by lia.
+      rewrite shorter_depth, shorter_state.
+      rewrite (handle_length latest_valid).
+      replace (S (depth (latest first) - 1 - first_depth first)) with
+        (depth (latest first) - first_depth first) by lia.
+      reflexivity.
+    + split; [exact latest_valid|]. split; [|lia].
+      constructor; [|exact rest_valid]. apply make_run_valid.
+      * apply shorter_is_valid; [exact latest_valid|lia].
+      * rewrite shorter_depth. lia.
+Qed.
+
+
+Lemma descending_prefixes_have_valid_handles current count :
+  valid_handle current -> count <= S (depth current) ->
+  Forall (fun entry => exists saved, valid_handle saved /\ observe saved = entry)
+    (descending (handle_state current) (bytes current) count).
+Proof.
+  revert current. induction count as [|count IH]; intros current valid bounded; [constructor|].
+  cbn [descending]. constructor.
+  - exists current. split; [exact valid|reflexivity].
+  - destruct count as [|count]; [constructor|].
+    assert (within : depth current - 1 <= depth current) by lia.
+    assert (next_valid : valid_handle (shorter current (depth current - 1)))
+      by (apply shorter_is_valid; assumption).
+    pose proof (IH (shorter current (depth current - 1)) next_valid
+      ltac:(rewrite shorter_depth; lia)) as represented.
+    rewrite shorter_state in represented.
+    rewrite shorter_bytes in represented by exact within.
+    rewrite (handle_length valid). exact represented.
+Qed.
+
+Theorem every_compressed_historical_prefix_is_a_valid_located_handle history :
+  valid_history history ->
+  Forall (fun entry => exists saved, valid_handle saved /\ observe saved = entry) (expand history).
+Proof.
+  intro valid. induction valid as [|first rest [head lower] tail IH]; cbn [expand]; [constructor|].
+  apply Forall_app. split; [|exact IH].
+  apply descending_prefixes_have_valid_handles; [exact head|lia].
+Qed.
+
+Theorem successful_edge_preserves_scalar_topology previous next byte history :
+  valid_handle previous -> valid_history history ->
+  scalar_chain (bytes previous) (expand history) ->
+  bytes next = bytes previous ++ [byte] ->
+  scalar_chain (bytes next) (expand (remember previous history)) /\
+  valid_history (remember previous history).
+Proof.
+  intros valid history_valid chain appended.
+  destruct (remembering_refines_exact_scalar_predecessor_push valid history_valid chain)
+    as [exact_history next_valid].
+  split; [|exact next_valid]. rewrite appended, exact_history.
+  unfold observe. constructor. exact chain.
+Qed.
+
+Theorem successful_leave_preserves_scalar_topology current history result :
+  valid_history history -> scalar_chain (bytes current) (expand history) ->
+  pop history = Some result ->
+  scalar_chain (bytes (restored result)) (expand (remaining_runs result)) /\
+  valid_handle (restored result) /\ valid_history (remaining_runs result).
+Proof.
+  intros valid chain popped.
+  destruct (popping_refines_exact_scalar_head_and_tail valid popped)
+    as [expanded [restored_valid [tail_valid work]]].
+  rewrite expanded in chain.
+  destruct (scalar_chain_head chain) as [_ tail].
+  split; [exact tail|]. split; assumption.
+Qed.
+
+Theorem byte_preserving_private_operations_preserve_the_exact_undo_topology
+    current next history :
+  bytes next = bytes current ->
+  scalar_chain (bytes current) (expand history) ->
+  scalar_chain (bytes next) (expand history).
+Proof. intros same chain. now rewrite same. Qed.
+
+Section Observation.
+Context {Span : Type}.
+
+Definition selected (stored : @AbsolutePayloadCheckpointBoundary.storage Span) current :=
+  option_map
+    (fun checkpoint => (AbsolutePayloadRealization.selected_graph checkpoint (length (bytes current)),
+      bytes current))
+    (AbsolutePayloadCheckpointBoundary.lookup stored (handle_state current) (length (bytes current))).
+
+Theorem exact_state_and_located_bytes_preserve_every_selected_graph_and_query
+    (stored : @AbsolutePayloadCheckpointBoundary.storage Span) left right :
+  observe left = observe right ->
+  selected stored left = selected stored right /\
+  forall (Result : Type) (query : option (PersistentFrameRealization.semantic_path * list located_byte) -> Result),
+    query (selected stored left) = query (selected stored right).
+Proof.
+  unfold observe. intro same. inversion same as [[state_same bytes_same]].
+  assert (selected_same : selected stored left = selected stored right).
+  { unfold selected. now rewrite state_same, bytes_same. }
+  split; [exact selected_same|]. intros. now rewrite selected_same.
+Qed.
+
+Definition install_restored (current : @AbsolutePayloadCheckpointBoundary.world Span)
+    previous history :=
+  AbsolutePayloadCheckpointBoundary.World
+    (AbsolutePayloadCheckpointBoundary.world_checkpoints current)
+    (AbsolutePayloadCheckpointBoundary.world_frames current)
+    (AbsolutePayloadCheckpointBoundary.world_owners current)
+    (bytes previous) (handle_state previous) history
+    (AbsolutePayloadCheckpointBoundary.world_clock current).
+
+Definition scalar_leave (current : @AbsolutePayloadCheckpointBoundary.world Span) :=
+  match AbsolutePayloadCheckpointBoundary.world_restore current with
+  | [] => None
+  | (state, prefix) :: rest =>
+      Some (AbsolutePayloadCheckpointBoundary.World
+        (AbsolutePayloadCheckpointBoundary.world_checkpoints current)
+        (AbsolutePayloadCheckpointBoundary.world_frames current)
+        (AbsolutePayloadCheckpointBoundary.world_owners current)
+        prefix state rest (AbsolutePayloadCheckpointBoundary.world_clock current))
+  end.
+
+Theorem compressed_pop_is_the_exact_existing_scalar_world_transition
+    (current : @AbsolutePayloadCheckpointBoundary.world Span) history result :
+  valid_history history ->
+  AbsolutePayloadCheckpointBoundary.world_restore current = expand history ->
+  pop history = Some result ->
+  scalar_leave current =
+    Some (install_restored current (restored result) (expand (remaining_runs result))).
+Proof.
+  intros valid agrees popped.
+  destruct (popping_refines_exact_scalar_head_and_tail valid popped) as [expanded other].
+  unfold scalar_leave. rewrite agrees, expanded. reflexivity.
+Qed.
+
+Theorem restoring_never_changes_any_checkpoint_frame_owner_or_obligation_clock
+    (current : @AbsolutePayloadCheckpointBoundary.world Span) previous history :
+  let next := install_restored current previous history in
+  AbsolutePayloadCheckpointBoundary.world_checkpoints next =
+    AbsolutePayloadCheckpointBoundary.world_checkpoints current /\
+  AbsolutePayloadCheckpointBoundary.world_frames next =
+    AbsolutePayloadCheckpointBoundary.world_frames current /\
+  AbsolutePayloadCheckpointBoundary.world_owners next =
+    AbsolutePayloadCheckpointBoundary.world_owners current /\
+  AbsolutePayloadCheckpointBoundary.world_clock next =
+    AbsolutePayloadCheckpointBoundary.world_clock current /\
+  AbsolutePayloadCheckpointBoundary.world_current next = handle_state previous /\
+  AbsolutePayloadCheckpointBoundary.world_bytes next = bytes previous /\
+  AbsolutePayloadCheckpointBoundary.world_restore next = history.
+Proof. repeat split; reflexivity. Qed.
+
+End Observation.
+
+Lemma scalar_chain_depth current history :
+  scalar_chain current history -> length history = length current.
+Proof. intro chain. induction chain; cbn; [reflexivity|]. rewrite length_app. cbn. lia. Qed.
+
+Theorem compressed_topology_depth_and_empty_root_are_exact current history :
+  scalar_chain (bytes current) (expand history) ->
+  length (expand history) = length (bytes current) /\
+  (history = [] <-> bytes current = []).
+Proof.
+  intro chain. pose proof (scalar_chain_depth chain) as same.
+  split; [exact same|]. split.
+  - intro empty. subst history. cbn in chain. inversion chain. reflexivity.
+  - intro empty. apply compressed_emptiness_is_exact.
+    apply length_zero_iff_nil. rewrite same, empty. reflexivity.
+Qed.
+
+Inductive leave_branch :=
+| RestorePredecessor
+| FirstRootLeave
+| RootUnderflow (source : provenance).
+
+Definition classify_leave (empty root_left : bool) source :=
+  if empty then if root_left then RootUnderflow source else FirstRootLeave
+  else RestorePredecessor.
+
+Inductive topology_error :=
+| UnresolvedAt (source : provenance)
+| IncompleteAt (source : provenance)
+| AfterRootAt (source : provenance).
+
+Definition classify_finish empty root_left pending source :=
+  match pending with
+  | Some endpoint => Some (UnresolvedAt endpoint)
+  | None => if root_left && empty then None else Some (IncompleteAt source)
+  end.
+
+Definition is_empty {Value : Type} (values : list Value) :=
+  match values with [] => true | _ => false end.
+
+Theorem compression_preserves_root_leave_underflow_and_finish_error_priority
+    history root_left pending source :
+  classify_leave (is_empty history) root_left source =
+    classify_leave (is_empty (expand history)) root_left source /\
+  classify_finish (is_empty history) root_left pending source =
+    classify_finish (is_empty (expand history)) root_left pending source.
+Proof.
+  destruct history as [|first rest]; [split; reflexivity|].
+  rewrite expand_cons. split; reflexivity.
+Qed.
+
+Definition guarded_edge_publication {Store Error : Type} (root_left : bool) source
+    (result : Error + (Store * handle)) stored current history :=
+  if root_left then (Some (inl (AfterRootAt source)), stored, current, history)
+  else match result with
+  | inl error => (Some (inr error), stored, current, history)
+  | inr (next_store, next) => (None, next_store, next, remember current history)
+  end.
+
+Theorem root_left_refuses_an_edge_without_touching_stores_current_or_history
+    {Store Error : Type} root_left source (result : Error + (Store * handle))
+    (stored : Store) current history :
+  root_left = true ->
+  guarded_edge_publication root_left source result stored current history =
+    (Some (inl (AfterRootAt source)), stored, current, history).
+Proof. intros ->. reflexivity. Qed.
+
+Theorem returned_edge_error_preserves_its_exact_source_stores_current_and_history
+    {Store Error : Type} source (error : Error) (stored : Store) current history :
+  guarded_edge_publication false source (inl error) stored current history =
+    (Some (inr error), stored, current, history).
+Proof. reflexivity. Qed.
+
+Theorem successful_edges_publish_exactly_the_previous_not_the_returned_state
+    {Store Error : Type} source (stored next_store : Store) current next history :
+  @guarded_edge_publication Store Error false source (inr (next_store, next))
+    stored current history = (None, next_store, next, remember current history).
+Proof. reflexivity. Qed.
+
+Theorem a_pop_inspects_one_run_and_performs_exactly_zero_or_one_prefix_slice first rest :
+  pop (first :: rest) =
+    Some (if depth (latest first) =? first_depth first
+      then PopResult (latest first) rest 0
+      else PopResult (latest first)
+        (Run (shorter (latest first) (depth (latest first) - 1)) (first_depth first) :: rest) 1).
+Proof. reflexivity. Qed.
+
+
+Theorem remembering_touches_only_the_latest_run_and_adds_at_most_one_record previous history :
+  length history <= length (remember previous history) /\
+  length (remember previous history) <= S (length history).
+Proof.
+  destruct history as [|first rest]; cbn [remember length]; [lia|].
+  destruct (same_state previous (latest first)); cbn; lia.
+Qed.
+
+Theorem a_nonsingleton_run_has_a_safe_strict_predecessor first :
+  valid_run first -> depth (latest first) <> first_depth first ->
+  0 < depth (latest first) /\ first_depth first <= depth (latest first) - 1.
+Proof. intros [valid bounded] different. lia. Qed.
+
+
+Definition run_state current := handle_state (latest current).
+
+Fixpoint maximal history : Prop :=
+  match history with
+  | [] => True
+  | first :: rest =>
+      (match rest with [] => True | second :: _ => run_state first <> run_state second end) /\
+      maximal rest
+  end.
+
+Lemma maximal_tail first rest : maximal (first :: rest) -> maximal rest.
+Proof. intros [_ tail]. exact tail. Qed.
+
+Lemma maximal_head_state first replacement rest :
+  run_state replacement = run_state first ->
+  maximal (first :: rest) -> maximal (replacement :: rest).
+Proof.
+  intros same normalized. destruct rest as [|second tail]; [exact normalized|].
+  change (run_state replacement <> run_state second /\ maximal (second :: tail)).
+  change (run_state first <> run_state second /\ maximal (second :: tail)) in normalized.
+  now rewrite same.
+Qed.
+
+Lemma descending_has_one_exact_state state data count :
+  Forall (fun entry => fst entry = state) (descending state data count).
+Proof.
+  revert data. induction count; intro data; cbn [descending]; [constructor|].
+  constructor; [reflexivity|apply IHcount].
+Qed.
+
+Theorem every_run_is_a_nonempty_block_of_one_exact_state first :
+  expand_run first <> [] /\
+  Forall (fun entry => fst entry = run_state first) (expand_run first).
+Proof.
+  split; [discriminate|]. apply descending_has_one_exact_state.
+Qed.
+
+Theorem remembering_preserves_maximal_adjacent_state_runs previous history :
+  maximal history -> maximal (remember previous history).
+Proof.
+  intro normalized. destruct history as [|first rest].
+  - cbn [remember maximal]. tauto.
+  - cbn [remember]. destruct (same_state previous (latest first)) eqn:same.
+    + apply same_state_exact in same.
+      eapply maximal_head_state; [|exact normalized].
+      exact same.
+    + change (handle_state previous <> run_state first /\ maximal (first :: rest)).
+      split; [|exact normalized].
+      unfold run_state; cbn [latest]. intro equal.
+      apply same_state_exact in equal. congruence.
+Qed.
+
+Theorem popping_preserves_maximal_adjacent_state_runs history result :
+  maximal history -> pop history = Some result -> maximal (remaining_runs result).
+Proof.
+  intros normalized popped. destruct history as [|first rest]; [discriminate|].
+  cbn [pop] in popped.
+  destruct (depth (latest first) =? first_depth first);
+    inversion popped; subst result; cbn [remaining_runs].
+  - now apply maximal_tail in normalized.
+  - eapply maximal_head_state; [reflexivity|exact normalized].
+Qed.
+
+End Bytes.
+
+Print Assumptions strict_shortening_is_the_existing_checked_source_window.
+Print Assumptions zero_prefix_normalization_is_observational.
+Print Assumptions compressed_emptiness_is_exact.
+Print Assumptions remembering_refines_exact_scalar_predecessor_push.
+Print Assumptions popping_refines_exact_scalar_head_and_tail.
+Print Assumptions every_compressed_historical_prefix_is_a_valid_located_handle.
+Print Assumptions successful_edge_preserves_scalar_topology.
+Print Assumptions successful_leave_preserves_scalar_topology.
+Print Assumptions byte_preserving_private_operations_preserve_the_exact_undo_topology.
+Print Assumptions exact_state_and_located_bytes_preserve_every_selected_graph_and_query.
+Print Assumptions compressed_pop_is_the_exact_existing_scalar_world_transition.
+Print Assumptions restoring_never_changes_any_checkpoint_frame_owner_or_obligation_clock.
+Print Assumptions compressed_topology_depth_and_empty_root_are_exact.
+Print Assumptions compression_preserves_root_leave_underflow_and_finish_error_priority.
+Print Assumptions root_left_refuses_an_edge_without_touching_stores_current_or_history.
+Print Assumptions returned_edge_error_preserves_its_exact_source_stores_current_and_history.
+Print Assumptions successful_edges_publish_exactly_the_previous_not_the_returned_state.
+Print Assumptions a_pop_inspects_one_run_and_performs_exactly_zero_or_one_prefix_slice.
+Print Assumptions remembering_touches_only_the_latest_run_and_adds_at_most_one_record.
+Print Assumptions a_nonsingleton_run_has_a_safe_strict_predecessor.
+Print Assumptions every_run_is_a_nonempty_block_of_one_exact_state.
+Print Assumptions remembering_preserves_maximal_adjacent_state_runs.
+Print Assumptions popping_preserves_maximal_adjacent_state_runs.
+
+End CompressedScalarUndo.

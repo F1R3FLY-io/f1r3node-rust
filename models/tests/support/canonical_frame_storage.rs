@@ -1825,6 +1825,69 @@ fn realize_selected_payload<Span>(root: &InnerPath, frames: &mut [Frame<Span>], 
     }
 }
 
+fn normalize_located_graph(
+    root: InnerPath,
+    frames: &[Frame],
+    arena: &CanonicalBytesArena,
+) -> (
+    InnerPath,
+    Vec<Frame>,
+    Vec<Option<Vec<CanonicalLocatedByte>>>,
+) {
+    let (root, mut frames) = super::opaque_interior_tests::normalize_graph(root, frames);
+    let spans = frames
+        .iter_mut()
+        .filter_map(|frame| match frame {
+            Frame::Region { previous, .. } => Some(
+                previous
+                    .take()
+                    .map(|span| arena.located_bytes(span).collect::<Vec<_>>()),
+            ),
+            _ => None,
+        })
+        .collect();
+    (root, frames, spans)
+}
+
+#[test]
+fn located_graph_oracle_preserves_span_presence_bytes_and_provenance() {
+    let mut left = CanonicalBytesArena::new();
+    let mut right = CanonicalBytesArena::new();
+    let original = CanonicalLocatedByte::new(0x19, CanonicalByteProvenance::new(7, 31));
+    let left_span = left.append(left.empty(), original).unwrap();
+    right.append(right.empty(), original).unwrap();
+    let right_span = right.append(right.empty(), original).unwrap();
+    assert_ne!(left_span, right_span);
+    let mut root = InnerPath::new(true);
+    root.stack = Some(FrameId(0));
+    let frame = |previous| Frame::Region {
+        remaining: 7,
+        previous,
+        phase: RegionPhase::PathLength(VarintState::default()),
+        next: None,
+    };
+    let baseline = normalize_located_graph(root.clone(), &[frame(Some(left_span))], &left);
+    assert_eq!(
+        baseline,
+        normalize_located_graph(root.clone(), &[frame(Some(right_span))], &right)
+    );
+    for changed in [
+        CanonicalLocatedByte::new(0xe3, original.provenance),
+        CanonicalLocatedByte::new(original.byte, CanonicalByteProvenance::new(8, 31)),
+        CanonicalLocatedByte::new(original.byte, CanonicalByteProvenance::new(7, 32)),
+    ] {
+        let span = right.append(right.empty(), changed).unwrap();
+        assert_ne!(
+            baseline,
+            normalize_located_graph(root.clone(), &[frame(Some(span))], &right)
+        );
+    }
+    assert_ne!(
+        normalize_located_graph(root.clone(), &[frame(None)], &left),
+        normalize_located_graph(root, &[frame(Some(left.empty()))], &left),
+    );
+}
+
 fn assert_focused_persistent_matches(
     reference: &EagerCanonicalPathReducer,
     reference_arena: &CanonicalBytesArena,
@@ -1837,9 +1900,28 @@ fn assert_focused_persistent_matches(
         reference.active_obligation(expected),
         focused.active_obligation(actual)
     );
+    let completed =
+        |result: Result<Option<CanonicalPathCompletedObligation>, CanonicalPathAdmissionError>,
+         arena: &CanonicalBytesArena| {
+            result.map(|payload| {
+                payload.map(|payload| {
+                    (
+                        payload.obligation,
+                        payload.payload_end,
+                        arena.located_bytes(payload.payload).collect::<Vec<_>>(),
+                    )
+                })
+            })
+        };
     assert_eq!(
-        reference.completed_obligation(reference_arena, expected),
-        focused.completed_obligation(focused_arena, actual)
+        completed(
+            reference.completed_obligation(reference_arena, expected),
+            reference_arena
+        ),
+        completed(
+            focused.completed_obligation(focused_arena, actual),
+            focused_arena
+        ),
     );
     for has_value in [false, true] {
         assert_eq!(
@@ -1874,10 +1956,11 @@ fn assert_focused_persistent_matches(
     }
     realize_selected_payload(&root, &mut frames.slots, state.stamp);
     assert_eq!(
-        super::opaque_interior_tests::normalize_graph(root, &frames.slots),
-        super::opaque_interior_tests::normalize_graph(
+        normalize_located_graph(root, &frames.slots, focused_arena),
+        normalize_located_graph(
             reference.states[expected.state.0].clone(),
-            &reference.machine.frames.slots
+            &reference.machine.frames.slots,
+            reference_arena,
         ),
     );
 }
@@ -2860,5 +2943,258 @@ fn focused_persistent_topology_resolution_rejection_and_restore_match_eager() {
                 assert_eq!(payload.payload.located_bytes().collect::<Vec<_>>(), bytes);
             }
         }
+    }
+}
+
+#[test]
+fn topology_restore_runs_preserve_page_crossing_prefixes_and_divergent_continuations() {
+    for depth in [0, 3] {
+        for width in [2usize, 33, 129, 1_025] {
+            let mut key = vec![EPATHMAP_MAP];
+            prost::encoding::encode_varint(width as u64, &mut key);
+            key.resize(key.len() + width, 0xa7);
+            for _ in 0..depth {
+                let mut body = Vec::new();
+                prost::encoding::encode_varint(key.len() as u64, &mut body);
+                body.extend_from_slice(&key);
+                key = vec![EPATHMAP];
+                prost::encoding::encode_varint(body.len() as u64, &mut key);
+                key.extend_from_slice(&body);
+            }
+            let mut actual = CanonicalPathTopologyAdmission::new();
+            let mut expected = EagerCanonicalPathTopologyAdmission::new();
+            let mut undo = Vec::new();
+            let mut frozen = Vec::new();
+            for (offset, byte) in key.iter().copied().enumerate() {
+                if [3, 31, 32, 63].contains(&offset) {
+                    let snapshot = actual.arena.freeze(actual.current.bytes);
+                    let contents = snapshot.located_bytes().collect::<Vec<_>>();
+                    frozen.push((snapshot, contents));
+                }
+                undo.push(actual.current);
+                let located =
+                    LocatedPathByte::in_source(byte, offset as u32 % 7, 103 + offset * 19);
+                assert_eq!(actual.edge(located), expected.edge(located));
+                let runs = 1 + undo
+                    .windows(2)
+                    .filter(|pair| pair[0].state != pair[1].state)
+                    .count();
+                assert_eq!(actual.restore.len(), runs);
+                assert_focused_persistent_matches(
+                    &expected.reducer,
+                    &expected.arena,
+                    expected.current,
+                    &actual.reducer,
+                    &actual.arena,
+                    actual.current,
+                );
+            }
+            let pending = actual.active_obligation().unwrap();
+            assert!(pending.awaiting_resolution);
+            let before = (actual.stats(), actual.current, actual.restore.clone());
+            let byte = LocatedPathByte::in_source(0xee, 97, 301);
+            assert_eq!(actual.edge(byte), expected.edge(byte));
+            assert_eq!(
+                (actual.stats(), actual.current, actual.restore.clone()),
+                before
+            );
+            let resolution = CanonicalPathObligationResolution::NestedEpm1 {
+                mode: NestedEpmMode::Map,
+                entries_stable: true,
+            };
+            let wrong = CanonicalPathObligationId(pending.obligation.id.0 + 1);
+            assert_eq!(
+                actual.resolve_obligation(wrong, resolution),
+                expected.resolve_obligation(wrong, resolution)
+            );
+            assert_eq!(
+                (actual.stats(), actual.current, actual.restore.clone()),
+                before
+            );
+            while let Some(saved) = undo.pop() {
+                let stores = (saved.bytes.len() % 32 == 0).then(|| {
+                    (
+                        actual.reducer.states.clone(),
+                        actual.reducer.machine.frames.slots.clone(),
+                        actual.reducer.owners.entries.clone(),
+                    )
+                });
+                let allocation = (
+                    actual.stats(),
+                    actual.arena.stats(),
+                    actual.reducer.machine.next_obligation,
+                );
+                assert_eq!(actual.leave(source(901)), expected.leave(source(901)));
+                assert_eq!(
+                    (
+                        actual.stats(),
+                        actual.arena.stats(),
+                        actual.reducer.machine.next_obligation,
+                    ),
+                    allocation,
+                );
+                if let Some((states, frames, owners)) = stores {
+                    assert_eq!(actual.reducer.states, states);
+                    assert_eq!(actual.reducer.machine.frames.slots, frames);
+                    assert_eq!(actual.reducer.owners.entries, owners);
+                }
+                assert_eq!(actual.current.state, saved.state);
+                assert_eq!(actual.current.bytes.len(), saved.bytes.len());
+                assert_eq!(
+                    actual
+                        .arena
+                        .located_bytes(actual.current.bytes)
+                        .collect::<Vec<_>>(),
+                    actual.arena.located_bytes(saved.bytes).collect::<Vec<_>>(),
+                );
+                let runs = if undo.is_empty() {
+                    0
+                } else {
+                    1 + undo
+                        .windows(2)
+                        .filter(|pair| pair[0].state != pair[1].state)
+                        .count()
+                };
+                assert_eq!(actual.restore.len(), runs);
+                assert_focused_persistent_matches(
+                    &expected.reducer,
+                    &expected.arena,
+                    expected.current,
+                    &actual.reducer,
+                    &actual.arena,
+                    actual.current,
+                );
+                if actual
+                    .active_obligation()
+                    .is_some_and(|progress| progress.remaining > 1)
+                {
+                    for byte in [0x19, 0xe3] {
+                        let located = LocatedPathByte::in_source(byte, 101, 307);
+                        assert_eq!(actual.edge(located), expected.edge(located));
+                        assert_focused_persistent_matches(
+                            &expected.reducer,
+                            &expected.arena,
+                            expected.current,
+                            &actual.reducer,
+                            &actual.arena,
+                            actual.current,
+                        );
+                        assert_eq!(actual.leave(source(903)), expected.leave(source(903)));
+                        assert_eq!(actual.restore.len(), runs);
+                    }
+                }
+            }
+            assert_eq!(actual.leave(source(905)), expected.leave(source(905)));
+            assert_eq!(actual.finish(source(907)), expected.finish(source(907)));
+            assert_eq!(actual.leave(source(909)), expected.leave(source(909)));
+            assert_eq!(actual.edge(byte), expected.edge(byte));
+            drop(actual);
+            drop(expected);
+            for (snapshot, contents) in frozen {
+                assert_eq!(snapshot.located_bytes().collect::<Vec<_>>(), contents);
+            }
+        }
+    }
+}
+
+#[test]
+fn topology_restore_runs_preserve_private_effects_faults_and_fresh_births() {
+    for action in 0..3 {
+        let mut body = Vec::new();
+        for width in 129..=130 {
+            let mut key = vec![EPATHMAP_MAP];
+            prost::encoding::encode_varint((width + usize::from(action == 2)) as u64, &mut key);
+            key.resize(key.len() + width, 0xa7);
+            prost::encoding::encode_varint(key.len() as u64, &mut body);
+            body.extend(key);
+            if action == 2 {
+                break;
+            }
+        }
+        let mut key = vec![EPATHMAP];
+        prost::encoding::encode_varint(body.len() as u64, &mut key);
+        key.extend(body);
+        if action == 2 {
+            key.extend_from_slice(&[0x19, 0xe3, 0xff]);
+        }
+        let mut actual = CanonicalPathTopologyAdmission::new();
+        let mut expected = EagerCanonicalPathTopologyAdmission::new();
+        for round in 0..2 {
+            let floor = actual.reducer.machine.next_obligation;
+            let mut births = Vec::new();
+            let mut completed = 0;
+            for (offset, byte) in key.iter().copied().enumerate() {
+                let located = LocatedPathByte::in_source(byte, 71 + round, 503 + offset * 11);
+                let transition = actual.edge(located);
+                assert_eq!(transition, expected.edge(located));
+                if let Ok(CanonicalPathTransition::ObligationStarted(obligation)) = transition {
+                    assert!(obligation.id.0 >= floor);
+                    assert!(!births.contains(&obligation.id));
+                    births.push(obligation.id);
+                }
+                if let Some(payload) = actual.freeze_completed_obligation().unwrap() {
+                    let reference = expected.freeze_completed_obligation().unwrap().unwrap();
+                    assert_eq!(payload.obligation, reference.obligation);
+                    assert_eq!(payload.payload_end, reference.payload_end);
+                    assert_eq!(
+                        payload.payload.located_bytes().collect::<Vec<_>>(),
+                        reference.payload.located_bytes().collect::<Vec<_>>()
+                    );
+                    let undo = actual.restore.clone();
+                    let before = actual.current;
+                    if action == 1 {
+                        assert_eq!(
+                            actual.reject_obligation(payload.obligation.id, source(709)),
+                            expected.reject_obligation(payload.obligation.id, source(709))
+                        );
+                    } else {
+                        let resolution = CanonicalPathObligationResolution::NestedEpm1 {
+                            mode: NestedEpmMode::Map,
+                            entries_stable: true,
+                        };
+                        assert_eq!(
+                            actual.resolve_obligation(payload.obligation.id, resolution),
+                            expected.resolve_obligation(payload.obligation.id, resolution)
+                        );
+                    }
+                    assert_eq!(actual.restore, undo);
+                    assert_eq!(actual.current.bytes, before.bytes);
+                    assert_ne!(actual.current.state, before.state);
+                    completed += 1;
+                }
+                assert_focused_persistent_matches(
+                    &expected.reducer,
+                    &expected.arena,
+                    expected.current,
+                    &actual.reducer,
+                    &actual.arena,
+                    actual.current,
+                );
+            }
+            assert_eq!(births.len(), if action == 0 { 2 } else { 1 });
+            assert_eq!(completed, match action {
+                0 => 2,
+                1 => 1,
+                _ => 0,
+            });
+            let clock = actual.reducer.machine.next_obligation;
+            assert!(clock > floor);
+            for _ in 0..key.len() {
+                assert_eq!(actual.leave(source(711)), expected.leave(source(711)));
+                assert_eq!(actual.reducer.machine.next_obligation, clock);
+                assert_focused_persistent_matches(
+                    &expected.reducer,
+                    &expected.arena,
+                    expected.current,
+                    &actual.reducer,
+                    &actual.arena,
+                    actual.current,
+                );
+            }
+            assert_eq!(actual.current.bytes.len(), 0);
+            assert!(actual.restore.is_empty());
+        }
+        assert_eq!(actual.leave(source(713)), expected.leave(source(713)));
+        assert_eq!(actual.finish(source(715)), expected.finish(source(715)));
     }
 }

@@ -8514,6 +8514,92 @@ Its proof must distinguish exact located-byte prefixes from raw arena descriptor
 identity across page boundaries. These remain required proof/implementation
 work; neither task 6018 nor the ACT/LMDB comparison is complete.
 
+### J-120 — 2026-09-10: compress scalar undo into exact predecessor runs
+
+**DECISION.** Following J-119 checkpoint reuse, topology admission now stores one
+`CanonicalPathRestoreRun` per maximal adjacent group of saved predecessor state
+IDs. Each run holds its latest predecessor and first logical depth. A successful
+edge extends the latest matching run or appends a singleton. A leave returns the
+latest predecessor, then removes its singleton run or shortens its remaining byte
+view once. The parser, grammar, private operations and event ordering are unchanged.
+
+**DERIVED contract.** The existing topology invariant makes each prior saved
+handle the exact located prefix one byte shorter. Therefore the same checkpoint
+address plus that prefix preserves every selected graph, byte, source and phase.
+Raw arena descriptor identity is not the contract: page/freeze boundaries can
+give equal prefixes different descriptor roots. Full state-ID equality is still
+required, and divergent located contents are never equated. Error-returning
+edges publish nothing; successful private resolution/rejection changes the
+current checkpoint while preserving bytes and undo history. Root leave,
+underflow and pending-error priority remain unchanged.
+
+**Formal-first qualification.** `CompressedScalarUndo` adds 23 exported checks:
+checked prefix interpretation, scalar expansion/push/pop, historical validity,
+topology/private/error behavior, unchanged stores and clock, bounded restore
+work, and maximal adjacent-state grouping. All 260 assumption checks close;
+independent kernel checking passes before activation. The formal README binds
+every exported invariant to executable controls. Its fixed source interpretation
+uses the existing arena/window-growth preservation contract; it does not prove
+a new mutable arena implementation or equate raw descriptors.
+
+**Negative and positive controls.** Before activation, the maximal-run test
+fails at four scalar undo records versus three required runs. A separate long-run
+control already passes against scalar undo: successful resolution followed by
+more topology, rejection, malformed owner boundaries with ignored bytes, complete
+unwind, and fresh obligation births on a second traversal. The activated tests
+also cover every prefix across multiple page boundaries, held frozen pages,
+divergent siblings, pending/wrong-ID refusal, exact root behavior and retained
+payload survival. Every leave preserves arena counters and the obligation clock;
+representative leaves compare complete checkpoint, frame and owner stores.
+
+The first activated frame suite reports 30 passed and one failed. The shared
+oracle compares a completed payload's raw descriptor (`root 0` versus `root 1`)
+after deliberate arena-layout divergence. Its cross-arena comparison now retains
+the complete located payload and metadata instead. Graph comparison extracts
+each ordered `Region.previous` located span alongside all normalized frame/link
+fields, preserving absent versus present-empty spans. Same-arena physical-store
+checks remain exact. A new sensitivity control rejects changed bytes, source IDs,
+offsets and span presence while accepting equal contents in different layouts.
+Independent read-only review confirms those distinctions remain covered. The
+intermediate 31-test frame suite then passes; final qualification includes the
+additional oracle sensitivity control.
+
+**MEASURED qualification.** The complete model library passes **425 tests, zero
+failed and zero ignored**, in 52.40 s; service time including compilation is
+84.962 s, peak 1.5G, zero swap. The integrated gate passes **122 focused model
+tests and six ACT transport tests**, three kernel checks, and the positive
+compiler control plus eight exact compiler-error controls. Its 188.950 s and
+47.2M launcher peak exclude separately bounded child scopes. Full proof compilation
+takes 34.454 s, peak 1G; kernel checking takes 20.569 s, peak 471.6M, both zero
+swap. Proof limits are High1G/Max2G/CPU100; Rust limits are High4G/Max6G/CPU400,
+four build/test workers and zero swap. Durable logs under `target/verification/`
+include `epathmap-compressed-undo-{proof,kernel}-final.log`,
+`epathmap-restore-runs-negative-20260910.log`,
+`epathmap-restore-private-control-20260910.log`,
+`epathmap-compressed-undo-frame-tests-20260910.log` (the descriptor mismatch),
+`epathmap-compressed-undo-frame-final-20260910.log`,
+`epathmap-compressed-undo-full-models-20260910.log`, and
+`epathmap-compressed-undo-integrated-20260910.log`.
+
+The full-library log SHA-256 is
+`3898691fcdd4c68457bc82360af30cbce0ecf08ad57186f6ab238e6aa1d40ecf`;
+the formal source is
+`1996a46ccad5257c552421950fecbdfd9cb72b59a79e6a18ddd7bbc232524b5e`.
+
+**Resource interpretation.** Undo examines one run and takes at most one
+constant-size prefix slice, without allocating checkpoint/frame/owner/byte-arena
+storage. Native vector growth on publication is amortized, not worst-case constant.
+Run records add one native depth word, so singleton-heavy histories pay a larger
+per-record constant; capacity is retained during unwind. The resource observer
+now measures the actual run size. Exact record-count assertions establish the
+compression mechanism, not a whole-import latency, allocation-profile or RSS
+speedup. No new benchmark is claimed by this qualification entry.
+
+Source-backed byte composition, joint ACT/EPM1 transport, full-import slope
+closure and the production ACT/LMDB comparison remain required. This change
+introduces no codec, consensus/hash/metering alteration, PathMap fork, dependency,
+recursive traversal or depth cap.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

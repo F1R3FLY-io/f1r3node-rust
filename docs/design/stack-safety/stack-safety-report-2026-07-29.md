@@ -10615,6 +10615,36 @@ stack measurement or ACT/LMDB comparison was performed for this refinement.
 See [J-119](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-119--2026-09-10-reuse-immutable-payload-checkpoints-without-changing-historical-observations)
 for proof bindings, negative evidence, logs, hashes and remaining requirements.
 
+#### 5.33.38 Run-compressed persistent topology undo (2026-09-10)
+
+The undo list now retains one run per maximal adjacent group of predecessor
+checkpoint IDs. One leave returns the latest predecessor and performs at most
+one checked prefix slice; it does not allocate checkpoint, frame, owner or byte
+storage. Exact located prefixes and state IDs are preserved across page/freeze
+boundaries and divergent continuations, without requiring arena-local descriptor
+identity. Private resolution, rejection, saved faults and globally fresh
+obligation IDs retain the scalar reference behavior.
+
+Twenty-three new formal checks precede activation; all 260 assumption reports
+close and kernel checking passes. The final model library passes **425/425**,
+with no ignored tests. The integrated gate passes **122 model tests and six ACT
+tests**, three kernel checks and the positive/eight negative compiler controls.
+New controls cover maximal runs, long private/fault/backtracking traces, physical
+store and clock preservation, and cross-arena oracle sensitivity. The first
+30-pass/one-failure run exposed a test-only raw descriptor comparison; exact
+located payloads and all metadata replace it, not a relaxed semantic assertion.
+
+The full model service takes 84.962 s including compilation (52.40 s tests),
+peak 1.5G and zero swap. The integrated launcher's 47.2M peak excludes child
+scopes; proof/Rust hard ceilings remain 2G/6G with zero swap. A run adds one
+native depth word, so singleton histories use larger records while repeated-state
+payloads retain fewer records. Vector growth is amortized and capacity remains
+retained during unwind. These operation/storage invariants do not establish a
+whole-import timing or RSS improvement; shared source composition and joint ACT
+transport remain required. See
+[J-120](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-120--2026-09-10-compress-scalar-undo-into-exact-predecessor-runs)
+for complete proof bindings, negative evidence and qualification limits.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

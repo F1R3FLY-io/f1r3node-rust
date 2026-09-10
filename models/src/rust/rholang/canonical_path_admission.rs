@@ -3109,11 +3109,17 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CanonicalPathRestoreRun {
+    latest: CanonicalPathReducerHandle,
+    first_depth: usize,
+}
+
 pub(crate) struct CanonicalPathTopologyAdmission {
     reducer: CanonicalPathReducer,
     arena: CanonicalBytesArena,
     current: CanonicalPathReducerHandle,
-    restore: Vec<CanonicalPathReducerHandle>,
+    restore: Vec<CanonicalPathRestoreRun>,
     root_left: bool,
 }
 
@@ -3143,7 +3149,7 @@ impl CanonicalPathTopologyAdmission {
         (
             self.reducer.retained_state_bytes(),
             self.reducer.retained_frame_bytes(),
-            self.restore.capacity() * std::mem::size_of::<CanonicalPathReducerHandle>(),
+            self.restore.capacity() * std::mem::size_of::<CanonicalPathRestoreRun>(),
             self.reducer.machine.owner_work.get(),
         )
     }
@@ -3178,7 +3184,19 @@ impl CanonicalPathTopologyAdmission {
                 CanonicalByteProvenance::new(byte.source.source, byte.source.offset),
             ),
         )?;
-        self.restore.push(previous);
+        match self.restore.last_mut() {
+            Some(run) if run.latest.state == previous.state => {
+                debug_assert_eq!(
+                    previous.bytes.len().checked_sub(1),
+                    Some(run.latest.bytes.len()),
+                );
+                run.latest = previous;
+            }
+            _ => self.restore.push(CanonicalPathRestoreRun {
+                latest: previous,
+                first_depth: previous.bytes.len(),
+            }),
+        }
         self.current = current;
         Ok(transition)
     }
@@ -3187,7 +3205,17 @@ impl CanonicalPathTopologyAdmission {
         &mut self,
         source: CanonicalPathSource,
     ) -> Result<CanonicalPathTransition, CanonicalPathAdmissionError> {
-        if let Some(previous) = self.restore.pop() {
+        if let Some(run) = self.restore.last_mut() {
+            let previous = run.latest;
+            if previous.bytes.len() == run.first_depth {
+                self.restore.pop();
+            } else {
+                debug_assert!(run.first_depth < previous.bytes.len());
+                run.latest.bytes = self
+                    .arena
+                    .slice(previous.bytes, 0..previous.bytes.len() - 1)
+                    .expect("a nonsingleton restore run retains its strict predecessor prefix");
+            }
             self.current = previous;
             return Ok(CanonicalPathTransition::Restored {
                 active_obligation: self.active_obligation(),

@@ -2425,3 +2425,78 @@ nested-prefix/fork differential comprise three new tests, bringing the
 frame-storage gate to 29. The shared stream/persistent trace helper retains all
 semantic comparisons but treats persistent allocations as an upper bound;
 accepted interior steps have a separate exact zero-allocation assertion.
+
+#### Compressed scalar undo: preimplementation binding catalogue (2026-09-10)
+
+The planned `CompressedScalarUndo` refinement retains one run descriptor for
+consecutive saved predecessors that share a checkpoint address. A descriptor
+contains the latest predecessor handle and its first logical depth. The existing
+topology protocol guarantees that each earlier predecessor is the exact located
+prefix one byte shorter. A successful edge extends or creates the latest run;
+one leave returns its latest predecessor and either removes a singleton run or
+shortens its byte view once. Private resolution changes the current checkpoint
+without changing its bytes or saved undo history.
+
+The ghost expansion is an ordinary scalar undo list of checkpoint addresses and
+located-byte sequences. Native code must not construct that expansion. Equal
+located-byte prefixes can have different arena descriptor roots across page
+boundaries; observation equivalence therefore includes the exact checkpoint
+address, logical length and every byte/provenance pair, not raw descriptor
+identity. Different sibling contents remain different observations. Window
+interpretation is parameterized by stable source roots: preservation when the
+concrete arena grows remains a prerequisite supplied by the existing arena
+contract and its historical/frozen-source tests, not a new result of this undo
+model.
+
+This catalogue is the required executable binding before runtime activation.
+All names below have prefix `CompressedScalarUndo.`; final proof qualification
+and any additional exported invariants must be recorded before activation.
+
+| Model invariant | Required executable binding |
+|---|---|
+| `strict_shortening_is_the_existing_checked_source_window` | Page-crossing and frozen-page undo uses checked prefix slicing with exact source provenance and no arena mutation. |
+| `zero_prefix_normalization_is_observational` | Final predecessor restores the empty byte sequence, regardless of internal empty-span normalization. |
+| `compressed_emptiness_is_exact` | Compare compressed and scalar history emptiness after every edge and leave. |
+| `remembering_refines_exact_scalar_predecessor_push` | Independent scalar `Vec<Handle>` oracle records the previous handle; compare maximal run count and all subsequently restored observations. |
+| `popping_refines_exact_scalar_head_and_tail` | Every leave returns the scalar oracle's exact state ID and located bytes; remaining history has the corresponding run count. |
+| `every_compressed_historical_prefix_is_a_valid_located_handle` | Retain old handles and frozen payloads while appending and branching across page boundaries; all remain readable. |
+| `successful_edge_preserves_scalar_topology` | Append through healthy and malformed nested topology, comparing every transition and semantic graph with the independent eager parser. |
+| `successful_leave_preserves_scalar_topology` | Partially unwind, append divergent siblings, then unwind again; compare all prefixes and graph phases. |
+| `byte_preserving_private_operations_preserve_the_exact_undo_topology` | Successful resolve/reject preserves complete restore records and current bytes while publishing a new checkpoint; later edges and backtracking remain exact. |
+| `exact_state_and_located_bytes_preserve_every_selected_graph_and_query` | Compare active, pending, value, error-source, frozen-payload and hidden failed-state observations, not descriptor equality. |
+| `compressed_pop_is_the_exact_existing_scalar_world_transition` | Compare every popped predecessor and semantic graph with the eager topology's scalar history. |
+| `restoring_never_changes_any_checkpoint_frame_owner_or_obligation_clock` | Check unchanged parser statistics, arena counters and clock at every leave; compare complete stores at representative page boundaries. |
+| `compressed_topology_depth_and_empty_root_are_exact` | Unwind exactly the successful-edge count to depth zero, then verify first root leave and repeated underflow. |
+| `compression_preserves_root_leave_underflow_and_finish_error_priority` | Preserve pending-obligation error priority, incomplete topology, exact source and root-leave behavior. |
+| `returned_edge_error_preserves_its_exact_source_stores_current_and_history` | Pending-edge refusal preserves the complete current handle, stores and restore records; compare the exact error kind and physical source. |
+| `successful_edges_publish_exactly_the_previous_not_the_returned_state` | Final payload edges save their interior predecessor even when the returned state is pending; private-operation successor checkpoints delimit later runs. |
+| `root_left_refuses_an_edge_without_touching_stores_current_or_history` | Edge-after-root-leave returns the existing source-specific error with unchanged stores, state and history. |
+| `a_pop_inspects_one_run_and_performs_exactly_zero_or_one_prefix_slice` | Inspect the native leave implementation for one top-record access and at most one constant-size slice; verify zero arena/checkpoint allocation. |
+| `remembering_touches_only_the_latest_run_and_adds_at_most_one_record` | Per-edge compressed record growth is zero or one; no expansion, replay or ancestor walk enters publication. |
+| `a_nonsingleton_run_has_a_safe_strict_predecessor` | Every nonterminal run pop uses a nonzero depth and remains above its first depth; native arithmetic cannot underflow. |
+| `every_run_is_a_nonempty_block_of_one_exact_state` | Scalar undo oracle groups maximal adjacent equal state IDs; each corresponding native record represents at least one predecessor. |
+| `remembering_preserves_maximal_adjacent_state_runs` | After every original or divergent edge, compare actual record count with the scalar oracle's exact adjacent-state group count. |
+| `popping_preserves_maximal_adjacent_state_runs` | After every partial or complete unwind, compare the remaining maximal run count and exact restored observations. |
+
+The exact maximal-run invariant requires that nonempty runs contain one
+state ID, adjacent runs have distinct IDs, and remember/pop preserve that
+property. The independent scalar-history test counts adjacent state-ID groups
+directly. Its preactivation failure (four scalar records versus three runs)
+demonstrates that it detects the missing compression; it is not passing runtime
+evidence. Source-region composition and the complete ACT transaction remain
+separate work. Run descriptors add one native depth word compared with a scalar
+handle; singleton-heavy histories therefore have a larger per-record constant.
+Maximal predecessor runs remove the per-byte factor only where state IDs repeat.
+Native vector growth remains amortized allocation, and vector capacity remains
+retained during unwind. Retained-storage reporting must use the actual run
+descriptor size rather than the old scalar-handle size.
+
+Runtime qualification is now recorded in journal J-120: 260 closed assumption
+checks and independent kernel checking precede activation. All 425 model-library
+tests pass, and the integrated gate passes 122 focused model tests plus six ACT
+tests. The frame-storage subset has 32 tests, including maximal-run, long
+private/fault/backtracking and located-span oracle controls. The preactivation
+run-count failure and the activated oracle's raw-descriptor mismatch remain in
+the evidence record. Cross-arena equality now compares all located payloads,
+metadata and normalized graph fields; physical same-arena preservation remains
+an exact separate assertion.
