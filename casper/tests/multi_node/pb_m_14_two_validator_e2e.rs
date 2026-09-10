@@ -220,7 +220,7 @@ async fn pb_m_14_two_validator_wal_and_file_byte_identity() {
 new rl(`rho:registry:lookup`), fsCh, ackCh in {{
   rl!(`{fs_uri}`, *fsCh) |
   for (@(_, fs) <- fsCh) {{
-    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
       for (@reply <- @file!?("writeByteArray", "{payload_hex}".hexToBytes())) {{
         ackCh!(reply)
       }}
@@ -376,7 +376,16 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 async fn pb_m_14_leader_pending_wal_slice_publishes_consensus_write() {
     let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
     let stage_file = stage_dir.path().join("target");
-    std::fs::write(&stage_file, b"").expect("seed empty file at stage source");
+    // Seed with PAYLOAD (not empty) so the fs_stat that openFileImpl runs
+    // pre-fs_open reports a stable size on both the block-creation and
+    // block-validation state_bound recomputations.  On single-validator
+    // TestNode, both re-executions run against the same on-disk file: an
+    // initial b"" seed would make create-side stat see size=0 and
+    // validate-side stat see size=PAYLOAD.len() (the write happened
+    // between them), producing divergent Stat WAL entries and an
+    // InvalidTransaction reject.  Multi-validator networks avoid this
+    // naturally because create + validate run on different disks.
+    std::fs::write(&stage_file, PAYLOAD).expect("seed stage source with PAYLOAD");
     let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
 
     let entry = BundleEntry::try_new(
@@ -422,7 +431,7 @@ async fn pb_m_14_leader_pending_wal_slice_publishes_consensus_write() {
 new rl(`rho:registry:lookup`), fsCh, ackCh in {{
   rl!(`{fs_uri}`, *fsCh) |
   for (@(_, fs) <- fsCh) {{
-    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
       for (@reply <- @file!?("writeByteArray", "{payload_hex}".hexToBytes())) {{
         ackCh!(reply)
       }}
@@ -624,7 +633,7 @@ async fn pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay() {
 new rl(`rho:registry:lookup`), fsCh, ackCh in {{
   rl!(`{fs_uri}`, *fsCh) |
   for (@(_, fs) <- fsCh) {{
-    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
       for (@reply <- @file!?("writeByteArray", "{payload_hex}".hexToBytes())) {{
         ackCh!(reply)
       }}
@@ -941,7 +950,7 @@ async fn pb_m_14_pseudo_joiner_boots_via_peer_fetch_tier() {
 new rl(`rho:registry:lookup`), fsCh, ackCh in {{
   rl!(`{fs_uri}`, *fsCh) |
   for (@(_, fs) <- fsCh) {{
-    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
       for (@reply <- @file!?("writeByteArray", "{payload_hex}".hexToBytes())) {{
         ackCh!(reply)
       }}
@@ -1283,7 +1292,7 @@ async fn pb_m_14_divergent_follower_read_causes_block_rejection() {
 new rl(`rho:registry:lookup`), fsCh, ackCh in {{
   rl!(`{fs_uri}`, *fsCh) |
   for (@(_, fs) <- fsCh) {{
-    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
       for (@reply <- @file!?("readN", {n})) {{
         ackCh!(reply)
       }}
@@ -1478,7 +1487,7 @@ async fn pb_m_14_divergent_follower_write_then_read_causes_block_rejection() {
 new rl(`rho:registry:lookup`), fsCh, ackCh in {{
   rl!(`{fs_uri}`, *fsCh) |
   for (@(_, fs) <- fsCh) {{
-    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
       for (@[true, _n] <- @file!?("writeByteArray", "{payload_hex}".hexToBytes())) {{
         for (@reply <- @file!?("readN", {n})) {{
           ackCh!(reply)
