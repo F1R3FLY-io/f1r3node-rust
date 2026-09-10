@@ -780,6 +780,40 @@ impl CanonicalPathReducer {
         candidate
     }
 
+    fn reusable_payload(
+        &self,
+        state: &PersistentFocusedPath,
+        next_stamp: usize,
+    ) -> Option<CanonicalPathObligationId> {
+        if state.fault.is_some()
+            || state.current.status != PathStatus::Open
+            || state.stamp.checked_add(1)? != next_stamp
+        {
+            return None;
+        }
+        let Frame::Obligation {
+            obligation,
+            status: ObligationStatus::Payload,
+            payload_start,
+            ..
+        } = &self.machine.frames.slots[state.current.stack?.0]
+        else {
+            return None;
+        };
+        if ObligationStatus::Payload.remaining(
+            obligation.payload_len,
+            *payload_start,
+            state.stamp,
+        )? <= 1
+            || state.owners.is_some_and(|root| {
+                next_stamp as u128 >= self.owners.entries[root.0].all_boundary.end
+            })
+        {
+            return None;
+        }
+        Some(obligation.id)
+    }
+
     pub(crate) fn edge(
         &mut self,
         arena: &mut CanonicalBytesArena,
@@ -806,6 +840,19 @@ impl CanonicalPathReducer {
         self.machine.stats.edges += 1;
         self.machine.stats.max_topology_depth =
             self.machine.stats.max_topology_depth.max(bytes.len());
+        if let Some(id) = self.reusable_payload(&before, bytes.len()) {
+            return Ok((
+                CanonicalPathReducerHandle {
+                    state: handle.state,
+                    bytes,
+                },
+                CanonicalPathTransition::ObligationByte {
+                    id,
+                    byte,
+                    last: false,
+                },
+            ));
+        }
         let (state, event) = if dead {
             (before, CanonicalPathTransition::Continue)
         } else {

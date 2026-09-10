@@ -7606,3 +7606,212 @@ Print Assumptions wrong_id_private_operations_return_the_hidden_source_without_m
 Print Assumptions matching_payload_resolve_is_nonmutating_while_reject_preflight_passes.
 
 End AbsolutePayloadCheckpointBoundary.
+
+Module PersistentOpaqueStateReuse.
+
+Import CanonicalKeyProtocol.
+
+Definition before_cache position (cache : PersistentFocusedOwners.boundary_handle) :=
+  match cache with None => true | Some (ending, _) => position <? ending end.
+
+Lemma before_chosen_boundary position bound address previous :
+  before_cache position (PersistentFocusedOwners.choose_boundary false bound address previous) = true <->
+  position < bound /\ before_cache position previous = true.
+Proof.
+  destruct previous as [[ending target]|]; unfold PersistentFocusedOwners.choose_boundary, before_cache; cbn -[Nat.ltb].
+  - destruct (bound <? ending) eqn:choice;
+      rewrite !Nat.ltb_lt; apply Nat.ltb_lt in choice || apply Nat.ltb_ge in choice; lia.
+  - rewrite Nat.ltb_lt. tauto.
+Qed.
+
+Lemma reference_cache_checks_every_held_bound position entries :
+  before_cache position (PersistentFocusedOwners.reference_all entries) = true <->
+  Forall (fun entry => position < FocusedRegionOwners.owner_bound (PersistentFocusedOwners.cell_owner (snd entry))) entries.
+Proof.
+  induction entries as [|[address cell] rest IH]; cbn [PersistentFocusedOwners.reference_all].
+  - split; intro valid; [constructor|reflexivity].
+  - rewrite before_chosen_boundary, IH, Forall_cons_iff. reflexivity.
+Qed.
+
+Section Refinement.
+Context {Span : Type}.
+Variable observe_span : Span -> option (list located_byte).
+Variable summarize_frame : @PersistentFrameRealization.stored_frame Span -> ReusableFrameOwnership.frame_metadata.
+
+Theorem checked_linked_cache_implies_every_typed_owner_is_strict
+    arena root entries owners stamp width :
+  PersistentFocusedOwners.linked arena root entries ->
+  PersistentOwnerProjection.owners_match observe_span summarize_frame owners entries ->
+  Forall (fun owner => FocusedRegionOwners.path_status_value (PersistentFrameRealization.held_metadata owner) = FocusedRegionOwners.OpenPath) owners ->
+  before_cache (stamp + width) (PersistentFocusedOwners.read_all arena root) = true ->
+  Forall (AbsolutePayloadRealization.strict_owner stamp width) owners.
+Proof.
+  intros linked matches open checked.
+  rewrite (proj1 (PersistentFocusedOwners.cached_linked_reads_refine_exact_list_selection linked)) in checked.
+  apply reference_cache_checks_every_held_bound in checked.
+  clear linked. revert open checked.
+  induction matches as [|owner [address cell] owners entries projected matches IH].
+  - intros. constructor.
+  - intros open checked. inversion open as [|? ? head_open tail_open]; subst.
+    inversion checked as [|? ? head_bound tail_bound]; subst.
+    constructor; [|now apply IH].
+    pose proof (@PersistentOwnerProjection.projected_owner_preserves_exact_scheduler_fields
+      Span observe_span summarize_frame owner (PersistentFocusedOwners.cell_owner cell) projected)
+      as [region [path fields]].
+    unfold FocusedRegionOwners.owner_bound in head_bound. cbn in head_bound, region, path.
+    rewrite region, path in head_bound.
+    unfold AbsolutePayloadRealization.strict_owner. split; [exact head_open|].
+    split; eapply Nat.lt_le_trans; [exact head_bound|apply Nat.le_min_l|
+      exact head_bound|apply Nat.le_min_r].
+Qed.
+
+Definition checked_interior arena root limit available stamp width (current : @AbsolutePayloadRealization.checkpoint Span) :=
+  match AbsolutePayloadRealization.checkpoint_fault current,
+      FocusedRegionOwners.path_status_value (AbsolutePayloadRealization.leaf_metadata (AbsolutePayloadRealization.checkpoint_leaf current)),
+      AbsolutePayloadRealization.leaf_phase (AbsolutePayloadRealization.checkpoint_leaf current) with
+  | None, FocusedRegionOwners.OpenPath, AbsolutePayloadRealization.PayloadMarker =>
+      (AbsolutePayloadRealization.leaf_payload_start (AbsolutePayloadRealization.checkpoint_leaf current) <=? stamp) &&
+      (width <? PersistentFrameRealization.obligation_payload_len (AbsolutePayloadRealization.leaf_obligation (AbsolutePayloadRealization.checkpoint_leaf current)) -
+        (stamp - AbsolutePayloadRealization.leaf_payload_start (AbsolutePayloadRealization.checkpoint_leaf current))) &&
+      (0 <? width) && (width <=? available) && (stamp + width <=? limit) &&
+      before_cache (stamp + width) (PersistentFocusedOwners.read_all arena root)
+  | _, _, _ => false
+  end.
+
+Theorem checked_native_guard_realizes_the_existing_strict_absolute_window
+    arena root entries limit available stamp width current :
+  PersistentFocusedOwners.linked arena root entries ->
+  PersistentOwnerProjection.owners_match observe_span summarize_frame (AbsolutePayloadRealization.checkpoint_owners current) entries ->
+  Forall (fun owner => FocusedRegionOwners.path_status_value (PersistentFrameRealization.held_metadata owner) = FocusedRegionOwners.OpenPath)
+    (AbsolutePayloadRealization.checkpoint_owners current) ->
+  checked_interior arena root limit available stamp width current = true ->
+  AbsolutePayloadRealization.checkpoint_fault current = None /\ 0 < width /\ width <= available /\
+  stamp + width <= limit /\
+  AbsolutePayloadRealization.strict_window stamp width (AbsolutePayloadRealization.checkpoint_leaf current) (AbsolutePayloadRealization.checkpoint_owners current).
+Proof.
+  intros linked matches open checked.
+  unfold checked_interior in checked.
+  destruct (AbsolutePayloadRealization.checkpoint_fault current) eqn:fault; [discriminate|].
+  destruct (FocusedRegionOwners.path_status_value (AbsolutePayloadRealization.leaf_metadata (AbsolutePayloadRealization.checkpoint_leaf current))) eqn:live;
+    try discriminate.
+  destruct (AbsolutePayloadRealization.leaf_phase (AbsolutePayloadRealization.checkpoint_leaf current)) eqn:phase; [|discriminate].
+  rewrite !andb_true_iff, !Nat.leb_le, !Nat.ltb_lt in checked.
+  destruct checked as [[[[[started payload] positive] source] native] owners].
+  split; [reflexivity|]. split; [exact positive|]. split; [exact source|].
+  split; [exact native|]. unfold AbsolutePayloadRealization.strict_window.
+  split; [exact phase|]. split; [exact live|]. split; [exact started|].
+  split; [unfold AbsolutePayloadRealization.payload_end; lia|].
+  eapply checked_linked_cache_implies_every_typed_owner_is_strict; eauto.
+Qed.
+
+Theorem guarded_state_reuse_refines_every_located_prefix
+    arena root entries limit available stamp input current prefix :
+  PersistentFocusedOwners.linked arena root entries ->
+  PersistentOwnerProjection.owners_match observe_span summarize_frame (AbsolutePayloadRealization.checkpoint_owners current) entries ->
+  Forall (fun owner => FocusedRegionOwners.path_status_value (PersistentFrameRealization.held_metadata owner) = FocusedRegionOwners.OpenPath)
+    (AbsolutePayloadRealization.checkpoint_owners current) ->
+  checked_interior arena root limit available stamp (length input) current = true ->
+  prefix <= length input ->
+  AbsolutePayloadRealization.strict_scalar_run (firstn prefix input) (AbsolutePayloadRealization.selected_graph current stamp)
+    (AbsolutePayloadRealization.selected_graph current (stamp + prefix))
+    (map (fun byte => StrictOpaqueInterior.PayloadByte
+      (PersistentFrameRealization.obligation_id (AbsolutePayloadRealization.leaf_obligation (AbsolutePayloadRealization.checkpoint_leaf current))) byte false)
+      (firstn prefix input)).
+Proof.
+  intros linked matches open checked within.
+  destruct (@checked_native_guard_realizes_the_existing_strict_absolute_window
+    arena root entries limit available stamp (length input) current linked matches open checked)
+    as [fault [_ [_ [_ strict]]]].
+  assert (live : FocusedRegionOwners.path_status_value (AbsolutePayloadRealization.leaf_metadata (AbsolutePayloadRealization.checkpoint_leaf current)) = FocusedRegionOwners.OpenPath)
+    by exact (proj1 (proj2 strict)).
+  rewrite !AbsolutePayloadRealization.live_absolute_checkpoint_uses_the_selected_byte_prefix by assumption.
+  unfold AbsolutePayloadRealization.graph_at. rewrite fault.
+  assert (size : length (firstn prefix input) = prefix) by (rewrite length_firstn, Nat.min_l; auto).
+  replace (stamp + prefix) with (stamp + length (firstn prefix input)) by now rewrite size.
+  apply AbsolutePayloadRealization.strict_absolute_window_refines_repeated_typed_scalar_payload_steps.
+  replace stamp with (stamp + 0) by lia.
+  eapply AbsolutePayloadRealization.strict_window_prefix; [exact strict|rewrite size; lia].
+Qed.
+
+Theorem guarded_scalar_reuses_the_physical_leaf_with_the_exact_scalar_event
+    arena root entries limit available stamp current fresh byte :
+  PersistentFocusedOwners.linked arena root entries ->
+  PersistentOwnerProjection.owners_match observe_span summarize_frame (AbsolutePayloadRealization.checkpoint_owners current) entries ->
+  Forall (fun owner => FocusedRegionOwners.path_status_value (PersistentFrameRealization.held_metadata owner) = FocusedRegionOwners.OpenPath)
+    (AbsolutePayloadRealization.checkpoint_owners current) ->
+  checked_interior arena root limit available stamp 1 current = true ->
+  AbsolutePayloadCheckpointBoundary.absolute_byte stamp fresh byte (AbsolutePayloadRealization.checkpoint_leaf current) =
+    Some (AbsolutePayloadRealization.checkpoint_leaf current,
+      AbsolutePayloadCheckpointBoundary.ObligationByte (PersistentFrameRealization.obligation_id (AbsolutePayloadRealization.leaf_obligation (AbsolutePayloadRealization.checkpoint_leaf current))) byte false).
+Proof.
+  intros linked matches open checked.
+  destruct (@checked_native_guard_realizes_the_existing_strict_absolute_window
+    arena root entries limit available stamp 1 current linked matches open checked)
+    as [_ [_ [_ [_ [phase [live [started [interior owners]]]]]]]].
+  apply (proj1 (@AbsolutePayloadCheckpointBoundary.nonfinal_scalar_retains_the_physical_leaf_and_refines_the_fresh_typed_frame
+    Span stamp fresh byte (AbsolutePayloadRealization.checkpoint_leaf current)
+    phase live started ltac:(lia))).
+Qed.
+
+End Refinement.
+
+Section Publication.
+Context {Span : Type}.
+
+Definition reuse_byte_handle (current : CompactPersistentCheckpoints.address * Span) (next_bytes : Span) := (fst current, next_bytes).
+
+Theorem reuse_keeps_the_exact_state_address_and_requires_the_full_byte_handle
+    (current : CompactPersistentCheckpoints.address * Span) next_bytes :
+  fst (reuse_byte_handle current next_bytes) = fst current /\
+  snd (reuse_byte_handle current next_bytes) = next_bytes /\
+  (reuse_byte_handle current next_bytes = current <-> next_bytes = snd current).
+Proof.
+  destruct current as [address bytes]. cbn.
+  split; [reflexivity|]. split; [reflexivity|].
+  split; intro same; [now inversion same|now subst].
+Qed.
+
+Definition scalar_world (current : @AbsolutePayloadCheckpointBoundary.world Span) byte :=
+  AbsolutePayloadCheckpointBoundary.World (AbsolutePayloadCheckpointBoundary.world_checkpoints current) (AbsolutePayloadCheckpointBoundary.world_frames current) (AbsolutePayloadCheckpointBoundary.world_owners current)
+    (AbsolutePayloadCheckpointBoundary.world_bytes current ++ [byte]) (AbsolutePayloadCheckpointBoundary.world_current current)
+    ((AbsolutePayloadCheckpointBoundary.world_current current, AbsolutePayloadCheckpointBoundary.world_bytes current) :: AbsolutePayloadCheckpointBoundary.world_restore current)
+    (AbsolutePayloadCheckpointBoundary.world_clock current).
+
+Theorem reused_scalar_publishes_only_the_byte_and_exact_restore_predecessor current byte :
+  AbsolutePayloadCheckpointBoundary.world_checkpoints (scalar_world current byte) = AbsolutePayloadCheckpointBoundary.world_checkpoints current /\
+  AbsolutePayloadCheckpointBoundary.world_frames (scalar_world current byte) = AbsolutePayloadCheckpointBoundary.world_frames current /\
+  AbsolutePayloadCheckpointBoundary.world_owners (scalar_world current byte) = AbsolutePayloadCheckpointBoundary.world_owners current /\
+  AbsolutePayloadCheckpointBoundary.world_clock (scalar_world current byte) = AbsolutePayloadCheckpointBoundary.world_clock current /\
+  AbsolutePayloadCheckpointBoundary.world_current (scalar_world current byte) = AbsolutePayloadCheckpointBoundary.world_current current /\
+  AbsolutePayloadCheckpointBoundary.world_bytes (scalar_world current byte) = AbsolutePayloadCheckpointBoundary.world_bytes current ++ [byte] /\
+  AbsolutePayloadCheckpointBoundary.world_restore (scalar_world current byte) =
+    (AbsolutePayloadCheckpointBoundary.world_current current, AbsolutePayloadCheckpointBoundary.world_bytes current) :: AbsolutePayloadCheckpointBoundary.world_restore current /\
+  forall address position,
+    AbsolutePayloadCheckpointBoundary.lookup (AbsolutePayloadCheckpointBoundary.world_checkpoints (scalar_world current byte)) address position =
+    AbsolutePayloadCheckpointBoundary.lookup (AbsolutePayloadCheckpointBoundary.world_checkpoints current) address position.
+Proof. repeat split; intros; reflexivity. Qed.
+
+Theorem every_reused_byte_handle_selects_the_existing_published_state
+    (stored : @AbsolutePayloadCheckpointBoundary.storage Span) current position :
+  let '(retained, address) := AbsolutePayloadCheckpointBoundary.publish stored current in
+  AbsolutePayloadCheckpointBoundary.lookup retained address position = Some (AbsolutePayloadCheckpointBoundary.retime position current) /\
+  AbsolutePayloadRealization.selected_graph (AbsolutePayloadCheckpointBoundary.retime position current) position = AbsolutePayloadRealization.selected_graph current position.
+Proof.
+  pose proof (AbsolutePayloadCheckpointBoundary.publication_returns_exact_fields_at_the_selected_byte_stamp stored current position) as found.
+  destruct (AbsolutePayloadCheckpointBoundary.publish stored current) as [retained address].
+  split; [exact found|].
+  exact (proj1 (proj2 (AbsolutePayloadCheckpointBoundary.retiming_preserves_selected_stamp_typed_graph_and_all_nonstamp_fields
+    current position position))).
+Qed.
+
+End Publication.
+
+Print Assumptions checked_linked_cache_implies_every_typed_owner_is_strict.
+Print Assumptions checked_native_guard_realizes_the_existing_strict_absolute_window.
+Print Assumptions guarded_state_reuse_refines_every_located_prefix.
+Print Assumptions guarded_scalar_reuses_the_physical_leaf_with_the_exact_scalar_event.
+Print Assumptions reuse_keeps_the_exact_state_address_and_requires_the_full_byte_handle.
+Print Assumptions reused_scalar_publishes_only_the_byte_and_exact_restore_predecessor.
+Print Assumptions every_reused_byte_handle_selects_the_existing_published_state.
+
+End PersistentOpaqueStateReuse.

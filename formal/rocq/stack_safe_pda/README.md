@@ -2379,3 +2379,49 @@ frames across nonfinal bytes and strict bulk interiors. The final 419-test model
 library and integrated 116-test admission gate pass, including all 26 frame-storage
 tests. This closes the scalar payload representation binding, not compressed
 restoration, full ACT transaction composition or whole-import resource bounds.
+
+#### Persistent opaque state reuse: native binding catalogue (2026-09-10)
+
+`PersistentOpaqueStateReuse` composes the checked linked-owner boundary cache
+with absolute payload realization. A nonfinal opaque byte does not change the
+physical grammar frame, owner chain, metadata or obligation clock. Consequently,
+the existing checkpoint address can select the advanced graph through its new
+byte handle. The full handle remains significant: two sibling byte histories
+can have the same state address, length and obligation ID but different content.
+
+The optimization is restricted to an unfaulted open payload with checked native
+arithmetic and an endpoint strictly before both the payload end and every held
+Region/path boundary. Equality at any boundary follows the existing scalar
+transition, preserving completion, refusal and exact physical provenance. The
+cache-to-owner theorem relies on the existing linked-owner projection and open
+owner representation invariants; it does not introduce an extra runtime flag.
+
+The seven exported invariants below all have prefix
+`PersistentOpaqueStateReuse.`. This catalogue specifies the executable binding
+before production activation; qualification is recorded separately.
+
+| Exported invariant | Executable binding |
+|---|---|
+| `checked_linked_cache_implies_every_typed_owner_is_strict` | Existing generated owner-capture/cache tests, plus malformed nested owner boundaries checked against the independent eager reducer. |
+| `checked_native_guard_realizes_the_existing_strict_absolute_window` | Generated native guard tests cover payload length, start/stamp arithmetic, explicit phase, status, fault and native overflow; boundary fixtures exclude equality and overrun at any owner. |
+| `guarded_state_reuse_refines_every_located_prefix` | Nested payload prefix and divergent-byte tests compare every retained semantic graph, exact located event and byte history with the independent countdown reference. |
+| `guarded_scalar_reuses_the_physical_leaf_with_the_exact_scalar_event` | Nonfinal bytes retain the state address and physical frame/owner counts; final bytes retain the existing explicit pending endpoint and event. |
+| `reuse_keeps_the_exact_state_address_and_requires_the_full_byte_handle` | Same-depth siblings share the checkpoint address but retain unequal full handles and unequal contents; all old handles remain readable. |
+| `reused_scalar_publishes_only_the_byte_and_exact_restore_predecessor` | Check unchanged checkpoint/frame/owner allocation and obligation clock; existing topology differential tests restore exact prior byte handles and phases after each leave. |
+| `every_reused_byte_handle_selects_the_existing_published_state` | Recheck all retained nested prefixes after subsequent appends and forks; existing direct/linked publication properties independently verify lookup and retiming. |
+
+This is a scalar checkpoint-allocation refinement, not a compressed restore
+implementation. The byte arena and topology restore list still retain scalar
+history. Source-region composition, joint ACT transactions and whole-import
+time/space bounds remain separate required work. In particular, proving that a
+record need not be copied is not a proof that the entire import is linear.
+
+The native binding is now qualified in journal J-119: 237 assumption checks
+close, independent kernel checking passes, all 422 model-library tests pass,
+and the integrated gate passes 119 focused model tests and six ACT transport
+tests. The preactivation unchanged-state-address regression fails as expected.
+The generated guard property, malformed-owner boundary fixture and complete
+nested-prefix/fork differential comprise three new tests, bringing the
+frame-storage gate to 29. The shared stream/persistent trace helper retains all
+semantic comparisons but treats persistent allocations as an upper bound;
+accepted interior steps have a separate exact zero-allocation assertion.

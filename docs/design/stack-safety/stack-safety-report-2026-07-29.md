@@ -10578,7 +10578,42 @@ service time was 20.457 s, peak 81.9M, zero swap. The peak includes fixture setu
 and is not an import-only memory figure. All raw samples, source/binary hashes,
 outliers and validity limits are retained in
 [J-118](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-118--2026-09-10-repeat-the-compact-import-ladder-after-immutable-payload-activation).
-State-ID reuse, compressed restore and source-window composition remain required.
+State-ID reuse, compressed restore and source-window composition remain required
+at that measurement checkpoint; the next subsection records scalar state-ID
+reuse qualification without claiming a new whole-import measurement.
+
+#### 5.33.37 Immutable checkpoint reuse inside opaque payloads (2026-09-10)
+
+The persistent reducer now retains the same checkpoint ID for nonfinal opaque
+bytes strictly before every payload and held-owner boundary. The selected byte
+handle supplies the graph stamp, so historical prefixes and divergent siblings
+remain distinct without copying unchanged parser metadata. Exact test counters
+require zero new checkpoint/frame/owner records and an unchanged obligation
+clock for these steps. Byte-history storage and the scalar undo list remain;
+this is not a constant-space or whole-import linearity claim.
+
+Seven new formal invariants compose native checked bounds, linked-owner cache
+selection, scalar events and persistent publication. All 237 assumption checks
+close and independent kernel checking passes before activation. Three new
+regression/property tests qualify the binding: nested historical prefixes and
+same-depth forks, native/phase/fault guard boundaries, and malformed enclosing
+Regions. The full model library passes **422/422**, with no ignored tests; the
+integrated gate passes **119 focused model tests and six ACT tests**, including
+three kernel checks and the positive/eight negative compiler controls.
+
+The initial full run's three failures were one obsolete shared expectation of
+a fresh checkpoint per successful operation. The helper now checks that physical
+allocation does not exceed that budget; byte/provenance, event, resolution and
+historical-graph comparisons are unchanged. Exact interior allocation assertions
+are separate. Both failed and final logs remain available.
+
+The final full run takes 52.57 s of tests, 104.781 s including compilation, with
+a reported 1.5G peak and zero swap. Rust commands use 4G/6G high/hard thresholds;
+proof commands use 1G/2G and zero swap. The gate launcher's 43.9M peak excludes
+its separately bounded children. No fresh benchmark, allocation profile, native
+stack measurement or ACT/LMDB comparison was performed for this refinement.
+See [J-119](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-119--2026-09-10-reuse-immutable-payload-checkpoints-without-changing-historical-observations)
+for proof bindings, negative evidence, logs, hashes and remaining requirements.
 
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 

@@ -384,7 +384,7 @@ fn assert_storage_trace(bytes: &[u8], raw_stable: bool, mode: NestedEpmMode, ent
             stream.value(true, endpoint)
         );
         let history_stats = history.stats();
-        assert_eq!(history_stats.states, successful + 1);
+        assert!((1..=successful + 1).contains(&history_stats.states));
         assert_eq!(stream.stats().states, 1);
         assert!(history_stats.frames >= stream.stats().frames);
         stream.assert_frame_invariants();

@@ -2121,6 +2121,225 @@ fn full_width_payload_lengths_keep_exact_residuals_and_historical_forks() {
     }
 }
 
+#[test]
+fn persistent_opaque_state_reuse_preserves_nested_prefixes_and_divergent_bytes() {
+    for depth in [0, 1, 8] {
+        for width in [0, 1, 2, 17, 129] {
+            let mut bytes = vec![EPATHMAP_MAP];
+            prost::encoding::encode_varint(width, &mut bytes);
+            bytes.resize(bytes.len() + width as usize, 0xa7);
+            for _ in 0..depth {
+                let mut body = Vec::new();
+                prost::encoding::encode_varint(bytes.len() as u64, &mut body);
+                body.extend_from_slice(&bytes);
+                bytes = vec![EPATHMAP];
+                prost::encoding::encode_varint(body.len() as u64, &mut bytes);
+                bytes.extend_from_slice(&body);
+            }
+            let mut reference = EagerCanonicalPathReducer::new();
+            let mut focused = CanonicalPathReducer::new();
+            let mut reference_arena = CanonicalBytesArena::new();
+            let mut arena = CanonicalBytesArena::new();
+            let mut expected = reference.root(&reference_arena);
+            let mut actual = focused.root(&arena);
+            let mut history = vec![(expected, actual)];
+            for (index, byte) in bytes.into_iter().enumerate() {
+                let interior = focused.active_obligation(actual).is_some_and(|progress| {
+                    !progress.awaiting_resolution && progress.remaining > 1
+                });
+                let saved = actual;
+                let allocation = (
+                    focused.states.len(),
+                    focused.machine.frames.slots.len(),
+                    focused.owners.entries.len(),
+                );
+                let clock = focused.machine.next_obligation;
+                let located = CanonicalLocatedByte::new(
+                    byte,
+                    CanonicalByteProvenance::new(31 + index as u32 % 3, 901 + index * 17),
+                );
+                let (left, a) = reference
+                    .edge(&mut reference_arena, expected, located)
+                    .unwrap();
+                let (right, b) = focused.edge(&mut arena, actual, located).unwrap();
+                expected = left;
+                actual = right;
+                assert_eq!(a, b);
+                if interior {
+                    assert_eq!(focused.machine.next_obligation, clock);
+                    assert_eq!(actual.state, saved.state);
+                    assert_ne!(actual.bytes, saved.bytes);
+                    assert_eq!(
+                        (
+                            focused.states.len(),
+                            focused.machine.frames.slots.len(),
+                            focused.owners.entries.len()
+                        ),
+                        allocation
+                    );
+                }
+                assert_focused_persistent_matches(
+                    &reference,
+                    &reference_arena,
+                    expected,
+                    &focused,
+                    &arena,
+                    actual,
+                );
+                history.push((expected, actual));
+            }
+            for (left, right) in history {
+                assert_focused_persistent_matches(
+                    &reference,
+                    &reference_arena,
+                    left,
+                    &focused,
+                    &arena,
+                    right,
+                );
+                let Some(progress) = focused.active_obligation(right) else {
+                    continue;
+                };
+                if progress.remaining <= 1 || progress.awaiting_resolution {
+                    continue;
+                }
+                let mut forks = Vec::new();
+                for byte in [0x19, 0xe3] {
+                    let located =
+                        CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(71, 997));
+                    let (expected, a) =
+                        reference.edge(&mut reference_arena, left, located).unwrap();
+                    let (actual, b) = focused.edge(&mut arena, right, located).unwrap();
+                    assert_eq!(a, b);
+                    assert_eq!(actual.state, right.state);
+                    assert_eq!(
+                        focused.active_obligation(actual).unwrap().obligation.id,
+                        progress.obligation.id
+                    );
+                    assert_focused_persistent_matches(
+                        &reference,
+                        &reference_arena,
+                        expected,
+                        &focused,
+                        &arena,
+                        actual,
+                    );
+                    forks.push(actual);
+                }
+                assert_eq!(forks[0].state, forks[1].state);
+                assert_eq!(forks[0].bytes.len(), forks[1].bytes.len());
+                assert_ne!(forks[0], forks[1]);
+                assert!(!arena.content_eq(forks[0].bytes, forks[1].bytes));
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn persistent_opaque_reuse_guard_matches_widened_native_boundaries(
+        start in prop_oneof![any::<usize>(), Just(0usize), Just(usize::MAX - 1), Just(usize::MAX)],
+        consumed in 0usize..32,
+        declared in prop_oneof![0u64..64, Just(u64::MAX)],
+    ) {
+        let stamp = start.wrapping_add(consumed);
+        for status in [PathStatus::Open, PathStatus::SplitComplete, PathStatus::Dead(error(7))] {
+            for fault in [None, Some(error(11))] {
+                for phase in [ObligationStatus::Payload,
+                    ObligationStatus::AwaitingResolution { payload_end: source(17) },
+                    ObligationStatus::Countdown { remaining: declared }] {
+                    let mut reducer = CanonicalPathReducer::new();
+                    let id = CanonicalPathObligationId(31);
+                    let top = reducer.machine.frames.push(Frame::Obligation {
+                        obligation: CanonicalPathObligation {
+                            id, kind: CanonicalPathObligationKind::NestedEpm1,
+                            payload_len: declared, tag_source: source(23),
+                        },
+                        status: phase, payload_start: start, next: None,
+                    });
+                    let mut current = InnerPath::new(true);
+                    current.stack = Some(top);
+                    current.status = status;
+                    let state = PersistentFocusedPath { current, owners: None, stamp, fault };
+                    let next = stamp.wrapping_add(1);
+                    let expected = fault.is_none() && status == PathStatus::Open
+                        && phase == ObligationStatus::Payload && stamp >= start
+                        && stamp != usize::MAX
+                        && (next as u128) < start as u128 + declared as u128;
+                    prop_assert_eq!(reducer.reusable_payload(&state, next), expected.then_some(id));
+                    prop_assert_eq!(reducer.reusable_payload(&state, stamp.wrapping_add(2)), None);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn persistent_opaque_reuse_excludes_every_malformed_owner_boundary() {
+    for depth in [1, 3, 8] {
+        for room in [0u8, 1, 2, 5] {
+            let mut bytes = vec![EPATHMAP, 3 + room, 2 + room, EPATHMAP_MAP, 12];
+            bytes.resize(bytes.len() + room as usize, 0xa7);
+            for _ in 1..depth {
+                let mut body = Vec::new();
+                prost::encoding::encode_varint(bytes.len() as u64, &mut body);
+                body.extend_from_slice(&bytes);
+                bytes = vec![EPATHMAP];
+                prost::encoding::encode_varint(body.len() as u64, &mut bytes);
+                bytes.extend_from_slice(&body);
+            }
+            bytes.extend_from_slice(&[0x19, 0xe3, 0xff]);
+            let mut reference = EagerCanonicalPathReducer::new();
+            let mut focused = CanonicalPathReducer::new();
+            let mut reference_arena = CanonicalBytesArena::new();
+            let mut arena = CanonicalBytesArena::new();
+            let mut expected = reference.root(&reference_arena);
+            let mut actual = focused.root(&arena);
+            let mut history = Vec::new();
+            for (offset, byte) in bytes.into_iter().enumerate() {
+                let state = focused.state(actual);
+                let boundary = state
+                    .owners
+                    .map(|root| focused.owners.entries[root.0].all_boundary.end);
+                let saved = actual;
+                let located =
+                    CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(43, offset * 7));
+                let (left, a) = reference
+                    .edge(&mut reference_arena, expected, located)
+                    .unwrap();
+                let (right, b) = focused.edge(&mut arena, actual, located).unwrap();
+                expected = left;
+                actual = right;
+                assert_eq!(a, b);
+                if boundary.is_some_and(|end| actual.bytes.len() as u128 >= end) {
+                    assert_ne!(actual.state, saved.state);
+                }
+                assert_focused_persistent_matches(
+                    &reference,
+                    &reference_arena,
+                    expected,
+                    &focused,
+                    &arena,
+                    actual,
+                );
+                history.push((expected, actual));
+            }
+            for (left, right) in history {
+                assert_focused_persistent_matches(
+                    &reference,
+                    &reference_arena,
+                    left,
+                    &focused,
+                    &arena,
+                    right,
+                );
+            }
+        }
+    }
+}
+
 fn exercise_focused_persistent(bytes: &[u8], resolution_choice: u8, fork_stride: usize) {
     let mut reference = EagerCanonicalPathReducer::new();
     let mut focused = CanonicalPathReducer::new();

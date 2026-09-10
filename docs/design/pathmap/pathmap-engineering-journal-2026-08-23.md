@@ -8429,6 +8429,91 @@ sources require truthful admission lifetimes rather than forced `'static` output
 These are design requirements, not claims that those changes are implemented.
 No ACT/LMDB comparison or campaign completion follows from this matrix.
 
+### J-119 — 2026-09-10: reuse immutable payload checkpoints without changing historical observations
+
+**Question and hypothesis.** J-118 retains a near-quadratic whole-import slope.
+After eliminating replacement payload frames, a nonfinal payload byte still
+publishes an identical persistent checkpoint. **HYPOTHESIS:** selecting the
+existing checkpoint with the extended byte handle removes this allocation while
+preserving every historical parser observation. It does not by itself remove
+the byte arena, scalar restore list or repeated frozen-source indexing.
+
+**Formal-first decision.** `PersistentOpaqueStateReuse` adds seven exported
+invariants to `RPB3Admission.v`, with an exhaustive native binding catalogue in
+the formal README. The existing linked-owner projection and cached minimum
+boundary establish strictness for every held Region and path. Checked native
+subtraction and increment establish a nonfinal payload interval. Within that
+interval, the proof composes exact located-byte events, unchanged physical
+frames, historical checkpoint retiming and publication effects. All 237
+assumption reports close; independent kernel checking succeeds before runtime
+activation. The proof is conditional on the existing valid linked-owner and
+open-owner representation invariants, not arbitrary forged internal records.
+
+**Implementation.** The private `CanonicalPathReducer::reusable_payload` guard
+accepts only an unfaulted open payload and exactly one checked byte advance,
+strictly before the payload end and all cached owner boundaries. `edge` retains
+the original byte preparation and checked arena append, then returns the existing
+state ID with the extended byte handle and exact nonfinal obligation event.
+It does not allocate a checkpoint, frame or owner, advance the obligation clock,
+or perform owner settlement on that interval. Final bytes, pending phases,
+malformed boundaries and failed states retain the existing scalar path. No
+codec, PathMap dependency, consensus byte, hash or metering rule changes.
+
+**Executable binding and negative evidence.** The preactivation test fails on
+the required unchanged state address (`PathStateId(6)` versus `PathStateId(4)`).
+After activation, the 29-test frame-storage suite passes. New tests cover every
+retained prefix of nested payload fixtures, same-depth divergent siblings with
+the same obligation ID, full byte/provenance equivalence, zero physical-state
+allocation and unchanged global clock. A 128-case generated guard property
+checks native/widened arithmetic, zero/full-width boundaries, explicit phases,
+faults and statuses. Malformed nested-owner fixtures exercise equality and
+overrun separately from successful interiors.
+
+The first complete model run reports 419 passed and three failures, all at the
+same helper assertion requiring one new persistent checkpoint per successful
+operation. That physical-allocation equality is deliberately superseded by an
+upper bound; semantic/event/source/frozen-payload comparisons remain unchanged.
+The new focused tests enforce exact zero allocation on accepted intervals.
+Shrinking produced `raw = [0, 0], depth = 0, mutation = 0, replacement = 0` and
+`n = 0`, with both stability flags false; the failed-run log retains the inputs.
+
+**Qualification.** The integrated gate passes 119 focused model tests, six ACT
+transport tests, three independent kernel checks and the positive compiler
+control plus eight exact compiler-error controls. The final full-library rerun
+passes **422 tests, zero failed and zero ignored**, in 52.57 s of test execution.
+Including compilation, the service takes 104.781 s with a 1.5G peak and zero
+swap. No timing or allocation-profiler speedup is inferred from this test run.
+
+**Resource discipline and evidence.** The proof compilation takes 25.528 s with
+a reported 1G peak; kernel checking takes 19.873 s with a 469M peak. Both use a
+1G high threshold, 2G hard limit, zero swap and one-core quota. The initial
+frame suite takes 34.774 s including compilation, with a 1.4G peak and zero
+swap. Rust runs use a 4G high threshold, 6G hard limit, zero swap and four jobs.
+The integrated launcher's 220.612 s and 43.9M peak exclude its separately capped
+child scopes and are not a whole-gate RSS measurement. Logs are retained on disk
+under `target/verification/`:
+
+- `epathmap-persistent-opaque-proof-14.log` and `epathmap-persistent-opaque-kernel.log`;
+- `epathmap-state-reuse-negative-20260910.log`;
+- `epathmap-state-reuse-frame-tests-20260910.log`;
+- `epathmap-state-reuse-full-models-20260910.log` (the three obsolete-count failures);
+- `epathmap-state-reuse-integrated-20260910.log`;
+- `epathmap-state-reuse-full-models-final-20260910.log`.
+
+The final full-library log SHA-256 is
+`9421c26d6f1b845cf2d6d28e048ceb6bb764621388d4edf3c3e5248ef0d1cf71`;
+the integrated log is
+`74c7c3c99fc3da58a00832d9a4021c5b77a0d3d966abaaebd6e2ab7aaa3e0f80`.
+The proof source is
+`3d994c47de12587aa122d0b8c64bd7460f09d4e8901a64dd682291866d9815df`.
+
+**Remaining requirement.** Scalar checkpoint reuse is not compressed undo.
+The next independent plan proposes run-length storage of saved predecessors,
+followed by balanced shared byte-region composition and joint ACT transport.
+Its proof must distinguish exact located-byte prefixes from raw arena descriptor
+identity across page boundaries. These remain required proof/implementation
+work; neither task 6018 nor the ACT/LMDB comparison is complete.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
