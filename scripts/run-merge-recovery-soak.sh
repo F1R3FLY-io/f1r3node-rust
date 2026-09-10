@@ -270,11 +270,23 @@ stop_node_writer_commands() {
 	local selection="$1"
 	shift
 	pkill -9 -f '/tmp/rnode' 2>/dev/null || true
-	docker ps "$selection" --filter 'name=rnode.' 2>/dev/null |
-		xargs -r docker "$@" 2>/dev/null || true
+	local cid owner ids status=0
+	ids="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || return 1
+	while IFS= read -r cid; do
+		[ -n "$cid" ] || continue
+		if ! [[ "$cid" =~ ^[a-f0-9]{64}$ ]]; then
+			status=1
+			continue
+		fi
+		owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid" 2>/dev/null)" || { status=1; continue; }
+		[ "$owner" = "$SOAK_WRITER_OWNER" ] || { status=1; continue; }
+		docker "$@" "$cid" 2>/dev/null || status=1
+	done <<<"$ids"
+	return "$status"
 }
 
 stop_node_writers() (
+	export SOAK_WRITER_OWNER
 	export -f stop_node_writer_commands
 	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
@@ -912,7 +924,11 @@ run_bench_segment() {
 	local segment_dir
 	segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"
 	mkdir -p "$segment_dir"
-	NODE_REPO_DIR="$NODE_REPO_DIR" \
+	PATH="$SOAK_WORKLOAD_PATH" \
+		SOAK_WRITER_OWNER="$SOAK_WRITER_OWNER" \
+		SOAK_DOCKER_REAL="$SOAK_DOCKER_REAL" \
+		SOAK_DOCKER_OWNER_DIR="$SOAK_DOCKER_OWNER_DIR" \
+		NODE_REPO_DIR="$NODE_REPO_DIR" \
 		OUT_DIR="$segment_dir" \
 		BENCH_DURATION="$BENCH_DURATION" \
 		BENCH_RATE="$BENCH_RATE" \
@@ -1027,6 +1043,59 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	persist_soak_state
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
+read -r SOAK_WRITER_OWNER </proc/sys/kernel/random/uuid || exit 2
+[[ "$SOAK_WRITER_OWNER" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
+SOAK_DOCKER_REAL="$(command -v docker || true)"
+SOAK_DOCKER_OWNER_DIR=""
+SOAK_WORKLOAD_PATH="$PATH"
+if [ -n "$SOAK_DOCKER_REAL" ]; then
+	SOAK_DOCKER_OWNER_DIR="$(mktemp -d "$OUTPUT_DIR/.docker-owner.XXXXXXXX")" || exit 2
+	cat >"$SOAK_DOCKER_OWNER_DIR/docker" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+real="${SOAK_DOCKER_REAL:?}"
+owner="${SOAK_WRITER_OWNER:?}"
+[[ "$owner" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
+original=("$@")
+case "${1:-}" in
+run | create)
+    command="$1"
+    shift
+    exec "$real" "$command" --label "io.f1r3fly.soak.owner=$owner" "$@"
+    ;;
+compose)
+    prefix=(compose)
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        -f | --file | -p | --project-name | --project-directory | --env-file | --profile | --ansi | --progress)
+            [[ $# -ge 2 ]] || exit 2
+            prefix+=("$1" "$2")
+            shift 2
+            ;;
+        --file=* | --project-name=* | --project-directory=* | --env-file=* | --profile=* | --ansi=* | --progress=*)
+            prefix+=("$1")
+            shift
+            ;;
+        up | create)
+            labels="$(mktemp "${SOAK_DOCKER_OWNER_DIR:?}/labels.XXXXXXXX.json")"
+            trap 'rm -f "$labels"' EXIT
+            "$real" "${prefix[@]}" config --format json |
+                jq --arg owner "$owner" '{services: (.services | with_entries(.value = {labels: {"io.f1r3fly.soak.owner": $owner}}))}' >"$labels"
+            "$real" "${prefix[@]}" -f "$labels" "$@"
+            exit "$?"
+            ;;
+        -*) exit 2 ;;
+        *) break ;;
+        esac
+    done
+    ;;
+esac
+exec "$real" "${original[@]}"
+SH
+	chmod 700 "$SOAK_DOCKER_OWNER_DIR/docker" || exit 2
+	SOAK_WORKLOAD_PATH="$SOAK_DOCKER_OWNER_DIR:$PATH"
+fi
 HOST_GUARDIAN_PID=""
 HOST_GUARDIAN_PROGRESS="$OUTPUT_DIR/.host-guardian-progress"
 BENCHMARK_PID=""
@@ -1048,7 +1117,17 @@ cleanup_soak_processes() {
 	[ -z "$ITERATION_SNAPSHOT_PID" ] || kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	[ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
 	if [ -n "$BENCHMARK_PID" ] || [ -n "$ITERATION_PID" ]; then
-		stop_node_writers -q kill >/dev/null 2>&1 || true
+		if ! stop_node_writers -q kill >/dev/null 2>&1; then
+			printf 'Writer termination is unconfirmed because the Docker stop failed or exceeded its budget.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+			printf 'writer_stop_failed: Writer termination is unconfirmed.\n' >"$OUTPUT_DIR/early-exit.txt"
+			if [ "$INFLIGHT_ITERATION" -eq 1 ]; then
+				INFLIGHT_ITERATION=2
+				FAILURES="$((FAILURES + 1))"
+			elif [ "$FAILURES" -eq 0 ]; then
+				FAILURES=1
+			fi
+			persist_soak_state || return 1
+		fi
 	fi
 }
 trap cleanup_soak_processes EXIT
@@ -1363,6 +1442,8 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_TEE_PID=$!
 	(
 		cd "$SYSTEM_INTEGRATION_DIR"
+		export SOAK_WRITER_OWNER SOAK_DOCKER_REAL SOAK_DOCKER_OWNER_DIR
+		export PATH="$SOAK_WORKLOAD_PATH"
 		exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
 			poetry run pytest \
 			integration-tests/test/tests/custom/test_load.py \

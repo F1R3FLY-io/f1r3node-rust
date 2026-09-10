@@ -33,7 +33,7 @@ if [[ "$SOAK_CRASH_STAGE" == recovery ]]; then
     printf 'new work after crash\n' >>"$SOAK_REAL_EVIDENCE/recovery-workload.txt"
     exit 0
 fi
-cid=$(/usr/bin/docker run -d --name "rnode.test.d2-crash-$$" --label fixture.owner=workload --network none --memory 32m --cpus 0.5 --pids-limit 32 --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 "$SOAK_REAL_DOCKER_IMAGE" /bin/sh -c 'i=0; while [ "$i" -lt 600 ]; do printf "%s\n" "$i" >>/tmp/writes; i=$((i+1)); sleep 0.1; done')
+cid=$(docker run -d --name "rnode.test.d2-crash-$$" --label fixture.owner=workload --network none --memory 32m --cpus 0.5 --pids-limit 32 --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 "$SOAK_REAL_DOCKER_IMAGE" /bin/sh -c 'i=0; while [ "$i" -lt 600 ]; do printf "%s\n" "$i" >>/tmp/writes; i=$((i+1)); sleep 0.1; done')
 printf '%s\n' "$cid" >"$SOAK_REAL_EVIDENCE/writer-id.txt"
 while :; do sleep 0.1; done
 SH
