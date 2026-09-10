@@ -590,6 +590,7 @@ impl CliqueOracle {
         latest_messages: &BTreeMap<V, M>,
         ftt: FtThreshold,
         strict: bool,
+        anchor: Option<i64>,
     ) -> Result<bool, KvStoreError> {
         // Non-existing message: MIN ⇒ not finalized (mirrors ft_witnessed).
         if !dag.contains(target_msg) {
@@ -615,12 +616,18 @@ impl CliqueOracle {
         if (agreeing as i128) * 2 <= total_stake as i128 {
             return Ok(false);
         }
-        // θ >= 0 with a finalized floor: an unheld block is below the restore
-        // anchor, hence inside the floor's irreversible prefix — the sees-walk
-        // treats it as settled instead of erroring. θ < 0 finality is advisory
-        // and absence stays an error. Held blocks always take their test:
-        // height below the floor is not membership in the settled prefix.
-        let settle_unheld = ftt.num >= 0 && dag.lookup(&dag.last_finalized_block())?.is_some();
+        // θ >= 0 with anchor <= floor PROVEN at runtime: an unheld block is
+        // below the restore anchor, hence inside the floor's irreversible
+        // prefix — the sees-walk treats it as settled instead of erroring.
+        // Unproven (no anchor supplied, no held floor, or anchor above it) or
+        // θ < 0: absence stays a typed error. Held blocks always take their
+        // test: height below the floor is not membership in the settled
+        // prefix.
+        let settle_unheld = ftt.num >= 0
+            && match (anchor, dag.lookup(&dag.last_finalized_block())?) {
+                (Some(anchor), Some(lfb)) => anchor <= lfb.block_number,
+                _ => false,
+            };
         let mut run_cache = Self::new_run_cache();
         let max_clique_weight = CliqueOracle::compute_max_clique_weight(
             target_msg,

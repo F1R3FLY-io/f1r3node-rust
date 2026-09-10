@@ -291,6 +291,7 @@ async fn replay_sample(
         &snapshot,
         FtThreshold::from_ppm(ftt_ppm),
         false,
+        None,
     )
     .await
     .expect("ft_witnessed_exact");

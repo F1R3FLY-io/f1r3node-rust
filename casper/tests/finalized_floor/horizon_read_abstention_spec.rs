@@ -200,16 +200,23 @@ async fn the_finality_decision_is_identical_with_and_without_the_stale_block() {
         .into_iter()
         .collect();
 
-    let held_verdict =
-        CliqueOracle::ft_witnessed_exact(&target.block_hash, &held_dag, &held_snapshot, ftt, false)
-            .await
-            .expect("fully-held decision");
+    let held_verdict = CliqueOracle::ft_witnessed_exact(
+        &target.block_hash,
+        &held_dag,
+        &held_snapshot,
+        ftt,
+        false,
+        None,
+    )
+    .await
+    .expect("fully-held decision");
     let restored_verdict = CliqueOracle::ft_witnessed_exact(
         &target.block_hash,
         &restored_dag,
         &restored_snapshot,
         ftt,
         false,
+        None,
     )
     .await
     .expect(
@@ -259,6 +266,7 @@ async fn a_sub_horizon_main_parent_crossing_resolves_deterministically() {
         &snapshot,
         FtThreshold::from_f32_lossy(0.1),
         false,
+        None,
     )
     .await
     .expect(

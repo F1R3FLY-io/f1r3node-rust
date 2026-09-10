@@ -363,17 +363,6 @@ pub async fn floor_of_view(
     current: &Floor,
     ftt: FtThreshold,
 ) -> Result<FloorOfView, CasperError> {
-    // The oracle's settled-range veto rests on anchor <= floor: everything
-    // unheld is below the anchor, hence below anything finalized.
-    #[cfg(debug_assertions)]
-    if let Some(approved) = block_store.get_approved_block().ok().flatten() {
-        if let Some(lfb) = dag.lookup(&dag.last_finalized_block()).ok().flatten() {
-            debug_assert!(
-                approved.candidate.block.body.state.block_number <= lfb.block_number,
-                "restore anchor above the finalized floor"
-            );
-        }
-    }
     // A latest-message slot whose held target the validator never signed
     // is a seed — the newly-bonded genesis placeholder — not testimony,
     // and it must not drag a height-0 tip into this derivation. A slot
@@ -571,9 +560,14 @@ async fn derive_floor(
     let inherited_floors = inherited.clone();
     let mut candidates = inherited;
     let inherited_max = candidates.iter().map(|f| f.block_number).max();
+    // The restore anchor, read once per derivation: the oracle settles unheld
+    // blocks only when it can prove anchor <= floor at runtime.
+    let anchor = block_store
+        .get_approved_block()?
+        .map(|approved| approved.candidate.block.body.state.block_number);
     let mut frontiers: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
-        frontiers.push(parent_frontier(dag, parent, latest_messages, ftt).await?);
+        frontiers.push(parent_frontier(dag, parent, latest_messages, ftt, anchor).await?);
     }
     // parents[0] is the main parent; its frontier over this snapshot is F(B).
     let main_parent_frontier = frontiers[0].clone();
@@ -853,10 +847,11 @@ pub(crate) async fn parent_frontier(
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    anchor: Option<i64>,
 ) -> Result<Floor, CasperError> {
     if let Some(pivot_hash) = dag.get_cached_frontier(parent)? {
         if let Some(frontier) =
-            incremental_frontier(dag, parent, &pivot_hash, latest_messages, ftt).await?
+            incremental_frontier(dag, parent, &pivot_hash, latest_messages, ftt, anchor).await?
         {
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_FRONTIER_CACHE_HIT_METRIC,
@@ -871,7 +866,7 @@ pub(crate) async fn parent_frontier(
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
     )
     .increment(1);
-    cold_parent_frontier(dag, parent, latest_messages, ftt).await
+    cold_parent_frontier(dag, parent, latest_messages, ftt, anchor).await
 }
 
 /// Warm frontier: resolve `parent`'s frontier over the (larger) `latest_messages`
@@ -885,6 +880,7 @@ async fn incremental_frontier(
     pivot_hash: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    anchor: Option<i64>,
 ) -> Result<Option<Floor>, CasperError> {
     let pivot_number = held_number(dag, pivot_hash)?;
 
@@ -927,7 +923,8 @@ async fn incremental_frontier(
     // A9 exact ≥-semantics (floor path): the pivot must still be witnessed-
     // finalized over the larger snapshot. `strict=false` ⇒ (2q−S)/S ≥ θ.
     let pivot_finalized =
-        CliqueOracle::ft_witnessed_exact(pivot_hash, dag, latest_messages, ftt, false).await?;
+        CliqueOracle::ft_witnessed_exact(pivot_hash, dag, latest_messages, ftt, false, anchor)
+            .await?;
     if !pivot_finalized {
         metrics::counter!(
             crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
@@ -948,7 +945,8 @@ async fn incremental_frontier(
         // A9 exact ≥-semantics (floor path): advance while each block stays
         // witnessed-finalized over the snapshot.
         let finalized =
-            CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, ftt, false).await?;
+            CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, ftt, false, anchor)
+                .await?;
         oracle_calls += 1;
         if finalized {
             best_hash = candidate.clone();
@@ -991,6 +989,7 @@ async fn cold_parent_frontier(
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    anchor: Option<i64>,
 ) -> Result<Floor, CasperError> {
     let mut current = parent.clone();
     let mut walked: usize = 0;
@@ -999,7 +998,8 @@ async fn cold_parent_frontier(
         // A9 exact ≥-semantics (floor path): first witnessed-finalized block down
         // the main-parent chain is the frontier.
         let finalized =
-            CliqueOracle::ft_witnessed_exact(&current, dag, latest_messages, ftt, false).await?;
+            CliqueOracle::ft_witnessed_exact(&current, dag, latest_messages, ftt, false, anchor)
+                .await?;
         oracle_calls += 1;
         tracing::debug!(
             target: "f1r3.trace.floor_walk",
@@ -1381,12 +1381,16 @@ mod frontier_determinism_tests {
         let thr = FtThreshold::from_f32_lossy(0.1);
 
         // Cold: top-down from b3 → first finalized is b2.
-        let cold = cold_parent_frontier(&dag, &b3, &j, thr).await.unwrap();
+        let cold = cold_parent_frontier(&dag, &b3, &j, thr, None)
+            .await
+            .unwrap();
         assert_eq!(cold.hash, b2, "cold frontier of b3 over J must be b2");
 
         // Warm: from a pivot BELOW the true frontier (b1) → the up-walk must
         // advance to b2 and stop (b3 not finalized), matching the cold result.
-        let warm = incremental_frontier(&dag, &b3, &b1, &j, thr).await.unwrap();
+        let warm = incremental_frontier(&dag, &b3, &b1, &j, thr, None)
+            .await
+            .unwrap();
         assert!(
             warm.is_some(),
             "warm path must apply (committee constant across the band, pivot finalized)"
@@ -1957,7 +1961,9 @@ mod frontier_determinism_tests {
         let thr = FtThreshold::from_f32_lossy(0.1);
 
         // Warm up-walk from pivot b1 must DECLINE (committee changes at b3 in the band).
-        let warm = incremental_frontier(&dag, &b3, &b1, &j, thr).await.unwrap();
+        let warm = incremental_frontier(&dag, &b3, &b1, &j, thr, None)
+            .await
+            .unwrap();
         assert!(
             warm.is_none(),
             "incremental_frontier must return Ok(None) on a committee change in the band"
@@ -1966,8 +1972,10 @@ mod frontier_determinism_tests {
         // Seed the pivot so the dispatcher attempts (and must abandon) the warm path;
         // it must fall back to the cold walk and return the identical frontier.
         dag.put_cached_frontier(b3.clone(), b1.clone()).unwrap();
-        let dispatched = parent_frontier(&dag, &b3, &j, thr).await.unwrap();
-        let cold = cold_parent_frontier(&dag, &b3, &j, thr).await.unwrap();
+        let dispatched = parent_frontier(&dag, &b3, &j, thr, None).await.unwrap();
+        let cold = cold_parent_frontier(&dag, &b3, &j, thr, None)
+            .await
+            .unwrap();
         assert_eq!(
             dispatched, cold,
             "on a guard trip the dispatched frontier must equal the cold walk (transparent)"
@@ -2278,6 +2286,7 @@ mod frontier_determinism_tests {
             &j,
             thr,
             false,
+            None,
         )
         .await
         .expect("ft_witnessed_exact");
@@ -2383,6 +2392,7 @@ mod frontier_determinism_tests {
             &tip,
             &BTreeMap::new(),
             FtThreshold::from_f32_lossy(0.1),
+            None,
         )
         .await
         .expect_err("a frontier walk that leaves the held blocks cannot yield a frontier");
@@ -2488,6 +2498,7 @@ mod frontier_determinism_tests {
             &latest_messages,
             FtThreshold::from_ppm(-500_000),
             false,
+            Some(9),
         )
         .await
         .expect_err("under a negative threshold the floor is advisory and absence stays an error");
@@ -2502,6 +2513,7 @@ mod frontier_determinism_tests {
             &latest_messages,
             FtThreshold::from_ppm(333_333),
             false,
+            Some(9),
         )
         .await
         .expect("under a BFT threshold the sub-floor range is settled and the walk completes");
@@ -2539,6 +2551,7 @@ mod frontier_determinism_tests {
             &latest_messages,
             FtThreshold::from_ppm(-500_000),
             false,
+            Some(9),
         )
         .await
         .expect_err("under a negative threshold the walk must surface the block it cannot read");
@@ -2553,6 +2566,7 @@ mod frontier_determinism_tests {
             &latest_messages,
             FtThreshold::from_ppm(333_333),
             false,
+            Some(9),
         )
         .await
         .expect("under a BFT threshold the walk settles at the anchor instead of crossing it");
@@ -2597,6 +2611,7 @@ mod frontier_determinism_tests {
             &latest_messages,
             FtThreshold::from_ppm(333_333),
             false,
+            Some(9),
         )
         .await
         .expect("every block on this walk is held");
@@ -2621,6 +2636,7 @@ mod frontier_determinism_tests {
             &latest_messages,
             FtThreshold::from_ppm(333_333),
             false,
+            Some(9),
         )
         .await
         .expect("an unheld latest message abstains; it must not error the decision");
