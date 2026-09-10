@@ -1,5 +1,6 @@
 pub mod drive;
 pub(crate) mod canonical_bytes_arena;
+pub(crate) mod canonical_source_tree;
 pub(crate) mod indexed_protobuf;
 pub(crate) mod canonical_par_identity;
 pub(crate) mod canonical_score_bytes;

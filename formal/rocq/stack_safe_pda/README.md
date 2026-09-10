@@ -3119,6 +3119,43 @@ Max1G, zero swap, CPU100%, Tasks64 and Runtime120. Source inspection and isolate
 diagnostics preceded these final whole-unit checks; no native performance
 result follows from them.
 
+### Initial native source implementation and executable controls
+
+`models/src/rust/rholang/canonical_source_tree.rs` now implements the private
+balanced two/three-child source representation, checked iterative join/split,
+constant-size shared windows, retained byte/located cursors and node-owned
+iterative release. Leaves contain original borrowed slices or the existing
+flat frozen backing, never another composed-source wrapper. The existing
+frozen-byte cursor skip is reused with crate visibility. No importer backing
+switch is included in this checkpoint.
+
+The initial executable bindings live in
+`models/tests/support/canonical_source_tree.rs`, separate from production:
+
+| Native control | Observed boundary |
+|---|---|
+| `concatenation_and_every_split_preserve_bytes_origins_and_balance` | 128 generated chunk families, both prepend/append directions, every cut, exact bytes/provenance, balanced cached lengths/heights, cursor observations, invalid-skip atomicity and rejoined equality. |
+| `normalized_windows_compose_without_losing_original_sources` | 128 generated retained-window compositions, unchanged original source and original node identity for constant-time subviews. |
+| `frozen_windows_keep_page_owners_after_arena_and_parent_release` | Composed windows retain original frozen bytes and provenance after arena and parent teardown. |
+| `coalescing_requires_original_owner_and_exact_adjacency` | Same-root adjacent windows merge; overlap and unrelated equal-content owners do not. Equality compares contents independently of provenance. |
+| `checked_lengths_refuse_first_unrepresentable_shared_tree_without_expansion` | A binary shared tree reaches the last representable doubling, rejects overflow and exercises split/rejoin near native bounds without enumerating its logical bytes. |
+| `concurrent_shared_root_release_retains_surviving_source_on_small_stacks` | Four simultaneous releases retain a surviving view; its final release uses a 64 KiB thread stack. |
+| `source_window_is_three_native_words` | The native shared window occupies three machine words. The full indexed-region backing layout is not yet requalified. |
+| `retained_leaf_cursors_avoid_frontier_allocation_and_preserve_skip_origins` | Borrowed and flat-frozen leaf cursors have zero pending-vector capacity and retain exact provenance after skipping and source teardown. |
+| `subtree_skip_is_constant_work_before_descent_and_failed_copy_is_atomic` | A near-native-limit skip changes a single pending window without descending; invalid copy leaves output unchanged and valid tail copy is exact. |
+| `maximally_shared_ternary_teardown_keeps_combined_frontier_bounded` | An independent fixture walk reaches the two-siblings-per-level bound; actual teardown completes on a 64 KiB stack. This is not instrumentation of every native destructor phase. |
+| `simultaneous_final_root_releases_reclaim_each_shared_physical_node` | Four final roots race to release a shared graph on 64 KiB stacks; weak probes confirm every source node is reclaimed after joins. |
+| `failed_uniqueness_checks_do_not_have_the_into_inner_payload_contract` | Deterministic native Arc control distinguishes callback-producing ordinary drops after failed checks from successful moved-payload extraction. |
+
+These controls do not complete every per-phase native binding in the formal
+catalogue. Exact runtime claim/lease ledgers, allocation accounting, all
+interleaving schedules, integrated indexed-region anchors and importer
+publication/lifetime bindings remain required. Current fragmented copy and
+equality paths are linear retained-cursor loops; chunk-copy optimization and
+original-owner coalescing across distinct leaf nodes remain explicit next
+steps. No production speedup or whole-campaign completion follows from this
+initial module qualification.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

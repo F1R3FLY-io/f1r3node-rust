@@ -10872,6 +10872,29 @@ memory results. [J-131](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-1
 records source/log hashes, timing, scope and the 20 extracted native controls.
 The backend implementation and native qualification remain required.
 
+#### 5.33.49 Native source controls and failed broader admission gate (2026-09-10)
+
+The new balanced source module passes twelve focused debug tests, including
+shared binary/ternary graphs and concurrent final-root destruction on 64 KiB
+stacks. Borrowed/frozen retained cursors, subtree skipping and native length
+overflow controls pass. Its source window occupies three machine words.
+The importer has not switched to this backing; no end-to-end performance
+improvement is measured. The focused compile/test process peaks at 2.1G with
+zero swap under the 6G hard cap.
+
+The subsequent 437-test debug model-library run **aborts with stack overflow**,
+despite all twelve new controls passing. Isolated GDB execution identifies
+the existing `deep_tuple_admission_and_teardown_use_a_small_stack` test,
+failing at path length one in derived admission-frame Clone through a short
+nonrecursive call chain. Oversized debug activation frames are suspected,
+not yet proven as the full cause. The existing 64 KiB limit remains unchanged.
+
+[J-132](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-132--2026-09-10-initial-native-balanced-source-and-broader-stack-gate-failure)
+records the positive and negative evidence, command/resource boundaries and
+remaining native obligations. Required task 8413 is reachable from 6018 and
+the epic. Neither this module checkpoint nor debugger exit zero makes the
+full model-library gate green.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

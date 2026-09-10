@@ -1191,7 +1191,7 @@ impl FrozenCanonicalByteCursor {
         }
     }
 
-    fn fast_forward(&mut self, width: usize) {
+    pub(crate) fn fast_forward(&mut self, width: usize) {
         let absolute = self
             .absolute
             .checked_add(width)

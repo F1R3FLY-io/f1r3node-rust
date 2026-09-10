@@ -9388,6 +9388,72 @@ throughput improvement is inferred. Tasks 5976/6018 remain required and open;
 production persistence qualification and ACT/LMDB comparison are not complete.
 No consensus bytes, hashing, COMM accounting or metering behavior changes.
 
+### J-132 — 2026-09-10: initial native balanced source and broader stack-gate failure
+
+**IMPLEMENTED / FOCUSED TESTED; BROADER GATE FAILED.**
+The private `canonical_source_tree` module implements the proved two/three-child
+representation, checked iterative concat/split, constant-size shared subviews,
+borrowed or flat-frozen leaves, and retained byte/located cursors. Node-owned
+Drop detaches payloads and consumes children with `Arc::into_inner` through a
+127/63-slot release buffer. Empty-shell and leaf-only callbacks do not enter
+the separate buffer-owning helper. No composed-source wrapper can be a leaf.
+The existing frozen-byte skip method gains crate visibility for reuse.
+
+Twelve native controls pass in the focused debug run, including two 128-case
+property families, every-cut differential splitting, exact source provenance,
+checked native-boundary shared trees, concurrent final-root releases, surviving
+readers, 64 KiB teardown stacks, a ternary-frontier fixture, zero pending-vector
+capacity for leaf cursors, subtree skipping and atomic invalid-copy refusal.
+The source window is three machine words (24 bytes on this target). A native
+Arc negative control distinguishes failed uniqueness checks plus ordinary Drop
+from `into_inner` payload extraction. The formal README maps each control and
+identifies the still-missing per-phase ownership/work instrumentation.
+
+The focused run passes **12/12**, with 425 existing tests filtered out, in
+0.64 seconds test time. Its compile/test service uses 20.574 seconds wall,
+30.787 seconds CPU and a 2.1G peak with zero swap. Two initial compile attempts
+found a required skip-method visibility binding and a moved value in a test
+assertion; both were corrected before successful execution. These are not
+application benchmark measurements. The importer still uses its existing
+backing; no throughput improvement is claimed from adding the module.
+
+**Broader failure, not concealed by the focused result.** After adding explicit
+content-equality observations, the complete debug model-library run starts
+437 tests. All twelve new controls pass again, but the process aborts with
+stack overflow before suite completion. Service time is 167.604 seconds,
+CPU time 641.509 seconds, peak 1.6G and swap zero. Both Rust runs use High4G,
+Max6G, CPU400%, Tasks512 and Runtime900.
+
+An isolated GDB run reproduces the existing
+`deep_tuple_admission_and_teardown_use_a_small_stack` test's failure on its
+first input byte, at path length one. The short call chain is derived
+`Frame<CanonicalByteRange>::clone`, `frame`, `feed_frame_inner`, `feed_frame`,
+`feed_path_shallow`, `edge`, `CanonicalPathFrame::step`, and `drive_admission`.
+Oversized debug activation frames are the current hypothesis; neither
+depth-dependent recursion nor a regression caused by the unused new source
+module is established. The debugger observes SIGSEGV; its own successful exit
+is not a passing test. Debugger resources were High4G/Max6G, CPU100%, Tasks64,
+Runtime120, with 409.3M peak and zero swap.
+
+Required dependency **8413**, `rpb3-debug-small-stack-frame-overflow`, is recorded
+under 6018 and root 4131. Keep the 64 KiB test and all semantics unchanged;
+quantify the actual frames and repair their ownership/control layout. No
+stack increase, depth reduction or optimizer-only workaround is authorized.
+
+After the broader failure, the latest binary's twelve source controls were
+rerun independently: **12 passed, zero failed/ignored**, 0.76 seconds test time,
+785 milliseconds service time, 791 milliseconds CPU and 15.4M peak, zero swap.
+This direct-binary run excludes compilation and uses the same memory/worker
+caps with Runtime120. Its terminal success does not supersede the full-suite
+failure. The log is `target/verification/canonical-source-native-controls-final.log`.
+
+Evidence is retained in `target/verification/canonical-source-native-tests-v3.log`,
+`canonical-source-native-all-models.log` and `canonical-admission-stack-isolate.log`.
+Original-owner coalescing across distinct leaves, chunk-copy/comparison,
+integrated indexed-region anchors, lifetime-threaded admission publication,
+per-phase native counters and full qualification remain required. No consensus
+encoding, hash, COMM accounting or storage-metering behavior changes.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
