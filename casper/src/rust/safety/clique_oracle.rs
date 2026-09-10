@@ -174,12 +174,8 @@ impl CliqueOracle {
         lm_a_j_b: &M,
         dag: &KeyValueDagRepresentation,
         target_msg: &M,
-        yield_check_interval: usize,
-        yield_timeslice: Duration,
-        self_justification_cache: &mut BTreeMap<M, Option<M>>,
-        ancestor_cache: &mut BTreeMap<(M, M), bool>,
-        max_self_justification_cache_entries: usize,
-        max_ancestor_cache_entries: usize,
+        settled_floor: Option<i64>,
+        run_cache: &mut CliqueOracleRunCache,
     ) -> Result<bool, KvStoreError> {
         /// Check if there might be eventual disagreement between validators
         async fn might_eventually_disagree(
@@ -187,38 +183,43 @@ impl CliqueOracle {
             lm_a_j_b: &M,
             dag: &KeyValueDagRepresentation,
             target_msg: &M,
-            self_justification_cache: &mut BTreeMap<M, Option<M>>,
-            ancestor_cache: &mut BTreeMap<(M, M), bool>,
-            yield_check_interval: usize,
-            yield_timeslice: Duration,
-            max_self_justification_cache_entries: usize,
-            max_ancestor_cache_entries: usize,
+            settled_floor: Option<i64>,
+            run_cache: &mut CliqueOracleRunCache,
         ) -> Result<bool, KvStoreError> {
+            let yield_check_interval = run_cache.yield_check_interval;
+            let yield_timeslice = run_cache.yield_timeslice;
             // self justification of lmAjB or lmAjB itself. Used as a stopper for traversal
             // TODO not completely clear why try to use self justification and not just message itself
-            let stopper = if let Some(cached) = self_justification_cache.get(lm_a_j_b) {
+            let stopper = if let Some(cached) = run_cache.self_justification_cache.get(lm_a_j_b) {
                 cached.clone().unwrap_or_else(|| lm_a_j_b.clone())
             } else {
-                let value = dag.self_justification(lm_a_j_b)?;
+                // Veto on: an unheld justification is below the anchor, hence
+                // below the floor — the range it opens is settled.
+                let value = match dag.self_justification(lm_a_j_b) {
+                    Err(KvStoreError::MissingBlock { .. }) if settled_floor.is_some() => {
+                        return Ok(false);
+                    }
+                    other => other?,
+                };
                 CliqueOracle::bounded_cache_insert(
-                    self_justification_cache,
+                    &mut run_cache.self_justification_cache,
                     lm_a_j_b.clone(),
                     value.clone(),
-                    max_self_justification_cache_entries,
+                    run_cache.max_self_justification_cache_entries,
                 );
                 value.unwrap_or_else(|| lm_a_j_b.clone())
             };
 
             // Traverse only until stopper instead of materializing full history to genesis.
-            let mut current = if let Some(cached) = self_justification_cache.get(lm_b) {
+            let mut current = if let Some(cached) = run_cache.self_justification_cache.get(lm_b) {
                 cached.clone()
             } else {
                 let value = dag.self_justification(lm_b)?;
                 CliqueOracle::bounded_cache_insert(
-                    self_justification_cache,
+                    &mut run_cache.self_justification_cache,
                     lm_b.clone(),
                     value.clone(),
-                    max_self_justification_cache_entries,
+                    run_cache.max_self_justification_cache_entries,
                 );
                 value
             };
@@ -259,39 +260,54 @@ impl CliqueOracle {
                 // CI (stall instance i5, run 32397055615 — see
                 // tests/finalized_floor/oracle_stall_replay_spec.rs).
                 //
-                // (`ancestor_cache` memoizes the per-(target, hash) verdict:
-                // true = this visited block does not veto.)
-                let ancestor_key = (target_msg.clone(), hash.clone());
-                let no_disagreement = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
-                    *cached
-                } else {
-                    let visited_height = dag.lookup_unsafe(&hash)?.block_number;
-                    let value = if visited_height < target_height {
-                        dag.is_in_main_chain(&hash, target_msg)?
-                    } else {
-                        dag.is_in_main_chain(target_msg, &hash)?
-                    };
-                    CliqueOracle::bounded_cache_insert(
-                        ancestor_cache,
-                        ancestor_key,
-                        value,
-                        max_ancestor_cache_entries,
-                    );
-                    value
-                };
-                if !no_disagreement {
-                    return Ok(true);
+                // Veto on: unheld means below the anchor, hence below the
+                // floor — settled and unreadable, stop. A held sub-floor
+                // block only skips its test: heights are not validated
+                // monotone along the chain, so a rival can sit deeper.
+                let mut settled_dip = false;
+                if let Some(floor) = settled_floor {
+                    match dag.lookup(&hash)? {
+                        None => break,
+                        Some(meta) => settled_dip = meta.block_number <= floor,
+                    }
                 }
 
-                current = if let Some(cached) = self_justification_cache.get(&hash) {
+                // (`ancestor_cache` memoizes the per-(target, hash) verdict:
+                // true = this visited block does not veto.)
+                if !settled_dip {
+                    let ancestor_key = (target_msg.clone(), hash.clone());
+                    let no_disagreement =
+                        if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
+                            *cached
+                        } else {
+                            let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                            let value = if visited_height < target_height {
+                                dag.is_in_main_chain(&hash, target_msg)?
+                            } else {
+                                dag.is_in_main_chain(target_msg, &hash)?
+                            };
+                            CliqueOracle::bounded_cache_insert(
+                                &mut run_cache.ancestor_cache,
+                                ancestor_key,
+                                value,
+                                run_cache.max_ancestor_cache_entries,
+                            );
+                            value
+                        };
+                    if !no_disagreement {
+                        return Ok(true);
+                    }
+                }
+
+                current = if let Some(cached) = run_cache.self_justification_cache.get(&hash) {
                     cached.clone()
                 } else {
                     let value = dag.self_justification(&hash)?;
                     CliqueOracle::bounded_cache_insert(
-                        self_justification_cache,
+                        &mut run_cache.self_justification_cache,
                         hash,
                         value.clone(),
-                        max_self_justification_cache_entries,
+                        run_cache.max_self_justification_cache_entries,
                     );
                     value
                 };
@@ -299,20 +315,9 @@ impl CliqueOracle {
             Ok(false)
         }
 
-        might_eventually_disagree(
-            lm_b,
-            lm_a_j_b,
-            dag,
-            target_msg,
-            self_justification_cache,
-            ancestor_cache,
-            yield_check_interval,
-            yield_timeslice,
-            max_self_justification_cache_entries,
-            max_ancestor_cache_entries,
-        )
-        .await
-        .map(|r| !r)
+        might_eventually_disagree(lm_b, lm_a_j_b, dag, target_msg, settled_floor, run_cache)
+            .await
+            .map(|r| !r)
     }
 
     async fn compute_max_clique_weight(
@@ -321,6 +326,7 @@ impl CliqueOracle {
         dag: &KeyValueDagRepresentation,
         run_cache: &mut CliqueOracleRunCache,
         latest_messages: &BTreeMap<V, M>,
+        settled_floor: Option<i64>,
     ) -> Result<i64, KvStoreError> {
         let __compute_start = std::time::Instant::now();
         // Using tracing events for async - Span[F].traceI("compute-max-clique-weight") from Scala
@@ -332,6 +338,7 @@ impl CliqueOracle {
             dag: &KeyValueDagRepresentation,
             run_cache: &mut CliqueOracleRunCache,
             latest_messages: &BTreeMap<V, M>,
+            settled_floor: Option<i64>,
         ) -> Result<Vec<(V, V)>, KvStoreError> {
             let yield_check_interval = run_cache.yield_check_interval;
             let yield_timeslice = run_cache.yield_timeslice;
@@ -421,12 +428,8 @@ impl CliqueOracle {
                         lm_a_j_b,
                         dag,
                         target_msg,
-                        yield_check_interval,
-                        yield_timeslice,
-                        &mut run_cache.self_justification_cache,
-                        &mut run_cache.ancestor_cache,
-                        run_cache.max_self_justification_cache_entries,
-                        run_cache.max_ancestor_cache_entries,
+                        settled_floor,
+                        run_cache,
                     )
                     .await?;
                     let no_b_a_disagreement = CliqueOracle::never_eventually_see_disagreement(
@@ -434,12 +437,8 @@ impl CliqueOracle {
                         lm_b_j_a,
                         dag,
                         target_msg,
-                        yield_check_interval,
-                        yield_timeslice,
-                        &mut run_cache.self_justification_cache,
-                        &mut run_cache.ancestor_cache,
-                        run_cache.max_self_justification_cache_entries,
-                        run_cache.max_ancestor_cache_entries,
+                        settled_floor,
+                        run_cache,
                     )
                     .await?;
 
@@ -458,6 +457,7 @@ impl CliqueOracle {
             dag,
             run_cache,
             latest_messages,
+            settled_floor,
         )
         .await?;
         let max_weight = Clique::find_maximum_clique_by_weight(&edges, agreeing_weight_map);
@@ -488,12 +488,14 @@ impl CliqueOracle {
         if (agreeing_weight_map.values().sum::<i64>() as f32) <= total_stake / 2.0 {
             Ok(MIN_FAULT_TOLERANCE)
         } else {
+            // Display-only path: no settled-floor veto, absence stays an error.
             let max_clique_weight = CliqueOracle::compute_max_clique_weight(
                 target_msg,
                 agreeing_weight_map,
                 dag,
                 run_cache,
                 latest_messages,
+                None,
             )
             .await? as f32;
 
@@ -617,6 +619,17 @@ impl CliqueOracle {
         if (agreeing as i128) * 2 <= total_stake as i128 {
             return Ok(false);
         }
+        // θ >= 0: the finalized floor is irreversible, so the sees-walk
+        // treats everything at or below it as settled; θ < 0 finality is
+        // advisory and absence stays an error. The floor is node-local, but
+        // clipping is monotone and θ >= 0 floors share one spine, so a lower
+        // floor only under-certifies.
+        let settled_floor = if ftt.num >= 0 {
+            dag.lookup(&dag.last_finalized_block())?
+                .map(|meta| meta.block_number)
+        } else {
+            None
+        };
         let mut run_cache = Self::new_run_cache();
         let max_clique_weight = CliqueOracle::compute_max_clique_weight(
             target_msg,
@@ -624,6 +637,7 @@ impl CliqueOracle {
             dag,
             &mut run_cache,
             latest_messages,
+            settled_floor,
         )
         .await?;
         let decision = ft_decides_exact(

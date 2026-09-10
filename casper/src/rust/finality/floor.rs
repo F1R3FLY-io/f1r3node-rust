@@ -362,6 +362,17 @@ pub async fn floor_of_view(
     current: &Floor,
     ftt: FtThreshold,
 ) -> Result<FloorOfView, CasperError> {
+    // The oracle's settled-range veto rests on anchor <= floor: everything
+    // unheld is below the anchor, hence below anything finalized.
+    #[cfg(debug_assertions)]
+    if let Some(approved) = block_store.get_approved_block().ok().flatten() {
+        if let Some(lfb) = dag.lookup(&dag.last_finalized_block()).ok().flatten() {
+            debug_assert!(
+                approved.candidate.block.body.state.block_number <= lfb.block_number,
+                "restore anchor above the finalized floor"
+            );
+        }
+    }
     // A latest-message slot whose held target the validator never signed
     // is a seed — the newly-bonded genesis placeholder — not testimony,
     // and it must not drag a height-0 tip into this derivation. A slot
@@ -2402,6 +2413,217 @@ mod frontier_determinism_tests {
             matches!(meet, StateLineage::Disconnected),
             "two lineages that reach separate roots share no state history"
         );
+    }
+
+    // ---- finality-clipped certification: the sub-floor range is settled ----
+
+    /// Two-validator committee agreeing on a target above the floor, with the
+    /// supporting structure the certification walk reads: the target's main
+    /// parent carries the committee weight map, both latest messages sit on
+    /// the target's spine, and each justifies the other.
+    fn certification_fixture(
+        la_justifies_vb_at: Bytes,
+        self_justifications: Vec<(Bytes, Bytes)>,
+        extra_blocks: Vec<BlockMetadata>,
+    ) -> (KeyValueDagRepresentation, Bytes, BTreeMap<Bytes, Bytes>) {
+        use models::rust::casper::protocol::casper_message::Justification;
+
+        let va = Bytes::from(vec![0xAA; 65]);
+        let vb = Bytes::from(vec![0xBB; 65]);
+        let committee = vec![(va.clone(), 1i64), (vb.clone(), 1i64)];
+
+        let floor_block = h(9); // the finalized floor; also the target's main parent
+        let target = h(11);
+        let la = h(12);
+        let lb = h(13);
+
+        let mut la_meta = md_wm(la.clone(), vec![target.clone()], 11, &va, vec![]);
+        la_meta.justifications = vec![Justification {
+            validator: vb.clone(),
+            latest_block_hash: la_justifies_vb_at,
+        }];
+        let mut lb_meta = md_wm(lb.clone(), vec![target.clone()], 11, &vb, vec![]);
+        lb_meta.justifications = vec![Justification {
+            validator: va.clone(),
+            latest_block_hash: la.clone(),
+        }];
+
+        let mut blocks = vec![
+            md_wm(floor_block.clone(), vec![], 9, &vb, committee),
+            md_wm(target.clone(), vec![floor_block.clone()], 10, &va, vec![]),
+            la_meta,
+            lb_meta,
+        ];
+        blocks.extend(extra_blocks);
+        let mut dag = build_dag(blocks);
+
+        dag.self_justification_map.insert(la, target.clone());
+        for (block, prev) in self_justifications {
+            dag.self_justification_map.insert(block, prev);
+        }
+        dag.last_finalized_block_hash = floor_block.clone();
+        dag.finalized_blocks_set.insert(floor_block);
+
+        let mut latest_messages = BTreeMap::new();
+        latest_messages.insert(va, h(12));
+        latest_messages.insert(vb, h(13));
+        (dag, target, latest_messages)
+    }
+
+    /// A departed-era justification can name a block below the restore
+    /// anchor. Under θ ≥ 0 the range it opens is settled and the edge
+    /// agrees; under θ < 0 finality is advisory and absence stays a typed
+    /// error naming the block.
+    #[tokio::test]
+    async fn a_justification_below_the_anchor_settles_the_edge_under_a_bft_threshold() {
+        use shared::rust::store::key_value_store::KvStoreError;
+
+        let gone = h(66); // below the anchor: referenced, never held
+        let (dag, target, latest_messages) = certification_fixture(gone.clone(), vec![], vec![]);
+
+        let err = CliqueOracle::ft_witnessed_exact(
+            &target,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_ppm(-500_000),
+            false,
+        )
+        .await
+        .expect_err("under a negative threshold the floor is advisory and absence stays an error");
+        assert!(
+            matches!(err, KvStoreError::MissingBlock { ref hash, .. } if *hash == gone),
+            "the error must name the block this node does not hold; got {err:?}"
+        );
+
+        let certified = CliqueOracle::ft_witnessed_exact(
+            &target,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_ppm(333_333),
+            false,
+        )
+        .await
+        .expect("under a BFT threshold the sub-floor range is settled and the walk completes");
+        assert!(
+            certified,
+            "both validators witness the target; the settled edge must not block certification"
+        );
+    }
+
+    /// The walk itself can cross the anchor: a held block's recorded
+    /// self-justification names a sub-anchor block that is not the stopper.
+    /// Same regime split: settled under θ ≥ 0, a typed error under θ < 0.
+    #[tokio::test]
+    async fn a_sees_walk_that_crosses_the_anchor_settles_the_settled_range() {
+        use shared::rust::store::key_value_store::KvStoreError;
+
+        let vb = Bytes::from(vec![0xBB; 65]);
+        let gone = h(66); // sub-anchor: named by a held block, never held
+        let jb_side = h(20); // vb's old message a still justifies; off lb's recorded chain
+        let stopper_value = h(67); // jb_side's recorded predecessor, also sub-anchor
+
+        let (dag, target, latest_messages) = certification_fixture(
+            jb_side.clone(),
+            vec![
+                (h(13), h(9)),        // lb's chain: floor block first,
+                (h(9), gone.clone()), // then below the anchor
+                (jb_side, stopper_value),
+            ],
+            vec![md_wm(h(20), vec![], 8, &vb, vec![])],
+        );
+
+        let err = CliqueOracle::ft_witnessed_exact(
+            &target,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_ppm(-500_000),
+            false,
+        )
+        .await
+        .expect_err("under a negative threshold the walk must surface the block it cannot read");
+        assert!(
+            matches!(err, KvStoreError::MissingBlock { ref hash, .. } if *hash == gone),
+            "the error must name the sub-anchor block; got {err:?}"
+        );
+
+        let certified = CliqueOracle::ft_witnessed_exact(
+            &target,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_ppm(333_333),
+            false,
+        )
+        .await
+        .expect("under a BFT threshold the walk stops at the floor instead of crossing the anchor");
+        assert!(certified, "the settled range must not block certification");
+    }
+
+    /// Heights are not validated monotone along a self-justification chain:
+    /// an above-floor rival can sit deeper than a sub-floor dip. The walk
+    /// must continue past the dip and find it.
+    #[tokio::test]
+    async fn a_sub_floor_dip_does_not_hide_an_above_floor_rival() {
+        let va = Bytes::from(vec![0xAA; 65]);
+        let vb = Bytes::from(vec![0xBB; 65]);
+
+        let dip = h(4); // held, on the target's spine, below the floor
+        let rival = h(21); // above the floor, on a parallel branch
+        let branch = h(22);
+        let j_old = h(20);
+
+        let (dag, target, latest_messages) = certification_fixture(
+            j_old.clone(),
+            vec![
+                (h(13), dip.clone()),         // lb's chain dips below the floor,
+                (dip.clone(), rival.clone()), // then names the above-floor rival
+                (j_old, h(67)),
+            ],
+            vec![
+                md_wm(dip.clone(), vec![], 4, &vb, vec![]),
+                md_wm(branch.clone(), vec![dip.clone()], 11, &va, vec![]),
+                md_wm(rival, vec![branch], 12, &vb, vec![]),
+                md_wm(h(20), vec![], 3, &vb, vec![]),
+            ],
+        );
+        // Splice the dip into the target's spine so visiting it alone vetoes
+        // nothing: floor <- dip is the settled prefix, rival is the divergence.
+        let mut dag = dag;
+        dag.main_parent_map.insert(h(9), dip);
+
+        let certified = CliqueOracle::ft_witnessed_exact(
+            &target,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_ppm(333_333),
+            false,
+        )
+        .await
+        .expect("every block on this walk is held");
+        assert!(
+            !certified,
+            "the rival above the floor disagrees; the dip below it must not settle the edge"
+        );
+    }
+
+    /// A latest-message slot naming a block this node does not hold (a stale
+    /// slot below a restore horizon) abstains its validator: it can neither
+    /// agree nor witness, and the decision completes without error.
+    #[tokio::test]
+    async fn an_unheld_latest_message_abstains_the_validator_without_error() {
+        let vb = Bytes::from(vec![0xBB; 65]);
+        let (dag, target, mut latest_messages) = certification_fixture(h(13), vec![], vec![]);
+        latest_messages.insert(vb, h(77)); // never held
+
+        let certified = CliqueOracle::ft_witnessed_exact(
+            &target,
+            &dag,
+            &latest_messages,
+            FtThreshold::from_ppm(333_333),
+            false,
+        )
+        .await
+        .expect("an unheld latest message abstains; it must not error the decision");
+        assert!(!certified, "half the committee cannot witness anything");
     }
 
     // ---- Phase-4 T-DET maximality: derive_floor picks the HIGHEST sound candidate ----
