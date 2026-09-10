@@ -10564,6 +10564,22 @@ disk and listed in J-117. The gate launcher's 56.8M peak excludes separately
 capped child scopes; it is not a whole-gate RSS measurement. This qualification
 does not close the known upstream PMU-006 failure in the broader codec suite.
 
+#### 5.33.36 Whole-import remeasurement after immutable payload activation (2026-09-10)
+
+The unchanged twelve-cell J-112 matrix was rerun against `4783a8d77`, with all
+fixture controls and 612 measured imports passing. Opaque depths 8/32/128 have
+medians 0.601808/4.696042/64.268301 ms. From depth 32 to 128, time grows 13.69 times
+for 3.85 times the compact bytes: the remaining whole-import slope is not closed.
+The earlier depth-128 median was 74.138043 ms, but these separate runs do not
+isolate a causal speedup. No new allocation profile was taken.
+
+CPU 2 was 99.34% idle and aggregate idle 84.45% before the capped, pinned run;
+service time was 20.457 s, peak 81.9M, zero swap. The peak includes fixture setup
+and is not an import-only memory figure. All raw samples, source/binary hashes,
+outliers and validity limits are retained in
+[J-118](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-118--2026-09-10-repeat-the-compact-import-ladder-after-immutable-payload-activation).
+State-ID reuse, compressed restore and source-window composition remain required.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

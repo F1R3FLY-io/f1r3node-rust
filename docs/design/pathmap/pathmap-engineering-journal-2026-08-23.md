@@ -8368,6 +8368,67 @@ and physical frame/owner immutability assertions. Neither run is a benchmark.
 | `target/verification/epathmap-absolute-payload-full-models-20260910.log` | `e608813d84b53ebfdd4316edf729e5a52167bf8c252c1ec55a0a9aa01a87688c` |
 | `target/verification/epathmap-absolute-payload-integrated-20260910.log` | `52c50dc7c6b22b6fa9e22df8dc29f9c8920e6c31f870e33c9efe31bf1c62e962` |
 
+### J-118 — 2026-09-10: repeat the compact-import ladder after immutable payload activation
+
+**MEASURED.** The unchanged J-112 benchmark source was rebuilt against production
+commit `4783a8d77`. All twelve fixture equality and compact-byte round-trip
+controls pass. Each cell contains 51 samples after three warmups; timing includes
+public compact import plus teardown and excludes fixture construction. The
+[complete 612-sample record](../stack-safety/measurements/compact-parbag-import-timing-2026-09-10.txt)
+preserves every observation.
+
+| Shape | Depth | Endpoints | Compact bytes | Median ms | Min ms | Max ms |
+|---|---:|---:|---:|---:|---:|---:|
+| region | 0 | 1 | 3263 | 1.178567 | 1.134855 | 1.398041 |
+| region | 0 | 16 | 3530 | 1.252747 | 1.231256 | 2.401047 |
+| region | 0 | 256 | 7163 | 2.368655 | 2.352054 | 2.404333 |
+| region | 8 | 1 | 3343 | 1.285689 | 1.208383 | 1.476249 |
+| region | 8 | 16 | 3610 | 1.359910 | 1.333901 | 1.377563 |
+| region | 8 | 256 | 7243 | 2.690454 | 2.631392 | 2.739526 |
+| region | 32 | 1 | 3583 | 1.370990 | 1.321417 | 1.426095 |
+| region | 32 | 16 | 3850 | 1.472211 | 1.453015 | 1.517417 |
+| region | 32 | 256 | 7483 | 2.832521 | 2.757230 | 4.409281 |
+| opaque | 8 | 1 | 1091 | 0.601808 | 0.588702 | 0.809670 |
+| opaque | 32 | 1 | 3803 | 4.696042 | 4.652050 | 4.879379 |
+| opaque | 128 | 1 | 14652 | 64.268301 | 61.938778 | 67.013808 |
+
+Region payload width remains 1,024 bytes; opaque payload width remains 16 bytes.
+The opaque depth-32 to depth-128 time ratio is 13.69, against a 3.85 encoded-byte
+ratio. The near-quadratic finite-ladder behavior therefore remains material.
+The older J-112 depth-128 median was 74.138043 ms versus 64.268301 ms here; this
+is an observational cross-run difference, **not** an isolated treatment effect
+or an accepted statistical speedup. Source-window and payload-frame changes,
+a reboot, sampling variation and system conditions separate the runs. No
+allocator or CPU-counter profile was collected in this repeat.
+
+**PROTOCOL AND RESOURCE EVIDENCE.** CPU 2 was 99.34% idle and the machine 84.45%
+idle in the three-second preflight. The timing service was restricted to CPU 2,
+with High4G/Max6G, zero swap and a one-core quota. Other campaign compilation
+was held during timing. Service time was 20.457 s, peak 81.9M, zero swap. This
+whole-process peak includes setup; it is not an import-only heap measurement.
+The finite matrix was sequential, not randomized, with no continuous
+interference monitor. Preserve the outliers instead of trimming them.
+
+Benchmark source hash remains
+`3592a839cbb8161cc26de916e788fd3c625e982eda7effdfee046c03a5a92611`;
+binary hash is
+`ef579c0d3bac3f0836b04b56d9733da5538a5a51c893710f2b9f154587ed0b65`.
+The timing and preflight logs are retained under `target/verification/`;
+their hashes are respectively
+`8f8de15fc9441ec699a26bdce106d0b114dcbea4754c3b1ca813c839c7c2b51f`
+and `3639979394ae8f9edd8b8dcf68567c5e545a99cf6c8f2b6000bb91b12162a66c`.
+Supporting pgmcp artifact 563 belongs to experiment 342.
+
+**DECISION.** Continue the existing required task rather than declare the slope
+closed. Independent plan reviews identify strict-interior state-ID reuse as the
+next finishable prerequisite, followed by compressed predecessor restoration,
+balanced source-window composition and joint ACT/EPM1 transport. Source
+composition must splice existing subtrees, never wrap an already composed source
+inside another leaf; otherwise recursive indexing would reappear. Shared borrowed
+sources require truthful admission lifetimes rather than forced `'static` output.
+These are design requirements, not claims that those changes are implemented.
+No ACT/LMDB comparison or campaign completion follows from this matrix.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
