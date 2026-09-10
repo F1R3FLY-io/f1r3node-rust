@@ -344,14 +344,17 @@ pub mod builder {
         // I5: the empty-frontier cap's per-validator exemption keys on the
         // stale-recovery interval; at or below the tick, every validator is
         // "idle for a full interval" at every tick and the cap never binds.
+        // A hard error: the recovery lane mints through the height constraint,
+        // so an unbound cap is unpaced per-tick minting.
         let stale_recovery_min_interval =
             node_conf.casper.heartbeat_conf.stale_recovery_min_interval;
         if stale_recovery_min_interval <= check_interval {
-            warnings.push(format!(
+            return Err(eyre::eyre!(
                 "casper.heartbeat.stale-recovery-min-interval ({:?}) is at or below \
                 casper.heartbeat.check-interval ({:?}): the recovery exemption opens \
                 every tick and the empty-frontier width cap never binds",
-                stale_recovery_min_interval, check_interval,
+                stale_recovery_min_interval,
+                check_interval,
             ));
         }
         // I4 tail: mpd < deploy-lifespan.
@@ -827,16 +830,15 @@ mod embedded_defaults_tests {
             "shipped geometry must be silent on I5, got {shipped:?}"
         );
 
-        // The boundary: interval == tick is the largest warning value.
+        // The boundary: interval == tick is the largest rejected value.
         let mut cfg = base.clone();
         cfg.casper.heartbeat_conf.stale_recovery_min_interval =
             cfg.casper.heartbeat_conf.check_interval;
-        let warnings = builder::validate_config(&cfg).expect("validate");
+        let err = builder::validate_config(&cfg)
+            .expect_err("an interval at the tick leaves the width cap unbound");
         assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("stale-recovery-min-interval") && w.contains("never binds")),
-            "an interval at the tick must warn, got {warnings:?}"
+            err.to_string().contains("never binds"),
+            "the error must name the unbound cap, got {err}"
         );
 
         let mut cfg = base.clone();
@@ -847,7 +849,7 @@ mod embedded_defaults_tests {
             !warnings
                 .iter()
                 .any(|w| w.contains("stale-recovery-min-interval")),
-            "an interval above the tick must not warn, got {warnings:?}"
+            "an interval above the tick must pass, got {warnings:?}"
         );
     }
 
