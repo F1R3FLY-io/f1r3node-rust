@@ -10766,6 +10766,28 @@ compilation, exact count, placeholder and kernel checks. This is not a complete
 workspace rerun. The remaining import-time slope and production ACT/LMDB
 comparison are unchanged.
 
+#### 5.33.44 Explicit balanced split-machine correspondence (2026-09-10)
+
+Fifteen new results prove the explicit split driver's agreement with the
+checked recursive split, including complete outputs/counters, boundary
+guards, cut rebasing and failure propagation. The driver terminates on
+finite trees without fuel or a depth cap. At every reachable state it holds
+at most the input height in split frames. A pop calls the independently
+verified concat subroutine; the split-frame count does not include that
+subroutine's frames or imply constant-time glue.
+
+Full compilation passes **322 closed checks**; independent kernel checking
+also passes. Compile: 36.070 seconds wall, 35.585 seconds CPU, 1.1G peak.
+Kernel: 20.479 seconds wall, 20.241 seconds CPU, 480M peak. Both retain
+1536M soft/2G hard limits and zero swap. These are verifier measurements,
+not runtime performance.
+
+[J-127](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-127--2026-09-10-explicit-split-machine-correspondence)
+records hashes, precise subroutine scope and the fifteen required native
+bindings. Native source ownership/release, endpoint anchors, cursors and
+ACT integration remain required. No runtime activation or closure of the
+import slope or production ACT/LMDB comparison is claimed.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

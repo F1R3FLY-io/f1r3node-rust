@@ -9055,6 +9055,67 @@ hash, COMM or accounting rule changes. Task 5976/6018 and experiment 342
 retain the result as a prerequisite; the import slope and production
 ACT-versus-LMDB comparison remain open.
 
+### J-127 — 2026-09-10: explicit split-machine correspondence
+
+**DERIVED / VERIFIED MODEL.** `BalancedSourceSplitDriver` adds fifteen
+closed capstones to the J-125 recursive split. Five continuation-frame forms
+retain the untouched siblings for the two-child first/last and three-child
+first/middle/last cases. Descent carries the selected optional root and
+rebased cut; return carries the exact optional split result or failure.
+
+Each step preserves the recursive interpretation. Every finite input tree
+reaches a terminal result without fuel or an artificial depth limit, including
+out-of-range and checked-window refusals. Every terminal result agrees with
+the recursive specification's complete outputs and counters. Endpoint cuts
+retain the exact original data root and perform no reconstruction; optional
+empty data roots accept only cut zero. All child boundaries and last-child
+offset subtraction are represented explicitly.
+
+For input height $`H`$, every reachable machine state holds at most
+$`H`$ **split frames**. A pop invokes a glue subroutine using the already
+verified iterative concat driver, not a constant-time primitive. Its concat
+frames and work remain separately accounted for; this theorem does not
+claim a combined stack bound for both machines. Two-sibling glue preserves
+the unfinished intermediate join. Failure propagates without invoking glue
+or publishing an output.
+
+**Executable bindings.** The formal README gives all fifteen export/control
+pairs: each frame case, every transition's interpretation, terminal
+differentials, out-of-range and empty-root guards, exact endpoint identities,
+interior source windows, node2/node3 rebasing, inherited legality/metadata
+and frame high-water counters. The actual native implementation and those
+tests remain required. Root endpoint anchors are still not data-tree roots:
+the original source's position-at-cut and end must be retained independently.
+
+**Verification.** Full compilation exits zero with 322 closed-context reports
+(307 previous plus 15 new). Independent kernel checking exits zero. Both
+runs use MemoryHigh 1536M, MemoryMax 2G, MemorySwapMax 0, CPUQuota 100%,
+TasksMax 64 and RuntimeMaxSec 900.
+
+| Check | Wall time (s) | CPU time (s) | Peak memory | Swap |
+|---|---:|---:|---:|---:|
+| Full proof compilation | 36.070 | 35.585 | 1.1G | 0 |
+| Independent kernel check | 20.479 | 20.241 | 480M | 0 |
+
+| Artifact | SHA-256 |
+|---|---|
+| `RPB3Admission.v` | `2b5148ce46b8e4af5d566fda613af949c7189c44b1902e0d333514439c590ac4` |
+| `RPB3Admission.vo` | `6a3a04982e7deb8dad90ed0cfaa1ab8b8040baa0c2bce55b583ed2e9af3e3b40` |
+| `target/verification/epathmap-split-driver-proof-final.log` | `4f0f7aaf13f54f47cc5ca84033cce7711921eb2d793765afb2a1922f94ca6036` |
+| `target/verification/epathmap-split-driver-kernel-final.log` | `3e028725321d7b3e6e7c9c8a5b435470a29aa4bc8d3f01a40a2dae1ea6d3d114` |
+
+Local diagnostics 1–6 are retained under `target/verification/`; their
+proof-script repairs precede the authoritative full compiler/kernel result.
+The shared full/focused gate expectation advances to 322; J-126's ownership
+unit remains independently checked at 31. No combined workspace execution
+or new runtime benchmark is implied by these counts.
+
+**Limits.** This prerequisite does not activate a native balanced source,
+prove native pointer identity or `Drop`, or close source-owner concurrency,
+cursor integration, bulk ACT admission or the measured nested-import slope.
+It changes no production or consensus behavior. Tasks 5976/6018 and
+experiment 342 retain the evidence; production ACT/LMDB comparison is open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

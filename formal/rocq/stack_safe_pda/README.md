@@ -2845,3 +2845,81 @@ Normal allocation failure that aborts must not be conflated with arithmetic
 panic or unwinding; neither allocator behavior nor panic safety follows from
 the ownership conservation lemmas. This catalogue activates no balanced-source
 backend and makes no whole-import performance or native Drop-completion claim.
+
+## Balanced source split driver invariant catalogue (2026-09-10; task 6018)
+
+`BalancedSourceSplitDriver` refines the checked recursive split into explicit
+descent and return states. Its five continuation variants retain the untouched
+siblings for first/last descent in a two-child node and first/middle/last descent
+in a three-child node. The current cut is rebased only when descending past a
+cached child prefix. Returning success rebuilds one saved context; returning
+failure pops that context without running its glue. An empty returning stack
+terminates the machine.
+
+The transition relation preserves the exact recursive interpretation at every
+prefix, including refusal, optional output roots, located bytes, reconstruction
+counts and visit counts. Termination is proved for every finite input tree,
+without fuel or a depth cap; successful source/native contracts additionally
+require the recursive model's legal-window, balance and representability
+preconditions. A malformed tree's finite execution need not succeed.
+
+### Exhaustive exported invariants and required executable controls
+
+These 15 bindings are required native controls, not implemented-test or runtime
+acceptance claims. The recursive model remains the independent specification;
+complete located observations include byte value, source identity and offset.
+
+| Exported invariant | Required executable control |
+|---|---|
+| `split_glue_uses_the_verified_concat_driver_without_intermediate_finalization` | Bind all four glue helpers to the iterative concat subroutine and compare complete results/counters with recursive glue. Two-sibling cases must absorb before finalization; reject the intermediate-finalization mutant. |
+| `every_split_frame_rebuilds_the_exact_recursive_outputs_and_counters` | Exercise all five frames with absent/present partial roots and concat carries; compare output roots, child order, caches and counters, and assert actual untouched sibling reference identity. |
+| `failed_split_results_propagate_without_any_glue_or_publication` | Inject a checked-window failure below nonempty saved contexts; pop the complete stack without invoking glue or publishing roots. Assert native source/root stores remain unchanged. |
+| `each_explicit_split_step_preserves_the_exact_recursive_interpretation` | At every descent/pop prefix, compare the active state plus saved contexts with recursive split interpretation; cover both failures and successful partial results. |
+| `explicit_split_loop_terminates_without_fuel_or_a_depth_cap` | Run the explicit loop to an empty returning stack on deep valid trees and finite malformed controls, including range and window refusals; do not introduce a semantic depth limit or recursive split fallback. |
+| `every_terminal_split_execution_has_the_exact_recursive_result_and_counters` | Differential-test complete terminal success/failure results against recursive split, including optional root identity, located outputs, visits and reconstruction counts. |
+| `every_reachable_split_state_retains_at_most_the_input_height_frames` | Record split-frame count at every transition on balanced inputs, including early stops and failed return paths. Count concat-subroutine frames separately rather than attributing the split-only bound to combined storage. |
+| `out_of_range_machine_cuts_return_failure_without_pushing_a_frame` | Reject cuts beyond cached size in the actual first transition; retain the saved stack and require no child descent, glue, window construction or store publication. |
+| `empty_optional_data_roots_preserve_the_exact_zero_cut_guard` | Accept absent-root cut zero and reject nonzero cuts with the exact result/counters and unchanged frames; preserve any independent endpoint metadata. |
+| `zero_and_full_machine_cuts_keep_the_exact_original_data_root` | Assert actual original-root reference identity for zero/full cuts, one visit and no reconstruction; cover saved outer frames and keep endpoint selection separate. |
+| `interior_leaf_machine_steps_keep_both_exact_checked_subwindow_results` | Compare both checked original-source ranges for every strict interior cut, including absolute-end overflow failures, owner/provenance preservation and the successful two-window count. |
+| `node2_machine_descent_selects_and_rebases_the_exact_child` | Test cuts before, at and after the child boundary; select the exact child/frame, subtract the first cached length only for last-child descent and retain the untouched sibling reference. |
+| `node3_machine_descent_keeps_both_boundaries_and_full_last_child_rebase` | Exercise all child interiors and both boundaries; subtract both preceding lengths for the last child and save exactly the correct ordered siblings. Reject one-prefix-only subtraction and wrong-frame mutants. |
+| `successful_tree_executions_inherit_the_full_recursive_split_facts` | From legal private trees, check successful outputs against all recursive facts: source legality, balance, exact caches, cut bounds, located reconstruction, output heights and both work potentials. |
+| `legal_optional_inputs_reach_the_exact_successful_recursive_result` | Exhaust valid optional roots and cuts against an eager located-byte oracle; require successful termination, exact sizes/prefix/suffix, output-height bounds, native metadata, absolute terminal bounds and established visit/rebuild limits. |
+
+### Subroutine, frame and endpoint scope
+
+A split pop is a glue-subroutine transition, not a constant-time operation.
+Its zero, one or two concatenations use `BalancedSourceConcatDriver`, whose
+separate loop correspondence and termination results supply the native
+subroutine contract. The current split execution relation does not interleave
+individual concat transitions with split transitions. Native code must call
+the explicit concat loop rather than translate its recursive proof specification
+into runtime recursion.
+
+For balanced input height $`H`$, every reachable split state has at most $`H`$
+saved split frames. This is not a bound on simultaneous split-plus-concat
+frames, allocator storage or ownership-release work. The recursive split's
+visit/reconstruction bounds transfer through exact result equality, but those
+counters are not counts of split control transitions or native wall time.
+
+Optional roots describe data, not global endpoint anchors. The left endpoint
+still requires `original.position_at(cut)` and the right endpoint requires
+`original.end`; absent data, seam positions and completion overrides need their
+separate bindings. Immutable reference cloning, source lifetimes, publication
+costs, the ownership model's remaining complete-drain obligations and native
+Drop/unwind safety are not proved by split-machine correspondence. No balanced
+runtime backend, cursor or bulk ACT transport is activated by this checkpoint.
+
+### Split driver proof qualification
+
+The module adds 15 exported capstones. Full compilation passes 322 closed-context
+checks (307 existing plus 15 new); independent kernel checking succeeds.
+Compilation took 36.070 seconds wall and 35.585 seconds CPU, with a 1.1G peak
+and zero swap. Kernel checking took 20.479 seconds wall and 20.241 seconds CPU,
+with a 480M peak and zero swap. Both used MemoryHigh=1536M, MemoryMax=2G,
+MemorySwapMax=0, CPUQuota=100%, TasksMax=64 and RuntimeMaxSec=900.
+Durable logs are `target/verification/epathmap-split-driver-proof-final.log`
+and `target/verification/epathmap-split-driver-kernel-final.log`; isolated
+diagnostics local-1 through local-6 remain retained. These standalone checks
+do not requalify the unified full/focused gate or establish native acceptance.

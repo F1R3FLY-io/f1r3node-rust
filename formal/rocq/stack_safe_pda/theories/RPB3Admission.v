@@ -10524,3 +10524,441 @@ Print Assumptions valid_cached_metadata_does_not_substitute_for_terminal_end_bou
 Print Assumptions publishing_both_optional_split_outputs_preserves_every_exact_historical_root.
 
 End CheckedBalancedSourceSplit.
+
+Module BalancedSourceSplitDriver.
+
+Import CanonicalKeyProtocol IndexedWindowTransport BalancedSourceComposition CheckedBalancedSourceSplit.
+
+Definition driver_gr1 partial sibling :=
+  match partial with
+  | None => Glued sibling 0 0
+  | Some value => freeze_join (BalancedSourceConcatDriver.driver value sibling)
+  end.
+
+Definition driver_gl1 sibling partial :=
+  match partial with
+  | None => Glued sibling 0 0
+  | Some value => freeze_join (BalancedSourceConcatDriver.driver sibling value)
+  end.
+
+Definition driver_gr2 partial first last :=
+  match partial with
+  | None => Glued (node2 first last) 0 1
+  | Some value => freeze_join (absorb_left2 (BalancedSourceConcatDriver.driver value first) last)
+  end.
+
+Definition driver_gl2 first last partial :=
+  match partial with
+  | None => Glued (node2 first last) 0 1
+  | Some value => freeze_join (absorb_right2 first (BalancedSourceConcatDriver.driver last value))
+  end.
+
+Theorem split_glue_uses_the_verified_concat_driver_without_intermediate_finalization
+    partial first last :
+  driver_gr1 partial last = gr1 partial last /\
+  driver_gl1 first partial = gl1 first partial /\
+  driver_gr2 partial first last = gr2 partial first last /\
+  driver_gl2 first last partial = gl2 first last partial.
+Proof.
+  destruct partial; cbn [driver_gr1 driver_gl1 driver_gr2 driver_gl2 gr1 gl1 gr2 gl2];
+    repeat rewrite BalancedSourceConcatDriver.explicit_stack_driver_returns_the_exact_recursive_pieces_visits_and_allocations;
+    repeat split.
+Qed.
+
+Inductive continuation :=
+| FromFirst2 (last : tree)
+| FromLast2 (first : tree)
+| FromFirst3 (middle last : tree)
+| FromMiddle3 (first last : tree)
+| FromLast3 (first middle : tree).
+
+Definition rebuild saved divided :=
+  match saved with
+  | FromFirst2 last => attach_right divided (driver_gr1 (split_right divided) last)
+  | FromLast2 first => attach_left (driver_gl1 first (split_left divided)) divided
+  | FromFirst3 middle last => attach_right divided (driver_gr2 (split_right divided) middle last)
+  | FromMiddle3 first last =>
+      attach_both (driver_gl1 first (split_left divided)) divided (driver_gr1 (split_right divided) last)
+  | FromLast3 first middle => attach_left (driver_gl2 first middle (split_left divided)) divided
+  end.
+
+Definition recursive_rebuild saved divided :=
+  match saved with
+  | FromFirst2 last => attach_right divided (gr1 (split_right divided) last)
+  | FromLast2 first => attach_left (gl1 first (split_left divided)) divided
+  | FromFirst3 middle last => attach_right divided (gr2 (split_right divided) middle last)
+  | FromMiddle3 first last => attach_both (gl1 first (split_left divided)) divided (gr1 (split_right divided) last)
+  | FromLast3 first middle => attach_left (gl2 first middle (split_left divided)) divided
+  end.
+
+Theorem every_split_frame_rebuilds_the_exact_recursive_outputs_and_counters saved divided :
+  rebuild saved divided = recursive_rebuild saved divided.
+Proof.
+  destruct saved; unfold rebuild, recursive_rebuild, driver_gr1, driver_gl1, driver_gr2, driver_gl2;
+    destruct (split_left divided); destruct (split_right divided);
+    cbn [gr1 gl1 gr2 gl2];
+    repeat rewrite BalancedSourceConcatDriver.explicit_stack_driver_returns_the_exact_recursive_pieces_visits_and_allocations;
+    reflexivity.
+Qed.
+
+Fixpoint resume frames result :=
+  match frames with
+  | [] => result
+  | saved :: rest => resume rest (option_map (rebuild saved) result)
+  end.
+
+Theorem failed_split_results_propagate_without_any_glue_or_publication frames :
+  resume frames None = None.
+Proof. induction frames; cbn [resume]; assumption || reflexivity. Qed.
+
+Inductive control :=
+| Descending (current : root) (cut : nat)
+| Returning (result : option split_result).
+
+Record machine := Machine {
+  active : control;
+  stack : list continuation
+}.
+
+Definition descend limit current cut frames :=
+  match current with
+  | None => Machine (Returning (if cut =? 0 then Some (Split None None 1 0) else None)) frames
+  | Some value =>
+      if cut <=? size value then
+        if cut =? 0 then Machine (Returning (Some (Split None (Some value) 1 0))) frames
+        else if cut =? size value then Machine (Returning (Some (Split (Some value) None 1 0))) frames
+        else match value with
+        | Leaf view => Machine (Returning
+            (match checked_subwindow limit view 0 cut,
+                   checked_subwindow limit view cut (window_width view) with
+             | Some before, Some after => Some (Split (Some (Leaf before)) (Some (Leaf after)) 1 2)
+             | _, _ => None
+             end)) frames
+        | Join2 _ _ first last =>
+            if cut <=? size first
+            then Machine (Descending (Some first) cut) (FromFirst2 last :: frames)
+            else Machine (Descending (Some last) (cut - size first)) (FromLast2 first :: frames)
+        | Join3 _ _ first middle last =>
+            if cut <=? size first
+            then Machine (Descending (Some first) cut) (FromFirst3 middle last :: frames)
+            else if cut <=? size first + size middle
+            then Machine (Descending (Some middle) (cut - size first)) (FromMiddle3 first last :: frames)
+            else Machine (Descending (Some last) (cut - (size first + size middle))) (FromLast3 first middle :: frames)
+        end
+      else Machine (Returning None) frames
+  end.
+
+Definition step limit current :=
+  match active current with
+  | Descending value cut => Some (descend limit value cut (stack current))
+  | Returning result => match stack current with
+      | [] => None
+      | saved :: rest => Some (Machine (Returning (option_map (rebuild saved) result)) rest)
+      end
+  end.
+
+Definition meaning limit current :=
+  resume (stack current)
+    (match active current with
+     | Descending value cut => split_root limit value cut
+     | Returning result => result
+     end).
+
+Lemma resume_recursive_frame saved frames result :
+  resume (saved :: frames) result = resume frames (option_map (recursive_rebuild saved) result).
+Proof.
+  cbn [resume]. destruct result; [|reflexivity].
+  cbn [option_map]. now rewrite every_split_frame_rebuilds_the_exact_recursive_outputs_and_counters.
+Qed.
+
+Lemma descent_preserves_meaning limit current cut frames :
+  meaning limit (descend limit current cut frames) = resume frames (split_root limit current cut).
+Proof.
+  destruct current as [value|]; [|reflexivity].
+  destruct value as [view|count rank first last|count rank first middle last];
+    cbn [descend split_root split_tree];
+    repeat match goal with |- context [if ?guard then _ else _] => destruct guard end;
+    try reflexivity.
+  all: lazymatch goal with
+  | |- meaning _ (Machine (Descending (Some ?child) ?offset) (?saved :: ?rest)) = ?rhs =>
+      change (resume (saved :: rest) (split_tree limit child offset) = rhs)
+  end.
+  all: rewrite resume_recursive_frame; reflexivity.
+Qed.
+
+Theorem each_explicit_split_step_preserves_the_exact_recursive_interpretation limit current next :
+  step limit current = Some next -> meaning limit next = meaning limit current.
+Proof.
+  destruct current as [[value cut|result] frames]; cbn [step active stack].
+  - intro same. inversion same; subst next. apply descent_preserves_meaning.
+  - destruct frames; [discriminate|]. intro same. inversion same; subst next. reflexivity.
+Qed.
+
+Inductive execution limit : machine -> nat -> machine -> Prop :=
+| Executed current : execution limit current 0 current
+| ExecutedStep current next final count :
+    step limit current = Some next -> execution limit next count final ->
+    execution limit current (S count) final.
+
+Lemma execution_append limit first middle last first_count last_count :
+  execution limit first first_count middle -> execution limit middle last_count last ->
+  execution limit first (first_count + last_count) last.
+Proof. intros prefix suffix. induction prefix; cbn; [exact suffix|]. econstructor; eauto. Qed.
+
+Lemma execution_preserves_meaning limit first count last :
+  execution limit first count last -> meaning limit last = meaning limit first.
+Proof.
+  intro ran. induction ran; [reflexivity|]. rewrite IHran.
+  now apply each_explicit_split_step_preserves_the_exact_recursive_interpretation.
+Qed.
+
+Lemma returning_executes_exactly_one_pop_per_saved_frame limit frames result :
+  execution limit (Machine (Returning result) frames) (length frames)
+    (Machine (Returning (resume frames result)) []).
+Proof.
+  revert result. induction frames as [|saved rest IH]; intro result; cbn [length resume].
+  - constructor.
+  - econstructor; [reflexivity|apply IH].
+Qed.
+
+Lemma one_descent_step_precedes_any_successor_execution limit current cut frames :
+  (exists count result, execution limit (descend limit current cut frames) count
+    (Machine (Returning result) [])) ->
+  exists count result, execution limit (Machine (Descending current cut) frames) count
+    (Machine (Returning result) []).
+Proof.
+  intros (count & result & ran). exists (S count), result.
+  econstructor; [reflexivity|exact ran].
+Qed.
+
+Lemma tree_descent_terminates_for_every_finite_tree limit current :
+  forall cut frames, exists count result,
+  execution limit (Machine (Descending (Some current) cut) frames) count
+    (Machine (Returning result) []).
+Proof.
+  induction current as [view|count rank first first_IH last last_IH|
+    count rank first first_IH middle middle_IH last last_IH]; intros cut frames;
+    apply one_descent_step_precedes_any_successor_execution; cbn [descend];
+    repeat match goal with |- context [if ?guard then _ else _] => destruct guard end;
+    try solve [do 2 eexists; apply returning_executes_exactly_one_pop_per_saved_frame];
+    first [apply first_IH|apply middle_IH|apply last_IH].
+Qed.
+
+Definition start current cut := Machine (Descending current cut) [].
+
+Theorem explicit_split_loop_terminates_without_fuel_or_a_depth_cap limit current cut :
+  exists count, execution limit (start current cut) count
+    (Machine (Returning (split_root limit current cut)) []) /\
+  step limit (Machine (Returning (split_root limit current cut)) []) = None.
+Proof.
+  assert (terminates : exists count result,
+    execution limit (start current cut) count (Machine (Returning result) [])).
+  { destruct current as [value|].
+    - apply tree_descent_terminates_for_every_finite_tree.
+    - apply one_descent_step_precedes_any_successor_execution.
+      cbn [descend]. do 2 eexists. apply returning_executes_exactly_one_pop_per_saved_frame. }
+  destruct terminates as (count & result & ran).
+  pose proof (execution_preserves_meaning ran) as same.
+  change (result = split_root limit current cut) in same. subst result.
+  exists count. split; [exact ran|reflexivity].
+Qed.
+
+Theorem every_terminal_split_execution_has_the_exact_recursive_result_and_counters
+    limit current cut count result :
+  execution limit (start current cut) count (Machine (Returning result) []) ->
+  result = split_root limit current cut.
+Proof. intro ran. exact (execution_preserves_meaning ran). Qed.
+
+Definition frontier_bound bound current :=
+  match active current with
+  | Descending value _ => root_balanced value /\ length (stack current) + root_height value <= bound
+  | Returning _ => length (stack current) <= bound
+  end.
+
+Lemma descent_preserves_frontier_bound limit current cut frames bound :
+  root_balanced current -> length frames + root_height current <= bound ->
+  frontier_bound bound (descend limit current cut frames).
+Proof.
+  destruct current as [value|].
+  - cbn [root_balanced root_height]. intros valid bounded.
+    destruct value as [view|count rank first last|count rank first middle last].
+    + cbn [descend].
+      repeat match goal with |- context [if ?guard then _ else _] => destruct guard end;
+        cbn [frontier_bound active stack]; cbn [height] in bounded; lia.
+    + destruct (balanced_shape2 valid) as (first_valid & last_valid & same & count_same & rank_same).
+      cbn [height] in bounded. subst rank. cbn [descend].
+      repeat match goal with |- context [if ?guard then _ else _] => destruct guard end;
+        cbn [frontier_bound active stack root_balanced root_height length];
+        repeat split; assumption || lia.
+    + destruct (balanced_shape3 valid) as
+        (first_valid & middle_valid & last_valid & same_middle & same & count_same & rank_same).
+      cbn [height] in bounded. subst rank. cbn [descend].
+      repeat match goal with |- context [if ?guard then _ else _] => destruct guard end;
+        cbn [frontier_bound active stack root_balanced root_height length];
+        repeat split; assumption || lia.
+  - cbn [root_balanced root_height descend]. intros _ bounded.
+    cbn [frontier_bound active stack]. lia.
+Qed.
+
+Lemma one_step_preserves_frontier_bound limit bound current next :
+  frontier_bound bound current -> step limit current = Some next -> frontier_bound bound next.
+Proof.
+  destruct current as [[value cut|result] frames]; cbn [frontier_bound step active stack].
+  - intros [valid bounded] same. inversion same; subst next.
+    now apply descent_preserves_frontier_bound.
+  - intros bounded same. destruct frames; [discriminate|].
+    inversion same; subst next. cbn [frontier_bound active stack]. cbn [length] in bounded. lia.
+Qed.
+
+Lemma execution_preserves_frontier_bound limit bound first count last :
+  execution limit first count last -> frontier_bound bound first -> frontier_bound bound last.
+Proof.
+  intro ran. induction ran; intro bounded; [exact bounded|].
+  apply IHran. eapply one_step_preserves_frontier_bound; eassumption.
+Qed.
+
+Theorem every_reachable_split_state_retains_at_most_the_input_height_frames
+    limit current cut count stopped :
+  root_balanced current -> execution limit (start current cut) count stopped ->
+  length (stack stopped) <= root_height current.
+Proof.
+  intros valid ran.
+  assert (bounded : frontier_bound (root_height current) stopped).
+  { eapply execution_preserves_frontier_bound; [exact ran|].
+    cbn [frontier_bound start active stack length]. split; [exact valid|lia]. }
+  destruct stopped as [[value offset|result] frames]; cbn [frontier_bound active stack] in *; lia.
+Qed.
+
+Theorem out_of_range_machine_cuts_return_failure_without_pushing_a_frame
+    limit current cut frames :
+  size current < cut ->
+  step limit (Machine (Descending (Some current) cut) frames) =
+    Some (Machine (Returning None) frames).
+Proof.
+  intro outside. cbn [step active stack descend].
+  assert (cut <=? size current = false) as refused by (apply Nat.leb_gt; exact outside).
+  now rewrite refused.
+Qed.
+
+Theorem empty_optional_data_roots_preserve_the_exact_zero_cut_guard limit cut frames :
+  step limit (Machine (Descending None cut) frames) =
+    Some (Machine (Returning (if cut =? 0 then Some (Split None None 1 0) else None)) frames).
+Proof. reflexivity. Qed.
+
+Theorem zero_and_full_machine_cuts_keep_the_exact_original_data_root limit current frames :
+  step limit (Machine (Descending (Some current) 0) frames) =
+    Some (Machine (Returning (Some (Split None (Some current) 1 0))) frames) /\
+  (0 < size current ->
+   step limit (Machine (Descending (Some current) (size current)) frames) =
+    Some (Machine (Returning (Some (Split (Some current) None 1 0))) frames)).
+Proof.
+  split; [reflexivity|]. intro positive. cbn [step active stack descend].
+  assert (size current =? 0 = false) as nonzero by (apply Nat.eqb_neq; lia).
+  now rewrite Nat.leb_refl, nonzero, Nat.eqb_refl.
+Qed.
+
+Theorem interior_leaf_machine_steps_keep_both_exact_checked_subwindow_results
+    limit view cut frames :
+  0 < cut < window_width view ->
+  step limit (Machine (Descending (Some (Leaf view)) cut) frames) =
+    Some (Machine (Returning
+      (match checked_subwindow limit view 0 cut,
+             checked_subwindow limit view cut (window_width view) with
+       | Some before, Some after => Some (Split (Some (Leaf before)) (Some (Leaf after)) 1 2)
+       | _, _ => None
+       end)) frames).
+Proof.
+  intro strict. cbn [step active stack descend size].
+  assert (cut <=? window_width view = true) as within by (apply Nat.leb_le; lia).
+  assert (cut =? 0 = false) as nonzero by (apply Nat.eqb_neq; lia).
+  assert (cut =? window_width view = false) as interior by (apply Nat.eqb_neq; lia).
+  now rewrite within, nonzero, interior.
+Qed.
+
+Theorem node2_machine_descent_selects_and_rebases_the_exact_child
+    limit count rank first last cut frames :
+  0 < cut < count ->
+  step limit (Machine (Descending (Some (Join2 count rank first last)) cut) frames) =
+    Some (if cut <=? size first
+      then Machine (Descending (Some first) cut) (FromFirst2 last :: frames)
+      else Machine (Descending (Some last) (cut - size first)) (FromLast2 first :: frames)).
+Proof.
+  intro strict. cbn [step active stack descend size].
+  assert (cut <=? count = true) as within by (apply Nat.leb_le; lia).
+  assert (cut =? 0 = false) as nonzero by (apply Nat.eqb_neq; lia).
+  assert (cut =? count = false) as interior by (apply Nat.eqb_neq; lia).
+  now rewrite within, nonzero, interior.
+Qed.
+
+Theorem node3_machine_descent_keeps_both_boundaries_and_full_last_child_rebase
+    limit count rank first middle last cut frames :
+  0 < cut < count ->
+  step limit (Machine (Descending (Some (Join3 count rank first middle last)) cut) frames) =
+    Some (if cut <=? size first
+      then Machine (Descending (Some first) cut) (FromFirst3 middle last :: frames)
+      else if cut <=? size first + size middle
+      then Machine (Descending (Some middle) (cut - size first)) (FromMiddle3 first last :: frames)
+      else Machine (Descending (Some last) (cut - (size first + size middle))) (FromLast3 first middle :: frames)).
+Proof.
+  intro strict. cbn [step active stack descend size].
+  assert (cut <=? count = true) as within by (apply Nat.leb_le; lia).
+  assert (cut =? 0 = false) as nonzero by (apply Nat.eqb_neq; lia).
+  assert (cut =? count = false) as interior by (apply Nat.eqb_neq; lia).
+  now rewrite within, nonzero, interior.
+Qed.
+
+Theorem successful_tree_executions_inherit_the_full_recursive_split_facts
+    roots limit allowed current cut count divided :
+  balanced current ->
+  Forall (legal_window roots limit allowed) (terminals current) -> cut <= size current ->
+  execution limit (start (Some current) cut) count (Machine (Returning (Some divided)) []) ->
+  split_facts roots limit allowed current cut divided.
+Proof.
+  intros valid windows within ran.
+  destruct (concrete_checked_split_is_total_preserves_sources_and_telescopes_both_output_heights
+    valid windows within) as [expected [accepted facts]].
+  pose proof (every_terminal_split_execution_has_the_exact_recursive_result_and_counters ran) as same.
+  cbn [split_root] in same. rewrite accepted in same. now inversion same; subst expected.
+Qed.
+
+Theorem legal_optional_inputs_reach_the_exact_successful_recursive_result
+    roots limit allowed current cut :
+  legal_root roots limit allowed current -> root_size current <= limit -> cut <= root_size current ->
+  exists count divided,
+    execution limit (start current cut) count (Machine (Returning (Some divided)) []) /\
+    root_balanced (split_left divided) /\ root_balanced (split_right divided) /\
+    root_size (split_left divided) = cut /\ root_size (split_right divided) = root_size current - cut /\
+    root_bytes roots (split_left divided) = firstn cut (root_bytes roots current) /\
+    root_bytes roots (split_right divided) = skipn cut (root_bytes roots current) /\
+    root_height (split_left divided) <= root_height current /\
+    root_height (split_right divided) <= root_height current /\
+    root_metadata limit (split_left divided) /\ root_metadata limit (split_right divided) /\
+    Forall (legal_window roots limit allowed)
+      (root_terminals (split_left divided) ++ root_terminals (split_right divided)) /\
+    split_visits divided <= 5 * root_height current + 1 /\
+    split_rebuilt divided <= 6 * root_height current + 2.
+Proof.
+  intros legal fits within.
+  destruct (checked_optional_split_is_total_exact_and_linearly_bounded legal fits within)
+    as [divided [accepted facts]].
+  destruct (explicit_split_loop_terminates_without_fuel_or_a_depth_cap limit current cut) as [count [ran stopped]].
+  rewrite accepted in ran. exists count, divided. split; assumption.
+Qed.
+
+Print Assumptions split_glue_uses_the_verified_concat_driver_without_intermediate_finalization.
+Print Assumptions every_split_frame_rebuilds_the_exact_recursive_outputs_and_counters.
+Print Assumptions failed_split_results_propagate_without_any_glue_or_publication.
+Print Assumptions each_explicit_split_step_preserves_the_exact_recursive_interpretation.
+Print Assumptions explicit_split_loop_terminates_without_fuel_or_a_depth_cap.
+Print Assumptions every_terminal_split_execution_has_the_exact_recursive_result_and_counters.
+Print Assumptions every_reachable_split_state_retains_at_most_the_input_height_frames.
+Print Assumptions out_of_range_machine_cuts_return_failure_without_pushing_a_frame.
+Print Assumptions empty_optional_data_roots_preserve_the_exact_zero_cut_guard.
+Print Assumptions zero_and_full_machine_cuts_keep_the_exact_original_data_root.
+Print Assumptions interior_leaf_machine_steps_keep_both_exact_checked_subwindow_results.
+Print Assumptions node2_machine_descent_selects_and_rebases_the_exact_child.
+Print Assumptions node3_machine_descent_keeps_both_boundaries_and_full_last_child_rebase.
+Print Assumptions successful_tree_executions_inherit_the_full_recursive_split_facts.
+Print Assumptions legal_optional_inputs_reach_the_exact_successful_recursive_result.
+
+End BalancedSourceSplitDriver.
