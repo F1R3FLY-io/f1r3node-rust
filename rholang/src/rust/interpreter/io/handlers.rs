@@ -53,8 +53,8 @@ use super::dir_handle_table::{DirHandle, DirIter};
 use super::errors::*;
 use super::handle_table::{FileHandle, FileHandleTable};
 use super::handler_trait::{
-    dispatch_via_trait, dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerReply,
-    JournalPath, SyscallCtx, FS_HANDLERS,
+    dispatch_via_trait, dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerFamily,
+    HandlerReply, JournalPath, SyscallCtx, FS_HANDLERS,
 };
 // C-R1 review fix: `extract_ok_fd` is used from fs_open's is_replay
 // branch to reconstruct the leader's returned fd for shadow-handle
@@ -4639,6 +4639,7 @@ static FS_FLUSH_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "flush",
     fixed_channel: FixedChannels::fs_flush,
     body_ref: BodyRefs::FS_FLUSH,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -4724,6 +4725,7 @@ static FS_TELL_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "tell",
     fixed_channel: FixedChannels::fs_tell,
     body_ref: BodyRefs::FS_TELL,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -4807,6 +4809,7 @@ static FS_CLOSE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "close",
     fixed_channel: FixedChannels::fs_close,
     body_ref: BodyRefs::FS_CLOSE,
+    family: HandlerFamily::Lifecycle,
 };
 
 // -------------------------------------------------------------------
@@ -4873,6 +4876,7 @@ static FS_RELEASE_LOCK_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "releaseLock",
     fixed_channel: FixedChannels::fs_release_lock,
     body_ref: BodyRefs::FS_RELEASE_LOCK,
+    family: HandlerFamily::Lock,
 };
 
 // -------------------------------------------------------------------
@@ -4957,6 +4961,7 @@ static FS_QUARANTINE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "quarantine",
     fixed_channel: FixedChannels::fs_quarantine,
     body_ref: BodyRefs::FS_QUARANTINE,
+    family: HandlerFamily::Lifecycle,
 };
 
 // -------------------------------------------------------------------
@@ -5034,6 +5039,7 @@ static FS_ENTRIES_STREAM_CLOSE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "entriesStreamClose",
     fixed_channel: FixedChannels::fs_entries_stream_close,
     body_ref: BodyRefs::FS_ENTRIES_STREAM_CLOSE,
+    family: HandlerFamily::Stream,
 };
 
 // -------------------------------------------------------------------
@@ -5175,6 +5181,7 @@ static FS_LOCK_RANGE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "lockRange",
     fixed_channel: FixedChannels::fs_lock_range,
     body_ref: BodyRefs::FS_LOCK_RANGE,
+    family: HandlerFamily::Lock,
 };
 
 // -------------------------------------------------------------------
@@ -5287,6 +5294,7 @@ static FS_LOCK_SEQUENTIAL_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "lockSequential",
     fixed_channel: FixedChannels::fs_lock_sequential,
     body_ref: BodyRefs::FS_LOCK_SEQUENTIAL,
+    family: HandlerFamily::Lock,
 };
 
 // -------------------------------------------------------------------
@@ -5479,6 +5487,7 @@ static FS_ENTRIES_STREAM_OPEN_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "entriesStreamOpen",
     fixed_channel: FixedChannels::fs_entries_stream_open,
     body_ref: BodyRefs::FS_ENTRIES_STREAM_OPEN,
+    family: HandlerFamily::Stream,
 };
 
 // -------------------------------------------------------------------
@@ -5641,6 +5650,7 @@ static FS_ENTRIES_STREAM_NEXT_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "entriesStreamNext",
     fixed_channel: FixedChannels::fs_entries_stream_next,
     body_ref: BodyRefs::FS_ENTRIES_STREAM_NEXT,
+    family: HandlerFamily::Stream,
 };
 
 // -------------------------------------------------------------------
@@ -5770,6 +5780,7 @@ static FS_SIZE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "size",
     fixed_channel: FixedChannels::fs_size,
     body_ref: BodyRefs::FS_SIZE,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -5916,6 +5927,7 @@ static FS_STAT_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "stat",
     fixed_channel: FixedChannels::fs_stat,
     body_ref: BodyRefs::FS_STAT,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -6065,6 +6077,7 @@ static FS_EXISTS_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "exists",
     fixed_channel: FixedChannels::fs_exists,
     body_ref: BodyRefs::FS_EXISTS,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -6205,6 +6218,7 @@ static FS_READ_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "read",
     fixed_channel: FixedChannels::fs_read,
     body_ref: BodyRefs::FS_READ,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -6339,6 +6353,7 @@ static FS_READ_AT_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "readAt",
     fixed_channel: FixedChannels::fs_read_at,
     body_ref: BodyRefs::FS_READ_AT,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -6498,6 +6513,7 @@ static FS_SEEK_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "seek",
     fixed_channel: FixedChannels::fs_seek,
     body_ref: BodyRefs::FS_SEEK,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -6668,6 +6684,7 @@ static FS_TRUNCATE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "truncate",
     fixed_channel: FixedChannels::fs_truncate,
     body_ref: BodyRefs::FS_TRUNCATE,
+    family: HandlerFamily::Mutation,
 };
 
 // -------------------------------------------------------------------
@@ -6866,6 +6883,7 @@ static FS_CHMOD_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "chmod",
     fixed_channel: FixedChannels::fs_chmod,
     body_ref: BodyRefs::FS_CHMOD,
+    family: HandlerFamily::Mutation,
 };
 
 // -------------------------------------------------------------------
@@ -7020,6 +7038,7 @@ static FS_CHOWN_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "chown",
     fixed_channel: FixedChannels::fs_chown,
     body_ref: BodyRefs::FS_CHOWN,
+    family: HandlerFamily::Mutation,
 };
 
 // -------------------------------------------------------------------
@@ -7214,6 +7233,7 @@ static FS_WRITE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "write",
     fixed_channel: FixedChannels::fs_write,
     body_ref: BodyRefs::FS_WRITE,
+    family: HandlerFamily::Mutation,
 };
 
 // -------------------------------------------------------------------
@@ -7381,6 +7401,7 @@ static FS_WRITE_AT_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "writeAt",
     fixed_channel: FixedChannels::fs_write_at,
     body_ref: BodyRefs::FS_WRITE_AT,
+    family: HandlerFamily::Mutation,
 };
 
 // -------------------------------------------------------------------
@@ -7587,6 +7608,7 @@ static FS_ENTRIES_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "entries",
     fixed_channel: FixedChannels::fs_entries,
     body_ref: BodyRefs::FS_ENTRIES,
+    family: HandlerFamily::Observation,
 };
 
 // -------------------------------------------------------------------
@@ -7788,6 +7810,7 @@ static FS_RENAME_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "rename",
     fixed_channel: FixedChannels::fs_rename,
     body_ref: BodyRefs::FS_RENAME,
+    family: HandlerFamily::Mutation,
 };
 
 // -------------------------------------------------------------------
@@ -7985,6 +8008,7 @@ static FS_COPY_FILE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "copyFile",
     fixed_channel: FixedChannels::fs_copy_file,
     body_ref: BodyRefs::FS_COPY_FILE,
+    family: HandlerFamily::Mutation,
 };
 
 // -------------------------------------------------------------------
@@ -8155,6 +8179,7 @@ static FS_OPEN_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "open",
     fixed_channel: FixedChannels::fs_open,
     body_ref: BodyRefs::FS_OPEN,
+    family: HandlerFamily::Lifecycle,
 };
 
 // -------------------------------------------------------------------
@@ -8345,6 +8370,7 @@ static FS_REMOVE_FILE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "removeFile",
     fixed_channel: FixedChannels::fs_remove_file,
     body_ref: BodyRefs::FS_REMOVE_FILE,
+    family: HandlerFamily::Mutation,
 };
 
 // -------------------------------------------------------------------
@@ -8427,6 +8453,7 @@ static FS_RELEASE_ALL_FOR_HOLDER_ENTRY: FsHandlerEntry = FsHandlerEntry {
     urn_suffix: "releaseAllForHolder",
     fixed_channel: FixedChannels::fs_release_all_for_holder,
     body_ref: BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+    family: HandlerFamily::Lock,
 };
 
 // ---------------------------------------------------------------------

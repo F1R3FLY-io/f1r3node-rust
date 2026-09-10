@@ -503,6 +503,50 @@ impl<'a> JournalPath<'a> {
 // FsHandlerEntry + FS_HANDLERS distributed slice
 // ------------------------------------------------------------------
 
+/// Handler family — used by the per-family count pin in
+/// `fileio_cost_spec.rs` and by future `handlers_{family}.rs` file
+/// splits (wave-3 S3.13).  Grouped by the shape of the syscall's
+/// effect on state and on the WAL:
+///
+///   - `Mutation`: writes state.  8 handlers migrated + 1 exempt
+///     (fs_remove_dir).  Includes fs_write, fs_write_at, fs_truncate,
+///     fs_chmod, fs_chown, fs_remove_file, fs_rename, fs_copy_file.
+///     WAL-journaling by default; some (fs_chown under Consensus,
+///     fs_chmod / fs_rename / fs_copy_file / fs_truncate / fs_write*)
+///     verify replies across leader / follower.
+///
+///   - `Observation`: reads state without mutating.  9 handlers.
+///     Includes fs_read, fs_read_at, fs_stat, fs_entries, fs_size,
+///     fs_seek, fs_exists, fs_flush, fs_tell.  Some (fs_stat,
+///     fs_entries, fs_exists, fs_size) verify replies; fs_read,
+///     fs_read_at, fs_seek are shape-observation-only and don't
+///     verify.
+///
+///   - `Stream`: per-fd directory-entries streaming primitives.
+///     3 handlers: fs_entries_stream_open / _next / _close.
+///     fs_entries_stream_next is the only verifying streaming
+///     handler (per-Next reply verified).
+///
+///   - `Lock`: byte-range and sequential lock helpers.  4
+///     handlers: fs_lock_range, fs_lock_sequential, fs_release_lock,
+///     fs_release_all_for_holder.  Non-verifying (LockRegistry is
+///     host-local).
+///
+///   - `Lifecycle`: file / cap creation + retirement.  3 handlers:
+///     fs_open, fs_close, fs_quarantine.  Non-verifying; fs_open
+///     has `on_replay_side_effect` for shadow-fd installation.
+///
+/// Total: 8+9+3+4+3 = 27 migrated FS_HANDLERS + 1 trait-exempt
+/// (fs_remove_dir, mutation family) = 28.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HandlerFamily {
+    Mutation,
+    Observation,
+    Stream,
+    Lock,
+    Lifecycle,
+}
+
 /// One entry per migrated handler in the `FS_HANDLERS` distributed
 /// slice.  Structured to be usable by rho_runtime.rs's future
 /// registration walk (wave-3 S3.12).
@@ -559,6 +603,13 @@ pub struct FsHandlerEntry {
     /// BodyRef constant: `BodyRefs::FS_X`.  Rholang's built-in
     /// dispatch table keys handler resolution on this i64.
     pub body_ref: super::super::system_processes::BodyRef,
+
+    /// Handler family.  Groups handlers by effect shape; used by
+    /// the per-family count pin (`fs_handlers_family_counts_
+    /// match_pinned` in fileio_cost_spec.rs) and by the S3.13 file
+    /// split into `handlers_{family}.rs`.  See `HandlerFamily`
+    /// doc-comment for the taxonomy.
+    pub family: HandlerFamily,
 }
 
 /// Distributed slice of every migrated handler's `FsHandlerEntry`.
@@ -944,6 +995,59 @@ mod tests {
             "The migrated-handler table above must have the same \
              length as EXPECTED_MIGRATED_HANDLER_COUNT.  Bump both \
              when a wave-3 session migrates a new handler."
+        );
+    }
+
+    /// Wave-3 S3.13a (2026-09-09): per-family count pin.  Every
+    /// migrated handler declares a `family: HandlerFamily::X` on its
+    /// `#[distributed_slice(FS_HANDLERS)] static FS_X_ENTRY`
+    /// registration.  This pin locks the family breakdown against
+    /// the plan-documented shape:
+    ///
+    ///   mutation:    8 (fs_remove_dir trait-exempt → not in slice)
+    ///   observation: 9
+    ///   stream:      3
+    ///   lock:        4
+    ///   lifecycle:   3
+    ///                --
+    ///                27 total (matches EXPECTED_MIGRATED_HANDLER_COUNT).
+    ///
+    /// A regression that miscategorizes a handler (or leaves a new
+    /// migration with a stale family field from a copy-paste)
+    /// surfaces here.  Prep for S3.13b `handlers_{family}.rs` file
+    /// split — the count per family MUST match the per-file
+    /// registration count.
+    #[test]
+    fn fs_handlers_family_counts_match_pinned() {
+        let mut counts = [0usize; 5];
+        for entry in FS_HANDLERS.iter() {
+            let idx = match entry.family {
+                HandlerFamily::Mutation => 0,
+                HandlerFamily::Observation => 1,
+                HandlerFamily::Stream => 2,
+                HandlerFamily::Lock => 3,
+                HandlerFamily::Lifecycle => 4,
+            };
+            counts[idx] += 1;
+        }
+        let expected = [8usize, 9, 3, 4, 3]; // see doc-comment
+        assert_eq!(
+            counts, expected,
+            "FS_HANDLERS family count drift.  Expected \
+             [Mutation=8, Observation=9, Stream=3, Lock=4, Lifecycle=3] \
+             (fs_remove_dir trait-exempt, so mutation is 8 in the slice; \
+             total 27 = EXPECTED_MIGRATED_HANDLER_COUNT).  Got {counts:?}.  \
+             Either a handler's `family:` field drifted, or a new handler \
+             was added without updating this pin.  See HandlerFamily \
+             doc-comment for the family taxonomy."
+        );
+        let total: usize = counts.iter().sum();
+        assert_eq!(
+            total, EXPECTED_MIGRATED_HANDLER_COUNT,
+            "Per-family count sum ({total}) must equal \
+             EXPECTED_MIGRATED_HANDLER_COUNT ({EXPECTED_MIGRATED_HANDLER_COUNT}).  \
+             Someone added a HandlerFamily variant but not the row above, or \
+             a family field was omitted from a FS_HANDLERS entry."
         );
     }
 
