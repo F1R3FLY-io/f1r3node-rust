@@ -9748,6 +9748,20 @@ The expanded combined route is running in bounded child scopes; its outer
 service metrics will describe only its driver, not aggregate proof/test use.
 No complete-debug-library or importer-cutover claim is made at this checkpoint.
 
+**EXPANDED COMBINED GATE PASS.** The maintained `--epathmap-import` route
+subsequently exits successfully, including the 333-result admission proof,
+68-result release proof, newly shared 15-result incremental-preparation proof,
+independent kernel checks, exact native group counts and positive ACT-span
+compilation with eight expected compiler-rejection controls. Source controls
+pass 22/22 in release and debug; arena controls pass 17/17 in both; standalone
+admission passes 32/32 in both. The full transcript is
+`target/verification/canonical-source-chunks-integrated.log`.
+Outer service time is 266.774 seconds. Its 3.395 seconds CPU and 55.8M peak
+are driver-only measurements: heavy proof and Rust children run in separately
+bounded systemd scopes. They must not be presented as aggregate validation
+resource use. Implementation checkpoint is `b1f90aab7`; importer integration
+and production performance comparison remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

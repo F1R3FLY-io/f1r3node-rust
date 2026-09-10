@@ -10975,7 +10975,9 @@ The reviewed implementation passes 22 source, 17 arena and 32 standalone
 admission debug controls and all 452 model-library release tests. Final
 service peak is 2.1G, swap zero, under a 6 GiB hard ceiling. The expanded
 maintained EPathMap gate additionally includes both-profile source controls
-and the reused ordered chunk-fold proof; its combined execution is pending.
+and the reused ordered chunk-fold proof; the expanded combined route passes
+its proof, kernel, runtime and ACT-span compilation controls. Its 266.774-second
+outer service reports only driver CPU/memory, not aggregate child resources.
 [J-136](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-136--2026-09-10-retained-source-chunks-for-copy-and-equality)
 records independent-oracle review, exact tests, logs and resource scope.
 Shared-source importer integration and production slope measurements remain

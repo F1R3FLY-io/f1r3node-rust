@@ -3217,7 +3217,9 @@ bounded resource use. The maintained EPathMap gate now includes both-profile
 source/arena controls and debug admission controls, and checks the existing
 15 closed incremental-preparation results including ordered chunk folding.
 The full proof route reuses that check instead of compiling it twice.
-The expanded combined route must itself pass before being reported qualified.
+The expanded combined route subsequently passes its exact proof/runtime
+counts, kernel checks and ACT-span positive/eight negative compiler controls.
+J-136 records its transcript and separates driver resources from child scopes.
 Native allocator-work instrumentation and importer source integration remain
 separate requirements; neither follows from abstract fold equality.
 
