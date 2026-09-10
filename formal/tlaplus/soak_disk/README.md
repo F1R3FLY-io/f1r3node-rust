@@ -10,7 +10,7 @@ a Boolean constant and must violate exactly the invariant named below.
 
 | Model action | Driver behavior |
 | --- | --- |
-| `ValidateSettings` | Reject the configuration outright when the floor, the band, or their sum does not fit in 64 bits (B24) |
+| `ValidateSettings` | Reject the configuration outright when the floor, the band, or their sum does not fit in 64 bits (B24). Refuse work when the state file records an iteration left in flight by a crashed segment (B29) |
 | `Benchmark` | Launch the opening benchmark on the first segment only when no breach marker was retained, a known sample is at or above floor plus band, and the guardian is alive. A guardian started first records a disk fall during the benchmark; a watched fault (breach or guardian death) cancels the benchmark and publishes the failure |
 | `CheckGuardian` | Read the guardian marker before the probe and after hygiene |
 | `ProbeBoundary`, `ProbeAfterHygiene` | `disk_free_mb`: `df` reports the free space, prints a malformed field, or fails |
@@ -40,8 +40,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `PreserveUnowned` | Hygiene never deletes a temporary session by age, since age proves neither ownership nor writer termination | `MC_SoakDiskAdmission_age_only_pre_fix` | `UnownedSessionPreserved` |
 | `EnforceCleanupFailures` | A failed Docker cleanup command fails hygiene and refuses admission, whatever the later sample says | `MC_SoakDiskAdmission_ignore_errors_pre_fix` | `CleanupFailurePreventsAdmission` |
 | `PreserveDockerResources` | Hygiene inspects exited containers, networks, images, and the build cache; it never prunes them, since the driver cannot tell its own resources from the host's | `MC_SoakDiskAdmission_global_prune_pre_fix` | `UnownedDockerResourcesPreserved` |
+| `RememberInFlight` | The state file records an iteration in flight. A segment that finds one counts a failure and refuses work, since writer termination is unconfirmed | `MC_SoakDiskAdmission_unrecorded_pre_fix` | `CrashRequiresRefusal` |
 
-`MC_SoakDiskAdmission` enables all fourteen corrections with both benchmark fault kinds. It checks `TypeOK`, the fourteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 12138 distinct states.
+`MC_SoakDiskAdmission` enables all fifteen corrections with both benchmark fault kinds. It checks `TypeOK`, the fifteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 12258 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 
@@ -61,6 +62,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | --- | --- |
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
+| `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28) |
 | `StartProbe`, `Tick`, `ProbeReturns` | The guardian runs `df` under `timeout` |
 | `DecideSample` | A timed-out or empty probe supplies no sample |
 | `Detect`, `Record`, `BeginStop` | Write `host-guardian-breach.txt`, then start `stop_node_writers` |
@@ -78,8 +80,9 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `PreserveBreach` | A restart keeps the marker and records a failure | `MC_SoakDiskGuardian_cleared_breach_pre_fix` | `RetainedBreachStopsRestart` |
 | `EnforceStopDeadline` | `pkill` and `docker kill` run under a deadline | `MC_SoakDiskGuardian_unbounded_stop_pre_fix` | `StopWithinBudget` |
 | `CheckProgress` | A live guardian without recent progress counts as failed, and the work is interrupted | `MC_SoakDiskGuardian_alive_only_pre_fix` | `StaleGuardianRequiresInterrupt` |
+| `StopOnExit` | The driver's EXIT trap stops the node writers it launched when it exits with an iteration or benchmark in flight | `MC_SoakDiskGuardian_client_only_pre_fix` | `ExitStopsWriters` |
 
-`MC_SoakDiskGuardian` enables all eight corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, and `KillFollowsTerm`. It completes with 6294 distinct states.
+`MC_SoakDiskGuardian` enables all nine corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, and `KillFollowsTerm`. It completes with 6342 distinct states.
 
 Clock units: the probe deadline is 3 units (a 2-second timeout plus a 1-second kill grace), a stalled `df` returns at 4 units, the stop budget is 2 units (TERM at 1, KILL at 2), and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
 

@@ -170,6 +170,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_age_only_pre_fix:UnownedSessionPreserved
     soak_disk/MC_SoakDiskAdmission_ignore_errors_pre_fix:CleanupFailurePreventsAdmission
     soak_disk/MC_SoakDiskAdmission_global_prune_pre_fix:UnownedDockerResourcesPreserved
+    soak_disk/MC_SoakDiskAdmission_unrecorded_pre_fix:CrashRequiresRefusal
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline
@@ -178,6 +179,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_cleared_breach_pre_fix:RetainedBreachStopsRestart
     soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix:StopWithinBudget
     soak_disk/MC_SoakDiskGuardian_alive_only_pre_fix:StaleGuardianRequiresInterrupt
+    soak_disk/MC_SoakDiskGuardian_client_only_pre_fix:ExitStopsWriters
 )
 
 # Areas whose expected-violation configurations are all registered. A

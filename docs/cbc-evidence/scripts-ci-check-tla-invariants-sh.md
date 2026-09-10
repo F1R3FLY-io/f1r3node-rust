@@ -13,7 +13,7 @@
 | B2 routing | `7034e2168` | The TLA+ job skipped pull requests. | PR and push run `--soak-pr` (2 workers, 2 m per configuration, 15-minute job). Schedule and dispatch keep the full list and 240 minutes. TLC logs upload on every result. |
 | B3 inventory | `43af06dab` | No candidate-bound claim inventory. | Superseded on 2026-09-09. The 256-file digest inventory and its CI step were replaced by [soak-disk-protection.md](../claims/soak-disk-protection.md), because any change to a digested file failed CI for every unrelated pull request. |
 
-The B1 and B2 tests are merged into `scripts/ci/test-check-tla-invariants.sh`. It reads the control registry from the gate and checks 23 controls times seven outcomes plus six routing scenarios.
+The B1 and B2 tests are merged into `scripts/ci/test-check-tla-invariants.sh`. It reads the control registry from the gate and checks 25 controls times seven outcomes plus six routing scenarios.
 
 ## Real TLC results
 

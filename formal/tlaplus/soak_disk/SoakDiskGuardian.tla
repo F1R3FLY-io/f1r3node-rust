@@ -2,7 +2,7 @@
 (* The emergency path of one soak iteration in                               *)
 (* scripts/run-merge-recovery-soak.sh: the guardian probes, records a        *)
 (* breach, stops the writers, attributes the space, and the next segment     *)
-(* finds the marker. Eight constants switch the eight corrections on and off *)
+(* finds the marker. Nine constants switch the nine corrections on and off   *)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
 EXTENDS Naturals, TLC
 
@@ -13,11 +13,12 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           AggregateDeadline, \* attribution has one budget for all roots
           PreserveBreach,    \* a restart keeps the marker and a failure
           EnforceStopDeadline, \* pkill and docker kill run under a deadline
-          CheckProgress \* a live guardian without recent progress counts as failed (B20, B21)
+          CheckProgress, \* a live guardian without recent progress counts as failed (B20, B21)
+          StopOnExit \* the driver's exit trap stops the node writers it launched (B28)
 
 ASSUME {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
-        AggregateDeadline, PreserveBreach, EnforceStopDeadline, CheckProgress}
-         \subseteq BOOLEAN
+        AggregateDeadline, PreserveBreach, EnforceStopDeadline, CheckProgress,
+        StopOnExit} \subseteq BOOLEAN
 
 ProbeDeadline     == 3  \* two-second timeout plus one-second kill grace
 ProbeReturnsAt    == 4  \* a stalled df prints a valid field after the deadline
@@ -29,13 +30,14 @@ VARIABLES phase, alive, interruptRequested, breachRecorded,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
           marker, priorFailures, failures, admitted,
-          stale \* the guardian is alive but its progress record has expired
+          stale, \* the guardian is alive but its progress record has expired
+          exitStop \* the driver's exit trap stopped the writers (B28)
 
 vars == <<phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
-          marker, priorFailures, failures, admitted, stale>>
+          marker, priorFailures, failures, admitted, stale, exitStop>>
 
 Init ==
     /\ phase = "running"
@@ -56,6 +58,27 @@ Init ==
     /\ failures = priorFailures
     /\ admitted = FALSE
     /\ stale = FALSE
+    /\ exitStop = FALSE
+
+\* B28: the driver exits while an iteration or benchmark runs (a signal, an
+\* early exit). Only the corrected EXIT trap stops the writers it launched;
+\* the pre-fix driver left them running on the host.
+DriverExit ==
+    /\ phase = "running"
+    /\ phase' = "exiting"
+    /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed,
+                   timedOut, known, stopStarted, stopElapsed, termSent, killSent,
+                   diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
+                   stale, exitStop>>
+
+ExitTrap ==
+    /\ phase = "exiting"
+    /\ exitStop' = StopOnExit
+    /\ phase' = "exited"
+    /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed,
+                   timedOut, known, stopStarted, stopElapsed, termSent, killSent,
+                   diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
+                   stale>>
 
 \* The guardian process is alive but stops making progress (SIGSTOP, a hung
 \* probe): its progress record ages past SOAK_GUARDIAN_MAX_SILENCE_SECONDS.
@@ -250,12 +273,13 @@ RestartDecision ==
                    known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker,
                    priorFailures, failures>>
 
-Next == Stall \/ WatcherPollStale
+Next == DriverExit \/ ExitTrap
+        \/ ((Stall \/ WatcherPollStale) /\ UNCHANGED exitStop)
         \/ (/\ Crash \/ WatcherPoll \/ StartProbe \/ Tick \/ ProbeReturns
                \/ DecideSample \/ Detect \/ Record \/ BeginStop \/ StopTick
                \/ StopReturns \/ PublishLate \/ AttributionTick \/ CompleteRoot
                \/ Finish \/ Recover \/ RestartDecision
-            /\ UNCHANGED stale)
+            /\ UNCHANGED <<stale, exitStop>>)
 
 Spec == Init /\ [][Next]_vars
 
@@ -263,7 +287,7 @@ TypeOK ==
     /\ phase \in {"running", "watcher-decided", "progress-decided", "probing",
                   "sampled", "sample-decided", "breach", "record", "stop",
                   "stopping", "attribution", "finished", "resume", "stopped",
-                  "ready", "done"}
+                  "ready", "done", "exiting", "exited"}
     /\ alive \in BOOLEAN
     /\ interruptRequested \in BOOLEAN
     /\ breachRecorded \in BOOLEAN
@@ -281,6 +305,7 @@ TypeOK ==
     /\ failures \in 0..2
     /\ admitted \in BOOLEAN
     /\ stale \in BOOLEAN
+    /\ exitStop \in BOOLEAN
 
 DeadGuardianRequiresInterrupt ==
     (phase = "watcher-decided" /\ ~alive) => (interruptRequested /\ breachRecorded)
@@ -296,4 +321,5 @@ KillFollowsTerm == killSent => termSent
 AttributionWithinBudget == phase = "attribution" => diagElapsed < AttributionBudget
 RetainedBreachStopsRestart == phase = "done" => (marker /\ ~admitted /\ failures > 0)
 PriorFailuresPreserved == failures >= priorFailures
+ExitStopsWriters == phase = "exited" => exitStop
 =============================================================================
