@@ -822,11 +822,13 @@ fn every_fs_handler_charges_its_cost_helper() {
     let handlers_stream_src = include_str!("../src/rust/interpreter/io/handlers_stream.rs");
     let handlers_lock_src = include_str!("../src/rust/interpreter/io/handlers_lock.rs");
     let handlers_lifecycle_src = include_str!("../src/rust/interpreter/io/handlers_lifecycle.rs");
+    let handlers_observation_src =
+        include_str!("../src/rust/interpreter/io/handlers_observation.rs");
     // Future family files (S3.13b continuation): concat with `\n---\n`
     // separator between; trait_impl_block anchor-search still works
     // per-file because each block is bounded by its own `}\n}\n`.
     let all_src: String = format!(
-        "{handlers_src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}"
+        "{handlers_src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}"
     );
 
     let mut missing = Vec::new();
@@ -953,10 +955,25 @@ fn handlers_top_comment_count_matches_actual_handlers() {
 /// branches) but counts once because it's one handler.
 #[test]
 fn handlers_top_comment_phase5_verifying_count_matches_actual() {
+    // Wave-3 S3.13b (2026-09-10): family split — aggregate every
+    // per-family file so pass 2 (trait-impl scan) sees all verifying
+    // handlers regardless of which module hosts them.  Pass 1 stays
+    // scoped to handlers.rs since it looks for `pub async fn` (only
+    // fs_remove_dir remains).
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    let handlers_stream_src = include_str!("../src/rust/interpreter/io/handlers_stream.rs");
+    let handlers_lock_src = include_str!("../src/rust/interpreter/io/handlers_lock.rs");
+    let handlers_lifecycle_src = include_str!("../src/rust/interpreter/io/handlers_lifecycle.rs");
+    let handlers_observation_src =
+        include_str!("../src/rust/interpreter/io/handlers_observation.rs");
+    let all_src: String = format!(
+        "{src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}"
+    );
 
     // Pass 1: pre-wave-3 style — scan `pub async fn fs_X` bodies
-    // for the inline `match verify_reply_hash_matches_cached`.
+    // for the inline `match verify_reply_hash_matches_cached`.  Post
+    // S3.12b only fs_remove_dir (trait-exempt) remains as a `pub
+    // async fn` in handlers.rs.
     let mut current_fn: Option<&str> = None;
     let mut verifying: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for line in src.lines() {
@@ -973,14 +990,12 @@ fn handlers_top_comment_phase5_verifying_count_matches_actual() {
     }
 
     // Pass 2: wave-3 style — scan `impl FsHandler for FsXHandler`
-    // blocks with `const VERIFYING: bool = true`.  Handler struct
-    // `FsXHandler` maps back to `fs_x` (snake_case).
+    // blocks with `const VERIFYING: bool = true` across ALL family
+    // files.
     let mut cursor = 0usize;
-    while let Some(rel) = src[cursor..].find("impl FsHandler for Fs") {
+    while let Some(rel) = all_src[cursor..].find("impl FsHandler for Fs") {
         let abs = cursor + rel;
-        let after = &src[abs..];
-        // Handler name: `impl FsHandler for FsXYHandler {` → "fs_x_y".
-        // Extract token between "for " and " {".
+        let after = &all_src[abs..];
         let struct_tok = after
             .split_once("for ")
             .and_then(|(_, rest)| rest.split_once(' '))
@@ -988,7 +1003,6 @@ fn handlers_top_comment_phase5_verifying_count_matches_actual() {
             .unwrap_or("");
         cursor = abs + "impl FsHandler for ".len();
         let name_snake = camel_handler_to_snake(struct_tok);
-        // Scan the trait-impl block for `const VERIFYING: bool = true`.
         let end = after.find("\n}\n").map(|e| e + 3).unwrap_or(after.len());
         let block = &after[..end];
         if block.contains("const VERIFYING: bool = true") {
@@ -1132,7 +1146,9 @@ fn setup_reducer_shares_one_metered_machine() {
 /// at least two occurrences within the handler body (one per branch).
 #[test]
 fn fs_entries_charges_supplement_on_both_branches() {
-    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    // Wave-3 S3.13b (2026-09-10): Observation family moved to
+    // handlers_observation.rs.
+    let src = include_str!("../src/rust/interpreter/io/handlers_observation.rs");
     // Wave-3 S3.12b (2026-09-09) rewrite: post-wrapper retirement,
     // fs_entries lives in `impl FsHandler for FsEntriesHandler`.
     // The setup charge is returned by `pre_charge_cost()`; the
@@ -1143,7 +1159,7 @@ fn fs_entries_charges_supplement_on_both_branches() {
     // single `post_reply_supplement` override on the trait impl is
     // sufficient — the framework fires it on both branches.
     let body = trait_impl_block(src, "impl FsHandler for FsEntriesHandler")
-        .expect("FsEntriesHandler trait impl must exist in handlers.rs");
+        .expect("FsEntriesHandler trait impl must exist in handlers_observation.rs");
 
     assert!(
         body.contains("costs::fs_entries_cost(0)"),

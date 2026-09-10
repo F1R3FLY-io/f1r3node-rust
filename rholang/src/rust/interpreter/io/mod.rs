@@ -29,6 +29,7 @@ pub mod handlers;
 // `pub(super)` visibility (accessible via `super::handlers::X`).
 pub mod handlers_lifecycle;
 pub mod handlers_lock;
+pub mod handlers_observation;
 pub mod handlers_stream;
 pub mod lock;
 pub mod mode;
