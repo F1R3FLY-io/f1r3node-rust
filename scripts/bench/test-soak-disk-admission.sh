@@ -32,7 +32,7 @@
 #   guardian-stall        the guardian is SIGSTOPped during an iteration; no progress -> stop it
 #   guardian-progress-boundary driver and guardian paused across the iteration probe; stale progress -> refuse
 #   benchmark-progress-boundary same, across the opening benchmark probe -> refuse
-#   hygiene-timeout       docker builder prune ignores TERM inside the band; hygiene is bounded -> refuse
+#   hygiene-timeout       docker system df ignores TERM inside the band; hygiene is bounded -> refuse
 #   disk-floor-range      SOAK_DISK_FREE_FLOOR_MB above the 64-bit maximum   -> configuration rejected, exit 2
 #   disk-band-range       SOAK_DISK_HYGIENE_BAND_MB above the 64-bit maximum -> configuration rejected, exit 2
 #   disk-sum-range        floor plus band above the 64-bit maximum           -> configuration rejected, exit 2
@@ -40,10 +40,10 @@
 #   disk-max-band         band exactly at the 64-bit maximum, floor 0        -> accepted, then refused on the sample
 #   cleanup-active-session an unowned two-hour-old session with a live writer survives hygiene
 #   cleanup-error-list    docker ps fails during hygiene; the failure is kept -> refuse
-#   cleanup-error-remove  docker rm fails during hygiene                     -> refuse
-#   cleanup-error-network docker network prune fails                          -> refuse
-#   cleanup-error-image   docker image prune fails                            -> refuse
-#   cleanup-error-builder docker builder prune fails                          -> refuse
+#   cleanup-error-remove  docker inspect fails during hygiene                -> refuse
+#   cleanup-error-network docker network ls fails                             -> refuse
+#   cleanup-error-image   docker image ls fails                               -> refuse
+#   cleanup-error-builder docker system df fails                              -> refuse
 #   cleanup-partial       hygiene reclaims to 8000 MiB, still below the band  -> refuse
 #   cleanup-sufficient    hygiene reclaims to 16384 MiB                       -> one iteration
 #
@@ -222,10 +222,10 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == cleanup-error-* ]]; then
     action=""
     case "$*" in
         'ps -aq --filter status=exited --filter name=rnode.') action=list; printf 'cleanup-fixture\n' ;;
-        'rm cleanup-fixture') action=remove ;;
-        'network prune -f') action=network ;;
-        'image prune -f') action=image ;;
-        'builder prune -af') action=builder; touch /case/evidence/hygiene-completed ;;
+        'inspect cleanup-fixture') action=remove ;;
+        'network ls -q') action=network ;;
+        'image ls -q') action=image ;;
+        'system df') action=builder; touch /case/evidence/hygiene-completed ;;
     esac
     if [[ "$action" == "${SOAK_DISK_TEST_SCENARIO#cleanup-error-}" ]]; then
         printf '%s\n' "$action" >/case/evidence/cleanup-failed-command.txt
@@ -296,7 +296,7 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-cancel-* &&
     touch /case/evidence/benchmark-returned.txt
     exit 1
 fi
-if [[ "$*" == 'builder prune -af' ]]; then
+if [[ "$*" == 'system df' ]]; then
     if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == hygiene-timeout ]]; then
         trap '' TERM
         printf '%s\n' "$$" >/case/evidence/hygiene-client-pid.txt
@@ -711,7 +711,7 @@ SH
     fi
     if [[ "$SCENARIO" == hygiene-timeout ]]; then
         if [[ ! -s evidence/hygiene-client-pid.txt ]] ||
-            ! grep -Fxq 'builder prune -af' evidence/docker-commands.txt ||
+            ! grep -Fxq 'system df' evidence/docker-commands.txt ||
             ! grep -Fxq 'valid=7000' evidence/probe-samples.txt; then
             printf 'ERROR: The fixture did not stall cleanup inside the hygiene band.\n' >&2
             exit 2

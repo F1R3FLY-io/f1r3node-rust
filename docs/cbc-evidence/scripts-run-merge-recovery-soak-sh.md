@@ -33,6 +33,7 @@ Each cycle ran the real driver inside a disposable container through `scripts/be
 | B24 | `SOAK_DISK_FREE_FLOOR_MB`, `SOAK_DISK_HYGIENE_BAND_MB`, or their sum above the 64-bit maximum | `9c99de84e` accepted the text and admitted work on an overflowed threshold | settings are parsed as decimals and range-checked before any work; the configuration is rejected with exit 2 and no summary | `unchecked_range` (`AdmissionRequiresValidDiskSettings`); the source's model and scenarios arrived unregistered, registered here; the source registered its own control one commit later |
 | B25 | An unowned two-hour-old temporary session whose writer still holds a file open | `4e9dd432b` swept `/tmp/test-*` older than 60 minutes during hygiene and deleted it under the live writer | hygiene no longer deletes temporary sessions by age; it reports that ownership is unconfirmed and keeps them, and the admission checks refuse work when space stays below the threshold | `age_only` (`UnownedSessionPreserved`) |
 | B26 | One of the five Docker cleanup commands fails during hygiene, then a sufficient sample arrives | `d64ae3bbf` swallowed every cleanup error and admitted work | command failures are kept across the group with pipefail, the failed stage is reported, and failed hygiene takes the B23 refusal path; 0 iterations, 1 failure. Two reclamation cases (8000 MiB refused, 16384 MiB admitted) are coverage only | `ignore_errors` (`CleanupFailurePreventsAdmission`) |
+| B27 | Hygiene runs on a host with a stopped container, an unused network, and an untagged image that the soak does not own | `1e2dc07f4` removed exited `rnode` containers and pruned every unused network, dangling image, and build cache | hygiene inspects those resources (`docker inspect`, `network ls`, `image ls`, `system df`) and reports them retained because ownership is unconfirmed; an inspection failure still fails hygiene (B26). The source's real-daemon check is `scripts/bench/test-soak-real-docker-ownership.sh`, not run on this host | `global_prune` (`UnownedDockerResourcesPreserved`) |
 
 Formal results after the 2026-09-09 consolidation into two modules (the per-cycle originals reported 54, 22, and 17 distinct states for D1, B5, and B6):
 
@@ -73,7 +74,7 @@ The per-cycle manifests were produced on the source branch and are retained outs
 - The model-to-code maps are reviewed abstractions, not refinement proofs of Bash.
 - Fixtures replace `df`, `docker`, and the workload. They do not cover every malformed field, exit status, or Docker failure.
 - Local records prove neither durability, upload, nor confirmed writer termination. Fairness is not a time bound.
-- D2 remains open for cleanup command bounds, cleanup ownership, confirmed termination, and a composed emergency deadline. D3 must identify the growing consumer.
+- D2 remains open for confirmed termination and a composed emergency deadline. Hygiene now reclaims nothing from Docker, so D3 must identify the growing consumer and an owned reclamation path.
 
 ```json
 {

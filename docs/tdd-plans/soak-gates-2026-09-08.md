@@ -404,6 +404,12 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B27
+    statement: Disk hygiene preserves unrelated Docker resources and the image reserved for later work.
+    priority: must
+    deep_module: false
+    done: false
+    cycle_log: []
 ---
 
 # Soak Gate Development Cycles
@@ -554,6 +560,12 @@ Two successful-cleanup cases preserve baseline behavior with partial and suffici
 Twenty-three positive configurations, twenty-four exact controls, 168 classifier cases, six routing scenarios, and thirty-eight emergency scenarios pass.
 
 ## Remaining D2 work
+
+The user requested real-Docker ownership, shutdown, and crash tests on September 10. Each behavior uses a separate cycle on a disposable VM.
+
+B27 first tests cleanup against a stopped container, an unused network, and an untagged image. The test substitutes disk samples and workload commands only.
+
+Docker commands reach the real daemon. The test retains resource identities and retrieves evidence before the VM expires.
 
 - [x] Verify opening admission at equality, sufficient space, unavailable samples, and disabled disk protection.
 - [x] Cancel stalled benchmark clients after guardian death or a recorded disk breach.

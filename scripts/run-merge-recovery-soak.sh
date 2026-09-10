@@ -281,24 +281,24 @@ reclaim_disk_space_commands() {
 	before="$(disk_free_mb)" || before=""
 	if command -v docker >/dev/null 2>&1; then
 		docker ps -aq --filter status=exited --filter 'name=rnode.' 2>/dev/null |
-			xargs -r docker rm >/dev/null 2>&1 || {
+			xargs -r docker inspect >/dev/null 2>&1 || {
 			status=1
-			printf 'disk hygiene: container cleanup failed\n' >&2
+			printf 'disk hygiene: container inspection failed\n' >&2
 		}
-		docker network prune -f >/dev/null 2>&1 || {
+		docker network ls -q >/dev/null 2>&1 || {
 			status=1
-			printf 'disk hygiene: network cleanup failed\n' >&2
+			printf 'disk hygiene: network inspection failed\n' >&2
 		}
-		docker image prune -f >/dev/null 2>&1 || {
+		docker image ls -q >/dev/null 2>&1 || {
 			status=1
-			printf 'disk hygiene: image cleanup failed\n' >&2
+			printf 'disk hygiene: image inspection failed\n' >&2
 		}
-		docker builder prune -af >/dev/null 2>&1 || {
+		docker system df >/dev/null 2>&1 || {
 			status=1
-			printf 'disk hygiene: builder cleanup failed\n' >&2
+			printf 'disk hygiene: storage inspection failed\n' >&2
 		}
 	fi
-	printf 'disk hygiene: temporary sessions retained because ownership is unconfirmed\n'
+	printf 'disk hygiene: Docker resources and temporary sessions retained because ownership is unconfirmed\n'
 	after="$(disk_free_mb)" || after=""
 	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
 	return "$status"

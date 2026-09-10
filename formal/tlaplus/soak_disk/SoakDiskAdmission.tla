@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Thirteen        *)
+(* decide, after the opening benchmark on the first segment. Fourteen        *)
 (* Boolean constants switch the corrections on and off so that each pre-fix  *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -21,6 +21,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           CheckRange,     \* floor, band, and their sum must fit in 64 bits (B24)
           PreserveUnowned, \* hygiene never deletes a temporary session by age (B25)
           EnforceCleanupFailures, \* a failed cleanup command fails hygiene (B26)
+          PreserveDockerResources, \* hygiene inspects Docker resources, never prunes them (B27)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -31,7 +32,7 @@ ASSUME /\ FloorMiB \in Nat \ {0}
        /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
            CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
            CheckProgress, EnforceHygieneDeadline, CheckRange, PreserveUnowned,
-           EnforceCleanupFailures} \subseteq BOOLEAN
+           EnforceCleanupFailures, PreserveDockerResources} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -71,7 +72,8 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           settingsValid, \* the configured floor, band, and their sum fit in 64 bits
           sessionAge,    \* an unowned temporary session with a live writer: "old" or "recent"
           sessionPresent, \* that session still exists after hygiene
-          cleanupFailed  \* a Docker cleanup command failed during hygiene (B26)
+          cleanupFailed, \* a Docker cleanup command failed during hygiene (B26)
+          dockerPresent  \* unowned Docker resources still exist after hygiene (B27)
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
@@ -80,7 +82,7 @@ vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkSample, benchmarkFault, benchmarkObserved, benchmarkCancelled,
           benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
           hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
-          settingsValid, sessionAge, sessionPresent, cleanupFailed>>
+          settingsValid, sessionAge, sessionPresent, cleanupFailed, dockerPresent>>
 
 Init ==
     /\ phase = "config"
@@ -88,6 +90,7 @@ Init ==
     /\ sessionAge \in {"old", "recent"}
     /\ sessionPresent = TRUE
     /\ cleanupFailed = FALSE
+    /\ dockerPresent = TRUE
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -182,7 +185,7 @@ Benchmark ==
                                    ELSE "guardian"
     /\ UNCHANGED <<free, raw, sample, admitted, admissionRaw, admissionSample,
                    evidence, retained, guardianFresh, admissionFresh, settingsValid,
-                   sessionAge, sessionPresent, cleanupFailed>>
+                   sessionAge, sessionPresent, cleanupFailed, dockerPresent>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -211,7 +214,10 @@ DecideHygiene ==
 \* corrected sweep keeps every temporary session; the pre-fix sweep deleted
 \* old ones under a live writer. B26: any Docker cleanup command may fail;
 \* the corrected driver keeps that failure across the group and takes the
-\* same refusal path as a killed group, whatever the later sample says.
+\* same refusal path as a killed group, whatever the later sample says. B27:
+\* the driver cannot tell its own Docker resources from the host's, so the
+\* corrected hygiene only inspects them; the pre-fix hygiene pruned every
+\* exited container, unused network, dangling image, and build cache.
 SweepKeeps == PreserveUnowned \/ sessionAge = "recent"
 
 HygieneCompletes(next) ==
@@ -220,6 +226,7 @@ HygieneCompletes(next) ==
         /\ cleanupFailed' = failed
         /\ free' \in {v \in FreeSamples : v >= free}
         /\ sessionPresent' = SweepKeeps
+        /\ dockerPresent' = PreserveDockerResources
         /\ phase' = IF refuse THEN "stopped" ELSE next
         /\ stopReason' = IF refuse THEN "hygiene" ELSE stopReason
         /\ guardian' = (guardian \/ refuse)
@@ -230,7 +237,7 @@ Hygiene ==
     /\ UNCHANGED <<raw, sample, guardianAlive, admitted,
                    admissionRaw, admissionSample, evidence>>
 
-\* B23: a hygiene client (docker builder prune) ignores TERM and stalls. Under
+\* B23: the last hygiene client (docker system df) ignores TERM and stalls. Under
 \* the deadline, timeout sends TERM at one unit and KILL at two; a killed group
 \* is a protection breach, the marker is written, and the driver refuses work.
 HygieneStall ==
@@ -344,7 +351,7 @@ FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkGuardianAlive, benchmarkFresh, settingsValid,
                           sessionAge>>
 
-HygieneOutcome == <<sessionPresent, cleanupFailed>>
+HygieneOutcome == <<sessionPresent, cleanupFailed, dockerPresent>>
 
 Next == (Benchmark /\ UNCHANGED HygieneVars)
         \/ (/\ Admit
@@ -404,6 +411,7 @@ TypeOK ==
     /\ sessionAge \in {"old", "recent"}
     /\ sessionPresent \in BOOLEAN
     /\ cleanupFailed \in BOOLEAN
+    /\ dockerPresent \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -425,6 +433,7 @@ HygieneWithinBudget == phase = "hygiene-stalled" => hygieneElapsed < HygieneBudg
 AdmissionRequiresValidDiskSettings == (admitted \/ benchmark) => settingsValid
 UnownedSessionPreserved == sessionPresent
 CleanupFailurePreventsAdmission == admitted => ~cleanupFailed
+UnownedDockerResourcesPreserved == dockerPresent
 HygieneKillFollowsTerm == hygieneKillSent => hygieneTermSent
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted

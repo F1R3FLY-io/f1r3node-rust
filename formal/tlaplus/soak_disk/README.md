@@ -15,7 +15,7 @@ a Boolean constant and must violate exactly the invariant named below.
 | `CheckGuardian` | Read the guardian marker before the probe and after hygiene |
 | `ProbeBoundary`, `ProbeAfterHygiene` | `disk_free_mb`: `df` reports the free space, prints a malformed field, or fails |
 | `DecideHygiene` | Run hygiene only when a known sample is below floor plus band |
-| `Hygiene` | `reclaim_disk_space`, which can reclaim nothing, keeps every temporary session (B25), and fails when any cleanup command fails (B26) |
+| `Hygiene` | `reclaim_disk_space`, which can reclaim nothing, keeps every temporary session (B25), fails when any cleanup command fails (B26), and inspects Docker resources instead of pruning them (B27) |
 | `HygieneStall`, `HygieneTick`, `HygieneReturns` | A hygiene client ignores TERM; under `SOAK_DISK_HYGIENE_SECONDS` it receives TERM, then KILL, and the driver refuses work (B23) |
 | `DecideAfterHygiene` | Refuse a known sample below the threshold |
 | `CheckAdmission` | Refuse a missing sample, a dead guardian process, or expired guardian progress before starting work |
@@ -39,8 +39,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `CheckRange` | Out-of-range disk settings reject the configuration before any work; whether a text is in range is abstracted, and the harness checks the three boundary texts | `MC_SoakDiskAdmission_unchecked_range_pre_fix` | `AdmissionRequiresValidDiskSettings` |
 | `PreserveUnowned` | Hygiene never deletes a temporary session by age, since age proves neither ownership nor writer termination | `MC_SoakDiskAdmission_age_only_pre_fix` | `UnownedSessionPreserved` |
 | `EnforceCleanupFailures` | A failed Docker cleanup command fails hygiene and refuses admission, whatever the later sample says | `MC_SoakDiskAdmission_ignore_errors_pre_fix` | `CleanupFailurePreventsAdmission` |
+| `PreserveDockerResources` | Hygiene inspects exited containers, networks, images, and the build cache; it never prunes them, since the driver cannot tell its own resources from the host's | `MC_SoakDiskAdmission_global_prune_pre_fix` | `UnownedDockerResourcesPreserved` |
 
-`MC_SoakDiskAdmission` enables all thirteen corrections with both benchmark fault kinds. It checks `TypeOK`, the thirteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 12138 distinct states.
+`MC_SoakDiskAdmission` enables all fourteen corrections with both benchmark fault kinds. It checks `TypeOK`, the fourteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 12138 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 
