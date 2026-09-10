@@ -68,8 +68,19 @@ Four items can ratify now, without the soak. They are the intent taxonomy, the r
 - The heartbeat amplification claim on dev updated to state its bound under each policy.
 - Decide whether `RecoveryLeader.tla` stays in the gate or is superseded by `RecoveryCommitteeTransition.tla`.
 - After ratification, replace the protocol section 8 decision tree and amend ground truth 4.
+- Operational evidence on the frontier-follow lane. See section 9.
 
 ## 8. Open questions
 
 1. Under rotation, how many rounds does a stalled shard need before a clique forms when the offline validator is the first leader? L13 gives the assumptions but not the bound.
-2. Does removing the frontier-follow lane change block cadence on a shard with no deploys and no stall?
+2. Does removing the frontier-follow lane change block cadence on a shard with no deploys and no stall? Answered on 2026-09-10. Yes. See section 9.
+
+## 9. Operational evidence (2026-09-10)
+
+A heartbeat-only shard with three validators and one bootstrap node ran for 2.5 days on dev. Every height received three blocks, one from each validator. The frontier-follow lane produced this cadence: with `check-interval = 5 seconds` and `self-propose-cooldown = 3 seconds`, each validator observed new parents on every tick and proposed again.
+
+The shard switched to a regime of one or two blocks per height without an info-level log event, and later switched back. The switch is an effect of the lag cap `frontier-chase-max-lag = 20`, the backpressure cap `empty-frontier-max-unfinalized-blocks = 12`, or cooldown phase drift. The lag-cap and cooldown throttles log at debug level only.
+
+The dense cadence carried a cost. Block processing time grew from 192 ms to 1107 ms over the run, and fell about fivefold in the sparse regime. Entry D-03 section 9 records the cause.
+
+Under rule R-HEARTBEAT-WORK, peer block arrival never authorizes a proposal, so the dense regime cannot form. This observation supports ratifying that rule now, as section 6 proposes. It does not decide the leader question. The full record is in [the observation record](../heartbeat-regime-observation-2026-09-10.md).

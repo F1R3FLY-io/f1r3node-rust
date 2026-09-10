@@ -78,7 +78,7 @@ The depth-filter removal needs its own argument. The old filter bounded the scor
 
 - Sub-decision 3.1, certified context and projections. Evidence: `CertifiedConsensusContext.tla` safe and unsafe configurations, and a differential test showing equal verdicts with dev fork choice on a DAG with no equivocation and no rebond.
 - Sub-decision 3.2, deferral on parent overflow. Evidence: one soak run at `max-number-of-parents` equal to the committee size plus one, with zero deferred rounds. Also one run at a smaller value with bounded deferral.
-- Sub-decision 3.3, LCA depth filter removal. Evidence: a stated work bound for the LCA walk as a function of floor distance.
+- Sub-decision 3.3, LCA depth filter removal. Evidence: a stated work bound for the LCA walk as a function of floor distance. Section 9 records the unbounded walk on dev in production numbers.
 - Sub-decision 3.4, promotion convergence. Decide whether the novel-signature gating rule is superseded or must stay gated.
 - After ratification, replace the fork-choice specification and update ground truth 1.
 
@@ -86,3 +86,11 @@ The depth-filter removal needs its own argument. The old filter bounded the scor
 
 1. Does PR #216 retain the novel-signature gating behavior that `PromotionConvergence.tla` models? No PR #216 rule names it.
 2. What happens to a proposer whose frontier stays above the parent cap for the whole deploy lifespan? R-COUNT says evidence and pending work are retained. Deploy expiry is not addressed.
+
+## 9. Operational evidence (2026-09-10)
+
+A heartbeat-only shard with three validators and one bootstrap node ran for 2.5 days on dev with three blocks at every height. Block processing time grew from 192 ms to 1107 ms. When the shard fell into a regime of one or two blocks per height, the time dropped about fivefold. It stayed flat regardless of chain length.
+
+The cause is the walk to the lowest universal common ancestor in `casper/src/rust/util/dag_operations.rs`. The walk stops at the lowest block through which every latest-message history passes. It is bounded by the approved block, not by the last finalized block. The `LATEST_MESSAGE_MAX_DEPTH` filter of 1000 in `casper/src/rust/estimator.rs` filters the latest messages and does not bound the walk. When no height holds a single block, the walk continues to the last single-block height, and that height recedes while the dense regime persists.
+
+This is the missing work bound that sub-decision 3.3 names. On dev the bound is the distance to the last single-block height, which is unbounded in the dense regime. The PR #216 certified context uses the floor as the backstop, which bounds the walk to floor distance. The full record is in [the observation record](../heartbeat-regime-observation-2026-09-10.md).
