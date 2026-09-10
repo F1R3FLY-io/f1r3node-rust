@@ -48,6 +48,18 @@ The model ends at admission or completed refusal. It does not model later disk g
 
 The proposed `CLAIM-SOAK-001` remains unratified and pending. No mandatory CbC attributes were added.
 
+## Real-system correspondence
+
+Current driver hygiene performs read-only Docker inspection. A larger later sample in the admission models can represent external space recovery, not proven reclamation.
+
+The additional correspondence documents cover selected real-system behaviors:
+
+- [Docker cleanup ownership](DockerCleanupOwnership.md) covers preservation of three fixture resources.
+- [Docker exit stop](DockerExitStop.md) covers one writer after active-iteration `SIGTERM`.
+- [Iteration crash recovery](IterationCrashRecovery.md) covers one process crash and two restarts.
+
+These fixtures require a disposable diagnostic virtual machine. They do not run against the developer's Docker daemon.
+
 ## Regression commands
 
 Run the production admission regression:

@@ -1,0 +1,1 @@
+PASS: The formal gate accepts only the expected invariant violations.
