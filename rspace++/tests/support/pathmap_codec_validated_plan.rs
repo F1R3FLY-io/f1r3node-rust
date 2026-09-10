@@ -519,7 +519,8 @@ fn wide_dense_topology_is_stack_safe_on_a_small_native_stack() {
 
 mod checked_line_transport {
     use super::super::{
-        CanonicalCompactTrieLineDirection as Direction, DirectTopologyStage, ValidatedActPlan,
+        CanonicalCompactTrieLineDirection as Direction, CanonicalCompactTrieLineSpan,
+        DirectTopologyStage, ValidatedActPlan,
         ValidatedCompactTrieTopologyState,
     };
     use super::*;
@@ -609,17 +610,38 @@ mod checked_line_transport {
                 assert!(!range.is_empty());
                 for invalid in [0, range.len() + 1, usize::MAX] {
                     assert!(cursor.line_span().unwrap().commit(invalid).is_none());
+                    assert!(cursor.line_span().unwrap().prepare(invalid).is_none());
                     assert_eq!(state(&cursor), before);
                     assert_eq!(cursor.work_counters(), counters);
                 }
                 for width in 1..=range.len() {
                     let mut fast = fork(&cursor);
                     let mut scalar = fork(&cursor);
+                    let mut prepared_fast = fork(&cursor);
+                    let prepared_source = &prepared_fast.source as *const FragmentedSource;
+                    let prepared = prepared_fast.line_span().unwrap().prepare(width).unwrap();
+                    assert_eq!(prepared.source() as *const FragmentedSource, prepared_source);
+                    drop(prepared);
+                    assert_eq!(state(&prepared_fast), before, "dropping preparation is nonmutating");
+                    assert_eq!(prepared_fast.work_counters(), counters);
+                    let prepared = prepared_fast.line_span().unwrap().prepare(width).unwrap();
+                    let prepared_range = prepared.source_range();
+                    let prepared_direction = prepared.direction();
+                    let prepared_events = prepared.expanded_events();
+                    let prepared_last = prepared.last_source_offset();
+                    let prepared_commit = prepared.commit();
+                    assert_eq!(prepared_commit.source_range(), prepared_range);
+                    assert_eq!(prepared_commit.direction(), prepared_direction);
+                    assert_eq!(prepared_commit.expanded_events(), prepared_events);
+                    assert_eq!(prepared_commit.last_source_offset(), prepared_last);
                     let records = fast.state.plan.records.as_ptr();
                     let source = &fast.source as *const FragmentedSource;
                     let span = fast.line_span().unwrap();
                     assert_eq!(span.source() as *const FragmentedSource, source);
                     let committed = span.commit(width).unwrap();
+                    assert_eq!(prepared_commit, committed);
+                    assert_eq!(state(&prepared_fast), state(&fast));
+                    assert_eq!(prepared_fast.work_counters(), counters);
                     assert_eq!(committed.direction, direction);
                     let expanded = match direction {
                         Direction::Forward => {
@@ -730,6 +752,7 @@ mod checked_line_transport {
         cursor.next_event().unwrap();
         let offered = cursor.line_span().unwrap().source_range();
         assert!(!offered.is_empty());
+        drop(cursor.line_span().unwrap().prepare(1).unwrap());
         cursor.rewind();
         let actual: Vec<_> = std::iter::from_fn(|| cursor.next_event().unwrap()).collect();
         assert_eq!(actual, before);
@@ -746,7 +769,7 @@ mod checked_line_transport {
             if let Some(span) = cursor.line_span() {
                 let width = span.source_range().len().min(17);
                 let direction = span.direction();
-                let committed = span.commit(width).unwrap();
+                let committed = span.prepare(width).unwrap().commit();
                 skipped += committed.expanded_events;
                 match direction {
                     Direction::Forward => {
@@ -803,5 +826,51 @@ mod checked_line_transport {
                 break;
             }
         }
+    }
+
+    #[test]
+    fn prepared_arithmetic_and_missing_frame_refusals_publish_nothing() {
+        let bytes = canonical_image([(b"abcdef".to_vec(), 7)]);
+        let mut cursor = Cursor::from_source(FragmentedSource::new(&bytes, 11)).unwrap();
+        cursor.next_event().unwrap();
+        let before = state(&cursor);
+        let counters = cursor.work_counters();
+        assert!(CanonicalCompactTrieLineSpan {
+            cursor: &mut cursor,
+            source_range: 0..usize::MAX,
+            direction: Direction::Forward,
+        }.prepare(usize::MAX / 2 + 1).is_none());
+        assert_eq!(state(&cursor), before);
+        assert_eq!(cursor.work_counters(), counters);
+
+        cursor.state.stack.last_mut().unwrap().line_index = usize::MAX;
+        let before = state(&cursor);
+        assert!(CanonicalCompactTrieLineSpan {
+            cursor: &mut cursor,
+            source_range: 0..1,
+            direction: Direction::Forward,
+        }.prepare(1).is_none());
+        assert_eq!(state(&cursor), before);
+        assert_eq!(cursor.work_counters(), counters);
+
+        cursor.state.stack.last_mut().unwrap().leave_index = usize::MAX;
+        let before = state(&cursor);
+        assert!(CanonicalCompactTrieLineSpan {
+            cursor: &mut cursor,
+            source_range: 0..1,
+            direction: Direction::Unwind,
+        }.prepare(1).is_none());
+        assert_eq!(state(&cursor), before);
+        assert_eq!(cursor.work_counters(), counters);
+
+        cursor.state.stack.clear();
+        let before = state(&cursor);
+        assert!(CanonicalCompactTrieLineSpan {
+            cursor: &mut cursor,
+            source_range: 0..1,
+            direction: Direction::Forward,
+        }.prepare(1).is_none());
+        assert_eq!(state(&cursor), before);
+        assert_eq!(cursor.work_counters(), counters);
     }
 }

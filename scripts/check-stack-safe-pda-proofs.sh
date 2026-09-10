@@ -344,7 +344,10 @@ epathmap_import_runtime() {
   rpb3_run_tests 31 --release -j4 --lib canonical_bytes_arena
   rpb3_run_tests 31 -j4 --lib canonical_bytes_arena
   rpb3_run_tests 8 --release -j4 --lib opaque_interior_tests
-  rpb3_run_tests 32 --release -j4 --lib frame_storage_tests
+  rpb3_run_tests 35 --release -j4 --lib frame_storage_tests
+  rpb3_run_tests 35 -j4 --lib frame_storage_tests
+  rpb3_run_tests 3 --release -j4 --lib line_batch_tests
+  rpb3_run_tests 3 -j4 --lib line_batch_tests
   rpb3_run_tests 6 --release -j4 --lib indexed_span_transport
   rpb3_run_tests 6 -j4 --lib indexed_span_transport
   rpb3_run_tests 15 --release -j4 --lib normalized_source_spans
@@ -353,11 +356,15 @@ epathmap_import_runtime() {
 }
 
 act_line_transport_runtime() {
+  rspace_preparation_run_tests 7 --locked --lib checked_line_transport
+  act_line_transport_compile_controls
+}
+
+act_line_transport_compile_controls() {
   local TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512
   local target="${CARGO_TARGET_DIR:-$repo_root/target}" fixture case_name expected_code output
   [[ "$target" = /* ]] || target="$repo_root/$target"
   fixture="$repo_root/rspace++/tests/compile_fail/act_line_span_borrows.rs"
-  rspace_preparation_run_tests 6 --locked --lib checked_line_transport
   tlc_bounded cargo build --release --locked -j4 -p rspace_plus_plus --lib --target-dir "$target"
   local result_dir="$target/verification/act-line-span-borrows"
   mkdir -p "$result_dir"
@@ -369,15 +376,17 @@ act_line_transport_runtime() {
     return 1
   fi
   printf '%s\n' "$output"
-  for case_name in live_rewind live_next_event live_replace double_commit clone_offer copy_offer escape_cursor substitute_cursor; do
+  for case_name in live_rewind live_next_event live_replace double_commit clone_offer copy_offer escape_cursor substitute_cursor \
+    prepared_live_rewind prepared_live_next_event prepared_live_replace prepared_double_commit \
+    prepared_clone_offer prepared_copy_offer prepared_escape_cursor prepared_substitute_source; do
     case "$case_name" in
-      live_rewind|live_next_event) expected_code=E0499 ;;
-      live_replace) expected_code=E0506 ;;
-      double_commit) expected_code=E0382 ;;
-      clone_offer) expected_code=E0599 ;;
-      copy_offer) expected_code=E0277 ;;
-      escape_cursor) expected_code=E0515 ;;
-      substitute_cursor) expected_code=E0616 ;;
+      live_rewind|live_next_event|prepared_live_rewind|prepared_live_next_event) expected_code=E0499 ;;
+      live_replace|prepared_live_replace) expected_code=E0506 ;;
+      double_commit|prepared_double_commit) expected_code=E0382 ;;
+      clone_offer|prepared_clone_offer) expected_code=E0599 ;;
+      copy_offer|prepared_copy_offer) expected_code=E0277 ;;
+      escape_cursor|prepared_escape_cursor) expected_code=E0515 ;;
+      substitute_cursor|prepared_substitute_source) expected_code=E0616 ;;
     esac
     if output="$(tlc_bounded "${compiler[@]}" --cfg "$case_name" -o "$result_dir/$case_name.rmeta" 2>&1)"; then
       printf '%s\n' "$output"
@@ -390,13 +399,21 @@ act_line_transport_runtime() {
       return 1
     fi
   done
-  echo "stack-safe-pda: ACT span positive compile and eight exact compiler-rejection controls passed"
+  echo "stack-safe-pda: ACT span positive compile and sixteen exact compiler-rejection controls passed"
 }
 
 if [[ "${1:-}" == "--act-line-transport" ]]; then
   pushd "$repo_root" >/dev/null
   act_line_transport_runtime
   popd >/dev/null
+  exit 0
+fi
+
+if [[ "${1:-}" == "--act-line-transport-compile" ]]; then
+  pushd "$repo_root" >/dev/null
+  act_line_transport_compile_controls
+  popd >/dev/null
+  echo "stack-safe-pda: ACT capability compiler checks passed; runtime qualification is separate"
   exit 0
 fi
 

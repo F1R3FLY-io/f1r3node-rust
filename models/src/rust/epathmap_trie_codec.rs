@@ -20,12 +20,15 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::pathmap_codec::CompactTrie;
 use rspace_plus_plus::rspace::pathmap_codec::{
     CanonicalCompactTrieCursor, CanonicalCompactTrieIndexedTopologyCursor,
+    CanonicalCompactTrieLineDirection, CanonicalCompactTrieLineSpan,
+    CanonicalCompactTriePreparedLineSpan,
     CanonicalCompactTrieTopologyCursor, CanonicalCompactTrieTopologyEvent,
     CanonicalCompactTrieValueSummary, CompactTrieError, CompactTrieTopologyEvent,
 };
 
 use crate::rhoapi::Par;
 use crate::rust::rholang::canonical_bytes_arena::CanonicalByteProvenance;
+use crate::rust::rholang::canonical_source_tree::SourceTreeWindow;
 use crate::rust::rholang::indexed_protobuf::{
     IndexedByteReadError, IndexedByteReadErrorKind, IndexedByteReadOperation, IndexedByteReader,
     IndexedByteRegion,
@@ -760,7 +763,71 @@ pub(crate) struct IndexedCanonicalEpm1TopologyCursor<'a> {
     terminal: IndexedCanonicalEpm1Terminal,
 }
 
+pub(crate) struct IndexedCanonicalEpm1LineSpan<'cursor, 'src> {
+    inner: CanonicalCompactTrieLineSpan<'cursor, IndexedByteRegion<'src>>,
+    topology_events: &'cursor mut usize,
+}
+
+pub(crate) struct IndexedCanonicalEpm1PreparedLineSpan<'cursor, 'src> {
+    inner: CanonicalCompactTriePreparedLineSpan<'cursor, IndexedByteRegion<'src>>,
+    topology_events: &'cursor mut usize,
+    next_events: usize,
+    last_source: CanonicalByteProvenance,
+}
+
+impl<'cursor, 'src> IndexedCanonicalEpm1LineSpan<'cursor, 'src> {
+    pub(crate) fn source_range(&self) -> Range<usize> { self.inner.source_range() }
+
+    pub(crate) fn direction(&self) -> CanonicalCompactTrieLineDirection {
+        self.inner.direction()
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        let available_events = usize::MAX - *self.topology_events;
+        self.source_range().len().min(match self.direction() {
+            CanonicalCompactTrieLineDirection::Forward => available_events / 2,
+            CanonicalCompactTrieLineDirection::Unwind => available_events,
+        })
+    }
+
+    pub(crate) fn prepare(self, width: usize)
+        -> Option<IndexedCanonicalEpm1PreparedLineSpan<'cursor, 'src>> {
+        if width == 0 || width > self.capacity() {
+            return None;
+        }
+        let inner = self.inner.prepare(width)?;
+        let next_events = self.topology_events.checked_add(inner.expanded_events())?;
+        let last_source = inner.source().position_at(inner.last_source_offset())?.physical;
+        Some(IndexedCanonicalEpm1PreparedLineSpan {
+            inner, topology_events: self.topology_events, next_events, last_source,
+        })
+    }
+}
+
+impl IndexedCanonicalEpm1PreparedLineSpan<'_, '_> {
+    pub(crate) fn commit(self) -> CanonicalByteProvenance {
+        self.inner.commit();
+        *self.topology_events = self.next_events;
+        self.last_source
+    }
+}
+
 impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
+    pub(crate) fn source_window(&self) -> Option<SourceTreeWindow<'a>> {
+        self.trie.as_ref()?.source().source_window()
+    }
+
+    pub(crate) fn line_span(&mut self) -> Option<IndexedCanonicalEpm1LineSpan<'_, 'a>> {
+        if !matches!(self.terminal, IndexedCanonicalEpm1Terminal::Active)
+            || self.mode == EPathMapMode::Empty {
+            return None;
+        }
+        Some(IndexedCanonicalEpm1LineSpan {
+            inner: self.trie.as_mut()?.line_span()?,
+            topology_events: &mut self.topology_events,
+        })
+    }
+
     pub(crate) fn new(snapshot: IndexedByteRegion<'a>) -> Result<Self, TrieCodecError> {
         let prefix = parse_indexed_canonical_snapshot_prefix(&snapshot)?;
         let value_table = snapshot
@@ -2164,6 +2231,10 @@ fn take<'a>(
     *cursor = end;
     Ok(region)
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/epm1_line_batch.rs"]
+mod line_batch_tests;
 
 #[cfg(test)]
 mod tests {

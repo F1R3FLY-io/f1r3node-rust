@@ -10202,6 +10202,97 @@ the publication source digest is
 No protobuf/bincode encoding, hash transcript, consensus contract, PathMap
 dependency or runtime ACT cursor behavior changes in this proof checkpoint.
 
+### J-142 — 2026-09-10: prepared cursor publication and constant-work restore
+
+**QUESTION / SCOPE.** Can the checked batch contracts be bound to native cursor
+and restoration operations before connecting forward source ingestion? This
+continues task 6018 and the formal-first boundary in J-141.
+
+**IMPLEMENTED MECHANISM.** ACT line preparation retains exclusive access to
+the selected frame and computes the selected range, final index and expanded
+event count before mutation. Its commit performs assignments only. The old
+line `commit(width)` API delegates to preparation followed by commit. No
+PathMap dependency or upstream source changes are involved.
+
+The enclosing EPM capability additionally borrows its topology-event counter.
+Its capacity is the smaller of the ACT offer and the remaining event budget
+(divided by two for forward Edge/absent-Value pairs). Preparation computes the
+new counter and final physical source position; publication changes only the
+ACT frame and that counter. Dropped preparations and failed checks publish
+nothing. Value-reader state, endpoint and value-record counts, terminal state
+and prefix counters remain untouched. Source-window access exposes the actual
+ACT arena, not the entire EPM envelope or a reconstructed key collection.
+
+`try_leave_run(width)` restores the exact scalar predecessor and remaining
+compressed history in constant work. Both selected and remaining slices are
+checked before publication; it neither allocates nor walks ancestors. Width
+one retains the original handle. Comparing `width - 1` against the run's
+depth difference avoids an overflowing population-plus-one calculation even
+for a maximally sized logical shared source. Root leave remains a separate
+scalar transition.
+
+**NATIVE CONTROLS.** All 35 frame-history tests pass in debug and release,
+including 64 generated nested-history cases, retained old sources, every cut
+across mixed original/generated spans, invalid and root refusals, maximum
+logical width without expansion, and private-effect/fault/fresh-ID controls.
+The three EPM tests pass in debug. They compare scalar event traces and value
+bodies for set/map modes, full enclosing authority and final provenance,
+borrowed/frozen/composed sources, repeated/nonmonotonic physical positions,
+preparation drops, both directions' refusals and exact `usize::MAX` counters.
+The full release models library passes **480 tests, zero failures, ignored or
+filtered**, in 53.12 seconds. This is not a workspace-wide result.
+
+Frame-history debug/release services take 25.744/50.270 seconds wall,
+37.686/126.722 CPU seconds, and peak at 2.3/1.9 GiB with zero swap. Rust commands
+use a 4 GiB soft/6 GiB hard systemd limit, zero swap, four CPU equivalents,
+512 tasks and a 900-second limit. These are test/build resource observations,
+not runtime throughput or workload allocation measurements.
+
+**ACT VERIFICATION / NEGATIVE EVIDENCE.** The first ACT test build failed on a
+missing test-only import; the import was repaired. No runtime test executed
+in that failed invocation. It took 18.037 seconds wall, 39.241 CPU seconds,
+peaked at 1.5 GiB and used zero swap. The complete ACT corpus still includes
+the PMU-006 source-construction reproducer; its status and compiler controls
+must be reported independently from the successful model-library tests.
+
+The subsequent complete ACT debug and release groups both exit 101: six
+deterministic controls pass, including the prepared-operation cases, while
+the unchanged generated property fails during source-trie construction with
+the same PMU-006 empty-sentinel panic. Debug takes 64.357 seconds wall,
+194.978 CPU seconds and 2.6 GiB peak; release takes 50.892 seconds wall,
+146.595 CPU seconds and 1.7 GiB peak. Both use zero swap. The minimized
+dangling-path sequence remains `[0]`, `[178]`, `[1]`, `[178, 0]`; no test or
+generator filtering is applied. The broader gate is still not green.
+
+An initial standalone compiler driver built the release library, then exited
+127 because shell argument expansion emptied its compiler command; it reached
+no compiler controls. The maintained `--act-line-transport-compile` entry point
+then exits zero: the positive client compiles and all sixteen negative clients
+produce their specified error codes, including eight prepared-capability
+controls. Its 1.827-second/4M driver figures exclude separately bounded child
+scopes and are not an aggregate resource measurement. All verification jobs
+for this checkpoint are terminal. The full runtime gate remains failed; the
+independent compiler result does not waive it.
+
+**ACTIVATION BOUNDARY.** These components are not yet connected to the
+production EPM frame loop. Strict forward payload planning, one-time source
+registration, source/history capacity preflight and joint path/cursor
+publication remain the next implementation work. The existing checked laws
+can be composed for this step; independent review found no need for another
+semantic proof framework. There is no serialization, consensus transcript,
+persistence completion or ACT-versus-LMDB performance claim here.
+
+| Evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-bulk-restore-debug-r3.log` | `49cafb4b039e1925ea15a39620b7f2734ca7a6fe7f123ade9461a18d1ca52fd6` |
+| `canonical-bulk-restore-release-r1.log` | `646da82cceeace9c3febaa9ae4160c742c55d167026c14a364267b1e8259166f` |
+| `canonical-epm-prepared-debug-r2.log` | `672246395e18fbc4edd644abd2c1eab7849ab4e2635a7ec5436906df36e8aa83` |
+| `canonical-epm-prepared-models-release.log` | `1b9152015c6fa274d29ff72525932a02822268a35f4557a6b452dfe1dc41c270` |
+| `act-prepared-line-debug-r2.log` | `5d5ce9d1d17bc5ca42d34b9043208c5399d5048663e216389c8e4d820fba64c8` |
+| `act-prepared-line-release.log` | `f7c0840d3eaeac33ac41272349309b0e9f1069cbdb89804bf6894f4ea232eeeb` |
+| `act-prepared-line-compiler-controls.log` (driver failure) | `2cd40004293d669de66e5d93bc57c3311b72a46d006922ab7b1a0571184b20da` |
+| `act-prepared-line-compiler-maintained.log` | `c6ddba705096ad7273a882679e09274ccc2c4533bf333e1de220744d28f5c180` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

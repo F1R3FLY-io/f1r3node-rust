@@ -3211,6 +3211,44 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
         Ok(transition)
     }
 
+    pub(crate) fn try_leave_run(&mut self, width: usize) -> Option<CanonicalPathTransition> {
+        if width == 0 || self.root_left {
+            return None;
+        }
+        let run = *self.restore.last()?;
+        let depth = run.latest.bytes.len();
+        let last_offset = depth.checked_sub(run.first_depth)?;
+        let offset = width - 1;
+        if offset > last_offset {
+            return None;
+        }
+        let selected = if width == 1 {
+            run.latest
+        } else {
+            CanonicalPathReducerHandle {
+                state: run.latest.state,
+                bytes: self.arena.slice(run.latest.bytes, 0..depth - offset).ok()?,
+            }
+        };
+        let remaining = if offset == last_offset {
+            None
+        } else {
+            Some(CanonicalPathReducerHandle {
+                state: run.latest.state,
+                bytes: self.arena.slice(run.latest.bytes, 0..depth - width).ok()?,
+            })
+        };
+        if let Some(latest) = remaining {
+            self.restore.last_mut()?.latest = latest;
+        } else {
+            self.restore.pop();
+        }
+        self.current = selected;
+        Some(CanonicalPathTransition::Restored {
+            active_obligation: self.active_obligation(),
+        })
+    }
+
     pub(crate) fn leave(
         &mut self,
         source: CanonicalPathSource,

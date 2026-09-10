@@ -3179,6 +3179,22 @@ fn topology_restore_runs_preserve_private_effects_faults_and_fresh_births() {
             });
             let clock = actual.reducer.machine.next_obligation;
             assert!(clock > floor);
+            let run = *actual.restore.last().unwrap();
+            for width in [1, run.latest.bytes.len() - run.first_depth + 1] {
+                let original = (actual.current, actual.restore.clone());
+                let mut transition = None;
+                for _ in 0..width {
+                    transition = Some(actual.leave(source(711)).unwrap());
+                }
+                let restored = (actual.current, actual.restore.clone());
+                actual.current = original.0;
+                actual.restore = original.1.clone();
+                assert_eq!(actual.try_leave_run(width), transition);
+                assert_eq!((actual.current, actual.restore.clone()), restored);
+                assert_eq!(actual.reducer.machine.next_obligation, clock);
+                actual.current = original.0;
+                actual.restore = original.1;
+            }
             for _ in 0..key.len() {
                 assert_eq!(actual.leave(source(711)), expected.leave(source(711)));
                 assert_eq!(actual.reducer.machine.next_obligation, clock);
@@ -3196,5 +3212,175 @@ fn topology_restore_runs_preserve_private_effects_faults_and_fresh_births() {
         }
         assert_eq!(actual.leave(source(713)), expected.leave(source(713)));
         assert_eq!(actual.finish(source(715)), expected.finish(source(715)));
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn bulk_restore_matches_scalar_history_across_nested_payloads(
+        width in 2usize..258,
+        nesting in 0usize..4,
+        choices in proptest::collection::vec(any::<usize>(), 1..17),
+    ) {
+        let mut key = vec![EPATHMAP_MAP];
+        prost::encoding::encode_varint(width as u64, &mut key);
+        key.resize(key.len() + width, 0xa7);
+        for _ in 0..nesting {
+            let mut body = Vec::new();
+            prost::encoding::encode_varint(key.len() as u64, &mut body);
+            body.extend(key);
+            key = vec![EPATHMAP];
+            prost::encoding::encode_varint(body.len() as u64, &mut key);
+            key.extend(body);
+        }
+        let mut actual = CanonicalPathTopologyAdmission::new();
+        let mut expected = EagerCanonicalPathTopologyAdmission::new();
+        let mut saved = Vec::new();
+        let mut frozen = Vec::new();
+        for (offset, byte) in key.iter().copied().enumerate() {
+            saved.push(actual.current);
+            if offset % 31 == 0 {
+                let root = actual.arena.retained_source_window(actual.current.bytes).unwrap();
+                let observed = root.located_bytes().collect::<Vec<_>>();
+                frozen.push((root, observed));
+            }
+            let located = LocatedPathByte::in_source(byte, offset as u32 % 7, 103 + offset * 19);
+            assert_eq!(actual.edge(located), expected.edge(located));
+        }
+        let mut index = 0;
+        while let Some(run) = actual.restore.last().copied() {
+            let population = run.latest.bytes.len() - run.first_depth + 1;
+            let count = 1 + choices[index % choices.len()] % population;
+            let resources = (actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation);
+            let stores = (
+                actual.reducer.states.clone(),
+                actual.reducer.machine.frames.slots.clone(),
+                actual.reducer.owners.entries.clone(),
+            );
+            let mut scalar = None;
+            for _ in 0..count {
+                scalar = Some(expected.leave(source(901)).unwrap());
+            }
+            assert_eq!(actual.try_leave_run(count), scalar);
+            let selected = saved[saved.len() - count];
+            saved.truncate(saved.len() - count);
+            assert_eq!(actual.current.state, selected.state);
+            assert_eq!(actual.arena.located_bytes(actual.current.bytes).collect::<Vec<_>>(),
+                actual.arena.located_bytes(selected.bytes).collect::<Vec<_>>());
+            assert_eq!((actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation), resources);
+            assert_eq!(actual.reducer.states, stores.0);
+            assert_eq!(actual.reducer.machine.frames.slots, stores.1);
+            assert_eq!(actual.reducer.owners.entries, stores.2);
+            assert_focused_persistent_matches(&expected.reducer, &expected.arena, expected.current,
+                &actual.reducer, &actual.arena, actual.current);
+            index += 1;
+        }
+        assert!(saved.is_empty());
+        assert!(!actual.root_left);
+        assert_eq!(actual.try_leave_run(1), None);
+        assert_eq!(actual.leave(source(905)), expected.leave(source(905)));
+        assert_eq!(actual.finish(source(907)), expected.finish(source(907)));
+        for (root, observed) in frozen {
+            assert_eq!(root.located_bytes().collect::<Vec<_>>(), observed);
+        }
+    }
+}
+
+#[test]
+fn bulk_restore_refusals_preserve_runs_root_and_typed_storage() {
+    let mut actual = CanonicalPathTopologyAdmission::new();
+    for byte in [EPATHMAP_MAP, 5, 0xa7, 0xa8, 0xa9] {
+        actual.edge(LocatedPathByte::new(byte, 7)).unwrap();
+    }
+    let run = *actual.restore.last().unwrap();
+    let population = run.latest.bytes.len() - run.first_depth + 1;
+    for width in [0, population + 1, usize::MAX] {
+        let before = (actual.current, actual.restore.clone(), actual.root_left,
+            actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation);
+        assert_eq!(actual.try_leave_run(width), None);
+        assert_eq!((actual.current, actual.restore.clone(), actual.root_left,
+            actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation), before);
+    }
+    actual.restore.last_mut().unwrap().first_depth = run.latest.bytes.len() + 1;
+    let before = (actual.current, actual.restore.clone());
+    assert_eq!(actual.try_leave_run(1), None);
+    assert_eq!((actual.current, actual.restore.clone()), before);
+    *actual.restore.last_mut().unwrap() = run;
+    actual.root_left = true;
+    let before = (actual.current, actual.restore.clone());
+    assert_eq!(actual.try_leave_run(1), None);
+    assert_eq!((actual.current, actual.restore.clone()), before);
+    assert!(actual.root_left);
+    let mut empty = CanonicalPathTopologyAdmission::new();
+    assert_eq!(empty.try_leave_run(1), None);
+    assert!(!empty.root_left);
+    empty.leave(source(9)).unwrap();
+    assert_eq!(empty.try_leave_run(1), None);
+    assert!(empty.root_left);
+    let byte = [0xa7];
+    let atom = SourceTreeWindow::from_borrowed(&byte, 17, 53).unwrap();
+    let mut root = SourceTreeWindow::empty();
+    for _ in 0..usize::BITS {
+        root = root.concat(&root).unwrap().concat(&atom).unwrap();
+    }
+    assert_eq!(root.len(), usize::MAX);
+    let mut maximal = CanonicalPathTopologyAdmission::new();
+    let slot = maximal.arena.register_source(root).unwrap();
+    let bytes = maximal.arena.append_source(maximal.arena.empty(), slot, 0..usize::MAX).unwrap();
+    maximal.restore.push(CanonicalPathRestoreRun {
+        latest: CanonicalPathReducerHandle { state: maximal.current.state, bytes },
+        first_depth: 0,
+    });
+    let resources = (maximal.stats(), maximal.arena.stats());
+    assert!(maximal.try_leave_run(usize::MAX).is_some());
+    assert_eq!(maximal.current.bytes.len(), 1);
+    assert_eq!(maximal.restore.len(), 1);
+    assert_eq!(maximal.restore[0].latest.bytes.len(), 0);
+    assert!(maximal.try_leave_run(1).is_some());
+    assert_eq!(maximal.current.bytes.len(), 0);
+    assert!(maximal.restore.is_empty());
+    assert!(!maximal.root_left);
+    assert_eq!((maximal.stats(), maximal.arena.stats()), resources);
+}
+
+#[test]
+fn bulk_restore_all_mixed_source_prefixes_match_scalar_handles() {
+    let left = [0x11, 0x12, 0x13];
+    let right = [0x21, 0x22, 0x23];
+    for count in 1..=8 {
+        let mut actual = CanonicalPathTopologyAdmission::new();
+        let left_slot = actual.arena.register_source(
+            SourceTreeWindow::from_borrowed(&left, 31, 503).unwrap()).unwrap();
+        let right_slot = actual.arena.register_source(
+            SourceTreeWindow::from_borrowed(&right, 79, usize::MAX - 2).unwrap()).unwrap();
+        let mut bytes = actual.arena.append_source(actual.arena.empty(), left_slot, 0..3).unwrap();
+        let retained = actual.arena.retained_source_window(bytes).unwrap();
+        bytes = actual.arena.append(bytes,
+            CanonicalLocatedByte::new(0x7f, CanonicalByteProvenance::new(101, 303))).unwrap();
+        bytes = actual.arena.append_source(bytes, right_slot, 0..3).unwrap();
+        let latest = CanonicalPathReducerHandle { state: actual.current.state, bytes };
+        actual.restore.push(CanonicalPathRestoreRun { latest, first_depth: 0 });
+        let prior = actual.current;
+        let before = actual.restore.clone();
+        let resources = (actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation);
+        let mut transition = None;
+        for _ in 0..count {
+            transition = Some(actual.leave(source(917)).unwrap());
+        }
+        let expected = (actual.current, actual.restore.clone());
+        actual.current = prior;
+        actual.restore = before;
+        assert_eq!(actual.try_leave_run(count), transition);
+        assert_eq!((actual.current, actual.restore.clone()), expected);
+        if count == 1 {
+            assert_eq!(actual.current, latest);
+            assert_eq!(actual.arena.located_bytes(actual.current.bytes).last().unwrap().provenance,
+                CanonicalByteProvenance::new(79, usize::MAX));
+        }
+        assert_eq!((actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation), resources);
+        assert_eq!(retained.bytes().collect::<Vec<_>>(), left);
+        assert!(!actual.root_left);
     }
 }

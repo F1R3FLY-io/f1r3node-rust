@@ -3438,6 +3438,31 @@ or parallel restoration oracle for this integration:
 These existing controls establish scalar/reference behavior. They do not by
 themselves verify a bulk adapter that has not yet been implemented.
 
+The native preparation and restoration components now have separate bindings:
+
+| Checked contract | Native implementation and control |
+|---|---|
+| Exact run-bounded scalar pop | `CanonicalPathTopologyAdmission::try_leave_run` checks both selected and remaining prefixes before mutation. `bulk_restore_matches_scalar_history_across_nested_payloads` compares 64 generated histories against eager scalar execution and saved checkpoints. |
+| Located history and refusal preservation | `bulk_restore_all_mixed_source_prefixes_match_scalar_handles` checks every cut of borrowed/generated histories. `bulk_restore_refusals_preserve_runs_root_and_typed_storage` checks invalid/empty/root cases and the maximum logical width without materializing it. Existing private-effect/fault/fresh-ID controls compare bulk and scalar restoration. |
+| Prepared ACT publication | `CanonicalCompactTrieLineSpan::prepare` retains an exclusive frame borrow and precomputes all arithmetic. `CanonicalCompactTriePreparedLineSpan::commit` performs assignments only; it cannot fail after a path update. Dropping preparation leaves the cursor unchanged. |
+| Preserved enclosing EPM authority | `IndexedCanonicalEpm1LineSpan` additionally borrows the topology counter. Preparation checks its final value and resolves final provenance from the actual source before inner publication. No reader, endpoint, value-record or terminal field is mutated. |
+| Scalar EPM trace and exact counters | `epm1_line_batch.rs` compares forward/absent/reverse traces, value bodies, retained authority and final provenance over set/map cursors, borrowed/frozen/composed sources, and discontinuous physical positions. Separate refusal/drop tests check both directions and the exact maximum counter. |
+
+These components are not yet joined to the production frame driver. In
+particular, prepared cursor publication does not by itself establish that a
+typed payload is eligible for a forward span or that source/history capacity
+has been reserved. The strict forward planner and joint publication still
+have to satisfy the acceptance table above before activation. Runtime results
+and the independently failing PMU-006 gate remain recorded separately from
+the proof-only result.
+
+`scripts/check-stack-safe-pda-proofs.sh --act-line-transport-compile` rebuilds
+the release library and independently checks the positive client plus sixteen
+expected compiler rejections, including the eight prepared-capability cases.
+The full `--act-line-transport` gate still requires all seven runtime tests
+before those same compiler controls. A compiler-only pass does not waive the
+PMU-006 runtime failure or establish joint native activation.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

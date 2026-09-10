@@ -1004,14 +1004,21 @@ pub struct CanonicalCompactTrieLineSpan<'a, S> {
     direction: CanonicalCompactTrieLineDirection,
 }
 
-impl<S> CanonicalCompactTrieLineSpan<'_, S> {
+pub struct CanonicalCompactTriePreparedLineSpan<'a, S> {
+    source: &'a S,
+    frame: &'a mut DirectTopologyFrame,
+    publication: CanonicalCompactTrieLineCommit,
+    next_index: usize,
+}
+
+impl<'a, S> CanonicalCompactTrieLineSpan<'a, S> {
     pub fn source(&self) -> &S { &self.cursor.source }
 
     pub fn source_range(&self) -> Range<usize> { self.source_range.clone() }
 
     pub fn direction(&self) -> CanonicalCompactTrieLineDirection { self.direction }
 
-    pub fn commit(self, width: usize) -> Option<CanonicalCompactTrieLineCommit> {
+    pub fn prepare(self, width: usize) -> Option<CanonicalCompactTriePreparedLineSpan<'a, S>> {
         if width == 0 || width > self.source_range.len() {
             return None;
         }
@@ -1020,26 +1027,57 @@ impl<S> CanonicalCompactTrieLineSpan<'_, S> {
             CanonicalCompactTrieLineDirection::Unwind => width,
         };
         let frame = self.cursor.state.stack.last_mut()?;
-        let source_range = match self.direction {
+        let (source_range, next_index) = match self.direction {
             CanonicalCompactTrieLineDirection::Forward => {
                 let end = self.source_range.start.checked_add(width)?;
                 let next_index = frame.line_index.checked_add(width)?;
-                frame.line_index = next_index;
-                self.source_range.start..end
+                (self.source_range.start..end, next_index)
             }
             CanonicalCompactTrieLineDirection::Unwind => {
                 let start = self.source_range.end.checked_sub(width)?;
                 let next_index = frame.leave_index.checked_add(width)?;
-                frame.leave_index = next_index;
-                frame.stage = DirectTopologyStage::Leave;
-                start..self.source_range.end
+                (start..self.source_range.end, next_index)
             }
         };
-        Some(CanonicalCompactTrieLineCommit {
-            source_range,
-            direction: self.direction,
-            expanded_events,
+        Some(CanonicalCompactTriePreparedLineSpan {
+            source: &self.cursor.source,
+            frame,
+            publication: CanonicalCompactTrieLineCommit {
+                source_range,
+                direction: self.direction,
+                expanded_events,
+            },
+            next_index,
         })
+    }
+
+    pub fn commit(self, width: usize) -> Option<CanonicalCompactTrieLineCommit> {
+        Some(self.prepare(width)?.commit())
+    }
+}
+
+impl<S> CanonicalCompactTriePreparedLineSpan<'_, S> {
+    pub fn source(&self) -> &S { self.source }
+
+    pub fn source_range(&self) -> Range<usize> { self.publication.source_range() }
+
+    pub fn direction(&self) -> CanonicalCompactTrieLineDirection { self.publication.direction() }
+
+    pub fn expanded_events(&self) -> usize { self.publication.expanded_events() }
+
+    pub fn last_source_offset(&self) -> usize { self.publication.last_source_offset() }
+
+    pub fn commit(self) -> CanonicalCompactTrieLineCommit {
+        match self.publication.direction {
+            CanonicalCompactTrieLineDirection::Forward => {
+                self.frame.line_index = self.next_index;
+            }
+            CanonicalCompactTrieLineDirection::Unwind => {
+                self.frame.leave_index = self.next_index;
+                self.frame.stage = DirectTopologyStage::Leave;
+            }
+        }
+        self.publication
     }
 }
 

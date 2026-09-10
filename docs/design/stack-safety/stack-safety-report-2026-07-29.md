@@ -11126,6 +11126,31 @@ explicitly separate from the full import/runtime gate.
 [J-141](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-141--2026-09-10-scalar-equivalent-act-batching-prerequisites)
 records the checked statements, bounded verification costs and evidence.
 
+#### 5.33.58 Native prepared cursor and bulk restore bindings (2026-09-10)
+
+Native ACT and EPM capabilities now separate fallible preparation from
+assignment-only publication. Bulk restoration selects exact run-bounded
+historical prefixes with constant work and no allocation or ancestor walk.
+It preserves width-one handles and avoids overflowing the logical run
+population. These operations bind the laws in section 5.33.57 but are not yet
+connected to production forward source ingestion.
+
+All 35 frame-history tests pass in debug/release, and three EPM capability
+tests check scalar traces, value-reader authority, source provenance and
+counter/refusal boundaries. All 480 release model-library tests pass in
+53.12 seconds. This is correctness evidence, not an end-to-end performance
+measurement or whole-workspace CI result. Forward joint publication and
+resource qualification remain required; the separate PMU-006 ACT fixture
+failure is not waived by these passing controls.
+[J-142](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-142--2026-09-10-prepared-cursor-publication-and-constant-work-restore)
+records the native mechanism, exact test scope and negative evidence.
+
+The ACT debug/release groups both subsequently report six passing controls
+and the same one PMU-006 construction failure. The independent maintained
+compiler gate passes its positive client and all sixteen specified compiler
+rejections. These terminal results do not change the failed full-gate status
+or the pending joint forward activation boundary.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
