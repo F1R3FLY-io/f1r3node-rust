@@ -22,6 +22,12 @@ pub mod errors;
 pub mod handle_table;
 pub mod handler_trait;
 pub mod handlers;
+// Wave-3 S3.13b (2026-09-10): per-family trait-impl split.  Stream
+// pilot lands first (3 handlers).  Family modules host `impl
+// FsHandler for FsXHandler` + FS_HANDLERS registrations + family-
+// local helpers.  Shared helpers stay in `handlers.rs` with
+// `pub(super)` visibility (accessible via `super::handlers::X`).
+pub mod handlers_stream;
 pub mod lock;
 pub mod mode;
 pub mod nss;

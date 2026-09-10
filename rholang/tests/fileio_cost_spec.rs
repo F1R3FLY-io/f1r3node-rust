@@ -811,14 +811,21 @@ fn trait_impl_block<'a>(src: &'a str, anchor: &str) -> Option<&'a str> {
 #[test]
 fn every_fs_handler_charges_its_cost_helper() {
     use rholang::rust::interpreter::io::handler_trait::FS_HANDLERS;
-    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
-    let mut missing = Vec::new();
-
     // Wave-3 S3.12b (2026-09-09) rewrite: source of truth for the
-    // 27 migrated handlers is now FS_HANDLERS (the pre-S3.12b
-    // `pub async fn fs_X` wrappers were retired).  Iterate every
-    // FS_HANDLERS entry + `fs_remove_dir` (trait-exempt; still
-    // has a `pub async fn fs_remove_dir` on impl FsProcesses).
+    // 27 migrated handlers is now FS_HANDLERS.
+    // Wave-3 S3.13b (2026-09-10) extension: family-split modules —
+    // Stream trait impls live in `handlers_stream.rs`, not
+    // `handlers.rs`.  Aggregate content from every candidate file so
+    // the trait-impl scan covers all migrated handlers regardless of
+    // which family file they live in.
+    let handlers_src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    let handlers_stream_src = include_str!("../src/rust/interpreter/io/handlers_stream.rs");
+    // Future family files (S3.13b continuation): concat with `\n---\n`
+    // separator between; trait_impl_block anchor-search still works
+    // per-file because each block is bounded by its own `}\n}\n`.
+    let all_src: String = format!("{handlers_src}\n// ---\n{handlers_stream_src}");
+
+    let mut missing = Vec::new();
     let mut handlers_to_check: Vec<String> =
         FS_HANDLERS.iter().map(|e| e.name.to_string()).collect();
     handlers_to_check.push("fs_remove_dir".to_string());
@@ -826,19 +833,20 @@ fn every_fs_handler_charges_its_cost_helper() {
     for handler_name in &handlers_to_check {
         let expected_call = format!("costs::{handler_name}_cost(");
 
-        // 1. Migrated handlers: check the trait impl block.
+        // 1. Migrated handlers: check the trait impl block (may live
+        //    in handlers.rs or any handlers_{family}.rs).
         let handler_struct = to_camel_case_handler(handler_name);
         let trait_anchor = format!("impl FsHandler for {handler_struct}");
-        if let Some(trait_block) = trait_impl_block(src, &trait_anchor) {
+        if let Some(trait_block) = trait_impl_block(&all_src, &trait_anchor) {
             if trait_block.contains(&expected_call) {
                 continue;
             }
         }
         // 2. Trait-exempt fs_remove_dir: still lives inside
         //    `impl FsProcesses` as a `pub async fn fs_remove_dir`
-        //    wrapper.  Check its body.
+        //    wrapper in handlers.rs.
         let signature_prefix = format!("    pub async fn {handler_name}(");
-        if let Some(body) = method_body(src, &signature_prefix) {
+        if let Some(body) = method_body(handlers_src, &signature_prefix) {
             if body.contains(&expected_call) {
                 continue;
             }
