@@ -11012,6 +11012,28 @@ records exact evidence and limitations. The admission arena has not yet
 switched to these source-backed roots, so no production import slope or
 ACT-versus-LMDB improvement is inferred.
 
+#### 5.33.54 Explicit source-export ownership (2026-09-10)
+
+An explicit trimmed source export reuses the checked split driver to release
+excluded composed subtrees. Ordinary indexed views remain constant-time.
+The distinction matters for nested payloads: retaining a tiny view must not
+inadvertently retain all generated prefix pages solely through its tree root.
+Original leaf allocations remain shared; this does not promise physical
+suballocation of a frozen leaf's original backing.
+
+All 25 source tests pass in debug/release, including Weak-reference ownership
+controls, mixed byte/provenance windows, and a huge shared-prefix export on
+an unchanged 64 KiB stack. Full release models pass 460 tests. The focused
+build/test service peaks at 3.3G under a 6 GiB cap, with zero swap. Eight new
+cache-denotation proofs pass compilation and independent kernel checking;
+they do not establish unimplemented cache resource bounds. The maintained
+integrated gate remains in progress. [J-138](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-138--2026-09-10-retained-source-cache-contract-and-export-ownership)
+records exact results, publication-seal costs and the historical-root
+metadata limitation that remains part of task 6018's resource qualification.
+The maintained integrated gate subsequently passes, including all 25 source
+tests in both profiles and ACT compile controls; J-138 distinguishes its
+outer-service accounting from separately bounded child scopes.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

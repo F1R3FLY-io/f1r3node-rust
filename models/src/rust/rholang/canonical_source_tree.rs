@@ -304,6 +304,10 @@ impl<'src> SourceTreeWindow<'src> {
         Some((Self::from_root(first), Self::from_root(last)))
     }
 
+    pub(crate) fn trimmed_subview(&self, range: Range<usize>) -> Option<Self> {
+        Some(Self::from_root(self.subview(range)?.normalized_root()?))
+    }
+
     fn normalized_root(&self) -> Option<Root<'src>> {
         if self.is_empty() {
             return Some(None);

@@ -3259,6 +3259,42 @@ Source-backed compact arena handles, borrowed lifetime threading, historical
 publication/resource counters and complete importer correspondence remain
 required before closing task 6018.
 
+### Cached source-prefix invariant bindings (2026-09-10; task 6018)
+
+`CachedSourcePrefixes` supplies the denotation bridge for retained arena
+completions. A descriptor denotes located bytes, and a compact handle selects
+a bounded range. Descriptor IDs are append-only, but their mutable tails can
+grow: the required relation is prefix-monotone growth, not immutable entries.
+A cache denotes an exact prefix; extending it concatenates only the new suffix.
+The semantic lists in this model are observations, not a proposed runtime copy.
+
+| Exported theorem | Required native/property observation |
+|---|---|
+| `bounded_handles_survive_prefix_monotone_descriptor_growth` | Every issued handle, including nonzero-start slices, retains exact located bytes after tail growth and sibling forks. |
+| `cached_prefix_survives_descriptor_growth` | Appending beyond an exported prefix does not change its cache or provenance. |
+| `cached_delta_extension_has_exact_requested_contents` | Previous cached contents plus the newly exported suffix equal the independent descriptor oracle. |
+| `cached_selection_matches_the_descriptor` | Whole, predecessor-only, tail-only and crossing ranges match the independent arena cursor. |
+| `extending_a_cache_preserves_all_older_bounded_handles` | Retain earlier completion views while extending cache coverage; every old selection remains unchanged. |
+| `refused_requests_preserve_the_exact_cache` | Range/arithmetic refusal precedes cache mutation, source registration and generated-page sealing. |
+| `repeated_or_shorter_exports_reuse_the_existing_cache` | Repeated/shorter exports allocate no new cache entry, page index or publication seal. |
+| `successful_requests_keep_cache_valid_and_cover_the_requested_prefix` | Every successful export covers its request, respects native length bounds and retains the cache denotation invariant. |
+
+Full RPB3 compilation reports 341 closed contexts; independent kernel checking
+passes. These eight new theorems do not prove the future cache implementation,
+its allocator bounds, or source-span integration. EOF remains independent
+caller authority. Existing balanced concat/split/release laws still govern
+native root operations; scheduling preflights remain unchanged.
+
+`SourceTreeWindow::trimmed_subview` reuses the existing checked subview and
+normalized split root at an ownership-export boundary. Unlike ordinary O(1)
+subviews, it discards excluded composed subtrees. Original borrowed/frozen
+leaf ownership is still shared; trimming does not detach a subrange from its
+original allocation. The ownership control keeps an ordinary subview as a
+negative control, then checks excluded leaf Weak references expire only after
+that control is released. Mixed-source properties and the huge shared-prefix
+64 KiB test bind exact selection, shape and stack behavior. Native verification
+is recorded in J-138 independently of the cache model.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

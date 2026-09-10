@@ -652,6 +652,100 @@ fn source_window_is_three_native_words() {
 }
 
 #[test]
+fn trimmed_exports_release_excluded_composed_roots() {
+    let mut root = SourceTreeWindow::empty();
+    let mut leaves = Vec::new();
+    for source in 0..3 {
+        let mut arena = CanonicalBytesArena::new();
+        let mut handle = arena.empty();
+        for offset in 0..4 {
+            handle = arena.append(handle, CanonicalLocatedByte::new(
+                source as u8, CanonicalByteProvenance::new(source, offset),
+            )).unwrap();
+        }
+        let leaf = SourceTreeWindow::from_frozen(arena.freeze(handle));
+        leaves.push(Arc::downgrade(leaf.root.as_ref().unwrap()));
+        root = root.concat(&leaf).unwrap();
+    }
+    let expected = observations(&root)[4..8].to_vec();
+    let ordinary = root.subview(4..8).unwrap();
+    let exported = root.trimmed_subview(4..8).unwrap();
+    assert_eq!(observations(&exported), expected);
+    assert_eq!(exported.start, 0);
+    assert_eq!(exported.root.as_ref().unwrap().len, 4);
+    assert!(root.trimmed_subview(0..12).unwrap().shares_root_with(&root));
+    for range in [8..4, 0..13, usize::MAX..usize::MAX] {
+        assert!(root.trimmed_subview(range).is_none());
+    }
+    let empty = root.trimmed_subview(6..6).unwrap();
+    assert!(empty.root.is_none());
+    drop(root);
+    assert!(leaves.iter().all(|leaf| leaf.upgrade().is_some()));
+    drop(ordinary);
+    assert!(leaves[0].upgrade().is_none());
+    assert!(leaves[1].upgrade().is_some());
+    assert!(leaves[2].upgrade().is_none());
+    assert_eq!(observations(&exported), expected);
+    drop(exported);
+    assert!(leaves.iter().all(|leaf| leaf.upgrade().is_none()));
+}
+
+proptest! {
+    #![proptest_config(property_config())]
+    #[test]
+    fn trimmed_subviews_preserve_mixed_located_windows(
+        chunks in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..17), 1..13),
+        first in any::<usize>(),
+        second in any::<usize>(),
+    ) {
+        let mut root = SourceTreeWindow::empty();
+        let mut expected = Vec::new();
+        for (source, chunk) in chunks.iter().enumerate() {
+            let located = chunk.iter().enumerate().map(|(at, byte)| CanonicalLocatedByte::new(
+                *byte, CanonicalByteProvenance::new(source as u32, 101 + at),
+            )).collect::<Vec<_>>();
+            let leaf = if source % 2 == 0 {
+                borrowed(chunk, source as u32, 101)
+            } else {
+                let mut arena = CanonicalBytesArena::new();
+                let mut handle = arena.empty();
+                for byte in &located { handle = arena.append(handle, *byte).unwrap(); }
+                SourceTreeWindow::from_frozen(arena.freeze(handle))
+            };
+            root = root.concat(&leaf).unwrap();
+            expected.extend(located);
+        }
+        let a = first % (root.len() + 1);
+        let b = second % (root.len() + 1);
+        let range = a.min(b)..a.max(b);
+        let view = root.subview(range.clone()).unwrap();
+        for start in 0..=view.len() {
+            let trimmed = view.trimmed_subview(start..view.len()).unwrap();
+            prop_assert_eq!(observations(&trimmed), &expected[range.start + start..range.end]);
+            prop_assert_eq!(trimmed.start, 0);
+            prop_assert_eq!(trimmed.root.as_ref().map_or(0, |node| node.len), trimmed.len());
+            assert_shape(&trimmed);
+        }
+    }
+}
+
+#[test]
+fn trimmed_shared_huge_prefix_exports_on_an_unchanged_small_stack() {
+    std::thread::Builder::new().stack_size(64 * 1024).spawn(|| {
+        let atom = [43];
+        let mut root = borrowed(&atom, 37, usize::MAX);
+        for _ in 1..usize::BITS { root = root.concat(&root).unwrap(); }
+        let last = root.len() - 1;
+        let exported = root.trimmed_subview(last..root.len()).unwrap();
+        drop(root);
+        assert_eq!(assert_shape(&exported), 1);
+        assert_eq!(observations(&exported), vec![CanonicalLocatedByte::new(
+            43, CanonicalByteProvenance::new(37, usize::MAX),
+        )]);
+    }).unwrap().join().unwrap();
+}
+
+#[test]
 fn retained_leaf_cursors_avoid_frontier_allocation_and_preserve_skip_origins() {
     let bytes = [1, 2, 3, 4, 5];
     let root = borrowed(&bytes, 31, 70);

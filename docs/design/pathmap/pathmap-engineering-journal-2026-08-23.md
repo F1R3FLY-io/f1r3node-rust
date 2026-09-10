@@ -9869,6 +9869,71 @@ Rholang execution rule changes. The remaining arena cutover must preserve
 generated logical ACT bytes separately from their physical provenance;
 source-backed indexed regions alone do not remove nested revalidation work.
 
+### J-138 — 2026-09-10: retained source-cache contract and export ownership
+
+**FORMAL / DESIGN REVIEW.** Existing source registration proofs preserve
+immutable original roots, but do not justify the mutable `SequenceNode` tail:
+its `used` and `len` grow while earlier bounded handles remain valid. Eight
+new `CachedSourcePrefixes` theorems prove exact cached-prefix growth,
+historical selection under prefix-monotone descriptor growth, checked
+refusal, repeated/shorter cache reuse and successful coverage. The exhaustive
+native binding table is in the formal README. Compilation reports 341 closed
+contexts (38.857 seconds wall, 37.874 CPU, 1.1G peak); independent kernel
+checking succeeds (21.708 seconds wall, 20.993 CPU, 492.9M peak). Both use
+High1536M/Max2G/Swap0/CPU100%/Tasks64/Runtime900 with zero swap. This is a
+denotation/scheduling bridge, not a proof of unimplemented allocator behavior.
+
+**OWNERSHIP BOUNDARY.** Exporting a short ordinary subview of a cached full
+root can retain the entire composed prefix after arena teardown. The explicit
+`trimmed_subview` operation reuses checked logical selection and the existing
+normalized split driver, releasing excluded composed subtrees while keeping
+ordinary parser subviews O(1). It neither copies payloads nor strips original
+leaf ownership. A frozen leaf can still retain its original frozen backing;
+single-page generated leaves keep that boundary bounded to their page.
+
+**RESOURCE LIMITS / NEXT IMPLEMENTATION.** A retained immutable view pins its
+generated-byte page; the current safe Vec-backed page cannot be extended by
+`Arc::get_mut` after publication. Count capacity rollovers, forks and distinct
+publication seals separately. Do not substitute `Arc::make_mut` and claim
+zero copy. Literal ACT spans must instead retain checked original sources;
+branch-mask-derived logical bytes remain distinct from physical provenance.
+
+A full cached balanced root per descriptor avoids repeated full index builds,
+but can retain O(S log S) metadata for S segments. Calling those descriptors
+sealed boundaries does not eliminate that cost. A completion-local cache
+trades retention for replay; a binary-carry frontier has linear construction
+only for a forward stream, not arbitrary historical forks. Therefore no
+universal linear-resource claim follows from cache-hit timings. The next
+source-arena integration must expose cache/segment/source/page/export work
+separately, preserve exact predecessor spans, and qualify actual nested
+literal-source workloads before closing the resource criterion. No cache
+activation, new dependency, upstream change or consensus format change is
+introduced by this checkpoint.
+
+**NATIVE QUALIFICATION.** Source tests pass 25/25 in debug (0.74 seconds)
+and release (0.10 seconds), with no failures/ignores and 435 tests filtered.
+The build/test service takes 97.506 seconds wall and 240.551 CPU seconds,
+peaks at 3.3G with zero swap under High4G/Max6G/CPU400%/Tasks512/Runtime900.
+The complete release model inventory subsequently passes 460 tests in
+52.51 seconds, with none failed, ignored or filtered. The expanded maintained
+gate then passes, including both profiles of the 25 source tests and the ACT
+span positive/eight exact compiler-rejection controls. The systemd journal
+records 324.753 seconds wall, 121.699 CPU seconds and 287M peak for the outer
+service; separately bounded child scopes are not included in those CPU/memory
+figures. The transient unit has been collected. The retained log ends at the
+gate's success marker rather than a systemd-run footer; no missing footer is
+used to invent an exit-status or aggregate resource observation.
+
+| Evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-source-cache-proof.log` | `4e8bb89a34e08a2bf1be9b0160b22ae233c86520674fc0708c6d4356ce495eff` |
+| `canonical-source-cache-kernel.log` | `674b989509eadf61e01e4d18f8302fc2c2bd5adcb06ba0833e255230d5f3ab73` |
+| `canonical-source-trim.log` | `c466d9a0adac67a34d5f3b7b8b114761b78360540651d823ce8ec1fbfb1d8fbb` |
+| `canonical-source-trim-qualified.log` | `35cc2c7cfabbb5af6460ab5d6b69ae09e2e66255cde734f50c00df765d454c96` |
+
+The checked `RPB3Admission.v` source SHA-256 is
+`df62c7715dc51b83cad9b48d064d451ae60fa89c7d8c281b011597c3f1a553d1`.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

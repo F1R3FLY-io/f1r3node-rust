@@ -11238,3 +11238,138 @@ Print Assumptions successful_deferred_dispatch_preserves_exact_parent_child_and_
 Print Assumptions rejected_construction_or_publication_never_resumes_a_parent_or_child.
 
 End CheckedConstructorScheduling.
+
+Module CachedSourcePrefixes.
+
+Section LocatedContents.
+
+Context {A : Type}.
+
+Definition selected (bytes : list A) start width :=
+  skipn start (firstn (start + width) bytes).
+
+Definition prefix_extension (before after : list A) :=
+  exists suffix, after = before ++ suffix.
+
+Record cache := Cached {
+  covered : nat;
+  contents : list A
+}.
+
+Definition valid (bytes : list A) saved :=
+  covered saved <= length bytes /\ contents saved = firstn (covered saved) bytes.
+
+Definition grow (bytes : list A) saved stop :=
+  Cached stop (contents saved ++ firstn (stop - covered saved) (skipn (covered saved) bytes)).
+
+Inductive action := Refused | Reused | Extended.
+
+Definition request limit (bytes : list A) saved stop : cache * action :=
+  if (stop <=? limit) && (stop <=? length bytes) then
+    if stop <=? covered saved then (saved, Reused)
+    else (grow bytes saved stop, Extended)
+  else (saved, Refused).
+
+Lemma bounded_prefix_after_append (before suffix : list A) width :
+  width <= length before -> firstn width (before ++ suffix) = firstn width before.
+Proof.
+  intro fits. rewrite firstn_app.
+  replace (width - length before) with 0 by lia.
+  cbn. now rewrite app_nil_r.
+Qed.
+
+Theorem bounded_handles_survive_prefix_monotone_descriptor_growth before after start width :
+  prefix_extension before after -> start + width <= length before ->
+  selected after start width = selected before start width.
+Proof.
+  intros [suffix ->] fits. unfold selected.
+  now rewrite bounded_prefix_after_append by exact fits.
+Qed.
+
+Theorem cached_prefix_survives_descriptor_growth before after saved :
+  prefix_extension before after -> valid before saved -> valid after saved.
+Proof.
+  intros [suffix ->] [fits exact_bytes]. unfold valid.
+  split; [rewrite length_app; lia|].
+  now rewrite bounded_prefix_after_append by exact fits.
+Qed.
+
+Theorem cached_delta_extension_has_exact_requested_contents bytes saved stop :
+  valid bytes saved -> covered saved <= stop -> stop <= length bytes ->
+  valid bytes (grow bytes saved stop).
+Proof.
+  intros [fits exact_bytes] forward within. unfold valid, grow; cbn.
+  split; [exact within|]. rewrite exact_bytes.
+  rewrite <- NormalizedSourceSpans.split_prefix.
+  replace (covered saved + (stop - covered saved)) with stop by lia.
+  reflexivity.
+Qed.
+
+Theorem cached_selection_matches_the_descriptor bytes saved start width :
+  valid bytes saved -> start + width <= covered saved ->
+  selected (contents saved) start width = selected bytes start width.
+Proof.
+  intros [_ ->] fits. unfold selected. rewrite firstn_firstn.
+  now rewrite Nat.min_l by exact fits.
+Qed.
+
+Theorem extending_a_cache_preserves_all_older_bounded_handles bytes saved stop start width :
+  valid bytes saved -> covered saved <= stop -> stop <= length bytes ->
+  start + width <= covered saved ->
+  selected (contents (grow bytes saved stop)) start width =
+    selected (contents saved) start width.
+Proof.
+  intros cached forward within old_handle.
+  rewrite (@cached_selection_matches_the_descriptor bytes (grow bytes saved stop) start width).
+  - symmetry. now apply cached_selection_matches_the_descriptor.
+  - now apply cached_delta_extension_has_exact_requested_contents.
+  - cbn [grow covered]. lia.
+Qed.
+
+Theorem refused_requests_preserve_the_exact_cache limit bytes saved stop :
+  limit < stop \/ length bytes < stop -> request limit bytes saved stop = (saved, Refused).
+Proof.
+  intro outside. unfold request.
+  destruct ((stop <=? limit) && (stop <=? length bytes)) eqn:guard; [|reflexivity].
+  rewrite andb_true_iff, !Nat.leb_le in guard. exfalso. lia.
+Qed.
+
+Theorem repeated_or_shorter_exports_reuse_the_existing_cache limit bytes saved stop :
+  valid bytes saved -> stop <= covered saved -> stop <= limit ->
+  request limit bytes saved stop = (saved, Reused).
+Proof.
+  intros [fits _] prior within. unfold request.
+  assert (stop <=? limit = true) by (apply Nat.leb_le; exact within).
+  assert (stop <=? length bytes = true) by (apply Nat.leb_le; lia).
+  assert (stop <=? covered saved = true) by (apply Nat.leb_le; exact prior).
+  now rewrite H, H0, H1.
+Qed.
+
+Theorem successful_requests_keep_cache_valid_and_cover_the_requested_prefix
+    limit bytes saved stop result effect :
+  valid bytes saved -> request limit bytes saved stop = (result, effect) ->
+  effect <> Refused -> valid bytes result /\ stop <= covered result /\ stop <= limit.
+Proof.
+  intros cached accepted success. unfold request in accepted.
+  destruct ((stop <=? limit) && (stop <=? length bytes)) eqn:guard.
+  - rewrite andb_true_iff, !Nat.leb_le in guard.
+    destruct (stop <=? covered saved) eqn:prior; inversion accepted; subst.
+    + apply Nat.leb_le in prior. tauto.
+    + apply Nat.leb_gt in prior. split.
+      * apply cached_delta_extension_has_exact_requested_contents; try exact cached; lia.
+      * cbn [grow covered]. lia.
+  - inversion accepted; subst. contradiction.
+Qed.
+
+End LocatedContents.
+
+Print Assumptions bounded_handles_survive_prefix_monotone_descriptor_growth.
+Print Assumptions cached_prefix_survives_descriptor_growth.
+Print Assumptions cached_delta_extension_has_exact_requested_contents.
+Print Assumptions cached_selection_matches_the_descriptor.
+Print Assumptions extending_a_cache_preserves_all_older_bounded_handles.
+Print Assumptions refused_requests_preserve_the_exact_cache.
+Print Assumptions repeated_or_shorter_exports_reuse_the_existing_cache.
+Print Assumptions successful_requests_keep_cache_valid_and_cover_the_requested_prefix.
+
+End CachedSourcePrefixes.
