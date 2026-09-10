@@ -177,7 +177,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         height_constraint_threshold: 0,
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
-        config_version: 1,
         bond_minimum: 0,
         bond_maximum: i64::MAX,
         epoch_length: 0,
@@ -185,7 +184,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         min_phlo_price: 0,
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
-        disable_late_block_filtering: false,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };
@@ -524,7 +522,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
+async fn ordinary_deploy_selection_is_bounded_only_by_the_configured_cap() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
@@ -545,10 +543,12 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
         .await
         .expect("block store");
     let mut snapshot = create_snapshot(20, validator_id);
+    // Above the old compiled ceiling (128): the conf key is the single
+    // count bound, so 150 must be honored, not clamped.
     snapshot
         .on_chain_state
         .shard_conf
-        .max_user_deploys_per_block = 777_777;
+        .max_user_deploys_per_block = 150;
     snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
     let deploys: Vec<Signed<DeployData>> = (1..=160)
         .map(|n| create_deploy(n, None, &validator_sk))
@@ -574,8 +574,8 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
 
     assert_eq!(
         prepared.deploys.len(),
-        128,
-        "ordinary deploy proposals must remain bounded when config is huge"
+        150,
+        "the configured cap is the single count bound — no hidden ceiling"
     );
     assert!(prepared.cap_hit);
 }
@@ -1036,11 +1036,11 @@ async fn buffered_retry_admission_follows_the_recovered_deploys_policy_switch() 
 
 /// Test: "remove block-expired deploys while keeping valid ones in storage"
 ///
-/// With deployLifespan = 50 and currentBlock = 101 (maxBlockNum = 100),
-/// earliestBlockNumber = 101 - 50 = 51
+/// With deploy_lifespan = 50 and current_block = 101 (max_block_num = 100),
+/// earliest_block_number = 101 - 50 = 51
 ///
-/// Expired deploy: validAfterBlockNumber = 0 (<= 51, expired)
-/// Valid deploy: validAfterBlockNumber = 60 (> 51 and < 101, valid)
+/// Expired deploy: valid_after_block_number = 0 (<= 51, expired)
+/// Valid deploy: valid_after_block_number = 60 (> 51 and < 101, valid)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     crate::init_logger();
@@ -1083,8 +1083,8 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     );
 
     // Create deploys:
-    // - Expired deploy: validAfterBlockNumber = 0 (<= 51, expired)
-    // - Valid deploy: validAfterBlockNumber = 60 (> 51 and < 101, valid)
+    // - Expired deploy: valid_after_block_number = 0 (<= 51, expired)
+    // - Valid deploy: valid_after_block_number = 60 (> 51 and < 101, valid)
     let expired_deploy = create_deploy(0, None, &validator_sk);
     let valid_deploy = create_deploy(60, None, &validator_sk);
 
@@ -1099,11 +1099,11 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         assert_eq!(deploys_before.len(), 2, "Expected 2 deploys before create");
     }
 
-    // Create snapshot with maxBlockNum = 100
+    // Create snapshot with max_block_num = 100
     let snapshot = create_snapshot(100, validator_id);
 
     // Call BlockCreator.create
-    // The cleanup happens in prepareUserDeploys before block creation
+    // The cleanup happens in prepare_user_deploys before block creation
     // Block creation may fail due to empty parents, but that's after cleanup
     let _ = block_creator::create(
         &snapshot,
@@ -1137,9 +1137,9 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
 
 /// Test: "remove both block-expired and time-expired deploys while keeping valid ones"
 ///
-/// - Block-expired deploy (validAfterBlockNumber = 0 is expired)
-/// - Time-expired deploy (validAfterBlockNumber = 60 is valid, but expirationTimestamp is past)
-/// - Valid deploy (validAfterBlockNumber = 60 is valid, no expiration timestamp)
+/// - Block-expired deploy (valid_after_block_number = 0 is expired)
+/// - Time-expired deploy (valid_after_block_number = 60 is valid, but expiration_timestamp is past)
+/// - Valid deploy (valid_after_block_number = 60 is valid, no expiration timestamp)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_remove_both_block_expired_and_time_expired_deploys() {
     crate::init_logger();
@@ -1189,9 +1189,9 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         - 60000;
 
     // Create deploys:
-    // - Block-expired deploy (validAfterBlockNumber = 0 is expired)
-    // - Time-expired deploy (validAfterBlockNumber = 60 is valid, but expirationTimestamp is past)
-    // - Valid deploy (validAfterBlockNumber = 60 is valid, no expiration timestamp)
+    // - Block-expired deploy (valid_after_block_number = 0 is expired)
+    // - Time-expired deploy (valid_after_block_number = 60 is valid, but expiration_timestamp is past)
+    // - Valid deploy (valid_after_block_number = 60 is valid, no expiration timestamp)
     let block_expired_deploy = create_deploy(0, None, &validator_sk);
     let time_expired_deploy = create_deploy(60, Some(past_timestamp), &validator_sk);
     let valid_deploy = create_deploy(60, None, &validator_sk);
@@ -1211,7 +1211,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         assert_eq!(deploys_before.len(), 3, "Expected 3 deploys before create");
     }
 
-    // Create snapshot with maxBlockNum = 100
+    // Create snapshot with max_block_num = 100
     let snapshot = create_snapshot(100, validator_id);
 
     // Call BlockCreator.create

@@ -148,7 +148,6 @@ struct FinalityLagStats {
 /// for per-shard control — when that happens the rename target is
 /// already in place.
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
-const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 128;
 const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
 const USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET: usize = 512 * 1024;
 const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
@@ -162,8 +161,11 @@ const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
 const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
 const FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 120_000;
 const FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 300_000;
-const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
-const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
+/// Public so startup validation can order the width cap against the hard tier.
+pub const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
+pub const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
+const _: () =
+    assert!(FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS);
 
 /// C15 / Smell-4: extract the deploy-signature pretty-print prefix
 /// used in operator-facing log messages. Previously inlined as
@@ -300,11 +302,10 @@ fn user_deploy_byte_budget(admission_policy: DeployAdmissionPolicy) -> usize {
 }
 
 fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
-    (casper_snapshot
+    casper_snapshot
         .on_chain_state
         .shard_conf
-        .max_user_deploys_per_block as usize)
-        .min(ORDINARY_DEPLOY_PROPOSAL_CAP)
+        .max_user_deploys_per_block as usize
 }
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
@@ -474,9 +475,7 @@ async fn prepare_user_deploys_with_policy(
 
     let mut buffered_deploys: HashSet<Signed<DeployData>> =
         if allow_ordinary_deploys || allow_in_scope_recovery || allow_recovered_deploys {
-            let buffer_guard = rejected_deploy_buffer
-                .lock()
-                .map_err(|e| CasperError::LockError(e.to_string()))?;
+            let buffer_guard = rejected_deploy_buffer.lock()?;
             buffer_guard.read_all()?
         } else {
             HashSet::new()
@@ -530,8 +529,7 @@ async fn prepare_user_deploys_with_policy(
         );
         deploy_storage_guard.remove(expired_buffered.clone())?;
         rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .lock()?
             .remove(expired_buffered.clone())?;
         let expired_sigs: HashSet<Bytes> = expired_buffered
             .into_iter()
@@ -593,8 +591,7 @@ async fn prepare_user_deploys_with_policy(
     };
     if !settled_buffered.is_empty() {
         rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .lock()?
             .remove(settled_buffered.clone())?;
         tracing::info!(
             target: "f1r3fly.casper.recovery",
@@ -1322,9 +1319,7 @@ async fn prepare_user_deploys_with_policy(
         // unless explicitly removed. Without this, a sustained-load
         // adversary that keeps generating conflicts can grow the buffer
         // unbounded.
-        let mut buffer_guard = rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        let mut buffer_guard = rejected_deploy_buffer.lock()?;
         buffer_guard.remove(expired_list)?;
     }
 
@@ -1837,8 +1832,7 @@ fn quarantine_refund_failure_deploy(
         .remove_by_sig(&sig)
         .map_err(CasperError::from)?;
     let removed_from_rejected_buffer = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .remove_by_sig(&sig)
         .map_err(CasperError::from)?;
 
@@ -1850,9 +1844,7 @@ fn drain_selected_deploys_from_rejected_buffer(
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     deploys: &[Signed<DeployData>],
 ) -> Result<usize, CasperError> {
-    let mut guard = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
+    let mut guard = rejected_deploy_buffer.lock()?;
     let mut removed = 0usize;
     for deploy in deploys {
         if guard
@@ -1878,9 +1870,7 @@ fn drain_selected_recovered_deploys_from_deploy_storage(
     deploys: &[Signed<DeployData>],
 ) -> Result<usize, CasperError> {
     let selected_recovered: Vec<Signed<DeployData>> = {
-        let guard = rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        let guard = rejected_deploy_buffer.lock()?;
         let mut out = Vec::new();
         for deploy in deploys {
             if guard.contains_sig(&deploy.sig).map_err(CasperError::from)? {
@@ -2057,8 +2047,7 @@ fn fresh_local_deploy_stats(
         return Ok(FreshLocalDeployStats::default());
     }
     let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .read_all()?
         .into_iter()
         .map(|deploy| deploy.sig)
@@ -2127,8 +2116,7 @@ fn in_scope_local_deploy_stats(
         return Ok(InScopeLocalDeployStats::default());
     }
     let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .read_all()?
         .into_iter()
         .map(|deploy| deploy.sig)
@@ -2205,9 +2193,7 @@ fn rejected_buffer_has_recoverable_deploys(
     floor_ctx: Option<&FloorContext>,
 ) -> Result<bool, CasperError> {
     let buffered_deploys = {
-        let buffer_guard = rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        let buffer_guard = rejected_deploy_buffer.lock()?;
         if !buffer_guard.non_empty()? {
             return Ok(false);
         }
@@ -2913,7 +2899,6 @@ pub async fn create(
         casper_snapshot,
         runtime_manager,
         &latest_messages,
-        None,
         Some(&rejected_deploy_buffer),
         floor_ctx.as_ref(),
         Some(&local_validator),
@@ -3100,7 +3085,7 @@ pub async fn create(
                 next_seq_num,
             );
             tracing::info!(
-                "Recovering merge-rejected slash: invalid_block={}, original_issuer={}, target_activation_epoch={}",
+                "Recovering merge-rejected slash: invalid_block={}, one_of_original_issuers={}, target_activation_epoch={}",
                 pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
                 hex::encode(&rs.issuer_public_key.bytes),
                 recovered_target_activation_epoch
@@ -4955,7 +4940,7 @@ mod tests {
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
-                ordinary_cap: ORDINARY_DEPLOY_PROPOSAL_CAP,
+                ordinary_cap: normal_ordinary_deploy_cap(&snapshot),
                 allow_in_scope_recovery: false,
                 in_scope_recovery_cap: 0,
                 reserve_tail: false,
@@ -4968,7 +4953,7 @@ mod tests {
         .expect("prepare deploys");
 
         assert!(!prepared.deploys.is_empty());
-        assert!(prepared.deploys.len() < ORDINARY_DEPLOY_PROPOSAL_CAP);
+        assert!(prepared.deploys.len() < normal_ordinary_deploy_cap(&snapshot));
         assert!(prepared.byte_cap_hit);
         assert!(prepared.cap_hit);
         assert!(prepared.selected_user_deploy_bytes <= USER_DEPLOY_BYTE_PROPOSAL_BUDGET);
@@ -5769,7 +5754,7 @@ mod tests {
         let deploys = HashSet::from([deploy]);
         let selected = select_deploys_for_block(
             &deploys,
-            ORDINARY_DEPLOY_PROPOSAL_CAP,
+            128, // count cap irrelevant; the test exercises the byte budget
             false,
             USER_DEPLOY_BYTE_PROPOSAL_BUDGET,
         );

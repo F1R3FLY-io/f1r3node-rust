@@ -153,8 +153,8 @@ async fn merged_siblings_must_not_score_equal() {
             (v3.clone(), m3.block_hash.clone()),
         ]);
 
-        let fork_choice = Estimator::apply(i32::MAX, None)
-            .tips_with_latest_messages(&mut dag, &genesis, latest)
+        let fork_choice = Estimator::apply()
+            .tips_with_latest_messages(&mut dag, &genesis, latest, i32::MAX, None)
             .await
             .expect("tips");
 

@@ -302,6 +302,28 @@ fn test_print_private_key_from_secret_roundtrips_through_read_key_pair() {
 }
 
 #[test]
+fn test_read_key_pair_keeps_base64_body_lines_containing_key() {
+    let pem = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgBTKEY6yp79c5dbNy\n\
+hUWSBmo9phQ452/PK1BotDnn9MihRANCAAQZMJSYyZI8LFWGt9m1i3iG32JY+rFv\n\
+tWB90bq4vpoJJMbKQl6ZoXhmeTtpOFxgJ9KMY7lfUz+MKa88M8XSn7Y5\n\
+-----END PRIVATE KEY-----";
+    assert!(pem
+        .lines()
+        .any(|line| !line.starts_with("-----") && line.contains("KEY")));
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let key_path = temp_dir.path().join("key.pem");
+    std::fs::write(&key_path, pem).expect("failed to write key file");
+
+    let (parsed_secret, _) = CertificateHelper::read_key_pair(key_path.to_str().unwrap())
+        .expect("body lines containing KEY must not be dropped");
+    let reprinted = CertificatePrinter::print_private_key_from_secret(&parsed_secret)
+        .expect("private key printing should succeed");
+    assert_eq!(reprinted, pem);
+}
+
+#[test]
 fn test_read_key_pair_error_paths() {
     let missing = CertificateHelper::read_key_pair("/nonexistent/path/key.pem");
     assert!(missing.is_err());

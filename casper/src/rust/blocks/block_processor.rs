@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -28,7 +28,6 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::env;
 use tokio::sync::mpsc;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
@@ -178,39 +177,36 @@ pub(crate) fn post_validation(status: &ValidBlockProcessing) -> PostValidation {
 /// alarmed storage. Past it the node degrades to today's deferral, loudly.
 const SETTLED_ADMISSION_BUDGET: u64 = 512;
 
+/// Ceiling on detached block-hash announces in flight. An announce is
+/// best-effort gossip (peers also learn hashes from proposals and the casper
+/// loop), so past the ceiling further announces are dropped rather than
+/// queued — bounded loss under saturation instead of unbounded task growth.
+pub const ANNOUNCE_MAX_IN_FLIGHT: usize = 128;
+
 const CASPER_BUFFER_PRUNE_INTERVAL_MS: u64 = 5_000;
+/// Must exceed the dependency re-request clock, or pruning fights recovery.
 const CASPER_BUFFER_STALE_TTL_MS: u64 = 180_000;
 const CASPER_BUFFER_MAX_APPROX_NODES: usize = 16_384;
 const CASPER_BUFFER_MAX_PRUNE_BATCH: usize = 512;
-const CASPER_BUFFER_MAX_APPROX_NODES_ENV: &str = "F1R3_CASPER_BUFFER_MAX_APPROX_NODES";
-const CASPER_BUFFER_STALE_TTL_MS_ENV: &str = "F1R3_CASPER_BUFFER_STALE_TTL_MS";
-const CASPER_BUFFER_MAX_PRUNE_BATCH_ENV: &str = "F1R3_CASPER_BUFFER_MAX_PRUNE_BATCH";
-const CASPER_BUFFER_PRUNE_INTERVAL_MS_ENV: &str = "F1R3_CASPER_BUFFER_PRUNE_INTERVAL_MS";
 const CASPER_BUFFER_STALE_PRUNED_METRIC: &str = "casper.buffer.stale-pruned";
 const CASPER_BUFFER_OVERFLOW_PRUNED_METRIC: &str = "casper.buffer.overflow-pruned";
 const CASPER_BUFFER_APPROX_NODES_METRIC: &str = "casper.buffer.approx-nodes";
 const CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC: &str = "casper.buffer.dependency-loop-pruned";
-const MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT: u32 = 32;
-const MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV: &str = "F1R3_MISSING_DEPENDENCY_ATTEMPTS_MAX";
-const VALIDATION_ERROR_ATTEMPTS_MAX_DEFAULT: u32 = 32;
-const VALIDATION_ERROR_ATTEMPTS_MAX_ENV: &str = "F1R3_VALIDATION_ERROR_ATTEMPTS_MAX";
-const MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT: u64 = 120_000;
-const MISSING_DEPENDENCY_QUARANTINE_MS_ENV: &str = "F1R3_MISSING_DEPENDENCY_QUARANTINE_MS";
+const MISSING_DEPENDENCY_ATTEMPTS_MAX: u32 = 32;
+/// Hard-error attempt cap per buffered block. Public so tests exercise the
+/// bound the block-processing loop relies on.
+pub const VALIDATION_ERROR_ATTEMPTS_MAX: u32 = 32;
+const MISSING_DEPENDENCY_QUARANTINE_MS: u64 = 120_000;
+/// Distinct from the missing-dependency pause: the two ledgers pace
+/// different recoveries.
+const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
+/// Admission cap on the shared in-flight block set. Must not exceed the
+/// node's block-processor queue capacity.
+pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-const MALLOC_TRIM_INTERVAL_BLOCKS_DEFAULT: u64 = 64;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-const MALLOC_TRIM_INTERVAL_BLOCKS_ENV: &str = "F1R3_MALLOC_TRIM_EVERY_BLOCKS";
+const MALLOC_TRIM_INTERVAL_BLOCKS: u64 = 64;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 static MALLOC_TRIM_BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-static MALLOC_TRIM_INTERVAL_BLOCKS: OnceLock<u64> = OnceLock::new();
-static CASPER_BUFFER_MAX_APPROX_NODES_CFG: OnceLock<usize> = OnceLock::new();
-static CASPER_BUFFER_STALE_TTL_MS_CFG: OnceLock<u64> = OnceLock::new();
-static CASPER_BUFFER_MAX_PRUNE_BATCH_CFG: OnceLock<usize> = OnceLock::new();
-static CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG: OnceLock<u64> = OnceLock::new();
-static MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
-static VALIDATION_ERROR_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
-static MISSING_DEPENDENCY_QUARANTINE_MS_CFG: OnceLock<u64> = OnceLock::new();
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 unsafe extern "C" {
@@ -218,55 +214,9 @@ unsafe extern "C" {
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn malloc_trim_interval_blocks() -> u64 {
-    *MALLOC_TRIM_INTERVAL_BLOCKS.get_or_init(|| {
-        env::var_or(
-            MALLOC_TRIM_INTERVAL_BLOCKS_ENV,
-            MALLOC_TRIM_INTERVAL_BLOCKS_DEFAULT,
-        )
-    })
-}
-
-fn casper_buffer_max_approx_nodes() -> usize {
-    *CASPER_BUFFER_MAX_APPROX_NODES_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_MAX_APPROX_NODES_ENV,
-            CASPER_BUFFER_MAX_APPROX_NODES,
-        )
-    })
-}
-
-fn casper_buffer_stale_ttl_ms() -> u64 {
-    *CASPER_BUFFER_STALE_TTL_MS_CFG
-        .get_or_init(|| env::var_or(CASPER_BUFFER_STALE_TTL_MS_ENV, CASPER_BUFFER_STALE_TTL_MS))
-}
-
-fn casper_buffer_max_prune_batch() -> usize {
-    *CASPER_BUFFER_MAX_PRUNE_BATCH_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_MAX_PRUNE_BATCH_ENV,
-            CASPER_BUFFER_MAX_PRUNE_BATCH,
-        )
-    })
-}
-
-fn casper_buffer_prune_interval_ms() -> u64 {
-    *CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_PRUNE_INTERVAL_MS_ENV,
-            CASPER_BUFFER_PRUNE_INTERVAL_MS,
-        )
-    })
-}
-
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn maybe_trim_allocator_after_block() {
-    let interval = malloc_trim_interval_blocks();
-    if interval == 0 {
-        return;
-    }
     let n = MALLOC_TRIM_BLOCK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-    if n.is_multiple_of(interval) {
+    if n.is_multiple_of(MALLOC_TRIM_INTERVAL_BLOCKS) {
         use crate::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC;
         // Best-effort return of free heap pages to OS to limit RSS ratcheting.
         unsafe {
@@ -280,39 +230,7 @@ fn maybe_trim_allocator_after_block() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn maybe_trim_allocator_after_block() {}
 
-/// Hard-error attempt cap per buffered block. Public so tests exercise the
-/// bound the block-processing loop relies on.
-pub fn validation_error_attempts_max() -> u32 {
-    *VALIDATION_ERROR_ATTEMPTS_MAX_CFG.get_or_init(|| {
-        env::var_or_filtered(
-            VALIDATION_ERROR_ATTEMPTS_MAX_ENV,
-            VALIDATION_ERROR_ATTEMPTS_MAX_DEFAULT,
-            |v: &u32| *v > 0,
-        )
-    })
-}
-
-fn missing_dependency_attempts_max() -> u32 {
-    *MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG.get_or_init(|| {
-        env::var_or_filtered(
-            MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV,
-            MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT,
-            |v: &u32| *v > 0,
-        )
-    })
-}
-
-fn missing_dependency_quarantine_ms() -> u64 {
-    *MISSING_DEPENDENCY_QUARANTINE_MS_CFG.get_or_init(|| {
-        env::var_or_filtered(
-            MISSING_DEPENDENCY_QUARANTINE_MS_ENV,
-            MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT,
-            |v: &u64| *v > 0,
-        )
-    })
-}
-
-impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
+impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
 
     /// The height this node was started from. Zero means genesis — a complete
@@ -412,7 +330,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
             tracing::debug!(
                 "Skipping block {} due to missing-dependency quarantine ({}ms).",
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                missing_dependency_quarantine_ms()
+                MISSING_DEPENDENCY_QUARANTINE_MS
             );
             metrics::counter!(CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE, "reason" => "quarantine")
                 .increment(1);
@@ -441,7 +359,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
                 tracing::warn!(
                     "Throttling block {} after {} missing-dependency checks (keeping in buffer).",
                     PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                    missing_dependency_attempts_max()
+                    MISSING_DEPENDENCY_ATTEMPTS_MAX
                 );
                 metrics::counter!(CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE, "reason" => "attempts")
                     .increment(1);
@@ -649,6 +567,13 @@ impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
         self.dependencies.ack_processed(block).await
     }
 
+    /// See [`BlockRetriever::note_local_backpressure_drop`].
+    pub fn note_local_backpressure_drop(&self, hash: &BlockHash, site: &'static str) {
+        self.dependencies
+            .block_retriever
+            .note_local_backpressure_drop(hash, site);
+    }
+
     /// See [`BlockProcessorDependencies::try_admit_settled`].
     pub async fn try_admit_settled(
         &self,
@@ -725,9 +650,13 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     /// in test constructions; without it a missing root still defers safely,
     /// it just never heals.
     state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
+    /// Permits bounding detached block-hash announces in flight. Each spawned
+    /// announce holds one until its sends resolve, so slow peers cap the task
+    /// count at the permit count instead of block-rate x send-timeout.
+    announce_permits: Arc<tokio::sync::Semaphore>,
 }
 
-impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
+impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub fn new(
         block_store: KeyValueBlockStore,
         casper_buffer: CasperBufferKeyValueStorage,
@@ -754,6 +683,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             settled_solicitations: Arc::new(Mutex::new(HashSet::new())),
             settled_admissions: Arc::new(AtomicU64::new(0)),
             state_root_fetch_tx,
+            announce_permits: Arc::new(tokio::sync::Semaphore::new(ANNOUNCE_MAX_IN_FLIGHT)),
         }
     }
 
@@ -840,7 +770,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let last_prune = self.casper_buffer_last_prune_ms.load(Ordering::Relaxed);
-        let prune_interval_ms = casper_buffer_prune_interval_ms();
+        let prune_interval_ms = CASPER_BUFFER_PRUNE_INTERVAL_MS;
         if now_ms.saturating_sub(last_prune) < prune_interval_ms {
             return Ok(());
         }
@@ -848,9 +778,9 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .store(now_ms, Ordering::Relaxed);
 
         let (stale_pruned, overflow_pruned) = self.casper_buffer.enforce_limits(
-            casper_buffer_max_approx_nodes(),
-            casper_buffer_stale_ttl_ms(),
-            casper_buffer_max_prune_batch(),
+            CASPER_BUFFER_MAX_APPROX_NODES,
+            CASPER_BUFFER_STALE_TTL_MS,
+            CASPER_BUFFER_MAX_PRUNE_BATCH,
             prune_interval_ms,
         )?;
         let approx_nodes = self.casper_buffer.approx_node_count();
@@ -1150,7 +1080,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         })?;
         let next = attempts.entry(block_hash.clone()).or_insert(0);
         *next = next.saturating_add(1);
-        Ok(*next >= missing_dependency_attempts_max())
+        Ok(*next >= MISSING_DEPENDENCY_ATTEMPTS_MAX)
     }
 
     fn clear_missing_dependency_attempts(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
@@ -1187,7 +1117,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let until = now_ms.saturating_add(missing_dependency_quarantine_ms());
+        let until = now_ms.saturating_add(MISSING_DEPENDENCY_QUARANTINE_MS);
         let mut quarantine = self
             .missing_dependency_quarantine_until
             .lock()
@@ -1243,7 +1173,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             })?;
             let next = attempts.entry(block_hash.clone()).or_insert(0);
             *next = next.saturating_add(1);
-            if *next >= validation_error_attempts_max() {
+            if *next >= VALIDATION_ERROR_ATTEMPTS_MAX {
                 attempts.remove(block_hash);
                 true
             } else {
@@ -1252,7 +1182,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         };
 
         let until = std::time::Instant::now()
-            + std::time::Duration::from_millis(missing_dependency_quarantine_ms());
+            + std::time::Duration::from_millis(VALIDATION_ERROR_QUARANTINE_MS);
         let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
             CasperError::RuntimeError(
                 "Failed to acquire validation_error_quarantine_until lock".to_string(),
@@ -1541,22 +1471,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         let dag = casper.handle_invalid_block(block, invalid_block, &snapshot.dag)?;
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
-        if let Err(err) = self
-            .transport
-            .send_block_hash(
-                &self.connections_cell,
-                &self.conf,
-                &block.block_hash,
-                &block.sender,
-            )
-            .await
-        {
-            tracing::warn!(
-                "Failed to send block hash {} to sender during invalid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                err
-            );
-        }
+        self.spawn_block_hash_announce(block);
 
         Ok(dag)
     }
@@ -1570,30 +1485,54 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         let dag = { casper.handle_valid_block(block).await? };
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
-        if let Err(err) = self
-            .transport
-            .send_block_hash(
-                &self.connections_cell,
-                &self.conf,
-                &block.block_hash,
-                &block.sender,
-            )
-            .await
-        {
-            tracing::warn!(
-                "Failed to send block hash {} to sender during valid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                err
-            );
-        }
+        self.spawn_block_hash_announce(block);
 
         Ok(dag)
+    }
+
+    /// Test-only: drive the announce spawn directly.
+    pub fn spawn_block_hash_announce_for_test(&self, block: &BlockMessage) {
+        self.spawn_block_hash_announce(block)
+    }
+
+    /// The announce is one-way gossip, so it runs detached: awaited inline,
+    /// one unreachable peer's send timeout taxes every processed block.
+    /// Detached tasks are permit-bounded: without the cap, in-flight count is
+    /// block-processing rate times the slowest peer's send timeout.
+    fn spawn_block_hash_announce(&self, block: &BlockMessage) {
+        let Ok(permit) = self.announce_permits.clone().try_acquire_owned() else {
+            tracing::debug!(
+                block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                cap = ANNOUNCE_MAX_IN_FLIGHT,
+                "dropping block-hash announce: every announce slot is held by a \
+                 slow peer send; peers learn the hash from gossip instead"
+            );
+            return;
+        };
+        let transport = self.transport.clone();
+        let connections_cell = self.connections_cell.clone();
+        let conf = self.conf.clone();
+        let block_hash = block.block_hash.clone();
+        let sender = block.sender.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(err) = transport
+                .send_block_hash(&connections_cell, &conf, &block_hash, &sender)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to send block hash {} to peers during block effects: {}",
+                    PrettyPrinter::build_string_bytes(&block_hash),
+                    err
+                );
+            }
+        });
     }
 }
 
 /// Constructor function equivalent to Scala's companion object apply method
 /// Creates unified dependencies and BlockProcessor
-pub fn new_block_processor<T: TransportLayer + Send + Sync>(
+pub fn new_block_processor<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     casper_buffer: CasperBufferKeyValueStorage,
     block_dag_storage: BlockDagKeyValueStorage,

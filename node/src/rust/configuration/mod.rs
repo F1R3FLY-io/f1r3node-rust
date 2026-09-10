@@ -23,6 +23,8 @@ pub mod builder {
     use std::env;
     use std::path::PathBuf;
 
+    use casper::rust::blocks::proposer::block_creator::FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS;
+
     use super::*;
     use crate::rust::configuration::commandline::ConfigMapper;
 
@@ -217,6 +219,139 @@ pub mod builder {
             }
         }
 
+        // A dropped delivery freezes the receiver's view until the retriever
+        // recovers it, and the recovery that must fit inside the citability
+        // window is the FULL re-request ladder (every backoff interval until
+        // the retry budget exhausts), not just the first anchor interval.
+        let recovery_span = std::time::Duration::from_millis(
+            casper::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+        );
+        if max_parent_depth != i32::MAX && max_parent_depth > 0 {
+            let citability_window = node_conf
+                .casper
+                .heartbeat_conf
+                .check_interval
+                .saturating_mul(max_parent_depth as u32);
+            if citability_window < recovery_span {
+                warnings.push(format!(
+                    "the citability window (max-parent-depth {} x heartbeat.check-interval \
+                    {:?} = {:?}) is smaller than the full dependency-recovery re-request \
+                    span ({:?} across the whole retry budget): a lost block delivery \
+                    cannot finish recovering before its blocks fall below the parent-depth \
+                    horizon, converting a dropped packet into a finality stall. Raise \
+                    max-parent-depth or slow the cadence.",
+                    max_parent_depth,
+                    node_conf.casper.heartbeat_conf.check_interval,
+                    citability_window,
+                    recovery_span,
+                ));
+            }
+        }
+
+        // Values the node cannot behave correctly under: fail startup rather
+        // than run inverted windows or nonsense rules.
+        if max_parent_depth <= 0 {
+            return Err(eyre::eyre!(
+                "casper.max-parent-depth ({}) must be positive (or i32::MAX to disable \
+                the depth check): the parent-spread validity rule and the citability \
+                horizon are undefined at zero or below",
+                max_parent_depth,
+            ));
+        }
+        if node_conf.casper.deploy_lifespan <= 0 {
+            return Err(eyre::eyre!(
+                "casper.deploy-lifespan ({}) must be positive: a non-positive validity \
+                window inverts the expiry and repeat-deploy rules",
+                node_conf.casper.deploy_lifespan,
+            ));
+        }
+        if node_conf.casper.min_phlo_price < 0 {
+            return Err(eyre::eyre!(
+                "casper.min-phlo-price ({}) must be non-negative",
+                node_conf.casper.min_phlo_price,
+            ));
+        }
+        if node_conf.casper.genesis_block_data.epoch_length <= 0 {
+            return Err(eyre::eyre!(
+                "casper.genesis-block-data.epoch-length ({}) must be positive: epoch \
+                arithmetic (slash activation, closeBlock boundaries) divides by it",
+                node_conf.casper.genesis_block_data.epoch_length,
+            ));
+        }
+
+        // The mpd sentinel's real side effect is easy to miss: with no
+        // citability horizon, nothing is ever provably beyond contest.
+        if max_parent_depth == i32::MAX {
+            warnings.push(
+                "casper.max-parent-depth is i32::MAX (depth check disabled): terminal \
+                Expired/Failed deploy verdicts are never written — deploys that miss \
+                inclusion stay Pending forever by design"
+                    .to_string(),
+            );
+        }
+
+        // The item-2 lesson: every request leg toward an unreachable peer
+        // costs up to network-timeout, so a timeout at or above the proposal
+        // cadence lets one dead peer tax each round end to end.
+        let network_timeout = node_conf.protocol_client.network_timeout;
+        let check_interval = node_conf.casper.heartbeat_conf.check_interval;
+        if network_timeout > check_interval {
+            warnings.push(format!(
+                "protocol-client.network-timeout ({:?}) exceeds \
+                heartbeat.check-interval ({:?}): one unreachable peer can tax every \
+                proposal round by a full timeout",
+                network_timeout, check_interval,
+            ));
+        }
+
+        if !node_conf.casper.enable_mergeable_channel_gc {
+            warnings.push(
+                "casper.enable-mergeable-channel-gc is false: mergeable-channel data is \
+                retained forever and the store grows without bound"
+                    .to_string(),
+            );
+        }
+
+        // I3: the width cap only bounds validity-window burn during a stall
+        // if it sits at or below the citability depth. A warning, not an
+        // error: the depth this cap runs against is the chain-adopted one,
+        // which can legitimately exceed the local value judged here (the
+        // authoritative re-judgement runs against the adopted depth).
+        let width_cap = node_conf
+            .casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks;
+        if max_parent_depth != i32::MAX && width_cap > max_parent_depth as i64 {
+            warnings.push(format!(
+                "casper.heartbeat.advanced.empty-frontier-max-unfinalized-blocks ({}) \
+                exceeds casper.max-parent-depth ({}): unless the chain-adopted depth is \
+                higher, a width cap above the citability depth cannot stop \
+                validity-window burn during a stall",
+                width_cap, max_parent_depth,
+            ));
+        }
+        // I4: a cap at or below the hard finality-lag tier inverts the
+        // backpressure ladder — legitimate in tests, surprising in production.
+        if width_cap <= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+            warnings.push(format!(
+                "casper.heartbeat.advanced.empty-frontier-max-unfinalized-blocks ({}) is \
+                at or below the hard finality-lag backpressure tier ({}): the width cap \
+                engages before the backpressure ladder that is meant to precede it",
+                width_cap, FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS,
+            ));
+        }
+        // I4 tail: mpd < deploy-lifespan.
+        if max_parent_depth != i32::MAX
+            && node_conf.casper.deploy_lifespan <= max_parent_depth as i64
+        {
+            warnings.push(format!(
+                "casper.deploy-lifespan ({}) is at or below casper.max-parent-depth ({}): \
+                deploys can expire inside the citability window",
+                node_conf.casper.deploy_lifespan, max_parent_depth,
+            ));
+        }
+
         Ok(warnings)
     }
 
@@ -371,7 +506,7 @@ mod heartbeat_conf_hocon_tests {
         assert_eq!(cfg.advanced.frontier_chase_max_lag, 20);
         assert_eq!(cfg.advanced.pending_deploy_max_lag, 7);
         assert_eq!(cfg.advanced.deploy_recovery_max_lag, 64);
-        assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 64);
+        assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 12);
     }
 
     #[test]
@@ -435,7 +570,7 @@ mod embedded_defaults_tests {
         assert!(matches!(cfg.logging.sink, LogSink::Stdout));
         assert!(matches!(cfg.logging.file.rotation, LogRotation::Daily));
         assert_eq!(cfg.logging.file.retention, 14);
-        assert_eq!(cfg.api_server.exploratory_deploy_max_concurrent, 1);
+        assert_eq!(cfg.api_server.exploratory_deploy_max_concurrent, 0);
         assert_eq!(cfg.api_server.exploratory_deploy_phlo_limit, 5_000_000);
         assert_eq!(
             cfg.api_server.exploratory_deploy_execution_timeout,
@@ -522,6 +657,238 @@ mod embedded_defaults_tests {
         );
     }
 
+    /// A citability window smaller than the FULL re-request recovery span
+    /// warns; shipped geometry and a disabled depth check stay silent. The
+    /// span, not the first anchor interval, is what has to fit: recovery is
+    /// the whole backoff ladder up to the retry budget.
+    #[test]
+    fn a_citability_window_under_the_recovery_span_warns_at_startup() {
+        let mut cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("re-request span")),
+            "shipped geometry must not warn, got {warnings:?}"
+        );
+
+        // 15 x 1s = 15s window against a ~58s full recovery span.
+        cfg.casper.max_parent_depth = 15;
+        cfg.casper.heartbeat_conf.check_interval = Duration::from_secs(1);
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("re-request span") && w.contains("max-parent-depth")),
+            "a citability window under the recovery span must warn, got {warnings:?}"
+        );
+
+        cfg.casper.max_parent_depth = i32::MAX;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("re-request span")),
+            "a disabled parent-depth check must not warn, got {warnings:?}"
+        );
+    }
+
+    /// Startup must refuse geometry the validity rules are undefined under;
+    /// shipped defaults must pass with none of the new warnings.
+    #[test]
+    fn invalid_consensus_values_fail_startup() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let shipped = builder::validate_config(&base).expect("shipped defaults must validate");
+        assert!(
+            !shipped.iter().any(|w| w.contains("network-timeout")
+                || w.contains("mergeable-channel-gc")
+                || w.contains("depth check disabled")),
+            "shipped geometry must be silent on the new checks, got {shipped:?}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.max_parent_depth = 0;
+        let err = builder::validate_config(&cfg).expect_err("max-parent-depth 0 must fail startup");
+        assert!(
+            err.to_string().contains("parent-spread"),
+            "the mpd check itself must fire (not a later geometry check), got: {err}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.deploy_lifespan = 0;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "deploy-lifespan 0 must fail startup"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.min_phlo_price = -1;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "negative min-phlo-price must fail startup"
+        );
+
+        let mut cfg = base;
+        cfg.casper.genesis_block_data.epoch_length = 0;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "epoch-length 0 must fail startup"
+        );
+    }
+
+    /// Side-effect configurations warn: the mpd sentinel disables terminal
+    /// deploy verdicts, an oversized network timeout taxes every proposal
+    /// round, and disabled mergeable-GC grows the store without bound.
+    #[test]
+    fn side_effect_configurations_warn_at_startup() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let mut cfg = base.clone();
+        cfg.casper.max_parent_depth = i32::MAX;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings.iter().any(|w| w.contains("depth check disabled")),
+            "the mpd sentinel must surface its terminal-verdict side effect, got {warnings:?}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.protocol_client.network_timeout = Duration::from_secs(15);
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings.iter().any(|w| w.contains("network-timeout")),
+            "a network timeout above the proposal cadence must warn, got {warnings:?}"
+        );
+
+        let mut cfg = base;
+        cfg.casper.enable_mergeable_channel_gc = false;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings.iter().any(|w| w.contains("mergeable-channel-gc")),
+            "disabled mergeable-GC must warn about unbounded growth, got {warnings:?}"
+        );
+    }
+
+    /// The shipped default and the serde fallback must agree, or a sparse
+    /// operator conf that omits the key silently disables GC (the drift the
+    /// heartbeat pinned/fallback test exists to catch, same class).
+    #[test]
+    fn mergeable_gc_fallback_matches_shipped_default() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        assert!(cfg.casper.enable_mergeable_channel_gc, "shipped default");
+        assert_eq!(
+            cfg.casper.enable_mergeable_channel_gc,
+            casper::rust::casper_conf::default_enable_mergeable_channel_gc(),
+            "serde fallback must match the shipped default"
+        );
+    }
+
+    /// I3/I4 width-cap geometry: shipped values pass silently; a cap above
+    /// the local max-parent-depth warns (the authoritative judgement runs
+    /// against the chain-adopted depth); a cap at or below the hard tier
+    /// warns.
+    #[test]
+    fn width_cap_geometry_is_validated_at_startup() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let shipped = builder::validate_config(&base).expect("shipped geometry must validate");
+        assert!(
+            !shipped
+                .iter()
+                .any(|w| w.contains("empty-frontier-max-unfinalized-blocks")
+                    || (w.contains("deploy-lifespan") && w.contains("max-parent-depth"))),
+            "shipped geometry must be silent on the width-cap checks, got {shipped:?}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = 64;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("empty-frontier-max-unfinalized-blocks")
+                    && w.contains("exceeds")),
+            "a width cap above the local max-parent-depth must warn, got {warnings:?}"
+        );
+
+        // The boundary itself: cap == mpd is the largest silent cap.
+        let mut cfg = base.clone();
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = cfg.casper.max_parent_depth as i64;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("exceeds")),
+            "a width cap equal to max-parent-depth must not warn, got {warnings:?}"
+        );
+        let mut cfg = base.clone();
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = cfg.casper.max_parent_depth as i64 + 1;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings.iter().any(|w| w.contains("exceeds")),
+            "a width cap one above max-parent-depth must warn, got {warnings:?}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.max_parent_depth = i32::MAX;
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = 64;
+        assert!(
+            builder::validate_config(&cfg).is_ok(),
+            "a disabled depth check leaves no citability depth for the cap to violate"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = 4;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("empty-frontier-max-unfinalized-blocks")
+                    && w.contains("backpressure")),
+            "a cap at or below the hard backpressure tier must warn, got {warnings:?}"
+        );
+
+        let mut cfg = base;
+        cfg.casper.deploy_lifespan = 15;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("deploy-lifespan") && w.contains("citability window")),
+            "a lifespan at or below max-parent-depth must warn, got {warnings:?}"
+        );
+    }
+
     /// The full heartbeat block, pinned twice over: the SHIPPED defaults.conf
     /// values, and the serde fallbacks a sparse operator conf (omitting every
     /// optional heartbeat key) lands on. The two must be identical — a
@@ -549,7 +916,7 @@ mod embedded_defaults_tests {
         assert_eq!(shipped.advanced.frontier_chase_max_lag, 20);
         assert_eq!(shipped.advanced.pending_deploy_max_lag, 20);
         assert_eq!(shipped.advanced.deploy_recovery_max_lag, 64);
-        assert_eq!(shipped.advanced.empty_frontier_max_unfinalized_blocks, 64);
+        assert_eq!(shipped.advanced.empty_frontier_max_unfinalized_blocks, 12);
 
         let sparse: casper::rust::casper_conf::HeartbeatConf = hocon::HoconLoader::new()
             .load_str(

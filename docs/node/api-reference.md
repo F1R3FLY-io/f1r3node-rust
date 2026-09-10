@@ -107,7 +107,7 @@ curl http://localhost:40403/api/status
 | `shardId` | string | Shard identifier |
 | `peers` | int | Connected peer count |
 | `nodes` | int | Discovered node count |
-| `minPhloPrice` | int | Minimum phlogiston price for deploys |
+| `minPhloPrice` | int | Minimum phlogiston price for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
 | `peerList` | array | Detailed peer info with connection status |
 | `nativeTokenName` | string | Full token name from genesis |
 | `nativeTokenSymbol` | string | Token ticker symbol |
@@ -118,6 +118,16 @@ curl http://localhost:40403/api/status
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |
 | `epochLength` | int | Blocks per epoch, from genesis configuration |
+
+---
+
+### `GET /api/ready`
+
+Readiness probe. Returns HTTP 200 with `{"ready": true}` once the Casper engine has entered the Running state and the node can serve deploys and exploratory deploys. Returns HTTP 503 with `{"ready": false}` while Casper is still initializing (genesis ceremony, or last-finalized-state sync on an observer).
+
+Unlike `GET /api/status`, which answers 200 throughout startup, this endpoint fails until the node is deploy-ready, so it works directly as a container health check (`docker compose up --wait`, `depends_on: condition: service_healthy`) and as a Kubernetes `httpGet` readiness probe without needing `jq`.
+
+A node running the genesis ceremony (minutes to hours) reports `unhealthy` for the whole window, because it cannot serve deploys yet. Operators spanning a long genesis raise `--wait-timeout` (Docker Compose) or probe `failureThreshold` / `start_period` (Kubernetes, Docker `HEALTHCHECK`) accordingly.
 
 ---
 
