@@ -2958,6 +2958,43 @@ allocator/unwind qualification or importer performance result follows from
 this checkpoint. The original single-drain algorithm is unchanged, and the
 balanced-source backend is not activated by these proof or documentation edits.
 
+## Representation-derived source frontier capacity (2026-09-10; task 6018)
+
+`BalancedSourceNativeCapacity` is a corollary for the private balanced
+2–3 source trees only. Every terminal window is nonempty. Therefore logical
+terminal occurrences are no greater than the cached logical byte length,
+even when subtrees share physical allocations. Together with the existing
+exponential terminal lower bound, this gives:
+
+```math
+2^h \le \text{terminal occurrences} \le \text{cached bytes} < 2^w,
+\qquad h < w.
+```
+
+Here $`h`$ is source-tree height and $`w`$ is the width of the native
+length type in bits. A previously proved local frontier bound
+$`1+2h`$ consequently fits $`1+2(w-1)`$ slots.
+
+| Exported invariant/control | Required native/property binding |
+|---|---|
+| `representable_balanced_sources_have_height_below_the_native_word_width` | Bind private constructors' nonempty leaves, balanced children, exact cached lengths and checked overflow to the native word width. Exercise maximally shared repeated-subtree shapes and refuse the first unrepresentable length; do not treat physical allocation count as logical size. |
+| `the_proved_local_frontier_fits_the_representation_derived_fixed_capacity` | Combine the actual single-root shell/staged/pending high-water observation with the source node's verified height. Assert every push fits before adopting a fixed buffer; retained/concurrent drains each require their own bound. |
+| `native_frontier_capacity_is_127_slots_for_64_bit_lengths` | Verify the capacity expression on a 64-bit target and cover rank-zero, near-boundary shared trees and leaf-only teardown. |
+| `native_frontier_capacity_is_63_slots_for_32_bit_lengths` | Verify the same expression on a 32-bit target or checked-width model; do not encode a platform-specific constant in persisted data. |
+
+This is a representation-derived capacity, not a limit on Rholang AST depth,
+input traversal or PathMap topology. It does not apply to the old unbalanced
+page DAG or to arbitrary ranked release-model heaps. Native binding must
+establish that the release node rank is the balanced source-tree height.
+
+A fixed-capacity safe buffer could remove frontier allocation/reallocation.
+It does not prove that backing disposal cannot allocate or unwind. Keep the
+empty-shell/leaf fast return outside a separate frontier-owning helper:
+a branch before array initialization alone does not guarantee the compiler
+avoids reserving the array's stack frame. Benchmark initialization and
+destruction overhead against the heap-backed candidate before adoption.
+No buffer implementation or measured improvement is claimed here.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

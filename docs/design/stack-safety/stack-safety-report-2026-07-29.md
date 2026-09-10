@@ -10818,6 +10818,25 @@ Native ordinary-root/parallel-drain ownership, actual resource tests and
 runtime source integration remain required. These proofs do not establish
 a new native performance result or complete the ACT/LMDB comparison.
 
+#### 5.33.46 Derived fixed source-frontier capacity (2026-09-10)
+
+The balanced source representation's checked logical byte length implies
+height below native word width. Combining that with the local token bound
+proves capacity 127 on 64-bit targets and 63 on 32-bit targets. This concerns
+only private balanced source trees; it does not cap Rholang AST depth or
+apply to PathMap internals or unbalanced page DAGs.
+
+Four new capstones bring RPB3 to **327 closed checks**, followed by
+independent kernel success under the unchanged 2G hard cap with zero swap.
+[J-129](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-129--2026-09-10-representation-derived-fixed-source-frontier-capacity)
+records hashes, derivation, exact native bindings and the proposed
+allocation-free buffer's qualifications.
+
+No native buffer or performance result is claimed. Native layout, small-input
+initialization cost, lifetime/concurrency behavior and backing disposal still
+require implementation and measurement. The capacity derives from valid
+representation bounds, not a new semantic traversal limit.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

@@ -9230,6 +9230,66 @@ accounting behavior changes in this checkpoint. Tasks 5976/6018 and
 experiment 342 retain the evidence. Native activation, the remaining
 import-time slope and production ACT/LMDB comparison remain open.
 
+### J-129 — 2026-09-10: representation-derived fixed source frontier capacity
+
+**DERIVED / VERIFIED MODEL; NATIVE BUFFER HYPOTHESIS.**
+Four new closed capstones in `BalancedSourceNativeCapacity` show that the
+private balanced source representation admits a fixed-capacity local drain
+frontier. Nonempty terminal occurrences consume at least one logical byte.
+The earlier balance proof gives an exponential lower bound on occurrences.
+Thus, for source height $`h`$ and native length width $`w`$:
+
+```math
+2^h \le \text{terminal occurrences} \le \text{cached logical bytes} < 2^w,
+\qquad h < w.
+```
+
+Combining this with the proved local token bound $`1+2h`$ gives capacity
+$`1+2(w-1)`$: **127 slots for 64-bit lengths and 63 for 32-bit lengths**.
+Concrete formal controls check both capacity expressions. The theorem is
+parametric in word width and introduces no persisted integer or format change.
+
+This is not an artificial semantic depth limit. It follows from balanced
+nonempty construction and already checked representability of logical byte
+length. It does not bound Rholang AST nesting, apply to PathMap's internal
+nodes, or cover the old unbalanced page DAG or an arbitrary release-model
+heap. Physical sharing does not weaken the argument: repeated shared
+subtrees still contribute their logical byte occurrences.
+
+**Native design consequence to evaluate.** A safe fixed array can remove
+frontier allocation/reallocation during source-node teardown. Each concurrent
+drain needs its own bounded buffer. The empty-shell and leaf-only routes
+should return before calling a separate frontier-owning helper; branching
+before initialization alone does not guarantee the compiler avoids reserving
+the helper's stack space. Buffer initialization, empty-slot destruction and
+small-input overhead must be measured against the heap-backed design before
+adoption. The corollary does not prove backing disposal is allocation-free,
+nor does it qualify native lifetimes, concurrency or unwind behavior.
+
+The formal README maps the height theorem, frontier corollary and both
+word-width controls to checked native constructors, repeated-subtree overflow,
+frame high-water and target-width tests. The actual release node's cached
+rank must be bound to the balanced source tree's height before using the
+capacity. No native buffer is activated by this checkpoint.
+
+**Verification.** Full compilation exits zero with **327 closed-context
+reports**; independent kernel checking exits zero with its completion marker.
+Both run under High1536M/Max2G, zero swap, CPU100%, Tasks64 and Runtime900.
+An isolated argument-binding diagnostic was repaired before final compilation.
+No verifier timing or native allocation/throughput measurement is inferred.
+
+| Artifact | SHA-256 |
+|---|---|
+| `RPB3Admission.v` | `8bcb4510e1306d65edfa5c5650516f2693787d8b20f0af24672e0d844fafcf47` |
+| `RPB3Admission.vo` | `0cf96a2a0d7df8e44a3fa863c487059ed7350ff0258d13cf4dac5c59a4960e1e` |
+| `target/verification/balanced-source-native-capacity-proof-final.log` | `e3c023e09c9875ef253e383c2027544920e34fc82256383fe69c2f6ff30ac433` |
+| `target/verification/balanced-source-native-capacity-kernel-final.log` | `417610ed885dabcb4153a19e1823fd3d6db732b0b9cc6868b3978ff320a1fcc3` |
+
+The shared RPB3 gate expects 327 reports; the source-release gate remains
+independent. This is a prerequisite in tasks 5976/6018 and experiment 342,
+not closure of native source integration, the import-time slope or the
+production ACT/LMDB comparison. No production or consensus behavior changes.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

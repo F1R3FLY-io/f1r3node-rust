@@ -11044,3 +11044,57 @@ Qed.
 Print Assumptions iterative_split_outputs_preserve_every_existing_anchored_region_position.
 
 End BalancedSplitRegionPositions.
+
+Module BalancedSourceNativeCapacity.
+
+Import BalancedSourceComposition.
+
+Lemma nonempty_terminal_occurrences_are_paid_for_by_cached_bytes current :
+  balanced current -> length (terminals current) <= size current.
+Proof.
+  intro valid. induction valid; cbn [terminals size node2 node3].
+  - cbn [length]. lia.
+  - rewrite length_app. lia.
+  - rewrite !length_app. lia.
+Qed.
+
+Theorem representable_balanced_sources_have_height_below_the_native_word_width
+    current word_bits :
+  balanced current -> size current < 2 ^ word_bits ->
+  height current < word_bits.
+Proof.
+  intros valid fits.
+  pose proof (balanced_height_has_a_concrete_exponential_terminal_lower_bound valid) as lower.
+  pose proof (nonempty_terminal_occurrences_are_paid_for_by_cached_bytes valid) as bytes.
+  apply (proj2 (Nat.pow_lt_mono_r_iff 2 (height current) word_bits ltac:(lia))).
+  lia.
+Qed.
+
+Definition native_frontier_capacity word_bits := 1 + 2 * (word_bits - 1).
+
+Theorem the_proved_local_frontier_fits_the_representation_derived_fixed_capacity
+    current word_bits held :
+  balanced current -> size current < 2 ^ word_bits ->
+  held <= 1 + 2 * height current ->
+  held <= native_frontier_capacity word_bits.
+Proof.
+  intros valid fits bounded.
+  pose proof (@representable_balanced_sources_have_height_below_the_native_word_width
+    current word_bits valid fits).
+  unfold native_frontier_capacity. lia.
+Qed.
+
+Example native_frontier_capacity_is_127_slots_for_64_bit_lengths :
+  native_frontier_capacity 64 = 127.
+Proof. reflexivity. Qed.
+
+Example native_frontier_capacity_is_63_slots_for_32_bit_lengths :
+  native_frontier_capacity 32 = 63.
+Proof. reflexivity. Qed.
+
+Print Assumptions representable_balanced_sources_have_height_below_the_native_word_width.
+Print Assumptions the_proved_local_frontier_fits_the_representation_derived_fixed_capacity.
+Print Assumptions native_frontier_capacity_is_127_slots_for_64_bit_lengths.
+Print Assumptions native_frontier_capacity_is_63_slots_for_32_bit_lengths.
+
+End BalancedSourceNativeCapacity.
