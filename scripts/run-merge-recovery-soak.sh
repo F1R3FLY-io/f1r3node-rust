@@ -26,6 +26,7 @@ PROVIDERS=(docker subprocess)
 # directories and silently discard its metrics.
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="$OUTPUT_DIR/.soak-state"
+INFLIGHT_ITERATION=0
 if [ -f "$STATE_FILE" ]; then
 	# shellcheck source=/dev/null
 	. "$STATE_FILE"
@@ -37,6 +38,10 @@ else
 	ITERATIONS=0
 	FAILURES=0
 	SEGMENT=1
+fi
+if ! [[ "$INFLIGHT_ITERATION" =~ ^[012]$ ]]; then
+	printf 'The saved iteration state must be 0, 1, or 2.\n' >&2
+	exit 2
 fi
 
 # An absolute deadline lets the caller end a segment on a wall-clock boundary
@@ -451,11 +456,12 @@ persist_soak_state() {
 	{
 		printf 'STARTED_AT=%s\n' "$STARTED_AT"
 		printf 'ITERATIONS=%s\n' "$ITERATIONS"
+		printf 'INFLIGHT_ITERATION=%s\n' "$INFLIGHT_ITERATION"
 		printf 'FAILURES=%s\n' "$FAILURES"
 		printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
 		printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
 		printf 'SEGMENT=%s\n' "$SEGMENT"
-	} >"$state_tmp" && mv "$state_tmp" "$STATE_FILE"
+	} >"$state_tmp" && mv "$state_tmp" "$STATE_FILE" || return 1
 	jq -n \
 		--arg target_ref "$TARGET_REF" \
 		--arg target_sha "$TARGET_SHA" \
@@ -477,7 +483,17 @@ persist_soak_state() {
 		mv "$checkpoint_tmp" "$checkpoint_state"
 }
 
-persist_soak_state
+if [ "$INFLIGHT_ITERATION" -eq 1 ]; then
+	FAILURES="$((FAILURES + 1))"
+	INFLIGHT_ITERATION=2
+fi
+if [ "$INFLIGHT_ITERATION" -eq 2 ]; then
+	EARLY_EXIT_REASON="interrupted_iteration"
+	DEADLINE=0
+	printf 'interrupted_iteration: iteration %s has no committed outcome. Writer termination is unconfirmed.\n' \
+		"$ITERATIONS" >"$OUTPUT_DIR/early-exit.txt" || exit 2
+fi
+persist_soak_state || exit 2
 
 # Peak total node RSS for this iteration, from the newest harness
 # resource-timeseries.csv written after the iteration's start marker
@@ -1031,6 +1047,9 @@ cleanup_soak_processes() {
 	[ -z "$ITERATION_TEE_PID" ] || kill "$ITERATION_TEE_PID" 2>/dev/null || true
 	[ -z "$ITERATION_SNAPSHOT_PID" ] || kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	[ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
+	if [ -n "$BENCHMARK_PID" ] || [ -n "$ITERATION_PID" ]; then
+		stop_node_writers -q kill >/dev/null 2>&1 || true
+	fi
 }
 trap cleanup_soak_processes EXIT
 if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
@@ -1325,11 +1344,13 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	fi
 	PROVIDER="${PROVIDERS[$((ITERATIONS % ${#PROVIDERS[@]}))]}"
 	ITERATIONS="$((ITERATIONS + 1))"
-	persist_soak_state
+	INFLIGHT_ITERATION=1
+	persist_soak_state || exit 2
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
 	mkdir -p "$ITERATION_DIR"
 	REMAINING="$((DEADLINE - $(date +%s)))"
 	if [ "$REMAINING" -le 0 ]; then
+		INFLIGHT_ITERATION=0
 		break
 	fi
 
@@ -1397,6 +1418,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITER_FINISHED="$(date +%s)"
 	emit_iteration_metrics "$ITERATION_DIR" "$ITERATIONS" "$PROVIDER" \
 		"$ITER_STARTED" "$ITER_FINISHED" "$STATUS" || true
+	INFLIGHT_ITERATION=0
 
 	if [ "$STATUS" -eq 124 ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then
 		printf '%s\n' "deadline reached during iteration $ITERATIONS" >"$ITERATION_DIR/deadline.txt"
@@ -1474,6 +1496,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		fi
 		sleep 30
 	fi
+	persist_soak_state || exit 2
 
 	if target_ref_moved; then
 		EARLY_EXIT_REASON="target_advanced"
