@@ -10852,6 +10852,26 @@ records the source hashes, pinned Arc implementation inspection, and separate
 64-byte mirrored production versus 72-byte test-layout requirements. This is
 an evidence-boundary audit, not a new native measurement or completion claim.
 
+#### 5.33.48 Concurrent source-release model and physical work (2026-09-10)
+
+The source-release model now checks 68 closed exports and passes independent
+kernel checking. Its 20 new results cover a finite closed family of drains,
+aggregate occurrence-sensitive ownership, unique final claims, exact physical
+release work, fuel-free quiescence and the explicit ordinary-drop/into-inner
+contract boundary. External owner lists and drain count are fixed; arbitrary
+external cloning and new drain admission are not proved by this trace model.
+
+The linear event bound counts physical nodes/child slots, initial root tokens
+and source actions without expanding shared trees. Final flat-backing metadata
+cleanup remains a separate native cost. Each 127/63-slot native drain still
+requires its own single balanced-root capacity binding, not a pooled bound.
+
+Compilation peaked at 537.4M and kernel checking at 268.5M, each under a 1G
+hard cap with zero swap. These are verifier measurements, not application
+memory results. [J-131](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-131--2026-09-10-closed-family-source-release-and-exact-physical-work)
+records source/log hashes, timing, scope and the 20 extracted native controls.
+The backend implementation and native qualification remain required.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

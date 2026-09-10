@@ -1243,3 +1243,654 @@ Print Assumptions every_successful_step_conserves_owned_source_leases_with_relea
 Print Assumptions every_finite_release_trace_accounts_for_every_owned_source_lease.
 
 End CanonicalSourceRelease.
+
+Module ConcurrentCanonicalSourceRelease.
+
+Import CanonicalSourceRelease.
+
+Record local_drain := LocalDrain {
+  local_pending : list nat;
+  local_payload : option node;
+  local_staged : list nat;
+  local_lease : source_lease;
+  local_phase : phase
+}.
+
+Definition capture current :=
+  LocalDrain (pending current) (local_shell current) (staged_children current)
+    (staged_source current) (control current).
+
+Definition bare local :=
+  State [] [] [] (local_pending local) (local_payload local) (local_staged local)
+    (local_lease local) (local_phase local) [] [].
+
+Definition local_nodes local :=
+  local_pending local ++ slot_children (local_payload local) ++ local_staged local.
+
+Definition local_sources local :=
+  slot_leases (local_payload local) ++ lease_tokens (local_lease local).
+
+Record world := World {
+  shared_heap : list (option node);
+  outside_nodes : list nat;
+  outside_sources : list nat;
+  drains : list local_drain;
+  global_claims : list nat;
+  global_releases : list nat
+}.
+
+Definition project current local others :=
+  State (shared_heap current)
+    (outside_nodes current ++ flat_map local_nodes others)
+    (outside_sources current ++ flat_map local_sources others)
+    (local_pending local) (local_payload local) (local_staged local)
+    (local_lease local) (local_phase local)
+    (global_claims current) (global_releases current).
+
+Definition global_node_refs current id :=
+  occurrences id (outside_nodes current) +
+  occurrences id (flat_map local_nodes (drains current)) +
+  occurrences id (heap_children (shared_heap current)).
+
+Definition global_source_refs current id :=
+  occurrences id (outside_sources current) +
+  occurrences id (flat_map local_sources (drains current)) +
+  occurrences id (heap_leases (shared_heap current)).
+
+Theorem selected_projection_counts_every_other_drain_token_as_external_ownership
+    current before local after id :
+  drains current = before ++ local :: after ->
+  node_refs (project current local (before ++ after)) id = global_node_refs current id /\
+  source_refs (project current local (before ++ after)) id = global_source_refs current id.
+Proof.
+  intro selected. unfold node_refs, source_refs, project, global_node_refs, global_source_refs.
+  cbn [external_nodes external_sources pending local_shell staged_children staged_source heap].
+  rewrite selected, !flat_map_app. cbn [flat_map].
+  unfold local_nodes, local_sources. repeat rewrite occurrences_app. split; lia.
+Qed.
+
+Lemma successful_local_step_preserves_projected_external_owners current observed next :
+  step current = Some (observed, next) ->
+  external_nodes next = external_nodes current /\ external_sources next = external_sources current.
+Proof.
+  destruct current as [storage outside readers work held staged lease pc claims releases].
+  destruct pc; destruct work; destruct held; destruct staged; destruct lease;
+    cbn [step control extract pending heap detach local_shell enqueue staged_children
+      release_source staged_source drop_empty] ; try discriminate;
+    repeat match goal with
+    | |- context [match slot ?storage ?id with _ => _ end] => destruct (slot storage id)
+    | |- context [if ?guard then _ else _] => destruct guard
+    end; intro stepped; inversion stepped; subst; split; reflexivity.
+Qed.
+
+Definition commit current before next after :=
+  World (heap next) (outside_nodes current) (outside_sources current)
+    (before ++ capture next :: after) (claimed_nodes next) (released_leases next).
+
+Lemma committing_and_reprojecting_the_selected_drain_is_exact current before local after observed next :
+  step (project current local (before ++ after)) = Some (observed, next) ->
+  project (commit current before next after) (capture next) (before ++ after) = next.
+Proof.
+  intro stepped.
+  destruct (successful_local_step_preserves_projected_external_owners _ _ _ stepped) as [nodes sources].
+  unfold project in nodes, sources. cbn [external_nodes external_sources] in nodes, sources.
+  destruct next. unfold project, commit, capture; cbn in *. now rewrite <- nodes, <- sources.
+Qed.
+
+Inductive global_step : world -> event -> world -> Prop :=
+| GlobalStep current before local after observed next :
+    drains current = before ++ local :: after ->
+    step (project current local (before ++ after)) = Some (observed, next) ->
+    global_step current observed (commit current before next after).
+
+Definition local_valid original local :=
+  phase_valid (bare local) /\
+  (forall value, local_payload local = Some value -> exists id, slot original id = Some value).
+
+Definition global_references_valid current :=
+  forall id, global_node_refs current id > 0 ->
+    exists value, slot (shared_heap current) id = Some value.
+
+Definition global_claims_valid current :=
+  NoDup (global_claims current) /\
+  Forall (fun id => slot (shared_heap current) id = None) (global_claims current).
+
+Definition world_valid original current :=
+  Forall (local_valid original) (drains current) /\
+  (forall id value, slot (shared_heap current) id = Some value -> slot original id = Some value) /\
+  global_references_valid current /\ global_claims_valid current.
+
+Lemma selected_local_valid original current before local after :
+  world_valid original current -> drains current = before ++ local :: after ->
+  drain_valid original (project current local (before ++ after)).
+Proof.
+  intros (locals & stored & references & claims) selected.
+  rewrite selected, Forall_app in locals. destruct locals as [prefix locals].
+  inversion locals as [|entry rest [phase_ok held] suffix]; subst entry rest.
+  split; [exact phase_ok|]. split.
+  - intros id positive. apply references.
+    now rewrite <- (proj1 (selected_projection_counts_every_other_drain_token_as_external_ownership
+      current before local after id selected)).
+  - split; [exact stored|exact held].
+Qed.
+
+Lemma selected_claims_valid current local others :
+  global_claims_valid current -> claims_valid (project current local others).
+Proof. exact (fun valid => valid). Qed.
+
+Theorem every_global_step_preserves_all_live_node_references original current observed next :
+  world_valid original current -> global_step current observed next -> global_references_valid next.
+Proof.
+  intros valid ran. revert valid.
+  destruct ran as [before_world before local after event_seen result selected stepped]. intro valid.
+  destruct (selected_local_valid original before_world before local after valid selected)
+    as (phase_ok & references & retained).
+  pose proof (every_successful_step_preserves_all_live_node_references
+    _ _ _ phase_ok references stepped) as preserved.
+  intros id positive.
+  pose proof (proj1 (selected_projection_counts_every_other_drain_token_as_external_ownership
+    (commit before_world before result after) before (capture result) after id eq_refl)) as counted.
+  rewrite (committing_and_reprojecting_the_selected_drain_is_exact
+    before_world before local after event_seen result stepped) in counted.
+  apply preserved. now rewrite counted.
+Qed.
+
+Theorem every_global_step_conserves_owned_source_leases_across_all_drains
+    original current observed next owner :
+  world_valid original current -> global_step current observed next ->
+  global_source_refs next owner + occurrences owner (global_releases next) =
+    global_source_refs current owner + occurrences owner (global_releases current).
+Proof.
+  intros valid ran. revert valid.
+  destruct ran as [before_world before local after event_seen result selected stepped]. intro valid.
+  destruct (selected_local_valid original before_world before local after valid selected)
+    as (phase_ok & references & retained).
+  pose proof (every_successful_step_conserves_owned_source_leases_with_release_occurrences
+    _ _ _ owner phase_ok stepped) as conserved.
+  pose proof (proj2 (selected_projection_counts_every_other_drain_token_as_external_ownership
+    before_world before local after owner selected)) as before_count.
+  pose proof (proj2 (selected_projection_counts_every_other_drain_token_as_external_ownership
+    (commit before_world before result after) before (capture result) after owner eq_refl)) as after_count.
+  rewrite (committing_and_reprojecting_the_selected_drain_is_exact
+    before_world before local after event_seen result stepped) in after_count.
+  rewrite <- before_count, <- after_count. exact conserved.
+Qed.
+
+Theorem every_global_step_preserves_unique_claims_and_all_cleared_slots current observed next :
+  global_claims_valid current -> global_step current observed next -> global_claims_valid next.
+Proof.
+  intros valid ran. revert valid.
+  destruct ran as [before_world before local after event_seen result selected stepped]. intro valid.
+  exact (every_successful_step_preserves_unique_claims_and_their_empty_slots
+    _ _ _ (selected_claims_valid before_world local (before ++ after) valid) stepped).
+Qed.
+
+Lemma capture_keeps_the_exact_local_phase_and_shell current :
+  phase_valid (bare (capture current)) = phase_valid current /\
+  local_payload (capture current) = local_shell current.
+Proof. split; reflexivity. Qed.
+
+Theorem every_global_step_preserves_the_complete_aggregate_invariant original current observed next :
+  world_valid original current -> global_step current observed next -> world_valid original next.
+Proof.
+  intros valid ran.
+  pose proof (every_global_step_preserves_all_live_node_references original _ _ _ valid ran) as references.
+  pose proof (every_global_step_preserves_unique_claims_and_all_cleared_slots _ _ _
+    (proj2 (proj2 (proj2 valid))) ran) as claims.
+  revert valid references claims.
+  destruct ran as [before_world before local after event_seen result selected stepped].
+  intros valid references claims.
+  pose proof (successful_step_preserves_drain_valid original _ _ _
+    (selected_local_valid original before_world before local after valid selected) stepped)
+    as (phase_ok & selected_refs & stored & held).
+  destruct valid as (locals & old_stored & old_refs & old_claims).
+  unfold world_valid, commit; cbn [drains shared_heap].
+  split.
+  - rewrite selected, Forall_app in locals. destruct locals as [prefix locals].
+    inversion locals; subst. apply Forall_app. split; [exact prefix|].
+    constructor; [split; assumption|assumption].
+  - split; [exact stored|]. split; assumption.
+Qed.
+
+Definition slot_work entry :=
+  match entry with
+  | None => 0
+  | Some value => 2 * length (children value) + 2 + lease_work (source value)
+  end.
+
+Definition total {A : Type} (weight : A -> nat) values :=
+  fold_right (fun value accumulated => weight value + accumulated) 0 values.
+
+Lemma total_app {A : Type} (weight : A -> nat) before after :
+  total weight (before ++ after) = total weight before + total weight after.
+Proof.
+  induction before as [|head rest IH]; [reflexivity|].
+  change (weight head + total weight (rest ++ after) =
+    (weight head + total weight rest) + total weight after).
+  rewrite IH. lia.
+Qed.
+
+Definition heap_work storage := total slot_work storage.
+Definition local_work local := staging_size (bare local) + phase_work (bare local).
+Definition single_work current := heap_work (heap current) + staging_size current + phase_work current.
+Definition global_work current := heap_work (shared_heap current) + total local_work (drains current).
+
+Lemma clearing_a_live_slot_removes_exactly_its_physical_work storage id :
+  heap_work storage = slot_work (slot storage id) + heap_work (clear_slot id storage).
+Proof.
+  revert id. induction storage as [|entry rest IH]; intros [|id];
+    try reflexivity.
+  change (slot_work entry + heap_work rest =
+    slot_work (slot rest id) + (slot_work entry + heap_work (clear_slot id rest))).
+  rewrite (IH id). lia.
+Qed.
+
+Theorem each_local_release_step_consumes_exactly_one_unit_of_physical_work current observed next :
+  phase_valid current -> step current = Some (observed, next) ->
+  S (single_work next) = single_work current.
+Proof.
+  destruct current as [storage outside readers work held staged lease pc claims releases].
+  destruct pc; cbn [phase_valid control local_shell staged_children staged_source].
+  - intros (empty & no_staged & no_lease) stepped. subst held staged lease.
+    destruct work as [|id rest]; [discriminate|].
+    cbn [step control extract pending heap] in stepped.
+    destruct (slot storage id) as [value|] eqn:live; [|discriminate].
+    pose proof (clearing_a_live_slot_removes_exactly_its_physical_work storage id) as removed.
+    rewrite live in removed. cbn [slot_work] in removed.
+    destruct (_ =? 1); inversion stepped; subst; clear stepped;
+      unfold single_work, staging_size, phase_work;
+      cbn [heap pending local_shell staged_children control
+        slot_children staged_source length]; lia.
+  - intros ((value & full) & no_staged & no_lease) stepped. subst held staged lease.
+    inversion stepped; subst; clear stepped.
+    unfold single_work, staging_size, phase_work.
+    cbn [heap pending local_shell staged_children control
+      slot_children staged_source]. lia.
+  - intros empty stepped. subst held.
+    destruct staged as [|id rest]; destruct lease;
+      cbn [step control staged_children staged_source enqueue release_source drop_empty local_shell] in stepped;
+      inversion stepped; subst; clear stepped;
+      unfold single_work, staging_size, phase_work;
+      cbn [heap pending local_shell staged_children control
+        slot_children staged_source lease_work length]; lia.
+Qed.
+
+Lemma focused_work_plus_other_drains_is_exact current before local after :
+  drains current = before ++ local :: after ->
+  global_work current = single_work (project current local (before ++ after)) +
+    total local_work before + total local_work after.
+Proof.
+  intro selected. unfold global_work. rewrite selected, (total_app local_work before (local :: after)).
+  assert (focused : single_work (project current local (before ++ after)) =
+    heap_work (shared_heap current) + local_work local).
+  { change (heap_work (shared_heap current) + staging_size (bare local) + phase_work (bare local) =
+      heap_work (shared_heap current) + (staging_size (bare local) + phase_work (bare local))). lia. }
+  rewrite focused.
+  change (heap_work (shared_heap current) +
+    (total local_work before + (local_work local + total local_work after)) =
+    heap_work (shared_heap current) + local_work local + total local_work before + total local_work after).
+  lia.
+Qed.
+
+Lemma committed_work_plus_other_drains_is_exact current before next after :
+  global_work (commit current before next after) = single_work next +
+    total local_work before + total local_work after.
+Proof.
+  unfold global_work, commit. cbn [shared_heap drains].
+  rewrite (total_app local_work before (capture next :: after)).
+  assert (focused : single_work next = heap_work (heap next) + local_work (capture next)).
+  { change (heap_work (heap next) + staging_size next + phase_work next =
+      heap_work (heap next) + (staging_size next + phase_work next)). lia. }
+  rewrite focused.
+  change (heap_work (heap next) +
+    (total local_work before + (local_work (capture next) + total local_work after)) =
+    heap_work (heap next) + local_work (capture next) + total local_work before + total local_work after).
+  lia.
+Qed.
+
+Theorem every_global_step_consumes_exactly_one_unit_of_total_physical_work
+    original current observed next :
+  world_valid original current -> global_step current observed next ->
+  S (global_work next) = global_work current.
+Proof.
+  intros valid ran. revert valid.
+  destruct ran as [before_world before local after event_seen result selected stepped]. intro valid.
+  pose proof (proj1 (selected_local_valid original before_world before local after valid selected)) as phase_ok.
+  pose proof (each_local_release_step_consumes_exactly_one_unit_of_physical_work _ _ _ phase_ok stepped).
+  rewrite (focused_work_plus_other_drains_is_exact before_world before local after selected),
+    committed_work_plus_other_drains_is_exact. lia.
+Qed.
+
+Inductive global_execution : world -> list event -> world -> Prop :=
+| GlobalEmpty current : global_execution current [] current
+| GlobalAdvance current observed middle events final :
+    global_step current observed middle -> global_execution middle events final ->
+    global_execution current (observed :: events) final.
+
+Theorem every_finite_interleaving_preserves_aggregate_ownership_and_lease_accounting
+    original initial events final :
+  world_valid original initial -> global_execution initial events final ->
+  world_valid original final /\
+  forall owner, global_source_refs final owner + occurrences owner (global_releases final) =
+    global_source_refs initial owner + occurrences owner (global_releases initial).
+Proof.
+  intros valid ran. induction ran.
+  - split; [exact valid|intro owner; reflexivity].
+  - pose proof (every_global_step_preserves_the_complete_aggregate_invariant original _ _ _ valid H) as middle_valid.
+    destruct (IHran middle_valid) as [final_valid conserved]. split; [exact final_valid|].
+    intro owner. rewrite conserved.
+    exact (every_global_step_conserves_owned_source_leases_across_all_drains original _ _ _ owner valid H).
+Qed.
+
+Theorem finite_interleaving_length_plus_remaining_physical_work_is_exact
+    original initial events final :
+  world_valid original initial -> global_execution initial events final ->
+  length events + global_work final = global_work initial.
+Proof.
+  intros valid ran. induction ran; [reflexivity|].
+  specialize (IHran (every_global_step_preserves_the_complete_aggregate_invariant original _ _ _ valid H)).
+  pose proof (every_global_step_consumes_exactly_one_unit_of_total_physical_work original _ _ _ valid H).
+  cbn [length]. lia.
+Qed.
+
+Definition local_done local := idle (bare local) /\ local_pending local = [].
+
+Fixpoint schedule current before remaining :=
+  match remaining with
+  | [] => None
+  | local :: after =>
+      match step (project current local (before ++ after)) with
+      | Some (observed, next) => Some (observed, commit current before next after)
+      | None => schedule current (before ++ [local]) after
+      end
+  end.
+
+Lemma schedule_selects_only_an_existing_global_step current remaining :
+  forall before observed next,
+  drains current = before ++ remaining -> schedule current before remaining = Some (observed, next) ->
+  global_step current observed next.
+Proof.
+  induction remaining as [|local after IH]; intros before observed next selected scheduled;
+    cbn [schedule] in scheduled; [discriminate|].
+  destruct (step (project current local (before ++ after))) as [[event_seen result]|] eqn:stepped.
+  - inversion scheduled; subst observed next. econstructor; eassumption.
+  - eapply IH; [|exact scheduled]. rewrite <- app_assoc. exact selected.
+Qed.
+
+Lemma an_empty_schedule_identifies_all_completed_local_drains original current remaining :
+  world_valid original current -> forall before,
+  drains current = before ++ remaining -> schedule current before remaining = None ->
+  Forall local_done remaining.
+Proof.
+  intro valid. induction remaining as [|local after IH]; intros before selected scheduled; [constructor|].
+  cbn [schedule] in scheduled.
+  destruct (step (project current local (before ++ after))) as [[event_seen result]|] eqn:stepped;
+    [discriminate|].
+  destruct (selected_local_valid original current before local after valid selected)
+    as (phase_ok & references & retained).
+  pose proof (proj1 (a_valid_state_stops_exactly_when_idle_and_work_is_empty
+    _ phase_ok references) stepped) as done.
+  constructor; [exact done|].
+  apply (IH (before ++ [local])); [|exact scheduled]. rewrite <- app_assoc. exact selected.
+Qed.
+
+Theorem every_finite_closed_family_of_drains_reaches_quiescence_without_fuel original :
+  forall current, world_valid original current ->
+  exists events final, global_execution current events final /\
+    world_valid original final /\ Forall local_done (drains final).
+Proof.
+  refine (well_founded_induction (well_founded_ltof world global_work)
+    (fun current => world_valid original current ->
+      exists events final, global_execution current events final /\
+        world_valid original final /\ Forall local_done (drains final)) _).
+  intros current IH valid.
+  destruct (schedule current [] (drains current)) as [[observed next]|] eqn:scheduled.
+  - pose proof (schedule_selects_only_an_existing_global_step current (drains current)
+      [] observed next eq_refl scheduled) as stepped.
+    pose proof (every_global_step_consumes_exactly_one_unit_of_total_physical_work
+      original current observed next valid stepped) as decreased.
+    pose proof (every_global_step_preserves_the_complete_aggregate_invariant
+      original current observed next valid stepped) as next_valid.
+    destruct (IH next ltac:(unfold ltof; lia) next_valid) as (events & final & ran & done).
+    exists (observed :: events), final. split; [econstructor; eauto|exact done].
+  - exists [], current. split; [constructor|]. split; [exact valid|].
+    exact (an_empty_schedule_identifies_all_completed_local_drains
+      original current (drains current) valid [] eq_refl scheduled).
+Qed.
+
+Definition live_nodes (storage : list (option node)) := total (fun entry => match entry with Some _ => 1 | None => 0 end) storage.
+Definition source_actions storage := total (fun entry => match entry with Some value => lease_work (source value) | None => 0 end) storage.
+
+Theorem heap_work_counts_physical_nodes_child_occurrences_and_source_actions storage :
+  heap_work storage = 2 * length (heap_children storage) + 2 * live_nodes storage + source_actions storage.
+Proof.
+  induction storage as [|[value|] rest IH]; [reflexivity| |exact IH].
+  change ((2 * length (children value) + 2 + lease_work (source value)) + heap_work rest =
+    2 * length (children value ++ heap_children rest) + 2 * (1 + live_nodes rest) +
+      (lease_work (source value) + source_actions rest)).
+  rewrite length_app, IH. lia.
+Qed.
+
+Theorem physical_work_bound_for_idle_initial_drains_counts_no_logical_tree_expansion
+    original initial events final :
+  world_valid original initial ->
+  Forall (fun local => idle (bare local)) (drains initial) ->
+  global_execution initial events final ->
+  length events <= length (flat_map local_pending (drains initial)) +
+    2 * length (heap_children (shared_heap initial)) + 2 * live_nodes (shared_heap initial) +
+    source_actions (shared_heap initial).
+Proof.
+  intros valid ready ran.
+  pose proof (finite_interleaving_length_plus_remaining_physical_work_is_exact original _ _ _ valid ran) as work.
+  assert (initial_local : total local_work (drains initial) = length (flat_map local_pending (drains initial))).
+  { induction ready as [|local rest is_ready all_ready IH]; [reflexivity|].
+    assert (head_work : local_work local = length (local_pending local)).
+    { destruct local as [pending_work held staged lease pc].
+      unfold idle, bare in is_ready. cbn in is_ready.
+      destruct is_ready as (ready_phase & empty & no_staged & no_lease). subst pc held staged lease.
+      unfold local_work, bare, staging_size, phase_work. cbn. lia. }
+    change (local_work local + total local_work rest =
+      length (local_pending local ++ flat_map local_pending rest)).
+    rewrite length_app, head_work. lia. }
+  unfold global_work in work. rewrite initial_local,
+    (heap_work_counts_physical_nodes_child_occurrences_and_source_actions (shared_heap initial)) in work.
+  lia.
+Qed.
+
+Definition family_frontiers original_rank upper current :=
+  Forall (fun local => frontier original_rank upper (realized_frontier (bare local))) (drains current).
+
+Theorem a_global_step_preserves_each_drain_frontier_under_arbitrary_interleaving
+    original original_rank upper current observed next :
+  original_graph_ranked original original_rank -> world_valid original current ->
+  family_frontiers original_rank upper current -> global_step current observed next ->
+  family_frontiers original_rank upper next.
+Proof.
+  intros ranked valid bounded ran. revert valid bounded.
+  destruct ran as [before_world before local after event_seen result selected stepped]. intros valid bounded.
+  destruct (selected_local_valid original before_world before local after valid selected)
+    as (phase_ok & references & retained).
+  unfold family_frontiers in *. rewrite selected, Forall_app in bounded.
+  destruct bounded as [prefix bounded]. inversion bounded as [|entry rest local_bound suffix]; subst entry rest.
+  pose proof (every_actual_step_preserves_the_ranked_realized_frontier
+    original original_rank upper _ event_seen result ranked retained phase_ok local_bound stepped) as preserved.
+  cbn [commit drains]. apply Forall_app. split; [exact prefix|]. constructor; assumption.
+Qed.
+
+Lemma global_steps_keep_the_finite_drain_family_fixed current observed next :
+  global_step current observed next -> length (drains next) = length (drains current).
+Proof.
+  intro ran. destruct ran as [before_world before local after event_seen result selected stepped].
+  cbn [commit drains]. rewrite selected, !length_app. reflexivity.
+Qed.
+
+Lemma combined_frontier_sum_bound original_rank upper locals :
+  Forall (fun local => frontier original_rank upper (realized_frontier (bare local))) locals ->
+  total (fun local => staging_size (bare local)) locals <= length locals * (1 + 2 * upper).
+Proof.
+  intro bounded. induction bounded as [|local rest local_bound tail_bound IH]; [apply Nat.le_refl|].
+  pose proof (each_ranked_lifo_frontier_has_at_most_one_plus_twice_root_height
+    original_rank upper (realized_frontier (bare local)) local_bound) as local_size.
+  rewrite realized_frontier_counts_every_local_staged_and_pending_occurrence in local_size.
+  change (staging_size (bare local) + total (fun item => staging_size (bare item)) rest <=
+    S (length rest) * (1 + 2 * upper)). nia.
+Qed.
+
+Theorem every_reachable_family_bounds_combined_local_staged_and_pending_storage
+    original original_rank upper initial events final :
+  original_graph_ranked original original_rank -> world_valid original initial ->
+  family_frontiers original_rank upper initial -> global_execution initial events final ->
+  total (fun local => staging_size (bare local)) (drains final) <=
+    length (drains initial) * (1 + 2 * upper).
+Proof.
+  intros ranked valid bounded ran.
+  assert (preserved : family_frontiers original_rank upper final /\ length (drains final) = length (drains initial)).
+  { induction ran; [split; assumption || reflexivity|].
+    destruct (IHran
+      (every_global_step_preserves_the_complete_aggregate_invariant original _ _ _ valid H)
+      (a_global_step_preserves_each_drain_frontier_under_arbitrary_interleaving
+        original original_rank upper _ _ _ ranked valid bounded H)) as [kept count].
+    split; [exact kept|]. rewrite count. exact (global_steps_keep_the_finite_drain_family_fixed _ _ _ H). }
+  destruct preserved as [kept count]. rewrite <- count. unfold family_frontiers in kept.
+  exact (combined_frontier_sum_bound original_rank upper (drains final) kept).
+Qed.
+
+Inductive consumption_kind := OrdinaryDrop | IntoInner.
+Inductive native_outcome := NoPayload | PopulatedCallback (id : nat) | MovedPayload (id : nat).
+
+Inductive arc_consumption_contract : consumption_kind -> nat -> nat -> nat -> native_outcome -> Prop :=
+| OrdinaryNonfinal remaining id :
+    arc_consumption_contract OrdinaryDrop (S (S remaining)) (S remaining) id NoPayload
+| OrdinaryFinal id : arc_consumption_contract OrdinaryDrop 1 0 id (PopulatedCallback id)
+| IntoInnerNonfinal remaining id :
+    arc_consumption_contract IntoInner (S (S remaining)) (S remaining) id NoPayload
+| IntoInnerFinal id : arc_consumption_contract IntoInner 1 0 id (MovedPayload id).
+
+Definition native_route kind observed :=
+  match observed with
+  | NonfinalExtraction => Some NoPayload
+  | FinalExtraction id =>
+      Some (match kind with OrdinaryDrop => PopulatedCallback id | IntoInner => MovedPayload id end)
+  | _ => None
+  end.
+
+Lemma extraction_identifies_the_exact_predecrement_owner_count current observed next id rest :
+  idle current -> pending current = id :: rest -> step current = Some (observed, next) ->
+  (node_refs current id = 1 /\ observed = FinalExtraction id) \/
+  (1 < node_refs current id /\ observed = NonfinalExtraction).
+Proof.
+  intros ready work stepped.
+  assert (positive : 0 < node_refs current id).
+  { unfold node_refs. rewrite work, occurrences_cons_same. lia. }
+  destruct ready as (pc & shell & staged & lease).
+  unfold step in stepped. rewrite pc in stepped.
+  unfold extract in stepped. rewrite pc, work in stepped.
+  destruct (slot (heap current) id); [|discriminate].
+  destruct (node_refs current id =? 1) eqn:final_owner; inversion stepped; subst.
+  - left. apply Nat.eqb_eq in final_owner. auto.
+  - right. apply Nat.eqb_neq in final_owner. split; [lia|reflexivity].
+Qed.
+
+Theorem global_extraction_consumes_exactly_one_token_across_all_drains
+    current before local after observed next id rest target :
+  drains current = before ++ local :: after ->
+  idle (bare local) -> local_pending local = id :: rest ->
+  step (project current local (before ++ after)) = Some (observed, next) ->
+  global_node_refs current target = global_node_refs (commit current before next after) target +
+    if Nat.eq_dec id target then 1 else 0.
+Proof.
+  intros selected ready work stepped.
+  assert (extracted : extract (project current local (before ++ after)) = Some (observed, next)).
+  { unfold step in stepped.
+    assert (pc : control (project current local (before ++ after)) = Ready) by exact (proj1 ready).
+    now rewrite pc in stepped. }
+  pose proof (extraction_consumes_exactly_one_reference_and_preserves_all_other_counts
+    (project current local (before ++ after)) observed next id rest target ready work extracted) as consumed.
+  pose proof (proj1 (selected_projection_counts_every_other_drain_token_as_external_ownership
+    current before local after target selected)) as old_count.
+  pose proof (proj1 (selected_projection_counts_every_other_drain_token_as_external_ownership
+    (commit current before next after) before (capture next) after target eq_refl)) as new_count.
+  rewrite (committing_and_reprojecting_the_selected_drain_is_exact
+    current before local after observed next stepped) in new_count.
+  now rewrite old_count, new_count in consumed.
+Qed.
+
+Theorem the_explicit_arc_contract_selects_the_exact_global_extraction_route
+    current before local after observed next id rest kind after_count outcome :
+  drains current = before ++ local :: after ->
+  idle (bare local) -> local_pending local = id :: rest ->
+  step (project current local (before ++ after)) = Some (observed, next) ->
+  arc_consumption_contract kind (global_node_refs current id) after_count id outcome ->
+  native_route kind observed = Some outcome /\
+  after_count = global_node_refs (commit current before next after) id.
+Proof.
+  intros selected ready work stepped native_contract.
+  pose proof (global_extraction_consumes_exactly_one_token_across_all_drains
+    current before local after observed next id rest id selected ready work stepped) as consumed.
+  destruct (Nat.eq_dec id id); [|contradiction].
+  split; [|inversion native_contract; subst; lia].
+  pose proof (extraction_identifies_the_exact_predecrement_owner_count
+    (project current local (before ++ after)) observed next id rest ready work stepped) as classified.
+  rewrite (proj1 (selected_projection_counts_every_other_drain_token_as_external_ownership
+    current before local after id selected)) in classified.
+  destruct classified as [[count final_event]|[count nonfinal_event]];
+    subst observed; inversion native_contract; subst; cbn [native_route]; reflexivity || lia.
+Qed.
+
+Theorem ordinary_final_drop_calls_the_node_destructor_but_into_inner_moves_its_payload id :
+  arc_consumption_contract OrdinaryDrop 1 0 id (PopulatedCallback id) /\
+  arc_consumption_contract IntoInner 1 0 id (MovedPayload id) /\
+  native_route OrdinaryDrop (FinalExtraction id) <> native_route IntoInner (FinalExtraction id).
+Proof. repeat split; constructor || discriminate. Qed.
+
+Inductive entry_context := ExternalOwner | ActiveDrain.
+Definition node_owned_protocol context kind :=
+  match context with ExternalOwner => True | ActiveDrain => kind = IntoInner end.
+
+Theorem active_drains_never_reenter_a_populated_child_destructor_under_the_native_contract
+    kind before_count after_count id outcome :
+  node_owned_protocol ActiveDrain kind ->
+  arc_consumption_contract kind before_count after_count id outcome ->
+  forall child, outcome <> PopulatedCallback child.
+Proof. cbn [node_owned_protocol]. intros -> native_contract child. inversion native_contract; discriminate. Qed.
+
+Theorem two_failed_uniqueness_checks_can_still_end_in_a_nested_populated_callback id :
+  (2 =? 1) = false /\ (2 =? 1) = false /\
+  arc_consumption_contract OrdinaryDrop 2 1 id NoPayload /\
+  arc_consumption_contract OrdinaryDrop 1 0 id (PopulatedCallback id) /\
+  ~ node_owned_protocol ActiveDrain OrdinaryDrop.
+Proof. repeat split; try reflexivity; try constructor. discriminate. Qed.
+
+Theorem closed_interleavings_keep_external_owners_and_the_drain_family_fixed initial events final :
+  global_execution initial events final ->
+  outside_nodes final = outside_nodes initial /\ outside_sources final = outside_sources initial /\
+  length (drains final) = length (drains initial).
+Proof.
+  intro ran. induction ran; [repeat split; reflexivity|].
+  destruct IHran as [nodes [sources count]]. rewrite nodes, sources, count.
+  pose proof (global_steps_keep_the_finite_drain_family_fixed _ _ _ H) as family.
+  revert family. destruct H. intro family. repeat split; assumption || reflexivity.
+Qed.
+
+Print Assumptions selected_projection_counts_every_other_drain_token_as_external_ownership.
+Print Assumptions every_global_step_preserves_all_live_node_references.
+Print Assumptions every_global_step_conserves_owned_source_leases_across_all_drains.
+Print Assumptions every_global_step_preserves_unique_claims_and_all_cleared_slots.
+Print Assumptions every_global_step_preserves_the_complete_aggregate_invariant.
+Print Assumptions each_local_release_step_consumes_exactly_one_unit_of_physical_work.
+Print Assumptions every_global_step_consumes_exactly_one_unit_of_total_physical_work.
+Print Assumptions every_finite_interleaving_preserves_aggregate_ownership_and_lease_accounting.
+Print Assumptions finite_interleaving_length_plus_remaining_physical_work_is_exact.
+Print Assumptions every_finite_closed_family_of_drains_reaches_quiescence_without_fuel.
+Print Assumptions heap_work_counts_physical_nodes_child_occurrences_and_source_actions.
+Print Assumptions physical_work_bound_for_idle_initial_drains_counts_no_logical_tree_expansion.
+Print Assumptions a_global_step_preserves_each_drain_frontier_under_arbitrary_interleaving.
+Print Assumptions every_reachable_family_bounds_combined_local_staged_and_pending_storage.
+Print Assumptions global_extraction_consumes_exactly_one_token_across_all_drains.
+Print Assumptions the_explicit_arc_contract_selects_the_exact_global_extraction_route.
+Print Assumptions ordinary_final_drop_calls_the_node_destructor_but_into_inner_moves_its_payload.
+Print Assumptions active_drains_never_reenter_a_populated_child_destructor_under_the_native_contract.
+Print Assumptions two_failed_uniqueness_checks_can_still_end_in_a_nested_populated_callback.
+Print Assumptions closed_interleavings_keep_external_owners_and_the_drain_family_fixed.
+
+End ConcurrentCanonicalSourceRelease.

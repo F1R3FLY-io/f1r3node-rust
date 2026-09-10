@@ -2738,8 +2738,9 @@ recursive model, not a native split implementation.
 Run `scripts/check-stack-safe-pda-proofs.sh --canonical-source-release` from the
 repository root to check this unit independently. Its placeholder scan, exact
 31-report compiler check and independent kernel check passed for the initial
-ownership prerequisite. The current gate requires 48 reports: those original
-31 exports plus the 17 phased-loop bridge bindings catalogued below. The bridge's
+ownership prerequisite. The single-drain checkpoint requires 48 reports: those original
+31 exports plus the 17 phased-loop bridge bindings catalogued below. The current
+gate requires 68 reports after the 20 concurrent bindings catalogued later. The bridge's
 48-report compilation and independent kernel check pass. The gate retains a
 512M soft/1G hard memory cap with swap disabled. The full and focused
 canonical-key routes invoke the same helper; standalone unit evidence does not
@@ -2903,7 +2904,7 @@ These 17 new exports comprise 13 bridge theorems and four checked concrete model
 controls. Native/property controls in the table remain required; the four
 explicitly identified model controls are already proved, not native tests.
 Together with the preceding historical catalogue, this accounts for all 48
-current assumption reports exactly once.
+single-drain assumption reports exactly once.
 
 | Exported invariant or model control | Executable control binding |
 |---|---|
@@ -3025,6 +3026,98 @@ external root drop must enter the populated node's protected destructor.
 ordinary `Arc` whose later drop can become final. This is inspection of the
 pinned standard-library contract, not formal verification of its internals
 or execution of the still-required native concurrent controls.
+
+## Concurrent canonical source release and native contract (2026-09-10; task 6018)
+
+`ConcurrentCanonicalSourceRelease` adds a shared heap and claim/release ledgers,
+fixed external owner lists, and a finite list of local drains. Projecting one
+drain treats every other drain's current pending, shell and staged tokens as
+external ownership. This reuses the existing single-step transition without
+incorrectly applying its fixed-environment trace theorem across interference.
+Repeated child and source identifiers are counted by occurrence.
+
+The aggregate invariant preserves local phases, exact original immutable
+payloads, positive-reference validity and unique final claims. A successful
+step decreases a physical work measure by exactly one. For an idle initial
+family, the resulting event bound is:
+
+```math
+\text{release events} \le R + 2E + 2N + L.
+```
+
+Here $`R`$ counts initial root tokens, $`E`$ counts child-slot occurrences
+in physical live nodes, $`N`$ counts physical live nodes and $`L`$ counts
+nonempty source-release actions. Shared subtrees are not unfolded. Every finite
+trace has exact event count plus residual work equal to initial work; a
+constructive schedule reaches idle empty drains without supplied fuel.
+Quiescence does not imply that externally retained, orphaned or cyclic
+unreclaimed heap entries disappear.
+
+This work measure counts abstract release transitions, not implementation time
+spent evaluating the model's list-based bookkeeping or searching for a runnable
+drain. A source action is a lease release, not the complete cleanup of a flat
+frozen backing's page-pair, leaf and index arrays. Native cost accounting must
+include that final metadata traversal separately.
+
+### Exhaustive concurrent exports and native controls
+
+The following 20 exports extend the historical 48-export catalogue to 68.
+These rows specify required executable bindings, not completed native tests.
+
+| Exported invariant/control | Required native/property binding |
+|---|---|
+| `selected_projection_counts_every_other_drain_token_as_external_ownership` | Count every other drain's shell, staged and pending tokens by occurrence at each selected event, including duplicate child and source IDs. |
+| `every_global_step_preserves_all_live_node_references` | Check every remaining positive aggregate node count names a live slot, including nodes held in another drain's local shell. |
+| `every_global_step_conserves_owned_source_leases_across_all_drains` | Compare each source's live lease occurrences plus released occurrences across every interleaved event; never deduplicate backing IDs. |
+| `every_global_step_preserves_unique_claims_and_all_cleared_slots` | Check one final claim per physical allocation and no resurrection of any previously cleared slot. |
+| `every_global_step_preserves_the_complete_aggregate_invariant` | Check valid local phases, original payload retention, live references and unique claims together after every controlled event. |
+| `each_local_release_step_consumes_exactly_one_unit_of_physical_work` | Calculate the physical heap and local-phase measure independently on small fixtures; each actual event must consume exactly one unit. |
+| `every_global_step_consumes_exactly_one_unit_of_total_physical_work` | Interleave paused drains and count the shared heap only once, plus every drain's local work; require exact unit decrease. |
+| `every_finite_interleaving_preserves_aggregate_ownership_and_lease_accounting` | Exercise exhaustive short and generated longer closed-family schedules, checking the full invariant and every source's live-plus-released total after each prefix. |
+| `finite_interleaving_length_plus_remaining_physical_work_is_exact` | Compare exact event count plus residual work with initial work, including prefixes ending during extraction or staging. |
+| `every_finite_closed_family_of_drains_reaches_quiescence_without_fuel` | Drain a finite pre-existing family without a depth/fuel limit until every local queue is idle and empty; externally retained nodes may remain live. |
+| `heap_work_counts_physical_nodes_child_occurrences_and_source_actions` | Count physical allocations, child slots by occurrence and nonempty source actions independently, including maximally shared subtrees. |
+| `physical_work_bound_for_idle_initial_drains_counts_no_logical_tree_expansion` | Check the root-token/physical-node/edge/source-action bound on shared DAGs without logical expansion; separately count final flat-backing metadata cleanup. |
+| `a_global_step_preserves_each_drain_frontier_under_arbitrary_interleaving` | Check each ordered realized frontier, including local and staged tokens, at every event in the closed family. |
+| `every_reachable_family_bounds_combined_local_staged_and_pending_storage` | Measure per-drain and aggregate high-water marks; bind ranks to actual balanced-tree heights and do not use one pooled capacity for separate drains. |
+| `global_extraction_consumes_exactly_one_token_across_all_drains` | Compare all aggregate counts across extraction; only the selected node loses one token, including when children are repeated or shared. |
+| `the_explicit_arc_contract_selects_the_exact_global_extraction_route` | Bind the actual atomic Arc consumption result and resulting count to the selected modeled route; never implement a strong_count check-then-act guard. |
+| `ordinary_final_drop_calls_the_node_destructor_but_into_inner_moves_its_payload` | Test ordinary final-root drop separately from final into_inner: populated callback versus returned payload subsequently detached before shell drop. |
+| `active_drains_never_reenter_a_populated_child_destructor_under_the_native_contract` | Instrument populated-destructor nesting while using into_inner, detaching payloads and dropping empty shells; cover diamonds, concurrent releases and retained cursors. |
+| `two_failed_uniqueness_checks_can_still_end_in_a_nested_populated_callback` | Force two failed try_unwrap checks before dropping returned Arc values; the final ordinary drop must demonstrate the forbidden nested callback. |
+| `closed_interleavings_keep_external_owners_and_the_drain_family_fixed` | Check fixed external lists and family size for the modeled schedule; treat external clone/drop and new drain admission as outside this trace theorem. |
+
+### Native assumptions and qualification boundary
+
+The native bridge takes an explicit atomic Arc consumption contract as a
+premise; it does not prove standard-library internals. Ordinary final drop
+invokes a populated node callback, whereas final `into_inner` returns the
+payload. Active drains permit only `into_inner`, and every returned node must
+be emptied before shell destruction. The negative control demonstrates why
+two failed uniqueness checks followed by ordinary drops are not equivalent.
+
+Safe Arc ownership and borrowed Rust lifetimes provide retention during
+external clone/drop activity, but the global trace relation here fixes
+external lists and drain-family size. New external transfers and newly started
+ordinary-root drains are outside that relation. No arbitrary-interference
+termination or whole-program stack bound is inferred. The logical empty-shell
+phase completion is not a claim about the exact instant of native allocation
+deallocation or destructor return.
+
+The family frontier result applies to rank-valid initial frontiers. Each
+native 127/63-slot buffer additionally requires a single representable balanced
+root and a rank equal to its actual height; aggregate family storage is not
+one pooled buffer. Private constructors, payload extraction, LIFO occurrence
+order, source lifetime, native stack, allocation and final backing cleanup
+must still be tested on the actual implementation.
+
+Full compilation passes **68 closed-context reports**, and independent kernel
+checking completes successfully. Compilation used 16.383 seconds service time,
+8.535 seconds CPU and 537.4M peak memory. Kernel checking used 13.889 seconds
+service time, 13.052 seconds CPU and 268.5M peak memory. Both used High512M,
+Max1G, zero swap, CPU100%, Tasks64 and Runtime120. Source inspection and isolated
+diagnostics preceded these final whole-unit checks; no native performance
+result follows from them.
 
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 

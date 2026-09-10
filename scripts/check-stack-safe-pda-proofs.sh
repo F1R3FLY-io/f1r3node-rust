@@ -305,7 +305,7 @@ canonical_key_protocol_proofs() {
 canonical_source_release_proofs() {
   local TLC_MEMORY_HIGH=512M TLC_RSS=1G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/CanonicalSourceRelease.v
-  rocq_compile_with_closed_count theories/CanonicalSourceRelease.v 48 \
+  rocq_compile_with_closed_count theories/CanonicalSourceRelease.v 68 \
     "canonical source ownership, release traces and ranked-frontier prerequisites"
   rocq_check_modules "canonical source release prerequisites" StackSafePDA.CanonicalSourceRelease
 }

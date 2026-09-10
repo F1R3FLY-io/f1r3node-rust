@@ -9335,6 +9335,59 @@ The formal README now names these reuse and exclusion boundaries next to the
 source invariant catalogue. Tasks 5976/6018 remain in progress. No new test,
 benchmark, runtime change, consensus format or metering change is claimed.
 
+### J-131 — 2026-09-10: closed-family source release and exact physical work
+
+**DERIVED / VERIFIED MODEL; NATIVE INTEGRATION STILL REQUIRED.**
+`ConcurrentCanonicalSourceRelease` adds 20 exported results to the 48-export
+single-drain model. The shared heap and ledgers are counted once; each selected
+drain sees all other drains' shell, staged and pending tokens as external
+owners. Repeated child and source identifiers remain occurrence-sensitive.
+Aggregate reference validity, unique claims, cleared-slot retention and source
+lease conservation survive every modeled interleaving.
+
+Each release event consumes exactly one unit of a physical work measure. From
+idle initial drains, the event bound is initial root tokens plus twice physical
+child slots, twice live physical nodes, and nonempty source actions. It does
+not unfold shared subtrees. Constructive scheduling establishes quiescence
+without supplied fuel. The earlier exponential rank measure remains a valid
+termination argument, not the claimed native work complexity.
+
+The scope is a finite closed family: outside-owner lists and drain count stay
+fixed. The model does not include new external clones or new ordinary-root
+destructor entries. Its native bridge assumes the atomic Arc contract and
+separates ordinary populated callbacks from `into_inner` payload return.
+Active drains admit only the latter; a two-failed-uniqueness-check negative
+control demonstrates the different ordinary-drop outcome. These are model
+results, not formal verification of the standard library or native tests.
+
+The formal README extracts all 20 new native/property bindings. Each actual
+fixed-capacity drain still needs one representable balanced root and a rank
+equal to native tree height. The family bound is not one pooled buffer.
+Source actions count lease releases; final flat backing metadata traversal
+must be counted separately in native resource tests. Safe Arc ownership and
+borrowed lifetimes protect retained readers, but do not make this closed
+trace model a proof of arbitrary external-interference termination.
+
+**Verification.** Full compilation reports **68 closed contexts**, and
+independent kernel checking completes successfully. Compilation: 16.383 seconds
+service time, 8.535 seconds CPU, 537.4M peak. Kernel: 13.889 seconds service time,
+13.052 seconds CPU, 268.5M peak. Both used High512M/Max1G, zero swap, CPU100%,
+Tasks64 and Runtime120. The saved isolated diagnostics were resumed rather
+than restarting the research. The shared source-release gate now expects 68;
+RPB3 remains at 327.
+
+| Artifact | SHA-256 |
+|---|---|
+| `CanonicalSourceRelease.v` | `3383caed73623168bf1113e703b06b29cf5049b3aa6a0e0c967d1c1a0af2ea80` |
+| `CanonicalSourceRelease.vo` | `5ab8c3072b692f9ada2771c6970d42ca944631a5e74ef253d8257c01311b63cb` |
+| `target/verification/canonical-release-concurrent-proof-final.log` | `966f5e966569a038046e2da88d46a04bcc5918b5eaba2d05cf5888677047a50c` |
+| `target/verification/canonical-release-concurrent-kernel-final.log` | `a2ef7c7fa6a03e187d3b8e7ba7f16a96c44b7255aeb20d99ca0a926db12f0820` |
+
+No source backend is activated, and no native runtime, stack, allocation or
+throughput improvement is inferred. Tasks 5976/6018 remain required and open;
+production persistence qualification and ACT/LMDB comparison are not complete.
+No consensus bytes, hashing, COMM accounting or metering behavior changes.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
