@@ -10962,3 +10962,85 @@ Print Assumptions successful_tree_executions_inherit_the_full_recursive_split_fa
 Print Assumptions legal_optional_inputs_reach_the_exact_successful_recursive_result.
 
 End BalancedSourceSplitDriver.
+
+Module BalancedSplitRegionPositions.
+
+Import CanonicalKeyProtocol IndexedWindowTransport BalancedSourceComposition
+  CheckedBalancedSourceSplit.
+
+Lemma every_in_range_region_position_exists original offset :
+  offset <= length (region_bytes original) ->
+  exists origin, root_position original offset = Some origin.
+Proof.
+  intro within. destruct (Nat.eq_dec offset (length (region_bytes original))) as [at_end|inside].
+  - subst offset. exists (region_end original). apply root_position_at_end.
+  - assert (present : nth_error (region_bytes original) offset <> None).
+    { apply nth_error_Some. lia. }
+    destruct (nth_error (region_bytes original) offset) as [byte|] eqn:found; [|contradiction].
+    exists (byte_provenance byte). unfold root_position. now rewrite found.
+Qed.
+
+Theorem iterative_split_outputs_preserve_every_existing_anchored_region_position
+    roots limit allowed current cut count divided original :
+  legal_root roots limit allowed current ->
+  root_size current <= limit -> cut <= root_size current ->
+  region_bytes original = root_bytes roots current ->
+  BalancedSourceSplitDriver.execution limit
+    (BalancedSourceSplitDriver.start current cut) count
+    (BalancedSourceSplitDriver.Machine (BalancedSourceSplitDriver.Returning (Some divided)) []) ->
+  exists seam,
+    root_position original cut = Some seam /\
+    let left := Region (region_owner original) (root_bytes roots (split_left divided))
+      (fst seam) (snd seam) in
+    let right := Region (region_owner original) (root_bytes roots (split_right divided))
+      (region_eof_source original) (region_eof_offset original) in
+    (forall offset,
+      window_position left (Window (region_owner original) 0 (root_size (split_left divided)) None) offset =
+      window_position original
+        (anchor_window (Window (region_owner original) 0 cut None) seam) offset) /\
+    (forall offset,
+      window_position right (Window (region_owner original) 0 (root_size (split_right divided)) None) offset =
+      window_position original
+        (anchor_window (Window (region_owner original) cut
+          (length (region_bytes original) - cut) None) (region_end original)) offset).
+Proof.
+  intros legal fits within bytes ran.
+  pose proof (legal_root_length legal) as length_is_size.
+  assert (original_length : length (region_bytes original) = root_size current)
+    by now rewrite bytes.
+  destruct (@every_in_range_region_position_exists original cut ltac:(lia)) as [seam found].
+  destruct (checked_optional_split_is_total_exact_and_linearly_bounded legal fits within)
+    as [expected [accepted facts]].
+  pose proof (BalancedSourceSplitDriver.every_terminal_split_execution_has_the_exact_recursive_result_and_counters ran)
+    as same.
+  rewrite accepted in same. inversion same; subst expected.
+  destruct facts as (_ & _ & left_size & right_size & left_bytes & right_bytes & rest).
+  assert (left_view_valid : window_valid original (Window (region_owner original) 0 cut None)).
+  { unfold window_valid. cbn. split; [reflexivity|lia]. }
+  assert (right_view_valid : window_valid original
+      (Window (region_owner original) cut (length (region_bytes original) - cut) None)).
+  { unfold window_valid. cbn. split; [reflexivity|lia]. }
+  exists seam. split; [exact found|]. cbn zeta. split.
+  - intro offset. rewrite left_size.
+    pose proof (@rebased_frozen_and_inline_anchored_windows_have_identical_positions
+      original (Window (region_owner original) 0 cut None) seam left_view_valid offset) as positions.
+    cbn [window_owner window_width] in positions.
+    rewrite <- bytes in left_bytes. rewrite left_bytes.
+    unfold rebase_anchored_region, window_bytes in positions. cbn [window_owner window_start window_width skipn] in positions.
+    symmetry. exact positions.
+  - intro offset. rewrite right_size, <- original_length.
+    pose proof (@rebased_frozen_and_inline_anchored_windows_have_identical_positions
+      original (Window (region_owner original) cut (length (region_bytes original) - cut) None)
+      (region_end original) right_view_valid offset) as positions.
+    cbn [window_owner window_width] in positions.
+    rewrite <- bytes in right_bytes. rewrite right_bytes.
+    unfold rebase_anchored_region, window_bytes in positions.
+    cbn [window_owner window_start window_width] in positions.
+    rewrite firstn_all2 in positions by (rewrite length_skipn; lia).
+    unfold region_end in positions. cbn [fst snd] in positions.
+    symmetry. exact positions.
+Qed.
+
+Print Assumptions iterative_split_outputs_preserve_every_existing_anchored_region_position.
+
+End BalancedSplitRegionPositions.

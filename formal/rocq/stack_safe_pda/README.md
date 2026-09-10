@@ -2737,10 +2737,13 @@ recursive model, not a native split implementation.
 
 Run `scripts/check-stack-safe-pda-proofs.sh --canonical-source-release` from the
 repository root to check this unit independently. Its placeholder scan, exact
-31-report compiler check and independent kernel check pass. The gate enforces
-a 512M soft/1G hard memory cap with swap disabled. The full and focused
-canonical-key routes also invoke the same helper; they are not requalified
-merely by this dedicated unit run.
+31-report compiler check and independent kernel check passed for the initial
+ownership prerequisite. The current gate requires 48 reports: those original
+31 exports plus the 17 phased-loop bridge bindings catalogued below. The bridge's
+48-report compilation and independent kernel check pass. The gate retains a
+512M soft/1G hard memory cap with swap disabled. The full and focused
+canonical-key routes invoke the same helper; standalone unit evidence does not
+requalify those larger routes.
 
 [`CanonicalSourceRelease`](theories/CanonicalSourceRelease.v) specifies one
 phased drain of counted ownership tokens. This is a bounded ownership-model
@@ -2750,7 +2753,8 @@ each modeled execution; concurrent clone/drop transitions are not present.
 The intended native graph is finite, immutable and acyclic, with no node-ID
 reuse, at most three child occurrences per node and strictly descending child
 ranks. The ranked-list results take the fanout and rank conditions explicitly;
-their connection to the model's heap and complete phased loop remains required.
+the subsequent phased-loop bridge connects them to the model's heap and complete
+single drain. Native and concurrent ownership bindings remain required.
 
 Node-reference counts include external roots, pending work, children still in
 the extracted local shell, detached children awaiting enqueue, and child slots
@@ -2768,9 +2772,10 @@ Child staging transfers one occurrence at a time to a LIFO worklist; source
 release records an owned-lease occurrence, not disposal of the entire backing.
 An empty-shell drop then returns to `Ready` without changing ownership.
 
-### Exhaustive exported invariants and required executable controls
+### Initial ownership exports and required executable controls
 
-The following 31 names are the exported assumption-check catalogue. Each row
+The following 31 names preserve the initial ownership assumption-check catalogue.
+The later bridge adds 17 bindings without replacing these results. Each row
 specifies a required native or property-test binding, not an implemented-test
 claim. Trace preservation requires the stated initial invariants: unique claims
 with cleared slots, valid phases, or positive reference counts naming live heap
@@ -2811,7 +2816,7 @@ release of every node, or complete reclamation of initially unreachable nodes.
 | `every_successful_step_conserves_owned_source_leases_with_release_occurrences` | For every owner ID and successful phase step, compare live owned leases plus released-ledger occurrences. Include two leaves retaining one backing and a nonempty initial release ledger. |
 | `every_finite_release_trace_accounts_for_every_owned_source_lease` | Compare initial and final live-plus-released occurrence totals over finite traces with shared backings, borrowed leaves and retained readers. Reject both deduplicated release ledgers and missing/double lease releases; do not require unique backing IDs in the ledger. |
 
-### Remaining native and full-loop proof bindings
+### Native bindings and the subsequent full-loop refinement
 
 The intended native pattern is node-owned `Drop` with an optional payload:
 detach children before draining them through `Arc::into_inner`, then let the
@@ -2819,13 +2824,13 @@ extracted empty shell drop. Ordinary external root/cursor `Arc` tokens need not
 each gain a wrapper when every recursively owning node has the protected
 destructor. That pattern is not implemented or verified by this catalogue.
 
-The next required refinement connects the actual phased state to the ordered
-frontier `rev(local_shell.children) ++ rev(staged_children) ++ pending`, relates
-every live or extracted payload to the immutable original heap's ranks and
-fanout, and proves a decreasing phase measure between extraction events.
-Together with progress on valid states, these are needed to lift the list-level
-frontier and debt lemmas to the complete drain. The single-root height bound
-does not automatically apply to an arbitrary multi-root initial queue.
+The phased-loop bridge below now connects the actual state to the ordered
+frontier `rev(local_shell.children) ++ rev(staged_children) ++ pending`, retains
+exact original heap and extracted payloads, and proves a decreasing whole-drain
+measure and progress on valid states. Its bound covers every modeled state
+reachable from an idle single-root start, including intermediate staging; it
+does not automatically apply to an arbitrary multi-root initial queue or prove
+the native destructor's stack bound.
 
 Ordinary final-root `Arc` drop and final `Arc::into_inner` extraction need
 distinct native control bindings, even when they share final-owner election.
@@ -2845,6 +2850,148 @@ Normal allocation failure that aborts must not be conflated with arithmetic
 panic or unwinding; neither allocator behavior nor panic safety follows from
 the ownership conservation lemmas. This catalogue activates no balanced-source
 backend and makes no whole-import performance or native Drop-completion claim.
+
+## Canonical source release phased-loop bridge (2026-09-10; task 6018)
+
+The bridge extends the same `CanonicalSourceRelease` state and transition
+function. `retained_payloads` requires every live heap slot to contain its exact
+original payload and every extracted shell to come from that original heap.
+`original_graph_ranked` links each original node's stored rank to its immutable
+ID, limits child occurrences to three and requires strict child-rank descent.
+`drain_valid` combines retained payloads, valid local phases and the requirement
+that every positive node-reference count names a live slot. These are explicit
+input invariants, not a validation pass over arbitrary native memory.
+
+The ordered realized frontier is
+`rev(local_shell.children) ++ rev(staged_children) ++ pending`. Its length is
+exactly `staging_size`, so children held between final extraction and enqueue
+cannot escape the bound. Actual final extraction replaces the head with its
+reversed child occurrences; nonfinal extraction removes only the head. Every
+other successful transition preserves this ordered list and decreases local
+phase work. For example, extracting a node with three repeated children leaves
+three realized tokens even when the pending worklist is empty.
+
+Let $`F(s)`$ be the realized frontier, $`r(i)`$ the immutable rank of node ID
+$`i`$, and $`P(s)`$ the phase work. Phase work is zero in `Ready`, child count
+plus two plus a possible source-release step in `Extracted`, and staged-child
+count plus one plus a possible source-release step in `Evacuated`. The natural
+termination measure is:
+
+```math
+D(F) = \sum_{i \in F} 4^{r(i)}, \qquad M(s) = 8D(F(s)) + P(s).
+```
+
+The sum counts occurrences, not distinct IDs. Final extraction decreases debt
+by at least one while creating at most six units of phase work. Nonfinal
+extraction decreases debt, and neutral staging decreases phase work without
+changing debt. Thus every successful step decreases the whole measure. A valid
+state has no successor exactly when it is idle with empty pending work.
+Well-founded induction yields a completed finite execution without a supplied
+fuel parameter; every finite trace's length plus its final measure is bounded
+by its initial measure.
+
+For any state reachable from a valid idle start with one pending root, all local,
+staged and pending child tokens together number at most
+$`1 + 2r(\mathrm{root})`$. These are abstract occurrence and proof-measure bounds,
+not native call-stack measurements or a practical exponential runtime counter.
+Neither termination nor the frame bound asserts reclamation of initially
+unreachable heap nodes or nodes retained by external owners.
+
+### Exhaustive bridge exports and executable control bindings
+
+These 17 new exports comprise 13 bridge theorems and four checked concrete model
+controls. Native/property controls in the table remain required; the four
+explicitly identified model controls are already proved, not native tests.
+Together with the preceding historical catalogue, this accounts for all 48
+current assumption reports exactly once.
+
+| Exported invariant or model control | Executable control binding |
+|---|---|
+| `realized_frontier_counts_every_local_staged_and_pending_occurrence` | Independently count shell, staged and pending tokens after each transition, including repeated IDs; reject a pending-only oracle. |
+| `every_successful_step_retains_exact_original_heap_and_shell_payloads` | Compare complete retained payloads and original identities after every event; reject slot mutation, source replacement and shell substitution. |
+| `original_heap_ranks_and_fanout_apply_to_every_retained_live_node` | Bind actual node IDs and stored ranks to the original immutable graph; check fanout and descending child ranks without deduplicating repeated children. |
+| `actual_final_extraction_replaces_the_realized_head_with_exact_reversed_children` | Pause immediately after final extraction and compare the exact reversed child occurrences followed by saved work, before any enqueue. |
+| `actual_nonfinal_extraction_removes_only_the_realized_head` | Retain another owner and check that only the selected head token disappears, the suffix remains exact and both phases have zero work. |
+| `every_actual_staging_step_preserves_frontier_order_and_decreases_phase_work` | Pause detachment, each enqueue, source release and empty-shell drop; reject FIFO, double reversal and stale staged-token mutants. |
+| `every_actual_step_preserves_the_ranked_realized_frontier` | Check every event kind against the ranked frontier invariant, including repeated children, saved siblings and intermediate staging. |
+| `every_actual_ranked_step_strictly_decreases_the_whole_drain_measure` | On small bounded-rank fixtures, calculate the mathematical measure independently and require strict decrease after every successful step; do not add an unchecked exponential native counter. |
+| `a_valid_state_stops_exactly_when_idle_and_work_is_empty` | Test valid empty and nonempty states in all phases; reject premature completion and a stuck valid state. Keep invalid cleared-slot refusal outside the progress precondition. |
+| `every_valid_ranked_drain_reaches_idle_empty_work_without_a_fuel_parameter` | Drain finite valid shared graphs without a user-supplied depth/fuel limit, including retained external owners; completion means idle empty work, not that every heap node was reclaimed. |
+| `every_finite_actual_trace_preserves_original_payloads_and_ranked_frontier` | Check complete original-payload retention and ranked frontier after every trace prefix, including mid-detachment and mid-enqueue states. |
+| `every_reachable_single_root_state_bounds_all_local_staged_and_pending_frames` | Measure the combined token high-water mark from a valid idle single-root start. Count local shell children even with empty pending work; do not generalize the bound to arbitrary root batches. |
+| `every_actual_trace_length_is_bounded_by_the_initial_whole_drain_measure` | Compare trace length plus final measure with initial measure on bounded fixtures, including zero-step traces and prefixes ending during staging. |
+| `repeated_child_control_has_valid_original_ranks_and_initial_ownership` | Checked model control: a rank-one root with three references to one owned leaf satisfies the original-rank and initial-ownership invariants. Mirror it natively to keep the shared-graph fixture nonvacuous. |
+| `repeated_child_control_executes_every_token_once_and_keeps_the_external_source_reader` | Checked model control: twelve exact transitions include two nonfinal child extractions, one final child extraction and one owned-lease release while the external reader survives. Mirror the exact claims, heap and lease ledger natively. |
+| `final_extraction_control_counts_children_before_the_first_enqueue` | Checked model control: final extraction leaves three repeated child tokens in the local shell, a realized frontier of length three and pending length zero. A pending-only bound must fail this control. |
+| `cyclic_child_control_cannot_satisfy_the_immutable_rank_precondition` | Checked negative model control: a self-child cannot satisfy strict immutable-rank descent. Reject cyclic or forged-rank native fixtures rather than invoking the termination theorem on them. |
+
+### Bridge qualification and remaining scope
+
+Full unit compilation passes 48 closed-context reports, and independent kernel
+checking succeeds. Compilation took 5.821 seconds wall and 5.716 seconds CPU,
+with a 465.1M peak and zero swap. Kernel checking took 13.098 seconds wall and
+12.812 seconds CPU, with a 277.3M peak and zero swap. Both used
+MemoryHigh=512M, MemoryMax=1G, MemorySwapMax=0, CPUQuota=100%, TasksMax=64 and
+RuntimeMaxSec=120. Durable logs are
+`target/verification/canonical-release-bridge-proof-final.log` and
+`target/verification/canonical-release-bridge-kernel-final.log`.
+
+Diagnostics 1 through 14 remain retained. Diagnostic 13's concrete trace proof
+used implicit intermediate-state unification and hit the 120-second limit:
+120.123 seconds service time, 2.796 seconds CPU and a 558.7M peak, with zero swap.
+Diagnostic 14 supplied explicit small intermediate states for the same twelve
+transitions and passed in 5.776 seconds wall and 5.701 seconds CPU, with a 469.6M
+peak and zero swap. This proof-term change required no algorithm change or cap
+increase; the final qualification reran the stable source.
+
+External owners remain fixed during the proved single-drain traces. Ordinary
+final-root `Arc` drop, the standard `Arc::into_inner` ownership contract and
+finite concurrent drains still need their native/model bindings. Other drains'
+held tokens may be accounted for as external ownership when relating an
+individual step, but the fixed-external-owner trace theorem cannot simply be
+applied across interfering releases or clones. Repeated source IDs remain
+legal; source-lease occurrence conservation does not become uniqueness of
+backing IDs or a verified physical backing-disposal implementation.
+
+No standard-library formal verification, native destructor completion,
+allocator/unwind qualification or importer performance result follows from
+this checkpoint. The original single-drain algorithm is unchanged, and the
+balanced-source backend is not activated by these proof or documentation edits.
+
+## Balanced split endpoint composition binding (2026-09-10; task 6018)
+
+`BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported
+capstone composes exact split-driver observations with the existing
+`IndexedWindowTransport` anchored/rebased-window theorem. Preconditions are a
+legal source root and representable cut, exact located-byte equality between
+the original region and that root, and a successful terminal split execution.
+No `source_refines` predicate is added: located ACT-derived logical values
+remain permitted.
+
+| Exported invariant | Required native/property control |
+|---|---|
+| `iterative_split_outputs_preserve_every_existing_anchored_region_position` | Feed composed outputs into the existing full-position oracles in `indexed_span_transport` and `normalized_source_spans`. Compare every local offset's physical source/offset and Byte/End kind, including beyond-end refusal. Cover zero/full cuts, empty input, interior discontinuous provenance, a preceding leaf with a conflicting anchor, and an original explicit completion override. |
+
+Capture both boundaries from the original view before changing data roots:
+left end is `original.position_at(cut).physical`; right end is
+`original.end_position().physical`. Reconstruct each output's local logical
+offset and position kind; do not copy the original position record wholesale.
+At cut zero in nonempty data, the empty left endpoint is the first byte's
+provenance. At full length the empty right retains the original end. Empty
+input gives both outputs that original end. An absent data root must not
+erase its endpoint metadata.
+
+The proof's `Region` lists are semantic observations, not a native flattening
+implementation. Original-region owner equality is not a prerequisite for
+position equivalence; actual backing/root identity is covered separately.
+Existing property oracles remain reusable, but their current native subjects
+do not cover an unimplemented composed backend.
+
+Full RPB3 compilation passes 323 closed-context reports and independent
+kernel checking passes under High1536M/Max2G, zero swap, CPU100%, Tasks64
+and Runtime900. J-128 records exact source/log hashes and the initial
+isolated/full implicit-argument mismatch. No combined runtime gate,
+performance or native implementation result follows from this capstone.
 
 ## Balanced source split driver invariant catalogue (2026-09-10; task 6018)
 

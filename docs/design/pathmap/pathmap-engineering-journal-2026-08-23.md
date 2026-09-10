@@ -9116,6 +9116,120 @@ cursor integration, bulk ACT admission or the measured nested-import slope.
 It changes no production or consensus behavior. Tasks 5976/6018 and
 experiment 342 retain the evidence; production ACT/LMDB comparison is open.
 
+### J-128 — 2026-09-10: whole-drain progress and split endpoint reuse
+
+**DERIVED / VERIFIED MODEL.** Two remaining composition gaps are closed at
+the specification level without replacing the existing ownership or position
+algorithms.
+
+The source-release extension retains exact original heap and extracted-shell
+payloads. It connects their immutable ranks and at-most-three child occurrences
+to the ordered realized frontier:
+
+```text
+reverse(local shell children) ++ reverse(staged children) ++ pending
+```
+
+Its length includes every locally held token, not just queued tokens.
+Final extraction replaces the head with reversed child occurrences; nonfinal
+extraction removes one head. Detach, enqueue, source release and empty-shell
+return preserve this realized order and decrease the remaining phase work.
+
+For a node rank $`h`$, the mathematical debt assigns weight $`4^h`$
+to each frontier occurrence. The whole-drain measure is eight times the
+debt plus the phase work. Extraction reduces debt; its new phase work is
+at most six. Other successful transitions decrease phase work without
+changing debt. This proves progress and termination without supplied fuel
+or an artificial depth limit. The measure is **not computed by native code**
+and its magnitude is not a claimed runtime complexity bound.
+
+For every reachable state of a valid single-root drain, combined shell,
+staged and pending storage is at most $`1+2h`$. Exact original payloads,
+phase/reference validity and the ranked frontier are preserved through
+each finite trace. A valid state stops precisely when idle with no work.
+
+Four executable formal controls establish inhabited initial conditions,
+a complete twelve-event repeated-child drain retaining an external source
+reader, three local children before any enqueue despite an empty pending
+list, and rejection of cyclic child ranks. Repeated node/backing identities
+remain counted by occurrence.
+
+**Endpoint reuse.** The split bridge adds one exported capstone, reusing
+the existing `IndexedWindowTransport` anchored/rebased position theorem.
+It assumes the original region's located bytes equal the split input's
+denotation and invokes exact split-driver correspondence. It then proves
+every output-local `window_position` observation: byte provenance, logical
+offset, Byte/End kind, empty roots and out-of-range refusal.
+
+The left output's endpoint is the original position at the cut; the right
+inherits the original endpoint, including an explicit completion override.
+For a discontinuous interior seam, the left endpoint comes from the following
+byte, not the previous leaf's end or physical offset plus one. An empty
+data root retains its separate endpoint metadata. This requires no new
+endpoint algorithm, source refinement predicate or native flattening step:
+the lists in the proof are observations, not a production representation.
+
+Existing `indexed_span_transport` and `normalized_source_spans` tests already
+provide full-position, nested-anchor, empty-root and reader-lifetime oracles.
+The native composed backend must enter those existing harnesses; their
+current coverage is not promoted to coverage of an unimplemented backend.
+The formal README records all seventeen ownership additions and the one
+endpoint capstone with required native controls.
+
+**Verification.** Source-release compilation passes 48 closed reports
+(31 earlier, 13 bridge theorems, four formal controls); independent kernel
+checking also passes. Compile: 5.821 seconds service wall, 5.716 seconds
+CPU, 465.1M peak. Kernel: 13.098 seconds service wall, 12.812 seconds CPU,
+277.3M peak. Both use High512M/Max1G, zero swap, CPU100%, Tasks64 and a
+120-second watchdog. Diagnostic 13 hit the watchdog under soft-limit
+pressure while implicitly constructing the concrete trace. Explicit
+intermediate states resolved it in diagnostic 14 without raising caps.
+The final proof and kernel results, not the earlier diagnostic, are authoritative.
+
+The RPB3 source including the endpoint bridge compiles with 323 closed
+reports and passes independent kernel checking under High1536M/Max2G,
+zero swap, CPU100%, Tasks64 and a 900-second watchdog. A first full
+compile rejected an implicit-argument mismatch that the initial isolated
+check did not reproduce; the corrected isolated check uses the full file's
+implicit-argument setting, and final full compilation succeeds.
+
+| Artifact | SHA-256 |
+|---|---|
+| `CanonicalSourceRelease.v` | `34067a3a22fbe99bbc5494861416ee407be72a5183ef7f1b32df703ab606b3e6` |
+| `target/verification/canonical-release-bridge-proof-final.log` | `a5559d6b47a8eac32e98900f36ae42cafdf82dce7fb37d18e7f1a55439503fc5` |
+| `target/verification/canonical-release-bridge-kernel-final.log` | `1f002ccec0ba95781d2a3ea37addb32ab9e47751d58c122eb2209d5886540a5f` |
+| `RPB3Admission.v` | `71959da312d0721f974217740a08e89d5d6b66f1925ceda94e42464ff777e868` |
+| `target/verification/balanced-split-region-bridge-proof-qualified.log` | `3c040867b0852dfd1657b4ee5cb42d2f3e666e7f50ccb8555319a345166cb8dc` |
+| `target/verification/balanced-split-region-bridge-kernel-qualified.log` | `bf83f6eb93e9e7409343b55a0aa1df3019988ef6a96b5bc5a75afdd6fe74d121` |
+| `target/verification/canonical-release-bridge-integrated-gate.log` | `18932029c9ba2000e2e8adac6829587af267e1c2045758316b26214da321f825` |
+
+The dedicated `--canonical-source-release` gate also passes its placeholder
+scan, exact 48-report compiler assertion and independent kernel check, exiting
+zero under its 1G hard cap. This is not a complete workspace rerun.
+
+**Next required native/concurrent refinement.** The pinned standard library
+distinguishes ordinary final `Arc::drop` (calls the payload destructor in
+place) from final `Arc::into_inner` (moves the payload out), while a
+nonfinal `into_inner` returns without an ordinary destructor call.
+The implementation must use that atomic final-owner operation, not
+`strong_count()` followed by a separate action.
+
+A finite multi-drain model can reuse the existing local transition by
+projecting other drains' tokens into its external-owner lists, with one
+shared heap and global claim/lease ledgers. Single-step invariants may be
+lifted this way; the fixed-external trace theorem must not be applied
+across interference. Native callback/return routes, global ownership,
+finite quiescent draining, physical work counts and actual small-stack
+controls remain required. A causal `try_unwrap(...).ok()` control must
+detect nested populated-drain entry, not assume a leak: node-owned
+protection may still reclaim correctly while violating the intended
+nonrecursive-entry property.
+
+No Rust production source, PathMap crate, consensus byte, hash, COMM or
+accounting behavior changes in this checkpoint. Tasks 5976/6018 and
+experiment 342 retain the evidence. Native activation, the remaining
+import-time slope and production ACT/LMDB comparison remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

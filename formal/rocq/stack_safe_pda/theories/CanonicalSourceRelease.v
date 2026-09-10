@@ -1,4 +1,4 @@
-From Stdlib Require Import Bool List Arith Lia.
+From Stdlib Require Import Bool List Arith Lia Wf_nat.
 Import ListNotations.
 
 Module CanonicalSourceRelease.
@@ -769,6 +769,445 @@ Proof.
   - eapply every_successful_step_conserves_owned_source_leases_with_release_occurrences; eauto.
   - eapply every_successful_step_preserves_the_local_ownership_phase; eauto.
 Qed.
+
+Definition realized_frontier current :=
+  rev (slot_children (local_shell current)) ++
+  rev (staged_children current) ++ pending current.
+
+Theorem realized_frontier_counts_every_local_staged_and_pending_occurrence current :
+  length (realized_frontier current) = staging_size current.
+Proof.
+  unfold realized_frontier, staging_size.
+  rewrite !length_app, !length_rev. lia.
+Qed.
+
+Definition retained_payloads original current :=
+  (forall id value, slot (heap current) id = Some value ->
+    slot original id = Some value) /\
+  (forall value, local_shell current = Some value ->
+    exists id, slot original id = Some value).
+
+Definition original_graph_ranked original original_rank :=
+  forall id value, slot original id = Some value ->
+    rank value = original_rank id /\ length (children value) <= 3 /\
+    Forall (fun child => original_rank child < original_rank id) (children value).
+
+Lemma successful_step_preserves_original_heap_payloads original current observed next :
+  (forall id value, slot (heap current) id = Some value -> slot original id = Some value) ->
+  step current = Some (observed, next) ->
+  forall id value, slot (heap next) id = Some value -> slot original id = Some value.
+Proof.
+  intros retained stepped id value live.
+  destruct (a_successful_step_only_preserves_storage_or_claims_one_live_slot
+    current observed next stepped) as [(same & _)|(claimed & old & was_live & changed & _) ].
+  - apply retained. now rewrite same in live.
+  - rewrite changed in live. destruct (Nat.eq_dec claimed id) as [same|different].
+    + subst id. rewrite clearing_a_node_empties_exactly_its_original_slot in live. discriminate.
+    + apply retained. now rewrite clearing_a_node_preserves_every_other_complete_node in live.
+Qed.
+
+Theorem every_successful_step_retains_exact_original_heap_and_shell_payloads
+    original current observed next :
+  phase_valid current -> retained_payloads original current ->
+  step current = Some (observed, next) -> retained_payloads original next.
+Proof.
+  intros phase_ok (stored & held) stepped. split.
+  - eapply successful_step_preserves_original_heap_payloads; eauto.
+  - destruct current as [storage outside readers work shell staged lease pc claims leases].
+    destruct pc; cbn [phase_valid control local_shell staged_children staged_source] in phase_ok.
+    + destruct phase_ok as (empty & no_staged & no_lease). subst shell staged lease.
+      destruct work as [|id rest]; [discriminate|].
+      cbn [step control extract pending heap] in stepped.
+      destruct (slot storage id) as [value|] eqn:found; [|discriminate].
+      destruct (_ =? 1); inversion stepped; subst; cbn [local_shell]; intros other same;
+        try discriminate.
+      inversion same; subst other. exists id. apply stored. exact found.
+    + destruct phase_ok as ((value & full) & no_staged & no_lease).
+      subst shell staged lease. inversion stepped; subst; cbn [local_shell]. discriminate.
+    + subst shell. destruct staged; destruct lease;
+        cbn [step control staged_children staged_source enqueue release_source drop_empty local_shell] in stepped;
+        inversion stepped; subst; cbn [local_shell]; discriminate.
+Qed.
+
+Theorem original_heap_ranks_and_fanout_apply_to_every_retained_live_node
+    original original_rank current id value :
+  original_graph_ranked original original_rank -> retained_payloads original current ->
+  slot (heap current) id = Some value ->
+  rank value = original_rank id /\ length (children value) <= 3 /\
+  Forall (fun child => original_rank child < original_rank id) (children value).
+Proof. intros ranked (stored & held) live. apply ranked. now apply stored. Qed.
+
+Definition lease_work lease := match lease with NoLease => 0 | _ => 1 end.
+
+Definition phase_work current :=
+  match control current with
+  | Ready => 0
+  | Extracted =>
+      length (slot_children (local_shell current)) + 2 +
+      match local_shell current with Some value => lease_work (source value) | None => 0 end
+  | Evacuated => length (staged_children current) + 1 + lease_work (staged_source current)
+  end.
+
+Theorem actual_final_extraction_replaces_the_realized_head_with_exact_reversed_children
+    current id next :
+  phase_valid current -> step current = Some (FinalExtraction id, next) ->
+  exists value rest,
+    slot (heap current) id = Some value /\
+    realized_frontier current = id :: rest /\
+    realized_frontier next = rev (children value) ++ rest /\
+    phase_work current = 0 /\
+    phase_work next = length (children value) + 2 + lease_work (source value).
+Proof.
+  destruct current as [storage outside readers work shell staged lease pc claims leases].
+  destruct pc; cbn [phase_valid control local_shell staged_children staged_source].
+  - intros (empty & no_staged & no_lease) stepped. subst shell staged lease.
+    destruct work as [|selected rest]; [discriminate|].
+    cbn [step control extract pending heap] in stepped.
+    destruct (slot storage selected) as [value|] eqn:found; [|discriminate].
+    destruct (_ =? 1); inversion stepped; subst; clear stepped.
+    exists value, rest. cbn [heap realized_frontier phase_work local_shell staged_children pending control slot_children rev app].
+    repeat split; auto.
+  - intros ((value & full) & no_staged & no_lease) stepped.
+    subst shell staged lease. discriminate.
+  - intros empty stepped. subst shell. destruct staged; destruct lease; discriminate.
+Qed.
+
+Theorem actual_nonfinal_extraction_removes_only_the_realized_head current next :
+  phase_valid current -> step current = Some (NonfinalExtraction, next) ->
+  exists id rest, realized_frontier current = id :: rest /\
+    realized_frontier next = rest /\ phase_work current = 0 /\ phase_work next = 0.
+Proof.
+  destruct current as [storage outside readers work shell staged lease pc claims leases].
+  destruct pc; cbn [phase_valid control local_shell staged_children staged_source].
+  - intros (empty & no_staged & no_lease) stepped. subst shell staged lease.
+    destruct work as [|id rest]; [discriminate|].
+    cbn [step control extract pending heap] in stepped.
+    destruct (slot storage id) as [value|]; [|discriminate].
+    destruct (_ =? 1); inversion stepped; subst; clear stepped.
+    exists id, rest. repeat split; reflexivity.
+  - intros ((value & full) & no_staged & no_lease) stepped.
+    subst shell staged lease. discriminate.
+  - intros empty stepped. subst shell. destruct staged; destruct lease; discriminate.
+Qed.
+
+Definition staging_event observed :=
+  match observed with NonfinalExtraction | FinalExtraction _ => False | _ => True end.
+
+Theorem every_actual_staging_step_preserves_frontier_order_and_decreases_phase_work
+    current observed next :
+  phase_valid current -> staging_event observed -> step current = Some (observed, next) ->
+  realized_frontier next = realized_frontier current /\ phase_work next < phase_work current.
+Proof.
+  destruct current as [storage outside readers work shell staged lease pc claims leases].
+  destruct pc; cbn [phase_valid control local_shell staged_children staged_source].
+  - intros (empty & no_staged & no_lease) stage stepped. subst shell staged lease.
+    destruct work as [|id rest]; [discriminate|].
+    cbn [step control extract pending heap] in stepped.
+    destruct (slot storage id); [|discriminate].
+    destruct (_ =? 1); inversion stepped; subst; contradiction.
+  - intros ((value & full) & no_staged & no_lease) stage stepped.
+    subst shell staged lease. inversion stepped; subst; clear stepped.
+    cbn [realized_frontier phase_work local_shell staged_children staged_source pending control slot_children].
+    split; [reflexivity|lia].
+  - intros empty stage stepped. subst shell. destruct staged as [|id rest].
+    + destruct lease;
+        cbn [step control staged_children staged_source release_source drop_empty local_shell] in stepped;
+        inversion stepped; subst; clear stepped;
+        cbn [realized_frontier phase_work local_shell staged_children staged_source pending control slot_children lease_work];
+        (split; [reflexivity|lia]).
+    + cbn [step control staged_children enqueue] in stepped.
+      inversion stepped; subst; clear stepped.
+      cbn [realized_frontier phase_work local_shell staged_children staged_source pending control slot_children rev].
+      split.
+      * change (rev rest ++ id :: work = (rev rest ++ [id]) ++ work).
+        now rewrite <- app_assoc.
+      * cbn [length]. lia.
+Qed.
+
+Theorem every_actual_step_preserves_the_ranked_realized_frontier
+    original original_rank upper current observed next :
+  original_graph_ranked original original_rank ->
+  retained_payloads original current -> phase_valid current ->
+  frontier original_rank upper (realized_frontier current) ->
+  step current = Some (observed, next) ->
+  frontier original_rank upper (realized_frontier next).
+Proof.
+  intros ranked retained phase_ok bounded stepped.
+  destruct observed as [|id| |child|owner| | ].
+  { destruct (actual_nonfinal_extraction_removes_only_the_realized_head
+      current next phase_ok stepped) as (id & rest & before & after & _).
+    rewrite before in bounded. rewrite after.
+    now apply nonfinal_lifo_extraction_preserves_the_ranked_frontier with (parent := id). }
+  { destruct (actual_final_extraction_replaces_the_realized_head_with_exact_reversed_children
+      current id next phase_ok stepped) as (value & rest & live & before & after & _).
+    pose proof (original_heap_ranks_and_fanout_apply_to_every_retained_live_node
+      original original_rank current id value ranked retained live) as (_ & count & smaller).
+    rewrite before in bounded. rewrite after.
+    eapply final_lifo_extraction_preserves_the_ranked_frontier; eauto. }
+  all: match type of stepped with
+    | step _ = Some (?observed, _) =>
+      pose proof (every_actual_staging_step_preserves_frontier_order_and_decreases_phase_work
+        current observed next phase_ok I stepped) as (same & _)
+    end; now rewrite same.
+Qed.
+
+Definition drain_measure original_rank current :=
+  8 * debt original_rank (realized_frontier current) + phase_work current.
+
+Lemma lease_work_at_most_one lease : lease_work lease <= 1.
+Proof. destruct lease; cbn [lease_work]; lia. Qed.
+
+Theorem every_actual_ranked_step_strictly_decreases_the_whole_drain_measure
+    original original_rank current observed next :
+  original_graph_ranked original original_rank ->
+  retained_payloads original current -> phase_valid current ->
+  step current = Some (observed, next) ->
+  drain_measure original_rank next < drain_measure original_rank current.
+Proof.
+  intros ranked retained phase_ok stepped. unfold drain_measure.
+  destruct observed as [|id| |child|owner| | ].
+  { destruct (actual_nonfinal_extraction_removes_only_the_realized_head
+      current next phase_ok stepped) as (id & rest & before & after & ready & done).
+    rewrite before, after, ready, done.
+    pose proof (every_nonfinal_extraction_strictly_decreases_rank_debt original_rank id rest). lia. }
+  { destruct (actual_final_extraction_replaces_the_realized_head_with_exact_reversed_children
+      current id next phase_ok stepped) as (value & rest & live & before & after & ready & held).
+    pose proof (original_heap_ranks_and_fanout_apply_to_every_retained_live_node
+      original original_rank current id value ranked retained live) as (_ & count & smaller).
+    pose proof (every_final_extraction_strictly_decreases_rank_debt
+      original_rank id rest (children value) count smaller).
+    pose proof (lease_work_at_most_one (source value)).
+    rewrite before, after, ready, held. lia. }
+  all: match type of stepped with
+    | step _ = Some (?observed, _) =>
+      pose proof (every_actual_staging_step_preserves_frontier_order_and_decreases_phase_work
+        current observed next phase_ok I stepped) as (same & decreased)
+    end; rewrite same; lia.
+Qed.
+
+Theorem a_valid_state_stops_exactly_when_idle_and_work_is_empty current :
+  phase_valid current -> references_valid current ->
+  (step current = None <-> idle current /\ pending current = []).
+Proof.
+  intros phase_ok references. split.
+  - intros stopped. unfold step in stopped.
+    destruct (control current) eqn:pc.
+    + unfold phase_valid in phase_ok. rewrite pc in phase_ok.
+      assert (ready : idle current) by (unfold idle; tauto).
+      split; [exact ready|].
+      destruct (pending current) as [|id rest] eqn:work; [reflexivity|].
+      assert (positive : node_refs current id > 0).
+      { unfold node_refs. rewrite work, occurrences_cons_same. lia. }
+      destruct (references id positive) as [value live].
+      unfold extract in stopped. rewrite pc, work, live in stopped.
+      destruct (_ =? 1); discriminate.
+    + unfold phase_valid in phase_ok. rewrite pc in phase_ok.
+      destruct phase_ok as ((value & full) & _).
+      unfold detach in stopped. rewrite pc, full in stopped. discriminate.
+    + unfold phase_valid in phase_ok. rewrite pc in phase_ok.
+      destruct (staged_children current) as [|id rest] eqn:staged.
+      * destruct (staged_source current) eqn:lease.
+        -- unfold drop_empty in stopped. rewrite pc, phase_ok, staged, lease in stopped. discriminate.
+        -- unfold release_source in stopped. rewrite pc, lease in stopped. discriminate.
+        -- unfold release_source in stopped. rewrite pc, lease in stopped. discriminate.
+      * unfold enqueue in stopped. rewrite pc, staged in stopped. discriminate.
+  - intros ((ready & empty & no_staged & no_lease) & no_work).
+    unfold step, extract. now rewrite ready, no_work.
+Qed.
+
+Definition drain_valid original current :=
+  phase_valid current /\ references_valid current /\ retained_payloads original current.
+
+Lemma successful_step_preserves_drain_valid original current observed next :
+  drain_valid original current -> step current = Some (observed, next) ->
+  drain_valid original next.
+Proof.
+  intros (phase_ok & references & retained) stepped. repeat split.
+  - eapply every_successful_step_preserves_the_local_ownership_phase; eauto.
+  - eapply every_successful_step_preserves_all_live_node_references; eauto.
+  - exact (proj1 (every_successful_step_retains_exact_original_heap_and_shell_payloads
+      original current observed next phase_ok retained stepped)).
+  - exact (proj2 (every_successful_step_retains_exact_original_heap_and_shell_payloads
+      original current observed next phase_ok retained stepped)).
+Qed.
+
+Theorem every_valid_ranked_drain_reaches_idle_empty_work_without_a_fuel_parameter
+    original original_rank :
+  original_graph_ranked original original_rank ->
+  forall current, drain_valid original current ->
+    exists events final, execution current events final /\ idle final /\ pending final = [].
+Proof.
+  intros ranked.
+  refine (well_founded_induction
+    (well_founded_ltof state (drain_measure original_rank))
+    (fun current => drain_valid original current ->
+      exists events final, execution current events final /\ idle final /\ pending final = []) _).
+  intros current IH valid.
+  destruct (step current) as [[observed next]|] eqn:stepped.
+  - assert (smaller : drain_measure original_rank next < drain_measure original_rank current).
+    { destruct valid as (phase_ok & references & retained).
+      eapply every_actual_ranked_step_strictly_decreases_the_whole_drain_measure; eauto. }
+    destruct (IH next smaller (successful_step_preserves_drain_valid
+      original current observed next valid stepped)) as (events & final & run & done).
+    exists (observed :: events), final. split; [econstructor; eauto|exact done].
+  - destruct valid as (phase_ok & references & retained).
+    exists [], current. split; [constructor|].
+    now apply (proj1 (a_valid_state_stops_exactly_when_idle_and_work_is_empty
+      current phase_ok references)).
+Qed.
+
+Theorem every_finite_actual_trace_preserves_original_payloads_and_ranked_frontier
+    original original_rank upper initial events final :
+  original_graph_ranked original original_rank -> drain_valid original initial ->
+  frontier original_rank upper (realized_frontier initial) ->
+  execution initial events final ->
+  drain_valid original final /\ frontier original_rank upper (realized_frontier final).
+Proof.
+  intros ranked valid bounded run. induction run.
+  - auto.
+  - apply IHrun.
+    + eapply successful_step_preserves_drain_valid; eauto.
+    + destruct valid as (phase_ok & references & retained).
+      eapply every_actual_step_preserves_the_ranked_realized_frontier; eauto.
+Qed.
+
+Theorem every_reachable_single_root_state_bounds_all_local_staged_and_pending_frames
+    original original_rank root initial events reached :
+  original_graph_ranked original original_rank -> drain_valid original initial ->
+  idle initial -> pending initial = [root] -> execution initial events reached ->
+  staging_size reached <= 1 + 2 * original_rank root.
+Proof.
+  intros ranked valid (ready & empty & no_staged & no_lease) root_work run.
+  assert (start : realized_frontier initial = [root]).
+  { unfold realized_frontier. now rewrite empty, no_staged, root_work. }
+  assert (bounded : frontier original_rank (original_rank root) (realized_frontier initial)).
+  { rewrite start. constructor; cbn [length]; try lia. constructor. }
+  pose proof (every_finite_actual_trace_preserves_original_payloads_and_ranked_frontier
+    original original_rank (original_rank root) initial events reached ranked valid bounded run)
+    as (_ & final_bound).
+  rewrite <- realized_frontier_counts_every_local_staged_and_pending_occurrence.
+  exact (each_ranked_lifo_frontier_has_at_most_one_plus_twice_root_height
+    original_rank (original_rank root) (realized_frontier reached) final_bound).
+Qed.
+
+Theorem every_actual_trace_length_is_bounded_by_the_initial_whole_drain_measure
+    original original_rank initial events final :
+  original_graph_ranked original original_rank -> drain_valid original initial ->
+  execution initial events final ->
+  length events + drain_measure original_rank final <= drain_measure original_rank initial.
+Proof.
+  intros ranked valid run. induction run.
+  - cbn [length]. lia.
+  - specialize (IHrun (successful_step_preserves_drain_valid
+      original current observed middle valid H)).
+    destruct valid as (phase_ok & references & retained).
+    pose proof (every_actual_ranked_step_strictly_decreases_the_whole_drain_measure
+      original original_rank current observed middle ranked retained phase_ok H).
+    cbn [length]. lia.
+Qed.
+
+Definition repeated_child_original :=
+  [Some (Node 0 [] (Owned 7)); Some (Node 1 [0; 0; 0] NoLease)].
+
+Definition repeated_child_ranks id := if id =? 0 then 0 else 1.
+
+Definition repeated_child_initial :=
+  State repeated_child_original [] [7] [1] None [] NoLease Ready [] [].
+
+Example repeated_child_control_has_valid_original_ranks_and_initial_ownership :
+  original_graph_ranked repeated_child_original repeated_child_ranks /\
+  drain_valid repeated_child_original repeated_child_initial.
+Proof.
+  split.
+  - intros [|[|id]] value live.
+    + change (Some (Node 0 [] (Owned 7)) = Some value) in live.
+      inversion live; subst value. cbn [rank children repeated_child_ranks].
+      repeat constructor; lia.
+    + change (Some (Node 1 [0; 0; 0] NoLease) = Some value) in live.
+      inversion live; subst value. cbn [rank children repeated_child_ranks].
+      repeat constructor; lia.
+    + change (nth id [] None = Some value) in live.
+      rewrite nth_overflow in live by (cbn; lia). discriminate.
+  - split; [repeat split; reflexivity|]. split.
+    + intros [|[|id]] positive.
+      * exists (Node 0 [] (Owned 7)). reflexivity.
+      * exists (Node 1 [0; 0; 0] NoLease). reflexivity.
+      * change (0 > 0) in positive. lia.
+    + split.
+      * intros id value live. exact live.
+      * intros value impossible. discriminate.
+Qed.
+
+Example repeated_child_control_executes_every_token_once_and_keeps_the_external_source_reader :
+  execution repeated_child_initial
+    [FinalExtraction 1; DetachPayload; EnqueueChild 0; EnqueueChild 0; EnqueueChild 0;
+     DropEmptyShell; NonfinalExtraction; NonfinalExtraction; FinalExtraction 0;
+     DetachPayload; ReleaseOwnedLease 7; DropEmptyShell]
+    (State [None; None] [] [7] [] None [] NoLease Ready [0; 1] [7]).
+Proof.
+  eapply ExecutionStep with (middle := State [Some (Node 0 [] (Owned 7)); None]
+    [] [7] [] (Some (Node 1 [0; 0; 0] NoLease)) [] NoLease Extracted [1] []);
+    [reflexivity|].
+  eapply ExecutionStep with (middle := State [Some (Node 0 [] (Owned 7)); None]
+    [] [7] [] None [0; 0; 0] NoLease Evacuated [1] []); [reflexivity|].
+  eapply ExecutionStep with (middle := State [Some (Node 0 [] (Owned 7)); None]
+    [] [7] [0] None [0; 0] NoLease Evacuated [1] []); [reflexivity|].
+  eapply ExecutionStep with (middle := State [Some (Node 0 [] (Owned 7)); None]
+    [] [7] [0; 0] None [0] NoLease Evacuated [1] []); [reflexivity|].
+  eapply ExecutionStep with (middle := State [Some (Node 0 [] (Owned 7)); None]
+    [] [7] [0; 0; 0] None [] NoLease Evacuated [1] []); [reflexivity|].
+  eapply ExecutionStep with (middle := State [Some (Node 0 [] (Owned 7)); None]
+    [] [7] [0; 0; 0] None [] NoLease Ready [1] []); [reflexivity|].
+  eapply ExecutionStep with (middle := State [Some (Node 0 [] (Owned 7)); None]
+    [] [7] [0; 0] None [] NoLease Ready [1] []); [reflexivity|].
+  eapply ExecutionStep with (middle := State [Some (Node 0 [] (Owned 7)); None]
+    [] [7] [0] None [] NoLease Ready [1] []); [reflexivity|].
+  eapply ExecutionStep with (middle := State [None; None]
+    [] [7] [] (Some (Node 0 [] (Owned 7))) [] NoLease Extracted [0; 1] []);
+    [reflexivity|].
+  eapply ExecutionStep with (middle := State [None; None]
+    [] [7] [] None [] (Owned 7) Evacuated [0; 1] []); [reflexivity|].
+  eapply ExecutionStep with (middle := State [None; None]
+    [] [7] [] None [] NoLease Evacuated [0; 1] [7]); [reflexivity|].
+  eapply ExecutionStep; [reflexivity|]. constructor.
+Qed.
+
+Example final_extraction_control_counts_children_before_the_first_enqueue :
+  let extracted := State [Some (Node 0 [] (Owned 7)); None] [] [7] []
+    (Some (Node 1 [0; 0; 0] NoLease)) [] NoLease Extracted [1] [] in
+  step repeated_child_initial = Some (FinalExtraction 1, extracted) /\
+  realized_frontier extracted = [0; 0; 0] /\
+  staging_size extracted = 3 /\ length (pending extracted) = 0.
+Proof. repeat split; reflexivity. Qed.
+
+Example cyclic_child_control_cannot_satisfy_the_immutable_rank_precondition :
+  forall original_rank,
+    ~ original_graph_ranked [Some (Node 1 [0] NoLease)] original_rank.
+Proof.
+  intros original_rank ranked.
+  destruct (ranked 0 (Node 1 [0] NoLease) eq_refl) as (_ & _ & smaller).
+  inversion smaller. lia.
+Qed.
+
+Print Assumptions every_actual_trace_length_is_bounded_by_the_initial_whole_drain_measure.
+Print Assumptions repeated_child_control_has_valid_original_ranks_and_initial_ownership.
+Print Assumptions repeated_child_control_executes_every_token_once_and_keeps_the_external_source_reader.
+Print Assumptions final_extraction_control_counts_children_before_the_first_enqueue.
+Print Assumptions cyclic_child_control_cannot_satisfy_the_immutable_rank_precondition.
+
+Print Assumptions every_actual_step_preserves_the_ranked_realized_frontier.
+Print Assumptions every_actual_ranked_step_strictly_decreases_the_whole_drain_measure.
+Print Assumptions a_valid_state_stops_exactly_when_idle_and_work_is_empty.
+Print Assumptions every_valid_ranked_drain_reaches_idle_empty_work_without_a_fuel_parameter.
+Print Assumptions every_finite_actual_trace_preserves_original_payloads_and_ranked_frontier.
+Print Assumptions every_reachable_single_root_state_bounds_all_local_staged_and_pending_frames.
+
+Print Assumptions realized_frontier_counts_every_local_staged_and_pending_occurrence.
+Print Assumptions every_successful_step_retains_exact_original_heap_and_shell_payloads.
+Print Assumptions original_heap_ranks_and_fanout_apply_to_every_retained_live_node.
+Print Assumptions actual_final_extraction_replaces_the_realized_head_with_exact_reversed_children.
+Print Assumptions actual_nonfinal_extraction_removes_only_the_realized_head.
+Print Assumptions every_actual_staging_step_preserves_frontier_order_and_decreases_phase_work.
 
 Print Assumptions clearing_a_node_empties_exactly_its_original_slot.
 Print Assumptions clearing_a_node_preserves_every_other_complete_node.

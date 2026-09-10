@@ -296,7 +296,7 @@ epathmap_score_proofs() {
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 322 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 323 \
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
   canonical_source_release_proofs
@@ -305,7 +305,7 @@ canonical_key_protocol_proofs() {
 canonical_source_release_proofs() {
   local TLC_MEMORY_HIGH=512M TLC_RSS=1G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/CanonicalSourceRelease.v
-  rocq_compile_with_closed_count theories/CanonicalSourceRelease.v 31 \
+  rocq_compile_with_closed_count theories/CanonicalSourceRelease.v 48 \
     "canonical source ownership, release traces and ranked-frontier prerequisites"
   rocq_check_modules "canonical source release prerequisites" StackSafePDA.CanonicalSourceRelease
 }

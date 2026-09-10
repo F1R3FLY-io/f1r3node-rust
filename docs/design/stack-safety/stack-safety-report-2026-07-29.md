@@ -10788,6 +10788,36 @@ bindings. Native source ownership/release, endpoint anchors, cursors and
 ACT integration remain required. No runtime activation or closure of the
 import slope or production ACT/LMDB comparison is claimed.
 
+#### 5.33.45 Whole-drain and endpoint composition proofs (2026-09-10)
+
+The source-release model now binds actual payload ranks, staging order,
+progress and a strictly decreasing mathematical measure to the complete
+single-drain loop. It terminates without fuel or a depth limit. At every
+reachable single-root state, shell, staged and pending tokens together
+are bounded by $`1+2h`$ for root rank $`h`$, not merely at loop boundaries.
+The exponential rank weight is a proof measure, not native arithmetic
+or a runtime performance bound.
+
+Thirteen new theorems and four concrete controls bring this unit to
+**48 closed checks**; independent kernel verification passes. Compiler:
+5.821 seconds service wall, 5.716 seconds CPU, 465.1M peak. Kernel:
+13.098 seconds service wall, 12.812 seconds CPU, 277.3M peak. Both retain
+512M soft/1G hard caps and zero swap. Explicit concrete-trace states resolved
+a diagnostic soft-limit timeout without increasing the memory limits.
+The dedicated release gate also passes its exact 48-count, placeholder and
+kernel assertions; this does not establish full workspace acceptance.
+
+A separate compositional capstone connects iterative split outputs to
+all existing anchored-region position observations, bringing RPB3 to
+**323 closed checks** with kernel success. It reuses existing endpoint
+semantics, including empty outputs and discontinuous provenance.
+
+[J-128](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-128--2026-09-10-whole-drain-progress-and-split-endpoint-reuse)
+records hashes, diagnostics, exact native bindings and concurrency limits.
+Native ordinary-root/parallel-drain ownership, actual resource tests and
+runtime source integration remain required. These proofs do not establish
+a new native performance result or complete the ACT/LMDB comparison.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
