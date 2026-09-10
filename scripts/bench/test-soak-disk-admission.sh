@@ -10,7 +10,7 @@ SOURCE_FILES=(
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
 case "$SCENARIO" in
-band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark | benchmark-band | benchmark-active-disk | benchmark-equal | benchmark-sufficient | benchmark-missing | benchmark-disabled | benchmark-cancel-death | benchmark-cancel-breach | benchmark-guardian-boundary | benchmark-guardian-interleaved | benchmark-cancel-stall | guardian-stall | guardian-progress-boundary | benchmark-progress-boundary | hygiene-timeout | disk-floor-range | disk-band-range | disk-sum-range | disk-max-floor | disk-max-band | cleanup-active-session) ;;
+band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark | benchmark-band | benchmark-active-disk | benchmark-equal | benchmark-sufficient | benchmark-missing | benchmark-disabled | benchmark-cancel-death | benchmark-cancel-breach | benchmark-guardian-boundary | benchmark-guardian-interleaved | benchmark-cancel-stall | guardian-stall | guardian-progress-boundary | benchmark-progress-boundary | hygiene-timeout | disk-floor-range | disk-band-range | disk-sum-range | disk-max-floor | disk-max-band | cleanup-active-session | cleanup-error-list | cleanup-error-remove | cleanup-error-network | cleanup-error-image | cleanup-error-builder | cleanup-partial | cleanup-sufficient) ;;
 *)
     printf 'ERROR: Unknown disk fixture scenario.\n' >&2
     exit 2
@@ -34,6 +34,12 @@ if [[ "${1:-}" == --inside ]]; then
 #!/usr/bin/env bash
 available=7000
 case "${SOAK_DISK_TEST_SCENARIO:-band}" in
+    cleanup-error-* | cleanup-partial | cleanup-sufficient)
+        if [[ -e /case/evidence/hygiene-completed ]]; then
+            available=16384
+            [[ "$SOAK_DISK_TEST_SCENARIO" != cleanup-partial ]] || available=8000
+        fi
+        ;;
     stalled-active)
         if [[ -f /case/evidence/workload-started.txt ]]; then
             printf 'stalled-active\n' >>/case/evidence/probe-samples.txt
@@ -152,6 +158,20 @@ SH
     cat >bin/docker <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
+if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == cleanup-error-* ]]; then
+    action=""
+    case "$*" in
+        'ps -aq --filter status=exited --filter name=rnode.') action=list; printf 'cleanup-fixture\n' ;;
+        'rm cleanup-fixture') action=remove ;;
+        'network prune -f') action=network ;;
+        'image prune -f') action=image ;;
+        'builder prune -af') action=builder; touch /case/evidence/hygiene-completed ;;
+    esac
+    if [[ "$action" == "${SOAK_DISK_TEST_SCENARIO#cleanup-error-}" ]]; then
+        printf '%s\n' "$action" >/case/evidence/cleanup-failed-command.txt
+        exit 42
+    fi
+fi
 if [[ ( "${SOAK_DISK_TEST_SCENARIO:-band}" == restart-benchmark ||
     ( "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-* &&
     "${SOAK_DISK_TEST_SCENARIO:-band}" != benchmark-active-disk &&
@@ -548,6 +568,46 @@ SH
         exit 2
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
+    if [[ "$SCENARIO" == cleanup-partial || "$SCENARIO" == cleanup-sufficient ]]; then
+        expected_iterations=0
+        expected_failures=1
+        expected_sample=8000
+        if [[ "$SCENARIO" == cleanup-sufficient ]]; then
+            expected_iterations=1
+            expected_failures=0
+            expected_sample=16384
+        fi
+        if ! grep -Fxq 'valid=7000' evidence/probe-samples.txt ||
+            ! grep -Fxq "valid=$expected_sample" evidence/probe-samples.txt ||
+            [[ ! -e evidence/hygiene-completed ]]; then
+            printf 'ERROR: The cleanup fixture did not exercise its reclamation outcome.\n' >&2
+            exit 2
+        fi
+        if [[ "$status" != "$expected_failures" || "$iterations" != "$expected_iterations" ]] ||
+            ! jq -e --argjson iterations "$expected_iterations" --argjson failures "$expected_failures" \
+                '.iterations == $iterations and .failures == $failures and .bench_segments == 0 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Successful cleanup changed the admission result for its disk sample (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        printf 'PASS: Successful cleanup preserved the admission result for its disk sample (%s).\n' "$SCENARIO"
+        exit 0
+    fi
+    if [[ "$SCENARIO" == cleanup-error-* ]]; then
+        if ! grep -Fxq "${SCENARIO#cleanup-error-}" evidence/cleanup-failed-command.txt ||
+            ! grep -Fxq 'valid=7000' evidence/probe-samples.txt ||
+            ! grep -Fxq 'valid=16384' evidence/probe-samples.txt; then
+            printf 'ERROR: The cleanup fixture did not expose the command error and later sufficient sample.\n' >&2
+            exit 2
+        fi
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: A failed cleanup command permitted work or lost its failure result (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        printf 'PASS: A failed cleanup command prevented admission despite a sufficient later disk sample (%s).\n' "$SCENARIO"
+        exit 0
+    fi
     if [[ "$SCENARIO" == cleanup-active-session ]]; then
         kill -0 "$ownership_writer" || exit 2
         ps -o pid=,stat= -p "$ownership_writer" >evidence/ownership-writer-state.txt

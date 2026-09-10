@@ -66,6 +66,7 @@ case "$config" in
     MC_DiskHygieneDeadline_unbounded_pre_fix.cfg) invariant=HygieneWithinBudget ;;
     MC_DiskSettingsAdmission_unchecked_pre_fix.cfg) invariant=AdmissionRequiresValidDiskSettings ;;
     MC_CleanupOwnership_age_only_pre_fix.cfg) invariant=UnownedSessionPreserved ;;
+    MC_CleanupOutcome_ignore_errors_pre_fix.cfg) invariant=CleanupFailurePreventsAdmission ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -117,6 +118,8 @@ pr_configs=(
     soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix
     soak_disk/MC_CleanupOwnership
     soak_disk/MC_CleanupOwnership_age_only_pre_fix
+    soak_disk/MC_CleanupOutcome
+    soak_disk/MC_CleanupOutcome_ignore_errors_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

@@ -122,6 +122,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_DiskHygieneDeadline
     soak_disk/MC_DiskSettingsAdmission
     soak_disk/MC_CleanupOwnership
+    soak_disk/MC_CleanupOutcome
 )
 
 TLC_WORKERS=auto
@@ -149,6 +150,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_DiskHygieneDeadline
         soak_disk/MC_DiskSettingsAdmission
         soak_disk/MC_CleanupOwnership
+        soak_disk/MC_CleanupOutcome
     )
     TLC_WORKERS=2
 fi
@@ -208,6 +210,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_DiskHygieneDeadline_unbounded_pre_fix:HygieneWithinBudget
     soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix:AdmissionRequiresValidDiskSettings
     soak_disk/MC_CleanupOwnership_age_only_pre_fix:UnownedSessionPreserved
+    soak_disk/MC_CleanupOutcome_ignore_errors_pre_fix:CleanupFailurePreventsAdmission
 )
 
 failed=0

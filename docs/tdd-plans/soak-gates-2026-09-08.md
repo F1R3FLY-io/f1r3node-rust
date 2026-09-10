@@ -376,6 +376,21 @@ behaviors:
     statement: Disk hygiene preserves an unowned temporary session while its writer remains active.
     priority: must
     deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/manifest.jsonc
+        test: scripts/bench/test-soak-cleanup-ownership.sh
+        red_revision: 8eba1e4a719fccac8f45a7968c8836013bc9f26e
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B26
+    statement: A failed cleanup command prevents admission even when the later disk sample is sufficient.
+    priority: must
+    deep_module: false
     done: false
 ---
 
@@ -513,6 +528,12 @@ Two valid maximum-value cases pass without changing baseline behavior. These res
 The first positive model reached its verification limit. The retained replacement uses explicit decimal column steps and passes with 88 distinct states.
 
 Twenty-one positive configurations, twenty-two exact controls, 154 classifier cases, six routing scenarios, and thirty emergency scenarios pass.
+
+B25 adds [temporary session preservation evidence](../cbc-evidence/soak-d2-cleanup-session-2026-09-10/README.md). An old directory remains intact while its fixture writer holds the data file open.
+
+The driver removes its age-only sweep and retains admission refusal when space remains insufficient. An existing regression now requires preservation instead of deletion.
+
+Twenty-two positive configurations, twenty-three exact controls, 161 classifier cases, six routing scenarios, and thirty-one emergency scenarios pass.
 
 ## Remaining D2 work
 

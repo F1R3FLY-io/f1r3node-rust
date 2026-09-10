@@ -276,18 +276,32 @@ stop_node_writers() (
 )
 
 reclaim_disk_space_commands() {
-	local before after
+	local before after status=0
+	set -o pipefail
 	before="$(disk_free_mb)" || before=""
 	if command -v docker >/dev/null 2>&1; then
 		docker ps -aq --filter status=exited --filter 'name=rnode.' 2>/dev/null |
-			xargs -r docker rm >/dev/null 2>&1 || true
-		docker network prune -f >/dev/null 2>&1 || true
-		docker image prune -f >/dev/null 2>&1 || true
-		docker builder prune -af >/dev/null 2>&1 || true
+			xargs -r docker rm >/dev/null 2>&1 || {
+			status=1
+			printf 'disk hygiene: container cleanup failed\n' >&2
+		}
+		docker network prune -f >/dev/null 2>&1 || {
+			status=1
+			printf 'disk hygiene: network cleanup failed\n' >&2
+		}
+		docker image prune -f >/dev/null 2>&1 || {
+			status=1
+			printf 'disk hygiene: image cleanup failed\n' >&2
+		}
+		docker builder prune -af >/dev/null 2>&1 || {
+			status=1
+			printf 'disk hygiene: builder cleanup failed\n' >&2
+		}
 	fi
 	printf 'disk hygiene: temporary sessions retained because ownership is unconfirmed\n'
 	after="$(disk_free_mb)" || after=""
 	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
+	return "$status"
 }
 
 reclaim_disk_space() (
