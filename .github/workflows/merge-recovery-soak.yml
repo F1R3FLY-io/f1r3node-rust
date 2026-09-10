@@ -559,6 +559,7 @@ jobs:
             target_ref=dev
             should_run=false
             idle_skip=false
+            preflight_verdict_skip=false
             duration_seconds=79200
             if [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
               # 22h, not 24h. The soak job shares a concurrency group with
@@ -659,6 +660,46 @@ jobs:
                 duplicate_skip=true
                 echo "slot already claimed by OCI-dispatched run $canonical_run; cron fallback yields"
               fi
+              # A dispatch that died before producing a verdict (runner never
+              # launched, VM lost, cancelled) is exactly what this fallback
+              # retries. A dispatch whose integration preflight RAN and failed
+              # is not: the failure is a property of the target commit, and a
+              # second VM only reproduces it — 2026-09-09 cost two ~2.5h
+              # sessions this way. The verdict is read from the "Soak
+              # Integration Preflight" commit status the finalize job below
+              # publishes; its description text is the contract, so the two
+              # must stay in step. The status is read by ref name: if the
+              # target moved since the dispatch, no status exists on the new
+              # tip and the fallback soaks the new code. Fails OPEN like the
+              # claim query.
+              if [ "$should_run" = "true" ] && [ -n "$claim_runs" ]; then
+                failed_claims="$(jq -r --arg title "$expected_title" \
+                  '[.workflow_runs[]
+                    | select(.display_title == $title)
+                    | select(.status == "completed" and .conclusion == "failure")
+                    | .id] | @tsv' <<<"$claim_runs" 2>/dev/null || printf '')"
+                if [ -n "$failed_claims" ]; then
+                  encoded_ref="$(jq -rn --arg ref "$target_ref" '$ref | @uri')"
+                  verdict="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_ref}/status" \
+                    --jq '[.statuses[] | select(.context == "Soak Integration Preflight")][0] // {}
+                      | [(.state // ""), (.description // ""), (.target_url // "")] | @tsv' 2>/dev/null)" \
+                    || { echo "::warning::preflight-verdict query failed; failing open and soaking anyway"; verdict=""; }
+                  IFS=$'\t' read -r verdict_state verdict_description verdict_url <<<"$verdict"
+                  verdict_run=""
+                  if [[ "$verdict_url" =~ /actions/runs/([0-9]+) ]]; then
+                    verdict_run="${BASH_REMATCH[1]}"
+                  fi
+                  if [ "$verdict_state" = "failure" ] \
+                    && [ "$verdict_description" = "Full integration preflight completed with test failures" ] \
+                    && [ -n "$verdict_run" ] \
+                    && grep -qx "$verdict_run" <<<"$(tr '\t' '\n' <<<"$failed_claims")"; then
+                    should_run=false
+                    preflight_verdict_skip=true
+                    canonical_run="$verdict_run"
+                    echo "OCI-dispatched run $verdict_run already ran the integration preflight for slot $slot_epoch and it failed on $target_ref; cron fallback yields"
+                  fi
+                fi
+              fi
             fi
           fi
           kind=daily
@@ -747,6 +788,16 @@ jobs:
               echo "## Schedule gate: skipped (duplicate OCI slot)"
               echo ""
               echo "Run \`$canonical_run\` already owns scheduled slot \`$slot_epoch\`."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ] && [ "${preflight_verdict_skip:-false}" = "true" ]; then
+            echo "::notice::Schedule gate skip: run $canonical_run already ran the integration preflight for this OCI slot and it failed on $target_ref. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: skipped (preflight already failed for this slot)"
+              echo ""
+              echo "Run \`$canonical_run\` claimed scheduled slot \`$slot_epoch\` and its full integration"
+              echo "preflight completed with test failures on \`$target_ref\`. A retry would only"
+              echo "reproduce that verdict on the same commit."
               echo "**No soak was attempted** — a green check on this run is not a soak result."
             } >> "$GITHUB_STEP_SUMMARY"
           elif [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
@@ -2277,6 +2328,9 @@ jobs:
             state=success
             description="Full integration preflight passed"
           elif [ "$PREFLIGHT_RESULT" = "failed" ]; then
+            # Contract with the schedule gate's cron fallback: it yields to a
+            # failed dispatch only when the status carries exactly this text,
+            # so a runner death or cancel (the branches below) still retries.
             description="Full integration preflight completed with test failures"
           elif [ "$PENDING_RESULT" != "success" ]; then
             description="Preflight status initialization failed"

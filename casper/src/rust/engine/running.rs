@@ -7,11 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
@@ -26,22 +21,18 @@ use models::rust::casper::protocol::casper_message::{
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
-use crate::rust::casper::{CasperShardConf, MultiParentCasper};
+use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
-use crate::rust::estimator::Estimator;
 use crate::rust::finality::floor::floor_of_block;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
 use crate::rust::safety::clique_oracle::FtThreshold;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasperMessageStatus {
@@ -206,12 +197,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                                 e
                             ))
                         })?;
-                    let now_ms = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64;
-                    self.last_peer_block_arrival_ms
-                        .store(now_ms, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(())
             }
@@ -346,13 +331,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
 
     /// Running always contains casper; enables `EngineDynExt::with_casper(...)`
     /// to mirror Scala `Engine.withCasper` behavior.
-    async fn recover_stuck_validator(
-        &self,
-        delay_threshold: Duration,
-    ) -> Result<bool, CasperError> {
-        self.recover_stuck_validator_inner(delay_threshold).await
-    }
-
     fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
         Some(Arc::clone(&self.casper) as Arc<dyn MultiParentCasper + Send + Sync>)
     }
@@ -375,54 +353,13 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     transport: Arc<T>,
     conf: RPConf,
     block_retriever: BlockRetriever<T>,
-    recovery_context: Option<RunningRecoveryContext>,
-    /// Wall-clock of the last peer block accepted for processing. The
-    /// stale-rejoin trigger requires receive-quiescence in addition to
-    /// own-message staleness: a node that keeps receiving blocks is not
-    /// partitioned — it is failing to PROPOSE, and ejecting it into an
-    /// approved-block state rejoin destroys its custody duties.
-    last_peer_block_arrival_ms: Arc<std::sync::atomic::AtomicI64>,
     /// Routes incoming [`casper_message::StoreItemsMessage`]s to the runtime
     /// state requester. `None` on a node that cannot need one (genesis
     /// ceremony); without it those messages are dropped, as they always were.
     state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
 }
 
-#[derive(Clone)]
-pub struct RunningRecoveryContext {
-    pub connections_cell: ConnectionsCell,
-    pub last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
-    pub block_store: KeyValueBlockStore,
-    pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: KeyValueDeployStorage,
-    pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    pub casper_buffer_storage: CasperBufferKeyValueStorage,
-    pub rspace_state_manager: RSpaceStateManager,
-    pub event_publisher: F1r3flyEvents,
-    pub engine_cell: Arc<EngineCell>,
-    pub runtime_manager: Arc<RuntimeManager>,
-    pub estimator: Estimator,
-    pub casper_shard_conf: CasperShardConf,
-    pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
-}
-
 use crate::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING;
-
-/// The stale-rejoin trigger: rejoin-from-approved-block only when the
-/// validator's own latest message is stale AND no peer block has arrived
-/// for the same window. Own-staleness alone is not a partition signal — a
-/// node that keeps receiving and validating peer blocks has a working
-/// network and a local PROPOSE problem, and ejecting it into a state
-/// rejoin abandons its owner-custody duties for the rejoin's duration
-/// (observed as an 80-minute self-eviction in the ucc ca7197d8 specimen,
-/// where every validator was propose-wedged but fully connected).
-fn should_rejoin_from_approved_block(
-    own_latest_age_ms: i64,
-    arrival_age_ms: i64,
-    threshold_ms: i64,
-) -> bool {
-    own_latest_age_ms >= threshold_ms && arrival_age_ms >= threshold_ms
-}
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
     /// The floor and frontier of the block we are about to hand over as a sync
@@ -511,13 +448,8 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         transport: Arc<T>,
         conf: RPConf,
         block_retriever: BlockRetriever<T>,
-        recovery_context: Option<RunningRecoveryContext>,
         state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
     ) -> Self {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
         Running {
             block_processing_queue_tx,
             blocks_in_processing,
@@ -529,8 +461,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             transport,
             conf,
             block_retriever,
-            recovery_context,
-            last_peer_block_arrival_ms: Arc::new(std::sync::atomic::AtomicI64::new(now_ms)),
             state_items_tx,
         }
     }
@@ -540,94 +470,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         let buffer_contains = self.casper.buffer_contains(&hash);
         let dag_contains = self.casper.dag_contains(&hash);
         Ok(blocks_in_processing || buffer_contains || dag_contains)
-    }
-
-    async fn recover_stuck_validator_inner(
-        &self,
-        delay_threshold: Duration,
-    ) -> Result<bool, CasperError>
-    where
-        T: Clone + 'static,
-    {
-        let Some(recovery_context) = &self.recovery_context else {
-            return Ok(false);
-        };
-        let Some(validator_id) = self.casper.get_validator() else {
-            return Ok(false);
-        };
-
-        let validator = validator_id.public_key.bytes.clone();
-        let dag = self.casper.block_dag().await?;
-        let latest_hash = match dag.latest_message_hash(&validator) {
-            Some(hash) => hash,
-            None => return Ok(false),
-        };
-        if latest_hash == dag.last_finalized_block() {
-            return Ok(false);
-        }
-
-        let latest_block = match self.casper.block_store().get(&latest_hash)? {
-            Some(block) => block,
-            None => return Ok(false),
-        };
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-        let latest_age_ms = now_ms.saturating_sub(latest_block.header.timestamp);
-        let arrival_age_ms = now_ms.saturating_sub(
-            self.last_peer_block_arrival_ms
-                .load(std::sync::atomic::Ordering::Relaxed),
-        );
-        if !should_rejoin_from_approved_block(
-            latest_age_ms,
-            arrival_age_ms,
-            delay_threshold.as_millis() as i64,
-        ) {
-            return Ok(false);
-        }
-
-        let init = Arc::new(|| {
-            Box::pin(async { Ok(()) })
-                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-        });
-
-        tracing::warn!(
-            "Validator latest message {} has been stale for {}ms; rejoining from approved block.",
-            PrettyPrinter::build_string_bytes(&latest_hash),
-            latest_age_ms
-        );
-
-        engine::transition_to_initializing(
-            &self.block_processing_queue_tx,
-            &self.blocks_in_processing,
-            &recovery_context.casper_shard_conf,
-            &Some(validator_id),
-            init,
-            true,
-            self.disable_state_exporter,
-            &self.transport,
-            &self.conf,
-            &recovery_context.connections_cell,
-            &recovery_context.last_approved_block,
-            &recovery_context.block_store,
-            &recovery_context.block_dag_storage,
-            &recovery_context.deploy_storage,
-            &recovery_context.rejected_deploy_buffer,
-            &recovery_context.casper_buffer_storage,
-            &recovery_context.rspace_state_manager,
-            recovery_context.event_publisher.clone(),
-            self.block_retriever.clone(),
-            &recovery_context.engine_cell,
-            &recovery_context.runtime_manager,
-            &recovery_context.estimator,
-            &recovery_context.heartbeat_signal_ref,
-            self.state_items_tx.clone(),
-        )
-        .await?;
-
-        Ok(true)
     }
 
     pub async fn handle_block_hash_message(
@@ -913,26 +755,5 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
 
         tracing::info!("Store items sent to {}", peer);
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_rejoin_from_approved_block;
-
-    /// A propose-wedged but connected validator must NOT rejoin: its own
-    /// latest message is stale, yet peer blocks keep arriving — the network
-    /// is alive and the fault is local to proposing.
-    #[test]
-    fn a_receiving_validator_with_a_stale_own_message_must_not_rejoin() {
-        assert!(!should_rejoin_from_approved_block(120_000, 500, 60_000));
-    }
-
-    /// Genuine quiescence: own message stale AND nothing arriving for the
-    /// window — the partition signal the rejoin exists for.
-    #[test]
-    fn a_quiescent_stale_validator_rejoins() {
-        assert!(should_rejoin_from_approved_block(120_000, 90_000, 60_000));
-        assert!(!should_rejoin_from_approved_block(500, 90_000, 60_000));
     }
 }
