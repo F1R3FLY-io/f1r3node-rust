@@ -60,7 +60,7 @@ fn synthetic(
             payload_len: payload,
             tag_source: CanonicalPathSource::in_source(31, 47),
         },
-        status: ObligationStatus::Payload { remaining: payload },
+        status: ObligationStatus::Payload,
         payload_start: from,
         next: Some(next),
     });
@@ -110,10 +110,14 @@ fn synthetic(
     reducer.machine.stats.edges = from;
     reducer.machine.stats.max_topology_depth = from;
     reducer.machine.frames.finish(false);
-    let initial = (
+    let mut initial = (
         reducer.current.clone(),
         reducer.machine.frames.slots.clone(),
     );
+    let Frame::Obligation { status, .. } = &mut initial.1[leaf.0] else {
+        unreachable!()
+    };
+    *status = ObligationStatus::Countdown { remaining: payload };
     reducer.focus_path();
     assert_eq!(reducer.projected_frame_graph(), initial);
     reducer.assert_frame_invariants();
@@ -216,6 +220,21 @@ fn scalar_interior(
     width: usize,
 ) {
     let from = reference.consumed_len();
+    let Frame::Obligation {
+        obligation,
+        status,
+        payload_start,
+        ..
+    } = &mut reference.machine.frames.slots[reference.current.stack.unwrap().0]
+    else {
+        unreachable!()
+    };
+    if *status == ObligationStatus::Payload {
+        assert_eq!(from, *payload_start);
+        *status = ObligationStatus::Countdown {
+            remaining: obligation.payload_len,
+        };
+    }
     let id = reference.active_obligation().unwrap().obligation.id;
     for byte in source.located_bytes().skip(from).take(width) {
         assert_eq!(
@@ -310,7 +329,14 @@ proptest! {
         let mut plan = bulk.plan_opaque_interior(source.len()).unwrap();
         prop_assert!(plan.width >= 2);
         plan.width = 1 + choice % plan.width;
+        let frames = bulk.machine.frames.slots.clone();
+        let leaf = bulk.current.stack;
+        let owners_before = bulk.owners.clone();
         prop_assert!(bulk.try_advance_opaque_interior(source.len(), plan));
+        prop_assert_eq!(&bulk.machine.frames.slots, &frames);
+        prop_assert_eq!(bulk.current.stack, leaf);
+        prop_assert_eq!(&bulk.owners, &owners_before);
+        prop_assert_eq!(bulk.graph_stamp, 3 + plan.width);
         scalar_interior(&mut reference, &source, plan.width);
         prop_assert_eq!(normalized(&bulk), normalized(&reference));
         prop_assert_eq!(bulk.active_obligation(), reference.active_obligation());

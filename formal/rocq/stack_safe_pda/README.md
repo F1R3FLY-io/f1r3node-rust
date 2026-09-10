@@ -2371,3 +2371,11 @@ remain necessary. Compressed restore and the complete ACT/admission transaction
 are also outside this module; these results do not establish whole-import linear
 complexity. In particular, successful private resolution of an already failed
 root does not revive it and must not retime its hidden graph to ignored bytes.
+
+Runtime binding is now implemented and qualified in journal J-117: the eager
+storage policy retains the original countdown transitions, native residuals are
+checked against widened arithmetic, and tests require unchanged physical leaf
+frames across nonfinal bytes and strict bulk interiors. The final 419-test model
+library and integrated 116-test admission gate pass, including all 26 frame-storage
+tests. This closes the scalar payload representation binding, not compressed
+restoration, full ACT transaction composition or whole-import resource bounds.

@@ -10528,6 +10528,42 @@ PMU-006 PathMap empty-sentinel construction panic before ACT emission. Existing
 tasks 6023/6038 retain that issue; neither this component gate nor the source-window
 repair establishes a green full codec suite or campaign closure.
 
+#### 5.33.35 Immutable payload progress and saved failed checkpoints (2026-09-09, task 6018)
+
+The payload reducer now retains one physical frame across nonfinal bytes and
+strict bulk interiors. Remaining length is derived from the selected byte-prefix
+position with checked arithmetic; final bytes alone publish explicit awaiting
+state. This removes per-byte payload-frame replacement without narrowing `u64`
+lengths, decoding ASTs, changing native-stack traversal, or introducing a cap.
+Failed checkpoints retain their original graph position even after ignored bytes
+are appended. The independent test reference keeps the former countdown update.
+
+The complete model library passed **419 tests, zero failures or ignores**, in
+52.48 s; compile-inclusive service time was 87.740 s, peak 1.4G, zero swap under a
+6 GiB hard limit. The twenty new prerequisite model results were compiled and
+independently kernel-checked before implementation. Their complete bindings and
+boundaries are in the formal README and
+[J-117](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-117--2026-09-09-immutable-payload-progress-with-exact-historical-checkpoint-semantics).
+These validation peaks are not per-operation allocation or performance estimates.
+
+The exact regression assertions require no replacement-frame allocation during
+nonfinal scalar steps or strict bulk interiors, with unchanged historical-prefix
+observations. Ownerless failed checkpoints now need larger saved-position records;
+no universal memory reduction is claimed. Per-edge byte/checkpoint publication,
+balanced source composition and compressed persistent restoration remain to be
+addressed. The whole-import slope in 5.33.31 remains open pending remeasurement,
+and the production-equivalent ACT/LMDB comparison is still outstanding. This
+slice changes no codec bytes, consensus rule, backend selection or PathMap crate.
+
+Post-reboot final qualification (2026-09-10 UTC) again passes **419/419** model
+tests, zero ignored, in 52.53 s; service time including compilation is 98.161 s,
+peak 1.9G, zero swap. The integrated gate passes 116 focused model tests, six
+ACT transport tests, three kernel checks and all eight expected compiler-error
+controls with their positive control. The final logs and hashes are retained on
+disk and listed in J-117. The gate launcher's 56.8M peak excludes separately
+capped child scopes; it is not a whole-gate RSS measurement. This qualification
+does not close the known upstream PMU-006 failure in the broader codec suite.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

@@ -8276,6 +8276,98 @@ boundaries and private/failure effects; implement and test that scalar slice
 before enabling persistent bulk advancement or compressed restoration. No extra
 run arena or new handle encoding is required by this design.
 
+### J-117 — 2026-09-09: immutable payload progress with exact historical checkpoint semantics
+
+**VERIFIED MODEL AND IMPLEMENTED COMPONENT.** Prerequisite commit `8cbb71c21`
+adds twenty closed `AbsolutePayloadCheckpointBoundary` results and an exhaustive
+invariant-to-property catalogue before runtime activation. Compilation reports
+230 closed contexts; independent kernel checking passes. The model distinguishes
+selected graph position from current byte-history length and proves concrete
+direct/linked publication, historical preservation, checked residual arithmetic,
+exact zero/nonfinal/final events, source endpoints, fresh IDs and nonmutating
+private refusal. Accepted private effects and the whole ACT transaction remain
+outside that module; no proof-count total is a whole-parser correctness claim.
+
+**DECISION.** Replace the per-byte payload countdown frame with an immutable
+marker. Compute remaining length by checked subtraction of consumed payload bytes
+from its declared `u64` length. Nonfinal scalar bytes and strict bulk interiors
+retain the same physical frame; final bytes alone create explicit awaiting state
+with their actual physical source. Empty payloads remain explicitly pending at
+the length-varint endpoint. Phase-only checks do not calculate residuals, and
+strict bulk navigation does not clone the payload frame.
+
+Live checkpoints derive graph position from their selected byte-prefix handle.
+Failed or deferred-fault checkpoints keep their saved position, even when no
+Region owner remains. Successful private resolution does not revive an already
+failed root, so it must not advance that root to ignored bytes. Current byte
+history remains separately available for the existing completion/error-source
+rules. Historical selection does not rewind the global obligation-ID clock.
+
+**EXECUTABLE CONTROLS.** The eager reference keeps the old decrement-and-replace
+transition under a test-only storage policy. Stream references initialize their
+countdown only at payload birth, asserted explicitly; they cannot silently use
+absolute progress for later steps. Native graph projection uses independent
+widened arithmetic and normalizes only the selected active leaf, not unrelated
+historical frames or continuations. Tests cover ownerless rejection followed by
+ignored bytes, successful private calls under failed roots, zero/final source
+anchors, full-width lengths, historical forks, all-owner boundaries and refusal
+without mutation. Mutation of a hidden reference countdown must be detected.
+New assertions require zero nonfinal frame allocations and unchanged physical
+frames/owners during strict bulk progress; every selected prefix retains its own
+remaining length. A generated arithmetic property compares checked native
+subtraction with widened endpoints, including invalid-position refusal.
+
+**MEASURED VALIDATION, NOT A BENCHMARK.** The preactivation control passed 25 tests
+in 0.18 s; its compile-inclusive service used 35.169 s and peaked at 1.4G with
+zero swap. After activation the complete model library passed **419 tests, zero
+failed or ignored**, in 52.48 s; service time was 87.740 s and peak memory 1.4G,
+including compilation. These are capped validation observations, not paired
+latency/RSS comparisons. Rust limits were High4G/Max6G, no swap, four jobs and
+four test threads. The independent proof check used High1G/Max2G, no swap,
+19.757 s and peak 468.4M. Later strengthening of test-only oracle/allocation
+assertions is checked by the integrated gate, whose result is recorded separately.
+
+**PRESERVED NEGATIVES AND LIMITS.** Initial new fixtures used the set-region tag
+instead of the nested-EPathMap obligation tag; correcting that test construction
+made the baseline pass without changing production. The first activation run
+passed all checkpoint controls but failed seven transport fixtures comparing
+physical markers against semantic countdown projections. Their expected semantic
+graphs were corrected without deleting cases. The initial logs were retained as
+diagnostic evidence, not accepted runs; see the subsequent reboot note. Keeping failed stamps requires larger linked records
+for ownerless failed states; every dead edge still publishes a checkpoint. Thus
+this is not a universal memory reduction. Balanced source composition, persistent
+bulk admission and compressed restoration remain required, and J-112's deep
+whole-import slope has not been remeasured or declared fixed. No protobuf,
+bincode, cryptographic, consensus, metering or PathMap dependency change is made.
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/task6018-payload-boundary-rocq-3.log` | `83f91c9698eede35c1d891913fe220cc9b036843477d0f8501533b0e54e86b9f` |
+| `/tmp/epathmap-payload-boundary-kernel-20260909.log` | `853b4695101123d27b14e910bce578143f7cb1a63c57214d191ddcf492235a04` |
+| `/tmp/epathmap-payload-controls-r4-20260909.log` | `0aa09c7aa89543967334648f96e75013b4c6cd47b4da4bbd9609b115b0aae80a` |
+| `/tmp/epathmap-absolute-payload-full-models-20260909.log` | `10c07ae3442f50baaf5896ea4528bfca2d760362f8c88406dcc03d23ae5d0e02` |
+
+**REBOOT RECOVERY.** The host rebooted before the final integrated-gate result
+was recorded. These `/tmp` logs no longer exist; their recorded hashes and
+supporting pgmcp artifact 561 preserve historical observations, not recoverable
+raw logs. No success is inferred for that interrupted gate. Final requalification
+logs are stored under `target/verification/` on disk, not on the `/tmp` tmpfs.
+
+**FINAL REQUALIFICATION, 2026-09-10 UTC.** The complete current model library
+passes **419/419**, zero ignored, in 52.53 s. Compile-inclusive service time is
+98.161 s, peak 1.9G, zero swap. The integrated gate passes **116 focused model
+tests**, **six ACT transport tests**, three independent kernel checks and one
+positive/eight expected-error compiler controls. Its exact RPB3 count is 230
+closed contexts. The launcher reports 179.602 s and peak 56.8M; its child proof
+and Rust scopes have separate caps, so that peak is not a total gate-memory
+measurement. These checks include the final birth-only reference initialization
+and physical frame/owner immutability assertions. Neither run is a benchmark.
+
+| Reboot-persistent evidence | SHA-256 |
+|---|---|
+| `target/verification/epathmap-absolute-payload-full-models-20260910.log` | `e608813d84b53ebfdd4316edf729e5a52167bf8c252c1ec55a0a9aa01a87688c` |
+| `target/verification/epathmap-absolute-payload-integrated-20260910.log` | `52c50dc7c6b22b6fa9e22df8dc29f9c8920e6c31f870e33c9efe31bf1c62e962` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

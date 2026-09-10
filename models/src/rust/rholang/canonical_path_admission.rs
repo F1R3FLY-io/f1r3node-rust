@@ -386,8 +386,25 @@ enum RegionPhase {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ObligationStatus {
-    Payload { remaining: u64 },
-    AwaitingResolution { payload_end: CanonicalPathSource },
+    Payload,
+    #[cfg(test)]
+    Countdown {
+        remaining: u64,
+    },
+    AwaitingResolution {
+        payload_end: CanonicalPathSource,
+    },
+}
+
+impl ObligationStatus {
+    fn remaining(self, declared: u64, start: usize, stamp: usize) -> Option<u64> {
+        match self {
+            Self::Payload => declared.checked_sub(u64::try_from(stamp.checked_sub(start)?).ok()?),
+            #[cfg(test)]
+            Self::Countdown { remaining } => Some(remaining),
+            Self::AwaitingResolution { .. } => Some(0),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -499,7 +516,11 @@ impl PersistentCheckpoints {
 
     fn get(&self, id: PathStateId, stamp: usize) -> PersistentFocusedPath {
         if id.is_linked() {
-            self.linked[id.slot()].clone()
+            let mut state = self.linked[id.slot()].clone();
+            if state.fault.is_none() && !matches!(state.current.status, PathStatus::Dead(_)) {
+                state.stamp = stamp;
+            }
+            state
         } else {
             PersistentFocusedPath {
                 current: self.direct[id.slot()].clone(),
@@ -511,17 +532,16 @@ impl PersistentCheckpoints {
     }
 
     fn push(&mut self, state: PersistentFocusedPath) -> PathStateId {
-        if state.owners.is_some() {
+        if state.owners.is_some()
+            || state.fault.is_some()
+            || matches!(state.current.status, PathStatus::Dead(_))
+        {
             let id = PathStateId::new(self.linked.len(), true);
             self.linked.push(state);
             id
         } else {
             let id = PathStateId::new(self.direct.len(), false);
-            let mut current = state.current;
-            if let Some(error) = state.fault {
-                current.kill(error);
-            }
-            self.direct.push(current);
+            self.direct.push(state.current);
             id
         }
     }
@@ -630,7 +650,8 @@ impl CanonicalPathReducer {
         if self.dead_error(&state).is_some() {
             return None;
         }
-        self.machine.active_obligation_in(&state.current)
+        self.machine
+            .active_obligation_in(&state.current, state.stamp)
     }
 
     pub(crate) fn completed_obligation(
@@ -896,7 +917,7 @@ impl CanonicalPathReducer {
             let mut state = PersistentFocusedPath {
                 current,
                 owners: None,
-                stamp: handle.bytes.len(),
+                stamp: before.stamp,
                 fault: None,
             };
             self.focus(&mut state);
@@ -1186,6 +1207,9 @@ impl<Span> std::ops::Index<usize> for FrameStorage<Span> {
 trait FrameStore: std::ops::Index<usize, Output = Frame<Self::Span>> {
     type Span: Copy + std::fmt::Debug + Eq;
 
+    #[cfg(test)]
+    const EAGER_PAYLOADS: bool = false;
+
     fn new() -> Self;
     fn push(&mut self, frame: Frame<Self::Span>) -> FrameId;
     fn checkpoint(&self) -> FrameCheckpoint { FrameCheckpoint::default() }
@@ -1426,7 +1450,8 @@ impl CanonicalPathStreamReducer {
     }
 
     pub(crate) fn active_obligation(&self) -> Option<CanonicalPathObligationProgress> {
-        self.machine.active_obligation_in(&self.current)
+        self.machine
+            .active_obligation_in(&self.current, self.graph_stamp)
     }
 
     pub(crate) fn plan_opaque_interior(&self, input_len: usize) -> Option<OpaqueInteriorPlan> {
@@ -1451,13 +1476,19 @@ impl CanonicalPathStreamReducer {
         }
         let Frame::Obligation {
             obligation,
-            status: ObligationStatus::Payload { remaining },
+            status,
+            payload_start,
             ..
         } = &self.machine.frames[self.current.stack?.0]
         else {
             return None;
         };
-        let width = usize::try_from(bound.min(*remaining).saturating_sub(1)).ok()?;
+        if matches!(status, ObligationStatus::AwaitingResolution { .. }) {
+            return None;
+        }
+        let remaining =
+            status.remaining(obligation.payload_len, *payload_start, self.graph_stamp)?;
+        let width = usize::try_from(bound.min(remaining).saturating_sub(1)).ok()?;
         (width != 0).then_some(OpaqueInteriorPlan {
             from: self.consumed,
             id: obligation.id,
@@ -1577,8 +1608,7 @@ impl CanonicalPathStreamReducer {
                 self.machine.finish_path_with_pending(
                     &owner.owner,
                     source,
-                    self.active_obligation()
-                        .is_some_and(|value| value.awaiting_resolution),
+                    self.machine.awaiting_obligation_in(&self.current),
                 )
             } else {
                 self.machine.finish_path(&self.current, source)
@@ -1792,10 +1822,7 @@ impl CanonicalPathStreamReducer {
         let mut remaining = self.owners.len();
         loop {
             if matches!(current.status, PathStatus::Dead(_))
-                || self
-                    .machine
-                    .active_obligation_in(&current)
-                    .is_some_and(|value| value.awaiting_resolution)
+                || self.machine.awaiting_obligation_in(&current)
                 || remaining == 0
             {
                 return (current, remaining);
@@ -1867,10 +1894,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
             byte: located.byte,
             source: CanonicalPathSource::from_provenance(located.provenance),
         };
-        if self
-            .active_obligation_in(current)
-            .is_some_and(|obligation| obligation.awaiting_resolution)
-        {
+        if self.awaiting_obligation_in(current) {
             return Err(CanonicalPathAdmissionError::new(
                 CanonicalPathAdmissionErrorKind::UnresolvedObligation,
                 byte.source,
@@ -2068,10 +2092,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
             // A sibling validator resolves an opaque payload only after this
             // edge returns.  Preserve a zero-remaining region frame so that a
             // last-byte obligation can resume and finalize its framed path.
-            if self
-                .active_obligation_in(&current)
-                .is_some_and(|obligation| obligation.awaiting_resolution)
-            {
+            if self.awaiting_obligation_in(&current) {
                 let region = self.push_frame(Frame::Region {
                     remaining: context.remaining,
                     previous: context.previous,
@@ -2124,26 +2145,36 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 let top = path
                     .stack
                     .expect("a planned interior has an active payload");
-                let Frame::Obligation {
-                    obligation,
-                    status: ObligationStatus::Payload { remaining },
-                    payload_start,
-                    next,
-                } = self.frame(top)
-                else {
-                    unreachable!("only opaque payloads admit interior plans")
-                };
-                let checkpoint = self.frames.checkpoint();
-                let previous = path.stack;
-                path.stack = Some(self.push_frame(Frame::Obligation {
-                    obligation,
-                    status: ObligationStatus::Payload {
-                        remaining: remaining - width,
-                    },
-                    payload_start,
-                    next,
-                }));
-                self.frames.select(checkpoint, previous, path.stack);
+                match &self.frames[top.0] {
+                    Frame::Obligation {
+                        status: ObligationStatus::Payload,
+                        ..
+                    } => {
+                        let _ = width;
+                    }
+                    #[cfg(test)]
+                    Frame::Obligation {
+                        obligation,
+                        status: ObligationStatus::Countdown { remaining },
+                        payload_start,
+                        next,
+                    } => {
+                        let (obligation, remaining, payload_start, next) =
+                            (*obligation, *remaining, *payload_start, *next);
+                        let checkpoint = self.frames.checkpoint();
+                        let previous = path.stack;
+                        path.stack = Some(self.push_frame(Frame::Obligation {
+                            obligation,
+                            status: ObligationStatus::Countdown {
+                                remaining: remaining - width,
+                            },
+                            payload_start,
+                            next,
+                        }));
+                        self.frames.select(checkpoint, previous, path.stack);
+                    }
+                    _ => unreachable!("only opaque payloads admit interior plans"),
+                }
                 CanonicalPathTransition::Continue
             }
         }
@@ -2331,7 +2362,28 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                 payload_start,
                 next,
             } => match status {
-                ObligationStatus::Payload { remaining } => {
+                ObligationStatus::Payload => {
+                    let remaining = status
+                        .remaining(obligation.payload_len, payload_start, path_len)
+                        .expect("an active payload byte lies within its declared length");
+                    if remaining == 0 {
+                        path.stack = Some(self.push_frame(Frame::Obligation {
+                            obligation,
+                            status: ObligationStatus::AwaitingResolution {
+                                payload_end: byte.source,
+                            },
+                            payload_start,
+                            next,
+                        }));
+                    }
+                    CanonicalPathTransition::ObligationByte {
+                        id: obligation.id,
+                        byte,
+                        last: remaining == 0,
+                    }
+                }
+                #[cfg(test)]
+                ObligationStatus::Countdown { remaining } => {
                     let remaining = remaining - 1;
                     path.stack = Some(self.push_frame(Frame::Obligation {
                         obligation,
@@ -2340,7 +2392,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                                 payload_end: byte.source,
                             }
                         } else {
-                            ObligationStatus::Payload { remaining }
+                            ObligationStatus::Countdown { remaining }
                         },
                         payload_start,
                         next,
@@ -2514,7 +2566,14 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
                             payload_end: source,
                         }
                     } else {
-                        ObligationStatus::Payload { remaining: value }
+                        #[cfg(test)]
+                        if S::EAGER_PAYLOADS {
+                            ObligationStatus::Countdown { remaining: value }
+                        } else {
+                            ObligationStatus::Payload
+                        }
+                        #[cfg(not(test))]
+                        ObligationStatus::Payload
                     },
                     payload_start: path_len,
                     next,
@@ -2558,12 +2617,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         path: &InnerPath,
         source: CanonicalPathSource,
     ) -> Result<CanonicalPathSummary, CanonicalPathAdmissionError> {
-        self.finish_path_with_pending(
-            path,
-            source,
-            self.active_obligation_in(path)
-                .is_some_and(|o| o.awaiting_resolution),
-        )
+        self.finish_path_with_pending(path, source, self.awaiting_obligation_in(path))
     }
 
     fn finish_path_with_pending(
@@ -2617,7 +2671,40 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
         }
     }
 
-    fn active_obligation_in(&self, root: &InnerPath) -> Option<CanonicalPathObligationProgress> {
+    fn active_obligation_in(
+        &self,
+        root: &InnerPath,
+        stamp: usize,
+    ) -> Option<CanonicalPathObligationProgress> {
+        let Frame::Obligation {
+            obligation,
+            status,
+            payload_start,
+            ..
+        } = self.active_obligation_frame(root)?
+        else {
+            unreachable!()
+        };
+        Some(CanonicalPathObligationProgress {
+            obligation: *obligation,
+            remaining: status
+                .remaining(obligation.payload_len, *payload_start, stamp)
+                .expect("selected payload stamp lies within its declared length"),
+            awaiting_resolution: matches!(status, ObligationStatus::AwaitingResolution { .. }),
+        })
+    }
+
+    fn awaiting_obligation_in(&self, root: &InnerPath) -> bool {
+        matches!(
+            self.active_obligation_frame(root),
+            Some(Frame::Obligation {
+                status: ObligationStatus::AwaitingResolution { .. },
+                ..
+            })
+        )
+    }
+
+    fn active_obligation_frame(&self, root: &InnerPath) -> Option<&Frame<S::Span>> {
         let mut path = root;
         loop {
             if matches!(path.status, PathStatus::Dead(_)) {
@@ -2625,21 +2712,7 @@ impl<S: FrameStore> CanonicalPathMachine<S> {
             }
             let top = path.stack?;
             match &self.frames[top.0] {
-                Frame::Obligation {
-                    obligation, status, ..
-                } => {
-                    return Some(CanonicalPathObligationProgress {
-                        obligation: *obligation,
-                        remaining: match status {
-                            ObligationStatus::Payload { remaining } => *remaining,
-                            ObligationStatus::AwaitingResolution { .. } => 0,
-                        },
-                        awaiting_resolution: matches!(
-                            status,
-                            ObligationStatus::AwaitingResolution { .. }
-                        ),
-                    });
-                }
+                frame @ Frame::Obligation { .. } => return Some(frame),
                 Frame::Region {
                     phase: RegionPhase::Path { path: child, .. },
                     ..
@@ -3171,21 +3244,17 @@ mod tests {
 
     fn linear_result(bytes: &[u8]) -> Result<CanonicalPathSummary, CanonicalPathAdmissionError> {
         let mut admission = CanonicalPathTopologyAdmission::new();
-        assert!(
-            admission
-                .value(false, CanonicalPathSource::new(0))
-                .is_none()
-        );
+        assert!(admission
+            .value(false, CanonicalPathSource::new(0))
+            .is_none());
         for (offset, byte) in bytes.iter().copied().enumerate() {
             let transition = admission
                 .edge(LocatedPathByte::new(byte, offset))
                 .expect("obligation-free driver use");
             assert_eq!(transition, CanonicalPathTransition::Continue);
-            assert!(
-                admission
-                    .value(false, CanonicalPathSource::new(offset))
-                    .is_none()
-            );
+            assert!(admission
+                .value(false, CanonicalPathSource::new(offset))
+                .is_none());
         }
         admission
             .value(true, CanonicalPathSource::new(bytes.len()))
@@ -3384,18 +3453,14 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(
-            reducer
-                .value(left, true, CanonicalPathSource::new(13))
-                .unwrap()
-                .is_ok()
-        );
-        assert!(
-            reducer
-                .value(right, true, CanonicalPathSource::new(23))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(reducer
+            .value(left, true, CanonicalPathSource::new(13))
+            .unwrap()
+            .is_ok());
+        assert!(reducer
+            .value(right, true, CanonicalPathSource::new(23))
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -3490,12 +3555,10 @@ mod tests {
                         ),
                     )
                     .unwrap();
-                assert!(
-                    reducer
-                        .value(state, true, CanonicalPathSource::new(offset + 1))
-                        .unwrap()
-                        .is_ok()
-                );
+                assert!(reducer
+                    .value(state, true, CanonicalPathSource::new(offset + 1))
+                    .unwrap()
+                    .is_ok());
                 let edges = offset + 1;
                 let reducer_stats = reducer.stats();
                 let arena_stats = arena.stats();
@@ -3546,23 +3609,19 @@ mod tests {
         admission.edge(LocatedPathByte::new(GINT, 15)).unwrap();
         admission.edge(LocatedPathByte::new(0, 16)).unwrap();
         admission.edge(LocatedPathByte::new(TERM, 17)).unwrap();
-        assert!(
-            admission
-                .value(true, CanonicalPathSource::new(18))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(admission
+            .value(true, CanonicalPathSource::new(18))
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
     fn malformed_value_free_topology_is_retained_but_not_admitted_as_a_value() {
         let mut admission = CanonicalPathTopologyAdmission::new();
         admission.edge(LocatedPathByte::new(0xff, 41)).unwrap();
-        assert!(
-            admission
-                .value(false, CanonicalPathSource::new(42))
-                .is_none()
-        );
+        assert!(admission
+            .value(false, CanonicalPathSource::new(42))
+            .is_none());
         let error = admission
             .value(true, CanonicalPathSource::new(42))
             .unwrap()
@@ -3576,12 +3635,10 @@ mod tests {
         admission
             .edge(LocatedPathByte::new(GBOOL_TRUE, 44))
             .unwrap();
-        assert!(
-            admission
-                .value(true, CanonicalPathSource::new(45))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(admission
+            .value(true, CanonicalPathSource::new(45))
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -3703,11 +3760,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(
-            map.value(true, CanonicalPathSource::new(22))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(map
+            .value(true, CanonicalPathSource::new(22))
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
@@ -3734,12 +3790,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(
-            admission
-                .value(true, CanonicalPathSource::new(5))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(admission
+            .value(true, CanonicalPathSource::new(5))
+            .unwrap()
+            .is_ok());
 
         let mut wrong_mode = CanonicalPathTopologyAdmission::new();
         wrong_mode
@@ -3783,11 +3837,9 @@ mod tests {
         // A rejected branch is dead rather than structurally fatal: topology
         // below it may still be traversed when it has no value endpoint.
         rejected.edge(LocatedPathByte::new(GBOOL_TRUE, 23)).unwrap();
-        assert!(
-            rejected
-                .value(false, CanonicalPathSource::new(24))
-                .is_none()
-        );
+        assert!(rejected
+            .value(false, CanonicalPathSource::new(24))
+            .is_none());
 
         // Exercise the other non-Map discriminator independently.
         let _ = NestedEpmMode::Set;

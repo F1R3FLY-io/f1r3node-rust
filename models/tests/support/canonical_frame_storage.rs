@@ -30,6 +30,21 @@ fn compact_checkpoint_addresses_preserve_slot_tag_and_native_width() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
+    fn absolute_payload_native_residual_matches_widened_arithmetic(
+        start in any::<usize>(), declared in any::<u64>(), stamp in any::<usize>(),
+    ) {
+        let expected = if stamp < start {
+            None
+        } else {
+            (start as u128 + declared as u128).checked_sub(stamp as u128)
+                .and_then(|value| u64::try_from(value).ok())
+        };
+        prop_assert_eq!(ObligationStatus::Payload.remaining(declared, start, stamp), expected);
+        let pending = ObligationStatus::AwaitingResolution { payload_end: source(17) };
+        prop_assert_eq!(pending.remaining(declared, start, stamp), Some(0));
+    }
+
+    #[test]
     fn compact_checkpoint_publication_preserves_both_historical_arenas(
         cases in proptest::collection::vec((any::<u16>(), any::<bool>(), any::<bool>()), 0..97),
     ) {
@@ -51,6 +66,8 @@ proptest! {
                 fault: fault.then_some(CanonicalPathAdmissionError::new(CanonicalPathAdmissionErrorKind::ReservedTag(seed as u8), CanonicalPathSource::in_source(u32::MAX, usize::MAX))),
             };
             let before = storage.clone();
+            let frozen = state.fault.is_some() || matches!(state.current.status, PathStatus::Dead(_));
+            let linked = linked || frozen;
             let id = storage.push(state.clone());
             assert_eq!(id.is_linked(), linked);
             assert_eq!(storage.len(), before.len() + 1);
@@ -62,12 +79,11 @@ proptest! {
             for (id, expected) in &retained {
                 for stamp in [0, 7, usize::MAX] {
                     let actual = storage.get(*id, stamp);
-                    if id.is_linked() { assert_eq!(&actual, expected); }
-                    else {
-                        let mut root = expected.current.clone();
-                        if let Some(error) = expected.fault { root.kill(error); }
-                        assert_eq!(actual, PersistentFocusedPath { current: root, owners: None, stamp, fault: None });
+                    let mut selected = expected.clone();
+                    if selected.fault.is_none() && !matches!(selected.current.status, PathStatus::Dead(_)) {
+                        selected.stamp = stamp;
                     }
+                    assert_eq!(actual, selected);
                 }
             }
         }
@@ -80,7 +96,7 @@ proptest! {
 }
 
 #[test]
-fn compact_checkpoint_dead_direct_private_operations_preserve_exact_graph() {
+fn compact_checkpoint_dead_private_operations_preserve_exact_graph_and_stamp() {
     let mut actual = CanonicalPathReducer::new();
     let mut expected = EagerCanonicalPathReducer::new();
     let mut arena = CanonicalBytesArena::new();
@@ -113,8 +129,8 @@ fn compact_checkpoint_dead_direct_private_operations_preserve_exact_graph() {
             right,
         );
     }
-    assert!(!right.state.is_linked());
-    let linked = actual.states.linked.len();
+    assert!(right.state.is_linked());
+    let saved_stamp = actual.state(right).stamp;
     for operation in 0..6 {
         let byte =
             CanonicalLocatedByte::new(0x99, CanonicalByteProvenance::new(41, 997 + operation));
@@ -139,8 +155,8 @@ fn compact_checkpoint_dead_direct_private_operations_preserve_exact_graph() {
         right = a.unwrap();
         left = b.unwrap();
         assert!(actual.dead_error(&actual.state(right)).is_some());
-        assert!(!right.state.is_linked());
-        assert_eq!(actual.states.linked.len(), linked);
+        assert!(right.state.is_linked());
+        assert_eq!(actual.state(right).stamp, saved_stamp);
         assert_focused_persistent_matches(
             &expected,
             &reference_arena,
@@ -166,6 +182,7 @@ impl std::ops::Index<usize> for EagerFrameHistory {
 
 impl FrameStore for EagerFrameHistory {
     type Span = CanonicalBytesHandle;
+    const EAGER_PAYLOADS: bool = true;
 
     fn new() -> Self { Self(FrameHistory::new()) }
     fn push(&mut self, frame: Frame) -> FrameId { self.0.push(frame) }
@@ -214,7 +231,7 @@ impl EagerCanonicalPathReducer {
         handle: CanonicalPathReducerHandle,
     ) -> Option<CanonicalPathObligationProgress> {
         self.machine
-            .active_obligation_in(&self.states[handle.state.0])
+            .active_obligation_in(&self.states[handle.state.0], handle.bytes.len())
     }
 
     pub(crate) fn completed_obligation(
@@ -481,6 +498,7 @@ impl CanonicalPathStreamReducer {
         located: CanonicalLocatedByte,
     ) -> Result<CanonicalPathTransition, CanonicalPathAdmissionError> {
         assert!(self.owners.is_empty());
+        initialize_reference_payload(&self.current, &mut self.machine.frames.slots, self.consumed);
         let byte = self.machine.prepare_edge(&self.current, located)?;
         let consumed = self
             .consumed
@@ -497,6 +515,7 @@ impl CanonicalPathStreamReducer {
                 .advance(&IndexedPathBytes { input, consumed }, &self.current, byte);
         self.current = current;
         self.consumed = consumed;
+        initialize_reference_payload(&self.current, &mut self.machine.frames.slots, consumed);
         Ok(event)
     }
 
@@ -554,6 +573,7 @@ impl CanonicalPathStreamReducer {
             *path = current;
             current = saved.owner.clone();
         }
+        realize_selected_payload(&current, &mut frames, self.graph_stamp);
         (current, frames)
     }
 
@@ -1377,7 +1397,7 @@ fn persistent_fault_private_preflight_uses_selected_graph_not_latest_event() {
                 } => hidden = path,
                 Frame::Obligation {
                     obligation,
-                    status: ObligationStatus::Payload { remaining },
+                    status: ObligationStatus::Countdown { remaining },
                     ..
                 } if payload_started => {
                     assert_eq!(*remaining, 2);
@@ -1748,6 +1768,63 @@ fn persistent_owner_capture_forcing_and_drop_use_a_small_native_stack() {
         .unwrap();
 }
 
+fn initialize_reference_payload<Span>(root: &InnerPath, frames: &mut [Frame<Span>], stamp: usize) {
+    let mut top = root.stack;
+    while let Some(id) = top {
+        match &mut frames[id.0] {
+            Frame::Obligation {
+                obligation,
+                status,
+                payload_start,
+                ..
+            } => {
+                if *status == ObligationStatus::Payload {
+                    assert_eq!(
+                        stamp, *payload_start,
+                        "reference markers may only initialize at payload birth"
+                    );
+                    *status = ObligationStatus::Countdown {
+                        remaining: obligation.payload_len,
+                    };
+                }
+                break;
+            }
+            Frame::Region {
+                phase: RegionPhase::Path { path, .. },
+                ..
+            } => top = path.stack,
+            _ => break,
+        }
+    }
+}
+
+fn realize_selected_payload<Span>(root: &InnerPath, frames: &mut [Frame<Span>], stamp: usize) {
+    let mut top = root.stack;
+    while let Some(id) = top {
+        match &mut frames[id.0] {
+            Frame::Obligation {
+                obligation,
+                status,
+                payload_start,
+                ..
+            } => {
+                if *status == ObligationStatus::Payload {
+                    assert!(stamp >= *payload_start);
+                    let end = *payload_start as u128 + u128::from(obligation.payload_len);
+                    let remaining = u64::try_from(end.checked_sub(stamp as u128).unwrap()).unwrap();
+                    *status = ObligationStatus::Countdown { remaining };
+                }
+                break;
+            }
+            Frame::Region {
+                phase: RegionPhase::Path { path, .. },
+                ..
+            } => top = path.stack,
+            _ => break,
+        }
+    }
+}
+
 fn assert_focused_persistent_matches(
     reference: &EagerCanonicalPathReducer,
     reference_arena: &CanonicalBytesArena,
@@ -1795,6 +1872,7 @@ fn assert_focused_persistent_matches(
     if let Some(error) = state.fault {
         root.kill(error);
     }
+    realize_selected_payload(&root, &mut frames.slots, state.stamp);
     assert_eq!(
         super::opaque_interior_tests::normalize_graph(root, &frames.slots),
         super::opaque_interior_tests::normalize_graph(
@@ -1846,7 +1924,7 @@ fn ownerless_rejected_payload_retains_hidden_countdown_after_dead_bytes() {
         assert_eq!(focused.active_obligation(actual), None);
         assert_eq!(focused.active_obligation(original).unwrap().remaining, 4);
         let Frame::Obligation {
-            status: ObligationStatus::Payload { remaining },
+            status: ObligationStatus::Countdown { remaining },
             ..
         } = &reference.machine.frames[retained.stack.unwrap().0]
         else {
@@ -1864,7 +1942,7 @@ fn ownerless_rejected_payload_retains_hidden_countdown_after_dead_bytes() {
     }
     let mut mutated = reference.machine.frames.slots.clone();
     let Frame::Obligation {
-        status: ObligationStatus::Payload { remaining },
+        status: ObligationStatus::Countdown { remaining },
         ..
     } = &mut mutated[retained.stack.unwrap().0]
     else {
@@ -1902,6 +1980,8 @@ fn scalar_payload_lengths_preserve_exact_boundary_sources_and_fresh_ids() {
             assert_eq!(a, b);
         }
         let active = reference.active_obligation(expected).unwrap();
+        let initial_frames = focused.machine.frames.slots.len();
+        let initial_leaf = focused.state(actual).current.stack;
         assert_eq!(active.remaining, u64::from(length));
         assert_eq!(active.awaiting_resolution, length == 0);
         assert_eq!(
@@ -1929,6 +2009,13 @@ fn scalar_payload_lengths_preserve_exact_boundary_sources_and_fresh_ids() {
                 ),
                 last: index + 1 == length,
             });
+            assert_eq!(
+                focused.machine.frames.slots.len(),
+                initial_frames + usize::from(index + 1 == length)
+            );
+            if index + 1 != length {
+                assert_eq!(focused.state(actual).current.stack, initial_leaf);
+            }
             assert_eq!(
                 focused.active_obligation(actual).unwrap().remaining,
                 u64::from(length - index - 1)
@@ -1991,6 +2078,7 @@ fn full_width_payload_lengths_keep_exact_residuals_and_historical_forks() {
         }
         let original = (expected, actual);
         let id = focused.active_obligation(actual).unwrap().obligation.id;
+        let initial_frames = focused.machine.frames.slots.len();
         for branch in 0..3 {
             (expected, actual) = original;
             for index in 0..17 {
@@ -2007,6 +2095,7 @@ fn full_width_payload_lengths_keep_exact_residuals_and_historical_forks() {
                 assert_eq!(progress.obligation.id, id);
                 assert_eq!(progress.remaining, length - index as u64 - 1);
                 assert!(!progress.awaiting_resolution);
+                assert_eq!(focused.machine.frames.slots.len(), initial_frames);
                 assert_focused_persistent_matches(
                     &reference,
                     &reference_arena,
