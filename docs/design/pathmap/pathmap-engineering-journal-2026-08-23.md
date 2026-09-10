@@ -9290,6 +9290,51 @@ independent. This is a prerequisite in tasks 5976/6018 and experiment 342,
 not closure of native source integration, the import-time slope or the
 production ACT/LMDB comparison. No production or consensus behavior changes.
 
+### J-130 — 2026-09-10: native source test reuse and ownership boundary audit
+
+**DERIVED / DECISION; NOT NATIVE QUALIFICATION.** Before activating the
+balanced source representation, the existing transport and ownership controls
+were inspected at `1e3651ce1`. The purpose is to reuse independent byte/anchor
+oracles while avoiding a false native teardown qualification.
+
+`indexed_span_transport.rs` already covers generated anchored/nested windows,
+physical provenance, byte/end distinctions, rejected ranges and children that
+survive their parent. `normalized_source_spans.rs` adds exact coalescing,
+backing identity, empty anchors and full-width offsets. The composed backing
+must join these existing matrices; the current borrowed/frozen arms remain
+controls. Their 64-bit layout assertions distinguish the **64-byte mirrored
+production header** from the **72-byte test region**, which includes test-only
+variants. These are inspected test requirements, not fresh measurements of
+the proposed representation.
+
+The 20,000-layer
+`persistent_owner_capture_forcing_and_drop_use_a_small_native_stack` test in
+`canonical_frame_storage.rs` covers arena-owned region-frame history. It does
+not exercise the proposed reference-counted source-node graph. Native shared
+diamonds, repeated children, concurrent final releases, surviving readers and
+empty-shell callbacks therefore require separate controls on the actual new
+nodes. No previous result is promoted to that wider boundary.
+
+The pinned `nightly-2026-02-09` standard-library source confirms that
+`Arc::into_inner` suppresses ordinary Arc destruction before atomic decrement;
+the final operation returns a moved payload. Ordinary final Arc destruction
+instead invokes the payload destructor in place. The node-owned cleanup
+protocol must protect both entrances and detach an extracted payload before
+dropping its empty shell. `try_unwrap(...).ok()` cannot substitute for the
+required operation. This source inspection does not formally verify the
+standard library or qualify native concurrent cleanup.
+
+| Inspected source | SHA-256 |
+|---|---|
+| Pinned Rust `library/alloc/src/sync.rs` | `428c037ce6557d87cfb388ca596fcf24fdfb3341e2cfb6be8199a30c16739fb8` |
+| `models/tests/support/indexed_span_transport.rs` | `1dbb1f7229f46869209a4255a0a1e1bf187eb48a014cbb356e16a7562a289be1` |
+| `models/tests/support/normalized_source_spans.rs` | `101ee245d87dfddf6e8543acb950ab093a78e0f5217ef05118bc064c70994ab0` |
+| `models/tests/support/canonical_frame_storage.rs` | `b8a51e536d300d17588736aad31cdb80ca297700259afa551f7a48c807aeac52` |
+
+The formal README now names these reuse and exclusion boundaries next to the
+source invariant catalogue. Tasks 5976/6018 remain in progress. No new test,
+benchmark, runtime change, consensus format or metering change is claimed.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

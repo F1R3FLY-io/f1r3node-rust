@@ -10837,6 +10837,21 @@ initialization cost, lifetime/concurrency behavior and backing disposal still
 require implementation and measurement. The capacity derives from valid
 representation bounds, not a new semantic traversal limit.
 
+#### 5.33.47 Native source test reuse boundary (2026-09-10)
+
+The existing 20,000-layer region-owner small-stack test exercises arena-owned
+history, not the proposed reference-counted source-node graph. Its passing
+result must not qualify the latter's Drop or concurrent ownership behavior.
+The new graph requires native shared-child, simultaneous-final-release,
+surviving-reader and empty-shell controls. Existing indexed-window and
+normalized-source tests will supply the unchanged byte/provenance/anchor
+oracles and retain their current backends as differential controls.
+
+[J-130](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-130--2026-09-10-native-source-test-reuse-and-ownership-boundary-audit)
+records the source hashes, pinned Arc implementation inspection, and separate
+64-byte mirrored production versus 72-byte test-layout requirements. This is
+an evidence-boundary audit, not a new native measurement or completion claim.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

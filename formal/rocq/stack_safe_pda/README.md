@@ -2995,6 +2995,37 @@ avoids reserving the array's stack frame. Benchmark initialization and
 destruction overhead against the heap-backed candidate before adoption.
 No buffer implementation or measured improvement is claimed here.
 
+### Reuse boundaries for the native source controls
+
+The existing test fixtures are not interchangeable ownership proofs. The
+implementation must extend their present oracles, retaining their original
+backends as differential controls:
+
+| Existing source | Coverage to reuse | Additional composed-source obligation |
+|---|---|---|
+| `models/tests/support/indexed_span_transport.rs` | Generated anchored windows, nested subviews, physical provenance, byte versus end positions, rejected ranges, and children surviving parent teardown. | Run the same observations against composed roots and retained cursors after parent/sibling release; preserve backing identity without projecting the tree into copied leaves. |
+| `models/tests/support/normalized_source_spans.rs` | Exact adjacency and backing-identity coalescing, empty-window anchors, full-width offsets, and byte/reader equivalence. | Add composed backing without weakening the flat borrowed/frozen controls or confusing equal contents with shared identity. |
+| `models/tests/support/canonical_frame_storage.rs` | The 20,000-layer `persistent_owner_capture_forcing_and_drop_use_a_small_native_stack` control exercises arena-owned region frames. | This does not test the proposed reference-counted source-node DAG. Add its actual shared-child, simultaneous-release, surviving-reader and empty-shell controls separately. |
+
+On the pinned 64-bit target, the existing layout controls require a 64-byte
+mirrored production region header and a 72-byte actual test region (the latter
+also includes test-only backing variants). They are not permission to grow
+every production descriptor to the test-only maximum. Measure the new native
+layout and preserve these distinctions when adding a composed variant.
+
+The installed `nightly-2026-02-09` implementation in
+`library/alloc/src/sync.rs` was inspected for the native ownership binding.
+`Arc::into_inner` suppresses ordinary `Arc` destruction with `ManuallyDrop`,
+atomically decrements the strong count, and returns the moved payload only
+for the final decrement. Ordinary final `Arc::drop` instead invokes
+`drop_in_place` through `drop_slow`. Consequently an extracted source node
+must have its payload removed before its empty shell is destroyed; a final
+external root drop must enter the populated node's protected destructor.
+`try_unwrap(...).ok()` is not a substitute: failed extraction returns an
+ordinary `Arc` whose later drop can become final. This is inspection of the
+pinned standard-library contract, not formal verification of its internals
+or execution of the still-required native concurrent controls.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported
