@@ -643,6 +643,29 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         self.dependencies.remove_from_buffer(block).await
     }
 
+    /// Drop a consumed copy per the verdict: purge for verdicts about the
+    /// block, ack-only for `AlreadyProcessed` — the buffer entry belongs to
+    /// the recovery in flight and must survive the duplicate.
+    pub async fn dispose_not_of_interest(
+        &self,
+        verdict: OfInterestVerdict,
+        block: &BlockMessage,
+    ) -> Result<(), CasperError> {
+        if verdict.purges_buffer() {
+            tracing::info!(
+                "Block {} is not of interest. Dropped.",
+                PrettyPrinter::build_string_bytes(&block.block_hash)
+            );
+            self.purge_from_buffer_and_ack(block).await
+        } else {
+            tracing::info!(
+                "Block {} is already processed or in recovery. Duplicate copy dropped.",
+                PrettyPrinter::build_string_bytes(&block.block_hash)
+            );
+            self.ack_processed(block).await
+        }
+    }
+
     /// Best-effort purge for stale/uninteresting blocks to prevent infinite buffer requeue loops.
     pub async fn purge_from_buffer_and_ack(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.dependencies.remove_from_buffer(block).await?;

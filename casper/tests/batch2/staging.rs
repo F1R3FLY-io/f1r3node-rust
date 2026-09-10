@@ -47,7 +47,7 @@ pub async fn mint_on_parents(
         rejected_buffer,
         &runtime_manager,
         &mut node.block_store,
-        true,
+        casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
     )
     .await
     .unwrap_or_else(|e| panic!("create[{label}] must succeed: {:?}", e));

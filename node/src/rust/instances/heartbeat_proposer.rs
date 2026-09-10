@@ -2188,6 +2188,63 @@ mod tests {
             );
         }
 
+        /// With the exemption interval below the tick, a validator that
+        /// minted one tick ago counts as idle-for-a-full-interval at every
+        /// tick — the width cap never binds and a stalled shard mints one
+        /// recovery block per validator per tick. Above the tick the same
+        /// validator is paced.
+        #[tokio::test]
+        async fn a_tick_old_mint_is_cap_exempt_below_the_tick_and_paced_above_it() {
+            let one_tick_ago_ms: i64 = 5_200;
+
+            async fn proposals_at(interval: Duration, one_tick_ago_ms: i64) -> usize {
+                let validator = create_test_validator_identity();
+                let validator_id = validator.public_key.bytes.clone();
+                let (snapshot, lfb) = wide_unfinalized_snapshot(validator_id);
+                let casper_impl =
+                    casper::rust::casper::test_helpers::TestCasperWithSnapshot::new(snapshot, lfb);
+                let mut self_tip = models::rust::block_implicits::get_random_block_default();
+                self_tip.block_hash = test_hash(0x18);
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64;
+                self_tip.header.timestamp = now_ms - one_tick_ago_ms;
+                casper_impl.insert_block(&self_tip);
+                let casper: Arc<dyn MultiParentCasper + Send + Sync> = Arc::new(casper_impl);
+                let (propose_count, propose_func) = create_counting_propose_function();
+                let mut config = empty_frontier_backpressure_config();
+                config.check_interval = Duration::from_secs(5);
+                config.stale_recovery_min_interval = interval;
+                let mut finality_progress = FinalityProgress::new(Instant::now());
+
+                do_heartbeat_check(
+                    casper,
+                    &*propose_func,
+                    &validator,
+                    &config,
+                    false,
+                    false,
+                    &mut finality_progress,
+                )
+                .await
+                .expect("do_heartbeat_check");
+                propose_count.load(Ordering::SeqCst)
+            }
+
+            assert_eq!(
+                proposals_at(Duration::from_secs(3), one_tick_ago_ms).await,
+                1,
+                "interval below the tick: the exemption opens every tick and \
+                 the cap never binds (the box's one-mint-per-tick)"
+            );
+            assert_eq!(
+                proposals_at(Duration::from_secs(15), one_tick_ago_ms).await,
+                0,
+                "interval above the tick: a tick-old mint is paced and the cap binds"
+            );
+        }
+
         #[tokio::test]
         async fn do_heartbeat_check_allows_pending_deploys_under_empty_frontier_pressure() {
             let validator = create_test_validator_identity();

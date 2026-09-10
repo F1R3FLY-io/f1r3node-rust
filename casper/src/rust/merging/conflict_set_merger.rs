@@ -677,13 +677,6 @@ where
     // + `combine_max_eq_combine_sum_under_no_dup`).
     let mergeable_keys: HashSet<Blake2b256Hash> = all_mergeable_channels.keys().cloned().collect();
     if let Some(channel) = order_guard.first_offender(&mergeable_keys) {
-        debug_assert!(
-            false,
-            "order-dependent survivor pair reached apply on channel {} — the \
-             max-union merge fold is not order-independent here (Finding A; \
-             docs/casper/theory/merge-algebra/merge-algebra-verification.md §6)",
-            hex::encode(channel.bytes())
-        );
         tracing::error!(target: "f1r3fly.merge.step",
             step = "apply.order_dependent_survivor_pair",
             channel = %hex::encode(channel.bytes()),

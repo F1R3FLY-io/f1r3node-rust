@@ -351,7 +351,11 @@ impl Default for HeartbeatConf {
 // the same behavior every tested deployment runs, not an untested stranger.
 fn default_self_propose_cooldown() -> Duration { Duration::from_secs(3) }
 
-fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(3) }
+// Must exceed the heartbeat check-interval: the empty-frontier cap's
+// per-validator exemption keys on this interval, and at or below the tick
+// every validator is "idle for a full interval" at every tick, so the cap
+// never binds.
+fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(15) }
 
 fn default_finality_progress_timeout() -> Duration { Duration::from_secs(30) }
 

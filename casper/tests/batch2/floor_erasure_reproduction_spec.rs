@@ -247,7 +247,7 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
-            true,
+            casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
         )
         .await
         .expect("create sibling contender branch");

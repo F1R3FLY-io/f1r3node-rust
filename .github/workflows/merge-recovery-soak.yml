@@ -248,7 +248,13 @@ env:
   #   the owed re-pin from 2026-09-07. Also carries #139 finalization-
   #   evidence fail-closed test fixes). Verified: descends from 5909b17
   #   (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: 962effd17708192627bd249362761c0ccb1fd5fa
+  # 2026-09-10: 962effd -> cffb055 (SI PR #142 branch, cut from main):
+  #   stale-recovery-min-interval 3s -> 6s in conf/rust.conf and
+  #   test_load.py — this branch makes the at-or-below-tick geometry a
+  #   hard config error, so the old conf refuses to boot (run
+  #   34494283638, every leg). Re-pin to the merged main SHA once #142
+  #   lands.
+  SYSTEM_INTEGRATION_REF: cffb055b43d50ac369844230e013974c5f7497b7
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
