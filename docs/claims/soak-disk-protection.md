@@ -49,7 +49,7 @@ The claim is not discharged. Gates from the prevention plan:
 | D1 | Band admission | Local RED/GREEN complete. Maintainer review pending. |
 | D2 | Emergency response bounds | Partial. Stop commands are bounded (B13) and guardian death blocks admission (B14). Cleanup command bounds, confirmed termination, durable publication, and a composed deadline remain open. |
 | O1 | Observability before the diagnostic soak | Pending. |
-| D3 | Identify and remove the disk-growth cause | Pending. |
+| D3 | Identify and remove the disk-growth cause | Evidence collection in place: the driver appends one attribution row per five minutes and per iteration to `disk-usage-timeline.tsv` in the run artifact. The cause is not yet identified. |
 | F1, F2, F3 | Finalization work bound and repair | Pending and separate from this claim. |
 | A1 | 60-hour acceptance soak on the exact candidate | Pending. |
 

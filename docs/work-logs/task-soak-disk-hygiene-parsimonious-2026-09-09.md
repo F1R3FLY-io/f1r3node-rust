@@ -106,6 +106,14 @@ After phase two the README paragraph about legacy modules in `formal/tlaplus/soa
   - This merge was redone on top of the remote branch tip, which had taken dev (#413, #418) from another machine.
   - Counts updated to 23 soak controls and 42 scenarios.
 
+## D3 evidence: the disk-usage timeline (2026-09-10)
+
+The breach snapshot names the consumer only at the end. The driver now records the growth curve as well. Every five minutes, and at each iteration start, it appends one row to `disk-usage-timeline.tsv` in the output directory. A row holds the epoch, a label, the free MiB, and the same per-root summary the breach tag carries. The guardian writes its rows in the background, so a slow `du` never delays the probe or the progress record. `SOAK_DISK_USAGE_INTERVAL_SECONDS` sets the interval, and 0 disables the timeline.
+
+The output directory is already uploaded as the run artifact, so the file survives the VM. The host suite checks the header, the first iteration row, and the segment-start row with the fake `df` sample.
+
+Next step: dispatch the soak workflow from this branch, with this branch as the target, and read which root or Docker object climbs. Run the workflow file from this branch, not from master, so the integration suite follows this branch's pin.
+
 ## Notes for the source agent
 
 - New cycles fit the existing shape: add a constant and an invariant to one of the two modules, one `MC_*_pre_fix.cfg`, one line in `NEGATIVE_CONTROLS`, and one scenario in `SCENARIOS` plus its `--inside` branch. Nothing else needs a copy of the list.

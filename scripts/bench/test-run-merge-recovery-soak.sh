@@ -154,6 +154,8 @@ DRIVER_PID=""
 [ "$status" -eq 1 ]
 
 test "$(find "$TMP/output" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 1
+test "$(head -1 "$TMP/output/disk-usage-timeline.tsv")" = "$(printf 'epoch\tlabel\tfree_mb\tusage')"
+grep -q "$(printf '\titeration-00001\t')" "$TMP/output/disk-usage-timeline.tsv"
 grep -q '^host_protection_breach:' "$TMP/output/early-exit.txt"
 grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output/summary.txt"
 jq -e '
@@ -306,6 +308,7 @@ grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output3/summary.txt"
 grep -q "$TMP/output3" "$TMP/output3/disk-floor-breach.txt"
 grep -q "$TMP/runner3/_diag" "$TMP/output3/disk-floor-breach.txt"
 grep -q "$TMP/tmp3/test-live" "$TMP/output3/disk-floor-breach.txt"
+grep -q "$(printf '\tsegment-start\t7000\t')out=" "$TMP/output3/disk-usage-timeline.tsv"
 test "$(find "$TMP/output3" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 0
 test ! -e "$TMP/fake-poetry-3.pid"
 

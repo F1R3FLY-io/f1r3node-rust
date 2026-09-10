@@ -223,6 +223,14 @@ if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
 	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
 	exit 2
 fi
+# D3 evidence: how often the guardian appends one attribution row to
+# disk-usage-timeline.tsv while the soak runs; 0 disables the timeline.
+DISK_USAGE_INTERVAL_SECONDS="${SOAK_DISK_USAGE_INTERVAL_SECONDS:-300}"
+if ! [[ "$DISK_USAGE_INTERVAL_SECONDS" =~ ^(0|[1-9][0-9]{0,3})$ ]]; then
+	printf 'SOAK_DISK_USAGE_INTERVAL_SECONDS must be an integer from 0 through 9999\n' >&2
+	exit 2
+fi
+DISK_USAGE_TIMELINE="$OUTPUT_DIR/disk-usage-timeline.tsv"
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
 # session dirs and the runner's _diag all live on the one boot volume, so one
@@ -381,11 +389,21 @@ disk_usage_tag_summary() {
 	printf '%s\n' "$summary"
 }
 
+# The same attribution as the breach tag, one row at a time, so the growth
+# curve rides in the run artifact instead of only the last snapshot. Columns:
+# epoch, label (segment-start, iteration-NNNNN, sample), free MiB, summary.
+disk_usage_timeline_row() {
+	local free
+	free="$(disk_free_mb 2>/dev/null)" || free='?'
+	printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "${free:-?}" "$(disk_usage_tag_summary)" \
+		>>"$DISK_USAGE_TIMELINE"
+}
+
 disk_diagnostics_bounded() {
 	local definitions
 	definitions="$(
-		declare -p OUTPUT_DIR HARNESS_TELEMETRY_DIRS SOAK_TMP_ROOT SOAK_RUNNER_ROOT
-		declare -f bounded disk_usage_roots disk_usage_snapshot_data disk_usage_tag_summary disk_guardian_diagnostics
+		declare -p OUTPUT_DIR HARNESS_TELEMETRY_DIRS SOAK_TMP_ROOT SOAK_RUNNER_ROOT DISK_USAGE_TIMELINE
+		declare -f bounded disk_free_mb disk_usage_roots disk_usage_snapshot_data disk_usage_tag_summary disk_usage_timeline_row disk_guardian_diagnostics
 		declare -f guardian_stamp_health_tag || true
 	)"
 	timeout --signal=TERM --kill-after=1 "$DISK_DIAGNOSTIC_SECONDS" \
@@ -394,6 +412,12 @@ disk_diagnostics_bounded() {
 
 disk_usage_snapshot() {
 	disk_diagnostics_bounded disk_usage_snapshot_data
+}
+
+disk_usage_timeline() {
+	[ "$DISK_USAGE_INTERVAL_SECONDS" -gt 0 ] || return 0
+	[ -s "$DISK_USAGE_TIMELINE" ] || printf 'epoch\tlabel\tfree_mb\tusage\n' >"$DISK_USAGE_TIMELINE"
+	disk_diagnostics_bounded disk_usage_timeline_row "$1" || true
 }
 
 disk_guardian_diagnostics() {
@@ -1011,6 +1035,7 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	persist_soak_state
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
+disk_usage_timeline segment-start
 HOST_GUARDIAN_PID=""
 HOST_GUARDIAN_PROGRESS="$OUTPUT_DIR/.host-guardian-progress"
 BENCHMARK_PID=""
@@ -1118,8 +1143,20 @@ print(json.dumps(tags))
 		[ "$disk_hard_floor_mb" -ge 1 ] || disk_hard_floor_mb=1
 		last_stamp=0
 		sample_n=0
+		timeline_last="$(date +%s)"
+		timeline_pid=""
 		while :; do
 			sleep 5
+			# The timeline row runs in the background and never overlaps
+			# itself, so a slow du cannot delay the probe or the progress
+			# record that the B22 admission check reads.
+			if [ "$DISK_USAGE_INTERVAL_SECONDS" -gt 0 ] &&
+				[ $(($(date +%s) - timeline_last)) -ge "$DISK_USAGE_INTERVAL_SECONDS" ] &&
+				{ [ -z "$timeline_pid" ] || ! kill -0 "$timeline_pid" 2>/dev/null; }; then
+				disk_usage_timeline sample &
+				timeline_pid=$!
+				timeline_last="$(date +%s)"
+			fi
 			if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 				disk_mb="$(disk_free_mb)"
 				if [ -z "$disk_mb" ]; then
@@ -1328,6 +1365,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	persist_soak_state
 	ITERATION_DIR="$OUTPUT_DIR/iteration-$(printf '%05d' "$ITERATIONS")-$PROVIDER"
 	mkdir -p "$ITERATION_DIR"
+	disk_usage_timeline "iteration-$(printf '%05d' "$ITERATIONS")"
 	REMAINING="$((DEADLINE - $(date +%s)))"
 	if [ "$REMAINING" -le 0 ]; then
 		break
