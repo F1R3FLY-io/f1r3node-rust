@@ -824,11 +824,13 @@ fn every_fs_handler_charges_its_cost_helper() {
     let handlers_lifecycle_src = include_str!("../src/rust/interpreter/io/handlers_lifecycle.rs");
     let handlers_observation_src =
         include_str!("../src/rust/interpreter/io/handlers_observation.rs");
-    // Future family files (S3.13b continuation): concat with `\n---\n`
-    // separator between; trait_impl_block anchor-search still works
-    // per-file because each block is bounded by its own `}\n}\n`.
+    let handlers_mutation_src = include_str!("../src/rust/interpreter/io/handlers_mutation.rs");
+    // Every migrated handler now lives in a per-family file; concat
+    // with `\n---\n` separator between so trait_impl_block anchor-
+    // search still works per-file (each block is bounded by its own
+    // `}\n}\n`).
     let all_src: String = format!(
-        "{handlers_src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}"
+        "{handlers_src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}\n// ---\n{handlers_mutation_src}"
     );
 
     let mut missing = Vec::new();
@@ -966,8 +968,9 @@ fn handlers_top_comment_phase5_verifying_count_matches_actual() {
     let handlers_lifecycle_src = include_str!("../src/rust/interpreter/io/handlers_lifecycle.rs");
     let handlers_observation_src =
         include_str!("../src/rust/interpreter/io/handlers_observation.rs");
+    let handlers_mutation_src = include_str!("../src/rust/interpreter/io/handlers_mutation.rs");
     let all_src: String = format!(
-        "{src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}"
+        "{src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}\n// ---\n{handlers_observation_src}\n// ---\n{handlers_mutation_src}"
     );
 
     // Pass 1: pre-wave-3 style — scan `pub async fn fs_X` bodies
