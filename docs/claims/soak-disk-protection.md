@@ -35,8 +35,8 @@ With disk protection enabled, the soak driver never starts an iteration from a f
 
 | Check | Command | Status |
 | --- | --- | --- |
-| Bounded models and twenty-one controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
-| Container regressions, 35 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally and in CI |
+| Bounded models and twenty-two controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
+| Container regressions, 42 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally and in CI |
 | Host driver regression, band scenario | `scripts/bench/test-run-merge-recovery-soak.sh` | Green locally and in CI |
 
 ## Pending obligations

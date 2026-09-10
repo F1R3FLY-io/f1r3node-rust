@@ -457,3 +457,29 @@ The [evidence package](../cbc-evidence/soak-d2-settings-2026-09-10/README.md) se
 External commits `4e9dd432b` and `556b944f3` contain the correction and final verification inputs. Those inputs match the pre-verification snapshot. Their hooks remain unattested by this session.
 
 B24 does not complete D2. Other input faults, cleanup ownership, complete shutdown, durable publication, reserve bounds, hosted checks, and maintainer review remain pending.
+
+## D2 temporary session preservation B25
+
+B25 starts from `8eba1e4a7`. That evidence commit formatted the B24 fixture and left its current inventory binding stale.
+
+The stale binding is not behavioral RED. The B25 combined suite verifies the current fixture, including all five B24 cases.
+
+The new ownership fixture creates an old unowned directory with an active writer. Production RED deletes the directory while the writer retains its open file.
+
+The exact formal control exits 12 on `UnownedSessionPreserved`. The correction removes age-only deletion and preserves the temporary session.
+
+Production GREEN retains the session data and records disk refusal without admitting work. The corrected model has four distinct states.
+
+The first supporting driver regression still required deletion of an old unowned directory. A retained diagnostic trace identifies that obsolete assertion.
+
+The updated assertion requires preservation. The complete supporting suite passes without a further production correction.
+
+Twenty-two positive configurations, twenty-three exact controls, 161 classifier cases, six routing scenarios, and thirty-one emergency scenarios pass.
+
+The [evidence package](../cbc-evidence/soak-d2-cleanup-session-2026-09-10/README.md) retains both behavioral counterexamples and the regression correction.
+
+External commit `d64ae3bbf` contains the tested executable inputs. Their hashes match the verification snapshot. Its hooks remain unattested by this session.
+
+Preserving unowned data can cause earlier disk refusal. Safe reclamation requires ownership and termination evidence, not a longer age threshold.
+
+Other D2 faults, Docker ownership, complete shutdown, durability, deadline bounds, reserve bounds, hosted checks, and maintainer review remain pending.

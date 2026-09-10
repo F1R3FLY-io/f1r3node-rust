@@ -299,6 +299,14 @@ Disk hygiene, other stop paths, cleanup ownership, full admission coverage, dura
 
 Hosted confirmation and maintainer review remain pending. D2 is not complete.
 
+B17 through B24 add local benchmark supervision, guardian progress, hygiene deadline, and disk setting evidence in the [cycle checklist](../tdd-plans/soak-gates-2026-09-08.md).
+
+The [B25 ownership cycle](../cbc-evidence/soak-d2-cleanup-session-2026-09-10/README.md) reproduces deletion of an unowned directory while its writer remains active.
+
+The driver no longer deletes temporary sessions by age. It preserves the data and refuses admission when disk space remains insufficient.
+
+Safe session reclamation, Docker ownership, other fault cases, complete shutdown, durability, and the deadline and reserve arguments remain open.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

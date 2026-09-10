@@ -4,7 +4,7 @@
   "schema_version": 1,
   "scope": "soak-recurrence-prevention",
   "candidate": {
-    "base_commit": "556b944f30e9be123718c9b279f814d5b5dde526",
+    "base_commit": "d64ae3bbf757de6089300191c23cc1796245c60c",
     "binding": "source-sha256",
     "inputs_sha256": {
       ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
@@ -132,7 +132,7 @@
       "docs/claims/repeat-deploy-carrier-index-equivalence.md": "16f110d8ebf50d2f39a3fbb45364019684a5118b0a65db106c6d9f5b810230ba",
       "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
       "docs/claims/soak-formal-gate.md": "027d529ad36da3fbc704df91789401755b9a5d948409e04f946d7c5fc01f7dee",
-      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "4b7aced8c9935dccf4020becdebfc45005f780f053dc372c5b2ca6ea9784f998",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "0d66e2357cdda143cd67a046c34271597cca3611b14e1938c68aa5063584f797",
       "docs/soak-evidence/34180346282/README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
       "docs/soak-evidence/34180346282/archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
       "docs/soak-evidence/34180346282/inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
@@ -157,8 +157,8 @@
       "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
-      "docs/tdd-plans/soak-gates-2026-09-08.md": "718713ca25ef207e9aa8fcbb9ef0f3f7b2744edac10ba59beeda6298c805e4cf",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "51f952042f205c91b09f9515fd028718202f70ae975995732662b9bc0505dfef",
+      "docs/tdd-plans/soak-gates-2026-09-08.md": "83e91509888bf3f5030aba39df5387d83b6f3395989add6b2023ac0f58b47318",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "3e7d0e7ebf529e08f44548e8ff9be3305867508b3a25c77e4452fb104b313af9",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -265,11 +265,11 @@
       "scripts/bench/soak-disk-test.Dockerfile": "85340de51da31c1ea8ded3c4a20a8e0cf8f85a26b0cfc13ab4b29768d5048aa9",
       "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7",
       "scripts/bench/test-extend-issue24-metrics.sh": "52cc1b8ac82a395ca187de577d28276ad79798ed6132b3289d3b4b6957dbc34d",
-      "scripts/bench/test-run-merge-recovery-soak.sh": "b2479d5ae1b911225dd8ddf33440d0c613c3e8db716dd373ca54f136a584855f",
+      "scripts/bench/test-run-merge-recovery-soak.sh": "bbae2e66414a986c8cb6d32d6b686077726f86e4c42d7e2ce0597992ac779db2",
       "scripts/bench/test-soak-disk-active-probe.sh": "9e5c50a0bf37cfa1a1b00b6ad2d442e2421fbd3788d82540ab5edb3058474f2b",
-      "scripts/bench/test-soak-disk-admission.sh": "e0e6d1bc42198c122ba409c311da4969b2286973e4c8ba8173d54fcfc8561f59",
+      "scripts/bench/test-soak-disk-admission.sh": "c8e5f5bfe1f9ae6fb593b92ac59b861d097ec750e521a23395f73f0f520fce1d",
       "scripts/bench/test-soak-disk-diagnostic-deadline.sh": "b44ff741f9d62d2c75cc119e12e70f9cdea9de0d9dec099e993c32e2ade1c955",
-      "scripts/bench/test-soak-disk-emergency.sh": "9bc5e5f6fcb536babdd851878c6be8dace7d3335dfcee3c2429a6d38dc3d48bd",
+      "scripts/bench/test-soak-disk-emergency.sh": "3b9febc453b6c75b3ef94cb75daf11e215bccccf59a3e28b615e3caeae264e0c",
       "scripts/bench/test-soak-disk-probe-timeout.sh": "872d44a5940e59d7a2457ee0747bd8cca5ad73ba5bc3e20ccacadc090b00e098",
       "scripts/bench/test-soak-disk-probe.sh": "41ee399da2c2bbf7a54634a5bbf90087071ecd0e8456dc6478932ca2032dbc41",
       "scripts/bench/test-soak-disk-record.sh": "c319c55aa832897d3c6f1d94d8a64bd68ba8dfc644cc1a9a1e4ec464e046be13",
@@ -281,13 +281,13 @@
       "scripts/bench/write-soak-summary.sh": "ed6c53492ab35dd9b2cc82123766e76efec9ea6a7e18b759a034b4a038d8a489",
       "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
       "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
-      "scripts/ci/check-tla-invariants.sh": "94c77d5bbcad457bb65021f787913c11d3c6a9e1510690a198d175977e187389",
-      "scripts/ci/test-check-tla-invariants.sh": "a58ed4dbdd0dede1425be29cb74a588a48e5bde453f8473fdd119ce703d7df6a",
+      "scripts/ci/check-tla-invariants.sh": "b78cbfa1f3c117ed78b4bc6d3c40ceabb2a248f3bf428ef00fb3a31bcf6b2df3",
+      "scripts/ci/test-check-tla-invariants.sh": "18958e8eb9314f21341f8e603aa0452a99e59970a8a3a3feff0caad1fba1778e",
       "scripts/ci/test-soak-claim-inventory-jsonc.sh": "b6ba3dcd5a81ef37698bd10cb6ca4058afccfdf9d0bf0273530a865202c691db",
       "scripts/ci/test-soak-claim-inventory.sh": "8bcbdb5ec7ab008ec9057ba07f03c425bd6e9237c915340ba7957681b5d7f3d4",
-      "scripts/ci/test-soak-pr-formal-gate.sh": "e93e03f4715937c1f30e6806ef46ff37835225b979d1ec3b1245004a27cd9772",
+      "scripts/ci/test-soak-pr-formal-gate.sh": "da189b3b656b0c59c9cb1754963a85557a51523c4e0831de41233bbadd6968f9",
       "scripts/repin-system-integration.sh": "762e421890952bc4c84ac7f1c4a844356edefe4786cf86e65e12f21590018a06",
-      "scripts/run-merge-recovery-soak.sh": "bef27c0bd700e09ed356dbcbc2267a3a7af9156c7e3222fce5c190c94a5ab9fd",
+      "scripts/run-merge-recovery-soak.sh": "4ff4c4b41be54bda6add23a2c3ebf521879009f86b1d11cf7b731adab7c870bc",
       "scripts/test-repin-system-integration.sh": "cf238a85019b74c232106fbcd2c357f09095d01f65f40bd8941e30e99f57c104",
       "formal/tlaplus/soak_disk/GuardianAdmission.md": "ad1fdfa044daefe0bd08c916ab2b2749ffc00e71a1d3091edf3fa8c1c876882a",
       "formal/tlaplus/soak_disk/GuardianAdmission.tla": "20033b702594dc615b100656b7abe3943088f7babd6a2916b63b04438bd69e4f",
@@ -483,7 +483,27 @@
       "formal/tlaplus/soak_disk/MC_DiskSettingsAdmission.tla": "a904d37d75874905551966a8e64e3860914b3d3f767e8d89415670b2ff877fca",
       "formal/tlaplus/soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix.cfg": "f25d220e6d295a8db3cd70b14b206481aca53b3000313c61e14288da20497d6a",
       "formal/tlaplus/soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix.tla": "1cdf5f6bd77f98636c2d2706d3a2d9d8ede57c15b48e56b6ebaeb250561e144c",
-      "scripts/bench/test-soak-disk-settings.sh": "3dfc41dda5d8e2d990f4878ea71156c5d4d8a376cbece0977007baf644d61893"
+      "scripts/bench/test-soak-disk-settings.sh": "3dfc41dda5d8e2d990f4878ea71156c5d4d8a376cbece0977007baf644d61893",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/README.md": "172a5a5dd6039d47695da96b9607bac412f4deeee48bcee75e4a87d5744aa207",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/composed-tla.txt": "c8ed66f86f2cbc6fb86f059eadb6c570e4fb6c0eb8f983e8915892114d3ffc2d",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/driver-suite.txt": "bf05567217400498d2dff1088c82ea977a34a00cb0517f1e4e3fecbb8727575e",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/emergency.txt": "361d75286645455389366d0a9f3d39c5cef7cbedee9d6148c867898985ba8e60",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/formal-green.txt": "c3609a0aaa612eceeba2973aa98dd0657ba658ed1b40f648a4990762917a934e",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/formal-red.txt": "576d9d75831f241d127eb44c8ba871e7b80fa8e46340c30861df8224f70010a1",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/manifest.jsonc": "0c7926aa4f0872c592321457ac2bbd797689198f4139e1d333db1475bb1171a4",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/production-green.txt": "10c269942f1c705edb7f4a398a68433414f62d3c0461bf7cc74a38f3c25e1954",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/production-red.txt": "994e7a3ec41275cdbc0fbc4d1a3a7f8d3bbca759d37f1d7dbf5fab3526c1c482",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/regressions-confirmed.txt": "b54774b2533666ef367cdf043ce398232071a8a98f6a94f5966fef91ed6ed40a",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/regressions-partial.txt": "3c9e134befe1c0f030aa6ae371f4c90b194ee7fc1c76161af986e9c7b055211b",
+      "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "formal/tlaplus/soak_disk/CleanupOwnership.md": "244649b0c25cb2e75de12cb86541cf35abb371e4c5befa97cc5dfb822e70845c",
+      "formal/tlaplus/soak_disk/CleanupOwnership.tla": "aed223b4fb6a33ab11497b7ea556cd2b6a2204167ca770a273008e06ab5ed65b",
+      "formal/tlaplus/soak_disk/MC_CleanupOwnership.cfg": "bb480ca5294125fcb5a2433d49b7352c6107d3159acd254b4acbea8b8a2eb267",
+      "formal/tlaplus/soak_disk/MC_CleanupOwnership.tla": "8314559206e2a7368b111e976563a9401631f3926df7e0341709883307c675d6",
+      "formal/tlaplus/soak_disk/MC_CleanupOwnership_age_only_pre_fix.cfg": "bc9a6d9d74a59c23f14b33a0c678b6d8a20c4855aa63ec41f558b8bf0c59d7a7",
+      "formal/tlaplus/soak_disk/MC_CleanupOwnership_age_only_pre_fix.tla": "c060230efcf83b04c60970942a5a63488722fc5f21eab325fbd68df30b13488f",
+      "scripts/bench/test-soak-cleanup-ownership.sh": "d5a61cee20287c00991731f60b246d5a82c35cba2927671bbb5a9c13d87a85db"
     }
   },
   "claims": [
@@ -732,7 +752,9 @@
         "formal/tlaplus/soak_disk/MC_DiskHygieneDeadline.cfg",
         "formal/tlaplus/soak_disk/MC_DiskHygieneDeadline_unbounded_pre_fix.cfg",
         "formal/tlaplus/soak_disk/MC_DiskSettingsAdmission.cfg",
-        "formal/tlaplus/soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix.cfg"
+        "formal/tlaplus/soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/MC_CleanupOwnership.cfg",
+        "formal/tlaplus/soak_disk/MC_CleanupOwnership_age_only_pre_fix.cfg"
       ],
       "verifier": {
         "name": "TLC",
@@ -755,7 +777,8 @@
         "B19 uses an atomic admission abstraction. The production liveness check and benchmark launch are not atomic.",
         "Progress models assume elapsed clock time and completing parent decisions. Atomic model transitions do not establish an atomic production admission or a complete deadline.",
         "B23 models cleanup client cancellation under effective signals and advancing abstract time. The production fixture checks refusal and local publication separately.",
-        "B24 assumes signed 64-bit Bash arithmetic. Its finite model does not cover every input string or the two maximum-value production characterization cases."
+        "B24 assumes signed 64-bit Bash arithmetic. Its finite model does not cover every input string or the two maximum-value production characterization cases.",
+        "B25 disables age-only deletion. It does not establish a safe ownership protocol, space reclamation, Docker ownership, or a complete deadline."
       ],
       "bounds": [
         "Carrier: two signatures, three blocks, watermark zero, and scan start at most two.",
@@ -773,7 +796,8 @@
         "B18 has fourteen distinct states for guardian death and a disk breach. B19 reuses the four-state GuardianAdmission model and its exact control.",
         "B20 and B21 share the five-state GuardianProgress model and exact control. B22 has six states for fresh, equal-limit, and stale admission ages.",
         "B23 reuses the unchanged five-state DiskStopDeadline model with an explicit hygiene invariant alias.",
-        "B24 has 88 distinct states for three exact invalid configurations and the valid default. Decimal column steps avoid native model-checker integer limits."
+        "B24 has 88 distinct states for three exact invalid configurations and the valid default. Decimal column steps avoid native model-checker integer limits.",
+        "B25 has four distinct states for an unowned session with a live writer and either an old or recent directory."
       ],
       "expected_results": [
         {
@@ -969,6 +993,15 @@
           "configuration": "MC_DiskSettingsAdmission_unchecked_pre_fix",
           "exit_code": 12,
           "invariant": "AdmissionRequiresValidDiskSettings"
+        },
+        {
+          "configuration": "MC_CleanupOwnership",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_CleanupOwnership_age_only_pre_fix",
+          "exit_code": 12,
+          "invariant": "UnownedSessionPreserved"
         }
       ],
       "production_tests": [
@@ -1004,7 +1037,8 @@
         "D2-BENCHMARK-SUPERVISION-LOCAL",
         "D2-GUARDIAN-PROGRESS-LOCAL",
         "D2-HYGIENE-DEADLINE-LOCAL",
-        "D2-DISK-SETTINGS-LOCAL"
+        "D2-DISK-SETTINGS-LOCAL",
+        "D2-TEMPORARY-SESSION-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1038,7 +1072,8 @@
         "B18 adds two exact controls and extends the classifier to 126 cases. Routing still covers six scenarios.",
         "B20 and B22 add two exact controls and extend the classifier to 140 cases. Routing still covers six scenarios.",
         "B23 adds one exact control and extends the classifier to 147 cases. Routing still covers six scenarios.",
-        "B24 adds one exact control and extends the classifier to 154 cases. Routing still covers six scenarios."
+        "B24 adds one exact control and extends the classifier to 154 cases. Routing still covers six scenarios.",
+        "B25 adds one exact control and extends the classifier to 161 cases. Routing still covers six scenarios."
       ],
       "production_tests": [
         {
@@ -1073,7 +1108,8 @@
         "D2-BENCHMARK-SUPERVISION-LOCAL",
         "D2-GUARDIAN-PROGRESS-LOCAL",
         "D2-HYGIENE-DEADLINE-LOCAL",
-        "D2-DISK-SETTINGS-LOCAL"
+        "D2-DISK-SETTINGS-LOCAL",
+        "D2-TEMPORARY-SESSION-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1175,7 +1211,8 @@
         "D2-BENCHMARK-SUPERVISION-LOCAL",
         "D2-GUARDIAN-PROGRESS-LOCAL",
         "D2-HYGIENE-DEADLINE-LOCAL",
-        "D2-DISK-SETTINGS-LOCAL"
+        "D2-DISK-SETTINGS-LOCAL",
+        "D2-TEMPORARY-SESSION-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1230,7 +1267,8 @@
         "D2-BENCHMARK-SUPERVISION-LOCAL",
         "D2-GUARDIAN-PROGRESS-LOCAL",
         "D2-HYGIENE-DEADLINE-LOCAL",
-        "D2-DISK-SETTINGS-LOCAL"
+        "D2-DISK-SETTINGS-LOCAL",
+        "D2-TEMPORARY-SESSION-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1288,7 +1326,8 @@
         "D2-BENCHMARK-SUPERVISION-LOCAL",
         "D2-GUARDIAN-PROGRESS-LOCAL",
         "D2-HYGIENE-DEADLINE-LOCAL",
-        "D2-DISK-SETTINGS-LOCAL"
+        "D2-DISK-SETTINGS-LOCAL",
+        "D2-TEMPORARY-SESSION-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1347,7 +1386,10 @@
         "formal/tlaplus/soak_disk/DiskHygieneDeadline.md",
         "formal/tlaplus/soak_disk/MC_DiskSettingsAdmission.cfg",
         "formal/tlaplus/soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix.cfg",
-        "formal/tlaplus/soak_disk/DiskSettingsAdmission.md"
+        "formal/tlaplus/soak_disk/DiskSettingsAdmission.md",
+        "formal/tlaplus/soak_disk/MC_CleanupOwnership.cfg",
+        "formal/tlaplus/soak_disk/MC_CleanupOwnership_age_only_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/CleanupOwnership.md"
       ],
       "verifier": {
         "name": "Bash production fixtures and bounded TLC",
@@ -1364,10 +1406,11 @@
         "B19 covers guardian death during the opening and interleaved benchmark probes. The interleaved fixture first completes one iteration.",
         "The initialization timestamp grants startup grace, not a completed sample. Atomic replacement does not establish durable storage or bounded filesystem calls.",
         "The cleanup selectors remain unchanged. Client cancellation does not establish termination of daemon operations or uninterruptible descendants.",
-        "Invalid disk settings return configuration error 2 before workload admission. No soak summary exists on that path, and missing counters remain null."
+        "Invalid disk settings return configuration error 2 before workload admission. No soak summary exists on that path, and missing counters remain null.",
+        "Directory age cannot establish ownership or writer termination. The driver retains shared temporary data until safe reclamation is established."
       ],
       "bounds": [
-        "Thirty fixture scenarios cover eighteen matched local behaviors and six characterization cases. They do not establish a composed response deadline.",
+        "Thirty-one fixture scenarios cover nineteen matched local behaviors and six characterization cases. They do not establish a composed response deadline.",
         "The disk probe limit is two seconds with a one-second kill grace.",
         "Attribution defaults to ten seconds with a one-second kill grace. The fixture uses one second and 32 session roots.",
         "Each disk stop group defaults to two seconds plus one second of kill grace. B13 uses a one-second budget and a five-second observation.",
@@ -1375,7 +1418,8 @@
         "B20 and B21 observe suspended guardians and stalled clients after twelve seconds. B22 resumes the paused driver after nine seconds, before the guardian.",
         "The silence threshold defaults to ten seconds and permits 8 through 30 seconds. Integer timestamps, polling, cancellation, and publication add separate delays.",
         "B23 uses a one-second hygiene budget, one second of kill grace, and a five-second observation. The production hygiene budget defaults to ten seconds.",
-        "B24 rejects oversized floors, oversized bands, and an overflowing sum. Two valid maximum-value cases preserve baseline behavior."
+        "B24 rejects oversized floors, oversized bands, and an overflowing sum. Two valid maximum-value cases preserve baseline behavior.",
+        "B25 preserves an old unowned directory while its fixture writer holds an open file. Admission remains refused when space is insufficient."
       ],
       "production_tests": [
         {
@@ -1462,6 +1506,11 @@
           "path": "scripts/bench/test-soak-disk-settings.sh",
           "command": "bash scripts/bench/test-soak-disk-settings.sh",
           "result": "local-matched-production-formal-red-green"
+        },
+        {
+          "path": "scripts/bench/test-soak-cleanup-ownership.sh",
+          "command": "bash scripts/bench/test-soak-cleanup-ownership.sh",
+          "result": "local-matched-production-formal-red-green"
         }
       ],
       "ci": {
@@ -1480,7 +1529,8 @@
         "D2-BENCHMARK-SUPERVISION-LOCAL",
         "D2-GUARDIAN-PROGRESS-LOCAL",
         "D2-HYGIENE-DEADLINE-LOCAL",
-        "D2-DISK-SETTINGS-LOCAL"
+        "D2-DISK-SETTINGS-LOCAL",
+        "D2-TEMPORARY-SESSION-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -1493,7 +1543,8 @@
         "B20 through B22 cover suspended guardians during active work and two stale admission pauses. Other progress-record faults, identifier reuse, and later races remain open.",
         "Extend B15 beyond a stable retained marker before the opening benchmark. Later marker changes and unreadable metadata remain open.",
         "Opening admission covers equality, sufficient space, unavailable samples, and disabled protection. Other sample faults and interleaved sample cases remain open.",
-        "B18 through B22 cover the tested guardian failures. Other progress faults, writer termination, and durability remain open."
+        "B18 through B22 cover the tested guardian failures. Other progress faults, writer termination, and durability remain open.",
+        "Establish safe temporary-session reclamation with ownership and termination evidence. B25 preserves sessions instead of deleting them by age."
       ]
     }
   ],
@@ -1712,6 +1763,19 @@
         "Other input faults, cleanup ownership, shutdown, reserve bounds, hosted checks, maintainer review, D2, and acceptance remain pending.",
         "This session does not attest the external commit hooks."
       ]
+    },
+    "D2-TEMPORARY-SESSION-LOCAL": {
+      "path": "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/manifest.jsonc",
+      "role": "historical-baseline",
+      "identity": "B25 starts from 8eba1e4a719fccac8f45a7968c8836013bc9f26e. External commit d64ae3bbf contains the tested correction and executable inputs.",
+      "limitations": [
+        "The fixture uses real files and a live fixture writer, but no real node process.",
+        "An existing driver regression expected unsafe deletion. Its corrected assertion requires preservation, and both runs remain retained.",
+        "The prior B24 evidence commit formatted the fixture and left a stale current binding. Historical B24 source identities remain unchanged.",
+        "Temporary-session retention can cause earlier disk refusal. It does not establish safe reclamation or Docker resource ownership.",
+        "Other faults, shutdown, durable publication, deadline and reserve bounds, hosted checks, maintainer review, D2, and acceptance remain pending.",
+        "This session does not attest the external commit hooks."
+      ]
     }
   },
   "gates": [
@@ -1749,13 +1813,14 @@
         "DISK-EMERGENCY"
       ],
       "pending_obligations": [
-        "B5 through B24 pass their local behavior cycles. D2 is not complete.",
+        "B5 through B25 pass their local behavior cycles. D2 is not complete.",
         "Confirm hosted execution and obtain maintainer review of the model-to-code correspondence.",
         "B23 bounds the tested hygiene group. Verify other stop paths, daemon operations, detached descendants, and guardian health at every admission boundary.",
         "Complete soft-floor sampling, cleanup outcomes, and remaining numeric-range, status, and location faults.",
         "Verify active-session and image preservation, confirmed termination, and durable evidence publication.",
         "Establish one composed emergency deadline, including shutdown and evidence handling.",
-        "Complete crash-recovery accounting and the D3-dependent writer-growth and reserve bounds."
+        "Complete crash-recovery accounting and the D3-dependent writer-growth and reserve bounds.",
+        "Establish safe temporary-session reclamation with ownership and termination evidence. B25 preserves sessions instead of deleting them by age."
       ]
     },
     {
