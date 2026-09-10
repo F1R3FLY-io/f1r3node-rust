@@ -9689,6 +9689,65 @@ Independent final review finds no remaining defect in this bounded patch.
 These results qualify the library change, not the still-pending importer
 integration or whole-workspace tests.
 
+### J-136 — 2026-09-10: retained source chunks for copy and equality
+
+**FORMAL REUSE / NATIVE BINDING PLAN.** Reuse
+`IncrementalPrepareStreaming.chunk_fold_equals_contiguous_fold` (generic in
+byte and accumulator types) and `IndexedWindowTransport.equal_content_prefixes_cancel`.
+The former preserves ordered bytes across arbitrary chunk partitions; the
+latter permits equal prefix cancellation independently of provenance. Native
+cursor state must still bind exact, nonempty, non-consuming current chunks,
+checked progress and remaining length to those abstract sequences.
+
+Factor one active-leaf preparation path for scalar and chunk iteration.
+Expose borrowed slices and retained frozen-page slices directly; never collect
+a chunk list or flatten the source. Frozen seeks reuse the current or next
+cached leaf for local advances, using indexed lookup only for farther skips.
+Copy preflights the entire destination range, keeps the contiguous fast path,
+then copies the minimum of current chunk and remaining output. Equality first
+checks length and identical retained windows, then contiguous bytes, otherwise
+cancels equal prefixes of the minimum current chunk widths. Every loop makes
+positive progress; no hash or physical provenance substitutes for content.
+
+Required controls: repeated non-consuming chunk access, chunk/next/skip
+interleavings, frozen page seams and truncated views, unequal partitions and
+first/middle/last mismatches, invalid-copy atomicity, retained backing lifetime,
+and identity equality of near-native-limit shared windows without enumerating
+their logical bytes. Existing cursor/provenance and tiny-stack controls remain.
+No measured production speedup is claimed before integration and benchmarking.
+
+**NATIVE QUALIFICATION.** Initial debug controls pass 22 source and 17 arena
+tests, followed by all 452 release model tests. Independent review requests
+two refinements: retain direct scalar frozen-byte indexing with shared leaf
+location, and derive the frozen seam test's oracle from the original input
+rather than the scalar cursor. Both are applied before the final run.
+
+| Final qualification group | Passed | Failed / ignored | Filtered | Test seconds |
+|---|---:|---:|---:|---:|
+| Source library, debug | 22 | 0 / 0 | 430 | 0.74 |
+| Frozen/source arena, debug | 17 | 0 / 0 | 435 | 0.22 |
+| Standalone admission, debug | 32 | 0 / 0 | 420 | 24.15 |
+| Complete models library, release | 452 | 0 / 0 | 0 | 52.56 |
+
+The final service uses 118.977 seconds wall, 249.446 seconds CPU, 2.1G peak
+and zero swap under High4G/Max6G/Swap0/CPU400%/Tasks512/Runtime900 and seed
+`41315976`. Logs `canonical-source-chunks.log` and
+`canonical-source-chunks-final.log` under `target/verification/` have SHA-256
+`705f43a46a769f09a2c0cc91fe98aeab3ad583ab43d13c79e0ad20e6a2ff4080`
+and `5b8d4843f8781c7348e26e74df6dfdf921cab6be7d6c1a492aa26768046359ec`.
+No negative timing benchmark is inferred from the shared-window test; its
+logical length is deliberately enormous but its retained physical graph is
+small and equality takes the exact-identity path.
+
+**MAINTAINED GATE.** Add source and arena controls in both profiles and the
+debug standalone admission controls to `--epathmap-import`; include the
+existing 15-result incremental-preparation proof and independent kernel check
+for its ordered chunk-fold law. Remove the duplicate compilation from the
+full route, which already invokes the shared canonical-key proof function.
+The expanded combined route is running in bounded child scopes; its outer
+service metrics will describe only its driver, not aggregate proof/test use.
+No complete-debug-library or importer-cutover claim is made at this checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

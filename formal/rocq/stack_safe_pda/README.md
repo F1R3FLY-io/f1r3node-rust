@@ -3195,6 +3195,32 @@ failures and resource evidence. Existing logical `legal_window` bounds and
 `explicit_completion_anchor_changes_only_the_end` remain unchanged; no
 complete native importer correspondence follows before integration.
 
+Retained-chunk refinement reuses the generic ordered fold in
+`IncrementalPrepareStreaming` and equal-content prefix cancellation in
+`IndexedWindowTransport`. Byte and located cursors share active-leaf
+preparation; frozen scalar and chunk reads share cached-leaf location without
+constructing chunk slices on the scalar path. The current/next cached leaf
+handles local seeks, with indexed fallback for farther jumps. Copy validates
+the entire range before writing; equality compares equal-width prefixes of
+possibly unequal chunks, independently of provenance. Identical retained
+windows take a constant-work identity path.
+
+| Native control | Chunk-state binding |
+|---|---|
+| `retained_chunks_match_scalar_interleavings_and_atomic_copy` | 128 mixed borrowed/frozen families compare repeated chunk, scalar read, skip and clone observations against original input; verify every bounded copy window and invalid-range nonmutation. |
+| `frozen_chunks_preserve_truncated_page_seams_and_cached_seeks` | Compare truncated frozen page seams against original input bytes, retain data after arena/root release, and exercise zero, local and distant seeks. |
+| `chunk_equality_handles_unequal_partitions_and_every_mismatch` | Compare distinct fragmentations and borrowed/frozen sources, every mismatch position, unequal lengths and empty roots; near-native-limit shared windows exercise identity without logical expansion. |
+
+The final local run passes 22 source, 17 arena and 32 admission controls in
+debug and all 452 model-library tests in release. J-136 records logs and
+bounded resource use. The maintained EPathMap gate now includes both-profile
+source/arena controls and debug admission controls, and checks the existing
+15 closed incremental-preparation results including ordered chunk folding.
+The full proof route reuses that check instead of compiling it twice.
+The expanded combined route must itself pass before being reported qualified.
+Native allocator-work instrumentation and importer source integration remain
+separate requirements; neither follows from abstract fold equality.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

@@ -1201,14 +1201,36 @@ impl FrozenCanonicalByteCursor {
             "a frozen cursor seek stays inside its view"
         );
         self.absolute = absolute;
-        self.leaf = if absolute == self.end {
-            self.value.inner.data.leaves.len()
-        } else {
-            self.value
-                .inner
-                .leaf_at(absolute)
-                .expect("a frozen cursor seek lands in one content leaf")
-        };
+        self.locate_current_leaf();
+    }
+
+    fn locate_current_leaf(&mut self) {
+        let leaves = &self.value.inner.data.leaves;
+        if self.absolute == self.end {
+            self.leaf = leaves.len();
+            return;
+        }
+        for index in [self.leaf, self.leaf.saturating_add(1)] {
+            if leaves.get(index).is_some_and(|leaf|
+                leaf.logical_start <= self.absolute && self.absolute < leaf.logical_end()
+            ) {
+                self.leaf = index;
+                return;
+            }
+        }
+        self.leaf = self.value.inner.leaf_at(self.absolute)
+            .expect("a frozen cursor seek lands in one content leaf");
+    }
+
+    pub(crate) fn chunk(&mut self) -> Option<&[u8]> {
+        if self.absolute == self.end {
+            return None;
+        }
+        self.locate_current_leaf();
+        let leaf = self.value.inner.data.leaves[self.leaf];
+        let start = leaf.page_start + self.absolute - leaf.logical_start;
+        let width = leaf.logical_end().min(self.end) - self.absolute;
+        Some(&self.value.inner.data.pages[leaf.page].bytes.bytes[start..start + width])
     }
 }
 
@@ -1219,9 +1241,7 @@ impl Iterator for FrozenCanonicalByteCursor {
         if self.absolute == self.end {
             return None;
         }
-        while self.value.inner.data.leaves[self.leaf].logical_end() <= self.absolute {
-            self.leaf += 1;
-        }
+        self.locate_current_leaf();
         let leaf = self.value.inner.data.leaves[self.leaf];
         let at = leaf.page_start + self.absolute - leaf.logical_start;
         let byte = self.value.inner.data.pages[leaf.page].bytes.bytes[at];

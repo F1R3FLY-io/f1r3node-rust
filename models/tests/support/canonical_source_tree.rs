@@ -105,6 +105,139 @@ fn property_config() -> ProptestConfig {
 
 proptest! {
     #![proptest_config(property_config())]
+    #[test]
+    fn retained_chunks_match_scalar_interleavings_and_atomic_copy(
+        chunks in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..17), 1..13),
+        skips in prop::collection::vec(0usize..33, 1..33),
+    ) {
+        let mut source = SourceTreeWindow::empty();
+        for (index, bytes) in chunks.iter().enumerate() {
+            let part = if index % 2 == 0 {
+                borrowed(bytes, index as u32, 100)
+            } else {
+                let mut arena = CanonicalBytesArena::new();
+                let mut handle = arena.empty();
+                for (at, byte) in bytes.iter().enumerate() {
+                    handle = arena.append(handle, CanonicalLocatedByte::new(*byte,
+                        CanonicalByteProvenance::new(index as u32, at * 3))).unwrap();
+                }
+                SourceTreeWindow::from_frozen(arena.freeze(handle))
+            };
+            source = source.concat(&part).unwrap();
+        }
+        let expected = chunks.concat();
+        let mut cursor = source.bytes();
+        let mut at = 0;
+        for (step, width) in skips.into_iter().enumerate() {
+            if at == expected.len() { break; }
+            let chunk = cursor.chunk().unwrap().to_vec();
+            prop_assert!(!chunk.is_empty());
+            prop_assert_eq!(&chunk[..], &expected[at..at + chunk.len()]);
+            prop_assert_eq!(cursor.chunk().unwrap(), &chunk[..]);
+            prop_assert_eq!(cursor.len(), expected.len() - at);
+            prop_assert_eq!(cursor.clone().take(chunk.len()).collect::<Vec<_>>(), chunk);
+            if step % 2 == 0 {
+                prop_assert_eq!(cursor.next(), Some(expected[at]));
+                at += 1;
+            } else {
+                let width = width.min(cursor.len());
+                prop_assert!(cursor.skip_exact(width));
+                at += width;
+            }
+        }
+        prop_assert_eq!(cursor.collect::<Vec<_>>(), expected[at..].to_vec());
+        for start in 0..=expected.len() {
+            let width = 17.min(expected.len() - start);
+            let mut output = vec![0; width];
+            prop_assert!(source.copy_exact(start, &mut output));
+            prop_assert_eq!(&output[..], &expected[start..start + width]);
+        }
+        for start in [expected.len(), expected.len() + 1, usize::MAX] {
+            let mut output = [99; 2];
+            prop_assert!(!source.copy_exact(start, &mut output));
+            prop_assert_eq!(output, [99; 2]);
+        }
+        prop_assert!(source.copy_exact(source.len(), &mut []));
+        prop_assert!(!source.copy_exact(source.len() + 1, &mut []));
+    }
+}
+
+#[test]
+fn frozen_chunks_preserve_truncated_page_seams_and_cached_seeks() {
+    let mut arena = CanonicalBytesArena::new();
+    let mut handle = arena.empty();
+    for at in 0..513 {
+        handle = arena.append(handle, CanonicalLocatedByte::new(at as u8,
+            CanonicalByteProvenance::new(5, at * 7))).unwrap();
+    }
+    let root = SourceTreeWindow::from_frozen(arena.freeze(handle));
+    let source = root.subview(17..500).unwrap();
+    let expected = (17..500).map(|at| at as u8).collect::<Vec<_>>();
+    let mut cursor = source.bytes();
+    drop((root, arena));
+    let mut at = 0;
+    while let Some(chunk) = cursor.chunk() {
+        assert!(!chunk.is_empty());
+        assert_eq!(chunk, &expected[at..at + chunk.len()]);
+        let width = chunk.len();
+        assert!(cursor.skip_exact(width));
+        at += width;
+    }
+    assert_eq!(at, expected.len());
+    assert_eq!(cursor.next(), None);
+    assert!(cursor.chunk().is_none());
+    for start in [0, 1, 46, 47, 48, 127, 255, 482] {
+        let mut cursor = source.bytes();
+        assert!(cursor.skip_exact(start));
+        let chunk = cursor.chunk().unwrap().to_vec();
+        assert!(cursor.skip_exact(0));
+        assert_eq!(cursor.chunk().unwrap(), chunk);
+        assert_eq!(cursor.next(), Some(expected[start]));
+        if start + 1 < expected.len() {
+            let suffix = cursor.chunk().unwrap();
+            assert_eq!(suffix, &expected[start + 1..start + 1 + suffix.len()]);
+        }
+    }
+}
+
+#[test]
+fn chunk_equality_handles_unequal_partitions_and_every_mismatch() {
+    let bytes = (0..129).map(|at| at as u8).collect::<Vec<_>>();
+    let partition = |bytes: &[u8], width| {
+        let mut arena = CanonicalBytesArena::new();
+        let mut result = SourceTreeWindow::empty();
+        for chunk in bytes.chunks(width) {
+            let mut handle = arena.empty();
+            for byte in chunk {
+                handle = arena.append(handle, CanonicalLocatedByte::new(*byte,
+                    CanonicalByteProvenance::new(17, 29))).unwrap();
+            }
+            result = result.concat(&SourceTreeWindow::from_frozen(arena.freeze(handle))).unwrap();
+        }
+        result
+    };
+    let left = partition(&bytes, 13);
+    let right = partition(&bytes, 19);
+    assert!(left.content_eq(&right));
+    assert!(right.content_eq(&left));
+    assert!(left.content_eq(&borrowed(&bytes, 99, 37)));
+    assert!(!left.content_eq(&right.subview(0..128).unwrap()));
+    for at in 0..bytes.len() {
+        let mut changed = bytes.clone();
+        changed[at] ^= 1;
+        assert!(!left.content_eq(&partition(&changed, 19)));
+    }
+    let atom = [3];
+    let mut shared = borrowed(&atom, 3, usize::MAX);
+    for _ in 1..usize::BITS { shared = shared.concat(&shared).unwrap(); }
+    let view = shared.subview(1..shared.len() - 1).unwrap();
+    assert!(shared.content_eq(&shared.clone()));
+    assert!(view.content_eq(&view.clone()));
+    assert!(SourceTreeWindow::empty().content_eq(&SourceTreeWindow::empty()));
+}
+
+proptest! {
+    #![proptest_config(property_config())]
 
     #[test]
     fn concatenation_and_every_split_preserve_bytes_origins_and_balance(

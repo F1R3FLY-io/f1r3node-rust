@@ -10961,6 +10961,26 @@ not a codec or consensus identity change. J-135 preserves the two negative
 controls, obsolete-assertion failure, independent empty-view review and final
 qualification. No production throughput or allocation slope is inferred.
 
+#### 5.33.52 Retained-chunk source traversal (2026-09-10)
+
+Fragmented copy and equality now consume retained borrowed/frozen chunks,
+without materializing a byte or chunk list. Both scalar and chunk cursors
+reuse the same leaf traversal; local frozen seeks retain cached leaf positions
+instead of repeating index lookup. Identical shared windows compare without
+enumerating their logical contents. Full destination preflight preserves
+failed-copy atomicity, and unequal chunk partitions preserve content equality.
+These are structural algorithm changes, not measured application speedups.
+
+The reviewed implementation passes 22 source, 17 arena and 32 standalone
+admission debug controls and all 452 model-library release tests. Final
+service peak is 2.1G, swap zero, under a 6 GiB hard ceiling. The expanded
+maintained EPathMap gate additionally includes both-profile source controls
+and the reused ordered chunk-fold proof; its combined execution is pending.
+[J-136](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-136--2026-09-10-retained-source-chunks-for-copy-and-equality)
+records independent-oracle review, exact tests, logs and resource scope.
+Shared-source importer integration and production slope measurements remain
+required before claiming that nested ACT admission benefits from this library.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

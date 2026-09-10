@@ -300,6 +300,10 @@ canonical_key_protocol_proofs() {
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
   canonical_source_release_proofs
+  rocq_reject_placeholders theories/IncrementalPrepareStreaming.v
+  rocq_compile_with_closed_count theories/IncrementalPrepareStreaming.v 15 \
+    "ordered source chunk folds and incremental preparation contracts"
+  rocq_check_modules "ordered source chunk folds" StackSafePDA.IncrementalPrepareStreaming
 }
 
 canonical_source_release_proofs() {
@@ -325,6 +329,11 @@ epathmap_import_runtime() {
   rpb3_run_tests 1 --release -j4 --lib \
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
   rpb3_run_tests 32 --release -j4 --lib standalone_path_admission
+  rpb3_run_tests 32 -j4 --lib standalone_path_admission
+  rpb3_run_tests 22 --release -j4 --lib canonical_source_tree
+  rpb3_run_tests 22 -j4 --lib canonical_source_tree
+  rpb3_run_tests 17 --release -j4 --lib canonical_bytes_arena
+  rpb3_run_tests 17 -j4 --lib canonical_bytes_arena
   rpb3_run_tests 8 --release -j4 --lib opaque_interior_tests
   rpb3_run_tests 32 --release -j4 --lib frame_storage_tests
   rpb3_run_tests 6 --release -j4 --lib indexed_span_transport
@@ -597,19 +606,6 @@ generation_checkpoint_closed_capstones="$({
 } || true)"
 if [[ "$generation_checkpoint_closed_capstones" != "94" ]]; then
   echo "stack-safe-pda: expected all ninety-four publication/journal/inventory/cursor/work Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
-  exit 1
-fi
-incremental_prepare_streaming_rocq_output="$(
-  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
-    theories/IncrementalPrepareStreaming.v 2>&1
-)"
-printf '%s\n' "$incremental_prepare_streaming_rocq_output"
-incremental_prepare_streaming_closed_capstones="$({
-  printf '%s\n' "$incremental_prepare_streaming_rocq_output" | \
-    grep -c '^Closed under the global context$'
-} || true)"
-if [[ "$incremental_prepare_streaming_closed_capstones" != "15" ]]; then
-  echo "stack-safe-pda: expected all fifteen incremental-PREPARE Rocq capstones to be closed; got $incremental_prepare_streaming_closed_capstones" >&2
   exit 1
 fi
 streaming_codec_rocq_output="$(

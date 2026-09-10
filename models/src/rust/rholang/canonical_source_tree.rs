@@ -411,14 +411,45 @@ impl<'src> SourceTreeWindow<'src> {
         }
         let mut cursor = self.bytes();
         cursor.skip_exact(start);
-        for destination in output {
-            *destination = cursor.next().expect("validated source copy range");
+        let mut written = 0;
+        while written < output.len() {
+            let chunk = cursor.chunk().expect("validated source copy range");
+            let width = chunk.len().min(output.len() - written);
+            output[written..written + width].copy_from_slice(&chunk[..width]);
+            cursor.skip_exact(width);
+            written += width;
         }
         true
     }
 
     pub(crate) fn content_eq(&self, other: &SourceTreeWindow<'_>) -> bool {
-        self.len == other.len && self.bytes().eq(other.bytes())
+        if self.len != other.len {
+            return false;
+        }
+        if self.len == 0 || (self.start == other.start && match (&self.root, &other.root) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }) {
+            return true;
+        }
+        if let (Some(left), Some(right)) = (
+            self.contiguous_bytes(0..self.len), other.contiguous_bytes(0..other.len),
+        ) {
+            return left == right;
+        }
+        let mut left = self.bytes();
+        let mut right = other.bytes();
+        while left.len() != 0 {
+            let left_chunk = left.chunk().expect("remaining left source bytes");
+            let right_chunk = right.chunk().expect("remaining right source bytes");
+            let width = left_chunk.len().min(right_chunk.len());
+            if left_chunk[..width] != right_chunk[..width] {
+                return false;
+            }
+            left.skip_exact(width);
+            right.skip_exact(width);
+        }
+        true
     }
 }
 
@@ -571,27 +602,33 @@ impl<'src, M: CursorMode> SourceCursor<'src, M> {
         }
     }
 
-    fn next(&mut self) -> Option<M::Item> {
+    fn prepare_active(&mut self) -> bool {
         if self.remaining == 0 {
-            return None;
+            return false;
         }
         loop {
-            if let Some(active) = &mut self.active {
-                if let Some(value) = active.next() {
-                    self.remaining -= 1;
-                    return Some(value);
-                }
-                self.active = None;
+            if self.active.as_ref().is_some_and(|active| active.len() != 0) {
+                return true;
             }
-            let window = self.pending.pop()?;
-            let node = window.root.as_ref()?;
+            self.active = None;
+            let Some(window) = self.pending.pop() else { return false; };
+            let node = window.root.as_ref().expect("nonempty pending source root");
             let range = window.start..window.start + window.len;
-            match node.payload.as_ref()? {
+            match node.payload.as_ref().expect("retained source payload") {
                 SourcePayload::Branch2(children) => self.expand_children(children, range),
                 SourcePayload::Branch3(children) => self.expand_children(children, range),
                 leaf => self.active = ActiveLeaf::new(leaf, range),
             }
         }
+    }
+
+    fn next(&mut self) -> Option<M::Item> {
+        if !self.prepare_active() {
+            return None;
+        }
+        let value = self.active.as_mut()?.next()?;
+        self.remaining -= 1;
+        Some(value)
     }
 
     fn skip_exact(&mut self, mut width: usize) -> bool {
@@ -629,6 +666,16 @@ pub(crate) struct SourceTreeByteCursor<'src>(SourceCursor<'src, ByteMode>);
 
 impl SourceTreeByteCursor<'_> {
     pub(crate) fn skip_exact(&mut self, width: usize) -> bool { self.0.skip_exact(width) }
+
+    pub(crate) fn chunk(&mut self) -> Option<&[u8]> {
+        if !self.0.prepare_active() {
+            return None;
+        }
+        match self.0.active.as_mut()? {
+            ActiveLeaf::Borrowed { bytes, at, .. } => Some(&bytes[*at..]),
+            ActiveLeaf::Frozen(cursor) => cursor.chunk(),
+        }
+    }
 }
 
 impl Iterator for SourceTreeByteCursor<'_> {
