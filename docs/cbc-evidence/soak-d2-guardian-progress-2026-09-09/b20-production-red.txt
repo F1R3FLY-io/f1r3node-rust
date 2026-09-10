@@ -1,0 +1,2 @@
+FAIL: A stalled benchmark prevented failure publication and client cancellation before fixture release (benchmark-cancel-stall).
+Evidence: [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/production-red

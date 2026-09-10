@@ -1,0 +1,2 @@
+PASS: Stale guardian progress prevented admission and preserved failure (benchmark-progress-boundary).
+Evidence: [EVIDENCE_ROOT]/d2-guardian-progress-k69aoiLY/b22/production-green-benchmark-progress-boundary

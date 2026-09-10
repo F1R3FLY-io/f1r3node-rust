@@ -16,6 +16,8 @@ The parent reads elapsed host time from `/proc/uptime`. It rejects missing, inva
 
 `SOAK_GUARDIAN_MAX_SILENCE_SECONDS` permits integers from 8 through 30. Its default is ten seconds. The fixtures use eight seconds.
 
+Integer timestamps can add less than one second before expiration. Polling and cancellation add further delay.
+
 The model keeps `guardianAlive` true and prevents progress. `Tick` increases the age, and `Observe` represents the parent's response after expiration.
 
 The negative control disables the progress check. It requires exit 12 and `StaleGuardianRequiresInterrupt`. The corrected model has five distinct states.

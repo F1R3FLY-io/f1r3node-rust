@@ -367,3 +367,43 @@ B20 suspends a live guardian during an active benchmark. The existing liveness c
 The fixture checks client cancellation and failure publication before releasing the suspended guardian after twelve seconds. It starts no nodes.
 
 No peer was available. The other agent retains refactoring ownership. D2 and acceptance remain pending.
+
+Production RED left the benchmark client active and published no summary before release. The guardian remained alive in a suspended state.
+
+The exact formal RED violated `StaleGuardianRequiresInterrupt` before production changes. The corrected driver checks an atomically replaced progress timestamp from elapsed host time.
+
+Production GREEN cancels the client and publishes one protection failure before release. Formal GREEN has five distinct states.
+
+ShellCheck reported an unused second uptime field during the correction. The field now uses `_unused`. This lint finding is not behavioral RED.
+
+## D2 active iteration progress B21
+
+B21 starts from the source-bound B20 correction. Its suspended guardian initially allowed the iteration client to remain active until fixture release.
+
+The unchanged progress model supplied the matching RED. The production correction adds the progress check to active iteration supervision.
+
+Production GREEN cancels the client and publishes one protection failure before release. Formal GREEN has five distinct states.
+
+## D2 admission progress B22
+
+B22 starts from the source-bound B21 correction. Its fixtures pause the driver and guardian during a valid disk probe.
+
+After nine seconds, the observer verifies expired progress and resumes the driver first. Both baseline paths admit work before active supervision can stop it.
+
+The matching formal control violates `StaleProgressPreventsAdmission`. The correction checks progress before benchmark and iteration counters change.
+
+Both production GREEN cases refuse all work and record one protection failure. Formal GREEN has six distinct states.
+
+The [combined package](../cbc-evidence/soak-d2-guardian-progress-2026-09-09/README.md) retains all three source-bound cycles and four production scenarios.
+
+Nineteen positive configurations, twenty exact controls, 140 classifier cases, six routing scenarios, and twenty-four emergency scenarios pass. Supporting regressions also pass.
+
+The silence limit defaults to ten seconds and permits 8 through 30 seconds. The fixtures use eight seconds. This component limit is not the complete response deadline.
+
+D2 and acceptance remain pending. These cycles do not prove writer termination, durable publication, reserve bounds, or every scheduling and metadata fault.
+
+External commit `706b11b6e` appeared during evidence preparation. Its parent is the B20 baseline, and its executable source matches the tested snapshots.
+
+The evidence builder stopped on the changed HEAD before publishing its manifest. The original error remains retained as a verification interruption, not behavioral RED.
+
+Hooks for the external commit remain unattested by this session. The assistant creates no replacement commit or amendment.

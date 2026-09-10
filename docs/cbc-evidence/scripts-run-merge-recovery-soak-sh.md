@@ -3,7 +3,7 @@
 - **Status:** pending (local RED/GREEN complete; hosted execution and maintainer review open)
 - **Adapter:** embedded
 - **Claim:** [CLAIM-SOAK-001](../claims/soak-disk-protection.md), proposed and unratified
-- **Commit:** 706b11b6e (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3, 7f0f46923, 6e0b50f26, 59b90568c, 8ab599e5c, 706b11b6e)
+- **Commit:** 5549561e1 (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3, 7f0f46923, 6e0b50f26, 59b90568c, 8ab599e5c, 706b11b6e)
 - **Verified:** locally, 2026-09-08 to 2026-09-09
 
 Each cycle ran the real driver inside a disposable container through `scripts/bench/test-soak-disk-admission.sh` (no host mounts, no network, no Docker socket, UID 65534, 256 MiB, one CPU). `df`, `docker`, and the workload command were fixtures. In every cycle the production regression failed on the pre-fix source, TLC reported the named invariant with exit 12 on the pre-fix configuration, and both passed after the correction.
@@ -56,7 +56,7 @@ The per-cycle manifests were produced on the source branch and are retained outs
 | `soak-d2-benchmark-2026-09-09/manifest.jsonc` (B15) | `871daa99255006420b61cf4c8d70f0164312f009fa138a1e220e5c0a1b2ffb4f` |
 | `soak-d2-benchmark-band-2026-09-09/manifest.jsonc` (B16) | `bff43e225d2de7d2a5b92559b093a36436be27ef80ba305293be99af7b4e0280` |
 | `soak-d2-benchmark-monitor-2026-09-09/manifest.jsonc` (B17) | `79b4505f9dbe2a7f2341430356ac63b75c1c5956244c83cfa66b7dfbbaca7323` |
-| B20 to B22: no manifest was committed; the source branch retains the raw store outside Git | (none) |
+| `soak-d2-guardian-progress-2026-09-09/manifest.jsonc` (B20 to B22) | `310280a8df04bcba0d34cc6d0bd3d8b6b8899bb87e85f5ff945be7f1ffb8618b` |
 | `soak-d2-benchmark-supervision-2026-09-09/manifest.jsonc` (B18, B19) | `33be0710c7d724988fa1e07797a6537f3ba5ae9f962eacce784cabe0a0d348fe` |
 | `soak-d2-benchmark-cases-2026-09-09/manifest.jsonc` (B17 coverage) | `c7671619622336d2ca493ea5b7597414b28f18a43bb5e4b3a659c50c9565661b` |
 
