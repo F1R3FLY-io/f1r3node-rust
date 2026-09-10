@@ -8724,6 +8724,70 @@ qualification. This entry records source inspection and implementation
 requirements only: no new performance result, runtime change, codec change,
 dependency or task-completion claim follows.
 
+### J-123 — 2026-09-10: verified balanced byte-source concatenation prerequisite
+
+**FORMALLY VERIFIED, not runtime activation.** Task 6018 now has a concrete
+persistent 2–3 join model in `RPB3Admission.v::BalancedSourceComposition`.
+Checked nonempty terminal windows retain original sources; internal nodes cache
+logical lengths and heights. Joining descends the facing boundary of the taller
+tree and reconstructs that boundary while retaining off-spine subtrees. This is
+an integration-owned byte-source descriptor structure, not a replacement for
+PathMap or its trie topology.
+
+**Derived bounds and semantics.** For input-height difference $`d`$, joining
+performs exactly $`d+1`$ boundary visits and creates at most $`2d+1`$ joins,
+including root finalization. Balanced height obeys
+$`2^{\mathrm{height}} \le S`$, where $`S`$ counts logical terminal
+occurrences, not unique shared allocations. Exact located bytes, source
+ownership, checked length/height metadata, empty data identities and historical
+root/source selection are preserved. Logical ACT bytes may differ from the
+physical byte at their reported provenance; the theorem preserves both fields
+without assuming equality between them.
+
+**Binding boundary.** The reference-construction witness distinguishes retained
+input subtrees from new joins. Actual immutable reference cloning, allocator
+behavior and registry cost remain executable obligations. A pure append-only
+list specification is not a constant-time publication proof. Native checked
+addition must precede publication; cached-balance invariants are constructor
+preconditions, not something the total-length guard validates for arbitrary
+forged trees. The formal README now enumerates all 19 exported invariants and
+their required generated, oracle, pointer-identity and resource-counter tests.
+
+**Verification.** The isolated module's 19 checks pass. Full compilation reports
+279 closed-context checks; independent kernel checking succeeds. Full compile:
+159.524 seconds wall, 29.843 seconds CPU, 1G peak, zero swap. Kernel:
+20.210 seconds wall, 19.980 seconds CPU, 486M peak, zero swap. Both use
+MemoryHigh=1G, MemoryMax=2G, MemorySwapMax=0, CPUQuota=100%, TasksMax=64,
+RuntimeMaxSec=900. Memory-high throttling delayed compilation artifact
+finalization; printed checks were not accepted until process exit zero.
+
+| Evidence | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/RPB3Admission.v` | `6daa8bc87396121a8d1ef3ca26be2a2dcd349ed03d9fbd4a1390fbadcf8b5357` |
+| `target/verification/epathmap-balanced-source-proof-final.log` | `d0c4e3c2db88629449eaf015cc230706ccc3c000c99cc83d82ce2fc759a798aa` |
+| `target/verification/epathmap-balanced-source-kernel-final.log` | `fe0ed3f1c907410948b62f4c34cc22b4aa33c1a3c71b280a0872bbdac2d406d0` |
+
+**Negative diagnostic history.** Early interactive checks rejected missing
+explicit proof arguments and an unreduced leaf sum. A later unrestricted
+`rewrite !sum_app` repeatedly matched its own zero-tail result; that bounded
+diagnostic was stopped and replaced by two explicitly instantiated rewrites.
+Subsequent reference-witness argument/bullet errors were repaired before the
+final full compile. Interactive `coqtop` exit zero was never sufficient:
+failed proof diagnostics remain failures, not accepted evidence.
+
+**Remaining required work.** Checked splitting, range normalization, endpoint
+anchors, explicit continuation-fold equivalence, retained cursors and iterative
+release must be modeled and bound before runtime activation. Split reconstruction
+must consume the join's one/two-peer result before finalization when attaching
+two siblings; fragment-height bounds and telescoping boundary work must rule out
+repeated full-height joins. Source composition must then be integrated with
+checked forward/reverse bulk ACT transport and the J-122 reader seams. Neither
+the J-121 import slope nor production ACT/LMDB parity is closed here. The existing
+425-test runtime result belongs to `ea9be8aad`; no Rust code was changed or
+retested by this proof-only checkpoint. No consensus-visible semantics, bytes,
+hashes, COMM ordering or accounting changes are introduced.
+
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

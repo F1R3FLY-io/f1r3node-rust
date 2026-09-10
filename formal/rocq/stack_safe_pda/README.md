@@ -2500,3 +2500,90 @@ run-count failure and the activated oracle's raw-descriptor mismatch remain in
 the evidence record. Cross-arena equality now compares all located payloads,
 metadata and normalized graph fields; physical same-arena preservation remains
 an exact separate assertion.
+
+## Balanced source concatenation invariant catalogue (2026-09-10; task 6018)
+
+`BalancedSourceComposition` specifies a concrete persistent 2–3 tree. A terminal
+leaf is a checked, nonempty window into an original source. Internal nodes have
+two or three equal-height children and cached logical length and height. These
+are private-constructor invariants, not validation performed by concatenation.
+Empty data roots are represented separately; endpoints are not tree payload.
+
+Joining descends only the facing boundary of the taller tree. A result contains
+one tree or two equal-height peers. A two-child parent absorbs the result;
+a three-child parent can split into two two-child peers. Finalization creates at
+most one new root. Untouched children must be retained as immutable references,
+not recursively cloned or reconstructed from equal bytes.
+
+Let $`d`$ be the absolute input-height difference and $`S`$ the number of
+logical terminal occurrences. The model proves exactly $`d+1`$ boundary visits,
+at most $`2d+1`$ new joins including finalization, and
+$`2^{\mathrm{height}} \le S`$. These bounds do not count allocator internals,
+reference-count synchronization, registry growth, cursor navigation or release.
+Unique shared allocations and logical terminal occurrences are different metrics.
+
+### Exhaustive exported invariants and required executable controls
+
+The controls below are required bindings, not claims that the new runtime or
+its tests already exist. The existing page-backed implementation remains the
+independent located-byte and historical-window oracle.
+
+| Exported invariant | Required executable control |
+|---|---|
+| `right_spine_rebuilding_keeps_the_exact_other_children` | Append to a taller two-child root; untouched left child retains pointer identity and full metadata. |
+| `right_three_spine_rebuilding_keeps_the_exact_other_children` | Append through a three-child boundary; retain both off-spine children exactly, including overflow propagation. |
+| `left_spine_rebuilding_keeps_the_exact_other_children` | Prepend through a two-child root; untouched right child retains pointer identity and metadata. |
+| `left_three_spine_rebuilding_keeps_the_exact_other_children` | Prepend through a three-child root; retain both off-spine children and preserve their order. |
+| `concrete_right_join_preserves_balance_caches_terminals_and_boundary_work` | Generated unequal-height right joins compare complete located output with the scalar oracle, validate every cache/rank and count actual visits/rebuilds. |
+| `concrete_left_join_preserves_balance_caches_terminals_and_boundary_work` | Symmetric generated left joins exercise every One/Two absorption and overflow case with the same exact controls. |
+| `concrete_concatenation_has_exact_caches_balance_order_and_boundary_cost` | Cover both orientations and equal heights; final root adds at most one level, preserves full order and meets the exact visit/new-join bounds. |
+| `checked_concatenation_has_only_the_exact_native_length_preflight` | Use shared doubling DAGs to reach native logical-length boundaries with only word-width-many unique nodes; exercise the actual checked-addition guard, reject before publication and preserve all prior roots. Do not enumerate exponentially many logical bytes. No arbitrary height cap. |
+| `checked_concatenation_preserves_all_native_cached_lengths_and_heights` | Inspect every reachable node after generated joins; cached sums/heights agree with the independent oracle and remain representable. |
+| `balanced_height_has_a_concrete_exponential_terminal_lower_bound` | Count logical terminal occurrences, including shared occurrences, and check the height bound on long append/prepend and irregular forest traces. |
+| `actual_join_preserves_arbitrary_located_bytes_and_valid_original_sources` | Compare byte values, source IDs and offsets for discontinuous sources and ACT-derived logical bytes that differ from the byte at their reported physical offset. |
+| `checked_terminal_leaf_retains_the_exact_original_window` | Accept precisely nonempty, source-owned, in-bounds, representable terminal ranges; reject wrong owner, overflowing/out-of-bounds windows and zero-width leaves. Native start/end conversion must also reject reversed ranges before constructing the modeled window. Empty roots use the separate representation. |
+| `checked_terminal_leaf_has_exact_bytes_and_representable_metadata` | Compare each accepted leaf's original backing/range, located bytes, length and rank with the existing source-window oracle. Physical provenance validity remains the source constructor's obligation. |
+| `concatenation_reuses_exact_input_subtree_references_with_the_counted_new_joins` | Keep both input roots alive, check actual off-spine reference identity and new-node counts, and reject a copying implementation even when bytes agree. |
+| `empty_data_roots_are_checked_identities_without_selecting_an_endpoint` | Check empty/empty, empty/nonempty and nonempty/empty data identities independently from right-endpoint selection and absent-versus-present-empty metadata. |
+| `publishing_a_composed_root_preserves_every_exact_historical_root` | Retain earlier root handles across publication, source registration and later sibling construction; all select the same original trees and bytes. |
+| `root_publication_returns_the_exact_composed_tree_without_flattening` | New root lookup selects the exact assembled root; separately count payload copies, source enumeration and registry allocations. The logical list model is not a constant-time publication proof. |
+| `retaining_a_terminal_source_preserves_each_historical_window` | Register more borrowed/frozen sources and release originating arena owners; retained historical windows preserve contents and provenance. |
+| `preserved_original_sources_preserve_every_historical_root_denotation` | Compare every retained root before and after source-store growth, including equal-content but distinct source identities and discontinuous provenance. |
+
+### Interpretation and remaining bindings
+
+Native code must use checked addition before allocation/publication: model
+natural numbers do not overflow. Concatenation assumes balanced trees with valid
+caches and sources; its total-size guard must not be advertised as a validator
+for arbitrary forged trees. Terminal window bounds do not independently prove
+the representability of physical source origins or offsets.
+
+`reference_assembly` distinguishes retained input subtree values from new join
+constructors. Its construction witness must be bound to actual immutable child
+references and allocation counters. It is not a Rust pointer-address or allocator
+proof. Append-only root/source publication preserves logical selection; its list
+specification does not prove the cost of the runtime registry.
+
+Before activation, subsequent models and tests must cover checked range
+splitting and splice normalization, explicit seam/end anchors, iterative
+continuation-fold correspondence, cursor/zipper seek and traversal, source-aware
+append/freeze, and iterative destruction. The runtime must not wrap a composed
+source as another terminal leaf, causing hidden ownership/delegation chains.
+Literal windows and genuinely generated located bytes remain distinct.
+
+Whole-import acceptance also requires the checked bulk forward/reverse ACT
+transport, retained provenance and hash-range cursors, and separate descriptor,
+source-read and validation-bitmap counters. These concatenation laws alone do
+not prove the J-121 import slope, release safety or production ACT/LMDB parity.
+
+### Proof checkpoint qualification
+
+Full compilation reports 279 closed-context checks (260 existing plus 19 new),
+and independent kernel checking succeeds. Compilation took 159.524 seconds
+wall time and 29.843 seconds CPU, with a 1G peak; the kernel check took
+20.210 seconds wall time and 19.980 seconds CPU, with a 486M peak. Both ran
+under MemoryHigh=1G, MemoryMax=2G, MemorySwapMax=0, CPUQuota=100%, TasksMax=64
+and a 900-second deadline. Compilation was memory-high throttled during
+artifact finalization; early printed proof results were not treated as completion.
+No new Rust implementation or runtime test result is claimed by this checkpoint.
+See journal J-123 for source/log hashes and retained diagnostic failures.

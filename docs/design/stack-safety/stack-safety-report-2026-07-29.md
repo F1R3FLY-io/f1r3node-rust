@@ -10666,6 +10666,31 @@ See [J-121](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-121--2026-09-
 for the complete matrix, raw 612 samples, protocol, hashes and limitations.
 
 
+#### 5.33.40 Balanced byte-source concatenation proof boundary (2026-09-10)
+
+The nested-import prerequisite now has 19 additional closed proofs over a
+concrete persistent 2–3 tree of original located source windows. It preserves
+checked caches, balance, byte/provenance order and historical sources/roots.
+For input-height difference $`d`$, the join takes exactly $`d+1`$ boundary
+visits and at most $`2d+1`$ new joins, retaining off-spine subtree references
+in the model. This descriptor tree does not replace the PathMap trie.
+
+Full compilation passes **279 closed checks** and independent kernel checking
+succeeds. Under a 1G memory-high threshold, 2G hard limit and zero swap,
+compilation takes 159.524 seconds wall time (29.843 seconds CPU, 1G peak);
+kernel checking takes 20.210 seconds (19.980 seconds CPU, 486M peak).
+Compilation was memory-high throttled during finalization, not accepted from
+intermediate printed checks.
+
+This is **proof-only**, not a new native-stack, runtime allocation or throughput
+result. Iterative concat/split correspondence, cursor traversal, release and
+bulk ACT integration remain required. The existing nested-import time slope
+remains unresolved. The formal README lists every exported invariant's required
+executable binding; [J-123](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-123--2026-09-10-verified-balanced-byte-source-concatenation-prerequisite)
+records exact source/log hashes, diagnostic failures and qualification limits.
+No consensus-visible bytes, hashes, COMM or accounting behavior changes.
+
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

@@ -8379,3 +8379,844 @@ Print Assumptions remembering_preserves_maximal_adjacent_state_runs.
 Print Assumptions popping_preserves_maximal_adjacent_state_runs.
 
 End CompressedScalarUndo.
+
+Module BalancedSourceComposition.
+
+Import CanonicalKeyProtocol IndexedWindowTransport.
+
+Inductive tree :=
+| Leaf (view : window)
+| Join2 (cached_length cached_height : nat) (left right : tree)
+| Join3 (cached_length cached_height : nat) (left middle right : tree).
+
+Definition size current :=
+  match current with
+  | Leaf view => window_width view
+  | Join2 count _ _ _ | Join3 count _ _ _ _ => count
+  end.
+
+Definition height current :=
+  match current with
+  | Leaf _ => 0
+  | Join2 _ rank _ _ | Join3 _ rank _ _ _ => rank
+  end.
+
+Definition node2 left right :=
+  Join2 (size left + size right) (S (height left)) left right.
+
+Definition node3 left middle right :=
+  Join3 (size left + size middle + size right) (S (height left)) left middle right.
+
+Fixpoint terminals current :=
+  match current with
+  | Leaf view => [view]
+  | Join2 _ _ first last => terminals first ++ terminals last
+  | Join3 _ _ first middle last => terminals first ++ terminals middle ++ terminals last
+  end.
+
+Inductive balanced : tree -> Prop :=
+| BalancedLeaf view : 0 < window_width view -> balanced (Leaf view)
+| Balanced2 left right :
+    balanced left -> balanced right -> height left = height right ->
+    balanced (node2 left right)
+| Balanced3 left middle right :
+    balanced left -> balanced middle -> balanced right ->
+    height left = height middle -> height left = height right ->
+    balanced (node3 left middle right).
+
+Inductive pieces :=
+| One (single : tree)
+| Two (first second : tree).
+
+Definition piece_height current :=
+  match current with One single => height single | Two first _ => height first end.
+
+Definition piece_size current :=
+  match current with One single => size single | Two first second => size first + size second end.
+
+Definition piece_terminals current :=
+  match current with
+  | One single => terminals single
+  | Two first second => terminals first ++ terminals second
+  end.
+
+Definition balanced_pieces current :=
+  match current with
+  | One single => balanced single
+  | Two first second => balanced first /\ balanced second /\ height first = height second
+  end.
+
+Record join_result := Joined {
+  joined_pieces : pieces;
+  boundary_visits : nat;
+  rebuilt_nodes : nat
+}.
+
+Definition absorb_right2 left result :=
+  Joined
+    (match joined_pieces result with
+    | One next => One (node2 left next)
+    | Two first second => One (node3 left first second)
+    end)
+    (S (boundary_visits result)) (S (rebuilt_nodes result)).
+
+Definition absorb_right3 left middle result :=
+  Joined
+    (match joined_pieces result with
+    | One next => One (node3 left middle next)
+    | Two first second => Two (node2 left middle) (node2 first second)
+    end)
+    (S (boundary_visits result))
+    (match joined_pieces result with
+    | One _ => S (rebuilt_nodes result)
+    | Two _ _ => 2 + rebuilt_nodes result
+    end).
+
+Definition absorb_left2 result right :=
+  Joined
+    (match joined_pieces result with
+    | One next => One (node2 next right)
+    | Two first second => One (node3 first second right)
+    end)
+    (S (boundary_visits result)) (S (rebuilt_nodes result)).
+
+Definition absorb_left3 result middle right :=
+  Joined
+    (match joined_pieces result with
+    | One next => One (node3 next middle right)
+    | Two first second => Two (node2 first second) (node2 middle right)
+    end)
+    (S (boundary_visits result))
+    (match joined_pieces result with
+    | One _ => S (rebuilt_nodes result)
+    | Two _ _ => 2 + rebuilt_nodes result
+    end).
+
+Fixpoint join_right left right :=
+  if height left =? height right then Joined (Two left right) 1 0
+  else match left with
+  | Leaf _ => Joined (Two left right) 1 0
+  | Join2 _ _ first last => absorb_right2 first (join_right last right)
+  | Join3 _ _ first middle last => absorb_right3 first middle (join_right last right)
+  end.
+
+Fixpoint join_left left right {struct right} :=
+  if height left =? height right then Joined (Two left right) 1 0
+  else match right with
+  | Leaf _ => Joined (Two left right) 1 0
+  | Join2 _ _ first last => absorb_left2 (join_left left first) last
+  | Join3 _ _ first middle last => absorb_left3 (join_left left first) middle last
+  end.
+
+Definition finish current :=
+  match current with One single => single | Two first second => node2 first second end.
+
+Definition concatenate left right :=
+  if height left <=? height right then join_left left right else join_right left right.
+
+Definition concatenate_root left right := finish (joined_pieces (concatenate left right)).
+
+Definition checked_concatenate limit left right :=
+  if size left + size right <=? limit then Some (concatenate_root left right) else None.
+
+Lemma balanced_shape2 count rank left right :
+  balanced (Join2 count rank left right) ->
+  balanced left /\ balanced right /\ height left = height right /\
+  count = size left + size right /\ rank = S (height left).
+Proof. intro valid. inversion valid; subst. repeat split; assumption || reflexivity. Qed.
+
+Lemma balanced_shape3 count rank left middle right :
+  balanced (Join3 count rank left middle right) ->
+  balanced left /\ balanced middle /\ balanced right /\
+  height left = height middle /\ height left = height right /\
+  count = size left + size middle + size right /\ rank = S (height left).
+Proof. intro valid. inversion valid; subst. repeat split; assumption || reflexivity. Qed.
+
+Lemma balanced_size_positive current : balanced current -> 0 < size current.
+Proof. intro valid. induction valid; cbn [node2 node3 size]; lia. Qed.
+
+Lemma balanced_height_bounded_by_bytes current :
+  balanced current -> height current < size current.
+Proof.
+  intro valid. induction valid; cbn [node2 node3 size height] in *; lia.
+Qed.
+
+Definition join_contract left right rank result :=
+  balanced_pieces (joined_pieces result) /\
+  piece_height (joined_pieces result) = rank /\
+  piece_size (joined_pieces result) = size left + size right /\
+  piece_terminals (joined_pieces result) = terminals left ++ terminals right.
+
+Lemma absorb_right2_contract first last right result :
+  balanced first -> height first = height last ->
+  join_contract last right (height last) result ->
+  join_contract (node2 first last) right (S (height last)) (absorb_right2 first result).
+Proof.
+  intros first_valid same (valid & rank & count & contents).
+  destruct result as [[next|next tail] visits rebuilt];
+    cbn [joined_pieces balanced_pieces piece_height piece_size piece_terminals] in *;
+    unfold join_contract, absorb_right2; cbn [joined_pieces piece_height piece_size piece_terminals node2 node3 size height terminals].
+  - split; [constructor; [exact first_valid|exact valid|lia]|].
+    repeat split; try lia. now rewrite contents, app_assoc.
+  - destruct valid as (next_valid & tail_valid & next_same).
+    split; [constructor; [exact first_valid|exact next_valid|exact tail_valid|lia|lia]|].
+    repeat split; try lia. now rewrite contents, app_assoc.
+Qed.
+
+Lemma absorb_right3_contract first middle last right result :
+  balanced first -> balanced middle -> height first = height middle ->
+  height first = height last ->
+  join_contract last right (height last) result ->
+  join_contract (node3 first middle last) right (S (height last)) (absorb_right3 first middle result).
+Proof.
+  intros first_valid middle_valid same_middle same (valid & rank & count & contents).
+  destruct result as [[next|next tail] visits rebuilt];
+    cbn [joined_pieces balanced_pieces piece_height piece_size piece_terminals] in *;
+    unfold join_contract, absorb_right3; cbn [joined_pieces piece_height piece_size piece_terminals node2 node3 size height terminals].
+  - split; [constructor; [exact first_valid|exact middle_valid|exact valid|lia|lia]|].
+    repeat split; try lia. now rewrite contents, !app_assoc.
+  - destruct valid as (next_valid & tail_valid & next_same).
+    split.
+    + split; [constructor; assumption|]. split; [constructor; assumption|].
+      cbn [node2 height]. lia.
+    + repeat split; try lia. now rewrite contents, !app_assoc.
+Qed.
+
+Lemma absorb_left2_contract left first last result :
+  balanced last -> height first = height last ->
+  join_contract left first (height first) result ->
+  join_contract left (node2 first last) (S (height first)) (absorb_left2 result last).
+Proof.
+  intros last_valid same (valid & rank & count & contents).
+  destruct result as [[next|next tail] visits rebuilt];
+    cbn [joined_pieces balanced_pieces piece_height piece_size piece_terminals] in *;
+    unfold join_contract, absorb_left2; cbn [joined_pieces piece_height piece_size piece_terminals node2 node3 size height terminals].
+  - split; [constructor; [exact valid|exact last_valid|lia]|].
+    repeat split; try lia. now rewrite contents, app_assoc.
+  - destruct valid as (next_valid & tail_valid & next_same).
+    split; [constructor; [exact next_valid|exact tail_valid|exact last_valid|lia|lia]|].
+    repeat split; try lia. now rewrite !app_assoc, contents.
+Qed.
+
+Lemma absorb_left3_contract left first middle last result :
+  balanced middle -> balanced last -> height first = height middle ->
+  height first = height last ->
+  join_contract left first (height first) result ->
+  join_contract left (node3 first middle last) (S (height first)) (absorb_left3 result middle last).
+Proof.
+  intros middle_valid last_valid same_middle same (valid & rank & count & contents).
+  destruct result as [[next|next tail] visits rebuilt];
+    cbn [joined_pieces balanced_pieces piece_height piece_size piece_terminals] in *;
+    unfold join_contract, absorb_left3; cbn [joined_pieces piece_height piece_size piece_terminals node2 node3 size height terminals].
+  - split; [constructor; [exact valid|exact middle_valid|exact last_valid|lia|lia]|].
+    repeat split; try lia. now rewrite contents, !app_assoc.
+  - destruct valid as (next_valid & tail_valid & next_same).
+    split.
+    + split; [constructor; assumption|]. split; [constructor; [exact middle_valid|exact last_valid|lia]|].
+      cbn [node2 height]. lia.
+    + repeat split; try lia. now rewrite contents, !app_assoc.
+Qed.
+
+Lemma equal_height_contract left right :
+  balanced left -> balanced right -> height left = height right ->
+  join_contract left right (height left) (Joined (Two left right) 1 0).
+Proof. intros left_valid right_valid same. repeat split; assumption || reflexivity. Qed.
+
+Lemma join_right_equal left right :
+  height left = height right -> join_right left right = Joined (Two left right) 1 0.
+Proof.
+  intro same. destruct left; cbn [join_right]; rewrite <- same, Nat.eqb_refl; reflexivity.
+Qed.
+
+Lemma join_left_equal left right :
+  height left = height right -> join_left left right = Joined (Two left right) 1 0.
+Proof.
+  intro same. destruct right; cbn [join_left]; rewrite same, Nat.eqb_refl; reflexivity.
+Qed.
+
+Theorem right_spine_rebuilding_keeps_the_exact_other_children first last right :
+  height (node2 first last) <> height right ->
+  join_right (node2 first last) right = absorb_right2 first (join_right last right).
+Proof.
+  intro different. cbn [join_right node2 height].
+  assert (S (height first) =? height right = false) by (apply Nat.eqb_neq; exact different).
+  now rewrite H.
+Qed.
+
+Theorem right_three_spine_rebuilding_keeps_the_exact_other_children first middle last right :
+  height (node3 first middle last) <> height right ->
+  join_right (node3 first middle last) right = absorb_right3 first middle (join_right last right).
+Proof.
+  intro different. cbn [join_right node3 height].
+  assert (S (height first) =? height right = false) by (apply Nat.eqb_neq; exact different).
+  now rewrite H.
+Qed.
+
+Theorem left_spine_rebuilding_keeps_the_exact_other_children left first last :
+  height left <> height (node2 first last) ->
+  join_left left (node2 first last) = absorb_left2 (join_left left first) last.
+Proof.
+  intro different. cbn [join_left node2 height].
+  assert (height left =? S (height first) = false) by (apply Nat.eqb_neq; exact different).
+  now rewrite H.
+Qed.
+
+Theorem left_three_spine_rebuilding_keeps_the_exact_other_children left first middle last :
+  height left <> height (node3 first middle last) ->
+  join_left left (node3 first middle last) = absorb_left3 (join_left left first) middle last.
+Proof.
+  intro different. cbn [join_left node3 height].
+  assert (height left =? S (height first) = false) by (apply Nat.eqb_neq; exact different).
+  now rewrite H.
+Qed.
+
+Theorem concrete_right_join_preserves_balance_caches_terminals_and_boundary_work left :
+  balanced left -> forall right,
+  balanced right -> height right <= height left ->
+  join_contract left right (height left) (join_right left right) /\
+  boundary_visits (join_right left right) = S (height left - height right) /\
+  rebuilt_nodes (join_right left right) <= 2 * (height left - height right).
+Proof.
+  intro left_valid.
+  induction left_valid as [view nonempty|first last first_valid first_IH last_valid last_IH same|
+    first middle last first_valid first_IH middle_valid middle_IH last_valid last_IH same_middle same];
+    intros right right_valid ordered.
+  - assert (equal : height (Leaf view) = height right) by (cbn [height] in *; lia).
+    rewrite join_right_equal by exact equal.
+    split; [apply equal_height_contract; [constructor; exact nonempty|exact right_valid|exact equal]|].
+    cbn [boundary_visits rebuilt_nodes]. rewrite equal, Nat.sub_diag. split; reflexivity.
+  - destruct (Nat.eq_dec (height (node2 first last)) (height right)) as [equal|different].
+    + rewrite join_right_equal by exact equal.
+      split; [apply equal_height_contract; [constructor; assumption|exact right_valid|exact equal]|].
+      cbn [boundary_visits rebuilt_nodes]. rewrite equal, Nat.sub_diag. split; reflexivity.
+    + rewrite right_spine_rebuilding_keeps_the_exact_other_children by exact different.
+      assert (lower : height right <= height last) by (cbn [node2 height] in *; lia).
+      destruct (last_IH right right_valid lower) as [contract [visits rebuilt]].
+      split.
+      * cbn [node2 height]. rewrite same.
+        now apply absorb_right2_contract.
+      * unfold absorb_right2. cbn [boundary_visits rebuilt_nodes node2 height]. rewrite visits.
+        split; lia.
+  - destruct (Nat.eq_dec (height (node3 first middle last)) (height right)) as [equal|different].
+    + rewrite join_right_equal by exact equal.
+      split; [apply equal_height_contract; [constructor; assumption|exact right_valid|exact equal]|].
+      cbn [boundary_visits rebuilt_nodes]. rewrite equal, Nat.sub_diag. split; reflexivity.
+    + rewrite right_three_spine_rebuilding_keeps_the_exact_other_children by exact different.
+      assert (lower : height right <= height last) by (cbn [node3 height] in *; lia).
+      destruct (last_IH right right_valid lower) as [contract [visits rebuilt]].
+      split.
+      * cbn [node3 height]. rewrite same.
+        now apply absorb_right3_contract.
+      * unfold absorb_right3. cbn [boundary_visits rebuilt_nodes node3 height]. rewrite visits.
+        destruct (joined_pieces (join_right last right)); split; lia.
+Qed.
+
+Theorem concrete_left_join_preserves_balance_caches_terminals_and_boundary_work right :
+  balanced right -> forall left,
+  balanced left -> height left <= height right ->
+  join_contract left right (height right) (join_left left right) /\
+  boundary_visits (join_left left right) = S (height right - height left) /\
+  rebuilt_nodes (join_left left right) <= 2 * (height right - height left).
+Proof.
+  intro right_valid.
+  induction right_valid as [view nonempty|first last first_valid first_IH last_valid last_IH same|
+    first middle last first_valid first_IH middle_valid middle_IH last_valid last_IH same_middle same];
+    intros left left_valid ordered.
+  - assert (equal : height left = height (Leaf view)) by (cbn [height] in *; lia).
+    rewrite join_left_equal by exact equal.
+    split; [rewrite <- equal; apply equal_height_contract; [exact left_valid|constructor; exact nonempty|exact equal]|].
+    cbn [boundary_visits rebuilt_nodes]. rewrite equal, Nat.sub_diag. split; reflexivity.
+  - destruct (Nat.eq_dec (height left) (height (node2 first last))) as [equal|different].
+    + rewrite join_left_equal by exact equal.
+      split; [rewrite <- equal; apply equal_height_contract; [exact left_valid|constructor; assumption|exact equal]|].
+      cbn [boundary_visits rebuilt_nodes]. rewrite equal, Nat.sub_diag. split; reflexivity.
+    + rewrite left_spine_rebuilding_keeps_the_exact_other_children by exact different.
+      assert (lower : height left <= height first) by (cbn [node2 height] in *; lia).
+      destruct (first_IH left left_valid lower) as [contract [visits rebuilt]].
+      split.
+      * now apply absorb_left2_contract.
+      * unfold absorb_left2. cbn [boundary_visits rebuilt_nodes node2 height]. rewrite visits.
+        split; lia.
+  - destruct (Nat.eq_dec (height left) (height (node3 first middle last))) as [equal|different].
+    + rewrite join_left_equal by exact equal.
+      split; [rewrite <- equal; apply equal_height_contract; [exact left_valid|constructor; assumption|exact equal]|].
+      cbn [boundary_visits rebuilt_nodes]. rewrite equal, Nat.sub_diag. split; reflexivity.
+    + rewrite left_three_spine_rebuilding_keeps_the_exact_other_children by exact different.
+      assert (lower : height left <= height first) by (cbn [node3 height] in *; lia).
+      destruct (first_IH left left_valid lower) as [contract [visits rebuilt]].
+      split.
+      * now apply absorb_left3_contract.
+      * unfold absorb_left3. cbn [boundary_visits rebuilt_nodes node3 height]. rewrite visits.
+        destruct (joined_pieces (join_left left first)); split; lia.
+Qed.
+
+Definition height_gap left right :=
+  Nat.max (height left) (height right) - Nat.min (height left) (height right).
+
+Definition total_rebuilt result :=
+  rebuilt_nodes result +
+    match joined_pieces result with One _ => 0 | Two _ _ => 1 end.
+
+Lemma finish_preserves_piece_contract current :
+  balanced_pieces current ->
+  balanced (finish current) /\
+  size (finish current) = piece_size current /\
+  terminals (finish current) = piece_terminals current /\
+  piece_height current <= height (finish current) <= S (piece_height current).
+Proof.
+  destruct current as [single|first second]; cbn [balanced_pieces finish piece_size piece_terminals piece_height].
+  - intro valid. repeat split; assumption || reflexivity || lia.
+  - intros (first_valid & second_valid & same).
+    split; [constructor; assumption|]. cbn [node2 size height terminals].
+    repeat split; reflexivity || lia.
+Qed.
+
+Theorem concrete_concatenation_has_exact_caches_balance_order_and_boundary_cost left right :
+  balanced left -> balanced right ->
+  balanced (concatenate_root left right) /\
+  size (concatenate_root left right) = size left + size right /\
+  terminals (concatenate_root left right) = terminals left ++ terminals right /\
+  Nat.max (height left) (height right) <= height (concatenate_root left right) <=
+    S (Nat.max (height left) (height right)) /\
+  boundary_visits (concatenate left right) = S (height_gap left right) /\
+  total_rebuilt (concatenate left right) <= S (2 * height_gap left right).
+Proof.
+  intros left_valid right_valid.
+  unfold concatenate_root, concatenate, height_gap.
+  destruct (height left <=? height right) eqn:direction.
+  - apply Nat.leb_le in direction.
+    destruct (concrete_left_join_preserves_balance_caches_terminals_and_boundary_work
+      right_valid left_valid direction) as [(valid & rank & count & contents) [visits rebuilt]].
+    destruct (finish_preserves_piece_contract _ valid) as (finished & same_size & same_terminals & bounds).
+    rewrite Nat.max_r, Nat.min_l by exact direction.
+    split; [exact finished|]. split; [now rewrite same_size|].
+    split; [now rewrite same_terminals|]. split; [now rewrite <- rank|].
+    split; [exact visits|]. unfold total_rebuilt.
+    destruct (joined_pieces (join_left left right)); lia.
+  - apply Nat.leb_gt in direction.
+    destruct (concrete_right_join_preserves_balance_caches_terminals_and_boundary_work
+      left_valid right_valid ltac:(lia)) as [(valid & rank & count & contents) [visits rebuilt]].
+    destruct (finish_preserves_piece_contract _ valid) as (finished & same_size & same_terminals & bounds).
+    rewrite Nat.max_l, Nat.min_r by lia.
+    split; [exact finished|]. split; [now rewrite same_size|].
+    split; [now rewrite same_terminals|]. split; [now rewrite <- rank|].
+    split; [exact visits|]. unfold total_rebuilt.
+    destruct (joined_pieces (join_right left right)); lia.
+Qed.
+
+Fixpoint native_metadata limit current : Prop :=
+  size current <= limit /\ height current <= limit /\
+  match current with
+  | Leaf _ => True
+  | Join2 _ _ first last => native_metadata limit first /\ native_metadata limit last
+  | Join3 _ _ first middle last =>
+      native_metadata limit first /\ native_metadata limit middle /\ native_metadata limit last
+  end.
+
+Lemma balanced_sizes_bound_every_cached_sum_and_height limit current :
+  balanced current -> size current <= limit -> native_metadata limit current.
+Proof.
+  intro valid. induction valid; intro fits.
+  - cbn [native_metadata]. split; [exact fits|]. split; [cbn [height]; lia|exact I].
+  - change (size (node2 left right) <= limit /\ height (node2 left right) <= limit /\
+      native_metadata limit left /\ native_metadata limit right).
+    split; [exact fits|]. split.
+    + pose proof (balanced_height_bounded_by_bytes (Balanced2 valid1 valid2 H)). lia.
+    + split; [apply IHvalid1|apply IHvalid2]; cbn [node2 size] in fits; lia.
+  - change (size (node3 left middle right) <= limit /\ height (node3 left middle right) <= limit /\
+      native_metadata limit left /\ native_metadata limit middle /\ native_metadata limit right).
+    split; [exact fits|]. split.
+    + pose proof (balanced_height_bounded_by_bytes (Balanced3 valid1 valid2 valid3 H H0)). lia.
+    + split; [apply IHvalid1|split; [apply IHvalid2|apply IHvalid3]]; cbn [node3 size] in fits; lia.
+Qed.
+
+Theorem checked_concatenation_has_only_the_exact_native_length_preflight limit left right result :
+  balanced left -> balanced right ->
+  (checked_concatenate limit left right = Some result <->
+    size left + size right <= limit /\ result = concatenate_root left right).
+Proof.
+  intros left_valid right_valid. unfold checked_concatenate.
+  destruct (size left + size right <=? limit) eqn:fits.
+  - apply Nat.leb_le in fits. split; [intro same; inversion same; subst; tauto|intros [_ ->]; reflexivity].
+  - apply Nat.leb_gt in fits. split; [discriminate|intros [bound _]; lia].
+Qed.
+
+Theorem checked_concatenation_preserves_all_native_cached_lengths_and_heights limit left right result :
+  balanced left -> balanced right ->
+  checked_concatenate limit left right = Some result ->
+  balanced result /\ size result = size left + size right /\ native_metadata limit result.
+Proof.
+  intros left_valid right_valid accepted.
+  apply checked_concatenation_has_only_the_exact_native_length_preflight in accepted; try assumption.
+  destruct accepted as [fits ->].
+  destruct (concrete_concatenation_has_exact_caches_balance_order_and_boundary_cost left_valid right_valid)
+    as [valid [count rest]].
+  split; [exact valid|]. split; [exact count|].
+  apply balanced_sizes_bound_every_cached_sum_and_height; [exact valid|now rewrite count].
+Qed.
+
+Theorem balanced_height_has_a_concrete_exponential_terminal_lower_bound current :
+  balanced current -> 2 ^ height current <= length (terminals current).
+Proof.
+  intro valid. induction valid; cbn [node2 node3 terminals height].
+  - reflexivity.
+  - rewrite length_app, Nat.pow_succ_r by lia. rewrite <- H in IHvalid2. lia.
+  - rewrite !length_app, Nat.pow_succ_r by lia.
+    rewrite <- H in IHvalid2. rewrite <- H0 in IHvalid3. lia.
+Qed.
+
+Section LocatedDenotation.
+Variable roots : nat -> region.
+
+Definition terminal_bytes view := window_bytes (roots (window_owner view)) view.
+Definition denotation current := concat (map terminal_bytes (terminals current)).
+Definition valid_sources current :=
+  Forall (fun view => window_valid (roots (window_owner view)) view) (terminals current).
+
+Lemma balanced_cache_is_the_sum_of_terminal_widths current :
+  balanced current -> size current = fold_right (fun view rest => window_width view + rest) 0 (terminals current).
+Proof.
+  intro valid. induction valid; cbn [size node2 node3 terminals].
+  - cbn [fold_right]. lia.
+  - rewrite fold_right_app. rewrite <- IHvalid2.
+    assert (sum_app : forall views tail,
+      fold_right (fun view rest => window_width view + rest) tail views =
+      fold_right (fun view rest => window_width view + rest) 0 views + tail).
+    { induction views; intro tail; cbn; [reflexivity|rewrite IHviews; lia]. }
+    rewrite sum_app, <- IHvalid1. reflexivity.
+  - assert (sum_app : forall views tail,
+      fold_right (fun view rest => window_width view + rest) tail views =
+      fold_right (fun view rest => window_width view + rest) 0 views + tail).
+    { induction views; intro tail; cbn; [reflexivity|rewrite IHviews; lia]. }
+    rewrite !fold_right_app.
+    rewrite (sum_app (terminals left)), (sum_app (terminals middle)).
+    rewrite <- IHvalid1, <- IHvalid2, <- IHvalid3. lia.
+Qed.
+
+Lemma source_validity_gives_exact_denotation_length current :
+  balanced current -> valid_sources current -> length (denotation current) = size current.
+Proof.
+  intros balanced_current valid.
+  rewrite balanced_cache_is_the_sum_of_terminal_widths by exact balanced_current.
+  unfold denotation. unfold valid_sources in valid.
+  induction valid as [|view rest head_valid rest_valid IH]; cbn; [reflexivity|].
+  rewrite length_app, IH. unfold terminal_bytes. now rewrite valid_window_length.
+Qed.
+
+Theorem actual_join_preserves_arbitrary_located_bytes_and_valid_original_sources left right :
+  balanced left -> balanced right -> valid_sources left -> valid_sources right ->
+  denotation (concatenate_root left right) = denotation left ++ denotation right /\
+  valid_sources (concatenate_root left right) /\
+  length (denotation (concatenate_root left right)) = size left + size right.
+Proof.
+  intros left_balanced right_balanced left_valid right_valid.
+  destruct (concrete_concatenation_has_exact_caches_balance_order_and_boundary_cost left_balanced right_balanced)
+    as [balanced_result [count [ordered rest]]].
+  assert (valid_result : valid_sources (concatenate_root left right)).
+  { unfold valid_sources. rewrite ordered. apply Forall_app. tauto. }
+  split.
+  - unfold denotation. rewrite ordered, map_app, concat_app. reflexivity.
+  - split; [exact valid_result|].
+    rewrite source_validity_gives_exact_denotation_length; assumption.
+Qed.
+
+Definition checked_leaf limit view :=
+  if (0 <? window_width view) &&
+      (window_owner view =? region_owner (roots (window_owner view))) &&
+      (window_start view + window_width view <=? length (region_bytes (roots (window_owner view)))) &&
+      (window_start view + window_width view <=? limit)
+  then Some (Leaf view) else None.
+
+Theorem checked_terminal_leaf_retains_the_exact_original_window limit view result :
+  checked_leaf limit view = Some result <->
+  0 < window_width view /\ window_valid (roots (window_owner view)) view /\
+  window_start view + window_width view <= limit /\ result = Leaf view.
+Proof.
+  unfold checked_leaf.
+  destruct ((0 <? window_width view) &&
+      (window_owner view =? region_owner (roots (window_owner view))) &&
+      (window_start view + window_width view <=? length (region_bytes (roots (window_owner view)))) &&
+      (window_start view + window_width view <=? limit)) eqn:guard.
+  - repeat rewrite andb_true_iff in guard.
+    rewrite Nat.ltb_lt, Nat.eqb_eq, !Nat.leb_le in guard.
+    unfold window_valid. split; [intro same; inversion same; subst; tauto|intros [_ [_ [_ ->]]]; reflexivity].
+  - split; [discriminate|]. intros (nonempty & [same valid] & fits & ->).
+    assert (guard_true : (0 <? window_width view) &&
+      (window_owner view =? region_owner (roots (window_owner view))) &&
+      (window_start view + window_width view <=? length (region_bytes (roots (window_owner view)))) &&
+      (window_start view + window_width view <=? limit) = true).
+    { repeat rewrite andb_true_iff. rewrite Nat.ltb_lt, Nat.eqb_eq, !Nat.leb_le. tauto. }
+    congruence.
+Qed.
+
+Theorem checked_terminal_leaf_has_exact_bytes_and_representable_metadata limit view result :
+  checked_leaf limit view = Some result ->
+  balanced result /\ valid_sources result /\ native_metadata limit result /\
+  denotation result = window_bytes (roots (window_owner view)) view.
+Proof.
+  intro accepted. apply checked_terminal_leaf_retains_the_exact_original_window in accepted.
+  destruct accepted as (nonempty & valid & fits & ->).
+  split; [constructor; exact nonempty|].
+  split; [constructor; [exact valid|constructor]|].
+  split.
+  - apply balanced_sizes_bound_every_cached_sum_and_height; [constructor; exact nonempty|cbn [size]; lia].
+  - unfold denotation; cbn [terminals map concat]. now rewrite app_nil_r.
+Qed.
+
+End LocatedDenotation.
+
+Inductive subtree : tree -> tree -> Prop :=
+| SubtreeRoot current : subtree current current
+| Subtree2Left current count rank first last :
+    subtree current first -> subtree current (Join2 count rank first last)
+| Subtree2Right current count rank first last :
+    subtree current last -> subtree current (Join2 count rank first last)
+| Subtree3Left current count rank first middle last :
+    subtree current first -> subtree current (Join3 count rank first middle last)
+| Subtree3Middle current count rank first middle last :
+    subtree current middle -> subtree current (Join3 count rank first middle last)
+| Subtree3Right current count rank first middle last :
+    subtree current last -> subtree current (Join3 count rank first middle last).
+
+Lemma subtree_transitive first middle last :
+  subtree first middle -> subtree middle last -> subtree first last.
+Proof. intros inside outside. induction outside; eauto using subtree. Qed.
+
+Definition reference_closed (available : tree -> Prop) :=
+  forall parent child, available parent -> subtree child parent -> available child.
+
+Inductive reference_assembly (available : tree -> Prop) : tree -> nat -> Prop :=
+| RetainReference current : available current -> reference_assembly available current 0
+| Allocate2 first last first_cost last_cost total :
+    reference_assembly available first first_cost ->
+    reference_assembly available last last_cost ->
+    total = S (first_cost + last_cost) ->
+    reference_assembly available (node2 first last) total
+| Allocate3 first middle last first_cost middle_cost last_cost total :
+    reference_assembly available first first_cost ->
+    reference_assembly available middle middle_cost ->
+    reference_assembly available last last_cost ->
+    total = S (first_cost + middle_cost + last_cost) ->
+    reference_assembly available (node3 first middle last) total.
+
+Definition piece_assembly available current cost :=
+  match current with
+  | One single => reference_assembly available single cost
+  | Two first second => exists first_cost second_cost,
+      reference_assembly available first first_cost /\
+      reference_assembly available second second_cost /\ cost = first_cost + second_cost
+  end.
+
+Lemma reference_absorb_right2 available first result :
+  available first ->
+  piece_assembly available (joined_pieces result) (rebuilt_nodes result) ->
+  piece_assembly available (joined_pieces (absorb_right2 first result))
+    (rebuilt_nodes (absorb_right2 first result)).
+Proof.
+  intros retained built. destruct result as [[next|next tail] visits cost];
+    cbn [piece_assembly joined_pieces rebuilt_nodes] in built;
+    cbn [absorb_right2 joined_pieces rebuilt_nodes piece_assembly].
+  - eapply Allocate2; [constructor; exact retained|exact built|reflexivity].
+  - destruct built as (next_cost & tail_cost & next_built & tail_built & ->).
+    eapply Allocate3; [constructor; exact retained|exact next_built|exact tail_built|reflexivity].
+Qed.
+
+Lemma reference_absorb_right3 available first middle result :
+  available first -> available middle ->
+  piece_assembly available (joined_pieces result) (rebuilt_nodes result) ->
+  piece_assembly available (joined_pieces (absorb_right3 first middle result))
+    (rebuilt_nodes (absorb_right3 first middle result)).
+Proof.
+  intros first_retained middle_retained built.
+  destruct result as [[next|next tail] visits cost];
+    cbn [piece_assembly joined_pieces rebuilt_nodes] in built;
+    cbn [absorb_right3 joined_pieces rebuilt_nodes piece_assembly].
+  - eapply Allocate3; [constructor; exact first_retained|constructor; exact middle_retained|exact built|reflexivity].
+  - destruct built as (next_cost & tail_cost & next_built & tail_built & ->).
+    exists 1, (S (next_cost + tail_cost)). repeat split.
+    + eapply Allocate2; [constructor; exact first_retained|constructor; exact middle_retained|reflexivity].
+    + eapply Allocate2; [exact next_built|exact tail_built|reflexivity].
+Qed.
+
+Lemma reference_absorb_left2 available result last :
+  available last ->
+  piece_assembly available (joined_pieces result) (rebuilt_nodes result) ->
+  piece_assembly available (joined_pieces (absorb_left2 result last))
+    (rebuilt_nodes (absorb_left2 result last)).
+Proof.
+  intros retained built. destruct result as [[next|next tail] visits cost];
+    cbn [piece_assembly joined_pieces rebuilt_nodes] in built;
+    cbn [absorb_left2 joined_pieces rebuilt_nodes piece_assembly].
+  - eapply Allocate2; [exact built|constructor; exact retained|lia].
+  - destruct built as (next_cost & tail_cost & next_built & tail_built & ->).
+    eapply Allocate3; [exact next_built|exact tail_built|constructor; exact retained|lia].
+Qed.
+
+Lemma reference_absorb_left3 available result middle last :
+  available middle -> available last ->
+  piece_assembly available (joined_pieces result) (rebuilt_nodes result) ->
+  piece_assembly available (joined_pieces (absorb_left3 result middle last))
+    (rebuilt_nodes (absorb_left3 result middle last)).
+Proof.
+  intros middle_retained last_retained built.
+  destruct result as [[next|next tail] visits cost];
+    cbn [piece_assembly joined_pieces rebuilt_nodes] in built;
+    cbn [absorb_left3 joined_pieces rebuilt_nodes piece_assembly].
+  - eapply Allocate3; [exact built|constructor; exact middle_retained|constructor; exact last_retained|lia].
+  - destruct built as (next_cost & tail_cost & next_built & tail_built & ->).
+    exists (S (next_cost + tail_cost)), 1. repeat split.
+    + eapply Allocate2; [exact next_built|exact tail_built|reflexivity].
+    + eapply Allocate2; [constructor; exact middle_retained|constructor; exact last_retained|reflexivity].
+    + lia.
+Qed.
+
+Lemma joined_pair_retains_both_exact_references available first last :
+  available first -> available last ->
+  piece_assembly available (Two first last) 0.
+Proof.
+  intros first_retained last_retained. exists 0, 0.
+  repeat split; constructor; assumption.
+Qed.
+
+Lemma right_join_has_an_exact_reference_assembly available left :
+  reference_closed available -> available left -> forall right, available right ->
+  piece_assembly available (joined_pieces (join_right left right)) (rebuilt_nodes (join_right left right)).
+Proof.
+  intros closed. induction left as [view|count rank first first_IH last last_IH|
+    count rank first first_IH middle middle_IH last last_IH]; intros retained right right_retained;
+    cbn [join_right]; destruct (height _ =? height right).
+  all: try (apply joined_pair_retains_both_exact_references; assumption).
+  - apply reference_absorb_right2.
+    + eapply closed; [exact retained|apply Subtree2Left; constructor].
+    + apply last_IH; [eapply closed; [exact retained|apply Subtree2Right; constructor]|exact right_retained].
+  - apply reference_absorb_right3.
+    + eapply closed; [exact retained|apply Subtree3Left; constructor].
+    + eapply closed; [exact retained|apply Subtree3Middle; constructor].
+    + apply last_IH; [eapply closed; [exact retained|apply Subtree3Right; constructor]|exact right_retained].
+Qed.
+
+Lemma left_join_has_an_exact_reference_assembly available right :
+  reference_closed available -> available right -> forall left, available left ->
+  piece_assembly available (joined_pieces (join_left left right)) (rebuilt_nodes (join_left left right)).
+Proof.
+  intros closed. induction right as [view|count rank first first_IH last last_IH|
+    count rank first first_IH middle middle_IH last last_IH]; intros retained left left_retained;
+    cbn [join_left]; destruct (height left =? height _).
+  all: try (apply joined_pair_retains_both_exact_references; assumption).
+  - apply reference_absorb_left2.
+    + eapply closed; [exact retained|apply Subtree2Right; constructor].
+    + apply first_IH; [eapply closed; [exact retained|apply Subtree2Left; constructor]|exact left_retained].
+  - apply reference_absorb_left3.
+    + eapply closed; [exact retained|apply Subtree3Middle; constructor].
+    + eapply closed; [exact retained|apply Subtree3Right; constructor].
+    + apply first_IH; [eapply closed; [exact retained|apply Subtree3Left; constructor]|exact left_retained].
+Qed.
+
+Definition input_reference left right candidate :=
+  subtree candidate left \/ subtree candidate right.
+
+Theorem concatenation_reuses_exact_input_subtree_references_with_the_counted_new_joins left right :
+  reference_assembly (input_reference left right) (concatenate_root left right)
+    (total_rebuilt (concatenate left right)).
+Proof.
+  assert (closed : reference_closed (input_reference left right)).
+  { intros parent child retained inside. destruct retained as [inside_left|inside_right];
+      [left|right]; eapply subtree_transitive; eassumption. }
+  assert (left_retained : input_reference left right left) by (left; constructor).
+  assert (right_retained : input_reference left right right) by (right; constructor).
+  assert (built : piece_assembly (input_reference left right)
+    (joined_pieces (concatenate left right)) (rebuilt_nodes (concatenate left right))).
+  { unfold concatenate. destruct (height left <=? height right).
+    - apply left_join_has_an_exact_reference_assembly; assumption.
+    - apply right_join_has_an_exact_reference_assembly; assumption. }
+  unfold concatenate_root, total_rebuilt.
+  destruct (joined_pieces (concatenate left right)) as [single|first second];
+    cbn [finish piece_assembly] in *.
+  - now rewrite Nat.add_0_r.
+  - destruct built as (first_cost & second_cost & first_built & second_built & count).
+    eapply Allocate2; [exact first_built|exact second_built|lia].
+Qed.
+
+Definition root := option tree.
+
+Definition root_size current := match current with None => 0 | Some value => size value end.
+
+Definition checked_root_concatenate limit (left right : root) :=
+  match left, right with
+  | None, _ => if root_size right <=? limit then Some right else None
+  | _, None => if root_size left <=? limit then Some left else None
+  | Some first, Some last => option_map (@Some tree) (checked_concatenate limit first last)
+  end.
+
+Theorem empty_data_roots_are_checked_identities_without_selecting_an_endpoint limit current :
+  root_size current <= limit ->
+  checked_root_concatenate limit None current = Some current /\
+  checked_root_concatenate limit current None = Some current.
+Proof.
+  intro fits. assert (root_size current <=? limit = true) by (apply Nat.leb_le; exact fits).
+  split.
+  - cbn [checked_root_concatenate]. now rewrite H.
+  - destruct current; cbn [checked_root_concatenate]; now rewrite H.
+Qed.
+
+Definition publish_root (stored : list tree) current := (stored ++ [current], length stored).
+
+Theorem publishing_a_composed_root_preserves_every_exact_historical_root stored current slot historical :
+  nth_error stored slot = Some historical ->
+  nth_error (fst (publish_root stored current)) slot = Some historical.
+Proof.
+  intro found. unfold publish_root; cbn.
+  rewrite nth_error_app1; [exact found|].
+  apply nth_error_Some. rewrite found. discriminate.
+Qed.
+
+Theorem root_publication_returns_the_exact_composed_tree_without_flattening stored current :
+  nth_error (fst (publish_root stored current)) (snd (publish_root stored current)) = Some current.
+Proof.
+  unfold publish_root; cbn. rewrite nth_error_app2 by lia. rewrite Nat.sub_diag. reflexivity.
+Qed.
+
+Theorem retaining_a_terminal_source_preserves_each_historical_window stored backing slot historical view :
+  nth_error stored slot = Some historical ->
+  window_bytes historical view =
+    window_bytes
+      (match nth_error (fst (NormalizedSourceSpans.retain_source stored backing)) slot with
+       | Some retained => retained | None => historical end) view.
+Proof.
+  intro found.
+  rewrite (@NormalizedSourceSpans.retaining_a_source_preserves_every_existing_backing
+    stored backing slot historical found).
+  reflexivity.
+Qed.
+
+Theorem preserved_original_sources_preserve_every_historical_root_denotation
+    earlier later current :
+  (forall view, In view (terminals current) ->
+    earlier (window_owner view) = later (window_owner view)) ->
+  denotation earlier current = denotation later current.
+Proof.
+  intro preserved. unfold denotation, terminal_bytes.
+  f_equal. apply map_ext_in. intros view found. now rewrite preserved by exact found.
+Qed.
+
+Print Assumptions right_spine_rebuilding_keeps_the_exact_other_children.
+Print Assumptions right_three_spine_rebuilding_keeps_the_exact_other_children.
+Print Assumptions left_spine_rebuilding_keeps_the_exact_other_children.
+Print Assumptions left_three_spine_rebuilding_keeps_the_exact_other_children.
+Print Assumptions concrete_right_join_preserves_balance_caches_terminals_and_boundary_work.
+Print Assumptions concrete_left_join_preserves_balance_caches_terminals_and_boundary_work.
+Print Assumptions concrete_concatenation_has_exact_caches_balance_order_and_boundary_cost.
+Print Assumptions checked_concatenation_has_only_the_exact_native_length_preflight.
+Print Assumptions checked_concatenation_preserves_all_native_cached_lengths_and_heights.
+Print Assumptions balanced_height_has_a_concrete_exponential_terminal_lower_bound.
+Print Assumptions actual_join_preserves_arbitrary_located_bytes_and_valid_original_sources.
+Print Assumptions checked_terminal_leaf_retains_the_exact_original_window.
+Print Assumptions checked_terminal_leaf_has_exact_bytes_and_representable_metadata.
+Print Assumptions concatenation_reuses_exact_input_subtree_references_with_the_counted_new_joins.
+Print Assumptions empty_data_roots_are_checked_identities_without_selecting_an_endpoint.
+Print Assumptions publishing_a_composed_root_preserves_every_exact_historical_root.
+Print Assumptions root_publication_returns_the_exact_composed_tree_without_flattening.
+Print Assumptions retaining_a_terminal_source_preserves_each_historical_window.
+Print Assumptions preserved_original_sources_preserve_every_historical_root_denotation.
+
+End BalancedSourceComposition.
