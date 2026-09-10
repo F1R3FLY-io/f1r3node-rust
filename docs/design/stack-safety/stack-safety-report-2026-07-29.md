@@ -10900,7 +10900,9 @@ full model-library gate green.
 Task 8413 remains open. Isolated GDB measurements show 32,256 bytes in the
 admission driver activation, 12,480 bytes in the canonical-path step and
 6,672 bytes in the indexed-path entry point, before the first input byte
-completes. The current heap-frame enum is 568 bytes. The planned repair moves
+completes. The initial unqualified 568-byte debugger lookup did not establish
+the outer heap-frame enum's identity. Typed native controls in the retained
+combined-gate log establish 1,272 bytes for that enum. The planned repair moves
 full child construction out of step return transport, using compact requests
 and the same heap frame vector. Stack size and fixture depth remain unchanged.
 
@@ -10982,6 +10984,33 @@ outer service reports only driver CPU/memory, not aggregate child resources.
 records independent-oracle review, exact tests, logs and resource scope.
 Shared-source importer integration and production slope measurements remain
 required before claiming that nested ACT admission benefits from this library.
+
+#### 5.33.53 Source-backed indexed regions (2026-09-10)
+
+Indexed byte regions now support original borrowed/frozen source trees with
+independent EOF authority. Views preserve shared roots; copy and mixed-backing
+equality use retained chunks without temporary source-leaf allocation. Direct
+controls cover lifetime retention, skip accounting, maximum offsets, all
+framing payload kinds and malformed terminal observations.
+
+Region size remains 64 bytes in the production mirror and 72 bytes with test
+variants. The outer admission frame changes from 1,272 to 1,304 bytes and its
+canonical-path frame from 560 to 592. J-133's earlier 568-byte debugger type
+lookup was unqualified and wrongly attributed to the outer enum; that report
+is corrected using exact typed native controls, not a reinterpreted lookup.
+Headless GDB confirms the unchanged 64 KiB fixture passes normally: driver
+activation is 13,248 bytes (32 more than the repaired baseline), step 5,856
+and entry 4,928 (unchanged). No stack-limit increase is introduced.
+
+The reviewed source state passes all 457 models release tests and targeted
+debug region/source/admission controls; service peak is 2.7G with zero swap
+under a 6 GiB hard cap. Final extended framing qualification also passes all
+457 release tests and the maintained proof/runtime gate, including the
+debug/release region matrices and eight expected compile-time refusals.
+[J-137](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-137--2026-09-10-source-backed-indexed-regions)
+records exact evidence and limitations. The admission arena has not yet
+switched to these source-backed roots, so no production import slope or
+ACT-versus-LMDB improvement is inferred.
 
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 

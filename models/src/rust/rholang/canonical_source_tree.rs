@@ -175,6 +175,14 @@ impl<'src> SourceTreeWindow<'src> {
 
     pub(crate) fn is_empty(&self) -> bool { self.len == 0 }
 
+    pub(crate) fn shares_root_with(&self, other: &SourceTreeWindow<'_>) -> bool {
+        match (&self.root, &other.root) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn height(&self) -> usize {
         self.root
             .as_ref()
@@ -426,10 +434,7 @@ impl<'src> SourceTreeWindow<'src> {
         if self.len != other.len {
             return false;
         }
-        if self.len == 0 || (self.start == other.start && match (&self.root, &other.root) {
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }) {
+        if self.len == 0 || (self.start == other.start && self.shares_root_with(other)) {
             return true;
         }
         if let (Some(left), Some(right)) = (

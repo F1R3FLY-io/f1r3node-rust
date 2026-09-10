@@ -46,6 +46,10 @@ fn assert_shared(parent: &IndexedByteRegion<'_>, child: &IndexedByteRegion<'_>, 
             IndexedByteBacking::Frozen { root: parent, .. },
             IndexedByteBacking::Frozen { root: child, .. },
         ) => assert!(child.shares_backing_with(parent)),
+        (
+            IndexedByteBacking::Composed { root: parent, .. },
+            IndexedByteBacking::Composed { root: child, .. },
+        ) => assert!(child.shares_root_with(parent)),
         _ => panic!("anchoring changed backing representation"),
     }
 }
@@ -127,6 +131,13 @@ proptest! {
             IndexedByteRegion::from_protobuf_region(ProtobufRegion::copy_from_slice(&bytes), 4),
             IndexedByteRegion::from_arena(&arena, handle, boundary),
             IndexedByteRegion::from_frozen(arena.freeze(handle), boundary),
+            IndexedByteRegion::from_source(
+                SourceTreeWindow::from_borrowed_range(&bytes, 0..bytes.len() / 2, 77, 501)
+                    .unwrap().concat(&SourceTreeWindow::from_frozen(
+                        arena.freeze(handle).subview(bytes.len() / 2..bytes.len()).unwrap()
+                    )).unwrap(),
+                boundary,
+            ),
         ];
         for root in &views {
             assert_window(root, range);

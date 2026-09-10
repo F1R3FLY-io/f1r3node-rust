@@ -3223,6 +3223,42 @@ J-136 records its transcript and separates driver resources from child scopes.
 Native allocator-work instrumentation and importer source integration remain
 separate requirements; neither follows from abstract fold equality.
 
+### Source-backed indexed regions (2026-09-10; task 6018)
+
+`IndexedByteBacking::Composed` retains the original `SourceTreeWindow`, outer
+start/length and independent root-end provenance. Ordinary views remain
+constant-work clones; explicit anchoring narrows the source window without
+copying bytes or wrapping a composed root as a new leaf. `source_window`
+extracts only bytes/provenance; an indexed conversion additionally needs an
+existing `position_at(len)` result. Test-only Contiguous/Arena backings retain
+their direct APIs rather than acquiring copying or lifetime-erasing adapters.
+
+The existing anchor-transport and normalized-source property matrices now
+include borrowed/frozen composed branches. Five additional native controls
+bind the integration to the existing window, coalescing, cursor and chunk laws:
+
+| Control | Required observation |
+|---|---|
+| `composed_mixed_sources_keep_lifetimes_and_exact_skip_accounting` | Original located bytes survive parent/arena release and sibling mutations; repeated views retain root identity; skips change yielded but not traversed counts, with failed-skip nonmutation. |
+| `composed_conversion_requires_independent_end_authority_at_native_max` | A valid last byte does not synthesize EOF; explicit anchored composed tails remain valid while the old borrowed physical-start refusal remains unchanged. |
+| `composed_cross_backing_coalescing_preserves_original_owners_and_right_end` | Borrowed/composed and frozen/composed pairs coalesce by original owner and adjacency in both directions, retaining the right selected endpoint. |
+| `composed_framing_matches_original_bytes_and_exact_terminal_errors` | Across every source seam, all canonical field payload kinds and malformed inputs retain field boundaries, located values, exact errors, terminal-error caching and cursor accounting. |
+| `all_backings_content_equality_preserves_bytes_across_chunk_partitions` | Every backing pair compares content independently of provenance, with unequal-length and every-position mismatch controls; test-only arena fallback is selected before chunk consumption. |
+
+Typed controls preserve production/test region sizes of 64/72 bytes on the
+observed 64-bit target. Outer admission frame and canonical-path frame grow
+by 32 bytes to 1,304/592; unchanged 64 KiB admission passes, with measured
+driver activation 13,248 bytes and unchanged step/entry activations. J-137
+corrects the earlier unqualified debugger type-size attribution and separates
+type sizes, activation sizes and service memory. Full release qualification
+passes 457 tests; the final fixture-expanded maintained gate also passes,
+including both profiles of the source/arena/admission/region groups and the
+eight exact ACT span compiler-rejection controls. See J-137 for log identity
+and the distinction between outer-service and nested-scope resource usage.
+Source-backed compact arena handles, borrowed lifetime threading, historical
+publication/resource counters and complete importer correspondence remain
+required before closing task 6018.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

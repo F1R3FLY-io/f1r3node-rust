@@ -9460,11 +9460,14 @@ encoding, hash, COMM accounting or storage-metering behavior changes.
 before the first canonical-key byte completes, not after growing traversal
 depth. GDB stack-pointer differences attribute 32,256 bytes to
 `drive_admission`, 12,480 bytes to `CanonicalPathFrame::step`, and 6,672 bytes
-to `validate_canonical_path_indexed`. The current heap-frame enum is 568 bytes
-and its canonical-path variant is 560 bytes; historical larger enum-size
-measurements do not describe this binary. The evidence is
-`target/verification/canonical-admission-stack-pointers.log`. These are debug
-activation measurements, not retained heap sizes or application timings.
+to `validate_canonical_path_indexed`. The initial unqualified debugger lookup
+reported 568 bytes, but did not establish the outer admission enum's size.
+The exact typed native control in the retained combined-gate log establishes
+1,272 bytes for that enum and 560 bytes for `CanonicalPathFrame` in
+`target/verification/canonical-admission-request-integrated.log`. The separate
+activation evidence is `target/verification/canonical-admission-stack-pointers.log`.
+Type sizes and stack-pointer differences are distinct observations; neither
+is an application timing measurement.
 
 **DECISION.** Replace child-frame return transport with compact construction
 requests. Materialize each child in the driver after the parent step returns;
@@ -9761,6 +9764,110 @@ are driver-only measurements: heavy proof and Rust children run in separately
 bounded systemd scopes. They must not be presented as aggregate validation
 resource use. Implementation checkpoint is `b1f90aab7`; importer integration
 and production performance comparison remain open.
+
+### J-137 — 2026-09-10: source-backed indexed regions
+
+**FORMAL REUSE / INTEGRATION CONTRACT.** Add a composed indexed backing
+containing an original `SourceTreeWindow`, outer start/length and the exact
+root-end provenance. Ordinary subviews retain the same source root without
+traversal. An explicitly anchored subview narrows the source window, resets
+its outer start and stores the supplied endpoint. Interior positions resolve
+through the original source; only its actual end uses the retained anchor.
+Reuse `IndexedWindowTransport` and `NormalizedSourceSpans` laws for exact
+located windows, anchor overrides, identity/adjacency and right-end coalescing.
+
+Source-window extraction carries bytes and provenance, not implicit EOF.
+Region-preserving conversion separately requires `position_at(len)` to exist.
+Borrowed/Frozen extraction retains original backing; Composed extraction
+grafts the existing window, never a new composed wrapper leaf. Test-only
+Contiguous/Arena backings keep their direct paths rather than introducing
+copies or lifetime-erasing adapters. Their optional source accessor declines
+conversion. An anchored source-backed empty tail may be valid where the old
+borrowed constructor refuses physical-start overflow; document that boundary,
+not identical rejection behavior across representations.
+
+Bind both source cursors, random/contiguous/copy access and coalescing through
+existing indexed-region tests. Successful source skips update logical yielded
+count but not scalar traversed count; failed skips leave both untouched.
+Extend current property matrices with genuinely branched borrowed/frozen
+sources and independently check seams, explicit right endpoints, parent/arena
+teardown, native maximum offsets and malformed framing. Measure cursor/frame
+layout and rerun the unchanged tiny-stack admission gate: constant region
+size does not imply constant cursor size. This slice integrates the source
+backing into indexed regions; replacing the admission arena follows it.
+
+**REVIEW REFINEMENT.** Retain specialized frozen/frozen and composed/composed
+equality, but route other production backing pairs through existing cursor
+chunks and checked prefix skipping. Do not allocate temporary source-leaf
+Arcs merely for comparison. Test-only arena cursors select their scalar
+compatibility path before any chunk comparison. A complete backing-pair
+matrix checks equal bytes, every mismatch position and unequal lengths.
+
+**LAYOUT ATTRIBUTION CORRECTION.** The pre-change typed controls in
+`canonical-admission-request-integrated.log` and
+`canonical-source-chunks-integrated.log` report outer admission `Frame` size
+1,272 bytes and `CanonicalPathFrame` size 560 bytes. The earlier unqualified
+568-byte debugger lookup was incorrectly labeled as the outer frame in
+J-133; that attribution is corrected without changing the measured activation
+stack-pointer differences. Composed integration reports 1,304 and 592 bytes,
+respectively: 32 bytes growth in each, not a jump from 568 to 1,304. Production
+region size remains 64 bytes (test region 72); byte cursor, located cursor,
+reader and field cursor now measure 88, 152, 232 and 416 bytes. These are
+native type sizes, not activation sizes or process memory slopes.
+
+**NATIVE RESULTS / ACTIVATION RECHECK.** The first extended existing matrices
+pass six anchor-transport and ten normalized-source tests. After direct
+endpoint/lifetime/framing controls are added, the reviewed implementation
+passes the following qualification before the final fixed-width fixture
+extension:
+
+| Group | Passed | Failed / ignored | Filtered | Test seconds |
+|---|---:|---:|---:|---:|
+| Normalized source windows, debug | 15 | 0 / 0 | 442 | 0.07 |
+| Indexed anchor transport, debug | 6 | 0 / 0 | 451 | 0.04 |
+| Source library, debug | 22 | 0 / 0 | 435 | 0.74 |
+| Standalone admission, debug | 32 | 0 / 0 | 425 | 23.99 |
+| Complete models library, release | 457 | 0 / 0 | 0 | 53.03 |
+
+This rebuild/qualification service uses 161.244 seconds wall, 361.678 seconds
+CPU, 2.7G peak and zero swap under High4G/Max6G/Swap0/CPU400%/Tasks512/Runtime900
+with seed `41315976`. The final fixture extension adds valid/truncated fixed32,
+fixed64 and unsupported group cases to the existing framing test; it does not
+change production code or the test count. The maintained gate now checks all
+15 normalized-source and six anchor-transport tests in both profiles.
+
+**FINAL QUALIFICATION.** The fixture-expanded run passes all 457 release
+model tests (54.93 seconds), the 15 normalized-source debug tests, and the
+complete focused proof/runtime gate. Within that gate, admission 32, source
+tree 22, page arena 17, anchor transport six and normalized source 15 tests
+pass in each profile. ACT span compilation succeeds and all eight intentional
+compiler-rejection controls reject as expected. The service exits successfully
+after 391.541 seconds. Its 229.430 CPU seconds, 2.2G peak and zero swap include
+the initial Rust commands and gate driver, but not aggregate resource usage
+of the gate's separately bounded systemd children. These are verification
+observations, not benchmark results or whole-workspace qualification.
+
+Headless GDB on the unchanged 64 KiB fixture measures `drive_admission` at
+13,248 bytes, `CanonicalPathFrame::step` at 5,856 and the indexed entry at
+4,928. Relative to the previous repaired activation measurements this is
+32 bytes growth in the driver and no change in the latter two activations.
+After disabling the breakpoint, the test passes and the inferior exits
+normally. Service time is 2.696 seconds, CPU 2.303 seconds, peak 411.3M and
+zero swap under High512M/Max1G/Swap0/CPU100%/Tasks64/Runtime120. This is bounded
+stack qualification, not whole-application throughput or an allocator slope.
+
+| Evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-source-indexed-initial.log` | `dcc4eec7ae852e45f6b004c15787e8f7a86f06fb1dd7eda9335888e5c6e2db78` |
+| `canonical-source-indexed-controls.log` | `08c9af156a6762290af4b1c36b25884f975af67703c97da632e59f4cac827e1e` |
+| `canonical-source-indexed-final.log` | `5fb144e8cf95384bd41bd5aea59c7e800aec6f7329162a3450bfeab6f8499bfd` |
+| `canonical-source-indexed-stack.log` | `d249d1e4c54a262241b7aa5960b0bd7efc0c841d375215d20a4adf7fc7eca239` |
+| `canonical-source-indexed-qualified.log` | `6fd7bdaa18aa0e2b2b99664b184de8ca70c5947c365e69c8fd317046e16c9bef` |
+
+No canonical protobuf/bincode representation, signature/hash transcript or
+Rholang execution rule changes. The remaining arena cutover must preserve
+generated logical ACT bytes separately from their physical provenance;
+source-backed indexed regions alone do not remove nested revalidation work.
 
 ## Upstream PathMap integration request register
 
