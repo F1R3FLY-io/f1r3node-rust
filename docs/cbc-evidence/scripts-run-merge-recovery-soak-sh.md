@@ -3,7 +3,7 @@
 - **Status:** pending (local RED/GREEN complete; hosted execution and maintainer review open)
 - **Adapter:** embedded
 - **Claim:** [CLAIM-SOAK-001](../claims/soak-disk-protection.md), proposed and unratified
-- **Commit:** 4e9dd432b (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3, 7f0f46923, 6e0b50f26, 59b90568c, 8ab599e5c, 706b11b6e, 9c99de84e, 4e9dd432b)
+- **Commit:** d64ae3bbf (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3, 7f0f46923, 6e0b50f26, 59b90568c, 8ab599e5c, 706b11b6e, 9c99de84e, 4e9dd432b, d64ae3bbf)
 - **Verified:** locally, 2026-09-08 to 2026-09-09
 
 Each cycle ran the real driver inside a disposable container through `scripts/bench/test-soak-disk-admission.sh` (no host mounts, no network, no Docker socket, UID 65534, 256 MiB, one CPU). `df`, `docker`, and the workload command were fixtures. In every cycle the production regression failed on the pre-fix source, TLC reported the named invariant with exit 12 on the pre-fix configuration, and both passed after the correction.
@@ -30,7 +30,8 @@ Each cycle ran the real driver inside a disposable container through `scripts/be
 | B20, B21 | The guardian is SIGSTOPped, alive but silent, during the benchmark (B20) or an iteration (B21) | `8ab599e5c` saw a live process and waited on the stalled client | the guardian writes a progress timestamp after each sample and the driver treats one older than `SOAK_GUARDIAN_MAX_SILENCE_SECONDS` (8 to 30, default 10) as a breach; the work is cancelled and the failure published | `alive_only` (`StaleGuardianRequiresInterrupt`, guardian model) |
 | B22 | Driver and guardian paused across a valid admission probe, so the progress record expires | the B21 driver admitted the iteration and the opening benchmark on stale progress | freshness checked after the probe, before either work counter increments; 0 admissions, 1 failure | `unchecked_progress` (`StaleProgressPreventsAdmission`) |
 | B23 | `docker builder prune` ignores TERM inside the hygiene band | `5549561e1` waited on the cleanup client; no refusal, no summary | hygiene commands run in a timed child shell under `SOAK_DISK_HYGIENE_SECONDS` (1 to 30, default 10) with a one-second kill grace; a killed group is a protection breach; 0 iterations, 1 failure | `unbounded_hygiene` (`HygieneWithinBudget`) |
-| B24 | `SOAK_DISK_FREE_FLOOR_MB`, `SOAK_DISK_HYGIENE_BAND_MB`, or their sum above the 64-bit maximum | `9c99de84e` accepted the text and admitted work on an overflowed threshold | settings are parsed as decimals and range-checked before any work; the configuration is rejected with exit 2 and no summary | `unchecked_range` (`AdmissionRequiresValidDiskSettings`); the source's model and scenarios arrived unregistered, registered here |
+| B24 | `SOAK_DISK_FREE_FLOOR_MB`, `SOAK_DISK_HYGIENE_BAND_MB`, or their sum above the 64-bit maximum | `9c99de84e` accepted the text and admitted work on an overflowed threshold | settings are parsed as decimals and range-checked before any work; the configuration is rejected with exit 2 and no summary | `unchecked_range` (`AdmissionRequiresValidDiskSettings`); the source's model and scenarios arrived unregistered, registered here; the source registered its own control one commit later |
+| B25 | An unowned two-hour-old temporary session whose writer still holds a file open | `4e9dd432b` swept `/tmp/test-*` older than 60 minutes during hygiene and deleted it under the live writer | hygiene no longer deletes temporary sessions by age; it reports that ownership is unconfirmed and keeps them, and the admission checks refuse work when space stays below the threshold | `age_only` (`UnownedSessionPreserved`) |
 
 Formal results after the 2026-09-09 consolidation into two modules (the per-cycle originals reported 54, 22, and 17 distinct states for D1, B5, and B6):
 
@@ -38,9 +39,9 @@ Formal results after the 2026-09-09 consolidation into two modules (the per-cycl
 | --- | --- | ---: |
 | `MC_SoakDiskAdmission` | clean, `Completes` holds | 320 |
 | `MC_SoakDiskGuardian` | clean | 3144 |
-| twenty `*_pre_fix` controls | exit 12 with the expected invariant | 20 to 436 |
+| twenty-one `*_pre_fix` controls | exit 12 with the expected invariant | 20 to 436 |
 
-Regression suites green on the corrected driver: `test-soak-disk-admission.sh` (32 scenarios), `test-run-merge-recovery-soak.sh` (3 scenarios), `check-tla-invariants.sh --soak-pr` (4 positives, 22 controls, about 25 s).
+Regression suites green on the corrected driver: `test-soak-disk-admission.sh` (35 scenarios), `test-run-merge-recovery-soak.sh` (3 scenarios), `check-tla-invariants.sh --soak-pr` (4 positives, 23 controls, about 25 s).
 
 Fixture corrections during the cycles: one B9 driver-suite run failed on a readiness race at the resource CSV assertion, and the fixture now waits for every required telemetry file (30 repetitions passed). The first B5 model attempt exited 75 on a mixed string and numeric sample encoding before any behavioral result and was replaced by uniform sample records.
 
@@ -59,7 +60,8 @@ The per-cycle manifests were produced on the source branch and are retained outs
 | `soak-d2-benchmark-band-2026-09-09/manifest.jsonc` (B16) | `bff43e225d2de7d2a5b92559b093a36436be27ef80ba305293be99af7b4e0280` |
 | `soak-d2-benchmark-monitor-2026-09-09/manifest.jsonc` (B17) | `79b4505f9dbe2a7f2341430356ac63b75c1c5956244c83cfa66b7dfbbaca7323` |
 | `soak-d2-hygiene-2026-09-09/manifest.jsonc` (B23) | `17bc0ec164978c3b8f6ba4b59394bd666b650d3f29234ca5110aab7bb8b58bff` |
-| B24: no manifest was committed yet; the source branch retains the raw store outside Git | (none) |
+| `soak-d2-settings-2026-09-10/manifest.jsonc` (B24) | `0f8ed4935155b3ca96d133e656a19da4edd2f340c192c77395a03cedc4d4db8b` |
+| B25: no manifest was committed yet; the source branch retains the raw store outside Git | (none) |
 | `soak-d2-guardian-progress-2026-09-09/manifest.jsonc` (B20 to B22) | `310280a8df04bcba0d34cc6d0bd3d8b6b8899bb87e85f5ff945be7f1ffb8618b` |
 | `soak-d2-benchmark-supervision-2026-09-09/manifest.jsonc` (B18, B19) | `33be0710c7d724988fa1e07797a6537f3ba5ae9f962eacce784cabe0a0d348fe` |
 | `soak-d2-benchmark-cases-2026-09-09/manifest.jsonc` (B17 coverage) | `c7671619622336d2ca493ea5b7597414b28f18a43bb5e4b3a659c50c9565661b` |
@@ -83,7 +85,7 @@ The per-cycle manifests were produced on the source branch and are retained outs
   "status": "pending",
   "evidence": {
     "kind": "container-regressions+bounded-model-check",
-    "ref": "scripts/bench/test-soak-disk-admission.sh (32 scenarios); formal/tlaplus/soak_disk/MC_SoakDiskAdmission.cfg, MC_SoakDiskGuardian.cfg",
+    "ref": "scripts/bench/test-soak-disk-admission.sh (35 scenarios); formal/tlaplus/soak_disk/MC_SoakDiskAdmission.cfg, MC_SoakDiskGuardian.cfg",
     "counterexample": "formal/tlaplus/soak_disk/MC_SoakDiskAdmission_*_pre_fix.cfg, MC_SoakDiskGuardian_*_pre_fix.cfg",
     "detail": "Eleven local RED/GREEN cycles on fix/soak-disk-hygiene-stop. No hosted execution of the container regressions, no maintainer model review, no mandatory-scope ratification, and no acceptance soak."
   },

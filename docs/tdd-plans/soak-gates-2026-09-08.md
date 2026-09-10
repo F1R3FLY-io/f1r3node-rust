@@ -354,6 +354,29 @@ behaviors:
         reused_model: DiskStopDeadline
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B24
+    statement: Disk settings outside the signed arithmetic range cannot permit workload admission.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-settings-2026-09-10/manifest.jsonc
+        test: scripts/bench/test-soak-disk-settings.sh
+        red_revision: 9c99de84e492acab09d71df62642bbe67e4eb75a
+        scenarios: [disk-floor-range, disk-band-range, disk-sum-range]
+        characterization_cases: [disk-max-floor, disk-max-band]
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        green_driver_exit: 2
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B25
+    statement: Disk hygiene preserves an unowned temporary session while its writer remains active.
+    priority: must
+    deep_module: false
+    done: false
 ---
 
 # Soak Gate Development Cycles
@@ -483,6 +506,14 @@ B23 adds [disk hygiene deadline evidence](../cbc-evidence/soak-d2-hygiene-2026-0
 
 Twenty positive configurations, twenty-one exact controls, 147 classifier cases, six routing scenarios, and twenty-five emergency scenarios pass.
 
+B24 adds [disk setting validation evidence](../cbc-evidence/soak-d2-settings-2026-09-10/README.md). Three configurations that previously admitted work now fail before workload startup.
+
+Two valid maximum-value cases pass without changing baseline behavior. These results add coverage, not repair cycles.
+
+The first positive model reached its verification limit. The retained replacement uses explicit decimal column steps and passes with 88 distinct states.
+
+Twenty-one positive configurations, twenty-two exact controls, 154 classifier cases, six routing scenarios, and thirty emergency scenarios pass.
+
 ## Remaining D2 work
 
 - [x] Verify opening admission at equality, sufficient space, unavailable samples, and disabled disk protection.
@@ -498,7 +529,9 @@ Twenty positive configurations, twenty-one exact controls, 147 classifier cases,
 - [ ] Verify active-session and image preservation through the cleanup ownership contract.
 - [ ] Verify confirmed termination and durable evidence publication.
 - [ ] Establish one composed emergency deadline, including iteration shutdown and evidence handling.
-- [ ] Complete numeric-range, status, location, and crash-recovery cases outside the recorded fixture domains.
+- [x] Reject the tested oversized disk settings and overflowing admission sum.
+- [x] Preserve the tested valid maximum settings.
+- [ ] Complete other numeric-range, status, location, and crash-recovery cases outside the recorded fixture domains.
 - [ ] Obtain D3 writer-growth and reserve evidence, hosted results, and maintainer review.
 
 The completed local cycles do not complete D2 or discharge a claim. O1 and another soak remain on hold.

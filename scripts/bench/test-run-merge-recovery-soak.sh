@@ -244,14 +244,6 @@ jq -e '
 test -s "$TMP/fake-poetry-2.pid"
 ! kill -0 "$(cat "$TMP/fake-poetry-2.pid")" 2>/dev/null
 
-# Scenario 3: free space is inside the hygiene band and hygiene cannot lift
-# it out. df is shimmed to report a constant 7000MB (floor 4096 + band 4096),
-# docker is shimmed to a no-op so the developer's daemon is never pruned, and
-# the session sweep is pointed at a private tree. The driver must sweep the
-# stale session dir, keep the live one, and end the soak fail-closed BEFORE
-# the first iteration — the weekend runs 33939315110/33978505238/34056342543
-# each ran one more iteration from exactly this state and lost the VM. The
-# breach evidence must carry du attribution, not just df.
 mkdir -p "$TMP/bin3" "$TMP/si3" "$TMP/tmp3/test-stale" "$TMP/tmp3/test-live" "$TMP/runner3/_diag"
 perl -e 'utime $^T - 7200, $^T - 7200, @ARGV' "$TMP/tmp3/test-stale"
 printf '7000\n' >"$TMP/fake-df-avail"
@@ -302,7 +294,7 @@ if [ "$status" -ne 1 ]; then
 	exit 1
 fi
 
-test ! -e "$TMP/tmp3/test-stale"
+test -d "$TMP/tmp3/test-stale"
 test -d "$TMP/tmp3/test-live"
 grep -q 'free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming' "$TMP/driver3.log"
 grep -q '^disk hygiene: 7000MB free -> 7000MB free$' "$TMP/driver3.log"

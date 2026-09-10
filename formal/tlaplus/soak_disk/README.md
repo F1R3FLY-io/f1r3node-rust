@@ -15,7 +15,7 @@ a Boolean constant and must violate exactly the invariant named below.
 | `CheckGuardian` | Read the guardian marker before the probe and after hygiene |
 | `ProbeBoundary`, `ProbeAfterHygiene` | `disk_free_mb`: `df` reports the free space, prints a malformed field, or fails |
 | `DecideHygiene` | Run hygiene only when a known sample is below floor plus band |
-| `Hygiene` | `reclaim_disk_space`, which can reclaim nothing |
+| `Hygiene` | `reclaim_disk_space`, which can reclaim nothing and keeps every temporary session (B25) |
 | `HygieneStall`, `HygieneTick`, `HygieneReturns` | A hygiene client ignores TERM; under `SOAK_DISK_HYGIENE_SECONDS` it receives TERM, then KILL, and the driver refuses work (B23) |
 | `DecideAfterHygiene` | Refuse a known sample below the threshold |
 | `CheckAdmission` | Refuse a missing sample, a dead guardian process, or expired guardian progress before starting work |
@@ -37,8 +37,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `CheckProgress` | Expired guardian progress cannot admit an iteration or a benchmark (B22) | `MC_SoakDiskAdmission_unchecked_progress_pre_fix` | `StaleProgressPreventsAdmission` |
 | `EnforceHygieneDeadline` | Hygiene commands run under a deadline; a killed group is a protection breach | `MC_SoakDiskAdmission_unbounded_hygiene_pre_fix` | `HygieneWithinBudget` |
 | `CheckRange` | Out-of-range disk settings reject the configuration before any work; whether a text is in range is abstracted, and the harness checks the three boundary texts | `MC_SoakDiskAdmission_unchecked_range_pre_fix` | `AdmissionRequiresValidDiskSettings` |
+| `PreserveUnowned` | Hygiene never deletes a temporary session by age, since age proves neither ownership nor writer termination | `MC_SoakDiskAdmission_age_only_pre_fix` | `UnownedSessionPreserved` |
 
-`MC_SoakDiskAdmission` enables all eleven corrections with both benchmark fault kinds. It checks `TypeOK`, the eleven invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 5709 distinct states.
+`MC_SoakDiskAdmission` enables all twelve corrections with both benchmark fault kinds. It checks `TypeOK`, the twelve invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 11418 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 

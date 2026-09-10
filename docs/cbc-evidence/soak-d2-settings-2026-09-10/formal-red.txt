@@ -1,0 +1,384 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 97 and seed -7558272462021248573 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [EVIDENCE_ROOT]/d2-settings-DPaH5adL/formal-source-corrected/MC_DiskSettingsAdmission_unchecked_pre_fix.tla
+Parsing file [EVIDENCE_ROOT]/d2-settings-DPaH5adL/formal-source-corrected/DiskSettingsAdmission.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskSettingsAdmission
+Semantic processing of module MC_DiskSettingsAdmission_unchecked_pre_fix
+Starting... (2026-09-10 00:43:01)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 4 distinct states generated at 2026-09-10 00:43:02.
+Error: Invariant AdmissionRequiresValidDiskSettings is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 20
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = ""
+
+State 2: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 19
+/\ phase = "adding"
+/\ carry = 1
+/\ admitted = FALSE
+/\ sumText = "4"
+
+State 3: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 18
+/\ phase = "adding"
+/\ carry = 1
+/\ admitted = FALSE
+/\ sumText = "04"
+
+State 4: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 17
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "904"
+
+State 5: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 16
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "9904"
+
+State 6: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 15
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "79904"
+
+State 7: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 14
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "779904"
+
+State 8: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 13
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "4779904"
+
+State 9: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 12
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "54779904"
+
+State 10: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 11
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "854779904"
+
+State 11: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 10
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "6854779904"
+
+State 12: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 9
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "36854779904"
+
+State 13: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 8
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "036854779904"
+
+State 14: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 7
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "2036854779904"
+
+State 15: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 6
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "72036854779904"
+
+State 16: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 5
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "372036854779904"
+
+State 17: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 4
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "3372036854779904"
+
+State 18: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 3
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "23372036854779904"
+
+State 19: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 2
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "223372036854779904"
+
+State 20: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 1
+/\ phase = "adding"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "9223372036854779904"
+
+State 21: <AddColumn line 43, col 5 to line 50, col 49 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 0
+/\ phase = "config"
+/\ carry = 0
+/\ admitted = FALSE
+/\ sumText = "09223372036854779904"
+
+State 22: <Decide line 52, col 5 to line 56, col 53 of module DiskSettingsAdmission>
+/\ settings = [floorText |-> "4096", bandText |-> "9223372036854775808"]
+/\ rejected = FALSE
+/\ column = 0
+/\ phase = "checked"
+/\ carry = 0
+/\ admitted = TRUE
+/\ sumText = "09223372036854779904"
+
+The coverage statistics at 2026-09-10 00:43:02
+<Init line 34, col 1 to line 34, col 4 of module DiskSettingsAdmission>: 8:8
+  line 35, col 8 to line 35, col 25 of module DiskSettingsAdmission: 2
+  line 37, col 8 to line 37, col 23 of module DiskSettingsAdmission: 8
+  line 38, col 8 to line 38, col 23 of module DiskSettingsAdmission: 8
+  line 41, col 8 to line 41, col 19 of module DiskSettingsAdmission: 8
+<AddColumn line 42, col 1 to line 42, col 9 of module DiskSettingsAdmission>: 80:100
+  line 43, col 8 to line 43, col 23 of module DiskSettingsAdmission: 204
+  |line 43, col 8 to line 43, col 12 of module DiskSettingsAdmission: 104
+  line 46, col 14 to line 46, col 85 of module DiskSettingsAdmission: 100
+  |line 46, col 25 to line 46, col 85 of module DiskSettingsAdmission: 100
+  ||line 46, col 25 to line 46, col 74 of module DiskSettingsAdmission: 100
+  |||line 46, col 32 to line 46, col 37 of module DiskSettingsAdmission: 100
+  |||line 46, col 40 to line 46, col 55 of module DiskSettingsAdmission: 100
+  ||||line 46, col 41 to line 46, col 50 of module DiskSettingsAdmission: 100
+  |||||line 46, col 41 to line 46, col 45 of module DiskSettingsAdmission: 100
+  ||||||line 44, col 21 to line 45, col 73 of module DiskSettingsAdmission: 100
+  |||||||line 44, col 21 to line 45, col 65 of module DiskSettingsAdmission: 100
+  ||||||||line 44, col 21 to line 44, col 63 of module DiskSettingsAdmission: 100
+  |||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 100
+  ||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 265
+  ||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 100
+  |||||||||line 44, col 29 to line 44, col 54 of module DiskSettingsAdmission: 100
+  |||||||||line 44, col 57 to line 44, col 62 of module DiskSettingsAdmission: 100
+  ||||||||line 45, col 24 to line 45, col 65 of module DiskSettingsAdmission: 100
+  |||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 100
+  ||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 395
+  ||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 100
+  |||||||||line 45, col 32 to line 45, col 56 of module DiskSettingsAdmission: 100
+  |||||||||line 45, col 59 to line 45, col 64 of module DiskSettingsAdmission: 100
+  |||||||line 45, col 69 to line 45, col 73 of module DiskSettingsAdmission: 100
+  |||line 46, col 58 to line 46, col 73 of module DiskSettingsAdmission: 100
+  ||||line 46, col 59 to line 46, col 68 of module DiskSettingsAdmission: 100
+  |||||line 46, col 59 to line 46, col 63 of module DiskSettingsAdmission: 100
+  ||||||line 44, col 21 to line 45, col 73 of module DiskSettingsAdmission: 100
+  |||||||line 44, col 21 to line 45, col 65 of module DiskSettingsAdmission: 100
+  ||||||||line 44, col 21 to line 44, col 63 of module DiskSettingsAdmission: 100
+  |||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 100
+  ||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 265
+  ||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 100
+  |||||||||line 44, col 29 to line 44, col 54 of module DiskSettingsAdmission: 100
+  |||||||||line 44, col 57 to line 44, col 62 of module DiskSettingsAdmission: 100
+  ||||||||line 45, col 24 to line 45, col 65 of module DiskSettingsAdmission: 100
+  |||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 100
+  ||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 395
+  ||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 100
+  |||||||||line 45, col 32 to line 45, col 56 of module DiskSettingsAdmission: 100
+  |||||||||line 45, col 59 to line 45, col 64 of module DiskSettingsAdmission: 100
+  |||||||line 45, col 69 to line 45, col 73 of module DiskSettingsAdmission: 100
+  ||line 46, col 79 to line 46, col 85 of module DiskSettingsAdmission: 100
+  line 47, col 14 to line 47, col 35 of module DiskSettingsAdmission: 100
+  |line 47, col 23 to line 47, col 35 of module DiskSettingsAdmission: 100
+  ||line 47, col 23 to line 47, col 27 of module DiskSettingsAdmission: 100
+  |||line 44, col 21 to line 45, col 73 of module DiskSettingsAdmission: 100
+  ||||line 44, col 21 to line 45, col 65 of module DiskSettingsAdmission: 100
+  |||||line 44, col 21 to line 44, col 63 of module DiskSettingsAdmission: 100
+  ||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 100
+  |||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 265
+  |||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 100
+  ||||||line 44, col 29 to line 44, col 54 of module DiskSettingsAdmission: 100
+  ||||||line 44, col 57 to line 44, col 62 of module DiskSettingsAdmission: 100
+  |||||line 45, col 24 to line 45, col 65 of module DiskSettingsAdmission: 100
+  ||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 100
+  |||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 395
+  |||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 100
+  ||||||line 45, col 32 to line 45, col 56 of module DiskSettingsAdmission: 100
+  ||||||line 45, col 59 to line 45, col 64 of module DiskSettingsAdmission: 100
+  ||||line 45, col 69 to line 45, col 73 of module DiskSettingsAdmission: 100
+  line 48, col 8 to line 48, col 27 of module DiskSettingsAdmission: 100
+  line 49, col 8 to line 49, col 57 of module DiskSettingsAdmission: 100
+  line 50, col 8 to line 50, col 49 of module DiskSettingsAdmission: 100
+<Decide line 51, col 1 to line 51, col 6 of module DiskSettingsAdmission>: 3:4
+  line 52, col 8 to line 52, col 23 of module DiskSettingsAdmission: 86
+  |line 52, col 8 to line 52, col 12 of module DiskSettingsAdmission: 84
+  line 53, col 8 to line 53, col 41 of module DiskSettingsAdmission: 2
+  |line 53, col 21 to line 53, col 40 of module DiskSettingsAdmission: 4
+  line 54, col 8 to line 54, col 29 of module DiskSettingsAdmission: 2
+  |line 54, col 20 to line 54, col 29 of module DiskSettingsAdmission: 4
+  line 55, col 8 to line 55, col 25 of module DiskSettingsAdmission: 2
+  line 56, col 8 to line 56, col 53 of module DiskSettingsAdmission: 2
+<TypeOK line 59, col 1 to line 59, col 6 of module DiskSettingsAdmission>
+  line 60, col 5 to line 66, col 33 of module DiskSettingsAdmission: 87
+<AdmissionRequiresValidDiskSettings line 67, col 1 to line 67, col 34 of module DiskSettingsAdmission>
+  line 67, col 39 to line 67, col 55 of module DiskSettingsAdmission: 87
+  |line 67, col 39 to line 67, col 46 of module DiskSettingsAdmission: 87
+  |line 67, col 51 to line 67, col 55 of module DiskSettingsAdmission: 3
+  ||line 30, col 5 to line 33, col 34 of module DiskSettingsAdmission: 3
+  |||line 30, col 8 to line 30, col 45 of module DiskSettingsAdmission: 3
+  |||line 31, col 8 to line 31, col 44 of module DiskSettingsAdmission: 3
+  ||||line 22, col 14 to line 22, col 25 of module DiskSettingsAdmission: 3
+  ||||line 22, col 32 to line 22, col 43 of module DiskSettingsAdmission: 3
+  ||||line 23, col 5 to line 27, col 44 of module DiskSettingsAdmission: 3
+  |||||line 23, col 8 to line 23, col 22 of module DiskSettingsAdmission: 3
+  |||||line 24, col 8 to line 27, col 44 of module DiskSettingsAdmission: 2
+  ||||||line 24, col 11 to line 24, col 25 of module DiskSettingsAdmission: 2
+  ||||||line 25, col 12 to line 27, col 43 of module DiskSettingsAdmission: 2
+  |||||||line 25, col 12 to line 25, col 16 of module DiskSettingsAdmission: 2
+  |||||||line 25, col 21 to line 27, col 43 of module DiskSettingsAdmission: 2
+  ||||||||line 26, col 12 to line 27, col 43 of module DiskSettingsAdmission: 35
+  |||||||||line 26, col 15 to line 26, col 55 of module DiskSettingsAdmission: 35
+  |||||||||line 27, col 15 to line 27, col 43 of module DiskSettingsAdmission: 35
+  ||||||||||line 27, col 15 to line 27, col 27 of module DiskSettingsAdmission: 35
+  |||||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 35
+  ||||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 193
+  ||||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 35
+  |||||||||||line 27, col 26 to line 27, col 26 of module DiskSettingsAdmission: 35
+  ||||||||||line 27, col 31 to line 27, col 43 of module DiskSettingsAdmission: 35
+  |||||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 35
+  ||||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 196
+  ||||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 35
+  |||||||||||line 27, col 42 to line 27, col 42 of module DiskSettingsAdmission: 35
+  ||||||||line 25, col 30 to line 25, col 38 of module DiskSettingsAdmission: 2
+  ||||line 31, col 18 to line 31, col 34 of module DiskSettingsAdmission: 3
+  ||||line 31, col 37 to line 31, col 43 of module DiskSettingsAdmission: 3
+  |||line 32, col 8 to line 32, col 16 of module DiskSettingsAdmission: 2
+  |||line 33, col 8 to line 33, col 34 of module DiskSettingsAdmission: 2
+  ||||line 22, col 14 to line 22, col 25 of module DiskSettingsAdmission: 2
+  |||||line 16, col 5 to line 20, col 62 of module DiskSettingsAdmission: 2
+  ||||||line 16, col 8 to line 16, col 48 of module DiskSettingsAdmission: 2
+  |||||||line 16, col 28 to line 16, col 48 of module DiskSettingsAdmission: 19
+  |||||||line 16, col 17 to line 16, col 25 of module DiskSettingsAdmission: 2
+  ||||||line 18, col 10 to line 20, col 62 of module DiskSettingsAdmission: 2
+  |||||||line 18, col 17 to line 18, col 17 of module DiskSettingsAdmission: 2
+  |||||||line 18, col 20 to line 20, col 53 of module DiskSettingsAdmission: 2
+  ||||||||line 19, col 9 to line 20, col 53 of module DiskSettingsAdmission: 19
+  |||||||||line 19, col 12 to line 19, col 32 of module DiskSettingsAdmission: 19
+  |||||||||line 20, col 12 to line 20, col 53 of module DiskSettingsAdmission: 2
+  ||||||||||line 20, col 33 to line 20, col 53 of module DiskSettingsAdmission: 17
+  ||||||||||line 20, col 21 to line 20, col 30 of module DiskSettingsAdmission: 2
+  ||||||||line 18, col 33 to line 18, col 41 of module DiskSettingsAdmission: 2
+  |||||||line 20, col 56 to line 20, col 61 of module DiskSettingsAdmission: 2
+  ||||line 22, col 32 to line 22, col 43 of module DiskSettingsAdmission: 2
+  ||||line 23, col 5 to line 27, col 44 of module DiskSettingsAdmission: 2
+  |||||line 23, col 8 to line 23, col 22 of module DiskSettingsAdmission: 2
+  |||||line 24, col 8 to line 27, col 44 of module DiskSettingsAdmission: 1
+  ||||||line 24, col 11 to line 24, col 25 of module DiskSettingsAdmission: 1
+  ||||||line 25, col 12 to line 27, col 43 of module DiskSettingsAdmission: 1
+  |||||||line 25, col 12 to line 25, col 16 of module DiskSettingsAdmission: 1
+  |||||||line 25, col 21 to line 27, col 43 of module DiskSettingsAdmission: 1
+  ||||||||line 26, col 12 to line 27, col 43 of module DiskSettingsAdmission: 19
+  |||||||||line 26, col 15 to line 26, col 55 of module DiskSettingsAdmission: 19
+  |||||||||line 27, col 15 to line 27, col 43 of module DiskSettingsAdmission: 19
+  ||||||||||line 27, col 15 to line 27, col 27 of module DiskSettingsAdmission: 19
+  |||||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 19
+  ||||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 108
+  ||||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 19
+  |||||||||||line 27, col 26 to line 27, col 26 of module DiskSettingsAdmission: 19
+  ||||||||||line 27, col 31 to line 27, col 43 of module DiskSettingsAdmission: 19
+  |||||||||||line 14, col 18 to line 14, col 82 of module DiskSettingsAdmission: 19
+  ||||||||||||line 14, col 37 to line 14, col 82 of module DiskSettingsAdmission: 107
+  ||||||||||||line 14, col 31 to line 14, col 34 of module DiskSettingsAdmission: 19
+  |||||||||||line 27, col 42 to line 27, col 42 of module DiskSettingsAdmission: 19
+  ||||||||line 25, col 30 to line 25, col 38 of module DiskSettingsAdmission: 1
+  ||||line 33, col 18 to line 33, col 24 of module DiskSettingsAdmission: 2
+  ||||line 33, col 27 to line 33, col 33 of module DiskSettingsAdmission: 2
+<RefusalRecorded line 68, col 1 to line 68, col 15 of module DiskSettingsAdmission>
+  line 68, col 20 to line 68, col 63 of module DiskSettingsAdmission: 85
+  |line 68, col 21 to line 68, col 50 of module DiskSettingsAdmission: 85
+  ||line 68, col 21 to line 68, col 37 of module DiskSettingsAdmission: 85
+  ||line 68, col 42 to line 68, col 50 of module DiskSettingsAdmission: 1
+End of statistics.
+87 states generated, 87 distinct states found, 2 states left on queue.
+The depth of the complete state graph search is 22.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-10 00:43:02)

@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Eleven Boolean  *)
+(* decide, after the opening benchmark on the first segment. Twelve Boolean  *)
 (* constants switch the corrections on and off so that each pre-fix          *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -19,6 +19,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           CheckProgress,  \* stale guardian progress cannot admit (B22)
           EnforceHygieneDeadline, \* hygiene commands run under a deadline (B23)
           CheckRange,     \* floor, band, and their sum must fit in 64 bits (B24)
+          PreserveUnowned, \* hygiene never deletes a temporary session by age (B25)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -28,7 +29,8 @@ ASSUME /\ FloorMiB \in Nat \ {0}
        /\ MalformedPrefixMiB \in Nat
        /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
            CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
-           CheckProgress, EnforceHygieneDeadline, CheckRange} \subseteq BOOLEAN
+           CheckProgress, EnforceHygieneDeadline, CheckRange, PreserveUnowned}
+            \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -65,7 +67,9 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkFresh, \* progress was fresh when the benchmark was admitted (B22)
           hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
             \* a hygiene command group that ignores TERM, under the deadline (B23)
-          settingsValid \* the configured floor, band, and their sum fit in 64 bits
+          settingsValid, \* the configured floor, band, and their sum fit in 64 bits
+          sessionAge,    \* an unowned temporary session with a live writer: "old" or "recent"
+          sessionPresent \* that session still exists after hygiene
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
@@ -74,11 +78,13 @@ vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkSample, benchmarkFault, benchmarkObserved, benchmarkCancelled,
           benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
           hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
-          settingsValid>>
+          settingsValid, sessionAge, sessionPresent>>
 
 Init ==
     /\ phase = "config"
     /\ settingsValid \in BOOLEAN
+    /\ sessionAge \in {"old", "recent"}
+    /\ sessionPresent = TRUE
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -172,7 +178,8 @@ Benchmark ==
                                    ELSE IF ~diskOk THEN "probe"
                                    ELSE "guardian"
     /\ UNCHANGED <<free, raw, sample, admitted, admissionRaw, admissionSample,
-                   evidence, retained, guardianFresh, admissionFresh, settingsValid>>
+                   evidence, retained, guardianFresh, admissionFresh, settingsValid,
+                   sessionAge, sessionPresent>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -196,10 +203,16 @@ DecideHygiene ==
     /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
-\* reclaim_disk_space never loses space and does not always recover any.
+\* reclaim_disk_space never loses space and does not always recover any. B25:
+\* directory age proves neither ownership nor writer termination, so the
+\* corrected sweep keeps every temporary session; the pre-fix sweep deleted
+\* old ones under a live writer.
+SweepKeeps == PreserveUnowned \/ sessionAge = "recent"
+
 Hygiene ==
     /\ phase = "hygiene"
     /\ free' \in {v \in FreeSamples : v >= free}
+    /\ sessionPresent' = SweepKeeps
     /\ phase' = "post-guard"
     /\ UNCHANGED <<raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
@@ -232,6 +245,7 @@ HygieneTick ==
 HygieneReturns ==
     /\ phase = "hygiene-stalled"
     /\ free' \in {v \in FreeSamples : v >= free}
+    /\ sessionPresent' = SweepKeeps
     /\ phase' = "post-guard"
     /\ UNCHANGED <<raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason, evidence,
@@ -317,24 +331,31 @@ PublishRefusal ==
 
 FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
-                          benchmarkGuardianAlive, benchmarkFresh, settingsValid>>
+                          benchmarkGuardianAlive, benchmarkFresh, settingsValid,
+                          sessionAge>>
 
 Next == (Benchmark /\ UNCHANGED HygieneVars)
         \/ (/\ Admit
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<guardianFresh, HygieneVars>>)
+            /\ UNCHANGED <<guardianFresh, HygieneVars, sessionPresent>>)
         \/ (/\ GuardianStall
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<admissionFresh, HygieneVars>>)
-        \/ (/\ HygieneStall \/ HygieneTick \/ HygieneReturns
+            /\ UNCHANGED <<admissionFresh, HygieneVars, sessionPresent>>)
+        \/ (/\ HygieneStall \/ HygieneTick
+            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<guardianFresh, admissionFresh, sessionPresent>>)
+        \/ (/\ HygieneReturns
             /\ UNCHANGED FrozenAfterBenchmark
             /\ UNCHANGED <<guardianFresh, admissionFresh>>)
+        \/ (/\ Hygiene
+            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneVars>>)
         \/ (/\ ValidateSettings
-               \/ CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
+               \/ CheckGuardian \/ ProbeBoundary \/ DecideHygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
                \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneVars>>)
+            /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneVars, sessionPresent>>)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -368,6 +389,8 @@ TypeOK ==
     /\ hygieneTermSent \in BOOLEAN
     /\ hygieneKillSent \in BOOLEAN
     /\ settingsValid \in BOOLEAN
+    /\ sessionAge \in {"old", "recent"}
+    /\ sessionPresent \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -387,6 +410,7 @@ StaleProgressPreventsAdmission ==
     /\ benchmark => benchmarkFresh
 HygieneWithinBudget == phase = "hygiene-stalled" => hygieneElapsed < HygieneBudget
 AdmissionRequiresValidDiskSettings == (admitted \/ benchmark) => settingsValid
+UnownedSessionPreserved == sessionPresent
 HygieneKillFollowsTerm == hygieneKillSent => hygieneTermSent
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted

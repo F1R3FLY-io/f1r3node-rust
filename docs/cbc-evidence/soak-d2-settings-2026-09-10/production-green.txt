@@ -1,0 +1,11 @@
+PASS: Invalid disk settings were rejected before workload admission (disk-floor-range).
+Evidence: [EVIDENCE_ROOT]/d2-settings-DPaH5adL/production-green-final/disk-floor-range
+PASS: Invalid disk settings were rejected before workload admission (disk-band-range).
+Evidence: [EVIDENCE_ROOT]/d2-settings-DPaH5adL/production-green-final/disk-band-range
+PASS: Invalid disk settings were rejected before workload admission (disk-sum-range).
+Evidence: [EVIDENCE_ROOT]/d2-settings-DPaH5adL/production-green-final/disk-sum-range
+PASS: A valid maximum disk setting preserved admission behavior (disk-max-floor).
+Evidence: [EVIDENCE_ROOT]/d2-settings-DPaH5adL/production-green-final/disk-max-floor
+PASS: A valid maximum disk setting preserved admission behavior (disk-max-band).
+Evidence: [EVIDENCE_ROOT]/d2-settings-DPaH5adL/production-green-final/disk-max-band
+PASS: All five disk setting cases passed.

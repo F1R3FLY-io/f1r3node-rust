@@ -36,6 +36,9 @@
 #   disk-floor-range      SOAK_DISK_FREE_FLOOR_MB above the 64-bit maximum   -> configuration rejected, exit 2
 #   disk-band-range       SOAK_DISK_HYGIENE_BAND_MB above the 64-bit maximum -> configuration rejected, exit 2
 #   disk-sum-range        floor plus band above the 64-bit maximum           -> configuration rejected, exit 2
+#   disk-max-floor        floor exactly at the 64-bit maximum, band 0        -> accepted, then refused on the sample
+#   disk-max-band         band exactly at the 64-bit maximum, floor 0        -> accepted, then refused on the sample
+#   cleanup-active-session an unowned two-hour-old session with a live writer survives hygiene
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -56,7 +59,8 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     benchmark-active-disk benchmark-equal benchmark-sufficient benchmark-missing benchmark-disabled
     benchmark-cancel-death benchmark-cancel-breach benchmark-guardian-boundary benchmark-guardian-interleaved
     benchmark-cancel-stall guardian-stall guardian-progress-boundary benchmark-progress-boundary
-    hygiene-timeout disk-floor-range disk-band-range disk-sum-range)
+    hygiene-timeout disk-floor-range disk-band-range disk-sum-range disk-max-floor disk-max-band
+    cleanup-active-session)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -340,9 +344,17 @@ SH
     disk_floor=4096
     disk_band=4096
     case "$SCENARIO" in
-        disk-floor-range) disk_floor=9223372036854775808 ;;
-        disk-band-range) disk_band=9223372036854775808 ;;
-        disk-sum-range) disk_band=9223372036854771712 ;;
+    disk-floor-range) disk_floor=9223372036854775808 ;;
+    disk-band-range) disk_band=9223372036854775808 ;;
+    disk-sum-range) disk_band=9223372036854771712 ;;
+    disk-max-floor)
+        disk_floor=9223372036854775807
+        disk_band=0
+        ;;
+    disk-max-band)
+        disk_floor=0
+        disk_band=9223372036854775807
+        ;;
     esac
     [[ "$SCENARIO" != benchmark-disabled ]] || disk_floor=0
     printf 'floor=%s\nband=%s\n' "$disk_floor" "$disk_band" >evidence/disk-settings.txt
@@ -509,6 +521,31 @@ SH
         ) &
         observer=$!
     fi
+    ownership_writer=""
+    if [[ "$SCENARIO" == cleanup-active-session ]]; then
+        mkdir /tmp/test-unowned-active
+        printf 'active session data\n' >/tmp/test-unowned-active/data
+        (
+            exec 3>>/tmp/test-unowned-active/data
+            touch /case/evidence/ownership-writer-ready
+            while [[ ! -e /case/evidence/release-ownership-writer ]]; do
+                printf 'writer active\n' >&3
+                sleep 0.05
+            done
+        ) &
+        ownership_writer=$!
+        for _ in $(seq 1 100); do
+            [[ ! -e evidence/ownership-writer-ready ]] || break
+            sleep 0.05
+        done
+        [[ -e evidence/ownership-writer-ready ]] || exit 2
+        kill -0 "$ownership_writer" || exit 2
+        touch -d '2 hours ago' /tmp/test-unowned-active
+        stat -c '%n %i %Y' /tmp/test-unowned-active /tmp/test-unowned-active/data >evidence/ownership-before.txt
+        find /tmp -maxdepth 1 -name test-unowned-active -mmin +60 >evidence/ownership-aged-root.txt
+        grep -Fxq /tmp/test-unowned-active evidence/ownership-aged-root.txt || exit 2
+        printf '%s\n' "$ownership_writer" >evidence/ownership-writer-pid.txt
+    fi
     chmod +x bin/*
     status=0
     PATH="/case/bin:$PATH" \
@@ -563,6 +600,47 @@ SH
         exit 2
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
+    if [[ "$SCENARIO" == cleanup-active-session ]]; then
+        kill -0 "$ownership_writer" || exit 2
+        ps -o pid=,stat= -p "$ownership_writer" >evidence/ownership-writer-state.txt
+        readlink "/proc/$ownership_writer/fd/3" >evidence/ownership-open-file.txt
+        touch evidence/release-ownership-writer
+        wait "$ownership_writer"
+        if ! grep -Fxq 'valid=7000' evidence/probe-samples.txt || [[ ! -e evidence/hygiene-completed ]]; then
+            printf 'ERROR: The ownership fixture did not exercise disk hygiene.\n' >&2
+            exit 2
+        fi
+        if [[ ! -d /tmp/test-unowned-active || ! -s /tmp/test-unowned-active/data ]]; then
+            printf 'FAIL: Disk hygiene deleted an unowned session directory while its writer remained active.\n' >&2
+            exit 1
+        fi
+        stat -c '%n %i %Y' /tmp/test-unowned-active /tmp/test-unowned-active/data >evidence/ownership-after.txt
+        cp /tmp/test-unowned-active/data evidence/ownership-preserved-data.txt
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt ]] ||
+            ! grep -Fxq 'active session data' evidence/ownership-preserved-data.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Preserved session data did not retain disk refusal and its failure result.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: Disk hygiene preserved the unowned active session and refused new work below the admission threshold.\n'
+        exit 0
+    fi
+    if [[ "$SCENARIO" == disk-max-floor || "$SCENARIO" == disk-max-band ]]; then
+        expected_iterations=0
+        expected_failures=1
+        if [[ "$SCENARIO" == disk-max-band ]]; then
+            expected_iterations=1
+            expected_failures=0
+        fi
+        if [[ "$status" != "$expected_failures" || "$iterations" != "$expected_iterations" ]] ||
+            ! jq -e --argjson count "$expected_iterations" --argjson failures "$expected_failures" \
+                '.iterations == $count and .failures == $failures and .bench_segments == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: A valid maximum disk setting changed admission behavior (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        printf 'PASS: A valid maximum disk setting preserved admission behavior (%s).\n' "$SCENARIO"
+        exit 0
+    fi
     if [[ "$SCENARIO" == hygiene-timeout ]]; then
         if [[ ! -s evidence/hygiene-client-pid.txt ]] ||
             ! grep -Fxq 'builder prune -af' evidence/docker-commands.txt ||
