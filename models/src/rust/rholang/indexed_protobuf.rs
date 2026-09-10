@@ -61,7 +61,7 @@ enum IndexedByteBacking<'a> {
     },
     #[cfg(test)]
     Arena {
-        arena: &'a CanonicalBytesArena,
+        arena: &'a CanonicalBytesArena<'a>,
         root: CanonicalBytesHandle,
         start: usize,
         len: usize,

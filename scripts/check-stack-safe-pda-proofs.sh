@@ -332,8 +332,8 @@ epathmap_import_runtime() {
   rpb3_run_tests 32 -j4 --lib standalone_path_admission
   rpb3_run_tests 25 --release -j4 --lib canonical_source_tree
   rpb3_run_tests 25 -j4 --lib canonical_source_tree
-  rpb3_run_tests 24 --release -j4 --lib canonical_bytes_arena
-  rpb3_run_tests 24 -j4 --lib canonical_bytes_arena
+  rpb3_run_tests 31 --release -j4 --lib canonical_bytes_arena
+  rpb3_run_tests 31 -j4 --lib canonical_bytes_arena
   rpb3_run_tests 8 --release -j4 --lib opaque_interior_tests
   rpb3_run_tests 32 --release -j4 --lib frame_storage_tests
   rpb3_run_tests 6 --release -j4 --lib indexed_span_transport

@@ -287,7 +287,7 @@ fn anchored_metadata_fits_the_original_indexed_region_layout() {
             source: u32,
         },
         Arena {
-            arena: &'a CanonicalBytesArena,
+            arena: &'a CanonicalBytesArena<'a>,
             root: CanonicalBytesHandle,
             start: usize,
             len: usize,

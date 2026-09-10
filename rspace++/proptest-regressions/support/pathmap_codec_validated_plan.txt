@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 9a6e97c52636b423eab32ba35a95b29a94015e85b3a8a9086d19f102da382efa # shrinks to operations = [([1], None), ([2], None), ([3], None), ([1, 0], None)]
+cc 7dda0a1bcd26c93ab9b57bf12e461fa030a345871ee2814985fe7653d20d1ee0 # shrinks to operations = [([0], None), ([178], None), ([1], None), ([178, 0], None)], seed = 16299543669

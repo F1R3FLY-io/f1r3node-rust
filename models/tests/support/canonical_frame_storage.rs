@@ -349,7 +349,7 @@ impl EagerCanonicalPathReducer {
 
 pub(crate) struct EagerCanonicalPathTopologyAdmission {
     reducer: EagerCanonicalPathReducer,
-    arena: CanonicalBytesArena,
+    arena: CanonicalBytesArena<'static>,
     current: CanonicalPathReducerHandle,
     restore: Vec<CanonicalPathReducerHandle>,
     root_left: bool,

@@ -1090,7 +1090,7 @@ trait PathByteView {
 }
 
 struct ArenaPathBytes<'a> {
-    arena: &'a CanonicalBytesArena,
+    arena: &'a CanonicalBytesArena<'a>,
     bytes: CanonicalBytesHandle,
 }
 
@@ -3119,19 +3119,19 @@ struct CanonicalPathRestoreRun {
     first_depth: usize,
 }
 
-pub(crate) struct CanonicalPathTopologyAdmission {
+pub(crate) struct CanonicalPathTopologyAdmission<'src> {
     reducer: CanonicalPathReducer,
-    arena: CanonicalBytesArena,
+    arena: CanonicalBytesArena<'src>,
     current: CanonicalPathReducerHandle,
     restore: Vec<CanonicalPathRestoreRun>,
     root_left: bool,
 }
 
-impl Default for CanonicalPathTopologyAdmission {
+impl Default for CanonicalPathTopologyAdmission<'_> {
     fn default() -> Self { Self::new() }
 }
 
-impl CanonicalPathTopologyAdmission {
+impl<'src> CanonicalPathTopologyAdmission<'src> {
     pub(crate) fn new() -> Self {
         let arena = CanonicalBytesArena::new();
         let reducer = CanonicalPathReducer::new();
@@ -3164,7 +3164,7 @@ impl CanonicalPathTopologyAdmission {
 
     pub(crate) fn retained_completed_obligation(
         &mut self,
-    ) -> Result<Option<CanonicalPathCompletedObligation<SourceTreeWindow<'static>>>, CanonicalPathAdmissionError> {
+    ) -> Result<Option<CanonicalPathCompletedObligation<SourceTreeWindow<'src>>>, CanonicalPathAdmissionError> {
         Ok(self.reducer.completed_obligation(&self.arena, self.current)?.map(|completed| {
             CanonicalPathCompletedObligation {
                 obligation: completed.obligation,

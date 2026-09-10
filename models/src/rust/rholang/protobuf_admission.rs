@@ -2143,7 +2143,7 @@ struct EPathMapFrame<'src> {
     region_start: CanonicalByteProvenance,
     snapshot: AdmissionRegion<'src>,
     cursor: IndexedCanonicalEpm1TopologyCursor<'src>,
-    path: CanonicalPathTopologyAdmission,
+    path: CanonicalPathTopologyAdmission<'src>,
     mode: EPathMapMode,
     entries_canonical_path_stable: bool,
     waiting: Option<EPathMapWait>,

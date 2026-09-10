@@ -3322,6 +3322,41 @@ J-139 records verification separately. Arbitrary-history linear metadata,
 literal source-span integration and borrowed arena lifetime threading are
 not proved by this owned-generated-page implementation.
 
+### Original-source arena span bindings (2026-09-10; task 6018)
+
+The mixed arena extends the retained generated-segment cache with immutable
+source descriptors. A descriptor stores a registered root ID and checked local
+range, not a byte vector or a physical-offset reconstruction. The registry
+retains original borrowed, frozen or composed source roots. Its lifetime passes
+through topology completion into indexed admission; compact history handles
+remain lifetime-free IDs and bounded ranges. Generated ACT values still need
+owned located-byte pages because a mask-derived byte may differ from the byte
+at its physical source position.
+
+This implementation reuses the previously checked `NormalizedSourceSpans`
+registration/window laws, `CachedSourcePrefixes` bounded-history/cache laws,
+and balanced source concat/split/release laws. Source descriptors never extend
+in place, so no additional source cache-sealing protocol is assumed. Generated
+segments retain their existing Arc-based publication seal. General arena
+freezing is now test-only; production exports only one owned segment at a time
+and grafts source windows directly into the balanced tree.
+
+| Native control | Existing invariant bound to implementation |
+|---|---|
+| `source_segments_retain_borrowed_bytes_without_owned_payload_cells` | Registered original owner, exact translated positions, identical borrowed payload pointer after arena drop, zero owned payload/provenance pages. |
+| `source_append_refusals_and_empty_ranges_do_not_mutate_storage` | Slot/range/length checks precede mutation; empty append preserves the handle and resources. |
+| `source_offsets_subtract_prefix_before_adding_large_root_position` | Local source offset remains bounded even when the predecessor and source start have a sum outside `usize`; repeated shared roots avoid large payload allocation. |
+| `mixed_source_histories_match_located_oracle` | 128 generated append/source/slice/concat histories match an independent located-byte oracle; all historical handles and exported views survive subsequent operations. |
+| `mixed_original_composed_sources_preserve_every_selected_range` | Original borrowed/frozen/composed owners remain valid across every source/generated seam and after arena teardown. |
+| `direct_owned_segment_exports_match_independent_legacy_freezer` | Direct single-segment metadata matches the old test-only descriptor-walking freezer at capacities 32, 64, 128 and 256. |
+| `mixed_source_descriptors_export_and_drop_on_an_unchanged_small_stack` | 4,096 source/generated pairs traverse, export and release on 64 KiB with only 4,096 owned payload cells. |
+
+These controls do not establish end-to-end literal ACT ingestion or a universal
+metadata bound. Each accepted source append currently creates one immutable
+descriptor. Activation must batch authoritative ACT line spans rather than
+turn this into a descriptor-per-byte adapter. Completion EOF anchors remain
+independent of source contents. J-140 records this checkpoint's results.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported
