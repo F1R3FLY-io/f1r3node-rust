@@ -2829,14 +2829,17 @@ mod tests {
             if *hash == held {
                 Ok(Vec::new())
             } else {
-                Err(CasperError::BlockNotHeld(hash.clone()))
+                Err(CasperError::BlockNotHeld(
+                    hash.clone(),
+                    shared::rust::store::key_value_store::MissingBlockContext::new(""),
+                ))
             }
         };
 
         let result = scope_prior_rejection_counts(vec![held.clone(), missing.clone()], records_of);
 
         match result {
-            Err(CasperError::BlockNotHeld(hash)) => assert_eq!(hash, missing),
+            Err(CasperError::BlockNotHeld(hash, _)) => assert_eq!(hash, missing),
             other => panic!(
                 "a missing visible block must surface as BlockNotHeld, got {:?}",
                 other.map(|c| c.len())

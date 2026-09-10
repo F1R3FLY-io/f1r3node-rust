@@ -31,6 +31,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
+use shared::rust::store::key_value_store::MissingBlockContext;
 
 use crate::rust::errors::CasperError;
 use crate::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
@@ -103,9 +104,9 @@ fn held_meta(
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
 ) -> Result<models::rust::block_metadata::BlockMetadata, CasperError> {
-    dag.lookup(hash)
-        .map_err(CasperError::from)?
-        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
+    dag.lookup(hash).map_err(CasperError::from)?.ok_or_else(|| {
+        CasperError::BlockNotHeld(hash.clone(), MissingBlockContext::new("floor held_meta"))
+    })
 }
 
 /// The block number of a block a walk needs, or [`CasperError::BlockNotHeld`].
@@ -400,7 +401,9 @@ pub async fn floor_of_view(
     let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
     let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
         Ok(derived) => derived,
-        Err(CasperError::BlockNotHeld(missing)) => return Ok(FloorOfView::AbsenceHold { missing }),
+        Err(CasperError::BlockNotHeld(missing, _)) => {
+            return Ok(FloorOfView::AbsenceHold { missing })
+        }
         // Under a negative threshold, incompatible majority-agreement
         // candidates are an expected transient — hold the cycle. Under
         // θ ≥ 0 the same error is a genuine safety alarm and stays loud.
@@ -425,7 +428,7 @@ pub async fn floor_of_view(
             );
             Ok(FloorOfView::ContainmentHold { derived })
         }
-        Err(CasperError::BlockNotHeld(missing)) => Ok(FloorOfView::AbsenceHold { missing }),
+        Err(CasperError::BlockNotHeld(missing, _)) => Ok(FloorOfView::AbsenceHold { missing }),
         Err(other) => Err(other),
     }
 }
@@ -1250,7 +1253,7 @@ mod frontier_determinism_tests {
             .await
             .expect_err("without a seed the derivation must run out of history");
         assert!(
-            matches!(unseeded, CasperError::BlockNotHeld(ref h) if *h == absent),
+            matches!(unseeded, CasperError::BlockNotHeld(ref h, _) if *h == absent),
             "the unseeded derivation must fail by naming the block below the window, \
              or this fixture is not truncated and proves nothing; got {unseeded}"
         );
@@ -2309,7 +2312,7 @@ mod frontier_determinism_tests {
         let err = state_lineage_meet(&dag, &a, &b)
             .expect_err("a lineage that leaves the held blocks cannot yield a verdict");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == gone),
             "truncation must be a TYPED error naming the block this node does not hold, so \
              the caller can request it and retry instead of turning it into a verdict; got {err}"
         );
@@ -2336,7 +2339,7 @@ mod frontier_determinism_tests {
             .await
             .expect_err("a floor recursion that leaves the held blocks cannot yield a floor");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == gone),
             "the floor recursion must name the block it does not hold; got {err}"
         );
     }
@@ -2373,7 +2376,7 @@ mod frontier_determinism_tests {
         .await
         .expect_err("a frontier walk that leaves the held blocks cannot yield a frontier");
         assert!(
-            matches!(err, CasperError::BlockNotHeld(ref h) if *h == gone),
+            matches!(err, CasperError::BlockNotHeld(ref h, _) if *h == gone),
             "the oracle must name the block it does not hold, so the caller can request \
              it and retry instead of recording a verdict against the proposer; got {err}"
         );
