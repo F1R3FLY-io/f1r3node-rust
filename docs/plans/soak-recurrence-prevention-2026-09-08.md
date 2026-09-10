@@ -305,6 +305,10 @@ The [B25 ownership cycle](../cbc-evidence/soak-d2-cleanup-session-2026-09-10/REA
 
 The driver no longer deletes temporary sessions by age. It preserves the data and refuses admission when disk space remains insufficient.
 
+The [B26 outcome cycle](../cbc-evidence/soak-d2-cleanup-outcome-2026-09-10/README.md) preserves five cleanup command failures despite later sufficient disk samples.
+
+Successful partial and sufficient reclamation retain their baseline admission results. The command selectors remain unchanged.
+
 Safe session reclamation, Docker ownership, other fault cases, complete shutdown, durability, and the deadline and reserve arguments remain open.
 
 ### Gate O1: Verify observability before the diagnostic soak
