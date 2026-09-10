@@ -116,6 +116,8 @@ After phase two the README paragraph about legacy modules in `formal/tlaplus/soa
   - The README conflict was the source's real-system section against the theorem table, resolved toward this branch. `docs/ToDos.md` keeps this branch's bullets and the source's newer status line.
   - Counts updated to 29 soak controls and 42 scenarios.
 
+- 2026-09-10, `463992ed1` (source registers its B30 and B31 controls and shims owner labels in the harness fixture): no new behavior. The harness fixture's `docker` now answers the owner-label `ps`, `inspect`, `kill`, and `compose` calls, and that change auto-merged. Conflicts in the gate registry and the gate test resolved toward this branch. `test-soak-pr-formal-gate.sh` stays deleted. Counts unchanged.
+
 ## D3 evidence: the disk-usage timeline (2026-09-10)
 
 The breach snapshot names the consumer only at the end. The driver now records the growth curve as well. Every five minutes, and at each iteration start, it appends one row to `disk-usage-timeline.tsv` in the output directory. A row holds the epoch, a label, the free MiB, and the same per-root summary the breach tag carries. The guardian writes its rows in the background, so a slow `du` never delays the probe or the progress record. `SOAK_DISK_USAGE_INTERVAL_SECONDS` sets the interval, and 0 disables the timeline.
