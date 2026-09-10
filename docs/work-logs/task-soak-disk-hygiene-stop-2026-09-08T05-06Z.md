@@ -503,3 +503,29 @@ The [evidence package](../cbc-evidence/soak-d2-cleanup-outcome-2026-09-10/README
 External commit `14ffb4d3a` contains the tested executable inputs. This session does not attest its hooks.
 
 D2 remains pending. Other faults, Docker ownership, image preservation, complete shutdown, durable publication, deadline and reserve bounds, hosted checks, and maintainer review remain open.
+
+## D2 real-system cycles B27–B29
+
+The [evidence package](../cbc-evidence/soak-d2-real-system-2026-09-10/README.md) records three separate failures and corrections on a disposable diagnostic virtual machine.
+
+B27 reproduces deletion of an unrelated stopped container, unused network, and reserved fixture image. Read-only hygiene preserves all three and retains disk admission refusal.
+
+B28 reproduces a Docker writer that survives driver `SIGTERM`. Exit cleanup now requests writer termination. The post-exit check confirms termination and stable file contents.
+
+B29 kills the driver process group with `SIGKILL`. The fixture supervisor stops the surviving Docker writer before recovery. This stop is not production crash-time shutdown evidence.
+
+The baseline resumes work with zero failures. The correction records the uncommitted iteration and retains one interruption failure across two refused restarts.
+
+The first B29 positive model had an incomplete successor because a Boolean assignment lacked parentheses. The corrected model passes both repeated controls.
+
+The final gate passes 26 positive configurations and 27 exact controls. The classifier passes 189 cases, and routing passes six scenarios.
+
+All 38 emergency scenarios, three composed real-system fixtures, and supporting regressions pass. Actual TLC logs were retained before classifier mocks ran.
+
+External commits `3b7904eb` and `f4111f6b` contain the tested corrections. This session does not attest their hooks or change Git history.
+
+Test evidence was retrieved before the diagnostic machine's termination request. Other workflows and machines were left unchanged. No node workload or soak ran.
+
+D2 and acceptance remain pending. Ownership-safe stops, safe reclamation, other shutdown paths, additional crash windows, power-loss durability, deadline and reserve bounds remain open.
+
+Hosted verification, required-check enforcement, and maintainer review remain open. The workload and 45-second finalization wait remain unchanged.

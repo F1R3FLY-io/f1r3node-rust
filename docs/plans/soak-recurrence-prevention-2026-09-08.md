@@ -307,9 +307,15 @@ The driver no longer deletes temporary sessions by age. It preserves the data an
 
 The [B26 outcome cycle](../cbc-evidence/soak-d2-cleanup-outcome-2026-09-10/README.md) preserves five cleanup command failures despite later sufficient disk samples.
 
-Successful partial and sufficient reclamation retain their baseline admission results. The command selectors remain unchanged.
+B26 preserved the baseline admission results for partial and sufficient reclamation. It did not change command selectors.
 
-Safe session reclamation, Docker ownership, other fault cases, complete shutdown, durability, and the deadline and reserve arguments remain open.
+The [B27–B29 real-system cycles](../cbc-evidence/soak-d2-real-system-2026-09-10/README.md) add separate ownership, shutdown, and process-crash results.
+
+B27 replaces destructive Docker hygiene with read-only inspection. B28 confirms selected writer termination after active-iteration `SIGTERM`. B29 refuses two restarts with one retained interruption failure.
+
+The crash fixture supervisor stops the surviving Docker writer before restart. This action is not production crash-time shutdown evidence.
+
+Safe reclamation, ownership-safe stops, other shutdown paths, additional crash windows, power-loss durability, and complete deadline and reserve arguments remain open.
 
 ### Gate O1: Verify observability before the diagnostic soak
 

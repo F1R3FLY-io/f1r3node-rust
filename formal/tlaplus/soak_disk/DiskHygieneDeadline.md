@@ -28,6 +28,12 @@ The negative control disables enforcement and requires exit 12 on `HygieneWithin
 
 This correspondence concerns command cancellation. The production fixture separately checks refusal and summary publication, which the model does not represent.
 
+## Current command mapping
+
+B27 removes destructive Docker hygiene. The current timeout fixture stalls `docker system df` inside the same timed command group.
+
+The historical B23 evidence still records the builder cleanup client. The unchanged deadline model applies to cancellation of either selected client, not daemon completion.
+
 ## Limits
 
 The configured budget is a component limit, not a measured complete response deadline. The model assumes effective signals and advancing abstract time.

@@ -62,7 +62,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | --- | --- |
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
-| `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28) |
+| `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B30) |
 | `StartProbe`, `Tick`, `ProbeReturns` | The guardian runs `df` under `timeout` |
 | `DecideSample` | A timed-out or empty probe supplies no sample |
 | `Detect`, `Record`, `BeginStop` | Write `host-guardian-breach.txt`, then start `stop_node_writers` |
@@ -82,8 +82,10 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `EnforceStopDeadline` | `pkill` and `docker kill` run under a deadline | `MC_SoakDiskGuardian_unbounded_stop_pre_fix` | `StopWithinBudget` |
 | `CheckProgress` | A live guardian without recent progress counts as failed, and the work is interrupted | `MC_SoakDiskGuardian_alive_only_pre_fix` | `StaleGuardianRequiresInterrupt` |
 | `StopOnExit` | The driver's EXIT trap stops the node writers it launched when it exits with an iteration or benchmark in flight | `MC_SoakDiskGuardian_client_only_pre_fix` | `ExitStopsWriters` |
+| `RetainStopFailure` | A rejected stop command in the exit trap counts a failure, writes the early-exit reason, and refuses work, since termination is unconfirmed | `MC_SoakDiskGuardian_ignored_pre_fix` | `FailedStopRetained` |
+| `SelectOwned` | Stop commands select only the containers that carry this run's owner label. The pre-fix stop killed every `rnode` container on the host | `MC_SoakDiskGuardian_name_only_pre_fix` | `UnownedWritersPreserved` |
 
-`MC_SoakDiskGuardian` enables all nine corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6342 distinct states.
+`MC_SoakDiskGuardian` enables all eleven corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6366 distinct states.
 
 ### Conditional no-overrun theorem
 

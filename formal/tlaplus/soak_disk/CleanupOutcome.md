@@ -28,6 +28,22 @@ Two successful-cleanup cases pass on both baseline and corrected source. Partial
 
 Sufficient reclamation leaves 16384 MiB and permits one iteration. These cases provide characterization coverage, not additional repair cycles.
 
+## Current command mapping
+
+B27 replaces destructive hygiene with read-only inspection. The historical B26 evidence remains unchanged, and the model still represents five command outcomes.
+
+The fixture retains its historical scenario labels:
+
+| Label | Current command |
+| --- | --- |
+| `list` | `docker ps -aq --filter status=exited --filter name=rnode.` |
+| `remove` | `docker inspect cleanup-fixture` |
+| `network` | `docker network ls -q` |
+| `image` | `docker image ls -q` |
+| `builder` | `docker system df` |
+
+The two recovery cases now simulate later disk samples after read-only inspection. They do not establish actual space reclamation.
+
 ## Limits
 
 The fixtures replace external Docker commands and disk samples. They do not start real nodes or prove Docker daemon completion.

@@ -405,11 +405,53 @@ behaviors:
         hosted_confirmation: pending
         claim_discharge: pending
   - id: B27
-    statement: Disk hygiene preserves unrelated Docker resources and the image reserved for later work.
+    statement: Disk hygiene preserves the tested unrelated Docker resources and reserved fixture image.
     priority: must
     deep_module: false
-    done: false
-    cycle_log: []
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-real-system-2026-09-10/manifest.jsonc
+        test: scripts/bench/test-soak-real-docker-ownership.sh
+        red_revision: 1e2dc07f4c19c70fb56d9b861be2a0394fcfe721
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B28
+    statement: After active-iteration SIGTERM, the post-exit check confirms termination of the selected Docker writer.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-real-system-2026-09-10/manifest.jsonc
+        test: scripts/bench/test-soak-real-docker-shutdown.sh
+        baseline: B27 correction
+        binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
+  - id: B29
+    statement: Two restarts refuse new work and retain one failure after the tested process-group crash.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-real-system-2026-09-10/manifest.jsonc
+        test: scripts/bench/test-soak-real-crash-recovery.sh
+        baseline: B28 correction
+        binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        initial_formal_green: incomplete-successor
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -561,11 +603,13 @@ Twenty-three positive configurations, twenty-four exact controls, 168 classifier
 
 ## Remaining D2 work
 
-The user requested real-Docker ownership, shutdown, and crash tests on September 10. Each behavior uses a separate cycle on a disposable VM.
+B27 through B29 add [real-system evidence](../cbc-evidence/soak-d2-real-system-2026-09-10/README.md) from a disposable virtual machine. Docker commands reach its real daemon.
 
-B27 first tests cleanup against a stopped container, an unused network, and an untagged image. The test substitutes disk samples and workload commands only.
+B27 preserves the tested resources through read-only hygiene. B28 confirms the selected writer stops after `SIGTERM`. B29 retains one interruption failure across two restarts.
 
-Docker commands reach the real daemon. The test retains resource identities and retrieves evidence before the VM expires.
+The final gate passes 26 positive configurations, 27 exact controls, 189 classifier cases, and six routing scenarios. All 38 emergency scenarios and three real-system fixtures pass.
+
+The first B29 positive model had an incomplete successor. Its corrected RED/GREEN pair passes. Process-crash recovery does not establish power-loss durability.
 
 - [x] Verify opening admission at equality, sufficient space, unavailable samples, and disabled disk protection.
 - [x] Cancel stalled benchmark clients after guardian death or a recorded disk breach.
@@ -577,8 +621,11 @@ Docker commands reach the real daemon. The test retains resource identities and 
 - [x] Bound the tested hygiene command group and refuse work when the group fails.
 - [ ] Verify other stop paths, detached and uninterruptible commands, and daemon-side cleanup operations.
 - [ ] Verify soft-floor sampling, cleanup outcomes, and guardian events at every admission boundary.
-- [ ] Verify active-session and image preservation through the cleanup ownership contract.
-- [ ] Verify confirmed termination and durable evidence publication.
+- [x] Preserve the tested Docker resources through read-only hygiene.
+- [x] Confirm selected writer termination after active-iteration `SIGTERM`.
+- [x] Refuse two restarts after the tested process crash with one retained interruption failure.
+- [ ] Verify ownership-safe reclamation, ownership-safe stop selection, and the complete node-image lifecycle.
+- [ ] Verify other shutdown paths and durable evidence publication.
 - [ ] Establish one composed emergency deadline, including iteration shutdown and evidence handling.
 - [x] Reject the tested oversized disk settings and overflowing admission sum.
 - [x] Preserve the tested valid maximum settings.

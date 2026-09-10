@@ -2,7 +2,7 @@
 (* The emergency path of one soak iteration in                               *)
 (* scripts/run-merge-recovery-soak.sh: the guardian probes, records a        *)
 (* breach, stops the writers, attributes the space, and the next segment     *)
-(* finds the marker. Nine constants switch the nine corrections on and off   *)
+(* finds the marker. Eleven constants switch the corrections on and off      *)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
 (* Four more constants state the conditional no-overrun theorem: free space  *)
 (* stays positive when the hard floor covers the writers' worst consumption   *)
@@ -18,6 +18,8 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           EnforceStopDeadline, \* pkill and docker kill run under a deadline
           CheckProgress, \* a live guardian without recent progress counts as failed (B20, B21)
           StopOnExit, \* the driver's exit trap stops the node writers it launched (B28)
+          RetainStopFailure, \* a rejected stop command is a retained failure and a refusal (B30)
+          SelectOwned, \* stop commands select only this run's owner-labeled writers (B31)
           WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
           SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
           HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
@@ -25,7 +27,7 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
 
 ASSUME /\ {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
            AggregateDeadline, PreserveBreach, EnforceStopDeadline, CheckProgress,
-           StopOnExit, BoundTermination} \subseteq BOOLEAN
+           StopOnExit, BoundTermination, RetainStopFailure, SelectOwned} \subseteq BOOLEAN
        /\ WriteRateMax \in Nat
        /\ SamplePeriod \in Nat
        /\ HardFloorMiB \in Nat \ {0}
@@ -51,16 +53,21 @@ VARIABLES phase, alive, interruptRequested, breachRecorded,
           exitStop, \* the driver's exit trap stopped the writers (B28)
           freeMiB,      \* free space, consumed at WriteRateMax while the writers run
           writersAlive, \* the writers still consume space
-          lateUnits     \* clock units of unconfirmed consumption after the stop
+          lateUnits,    \* clock units of unconfirmed consumption after the stop
+          unownedStopped, \* a stop command also killed containers this run does not own (B31)
+          exitRejected,   \* the exit trap's stop command was rejected by Docker (B30)
+          exitFailureRetained \* that rejection became a counted failure and a refusal (B30)
 
 vars == <<phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
           marker, priorFailures, failures, admitted, stale, exitStop,
-          freeMiB, writersAlive, lateUnits>>
+          freeMiB, writersAlive, lateUnits,
+          unownedStopped, exitRejected, exitFailureRetained>>
 
 Consumption == <<freeMiB, writersAlive, lateUnits>>
+StopVars == <<unownedStopped, exitRejected, exitFailureRetained>>
 
 Init ==
     /\ phase = "running"
@@ -85,6 +92,9 @@ Init ==
     /\ freeMiB = HardFloorMiB
     /\ writersAlive = TRUE
     /\ lateUnits = 0
+    /\ unownedStopped = FALSE
+    /\ exitRejected = FALSE
+    /\ exitFailureRetained = FALSE
 
 \* B28: the driver exits while an iteration or benchmark runs (a signal, an
 \* early exit). Only the corrected EXIT trap stops the writers it launched;
@@ -97,9 +107,16 @@ DriverExit ==
                    diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
                    stale, exitStop>>
 
+\* B30: Docker can reject the stop; only the corrected trap records that as a
+\* failure and a refusal. B31: the corrected stop selects the containers that
+\* carry this run's owner label; the pre-fix stop killed every rnode container.
 ExitTrap ==
     /\ phase = "exiting"
-    /\ exitStop' = StopOnExit
+    /\ \E rejected \in BOOLEAN :
+         /\ exitStop' = StopOnExit
+         /\ exitRejected' = (StopOnExit /\ rejected)
+         /\ exitFailureRetained' = (StopOnExit /\ rejected /\ RetainStopFailure)
+         /\ unownedStopped' = (StopOnExit /\ ~SelectOwned)
     /\ phase' = "exited"
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed,
                    timedOut, known, stopStarted, stopElapsed, termSent, killSent,
@@ -220,6 +237,7 @@ BeginStop ==
     /\ phase = "stop"
     /\ stopStarted' = TRUE
     /\ interruptRequested' = TRUE
+    /\ unownedStopped' = ~SelectOwned
     /\ phase' = "stopping"
     /\ UNCHANGED <<alive, breachRecorded, elapsed, timedOut, known, stopElapsed,
                    termSent, killSent, diagElapsed, rootsLeft, marker,
@@ -317,15 +335,17 @@ RestartDecision ==
                    known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker,
                    priorFailures, failures>>
 
-Next == ((DriverExit \/ ExitTrap) /\ UNCHANGED Consumption)
-        \/ ((Stall \/ WatcherPollStale) /\ UNCHANGED <<exitStop, Consumption>>)
+Next == (DriverExit /\ UNCHANGED <<Consumption, StopVars>>)
+        \/ (ExitTrap /\ UNCHANGED Consumption)
+        \/ ((Stall \/ WatcherPollStale) /\ UNCHANGED <<exitStop, Consumption, StopVars>>)
         \/ ((StartProbe \/ Tick \/ StopTick \/ StopReturns \/ LateWrite)
-            /\ UNCHANGED <<stale, exitStop>>)
+            /\ UNCHANGED <<stale, exitStop, StopVars>>)
+        \/ (BeginStop /\ UNCHANGED <<stale, exitStop, Consumption, exitRejected, exitFailureRetained>>)
         \/ (/\ Crash \/ WatcherPoll \/ ProbeReturns
-               \/ DecideSample \/ Detect \/ Record \/ BeginStop
+               \/ DecideSample \/ Detect \/ Record
                \/ PublishLate \/ AttributionTick \/ CompleteRoot
                \/ Finish \/ Recover \/ RestartDecision
-            /\ UNCHANGED <<stale, exitStop, Consumption>>)
+            /\ UNCHANGED <<stale, exitStop, Consumption, StopVars>>)
 
 Spec == Init /\ [][Next]_vars
 
@@ -355,6 +375,9 @@ TypeOK ==
     /\ freeMiB \in Int
     /\ writersAlive \in BOOLEAN
     /\ lateUnits \in 0..LateUnits
+    /\ unownedStopped \in BOOLEAN
+    /\ exitRejected \in BOOLEAN
+    /\ exitFailureRetained \in BOOLEAN
 
 DeadGuardianRequiresInterrupt ==
     (phase = "watcher-decided" /\ ~alive) => (interruptRequested /\ breachRecorded)
@@ -371,6 +394,8 @@ AttributionWithinBudget == phase = "attribution" => diagElapsed < AttributionBud
 RetainedBreachStopsRestart == phase = "done" => (marker /\ ~admitted /\ failures > 0)
 PriorFailuresPreserved == failures >= priorFailures
 ExitStopsWriters == phase = "exited" => exitStop
+FailedStopRetained == (phase = "exited" /\ exitRejected) => exitFailureRetained
+UnownedWritersPreserved == ~unownedStopped
 
 \* The conditional theorem. Under FloorCoversReaction and BoundTermination the
 \* configuration keeps free space positive on every path; the two assumption

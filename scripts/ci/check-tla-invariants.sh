@@ -186,6 +186,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_client_only_pre_fix:ExitStopsWriters
     soak_disk/MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix:NoOverrun
     soak_disk/MC_SoakDiskGuardian_unconfirmed_stop_pre_fix:NoOverrun
+    soak_disk/MC_SoakDiskGuardian_ignored_pre_fix:FailedStopRetained
+    soak_disk/MC_SoakDiskGuardian_name_only_pre_fix:UnownedWritersPreserved
     soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget
