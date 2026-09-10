@@ -8655,6 +8655,75 @@ Durable logs are `target/verification/epathmap-undo-bench-build-20260910.log`,
 `target/verification/epathmap-undo-bench-matrix-20260910.log`.
 
 
+### J-122 — 2026-09-10: separate source composition from repeated topology work
+
+**CODE-PATH DEDUCTION, not a new measurement.** J-121's opaque fixture creates
+a singleton map at each nesting level. Its ACT has one canonical line:
+`DirectCanonicalLineReplay::expected_line_id` accepts that first line's producer
+position without hashing or equality comparison. `take_indexed` checks the line
+suffix bounds without scanning its contents. Therefore repeated canonical line
+hashing is not an inherent explanation for this fixture's remaining slope.
+
+The scalar topology cursor still reads every enclosing line byte and emits its
+Edge/Value/Leave sequence. Let $`L_i`$ be the line length visited at nesting level
+$`i`$. Current work includes $`\sum_i L_i`$, quadratic in depth for this ladder's
+fixed per-level overhead. This is an implementation cost, not a validation lower
+bound: nested suffixes occupy overlapping windows in the outer input, rather
+than a separately stored complete copy for every invocation. Independently
+stored copies count toward actual input size; equal contents alone do not
+establish shared source identity.
+
+**Required integration boundary.** Balanced source composition removes literal
+copying and repeated freeze-time leaf/index reconstruction. It does not remove
+scalar event replay. The already-planned checked forward/reverse ACT line
+transport must be bound jointly to the persistent reducer before claiming the
+whole-import slope is fixed. Source-only activation is not acceptance evidence.
+The selected composition proof prerequisite uses immutable checked terminal
+windows and 2/3-child joins, with cached lengths/heights, boundary-spine joining,
+and reuse of untouched subtrees. Actual join correctness, balance, checked
+arithmetic and resource bounds must be proved before implementation; the choice
+of a balanced representation alone supplies none of those proofs.
+
+**Cursor requirements.** Substituting logarithmic composed-source lookup for
+today's frozen indexed lookup would create another per-byte multiplier unless
+the following sites retain navigation state:
+
+| Existing production path | Required composed-source behavior |
+|---|---|
+| ACT line Edge delivery in `pathmap_codec.rs` | Retained forward line cursor |
+| EPM1 physical provenance for Edge/Value/Leave | Located traversal with repeated positions and reverse line unwind |
+| Indexed line hashing in consecutive 16-byte blocks | One retained range reader across blocks, not a fresh seek per block |
+| Miri/RISC-V hash fallback | Sequential byte cursor |
+| Sparse branch bytes and dense masks | Scoped node/header reader |
+| `IndexedLocatedByteCursor::skip_exact` | Skip subtrees/ranges without reading every skipped byte |
+
+`IndexedByteReader` already uses a located cursor for successful byte, varint
+and UTF-8 reads. Streaming equality, ordering and mismatch checks should retain
+that design. Actual ACT node and pooled-line jumps still require range seeks.
+An honest navigation bound is $`O(B + K + J\log S)`$, with $`B`$ bytes visited,
+$`K`$ terminal spans traversed, $`J`$ real range starts/jumps and $`S`$ source
+spans in the composed tree. Neither topology events nor individual hash blocks
+may silently become separate seeks. This navigation bound is not whole-import
+linearity. Descriptor visits need separate counters; byte-read counts do not
+measure tree-navigation work.
+
+**Other costs retained for qualification.** Each ACT validator requests a
+seen bitmap of one bit per source byte, even for a singleton. This is repeated
+size-proportional auxiliary storage/initialization, not suffix-byte reading.
+General multi-line ACT validation can also hash overlapping line ranges:
+`hash_by_line` avoids duplicate hashing of an encoded line address only within
+one validator, and candidate reuse still requires exact range equality. Fresh
+nested validators do not share that cache; different overlapping ranges are
+not identical windows. No cross-obligation interval/hash/semantic-summary cache
+was found on this admission path, and none is introduced by this review.
+
+Existing instrumentation separates `line_hash_bytes`, `line_equality_bytes`,
+`event_line_source_reads`, `validation_seen_bitmap_bytes`, and validation source
+reads/copies. Those counters must distinguish the remaining mechanisms during
+qualification. This entry records source inspection and implementation
+requirements only: no new performance result, runtime change, codec change,
+dependency or task-completion claim follows.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
