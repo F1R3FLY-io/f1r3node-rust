@@ -593,9 +593,19 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///     FileHandle + Phase-2 real-open on Consensus caps.
 ///     fs_remove_file: verifying path-mutation with lock-registry
 ///     gate.
+///   - S3.11 (2026-09-09): +1 (fs_release_all_for_holder).  Count
+///     = 27.  Non-verifying lifecycle (tautological echo on replay);
+///     cancel-first / release-second ordering preserved from the
+///     WalDeployScope::drop B1 fix.  fs_remove_dir stays trait-
+///     exempt — its 4 divergence reply shapes (DD-RemoveDir
+///     4-element vs 5-element err_with_manifest) + per-entry WAL
+///     journaling inside the recursive Consensus walk don't fit
+///     the pre_syscall/journal hook contract without adding a
+///     one-off `divergence_reply(args, reason)` trait method used
+///     by only this handler.  Documented in wave-3-plan.md § S3.11.
 ///   - ... (see wave-3-plan.md § Sessions).
-///   - S3.12: reaches 28, stays there.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 26;
+///   - S3.12: reaches 27 migrated + fs_remove_dir exempt (28 total).
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
 
 // ------------------------------------------------------------------
 // Framework loop: dispatch_via_trait
@@ -867,32 +877,33 @@ mod tests {
         // Update this table at every session that migrates a
         // handler.  Order matches wave-3-plan.md § Sessions.
         let migrated: &[&str] = &[
-            "fs_flush",                // S3.1 (2026-09-08)
-            "fs_tell",                 // S3.2 (2026-09-08)
-            "fs_close",                // S3.2 (2026-09-08)
-            "fs_release_lock",         // S3.2 (2026-09-08)
-            "fs_quarantine",           // S3.3 (2026-09-08)
-            "fs_entries_stream_close", // S3.3 (2026-09-08)
-            "fs_lock_range",           // S3.3 (2026-09-08)
-            "fs_lock_sequential",      // S3.3 (2026-09-08)
-            "fs_entries_stream_open",  // S3.4 (2026-09-09)
-            "fs_entries_stream_next",  // S3.4 (2026-09-09)
-            "fs_size",                 // S3.5 (2026-09-09)
-            "fs_stat",                 // S3.5 (2026-09-09)
-            "fs_exists",               // S3.5 (2026-09-09)
-            "fs_read",                 // S3.6 (2026-09-09)
-            "fs_read_at",              // S3.6 (2026-09-09)
-            "fs_seek",                 // S3.6 (2026-09-09)
-            "fs_chown",                // S3.7 (2026-09-09)
-            "fs_chmod",                // S3.7 (2026-09-09)
-            "fs_truncate",             // S3.7 (2026-09-09)
-            "fs_write",                // S3.8 (2026-09-09)
-            "fs_write_at",             // S3.8 (2026-09-09)
-            "fs_entries",              // S3.9 (2026-09-09)
-            "fs_rename",               // S3.9 (2026-09-09)
-            "fs_copy_file",            // S3.9 (2026-09-09)
-            "fs_open",                 // S3.10 (2026-09-09)
-            "fs_remove_file",          // S3.10 (2026-09-09)
+            "fs_flush",                  // S3.1 (2026-09-08)
+            "fs_tell",                   // S3.2 (2026-09-08)
+            "fs_close",                  // S3.2 (2026-09-08)
+            "fs_release_lock",           // S3.2 (2026-09-08)
+            "fs_quarantine",             // S3.3 (2026-09-08)
+            "fs_entries_stream_close",   // S3.3 (2026-09-08)
+            "fs_lock_range",             // S3.3 (2026-09-08)
+            "fs_lock_sequential",        // S3.3 (2026-09-08)
+            "fs_entries_stream_open",    // S3.4 (2026-09-09)
+            "fs_entries_stream_next",    // S3.4 (2026-09-09)
+            "fs_size",                   // S3.5 (2026-09-09)
+            "fs_stat",                   // S3.5 (2026-09-09)
+            "fs_exists",                 // S3.5 (2026-09-09)
+            "fs_read",                   // S3.6 (2026-09-09)
+            "fs_read_at",                // S3.6 (2026-09-09)
+            "fs_seek",                   // S3.6 (2026-09-09)
+            "fs_chown",                  // S3.7 (2026-09-09)
+            "fs_chmod",                  // S3.7 (2026-09-09)
+            "fs_truncate",               // S3.7 (2026-09-09)
+            "fs_write",                  // S3.8 (2026-09-09)
+            "fs_write_at",               // S3.8 (2026-09-09)
+            "fs_entries",                // S3.9 (2026-09-09)
+            "fs_rename",                 // S3.9 (2026-09-09)
+            "fs_copy_file",              // S3.9 (2026-09-09)
+            "fs_open",                   // S3.10 (2026-09-09)
+            "fs_remove_file",            // S3.10 (2026-09-09)
+            "fs_release_all_for_holder", // S3.11 (2026-09-09)
         ];
         for name in migrated {
             let found = FS_HANDLERS.iter().any(|h| h.name == *name);

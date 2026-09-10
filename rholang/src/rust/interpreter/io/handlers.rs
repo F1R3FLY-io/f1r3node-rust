@@ -4510,8 +4510,14 @@ impl FsProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-ii: charge fs_release_all_for_holder weight at handler entry.
-        // See fs_open for the rationale on placement before unapply.
+        dispatch_via_trait::<FsReleaseAllForHolderHandler>(self, contract_args).await
+    }
+
+    #[cfg(any())]
+    async fn _deleted_pre_wave3_fs_release_all_for_holder_body(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
         self.metering
             .reserve_primitive(costs::fs_release_all_for_holder_cost())?;
         let Some((produce, is_replay, previous, args)) =
@@ -4527,20 +4533,6 @@ impl FsProcesses {
             return Ok(previous);
         }
         let holder = holder_id_of(holder_par);
-        // Slice-8b sub-6 review round-2 (2026-08-12): cancel-first,
-        // release-second — SAME ordering as WalDeployScope::drop
-        // (B1 fix).  Rationale: `release_all_for_holder` internally
-        // calls `wake_waiters(state)` after removing this holder's
-        // held entries.  If this same holder has a parked waiter
-        // (concrete: cap held sequential + parked wait:true range),
-        // the wake path admits it — sequential-vs-positional exclusion
-        // no longer blocks (sequential just got released; ranges
-        // empty), and same-holder-skip trivially permits self.
-        // The subsequently-run cancel_all_waiters_for_holder then
-        // finds nothing to cancel; the just-admitted entry LEAKS
-        // attached to a now-closed cap.  Reversed order (cancel first,
-        // then release) kills the parked waiter before wake_waiters
-        // can promote it.  Mirrors the B1 fix pattern exactly.
         let cancelled = self
             .handles
             .lock_registry
@@ -8276,6 +8268,85 @@ static FS_REMOVE_FILE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsRemoveFileHandler>(fs, args)),
 };
 
+// -------------------------------------------------------------------
+// fs_release_all_for_holder — (holder) -> [true, nReleased]  (S3.11)
+//
+// Non-verifying lock helper.  Deploy-end sweep target.  Called by
+// File.close before dispatching fs_close so a File cap that still
+// holds locks at close time doesn't strand them until deploy-end
+// auto-release fires.
+//
+// Cancel-first / release-second ordering — same as
+// WalDeployScope::drop's B1 fix.  Rationale: `release_all_for_
+// holder` internally wakes waiters; reversing order would let a
+// same-holder parked waiter get admitted-then-leaked.
+// -------------------------------------------------------------------
+
+pub struct FsReleaseAllForHolderHandler;
+
+pub struct FsReleaseAllForHolderArgs {
+    holder: Par,
+}
+
+impl FsHandler for FsReleaseAllForHolderHandler {
+    const NAME: &'static str = "fs_release_all_for_holder";
+    const ARITY: usize = 2; // (holder, ack)
+                            // Non-verifying: holder is opaque Par (per-cap `this` name);
+                            // release/cancel counts are host-local, no cross-validator
+                            // verify semantics.
+
+    type Args = FsReleaseAllForHolderArgs;
+
+    fn parse_content(args: &[Par]) -> Result<FsReleaseAllForHolderArgs, Box<HandlerReply>> {
+        // `holder` is opaque Par (arbitrary Rholang value hashed to a
+        // stable 32-byte HolderId).  No type check needed — any Par
+        // shape maps deterministically to a HolderId.
+        let [holder_par] = args else {
+            return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected (Par)"));
+        };
+        Ok(FsReleaseAllForHolderArgs {
+            holder: holder_par.clone(),
+        })
+    }
+
+    fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
+        costs::fs_release_all_for_holder_cost()
+    }
+
+    fn dispatch<'a>(
+        ctx: SyscallCtx<'a>,
+        args: FsReleaseAllForHolderArgs,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
+        Box::pin(async move {
+            let holder = holder_id_of(&args.holder);
+            // Slice-8b sub-6 review round-2 (2026-08-12): cancel-first
+            // / release-second ordering — same as WalDeployScope::drop
+            // B1 fix.  `release_all_for_holder` internally wakes
+            // waiters; reversing the order would let a same-holder
+            // parked waiter get admitted then leaked when cancel
+            // subsequently finds nothing to cancel.
+            let cancelled = ctx
+                .handles
+                .lock_registry
+                .cancel_all_waiters_for_holder(&holder);
+            let released = ctx.handles.lock_registry.release_all_for_holder(&holder);
+            HandlerReply::ok(ok_u64((released + cancelled) as u64))
+        })
+    }
+}
+
+#[linkme::distributed_slice(FS_HANDLERS)]
+static FS_RELEASE_ALL_FOR_HOLDER_ENTRY: FsHandlerEntry = FsHandlerEntry {
+    name: <FsReleaseAllForHolderHandler as FsHandler>::NAME,
+    arity: <FsReleaseAllForHolderHandler as FsHandler>::ARITY,
+    verifying: <FsReleaseAllForHolderHandler as FsHandler>::VERIFYING,
+    dispatch: |fs, args| {
+        Box::pin(dispatch_via_trait_owned::<FsReleaseAllForHolderHandler>(
+            fs, args,
+        ))
+    },
+};
+
 // ---------------------------------------------------------------------
 // Helpers — pure fns (no self) called from spawn_blocking closures.
 // ---------------------------------------------------------------------
@@ -10267,9 +10338,17 @@ mod cmode_tests {
     #[test]
     fn fs_release_all_for_holder_cancels_before_releases() {
         let src = include_str!("handlers.rs");
+        // S3.11 (2026-09-09): after the FsHandler trait migration, the
+        // live cancel/release calls now live in `impl FsHandler for
+        // FsReleaseAllForHolderHandler`'s `dispatch` body.  The
+        // pre-refactor `pub async fn` wrapper is now a one-line
+        // `dispatch_via_trait::<...>` call, and the parked
+        // `#[cfg(any())]` body preserves the pre-refactor ordering for
+        // git-history reference only.  Anchor the pin on the trait impl
+        // so a regression there fires — the parked body is dead code.
         let fn_start = src
-            .find("pub async fn fs_release_all_for_holder")
-            .expect("handlers.rs missing fs_release_all_for_holder definition");
+            .find("impl FsHandler for FsReleaseAllForHolderHandler")
+            .expect("handlers.rs missing FsReleaseAllForHolderHandler trait impl");
         let window = &src[fn_start..std::cmp::min(fn_start + 3000, src.len())];
         let cancel_pos = window
             .find("cancel_all_waiters_for_holder(&holder)")
