@@ -11108,6 +11108,24 @@ Registry retention and historical cache metadata remain resource obligations.
 preserves the mechanism, invariant bindings and negative compile results.
 No persistence or LMDB comparison is claimed by this checkpoint.
 
+#### 5.33.57 ACT batching proof prerequisites (2026-09-10)
+
+Ten bulk-history laws and 21 enclosing-cursor laws pass compilation and
+independent kernel checking before native batching is activated. They preserve
+exact located predecessor histories, run-bounded restoration, ACT scalar
+event order, EPM1 value-reader state, event counts and final source provenance.
+Constructive acceptance controls exclude an implementation that always
+declines; final line bytes and node leaves remain scalar boundaries.
+
+This establishes formal prerequisites, not whole-pipeline correctness or a
+measured allocation improvement. Native exclusive capabilities, source identity,
+strict payload/owner bounds and joint publication must satisfy the bindings
+in the proof README. Runtime and resource qualification remain open, including
+the PMU-006 source-construction failure. The maintained proof-only gate is
+explicitly separate from the full import/runtime gate.
+[J-141](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-141--2026-09-10-scalar-equivalent-act-batching-prerequisites)
+records the checked statements, bounded verification costs and evidence.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

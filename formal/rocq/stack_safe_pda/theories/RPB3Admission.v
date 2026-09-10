@@ -11373,3 +11373,344 @@ Print Assumptions repeated_or_shorter_exports_reuse_the_existing_cache.
 Print Assumptions successful_requests_keep_cache_valid_and_cover_the_requested_prefix.
 
 End CachedSourcePrefixes.
+
+Module BulkCompressedUndo.
+
+Import CompressedScalarUndo.
+
+Lemma shorter_shorter current first second :
+  shorter (shorter current first) second = shorter current second.
+Proof. destruct current as [state [owner start width anchor]]. reflexivity. Qed.
+
+Lemma same_shorter_left current width other :
+  same_state (shorter current width) other = same_state current other.
+Proof. reflexivity. Qed.
+
+Lemma same_shorter_self current first second :
+  same_state (shorter current first) (shorter current second) = true.
+Proof. apply same_state_exact. reflexivity. Qed.
+
+Fixpoint remember_steps final start width history :=
+  match width with
+  | 0 => history
+  | S count => remember (shorter final (start + count))
+      (remember_steps final start count history)
+  end.
+
+Definition remember_closed final start width history :=
+  let previous := shorter final (start + width - 1) in
+  match history with
+  | [] => [Run previous start]
+  | first :: rest =>
+      if same_state final (latest first)
+      then Run previous (first_depth first) :: rest
+      else Run previous start :: history
+  end.
+
+Theorem positive_bulk_remember_is_exactly_iterated_scalar_remember
+    final start width history :
+  0 < width ->
+  remember_closed final start width history = remember_steps final start width history.
+Proof.
+  destruct width as [|count]; [lia|]. intros _.
+  induction count as [|count IH].
+  - cbn [remember_steps]. unfold remember_closed.
+    replace (start + 1 - 1) with start by lia.
+    rewrite Nat.add_0_r. destruct history as [|first rest]; cbn [remember].
+    + rewrite shorter_depth. reflexivity.
+    + rewrite same_shorter_left, shorter_depth. reflexivity.
+  - change (remember_closed final start (S (S count)) history =
+      remember (shorter final (start + S count)) (remember_steps final start (S count) history)).
+    rewrite <- IH.
+    unfold remember_closed. destruct history as [|first rest]; cbn [remember latest first_depth].
+    + rewrite same_shorter_self. f_equal. f_equal. f_equal. lia.
+    + destruct (same_state final (latest first)); cbn [remember latest first_depth];
+        rewrite same_shorter_self; f_equal; f_equal; f_equal; lia.
+Qed.
+
+Definition checked_remember final start width history :=
+  if (0 <? width) && (start + width <=? depth final)
+  then Some (remember_closed final start width history)
+  else None.
+
+Theorem bulk_remember_refuses_zero_or_outside_prefix final start width history :
+  width = 0 \/ depth final < start + width ->
+  checked_remember final start width history = None.
+Proof.
+  intros [->|outside]; unfold checked_remember; [reflexivity|].
+  assert (start + width <=? depth final = false) by (apply Nat.leb_gt; exact outside).
+  rewrite H, andb_false_r. reflexivity.
+Qed.
+
+Theorem accepted_bulk_remember_has_exact_scalar_history final start width history result :
+  checked_remember final start width history = Some result ->
+  0 < width /\ start + width <= depth final /\
+  result = remember_steps final start width history.
+Proof.
+  unfold checked_remember. destruct ((0 <? width) && (start + width <=? depth final)) eqn:guard;
+    [|discriminate]. intro accepted. inversion accepted; subst.
+  rewrite andb_true_iff, Nat.ltb_lt, Nat.leb_le in guard.
+  split; [tauto|]. split; [tauto|]. apply positive_bulk_remember_is_exactly_iterated_scalar_remember. tauto.
+Qed.
+
+Definition population first := S (depth (latest first) - first_depth first).
+
+Definition restored_after first width :=
+  match width with
+  | 0 | 1 => latest first
+  | S count => shorter (latest first) (depth (latest first) - count)
+  end.
+
+Definition remainder_after first rest width :=
+  if width =? population first then rest
+  else Run (shorter (latest first) (depth (latest first) - width)) (first_depth first) :: rest.
+
+Definition checked_pop width history :=
+  match history with
+  | [] => None
+  | first :: rest =>
+      if (0 <? width) && (first_depth first <=? depth (latest first)) &&
+          (width <=? population first)
+      then Some (restored_after first width, remainder_after first rest width)
+      else None
+  end.
+
+Fixpoint pop_steps width history : option (handle * list run) :=
+  match width with
+  | 0 => None
+  | S count =>
+      match pop history with
+      | None => None
+      | Some result =>
+          match count with
+          | 0 => Some (restored result, remaining_runs result)
+          | S _ => pop_steps count (remaining_runs result)
+          end
+      end
+  end.
+
+Lemma positive_pop_steps_closed count first rest :
+  first_depth first <= depth (latest first) -> S count <= population first ->
+  pop_steps (S count) (first :: rest) =
+    Some (restored_after first (S count), remainder_after first rest (S count)).
+Proof.
+  revert first rest. induction count as [|count IH]; intros [current lower] rest valid bound.
+  - cbn [pop_steps pop latest first_depth restored remaining_runs restored_after].
+    unfold remainder_after, population; cbn [latest first_depth] in *.
+    destruct (depth current =? lower) eqn:at_end.
+    + apply Nat.eqb_eq in at_end. rewrite at_end, Nat.sub_diag. reflexivity.
+    + apply Nat.eqb_neq in at_end.
+      assert (1 =? S (depth current - lower) = false) by (apply Nat.eqb_neq; lia).
+      rewrite H. reflexivity.
+  - assert (strict : lower < depth current) by (unfold population in bound; cbn in bound; lia).
+    assert (boundary : depth current =? lower = false) by (apply Nat.eqb_neq; lia).
+    change ((match pop (Run current lower :: rest) with
+      | Some result => pop_steps (S count) (remaining_runs result)
+      | None => None end) = Some (restored_after (Run current lower) (S (S count)),
+        remainder_after (Run current lower) rest (S (S count)))).
+    cbn [pop latest first_depth]. rewrite boundary.
+    change (pop_steps (S count) (Run (shorter current (depth current - 1)) lower :: rest) =
+      Some (restored_after (Run current lower) (S (S count)),
+        remainder_after (Run current lower) rest (S (S count)))).
+    rewrite IH.
+    2: { cbn [latest first_depth]. rewrite shorter_depth. lia. }
+    2: { unfold population in *; cbn [latest first_depth] in *; rewrite shorter_depth. lia. }
+    unfold remainder_after, population, restored_after; cbn [latest first_depth].
+    rewrite !shorter_depth, !shorter_shorter.
+    replace (depth current - 1 - S count) with (depth current - S (S count)) by lia.
+    assert (same_guard : (S count =? S (depth current - 1 - lower)) =
+      (S (S count) =? S (depth current - lower))).
+    { apply Bool.eq_true_iff_eq. rewrite !Nat.eqb_eq. lia. }
+    rewrite same_guard.
+    destruct count as [|count].
+    + reflexivity.
+    + cbn [restored_after]. rewrite ?shorter_shorter.
+      replace (depth current - 1 - S count) with (depth current - S (S count)) by lia.
+      reflexivity.
+Qed.
+
+Theorem accepted_run_bounded_pop_is_exactly_iterated_scalar_pop width history result :
+  checked_pop width history = Some result -> pop_steps width history = Some result.
+Proof.
+  destruct history as [|first rest]; [discriminate|]. unfold checked_pop.
+  destruct ((0 <? width) && (first_depth first <=? depth (latest first)) &&
+      (width <=? population first)) eqn:guard; [|discriminate].
+  intro accepted. inversion accepted; subst.
+  rewrite !andb_true_iff, Nat.ltb_lt, !Nat.leb_le in guard.
+  destruct width as [|count]; [lia|]. apply positive_pop_steps_closed; tauto.
+Qed.
+
+Theorem run_bounded_pop_refuses_zero_invalid_run_or_excess width first rest :
+  width = 0 \/ depth (latest first) < first_depth first \/ population first < width ->
+  checked_pop width (first :: rest) = None.
+Proof.
+  unfold checked_pop. intros [->|[bad|outside]]; [reflexivity| |].
+  - assert (first_depth first <=? depth (latest first) = false) by (apply Nat.leb_gt; exact bad).
+    rewrite H, andb_false_r. reflexivity.
+  - assert (width <=? population first = false) by (apply Nat.leb_gt; exact outside).
+    rewrite H, andb_false_r. reflexivity.
+Qed.
+
+Section Located.
+Variable roots : nat -> CanonicalKeyProtocol.region.
+
+Fixpoint predecessor_observations final start width :=
+  match width with
+  | 0 => []
+  | S count => observe roots (shorter final (start + count)) ::
+      predecessor_observations final start count
+  end.
+
+Lemma next_prefix_adds_one_located_byte final width :
+  valid_handle roots final -> width < depth final ->
+  exists byte, bytes roots (shorter final (S width)) =
+    bytes roots (shorter final width) ++ [byte].
+Proof.
+  intros valid strict.
+  assert (nonempty : 0 < length (skipn width (bytes roots final))).
+  { rewrite length_skipn, (handle_length valid). lia. }
+  destruct (skipn width (bytes roots final)) as [|byte tail] eqn:suffix;
+    [cbn in nonempty; lia|].
+  exists byte. rewrite !shorter_bytes by lia.
+  replace (S width) with (width + 1) by lia.
+  rewrite NormalizedSourceSpans.split_prefix, suffix. reflexivity.
+Qed.
+
+Lemma remember_steps_located final start width history :
+  valid_handle roots final -> start + width <= depth final ->
+  valid_history roots history ->
+  scalar_chain (bytes roots (shorter final start)) (expand roots history) ->
+  valid_history roots (remember_steps final start width history) /\
+  scalar_chain (bytes roots (shorter final (start + width)))
+    (expand roots (remember_steps final start width history)) /\
+  expand roots (remember_steps final start width history) =
+    predecessor_observations final start width ++ expand roots history.
+Proof.
+  intros final_valid. induction width as [|width IH]; intros bound history_valid chain.
+  - cbn [remember_steps predecessor_observations]. rewrite Nat.add_0_r. tauto.
+  - destruct (IH ltac:(lia) history_valid chain) as [prior_valid [prior_chain prior_observed]].
+    assert (prefix_valid : valid_handle roots (shorter final (start + width)))
+      by (apply shorter_is_valid; [exact final_valid|lia]).
+    destruct (remembering_refines_exact_scalar_predecessor_push prefix_valid prior_valid prior_chain)
+      as [observed preserved].
+    split; [exact preserved|]. split.
+    + replace (start + S width) with (S (start + width)) by lia.
+      destruct (next_prefix_adds_one_located_byte (width := start + width)
+        final_valid ltac:(lia)) as [byte appended].
+      change (scalar_chain (bytes roots (shorter final (S (start + width))))
+        (expand roots (remember (shorter final (start + width))
+          (remember_steps final start width history)))).
+      rewrite appended, observed. unfold observe. constructor. exact prior_chain.
+    + change (expand roots (remember (shorter final (start + width))
+        (remember_steps final start width history)) =
+        predecessor_observations final start (S width) ++ expand roots history).
+      rewrite observed, prior_observed. reflexivity.
+Qed.
+
+Theorem accepted_bulk_remember_preserves_valid_exact_located_scalar_history
+    final start width history result :
+  valid_handle roots final -> valid_history roots history ->
+  scalar_chain (firstn start (bytes roots final)) (expand roots history) ->
+  checked_remember final start width history = Some result ->
+  valid_history roots result /\
+  scalar_chain (firstn (start + width) (bytes roots final)) (expand roots result) /\
+  expand roots result = predecessor_observations final start width ++ expand roots history.
+Proof.
+  intros final_valid history_valid chain accepted.
+  destruct (@accepted_bulk_remember_has_exact_scalar_history final start width history result accepted)
+    as [positive [bound ->]].
+  assert (initial : scalar_chain (bytes roots (shorter final start)) (expand roots history)).
+  { rewrite shorter_bytes by lia. exact chain. }
+  pose proof (@remember_steps_located final start width history
+    final_valid bound history_valid initial) as result.
+  rewrite shorter_bytes in result by lia. exact result.
+Qed.
+
+Theorem each_bulk_predecessor_retains_its_exact_located_prefix final start width index :
+  valid_handle roots final -> start + width <= depth final -> index < width ->
+  valid_handle roots (shorter final (start + index)) /\
+  observe roots (shorter final (start + index)) =
+    (handle_state final, firstn (start + index) (bytes roots final)).
+Proof.
+  intros valid bounded within. split.
+  - apply shorter_is_valid; [exact valid|lia].
+  - unfold observe. rewrite shorter_state, shorter_bytes by lia. reflexivity.
+Qed.
+
+Lemma pop_steps_located count history last rest :
+  valid_history roots history -> pop_steps (S count) history = Some (last, rest) ->
+  valid_handle roots last /\ valid_history roots rest /\
+  nth_error (expand roots history) count = Some (observe roots last) /\
+  expand roots rest = skipn (S count) (expand roots history).
+Proof.
+  revert history last rest. induction count as [|count IH]; intros history last rest valid accepted.
+  - cbn [pop_steps] in accepted.
+    destruct (pop history) as [result|] eqn:popped; [|discriminate].
+    inversion accepted; subst.
+    destruct (popping_refines_exact_scalar_head_and_tail valid popped)
+      as [expanded [head [tail work]]].
+    split; [exact head|]. split; [exact tail|].
+    split; rewrite expanded; reflexivity.
+  - change ((match pop history with
+      | Some result => pop_steps (S count) (remaining_runs result)
+      | None => None end) = Some (last, rest)) in accepted.
+    destruct (pop history) as [result|] eqn:popped; [|discriminate].
+    destruct (popping_refines_exact_scalar_head_and_tail valid popped)
+      as [expanded [head [tail work]]].
+    destruct (IH _ _ _ tail accepted) as [last_valid [rest_valid [selected remainder]]].
+    split; [exact last_valid|]. split; [exact rest_valid|].
+    split; rewrite expanded; cbn; assumption.
+Qed.
+
+Theorem accepted_bulk_pop_preserves_exact_located_selection_and_remaining_history
+    width history last rest :
+  valid_history roots history -> checked_pop width history = Some (last, rest) ->
+  valid_handle roots last /\ valid_history roots rest /\
+  nth_error (expand roots history) (width - 1) = Some (observe roots last) /\
+  expand roots rest = skipn width (expand roots history).
+Proof.
+  intros valid accepted.
+  pose proof (@accepted_run_bounded_pop_is_exactly_iterated_scalar_pop
+    width history (last, rest) accepted) as scalar.
+  destruct width as [|count]; [discriminate|].
+  replace (S count - 1) with count by lia.
+  eapply pop_steps_located; eauto.
+Qed.
+
+End Located.
+
+Theorem positive_bounded_remember_constructively_accepts final start width history :
+  0 < width -> start + width <= depth final ->
+  checked_remember final start width history =
+    Some (remember_closed final start width history).
+Proof.
+  intros positive bounded. unfold checked_remember.
+  assert (0 <? width = true) by (apply Nat.ltb_lt; exact positive).
+  assert (start + width <=? depth final = true) by (apply Nat.leb_le; exact bounded).
+  rewrite H, H0. reflexivity.
+Qed.
+
+Theorem positive_valid_run_bounded_pop_constructively_accepts width first rest :
+  0 < width -> first_depth first <= depth (latest first) -> width <= population first ->
+  checked_pop width (first :: rest) =
+    Some (restored_after first width, remainder_after first rest width).
+Proof.
+  intros positive valid bounded. unfold checked_pop.
+  assert (0 <? width = true) by (apply Nat.ltb_lt; exact positive).
+  assert (first_depth first <=? depth (latest first) = true) by (apply Nat.leb_le; exact valid).
+  assert (width <=? population first = true) by (apply Nat.leb_le; exact bounded).
+  rewrite H, H0, H1. reflexivity.
+Qed.
+
+Print Assumptions positive_bulk_remember_is_exactly_iterated_scalar_remember.
+Print Assumptions bulk_remember_refuses_zero_or_outside_prefix.
+Print Assumptions accepted_bulk_remember_has_exact_scalar_history.
+Print Assumptions accepted_run_bounded_pop_is_exactly_iterated_scalar_pop.
+Print Assumptions run_bounded_pop_refuses_zero_invalid_run_or_excess.
+Print Assumptions each_bulk_predecessor_retains_its_exact_located_prefix.
+Print Assumptions accepted_bulk_remember_preserves_valid_exact_located_scalar_history.
+Print Assumptions accepted_bulk_pop_preserves_exact_located_selection_and_remaining_history.
+Print Assumptions positive_bounded_remember_constructively_accepts.
+Print Assumptions positive_valid_run_bounded_pop_constructively_accepts.
+
+End BulkCompressedUndo.

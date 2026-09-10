@@ -10134,6 +10134,74 @@ listed in the stack-safe proof README; no additional formal framework is added.
 | `canonical-source-literals-release.log` (474 release controls) | `59c47f3587d2f4a80def4634fa1dea3b9c6c02cc77d825c2e2ef44c33020135a` |
 | `canonical-source-literals-qualified.log` (combined gate blocked by PMU-006) | `17f2dfd6cfa7eb809ef1612582693a181d6ed8cafdb683c7b160e5fb4df7ea7e` |
 
+### J-141 — 2026-09-10: scalar-equivalent ACT batching prerequisites
+
+**QUESTION / SCOPE.** Can original-source spans advance the persistent key
+validator in batches without losing intermediate restore points or changing
+EPM1 value-table behavior? This is task 6018's formal-first prerequisite, not
+an ACT persistence result or a throughput measurement.
+
+**CHECKED CONTRACT.** `BulkCompressedUndo` adds ten closed-context laws to
+`RPB3Admission.v` (351 total). Bulk remember equals scalar predecessor pushes
+and preserves complete located histories even when older handles have different
+descriptor owners. Run-bounded pop selects exactly predecessor `width - 1`
+and removes exactly `width` history entries. Width one retains the original
+handle and endpoint anchor. Positive valid widths constructively succeed;
+zero and invalid widths decline without changing history.
+
+`CanonicalActBatchPublication.v` adds 21 closed-context laws for the enclosing
+cursor. Forward transport counts both the Edge and absent Value for every
+byte; reverse counts one Leave. Exact scalar traces, final source provenance,
+unchanged value-reader/endpoint authority, stale and terminal refusals, checked
+counter capacity and constructive acceptance are proved. Concrete controls
+accept two interior bytes of a three-byte line, refuse its final forward byte,
+and allow reverse line bytes without swallowing the node leave.
+
+**NATIVE BINDING / LIMITS.** A borrowed capability must carry the actual ACT
+source and provide exclusive mutation authority. Formal snapshot equality
+does not require a runtime reader clone or content comparison. Register the
+original ACT source once, not per attempted batch. Intersect the offered width
+with payload remaining minus one, held-owner distance minus one and counter
+capacity; do not subtract twice from an already strict ACT offer. Preflight
+all fallible operations before publishing path and cursor state. Capacity
+reservation is not itself logical publication, and refusal guarantees do not
+promise zero allocator activity. The proof README enumerates native bindings
+and existing scalar/eager controls. Runtime activation and its resource
+qualification remain required; these proofs alone do not close them.
+
+**VERIFICATION.** Full RPB3 compilation and independent kernel checking pass:
+38.481/20.785 seconds wall, 38.012/20.492 CPU seconds, 1.2 GiB/482.3 MiB peak,
+respectively. Publication compilation and kernel checking against the updated
+RPB3 base also pass: 2.437/20.902 seconds wall, 2.389/20.648 CPU seconds,
+542.2/481.2 MiB peak. All used systemd limits of 1.5 GiB soft, 2 GiB hard,
+one CPU, 64 tasks and 900 seconds, with zero swap. These measure verification
+tools, not Rholang runtime performance. Earlier proof-script errors were
+repaired without weakening assumptions; iteration logs remain in verification
+storage. No axiom or admitted proof was introduced.
+
+The maintained canonical-key gate now requires both new proof sets and their
+kernel checks. `--canonical-key-proofs` selects only the proof prerequisites;
+it does not bypass or certify the separate required ACT runtime gate. PMU-006
+still prevents that broader gate from passing and remains visible.
+
+The maintained proof-only invocation subsequently exits zero with 455 closed
+contexts (351 admission, 21 publication, 68 source-release, 15 streaming) and
+four successful independent kernel checks. The full output is retained in
+`target/verification/canonical-batch-proof-gate.log`. Nested proof scopes each
+have their own memory limit; the driver scope is not aggregate accounting.
+
+| Evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-act-batch-authority-final.log` | `16bb76afdb6b5e078720b3f97433f844296e037a699b39e3b9b740168fbb08cb` |
+| `canonical-act-batch-authority-final-kernel.log` | `1b9673bd0a53119d1e0e92e3925d03dae0cd1619fa963bfb6884d3a93856ff93` |
+
+The checked RPB3 source digest is
+`89587304eaae031c399a5a393d4623054791a55009dfbad98f16de5ab3e2a989`;
+the publication source digest is
+`3aaf44903fc9abb0e1cf1608216d212d4ebe08d622baaeaafa83b406abbb86d6`.
+No protobuf/bincode encoding, hash transcript, consensus contract, PathMap
+dependency or runtime ACT cursor behavior changes in this proof checkpoint.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

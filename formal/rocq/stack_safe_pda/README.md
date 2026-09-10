@@ -3357,6 +3357,87 @@ descriptor. Activation must batch authoritative ACT line spans rather than
 turn this into a descriptor-per-byte adapter. Completion EOF anchors remain
 independent of source contents. J-140 records this checkpoint's results.
 
+### Joint ACT source batching acceptance boundary (2026-09-10; task 6018)
+
+The next runtime integration must compose three already distinct authorities:
+the validated ACT line cursor, the enclosing EPM1 value-table cursor, and the
+persistent path reducer with its compressed restoration history. Source-span
+storage alone does not authorize advancing any of them. The implementation
+boundary remains closed until the joint transition and restoration proofs
+and their native properties are checked.
+
+The actual scalar path returns immediately from `value(false, source)` without
+querying the reducer. A literal ACT line interior yields an Edge followed by
+an absent Value event, so its absent events cannot read a map value, increment
+endpoint count, request a child, or settle a completed obligation. That does
+not authorize skipping the final line byte, a mask-derived edge, a grammar
+transition, an owner boundary, or an outstanding child continuation.
+
+| Acceptance obligation | Required runtime observation |
+|---|---|
+| Strict persistent payload guard | Live, unfaulted Payload phase; positive width strictly below remaining payload and every held owner boundary; exact current state/byte handle. No per-byte typed-state allocation or obligation-clock increment. |
+| Maximal safe source width | Intersect the ACT-offered width with payload remaining minus one, owner distance minus one, and native counter capacity. Do not subtract again from the already strict ACT-offered width. Zero capacity declines batching and leaves the scalar path available. |
+| Authoritative source identity | Register the ACT cursor's original source once per owning frame. Select logical line ranges from its exclusive capability; never invert physical provenance or infer literalness from byte equality. |
+| Forward compressed restoration | At depth `d` and width `w`, retain every predecessor through depth `d+w-1` in a same-state run. Preserve the old first depth when merging; otherwise start at `d`. Compare located bytes/state, not descriptor-owner equality. |
+| Reverse compressed restoration | Limit width to the ACT unwind offer and current run population. Restore its exact scalar predecessor sequence without crossing a state change, node leave or root leave. Width one preserves the original handle where scalar pop does. |
+| EPM authority preservation | Advance topology count by twice the forward width or once the reverse width. Preserve value-reader position, value count, endpoint count, terminal state/checks and pending-child authority. Set last source from the actual final emitted event. |
+| Joint refusal and publication | Validate widths, counters, source ranges and restoration capacity before advancing either cursor or path history. A stale, unavailable or overflowing optimization declines without mutation; it does not become an artificial input-depth limit. |
+| Boundary and oracle controls | Differentially compare every prefix, intermediate absent event and reverse prefix against scalar execution, including malformed/valueless branches, completion boundaries, old handles, shared siblings and discontinuous provenance. Retain generated mask bytes as owned data. |
+
+`BulkCompressedUndo` contributes ten closed-context laws to `RPB3Admission.v`
+(351 total). The complete theory and its independent kernel check pass. The
+laws identify bulk remember with repeated scalar remember, preserve the exact
+located predecessor history across different descriptor owners, and identify
+run-bounded pop with repeated scalar pop. Positive valid widths constructively
+succeed; zero, invalid and excessive widths are refused. Width-one restoration
+retains the original handle and anchor rather than manufacturing a new prefix.
+
+`CanonicalActBatchPublication.v` contributes 21 closed-context laws and also
+passes compilation and independent kernel checking against that updated base.
+It proves exact ACT scalar traces, enclosing value-authority preservation,
+expanded event counts, final source provenance, refusal nonmutation and
+constructive acceptance. The forward control consumes two interior bytes of
+a three-byte line, but refuses all three; reverse consumes the three line
+bytes, but refuses to cross their node leave.
+
+Run `scripts/check-stack-safe-pda-proofs.sh --canonical-key-proofs` to rebuild
+and kernel-check these prerequisites without running Rust tests. The same
+checks remain part of `--epathmap-import` and the full gate. A successful
+proof-only invocation does not mean those broader gates pass.
+
+The model's full authority equality is a freshness specification, not a
+request to clone or compare native cursor contents. Native exclusive borrowed
+capabilities must provide freshness and the fixed cursor-owned source. The
+model's reader list likewise represents preserved reader state, not a runtime
+byte projection. ACT event counting inside the model is ghost scalar-trace
+accounting; the actual enclosing cursor owns the native topology counter.
+Native reverse entry from `Children(0)` must use the existing
+`accepted_reverse_entry_commit_matches_the_exact_scalar_trace` normalization
+law before applying the abstract `LineLeave` result.
+
+These checked laws do not yet prove the joint native batch adapter. Its strict
+typed guard, source registration, restoration updates and capacity preflight
+must be bound together before activation. Reservations can change allocation
+capacity without changing logical authority; refusal nonmutation is not a
+claim that failed reservation attempts have zero allocation effects. Existing PMU-006
+source-trie construction failures remain a separate required gate, not grounds
+to filter the transport corpus. The independent scalar/eager oracles must
+remain usable even when a test-only backing has no retained source window.
+
+The runtime test seam already exists; do not introduce a second eager parser
+or parallel restoration oracle for this integration:
+
+| Existing control | Reuse in the joint native binding |
+|---|---|
+| `assert_focused_persistent_matches` | Compares active/completed obligations, exact completion anchor and located bytes, false/true value observations, fresh obligation clock and reified semantic graph. Invoke it after each accepted batch and corresponding scalar prefix. |
+| `persistent_opaque_reuse_guard_matches_widened_native_boundaries` | Extend its Open/SplitComplete/Dead, fault, Payload/Awaiting/Countdown and full-width length matrix to span widths; preserve the original scalar guard checks. |
+| `topology_restore_runs_preserve_page_crossing_prefixes_and_divergent_continuations` | Compare bulk restore with its existing saved-handle stack, frozen historical views, pending-child preflight and divergent continuations. |
+| `topology_restore_runs_preserve_private_effects_faults_and_fresh_births` | Keep resolve/reject and post-Dead effects in the bulk restoration corpus; do not restrict qualification to healthy linear payloads. |
+| `checked_line_transport::arbitrary_branched_fragmented_images_match_every_scalar_prefix` | Retain every forward/absent/reverse prefix and final boundary comparison over the full generated topology. Its PMU-006 construction failure remains visible until repaired. |
+
+These existing controls establish scalar/reference behavior. They do not by
+themselves verify a bulk adapter that has not yet been implemented.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

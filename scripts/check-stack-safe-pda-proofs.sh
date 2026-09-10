@@ -294,16 +294,25 @@ epathmap_score_proofs() {
 }
 
 canonical_key_protocol_proofs() {
-  local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 341 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 351 \
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
+  canonical_act_batch_publication_proofs
   canonical_source_release_proofs
   rocq_reject_placeholders theories/IncrementalPrepareStreaming.v
   rocq_compile_with_closed_count theories/IncrementalPrepareStreaming.v 15 \
     "ordered source chunk folds and incremental preparation contracts"
   rocq_check_modules "ordered source chunk folds" StackSafePDA.IncrementalPrepareStreaming
+}
+
+canonical_act_batch_publication_proofs() {
+  local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
+  rocq_reject_placeholders theories/CanonicalActBatchPublication.v
+  rocq_compile_with_closed_count theories/CanonicalActBatchPublication.v 21 \
+    "ACT batch publication, exact scalar authority and constructive acceptance"
+  rocq_check_modules "ACT batch publication" StackSafePDA.CanonicalActBatchPublication
 }
 
 canonical_source_release_proofs() {
@@ -396,6 +405,15 @@ if [[ "${1:-}" == "--canonical-source-release" ]]; then
   canonical_source_release_proofs
   popd >/dev/null
   echo "stack-safe-pda: canonical source release prerequisite proofs passed"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--canonical-key-proofs" ]]; then
+  pushd "$rocq_root" >/dev/null
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
+  canonical_key_protocol_proofs
+  popd >/dev/null
+  echo "stack-safe-pda: canonical-key prerequisite proofs passed; runtime qualification is separate"
   exit 0
 fi
 
