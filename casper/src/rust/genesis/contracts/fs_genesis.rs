@@ -1587,12 +1587,24 @@ mod tests {
     /// call (or vice versa) creates a silent-hang class where the
     /// dispatch pattern doesn't match and the reply channel is
     /// never fired — H-P7-8-E2E was exactly this class of bug.
-    /// This test locks the 22 arities against a hardcoded table
+    /// This test locks the 28 arities against a hardcoded table
     /// derived from Slice 26's arity documentation in handlers.rs.
     ///
     /// A regression bumping (say) `fs_stat` from arity 4 to 5
     /// without updating this table fails HERE — surfacing at
     /// build time rather than as a mysterious deploy hang.
+    ///
+    /// Wave-3 S3.12 (2026-09-09) source of truth shifted: 27 of the
+    /// 28 handlers now carry their arity as a `const ARITY: usize`
+    /// on their `impl FsHandler for FsXHandler` block (surfaced on
+    /// `FsHandlerEntry.arity` in the FS_HANDLERS distributed slice),
+    /// and are dispatched via a single loop in
+    /// `std_system_processes()` rather than 28 explicit
+    /// `fs_native_def(...)` calls.  fs_remove_dir remains the sole
+    /// explicit `fs_native_def(...)` call site (trait-exempt).  This
+    /// test walks FS_HANDLERS for the 27 migrated handlers and
+    /// falls back to source-scanning rho_runtime.rs for
+    /// fs_remove_dir only.
     #[test]
     fn fs_native_def_arities_match_golden_table() {
         // Golden table: URN suffix → (arity, rationale).
@@ -1642,73 +1654,109 @@ mod tests {
             ("releaseAllForHolder", 2), // (holder, ack)
         ];
 
-        // Read rho_runtime.rs from the sibling rholang crate.
+        // Walk FS_HANDLERS for the 27 migrated handlers.  Each entry
+        // carries its urn_suffix + arity — both authoritative
+        // post-S3.12.  fs_remove_dir stays trait-exempt (wave-3-plan
+        // § S3.11) and is checked via the fallback source-scan below.
+        use rholang::rust::interpreter::io::handler_trait::FS_HANDLERS;
+        let mut checked_suffixes: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for entry in FS_HANDLERS.iter() {
+            checked_suffixes.insert(entry.urn_suffix);
+            let expected = golden
+                .iter()
+                .find(|(s, _)| *s == entry.urn_suffix)
+                .map(|(_, a)| *a)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "M-2 (S3.12): FS_HANDLERS entry `{}` (URN suffix `{}`) has \
+                         no matching row in this golden table.  Add it if a new \
+                         handler was registered, or remove the FS_HANDLERS entry \
+                         if the handler was retired.",
+                        entry.name, entry.urn_suffix
+                    )
+                });
+            assert_eq!(
+                entry.arity, expected,
+                "M-2: arity drift for `{FS_NATIVE_URN_PREFIX}{}` — golden \
+                 table says {expected} but `<FsHandler>::ARITY` on the trait \
+                 impl for `{}` is {}.  If intentional, update this golden \
+                 table AND the ARITY constant AND every caller.  A silent \
+                 mismatch produces the H-P7-8-E2E hang class.",
+                entry.urn_suffix, entry.name, entry.arity
+            );
+        }
+
+        // fs_remove_dir: trait-exempt (wave-3-plan.md § S3.11); its
+        // registration lives inline in `std_system_processes()` as
+        // the sole remaining explicit `fs_native_def(...)` call.
+        // Fall back to a targeted source-scan for that one URN.
         let src = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../rholang/src/rust/interpreter/rho_runtime.rs"
         ))
-        .expect("read rho_runtime.rs to extract fs_native_def arities");
-
-        // Simple scanner: find each `fs_native_def(` opening,
-        // then within the parentheses find:
-        //   - the URN string literal after the prefix
-        //   - the first numeric literal following the URN — that's the arity
-        for (suffix, expected_arity) in golden {
-            let urn = format!("\"{FS_NATIVE_URN_PREFIX}{suffix}\"");
-            let anchor = src.find(&urn).unwrap_or_else(|| {
-                panic!(
-                    "M-2: rho_runtime.rs is missing fs_native_def registration \
-                     for `{FS_NATIVE_URN_PREFIX}{suffix}`; the M-3 bidirectional \
-                     drift check should have flagged this too"
-                )
-            });
-            // Scan forward line-by-line past the URN, skipping
-            // comments and the channel line, until a line whose
-            // trimmed body starts with an integer literal — that
-            // is the arity argument.
-            let window = &src[anchor..anchor + 800];
-            let mut actual: Option<usize> = None;
-            for line in window.lines() {
-                let trimmed = line.trim();
-                // Skip blanks, //-comments, block-comment lines,
-                // and the URN string itself.
-                if trimmed.is_empty()
-                    || trimmed.starts_with("//")
-                    || trimmed.starts_with("/*")
-                    || trimmed.starts_with('*')
-                    || trimmed.contains(&urn)
-                    || trimmed.starts_with("FixedChannels::")
-                {
-                    continue;
-                }
-                // First numeric-leading line after we've passed
-                // the channel is the arity.  Strip trailing `,`
-                // + comments.
-                let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if !digits.is_empty() {
-                    actual =
-                        Some(digits.parse().unwrap_or_else(|e| {
-                            panic!("M-2: arity for {suffix} did not parse: {e}")
-                        }));
-                    break;
-                }
+        .expect("read rho_runtime.rs to extract fs_remove_dir arity");
+        let remove_dir_suffix = "removeDir";
+        let expected_remove_dir = golden
+            .iter()
+            .find(|(s, _)| *s == remove_dir_suffix)
+            .map(|(_, a)| *a)
+            .expect("golden table must have a `removeDir` row");
+        let urn = format!("\"{FS_NATIVE_URN_PREFIX}{remove_dir_suffix}\"");
+        let anchor = src.find(&urn).unwrap_or_else(|| {
+            panic!(
+                "M-2 (S3.12): rho_runtime.rs no longer has an explicit \
+                 fs_native_def call for `{FS_NATIVE_URN_PREFIX}{remove_dir_suffix}`.  \
+                 fs_remove_dir is trait-exempt (wave-3-plan.md § S3.11) — either \
+                 restore the explicit call, or migrate it into the FsHandler \
+                 trait framework and register it on FS_HANDLERS."
+            )
+        });
+        let window = &src[anchor..anchor + 800];
+        let mut actual: Option<usize> = None;
+        for line in window.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+                || trimmed.contains(&urn)
+                || trimmed.starts_with("FixedChannels::")
+            {
+                continue;
             }
-            let actual = actual.unwrap_or_else(|| {
-                panic!(
-                    "M-2: could not find an integer-literal arity line \
-                     within 800 bytes after the URN for {suffix}; the \
-                     `fs_native_def(URN, channel, arity, body_ref, closure)` \
-                     layout may have changed"
-                )
-            });
-            assert_eq!(
-                actual, *expected_arity,
-                "M-2: arity drift for `{FS_NATIVE_URN_PREFIX}{suffix}` — \
-                 handler destructures {expected_arity} args (per handlers.rs) \
-                 but fs_native_def registers arity {actual}.  If intentional, \
-                 update this golden table AND the destructure in handlers.rs \
-                 AND every caller.  A silent mismatch produces the H-P7-8-E2E \
-                 hang class."
+            let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                actual = Some(
+                    digits
+                        .parse()
+                        .unwrap_or_else(|e| panic!("M-2: arity for removeDir did not parse: {e}")),
+                );
+                break;
+            }
+        }
+        let actual = actual.expect(
+            "M-2: could not find an integer-literal arity line \
+             within 800 bytes after the removeDir URN",
+        );
+        assert_eq!(
+            actual, expected_remove_dir,
+            "M-2: arity drift for `{FS_NATIVE_URN_PREFIX}{remove_dir_suffix}` — \
+             golden table says {expected_remove_dir} but fs_native_def \
+             registers arity {actual}."
+        );
+        checked_suffixes.insert(remove_dir_suffix);
+
+        // Bidirectional: every golden entry must have been visited
+        // (either via FS_HANDLERS or the removeDir fallback).  A
+        // handler retired without a golden-table update fires here.
+        for (suffix, _) in golden {
+            assert!(
+                checked_suffixes.contains(suffix),
+                "M-2 (S3.12): golden table has an entry for `{FS_NATIVE_URN_PREFIX}{suffix}` \
+                 but no matching FS_HANDLERS entry OR explicit fs_native_def \
+                 call was found.  If this handler was retired, remove the \
+                 golden-table row and update FS_NATIVE_URN_SUFFIXES."
             );
         }
     }
