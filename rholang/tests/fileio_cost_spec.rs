@@ -821,11 +821,13 @@ fn every_fs_handler_charges_its_cost_helper() {
     let handlers_src = include_str!("../src/rust/interpreter/io/handlers.rs");
     let handlers_stream_src = include_str!("../src/rust/interpreter/io/handlers_stream.rs");
     let handlers_lock_src = include_str!("../src/rust/interpreter/io/handlers_lock.rs");
+    let handlers_lifecycle_src = include_str!("../src/rust/interpreter/io/handlers_lifecycle.rs");
     // Future family files (S3.13b continuation): concat with `\n---\n`
     // separator between; trait_impl_block anchor-search still works
     // per-file because each block is bounded by its own `}\n}\n`.
-    let all_src: String =
-        format!("{handlers_src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}");
+    let all_src: String = format!(
+        "{handlers_src}\n// ---\n{handlers_stream_src}\n// ---\n{handlers_lock_src}\n// ---\n{handlers_lifecycle_src}"
+    );
 
     let mut missing = Vec::new();
     let mut handlers_to_check: Vec<String> =
