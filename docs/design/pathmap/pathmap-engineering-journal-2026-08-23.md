@@ -9643,6 +9643,52 @@ do not claim an anchor silently repairs it. The formal `legal_window` bound
 concerns logical indices, while `explicit_completion_anchor_changes_only_the_end`
 separates end provenance. No consensus encoding change is implied.
 
+### J-135 — 2026-09-10: selected borrowed-source provenance bounds
+
+**FORMAL REUSE / IMPLEMENTATION CONTRACT.** The existing checked terminal
+window model bounds logical indices into an original source, not an unused
+physical EOF offset. `IndexedWindowTransport` proves that an explicit end
+anchor changes only the end observation. Bind those laws to one checked
+borrowed-payload constructor, reused by full/selected construction, leaf
+splitting and original-owner coalescing. Preserve full-slice identity and
+normalized indices; reject reversed or out-of-slice ranges. Check physical
+start before accepting explicit empty construction; for nonempty data check
+the last selected byte, not the physical one-past-end. Logical source-tree
+empty subviews remain endpoint-free, distinct from indexed borrowed subviews
+whose overflowing physical start is already refused.
+
+Native controls must cover a final physical byte at `usize::MAX`, explicit
+versus missing indexed EOF, every split/rejoin at that boundary, unused
+overflowing whole-source tails, selected empty-range refusal and generated
+range/origin differentials. Existing logical bounds and iterative drivers are
+unchanged. This is a prerequisite to source-backed indexed regions, not that
+integration itself; no production codec or consensus identity change is made.
+
+**NATIVE RESULTS.** Both new existing-API boundary controls fail before the
+constructor repair (exit 101, 7.550 seconds service, 8.251 seconds CPU, 1.8G
+peak, zero swap). The initial repair run passes 18 controls but fails the
+old assertion rejecting one byte at the maximum physical offset. Replace
+that obsolete refusal witness with two bytes at that offset, which actually
+overflows represented data. Independent review additionally requires
+zero-total-length original-owner coalescing to return after identity/adjacency
+checks, before validating a physical EOF; a new assertion covers independent
+empty views at that boundary. Explicit empty construction still checks its
+physical start. No source-tree subview is assigned indexed EOF authority.
+
+After those corrections all 19 source controls pass in debug (0.80 seconds)
+and release (0.10 seconds), with zero failures/ignores and 430 filtered per
+profile. Combined service time is 42.527 seconds, CPU 97.533 seconds, peak
+2.3G and zero swap under High4G/Max6G/Swap0/CPU400%/Tasks512/Runtime900 and
+seed `41315976`. The additional generated selected-range property compares
+acceptance and every physical byte against checked arithmetic, including
+near-maximum bases, then exercises every accepted split/rejoin. Preserve
+negative, initial-positive-failure and final logs respectively as
+`canonical-source-selected-negative.log`, `canonical-source-selected-positive.log`
+and `canonical-source-selected-positive-r2.log` under `target/verification/`.
+Independent final review finds no remaining defect in this bounded patch.
+These results qualify the library change, not the still-pending importer
+integration or whole-workspace tests.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

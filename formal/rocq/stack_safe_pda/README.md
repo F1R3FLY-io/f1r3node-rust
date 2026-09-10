@@ -3175,6 +3175,26 @@ is not an overflowing logical window. Existing borrowed empty-tail refusal
 when its physical start overflows must remain explicit in the compatibility
 binding. No importer cutover is claimed by the local coalescing tests.
 
+The selected-source refinement subsequently implements that distinction via
+one `SourcePayload::borrowed` validator reused by full/selected construction,
+leaf splitting and coalescing. The represented last byte, rather than an
+unused physical end, must fit. Independent zero-width source views may
+coalesce without manufacturing an end anchor; explicit empty construction
+still requires a representable physical start. Four added controls bind:
+
+| Native control | Additional binding |
+|---|---|
+| `physical_last_byte_at_native_max_keeps_indexed_end_authority_separate` | Existing indexed byte/end observations remain independent; missing EOF stays missing, explicit EOF survives, and endpoint-free empty views coalesce without changing indexed empty-tail refusal. |
+| `physical_last_byte_boundary_survives_every_split_and_original_owner_rejoin` | Every cut at the maximum physical-byte boundary preserves bytes, provenance and one-leaf rejoining. |
+| `selected_borrowed_range_preserves_identity_without_validating_unused_tail` | Original full-slice identity survives selecting a valid prefix from a source whose unused tail overflows; reversed, out-of-bounds and overflowing explicit empty ranges refuse. |
+| `selected_borrowed_ranges_match_checked_physical_byte_oracle` | 128 generated range/base/corpus cases compare acceptance and physical bytes against independent checked arithmetic and exercise every accepted split. |
+
+All 19 source controls pass in debug and release after the initial two
+boundary controls fail on the old constructor. J-135 preserves intermediate
+failures and resource evidence. Existing logical `legal_window` bounds and
+`explicit_completion_anchor_changes_only_the_end` remain unchanged; no
+complete native importer correspondence follows before integration.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

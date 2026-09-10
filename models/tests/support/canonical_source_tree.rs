@@ -39,7 +39,7 @@ fn assert_shape(source: &SourceTreeWindow<'_>) -> usize {
                     absolute_start
                         .checked_add(*start)
                         .unwrap()
-                        .checked_add(*len)
+                        .checked_add(*len - 1)
                         .is_some()
                 );
             }
@@ -354,7 +354,7 @@ fn checked_lengths_refuse_first_unrepresentable_shared_tree_without_expansion() 
     }
     assert!(root.concat(&root).is_none());
     assert!(root.subview(1..usize::MAX).is_none());
-    assert!(SourceTreeWindow::from_borrowed(&atom, 1, usize::MAX).is_none());
+    assert!(SourceTreeWindow::from_borrowed(&[17, 17], 1, usize::MAX).is_none());
     assert_eq!(root.byte_at(root.len() - 1), Some(17));
     assert_eq!(
         root.provenance_at(root.len() - 1),
@@ -371,6 +371,100 @@ fn checked_lengths_refuse_first_unrepresentable_shared_tree_without_expansion() 
         let joined = left.concat(&right).unwrap();
         assert_eq!(joined.len(), root.len());
         assert_shape(&joined);
+    }
+}
+
+#[test]
+fn physical_last_byte_at_native_max_keeps_indexed_end_authority_separate() {
+    use crate::rust::rholang::indexed_protobuf::IndexedByteRegion;
+    use crate::rust::rholang::protobuf_cursor::CanonicalByteRange;
+
+    let bytes = [73];
+    let indexed = IndexedByteRegion::from_borrowed(&bytes, 19, usize::MAX);
+    let anchor = CanonicalByteProvenance::new(23, 101);
+    let anchored = indexed
+        .subview_with_end(CanonicalByteRange { start: 0, end: 1 }, anchor)
+        .unwrap();
+    assert_eq!(anchored.position_at(0).unwrap().physical.offset, usize::MAX);
+    assert_eq!(anchored.position_at(1).unwrap().physical, anchor);
+    assert!(indexed.position_at(1).is_none());
+    assert!(indexed.subview_with_end(CanonicalByteRange { start: 1, end: 1 }, anchor).is_none());
+    assert!(indexed.subview_with_end(CanonicalByteRange { start: 0, end: 0 }, anchor).is_some());
+    let source = SourceTreeWindow::from_borrowed(&bytes, 19, usize::MAX).unwrap();
+    assert_eq!(source.located_bytes().collect::<Vec<_>>(), vec![
+        CanonicalLocatedByte::new(73, CanonicalByteProvenance::new(19, usize::MAX)),
+    ]);
+    assert!(source.provenance_at(1).is_none());
+    assert!(indexed.position_at(1).is_none());
+    let independent = SourceTreeWindow::from_borrowed(&bytes, 19, usize::MAX).unwrap();
+    let empty = source.subview(1..1).unwrap();
+    let other_empty = independent.subview(1..1).unwrap();
+    assert!(empty.try_coalesce(&other_empty).unwrap().is_empty());
+    assert_shape(&source);
+}
+
+#[test]
+fn physical_last_byte_boundary_survives_every_split_and_original_owner_rejoin() {
+    let bytes = [11, 13, 17, 19];
+    let source = SourceTreeWindow::from_borrowed(&bytes, 29, usize::MAX - 3).unwrap();
+    for cut in 0..=bytes.len() {
+        let (left, right) = source.split(cut).unwrap();
+        let joined = left.try_coalesce(&right).unwrap();
+        assert_eq!(observations(&joined), observations(&source));
+        assert_eq!(joined.located_bytes().collect::<Vec<_>>(), observations(&source));
+        assert_eq!(assert_shape(&joined), 1);
+        assert_eq!(joined.height(), 0);
+    }
+}
+
+#[test]
+fn selected_borrowed_range_preserves_identity_without_validating_unused_tail() {
+    let bytes = [2, 3, 5, 7];
+    let base = usize::MAX - 1;
+    assert!(SourceTreeWindow::from_borrowed(&bytes, 31, base).is_none());
+    let source = SourceTreeWindow::from_borrowed_range(&bytes, 0..2, 31, base).unwrap();
+    assert_eq!(observations(&source), vec![
+        CanonicalLocatedByte::new(2, CanonicalByteProvenance::new(31, base)),
+        CanonicalLocatedByte::new(3, CanonicalByteProvenance::new(31, usize::MAX)),
+    ]);
+    let tail = SourceTreeWindow::from_borrowed_range(&bytes, 1..2, 31, base).unwrap();
+    let joined = source.subview(0..1).unwrap().try_coalesce(&tail).unwrap();
+    assert_eq!(assert_shape(&joined), 1);
+    assert_eq!(joined.contiguous_bytes(0..2).unwrap().as_ptr(), bytes.as_ptr());
+    let SourcePayload::Borrowed { bytes: original, start, .. } =
+        tail.root.as_ref().unwrap().payload.as_ref().unwrap() else { unreachable!() };
+    assert!(std::ptr::eq(*original, &bytes[..]));
+    assert_eq!(*start, 1);
+    assert!(SourceTreeWindow::from_borrowed_range(&bytes, 0..0, 31, usize::MAX).is_some());
+    assert!(SourceTreeWindow::from_borrowed_range(&bytes, 1..1, 31, usize::MAX).is_none());
+    for range in [2..1, 0..5, 5..5, usize::MAX..usize::MAX, 0..usize::MAX] {
+        assert!(SourceTreeWindow::from_borrowed_range(&bytes, range, 31, 0).is_none());
+    }
+}
+
+proptest! {
+    #![proptest_config(property_config())]
+    #[test]
+    fn selected_borrowed_ranges_match_checked_physical_byte_oracle(
+        bytes in prop::collection::vec(any::<u8>(), 0..65),
+        base in prop_oneof![any::<usize>(), (0usize..65).prop_map(|distance| usize::MAX - distance)],
+        start in 0usize..70,
+        end in 0usize..70,
+    ) {
+        let expected = if start <= end && end <= bytes.len() && base.checked_add(start).is_some() {
+            (start..end).map(|at| base.checked_add(at).map(|offset|
+                CanonicalLocatedByte::new(bytes[at], CanonicalByteProvenance::new(41, offset))
+            )).collect::<Option<Vec<_>>>()
+        } else { None };
+        let actual = SourceTreeWindow::from_borrowed_range(&bytes, start..end, 41, base);
+        prop_assert_eq!(actual.as_ref().map(observations), expected);
+        if let Some(source) = actual {
+            assert_shape(&source);
+            for cut in 0..=source.len() {
+                let (left, right) = source.split(cut).unwrap();
+                prop_assert_eq!(observations(&left.concat(&right).unwrap()), observations(&source));
+            }
+        }
     }
 }
 

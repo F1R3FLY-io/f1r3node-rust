@@ -35,6 +35,29 @@ enum SourcePayload<'src> {
     Branch3([NodeRef<'src>; 3]),
 }
 
+impl<'src> SourcePayload<'src> {
+    fn borrowed(
+        bytes: &'src [u8],
+        range: Range<usize>,
+        source: u32,
+        absolute_start: usize,
+    ) -> Option<Self> {
+        let len = range.end.checked_sub(range.start)?;
+        bytes.get(range.clone())?;
+        absolute_start.checked_add(range.start)?;
+        if len != 0 {
+            absolute_start.checked_add(range.end - 1)?;
+        }
+        Some(Self::Borrowed {
+            bytes,
+            start: range.start,
+            len,
+            source,
+            absolute_start,
+        })
+    }
+}
+
 impl Drop for SourceNode<'_> {
     fn drop(&mut self) {
         match self.payload.take() {
@@ -107,20 +130,24 @@ impl<'src> SourceTreeWindow<'src> {
         source: u32,
         absolute_start: usize,
     ) -> Option<Self> {
-        absolute_start.checked_add(bytes.len())?;
-        if bytes.is_empty() {
+        Self::from_borrowed_range(bytes, 0..bytes.len(), source, absolute_start)
+    }
+
+    pub(crate) fn from_borrowed_range(
+        bytes: &'src [u8],
+        range: Range<usize>,
+        source: u32,
+        absolute_start: usize,
+    ) -> Option<Self> {
+        let payload = SourcePayload::borrowed(bytes, range.clone(), source, absolute_start)?;
+        let len = range.end - range.start;
+        if len == 0 {
             return Some(Self::empty());
         }
         Some(Self::from_root(Some(Arc::new(SourceNode {
-            len: bytes.len(),
+            len,
             height: 0,
-            payload: Some(SourcePayload::Borrowed {
-                bytes,
-                start: 0,
-                len: bytes.len(),
-                source,
-                absolute_start,
-            }),
+            payload: Some(payload),
         }))))
     }
 
@@ -212,19 +239,18 @@ impl<'src> SourceTreeWindow<'src> {
                     return None;
                 }
                 let start = start.checked_add(self.start)?;
-                if start.checked_add(self.len)? != right_start.checked_add(right.start)?
-                    || start.checked_add(len)? > bytes.len()
-                {
+                if start.checked_add(self.len)? != right_start.checked_add(right.start)? {
                     return None;
                 }
-                absolute_start.checked_add(start)?.checked_add(len)?;
-                SourcePayload::Borrowed {
-                    bytes,
-                    start,
-                    len,
-                    source: *source,
-                    absolute_start: *absolute_start,
+                if len == 0 {
+                    return Some(self.clone());
                 }
+                SourcePayload::borrowed(
+                    bytes,
+                    start..start.checked_add(len)?,
+                    *source,
+                    *absolute_start,
+                )?
             }
             (SourcePayload::Frozen(left_value), SourcePayload::Frozen(right_value)) => {
                 let left_value =
@@ -766,14 +792,12 @@ fn leaf_window<'src>(node: &SourceNode<'src>, range: Range<usize>) -> Option<Nod
             ..
         } => {
             let start = start.checked_add(range.start)?;
-            absolute_start.checked_add(start)?.checked_add(len)?;
-            SourcePayload::Borrowed {
+            SourcePayload::borrowed(
                 bytes,
-                start,
-                len,
-                source: *source,
-                absolute_start: *absolute_start,
-            }
+                start..start.checked_add(len)?,
+                *source,
+                *absolute_start,
+            )?
         }
         SourcePayload::Frozen(value) => SourcePayload::Frozen(value.subview(range)?),
         _ => return None,

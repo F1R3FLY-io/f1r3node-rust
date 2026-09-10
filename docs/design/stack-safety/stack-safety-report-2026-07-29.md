@@ -10952,6 +10952,15 @@ time or memory-slope improvement is inferred from these test results.
 records the proof reuse, native controls, regression corpus, resource scope
 and the selected-source provenance boundary required before integration.
 
+The subsequent selected-source refinement checks the physical last byte
+independently of indexed EOF, preserving valid data ending at `usize::MAX`
+and original backing identity. All 19 source controls pass in both profiles;
+combined service peak is 2.3G with zero swap under the same 6 GiB hard cap.
+This corrects a local representation boundary before importer integration,
+not a codec or consensus identity change. J-135 preserves the two negative
+controls, obsolete-assertion failure, independent empty-view review and final
+qualification. No production throughput or allocation slope is inferred.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
