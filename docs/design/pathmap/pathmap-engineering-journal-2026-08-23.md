@@ -8600,6 +8600,61 @@ closure and the production ACT/LMDB comparison remain required. This change
 introduces no codec, consensus/hash/metering alteration, PathMap fork, dependency,
 recursive traversal or depth cap.
 
+### J-121 — 2026-09-10: whole-import measurement after checkpoint and undo reuse
+
+**Question and protocol.** Do J-119 checkpoint reuse and J-120 compressed undo
+reduce whole-import costs and close nested-import scaling? The unchanged J-118
+benchmark is rebuilt against `ea9be8aad36c21420cda16f722c1cdf398b48730`.
+Each of the same 12 fixtures passes semantic equality and compact-byte roundtrip
+before three warmups and 51 timed import-plus-drop repetitions. Fixture setup is
+excluded from sample time. CPU 2 is pinned, with 98.02% idle preflight and 80.64%
+aggregate idle; no campaign compilation runs during timing. Systemd limits are
+High4G/Max6G/Swap0/CPU100%/Tasks128/Runtime900s. These are sequential before/after
+runs, not a randomized paired experiment isolating either optimization.
+
+**MEASURED results.** Medians are milliseconds; changes compare with J-118
+(`4783a8d77`), negative meaning lower elapsed time. Region width is 1024;
+opaque width is 16. Encoded fixture sizes are unchanged.
+
+| Shape | Depth | Endpoints | J-118 median, ms | Current median, ms | Change |
+|---|---:|---:|---:|---:|---:|
+| region | 0 | 1 | 1.178567 | 1.144836 | -2.86% |
+| region | 0 | 16 | 1.252747 | 1.303683 | 4.07% |
+| region | 0 | 256 | 2.368655 | 2.370880 | 0.09% |
+| region | 8 | 1 | 1.285689 | 1.263315 | -1.74% |
+| region | 8 | 16 | 1.359910 | 1.350513 | -0.69% |
+| region | 8 | 256 | 2.690454 | 2.585183 | -3.91% |
+| region | 32 | 1 | 1.370990 | 1.387525 | 1.21% |
+| region | 32 | 16 | 1.472211 | 1.490142 | 1.22% |
+| region | 32 | 256 | 2.832521 | 2.790707 | -1.48% |
+| opaque | 8 | 1 | 0.601808 | 0.533047 | -11.43% |
+| opaque | 32 | 1 | 4.696042 | 3.974628 | -15.36% |
+| opaque | 128 | 1 | 64.268301 | 49.183708 | -23.47% |
+
+The matrix succeeds in 19.098 s, consumes 18.981 s CPU, and peaks at 10.5M with
+zero swap, versus J-118's 81.9M. This process high-water mark includes fixture
+setup and all cells; it is not per-cell heap allocation measurement. The separate
+release build succeeds in 30.340 s, peak 1.6G, zero swap.
+
+**Interpretation and remaining requirement.** Opaque imports improve in this
+run, especially the deepest case. Region changes range from 3.91% lower to
+4.07% higher: this does not establish an across-the-board win or independent
+causal effects for the two changes. Opaque depth 32 to 128 still costs 12.37
+times the time for 3.85 times the encoded bytes. The whole-import scaling
+requirement remains unmet. Shared source composition and joint ACT transport
+remain required, not optional follow-ups. This is neither a production workload
+measurement nor the pending equal-contract ACT/LMDB persistence comparison.
+
+**Reproduction evidence.** [All 612 samples and parameters](../stack-safety/measurements/compact-parbag-import-undo-timing-2026-09-10.txt)
+are retained. Benchmark source SHA-256:
+`3592a839cbb8161cc26de916e788fd3c625e982eda7effdfee046c03a5a92611`;
+executable SHA-256:
+`765e2dc84ca1188a5827e0cbc227e74d750509b4d42d839722d69f4e633b62f5`.
+Durable logs are `target/verification/epathmap-undo-bench-build-20260910.log`,
+`target/verification/epathmap-undo-bench-idle-20260910.log` and
+`target/verification/epathmap-undo-bench-matrix-20260910.log`.
+
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

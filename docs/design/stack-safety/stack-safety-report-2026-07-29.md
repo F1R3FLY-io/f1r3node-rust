@@ -10645,6 +10645,27 @@ transport remain required. See
 [J-120](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-120--2026-09-10-compress-scalar-undo-into-exact-predecessor-runs)
 for complete proof bindings, negative evidence and qualification limits.
 
+#### 5.33.39 Whole-import checkpoint/undo measurement (2026-09-10)
+
+The unchanged 12-cell J-118 matrix is repeated at `ea9be8aad`, after checkpoint
+reuse and compressed undo. All fixture equality/roundtrip checks pass, with
+three warmups and 51 timed import-plus-drop samples per cell. CPU 2 is pinned
+after 98.02% idle preflight; the process is capped at 6G with no swap.
+
+Opaque depth 8/32/128 medians are **0.533047/3.974628/49.183708 ms**, versus
+0.601808/4.696042/64.268301 ms previously. The deepest median is 23.47% lower.
+Matrix process peak is **10.5M**, versus 81.9M previously; both include fixture
+setup and are not per-cell allocation measurements. Region medians range from
+3.91% lower to 4.07% higher. Sequential runs do not establish independent causal
+effects or an across-the-board performance win.
+
+Depth 32 to 128 still costs **12.37 times the time for 3.85 times the bytes**:
+the full-import slope remains unresolved. Source composition and joint ACT
+transport remain required. This does not qualify production ACT/LMDB performance.
+See [J-121](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-121--2026-09-10-whole-import-measurement-after-checkpoint-and-undo-reuse)
+for the complete matrix, raw 612 samples, protocol, hashes and limitations.
+
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
