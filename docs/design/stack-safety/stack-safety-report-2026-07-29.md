@@ -11151,6 +11151,38 @@ compiler gate passes its positive client and all sixteen specified compiler
 rejections. These terminal results do not change the failed full-gate status
 or the pending joint forward activation boundary.
 
+#### 5.33.59 Joint source activation and debug-stack qualification (2026-09-10)
+
+The production EPM loop now prepares native ACT spans, appends the original
+source range once to persistent path history, and publishes the prepared
+cursor state. Strict payload, owner and terminal boundaries retain scalar
+transitions. Forward spans preserve immutable parser-state identity and exact
+compressed predecessor history; reverse spans restore run-bounded prefixes
+without allocation. The 38-test history group passes. After the repairs below,
+the original 64 KiB/8192-byte opaque regression passes in 0.35 seconds and all
+37 admission tests pass in debug in 24.59 seconds. The complete release
+model-library suite passes all 488 tests in 54.97 seconds, with no failures,
+ignored or filtered tests. The additional all-family small-stack extension
+remains pending at this checkpoint; this is not whole-workspace qualification.
+
+The new unchanged 64 KiB opaque-payload control reveals excessive debug
+activation storage in scalar admission before batching. Headless debugger
+traces distinguish this from recursion: multiple large constructor and enum
+temporaries coexist on a fixed-depth call chain. Direct variant publication,
+continuation-based EPM construction and in-place frame destruction remove
+redundant return transport. Subsequent traces expose similar mutually exclusive
+temporary storage during semantic completion; field dispatch and component
+families are separated into distinct activations. The stack limit is not
+raised, and no boxing, unsafe code or new dependency is introduced.
+
+These are targeted implementation/verification findings, not a release
+throughput result or a whole-campaign stack-safety claim. Failed invocations,
+the corrected map-snapshot fixture, formal bindings and remaining acceptance
+requirements are preserved in
+[J-143](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-143--2026-09-10-joint-source-batching-and-admission-activation).
+The independent PMU-006 failure and whole-pipeline resource obligations remain
+open; no ACT-versus-LMDB result is inferred.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

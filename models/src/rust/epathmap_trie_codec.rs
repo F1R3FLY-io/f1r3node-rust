@@ -805,6 +805,8 @@ impl<'cursor, 'src> IndexedCanonicalEpm1LineSpan<'cursor, 'src> {
 }
 
 impl IndexedCanonicalEpm1PreparedLineSpan<'_, '_> {
+    pub(crate) fn source_range(&self) -> Range<usize> { self.inner.source_range() }
+
     pub(crate) fn commit(self) -> CanonicalByteProvenance {
         self.inner.commit();
         *self.topology_events = self.next_events;
@@ -837,7 +839,7 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
             })
             .expect("an EPM1 value table starts inside its snapshot");
 
-        let trie = match prefix.mode {
+        match prefix.mode {
             EPathMapMode::Empty => {
                 if !prefix.arena.is_empty() || prefix.value_count != 0 {
                     let failure = if !prefix.arena.is_empty() {
@@ -859,7 +861,6 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                         provenance,
                     ));
                 }
-                None
             }
             EPathMapMode::Set => {
                 if prefix.value_count != 0 {
@@ -877,29 +878,22 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                         provenance,
                     ));
                 }
-                let arena = prefix.arena;
-                let trie = CanonicalCompactTrieIndexedTopologyCursor::from_source(arena.clone())
-                    .map_err(|error| indexed_act_error(&arena, error))?;
-                validate_indexed_canonical_act_summary(
-                    prefix.mode,
-                    prefix.value_count,
-                    prefix.value_count_provenance,
-                    &trie,
-                )?;
-                Some(trie)
             }
-            EPathMapMode::Map => {
-                let arena = prefix.arena;
-                let trie = CanonicalCompactTrieIndexedTopologyCursor::from_source(arena.clone())
-                    .map_err(|error| indexed_act_error(&arena, error))?;
-                validate_indexed_canonical_act_summary(
-                    prefix.mode,
-                    prefix.value_count,
-                    prefix.value_count_provenance,
-                    &trie,
-                )?;
-                Some(trie)
-            }
+            EPathMapMode::Map => {}
+        }
+        let trie = if prefix.mode == EPathMapMode::Empty {
+            None
+        } else {
+            let arena = prefix.arena;
+            let trie = CanonicalCompactTrieIndexedTopologyCursor::from_source(arena.clone())
+                .map_err(|error| indexed_act_error(&arena, error))?;
+            validate_indexed_canonical_act_summary(
+                prefix.mode,
+                prefix.value_count,
+                prefix.value_count_provenance,
+                &trie,
+            )?;
+            Some(trie)
         };
         let value_reader = value_table.reader();
 

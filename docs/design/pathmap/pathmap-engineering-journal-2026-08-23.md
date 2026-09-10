@@ -10293,6 +10293,93 @@ persistence completion or ACT-versus-LMDB performance claim here.
 | `act-prepared-line-compiler-controls.log` (driver failure) | `2cd40004293d669de66e5d93bc57c3311b72a46d006922ab7b1a0571184b20da` |
 | `act-prepared-line-compiler-maintained.log` | `c6ddba705096ad7273a882679e09274ccc2c4533bf333e1de220744d28f5c180` |
 
+### J-143 — 2026-09-10: joint source batching and admission activation
+
+**QUESTION / HYPOTHESIS.** Can the original ACT source drive strict opaque
+payload spans without per-byte descriptors, while preserving scalar admission,
+historical branches, physical provenance and small-stack execution? This is
+task 6018's production binding of J-141/J-142, not a persistence comparison.
+
+**IMPLEMENTED MECHANISM.** Each EPM frame registers its cursor's original ACT
+source once. The persistent reducer shares the scalar payload eligibility
+predicate and intersects the offered width with strict payload/owner bounds
+and checked counter capacity. It appends one source descriptor per accepted
+span, retains the same immutable parser state and obligation clock, and
+coalesces exact predecessor history. It never reconstructs or decodes a key.
+Reverse spans select the exact run-bounded predecessor without allocation.
+
+The driver prepares the exclusive ACT/EPM capability before changing path
+history. After successful path publication, cursor publication consists only
+of the already prepared assignments. Final payload bytes, owner boundaries,
+ACT terminal events and child scheduling remain scalar. An unavailable span
+falls through to the original scalar transition; there is no depth limit.
+
+**FORMAL BASIS / NATIVE BINDINGS.** The checked strict-prefix reuse,
+source-denotation, compressed-undo and ACT-publication laws from J-141 are
+unchanged. New history properties compare eager, scalar and batched located
+prefixes, including old handles, discontinuous sources, maximal physical
+offsets, refusals, private effects and fresh obligation IDs. Joint admission
+controls compare the complete result, statistics, score and error provenance;
+positive controls require actual forward and reverse spans wider than one.
+This prevents an always-scalar implementation from passing the optimization
+controls vacuously.
+
+**NEGATIVE EVIDENCE / STACK DIAGNOSIS.** The initial frame group passes all
+38 tests. The admission run finds an invalid positive fixture: tag `0x10`
+requires a map snapshot, but the fixture supplied a set snapshot. The corrected
+fixture retains that set case as an explicit negative control and preserves
+the generated regression seed. The same run aborts on the new 64 KiB test.
+An isolated rerun and headless GDB identify scalar-mode constructor stack
+pressure before batching, not a recursive call chain.
+
+Debug frame observations initially include 9,488 bytes in EPM frame
+construction, 8,016 in frame materialization, 10,128 in frame publication and
+13,504 in the driver. These are particular unoptimized activations, not
+input-depth slopes or release measurements. Simply pushing from one large
+match is a negative result: its mutually exclusive variant temporaries occupy
+25,072 bytes in the debug activation. The revised design isolates variant
+construction, uses an allocation-free EPM constructor continuation to run
+publication after ACT parsing, and drops completed frames in place. Shared
+set/map ACT construction retains the original validation order. One initial
+edit fails compilation because patch context matched another constructor;
+it is corrected without changing that other constructor.
+
+Later traces reach semantic completion, exposing the same all-branches
+storage issue in message dispatch and component reduction. Field processing
+is separated from completion; component families receive separate reducer
+activations. Constructor, publication and error ordering remain governed by
+the existing `CheckedConstructorScheduling` laws and native counter-overflow
+controls. No stack increase, boxing, unsafe code, dependency change, test
+removal or input cap is used.
+
+**VERIFICATION STATUS.** After separating component-family activations, the
+original 64 KiB regression passes both 8192-byte opaque fixtures in 0.35
+seconds. All 37 admission tests then pass in debug in 24.59 seconds, with no
+ignored tests; the 451 filtered tests belong to other model-library groups.
+The full release model-library suite passes all 488 tests in 54.97 seconds,
+with zero failures, ignored or filtered tests. The additional all-family
+small-stack extension remains pending at this checkpoint. Logs under `target/verification/`
+retain the initial `canonical-joint-source-*` run, isolated test, each
+`canonical-joint-constructor-debug-r*` attempt and the corresponding headless
+`canonical-joint-debugger-r*` evidence. Rust and GDB run under systemd with
+MemoryHigh=4G, MemoryMax=6G, MemorySwapMax=0, CPUQuota=400%, TasksMax=512 and
+RuntimeMaxSec=900. Limits are not measured peak RSS. No benchmark ran.
+
+| Passing evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-joint-source-frames-debug.log` (38 tests) | `49b76337f482431e2ddbe832b0bc8fa381a4bfb743b0df4c324f970bd5fac34a` |
+| `canonical-joint-families-debug.log` (original small-stack case) | `fd62afa38d8868c130bc3b076b67da1229d8c36af667a194665bba98c6f2f6ae` |
+| `canonical-joint-admission-debug-r6.log` (37 tests) | `26505b9b08b567cacaf844346b77c35cd4ad6c6dfff1fbc8fa17dbeb87d366f1` |
+| `canonical-joint-models-release.log` (488 tests) | `e6df79ae7f0e001752aed10f2799ccb53d3426ca3810b1244f503fddda214bd2` |
+
+**LIMITS / NEXT ACCEPTANCE.** The passing admission and model-library controls
+support this local checkpoint, not workspace-wide CI or campaign closure.
+Expanded family-specific small-stack coverage remains in progress. The separate PMU-006 PathMap
+source-construction failure remains unwaived. Source registry retention and
+whole-pipeline resource qualification remain required; one descriptor per
+span is not a claim of constant memory for arbitrary input. No serialization
+format, hash, consensus transcript or ACT-versus-LMDB improvement is claimed.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

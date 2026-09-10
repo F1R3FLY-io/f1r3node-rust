@@ -3448,13 +3448,25 @@ The native preparation and restoration components now have separate bindings:
 | Preserved enclosing EPM authority | `IndexedCanonicalEpm1LineSpan` additionally borrows the topology counter. Preparation checks its final value and resolves final provenance from the actual source before inner publication. No reader, endpoint, value-record or terminal field is mutated. |
 | Scalar EPM trace and exact counters | `epm1_line_batch.rs` compares forward/absent/reverse traces, value bodies, retained authority and final provenance over set/map cursors, borrowed/frozen/composed sources, and discontinuous physical positions. Separate refusal/drop tests check both directions and the exact maximum counter. |
 
-These components are not yet joined to the production frame driver. In
-particular, prepared cursor publication does not by itself establish that a
-typed payload is eligible for a forward span or that source/history capacity
-has been reserved. The strict forward planner and joint publication still
-have to satisfy the acceptance table above before activation. Runtime results
-and the independently failing PMU-006 gate remain recorded separately from
-the proof-only result.
+The production frame driver now joins these components through
+`try_epathmap_batch`. `new_with_source` registers the ACT arena once;
+`forward_capacity` shares `reusable_payload_prefix` with scalar reuse and
+intersects strict payload/owner bounds with native counter capacity.
+`try_forward_source` reserves history capacity and appends one original-source
+descriptor before publishing its same-state checkpoint and compressed history.
+The prepared cursor capability then commits without fallible work. Reverse
+capacity is limited to the current restoration run. Scalar boundary events and
+pending-child checks remain in the existing driver.
+
+`source_forward_batches_preserve_scalar_histories_and_original_payloads`
+binds eager/scalar/batched histories and exact source bytes;
+`source_forward_capacity_is_maximal_strict_and_counter_bounded` and
+`source_forward_refusals_preserve_logical_state_and_registered_source` bind
+width and failure boundaries. `joint_epm_transport_*` compares complete native
+admission results and requires nontrivial forward/reverse batching. These
+bindings do not substitute for passing verification: current small-stack
+qualification and the independently failing PMU-006 gate are tracked in J-143,
+separately from the unchanged proof-only result.
 
 `scripts/check-stack-safe-pda-proofs.sh --act-line-transport-compile` rebuilds
 the release library and independently checks the positive client plus sixteen
@@ -3628,6 +3640,16 @@ representation improvement. The formal attempt trace is not a machine-stack
 measurement, an allocation count or proof of the native constructor internals.
 Constructor and publisher behavior remain explicit parameters; their Rust
 bindings and the unchanged grammar differential corpus remain necessary.
+
+The joint-source activation additionally binds this ordering to
+`FrameRequest::push_into`: variant-specific helpers construct, check their kind
+counter, and publish directly into the existing worklist. EPM construction uses
+`with_epm1_region` with a fallible publication continuation, so ACT parsing
+returns before the publisher's large enum temporaries become active. The direct
+returning constructor exists only in the test module. Completed frames are
+dropped in place. These changes add no allocation or semantic transition;
+their debug-stack benefit requires the unchanged small-stack controls, not an
+assumption that the compiler performs tail-call optimization.
 
 ### Proof evidence
 

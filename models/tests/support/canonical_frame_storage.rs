@@ -2326,6 +2326,7 @@ proptest! {
         start in prop_oneof![any::<usize>(), Just(0usize), Just(usize::MAX - 1), Just(usize::MAX)],
         consumed in 0usize..32,
         declared in prop_oneof![0u64..64, Just(u64::MAX)],
+        available in any::<usize>(),
     ) {
         let stamp = start.wrapping_add(consumed);
         for status in [PathStatus::Open, PathStatus::SplitComplete, PathStatus::Dead(error(7))] {
@@ -2353,6 +2354,14 @@ proptest! {
                         && (next as u128) < start as u128 + declared as u128;
                     prop_assert_eq!(reducer.reusable_payload(&state, next), expected.then_some(id));
                     prop_assert_eq!(reducer.reusable_payload(&state, stamp.wrapping_add(2)), None);
+                    let width = if fault.is_none() && status == PathStatus::Open
+                        && phase == ObligationStatus::Payload && stamp >= start {
+                        (start as u128 + declared as u128).checked_sub(stamp as u128 + 1)
+                            .map_or(0, |remaining| remaining.min(available as u128)
+                                .min((usize::MAX - stamp) as u128) as usize)
+                    } else { 0 };
+                    prop_assert_eq!(reducer.reusable_payload_prefix(&state, available),
+                        (width != 0).then_some((id, width)));
                 }
             }
         }
@@ -3383,4 +3392,222 @@ fn bulk_restore_all_mixed_source_prefixes_match_scalar_handles() {
         assert_eq!(retained.bytes().collect::<Vec<_>>(), left);
         assert!(!actual.root_left);
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn source_forward_batches_preserve_scalar_histories_and_original_payloads(
+        payload in proptest::collection::vec(any::<u8>(), 2..258),
+        nesting in 0usize..4,
+        fragmented in any::<bool>(),
+        reject in any::<bool>(),
+        choices in proptest::collection::vec(any::<usize>(), 1..17),
+    ) {
+        let mut key = vec![EPATHMAP_MAP];
+        prost::encoding::encode_varint(payload.len() as u64, &mut key);
+        key.extend_from_slice(&payload);
+        for _ in 0..nesting {
+            let mut body = Vec::new();
+            prost::encoding::encode_varint(key.len() as u64, &mut body);
+            body.extend(key);
+            key = vec![EPATHMAP];
+            prost::encoding::encode_varint(body.len() as u64, &mut key);
+            key.extend(body);
+        }
+        let provenance = |index: usize| if fragmented {
+            CanonicalByteProvenance::new(31 + index as u32 % 3,
+                if index % 13 == 0 { usize::MAX } else { 907 - index % 907 })
+        } else { CanonicalByteProvenance::new(17, 103 + index) };
+        let root = if fragmented {
+            let mut root = SourceTreeWindow::empty();
+            for index in 0..key.len() {
+                let at = provenance(index);
+                root = root.concat(&SourceTreeWindow::from_borrowed(
+                    &key[index..index + 1], at.source, at.offset).unwrap()).unwrap();
+            }
+            root
+        } else { SourceTreeWindow::from_borrowed(&key, 17, 103).unwrap() };
+        let mut actual = CanonicalPathTopologyAdmission::new_with_source(Some(root)).unwrap();
+        let registered = actual.source;
+        let mut scalar = CanonicalPathTopologyAdmission::new_with_source(None).unwrap();
+        let mut expected = EagerCanonicalPathTopologyAdmission::new();
+        let mut saved = Vec::new();
+        let mut offset = 0;
+        let mut batches = 0;
+        while offset < key.len() {
+            let available = 1 + choices[offset % choices.len()] % (key.len() - offset);
+            let width = actual.forward_capacity(available);
+            assert_eq!(scalar.forward_capacity(available), 0);
+            let consumed = if width == 0 { 1 } else { width };
+            let before = (actual.current.state, actual.reducer.states.clone(),
+                actual.reducer.machine.frames.slots.clone(), actual.reducer.owners.entries.clone(),
+                actual.reducer.machine.next_obligation, actual.stats(), actual.arena.stats());
+            for index in offset..offset + consumed {
+                saved.push(scalar.current);
+                let at = provenance(index);
+                let located = LocatedPathByte::in_source(key[index], at.source, at.offset);
+                let reference = expected.edge(located);
+                let observed = scalar.edge(located);
+                assert_eq!(observed, reference);
+                if width == 0 {
+                    assert_eq!(actual.edge(located), observed);
+                } else {
+                    assert!(matches!(observed.unwrap(), CanonicalPathTransition::ObligationByte { last: false, .. }));
+                    assert_eq!(expected.value(false, source(991)), None);
+                }
+            }
+            if width != 0 {
+                assert!(actual.try_forward_source(offset..offset + width).unwrap());
+                batches += 1;
+                assert_eq!(actual.current.state, before.0);
+                assert_eq!(actual.reducer.states, before.1);
+                assert_eq!(actual.reducer.machine.frames.slots, before.2);
+                assert_eq!(actual.reducer.owners.entries, before.3);
+                assert_eq!(actual.reducer.machine.next_obligation, before.4);
+                assert_eq!(actual.stats().edges, before.5.edges + width);
+                assert_eq!(actual.stats().bulk_operations, before.5.bulk_operations + 1);
+                assert_eq!(actual.stats().bulk_bytes, before.5.bulk_bytes + width);
+                let mut arena = before.6;
+                arena.content_nodes += 1;
+                arena.provenance_nodes += 1;
+                assert_eq!(actual.arena.stats(), arena);
+            }
+            assert_eq!(actual.source, registered);
+            assert_eq!(actual.stats().edges, scalar.stats().edges);
+            assert_eq!(actual.stats().max_topology_depth, scalar.stats().max_topology_depth);
+            assert_eq!(actual.current.state, scalar.current.state);
+            assert_eq!(actual.restore.len(), scalar.restore.len());
+            for (left, right) in actual.restore.iter().zip(&scalar.restore) {
+                assert_eq!((left.latest.state, left.first_depth), (right.latest.state, right.first_depth));
+                assert_eq!(actual.arena.located_bytes(left.latest.bytes).collect::<Vec<_>>(),
+                    scalar.arena.located_bytes(right.latest.bytes).collect::<Vec<_>>());
+            }
+            assert_focused_persistent_matches(&expected.reducer, &expected.arena, expected.current,
+                &actual.reducer, &actual.arena, actual.current);
+            offset += consumed;
+        }
+        assert!(batches > 0);
+        let retained = actual.retained_completed_obligation().unwrap().unwrap();
+        let observed = retained.payload.located_bytes().collect::<Vec<_>>();
+        assert_eq!(observed.iter().map(|byte| byte.byte).collect::<Vec<_>>(), payload);
+        let id = retained.obligation.id;
+        if reject {
+            assert_eq!(actual.reject_obligation(id, source(997)), scalar.reject_obligation(id, source(997)));
+            assert_eq!(actual.active_obligation(), scalar.active_obligation());
+            expected.reject_obligation(id, source(997)).unwrap();
+        } else {
+            let resolution = CanonicalPathObligationResolution::NestedEpm1 {
+                mode: NestedEpmMode::Map, entries_stable: true,
+            };
+            assert_eq!(actual.resolve_obligation(id, resolution), scalar.resolve_obligation(id, resolution));
+            expected.resolve_obligation(id, resolution).unwrap();
+        }
+        while !saved.is_empty() {
+            let available = 1 + choices[saved.len() % choices.len()] % saved.len();
+            let width = actual.reverse_capacity(available);
+            assert!(width > 0);
+            let mut transition = None;
+            for _ in 0..width {
+                transition = Some(scalar.leave(source(1001)).unwrap());
+                assert_eq!(transition, Some(expected.leave(source(1001)).unwrap()));
+            }
+            assert_eq!(actual.try_leave_run(width), transition);
+            let prior = saved[saved.len() - width];
+            saved.truncate(saved.len() - width);
+            assert_eq!(actual.current.state, prior.state);
+            assert_eq!(actual.arena.located_bytes(actual.current.bytes).collect::<Vec<_>>(),
+                scalar.arena.located_bytes(prior.bytes).collect::<Vec<_>>());
+            assert_focused_persistent_matches(&expected.reducer, &expected.arena, expected.current,
+                &actual.reducer, &actual.arena, actual.current);
+        }
+        assert_eq!(actual.reverse_capacity(usize::MAX), 0);
+        assert!(!actual.root_left);
+        drop(actual);
+        assert_eq!(retained.payload.located_bytes().collect::<Vec<_>>(), observed);
+    }
+}
+
+#[test]
+fn source_forward_capacity_is_maximal_strict_and_counter_bounded() {
+    let input = [EPATHMAP, 20, 19, EPATHMAP_MAP, 30];
+    let root = SourceTreeWindow::from_borrowed(&input, 17, 101).unwrap();
+    let mut actual = CanonicalPathTopologyAdmission::new_with_source(Some(root)).unwrap();
+    for (offset, byte) in input.into_iter().enumerate() {
+        actual.edge(LocatedPathByte::in_source(byte, 17, 101 + offset)).unwrap();
+    }
+    let state = actual.reducer.state(actual.current);
+    let owner = state.owners.unwrap();
+    let stamp = state.stamp as u128;
+    let before = actual.reducer.owners.entries[owner.0].all_boundary;
+    for boundary in [stamp - 1, stamp, stamp + 1, stamp + 2, stamp + 13,
+        usize::MAX as u128, usize::MAX as u128 + 1, u128::MAX] {
+        actual.reducer.owners.entries[owner.0].all_boundary.end = boundary;
+        for available in [0, 1, 2, 7, 29, 30, usize::MAX] {
+            for budget in [0, 1, 6, usize::MAX] {
+                actual.reducer.machine.stats.edges = usize::MAX - budget;
+                let expected = boundary.checked_sub(stamp + 1).map_or(0, |remaining| {
+                    remaining.min(29).min(available as u128).min(budget as u128)
+                        .min((usize::MAX - actual.current.bytes.len()) as u128) as usize
+                });
+                let unchanged = (actual.current, actual.restore.clone(), actual.stats(), actual.arena.stats());
+                assert_eq!(actual.forward_capacity(available), expected);
+                assert_eq!((actual.current, actual.restore.clone(), actual.stats(), actual.arena.stats()), unchanged);
+            }
+        }
+    }
+    actual.reducer.owners.entries[owner.0].all_boundary = before;
+    actual.reducer.machine.stats.edges = 5;
+    assert_eq!(actual.forward_capacity(1), 1);
+    actual.reducer.machine.stats.bulk_bytes = usize::MAX - 2;
+    assert_eq!(actual.forward_capacity(7), 2);
+    actual.reducer.machine.stats.bulk_operations = usize::MAX;
+    assert_eq!(actual.forward_capacity(7), 0);
+}
+
+#[test]
+fn source_forward_refusals_preserve_logical_state_and_registered_source() {
+    let input = [EPATHMAP_MAP, 5, 0xa7, 0xa8, 0xa9, 0xaa, 0xab];
+    let root = SourceTreeWindow::from_borrowed(&input, 17, 101).unwrap();
+    let mut actual = CanonicalPathTopologyAdmission::new_with_source(Some(root)).unwrap();
+    assert_eq!(actual.forward_capacity(usize::MAX), 0);
+    assert!(!actual.try_forward_source(0..1).unwrap());
+    for (offset, byte) in input[..2].iter().copied().enumerate() {
+        actual.edge(LocatedPathByte::in_source(byte, 17, 101 + offset)).unwrap();
+    }
+    for range in [0..0, 2..7, 3..2, 0..8, usize::MAX..usize::MAX] {
+        let before = (actual.current, actual.restore.clone(), actual.source,
+            actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation);
+        assert_ne!(actual.try_forward_source(range), Ok(true));
+        assert_eq!((actual.current, actual.restore.clone(), actual.source,
+            actual.stats(), actual.arena.stats(), actual.reducer.machine.next_obligation), before);
+    }
+    let current = actual.current;
+    let history = actual.restore.clone();
+    for range in [2..4, 4..6] {
+        assert!(actual.try_forward_source(range.clone()).unwrap());
+        let bytes = actual.arena.located_bytes(actual.current.bytes).collect::<Vec<_>>();
+        assert_eq!(bytes[2..].iter().map(|byte| byte.byte).collect::<Vec<_>>(), input[range]);
+        assert!(actual.try_leave_run(2).is_some());
+        assert_eq!(actual.current.state, current.state);
+        assert_eq!(actual.arena.located_bytes(actual.current.bytes).collect::<Vec<_>>(),
+            actual.arena.located_bytes(current.bytes).collect::<Vec<_>>());
+        assert_eq!(actual.restore, history);
+    }
+    assert!(actual.try_forward_source(2..6).unwrap());
+    assert_eq!(actual.forward_capacity(1), 0);
+    actual.edge(LocatedPathByte::in_source(input[6], 17, 107)).unwrap();
+    assert!(actual.active_obligation().unwrap().awaiting_resolution);
+    assert!(!actual.try_forward_source(2..3).unwrap());
+    let id = actual.active_obligation().unwrap().obligation.id;
+    actual.reject_obligation(id, source(911)).unwrap();
+    assert_eq!(actual.forward_capacity(1), 0);
+    assert!(!actual.try_forward_source(2..3).unwrap());
+    actual.root_left = true;
+    assert_eq!(actual.forward_capacity(1), 0);
+    assert_eq!(actual.reverse_capacity(1), 0);
+    assert!(!actual.try_forward_source(2..3).unwrap());
+    let mut scalar = CanonicalPathTopologyAdmission::new_with_source(None).unwrap();
+    assert!(!scalar.try_forward_source(0..1).unwrap());
 }

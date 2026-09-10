@@ -11,6 +11,76 @@ use crate::rust::rholang::canonical_path_admission::{
     CanonicalPathReducer, CanonicalPathReducerHandle,
 };
 use crate::rust::rholang::protobuf_encoder;
+use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieLineDirection;
+
+impl<'src> EPathMapFrame<'src> {
+    fn from_epm1_region(
+        owner: &'static RhoMatchProgram,
+        field: u32,
+        snapshot: AdmissionRegion<'src>,
+    ) -> Result<Self, CanonicalProtobufAdmissionError> {
+        Self::with_epm1_region(owner, field, snapshot, Ok)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EpmBatchObservation {
+    forward_batches: usize,
+    forward_bytes: usize,
+    max_forward: usize,
+    unwind_batches: usize,
+    unwind_bytes: usize,
+    max_unwind: usize,
+}
+
+thread_local! {
+    static SCALAR_EPM_TRANSPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EPM_BATCHES: std::cell::Cell<Option<EpmBatchObservation>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+pub(super) fn scalar_epm_transport() -> bool { SCALAR_EPM_TRANSPORT.with(std::cell::Cell::get) }
+
+pub(super) fn record_epm_batch(direction: CanonicalCompactTrieLineDirection, width: usize) {
+    assert!(width > 0);
+    EPM_BATCHES.with(|cell| {
+        if let Some(mut observed) = cell.get() {
+            match direction {
+                CanonicalCompactTrieLineDirection::Forward => {
+                    observed.forward_batches += 1;
+                    observed.forward_bytes += width;
+                    observed.max_forward = observed.max_forward.max(width);
+                }
+                CanonicalCompactTrieLineDirection::Unwind => {
+                    observed.unwind_batches += 1;
+                    observed.unwind_bytes += width;
+                    observed.max_unwind = observed.max_unwind.max(width);
+                }
+            }
+            cell.set(Some(observed));
+        }
+    });
+}
+
+fn with_epm_transport<T>(scalar: bool, action: impl FnOnce() -> T) -> (T, EpmBatchObservation) {
+    struct Restore {
+        scalar: bool,
+        observed: Option<EpmBatchObservation>,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SCALAR_EPM_TRANSPORT.with(|cell| cell.set(self.scalar));
+            EPM_BATCHES.with(|cell| cell.set(self.observed));
+        }
+    }
+    let _restore = Restore {
+        scalar: SCALAR_EPM_TRANSPORT.with(|cell| cell.replace(scalar)),
+        observed: EPM_BATCHES.with(|cell| cell.replace(Some(EpmBatchObservation::default()))),
+    };
+    let result = action();
+    (result, EPM_BATCHES.with(|cell| cell.get().unwrap()))
+}
 
 fn expr(value: ExprInstance) -> Par {
     Par::default().with_exprs(vec![Expr {
@@ -205,12 +275,23 @@ proptest! {
     fn deferred_epathmap_constructor_matches_direct_constructor(bytes in prop::collection::vec(any::<u8>(), 0..192)) {
         for input in [IndexedByteRegion::from_borrowed(&bytes, 37, 101), fragmented(&bytes)] {
             let direct = EPathMapFrame::from_epm1_region(&PAR_PROTOBUF_REGION_PROGRAM, 7, input.clone());
+            let mut frames = Vec::new();
+            let mut constructor_stats = CanonicalProtobufAdmissionStats::default();
             let deferred = FrameRequest::EPathMap {
                 region: input, owner: &PAR_PROTOBUF_REGION_PROGRAM, field: 7,
-            }.materialize();
+            }.push_into(&mut frames, &mut constructor_stats);
             match (direct, deferred) {
-                (Err(expected), Err(actual)) => prop_assert_eq!(actual, expected),
-                (Ok(expected), Ok(Frame::EPathMap(actual))) => {
+                (Err(expected), Err(actual)) => {
+                    prop_assert_eq!(actual, expected);
+                    prop_assert!(frames.is_empty());
+                    prop_assert_eq!(constructor_stats, CanonicalProtobufAdmissionStats::default());
+                }
+                (Ok(expected), Ok(())) => {
+                    prop_assert_eq!(frames.len(), 1);
+                    prop_assert_eq!(constructor_stats.epathmaps, 1);
+                    let Frame::EPathMap(actual) = &frames[0] else {
+                        panic!("deferred constructor must publish an EPathMap frame");
+                    };
                     prop_assert_eq!(actual.mode, expected.mode);
                     prop_assert_eq!(actual.region_start, expected.region_start);
                     prop_assert_eq!(actual.snapshot.len(), expected.snapshot.len());
@@ -454,6 +535,216 @@ fn fragmented(bytes: &[u8]) -> OwnedIndexedByteRegion {
             .unwrap();
     }
     OwnedIndexedByteRegion::from_frozen(arena.freeze(handle), CanonicalByteProvenance::new(99, 800))
+}
+
+fn joint_epm_key(nested: bool, width: usize, index: u8) -> Vec<u8> {
+    let mut data = vec![37; width];
+    *data.last_mut().unwrap() = index;
+    let value = expr(ExprInstance::GByteArray(data));
+    if nested {
+        let map = EPathMap::new_map([(integer(7), value)], Vec::new(), false, None);
+        payload(0x10, map.trie_snapshot())
+    } else {
+        let raw = value.with_sends(vec![Send {
+            chan: Some(integer(7)),
+            ..Send::default()
+        }]);
+        let key = encode_trie_path(&raw);
+        assert_eq!(key[0], 0x0f);
+        key
+    }
+}
+
+fn joint_epm_fixture(map: bool, keys: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
+    use crate::rust::epathmap_trie_codec::{self, EPathMapRepr};
+
+    fn field(number: u32, body: &[u8]) -> Vec<u8> {
+        let mut result = Vec::new();
+        prost::encoding::encode_key(number, prost::encoding::WireType::LengthDelimited, &mut result);
+        prost::encoding::encode_varint(body.len() as u64, &mut result);
+        result.extend_from_slice(body);
+        result
+    }
+
+    let snapshot = if map {
+        let mut trie = pathmap::PathMap::new();
+        for key in keys { trie.insert(&key, integer(11)); }
+        epathmap_trie_codec::encode(&EPathMapRepr::Map(trie))
+    } else {
+        let mut trie = pathmap::PathMap::new();
+        for key in keys { trie.insert(&key, ()); }
+        epathmap_trie_codec::encode(&EPathMapRepr::<Par>::Set(trie))
+    };
+    field(5, &field(32, &field(9, &snapshot)))
+}
+
+fn composed_joint_input(bytes: &[u8]) -> IndexedByteRegion<'_> {
+    let mut root = super::super::canonical_source_tree::SourceTreeWindow::empty();
+    for (index, byte) in bytes.chunks(1).enumerate() {
+        let offset = if index % 17 == 0 { usize::MAX } else { 101 - index % 97 };
+        let leaf = super::super::canonical_source_tree::SourceTreeWindow::from_borrowed(
+            byte, (index % 7) as u32, offset,
+        ).unwrap();
+        root = root.concat(&leaf).unwrap();
+    }
+    IndexedByteRegion::from_source(root, CanonicalByteProvenance::new(99, 313))
+}
+
+fn assert_joint_epm_transport(input: IndexedByteRegion<'_>) -> (
+    Result<CanonicalProtobufAdmission, CanonicalProtobufAdmissionError>, EpmBatchObservation,
+) {
+    let ((scalar, scalar_path), scalar_batches) = with_epm_transport(true, || {
+        observe_full_admission(|| {
+            validate_canonical_protobuf_inner(input.clone(), &PAR_PROTOBUF_REGION_PROGRAM, None)
+        })
+    });
+    let ((batched, batched_path), batches) = with_epm_transport(false, || {
+        observe_full_admission(|| {
+            validate_canonical_protobuf_inner(input, &PAR_PROTOBUF_REGION_PROGRAM, None)
+        })
+    });
+    assert_eq!(scalar_batches, EpmBatchObservation::default());
+    assert_eq!(batched, scalar, "joint transport must retain every admission field and error");
+    assert_eq!(batched_path.edges, scalar_path.edges);
+    assert_eq!(batched_path.states, scalar_path.states);
+    assert_eq!(batched_path.frames, scalar_path.frames);
+    assert_eq!(batched_path.repeated_owner_work, scalar_path.repeated_owner_work);
+    assert_eq!(batched_path.observations, scalar_path.observations);
+    (batched, batches)
+}
+
+fn assert_joint_epm_success(bytes: &[u8], width: usize) {
+    let typed = super::super::protobuf_decoder::decode_par(bytes).unwrap();
+    assert_eq!(protobuf_encoder::encode_to_vec(&typed), bytes);
+    let mut score = Vec::new();
+    typed.components().append_par_score_key(false, &mut score);
+    for input in [
+        IndexedByteRegion::from_borrowed(bytes, 7, 101),
+        fragmented(bytes),
+        composed_joint_input(bytes),
+    ] {
+        let (result, batches) = assert_joint_epm_transport(input);
+        let admitted = result.unwrap();
+        assert_eq!(admitted.score_bytes(), Some(score.as_slice()));
+        assert_eq!(admitted.stats().canonical_path_obligations,
+            admitted.stats().canonical_path_resolutions);
+        assert!(admitted.stats().canonical_path_obligations > 0);
+        assert_eq!(admitted.stats().reconstructed_key_bytes, 0);
+        assert_eq!(admitted.stats().legacy_endpoint_replays, 0);
+        assert_eq!(admitted.stats().typed_decodes, 0);
+        assert!(batches.forward_batches > 0 && batches.unwind_batches > 0, "{batches:?}");
+        assert!(batches.forward_bytes >= width / 2, "{batches:?}");
+        assert!(batches.max_forward > 1 && batches.max_unwind > 1, "{batches:?}");
+    }
+}
+
+#[test]
+fn joint_epm_transport_scopes_restore_modes_and_evidence_after_panics() {
+    let original_mode = scalar_epm_transport();
+    let original_evidence = EPM_BATCHES.with(std::cell::Cell::get);
+    let (_, evidence) = with_epm_transport(false, || {
+        record_epm_batch(CanonicalCompactTrieLineDirection::Forward, 3);
+        let failed = std::panic::catch_unwind(|| {
+            with_epm_transport(true, || {
+                assert!(scalar_epm_transport());
+                record_epm_batch(CanonicalCompactTrieLineDirection::Unwind, 5);
+                panic!("scoped transport control");
+            });
+        });
+        assert!(failed.is_err());
+        assert!(!scalar_epm_transport());
+        let observed = EPM_BATCHES.with(|cell| cell.get().unwrap());
+        assert_eq!(observed.forward_bytes, 3);
+        assert_eq!(observed.unwind_bytes, 0);
+    });
+    assert_eq!(evidence.forward_batches, 1);
+    assert_eq!(scalar_epm_transport(), original_mode);
+    assert_eq!(EPM_BATCHES.with(std::cell::Cell::get), original_evidence);
+}
+
+#[test]
+fn joint_epm_transport_preserves_opaque_children_scores_and_all_source_backings() {
+    for nested in [false, true] {
+        for map in [false, true] {
+            for width in [31, 257] {
+                for count in [1, 3] {
+                    let bytes = joint_epm_fixture(map,
+                        (0..count).map(|index| joint_epm_key(nested, width, index)));
+                    assert_joint_epm_success(&bytes, width);
+                }
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn joint_epm_transport_matches_scalar_for_arbitrary_opaque_widths_and_branches(
+        nested in any::<bool>(), map in any::<bool>(), width in 16usize..193,
+        count in 1u8..5,
+    ) {
+        let bytes = joint_epm_fixture(map,
+            (0..count).map(|index| joint_epm_key(nested, width, index)));
+        assert_joint_epm_success(&bytes, width);
+    }
+}
+
+#[test]
+fn joint_epm_transport_preserves_malformed_child_and_boundary_provenance() {
+    let raw = joint_epm_key(false, 129, 1);
+    let nested = joint_epm_key(true, 129, 1);
+    let stable_body = protobuf_encoder::encode_to_vec(&expr(ExprInstance::GByteArray(vec![37; 129])));
+    let raw_body = protobuf_encoder::encode_to_vec(&expr(ExprInstance::GByteArray(vec![37; 129]))
+        .with_sends(vec![Send { chan: Some(integer(7)), ..Send::default() }]));
+    let mut invalid_body = raw_body;
+    invalid_body.push(0);
+    let mut suffix = raw.clone();
+    suffix.push(0xff);
+    let mut invalid_nested = nested.clone();
+    let mut at = 1;
+    while invalid_nested[at] & 0x80 != 0 { at += 1; }
+    invalid_nested[at + 1] ^= 0xff;
+    let invalid_set_escape = EPathMap::from_set_iter(
+        [expr(ExprInstance::GByteArray(vec![37; 129]))], Vec::new(), false, None,
+    );
+    for key in [
+        raw[..raw.len() - 1].to_vec(),
+        nested[..nested.len() - 1].to_vec(),
+        payload(0x0f, &stable_body),
+        payload(0x0f, &invalid_body),
+        suffix,
+        invalid_nested,
+        payload(0x10, invalid_set_escape.trie_snapshot()),
+    ] {
+        for map in [false, true] {
+            let bytes = joint_epm_fixture(map, [key.clone()]);
+            for input in [
+                IndexedByteRegion::from_borrowed(&bytes, 7, 101),
+                fragmented(&bytes),
+                composed_joint_input(&bytes),
+            ] {
+                let (result, batches) = assert_joint_epm_transport(input);
+                assert!(result.is_err(), "malformed key unexpectedly admitted: {key:?}");
+                assert!(batches.forward_batches > 0, "failure fixture never exercises batching: {batches:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn joint_epm_transport_preserves_large_opaque_payloads_on_an_unchanged_small_stack() {
+    let fixtures = [false, true].map(|nested| {
+        joint_epm_fixture(true, [joint_epm_key(nested, 8192, 1)])
+    });
+    std::thread::Builder::new().name("joint-epm-opaque".to_owned()).stack_size(64 * 1024).spawn(move || {
+        for bytes in fixtures {
+            let (result, batches) = assert_joint_epm_transport(
+                IndexedByteRegion::from_borrowed(&bytes, 7, 101));
+            result.unwrap();
+            assert!(batches.forward_bytes > 4096 && batches.unwind_bytes > 4096, "{batches:?}");
+        }
+    }).unwrap().join().unwrap();
 }
 
 struct IndexedCompletedPayload {
@@ -1375,7 +1666,12 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
                 let FrameAction::Push(request) = parent.step(&mut stats).unwrap() else {
                     panic!("nested map payload must suspend before the suffix");
                 };
-                let Frame::EPathMap(child) = request.materialize().unwrap() else {
+                let mut children = Vec::new();
+                let mut constructor_stats = CanonicalProtobufAdmissionStats::default();
+                request.push_into(&mut children, &mut constructor_stats).unwrap();
+                assert_eq!(children.len(), 1);
+                assert_eq!(constructor_stats.epathmaps, 1);
+                let Frame::EPathMap(child) = &children[0] else {
                     panic!("nested map request must construct an EPathMap child");
                 };
                 let region = &child.snapshot;

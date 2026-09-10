@@ -14,7 +14,8 @@
 
 use crate::rust::canonical_path::CanonicalTopLevelPathForm;
 use crate::rust::rholang::canonical_bytes_arena::{
-    CanonicalByteProvenance, CanonicalBytesArena, CanonicalBytesHandle, CanonicalLocatedByte,
+    CanonicalByteProvenance, CanonicalBytesArena, CanonicalBytesArenaError, CanonicalBytesHandle,
+    CanonicalLocatedByte, CanonicalSourceSlot,
 };
 #[cfg(test)]
 use crate::rust::rholang::canonical_bytes_arena::FrozenCanonicalBytes;
@@ -789,9 +790,19 @@ impl CanonicalPathReducer {
         state: &PersistentFocusedPath,
         next_stamp: usize,
     ) -> Option<CanonicalPathObligationId> {
+        if state.stamp.checked_add(1)? != next_stamp {
+            return None;
+        }
+        self.reusable_payload_prefix(state, 1).map(|(id, _)| id)
+    }
+
+    fn reusable_payload_prefix(
+        &self,
+        state: &PersistentFocusedPath,
+        available: usize,
+    ) -> Option<(CanonicalPathObligationId, usize)> {
         if state.fault.is_some()
             || state.current.status != PathStatus::Open
-            || state.stamp.checked_add(1)? != next_stamp
         {
             return None;
         }
@@ -804,18 +815,20 @@ impl CanonicalPathReducer {
         else {
             return None;
         };
-        if ObligationStatus::Payload.remaining(
+        let remaining = ObligationStatus::Payload.remaining(
             obligation.payload_len,
             *payload_start,
             state.stamp,
-        )? <= 1
-            || state.owners.is_some_and(|root| {
-                next_stamp as u128 >= self.owners.entries[root.0].all_boundary.end
-            })
-        {
-            return None;
+        )?;
+        let mut width = available
+            .min(usize::try_from(remaining.checked_sub(1)?).unwrap_or(usize::MAX))
+            .min(usize::MAX - state.stamp);
+        if let Some(root) = state.owners {
+            let distance = self.owners.entries[root.0].all_boundary.end
+                .checked_sub(state.stamp as u128)?.checked_sub(1)?;
+            width = width.min(usize::try_from(distance).unwrap_or(usize::MAX));
         }
-        Some(obligation.id)
+        (width != 0).then_some((obligation.id, width))
     }
 
     pub(crate) fn edge(
@@ -3125,6 +3138,7 @@ pub(crate) struct CanonicalPathTopologyAdmission<'src> {
     current: CanonicalPathReducerHandle,
     restore: Vec<CanonicalPathRestoreRun>,
     root_left: bool,
+    source: Option<(CanonicalSourceSlot, usize)>,
 }
 
 impl Default for CanonicalPathTopologyAdmission<'_> {
@@ -3142,7 +3156,94 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
             current,
             restore: Vec::new(),
             root_left: false,
+            source: None,
         }
+    }
+
+    pub(crate) fn new_with_source(source: Option<SourceTreeWindow<'src>>)
+        -> Result<Self, CanonicalBytesArenaError> {
+        let mut topology = Self::new();
+        if let Some(source) = source {
+            let len = source.len();
+            let slot = topology.arena.register_source(source)?;
+            topology.source = Some((slot, len));
+        }
+        Ok(topology)
+    }
+
+    pub(crate) fn forward_capacity(&self, available: usize) -> usize {
+        if self.root_left || self.source.is_none() {
+            return 0;
+        }
+        let state = self.reducer.state(self.current);
+        let available = available
+            .min(usize::MAX - self.current.bytes.len())
+            .min(usize::MAX - self.reducer.machine.stats.edges);
+        #[cfg(test)]
+        let available = if self.reducer.machine.stats.bulk_operations == usize::MAX {
+            0
+        } else {
+            available.min(usize::MAX - self.reducer.machine.stats.bulk_bytes)
+        };
+        self.reducer.reusable_payload_prefix(&state, available)
+            .map_or(0, |(_, width)| width)
+    }
+
+    pub(crate) fn try_forward_source(&mut self, range: std::ops::Range<usize>)
+        -> Result<bool, CanonicalBytesArenaError> {
+        if self.root_left {
+            return Ok(false);
+        }
+        let Some((source, len)) = self.source else { return Ok(false) };
+        if range.start > range.end || range.end > len {
+            return Err(CanonicalBytesArenaError::SliceOutsideSequence {
+                start: range.start, end: range.end, len,
+            });
+        }
+        let width = range.end - range.start;
+        if width == 0 || self.forward_capacity(width) != width {
+            return Ok(false);
+        }
+        let previous = self.current;
+        let coalesce = self.restore.last().is_some_and(|run| run.latest.state == previous.state);
+        if !coalesce {
+            self.restore.try_reserve(1).map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
+        }
+        let bytes = self.arena.append_source(previous.bytes, source, range)?;
+        let latest = if width == 1 {
+            previous
+        } else {
+            CanonicalPathReducerHandle {
+                state: previous.state,
+                bytes: self.arena.slice(bytes, 0..bytes.len() - 1)
+                    .expect("a positive checked append retains its strict predecessor prefix"),
+            }
+        };
+        if coalesce {
+            self.restore.last_mut().expect("the checked history run remains present").latest = latest;
+        } else {
+            self.restore.push(CanonicalPathRestoreRun {
+                latest, first_depth: previous.bytes.len(),
+            });
+        }
+        self.current = CanonicalPathReducerHandle { state: previous.state, bytes };
+        self.reducer.machine.stats.edges += width;
+        self.reducer.machine.stats.max_topology_depth =
+            self.reducer.machine.stats.max_topology_depth.max(bytes.len());
+        #[cfg(test)]
+        {
+            self.reducer.machine.stats.bulk_operations += 1;
+            self.reducer.machine.stats.bulk_bytes += width;
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn reverse_capacity(&self, available: usize) -> usize {
+        if self.root_left {
+            return 0;
+        }
+        self.restore.last().and_then(|run| run.latest.bytes.len().checked_sub(run.first_depth))
+            .map_or(0, |last_offset| available.min(last_offset.saturating_add(1)))
     }
 
     #[cfg(test)]

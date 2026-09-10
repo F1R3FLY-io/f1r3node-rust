@@ -52,6 +52,7 @@ use crate::rust::epathmap_trie_codec::{
     EPathMapMode, IndexedCanonicalEpm1TopologyCursor, IndexedCanonicalEpm1TopologyEvent,
     TrieCodecError,
 };
+use rspace_plus_plus::rspace::pathmap_codec::CanonicalCompactTrieLineDirection;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalProtobufAdmissionStats {
@@ -1278,240 +1279,288 @@ fn reduce_component<'src>(
     family: ParComponentTag,
 ) -> Result<SemanticSummary<'src>, CanonicalProtobufAdmissionError> {
     let (complete, score) = match family {
-        ParComponentTag::Send => {
-            let channel = optional_par(frame, "chan")?;
-            let complete = channel.is_some();
-            if !complete {
-                (false, nonsemantic_score(scores)?)
-            } else {
-                let mut data = Vec::new();
-                for occurrence in semantic_slot(frame, "data")? {
-                    data.push(par_occurrence(occurrence, frame)?.0.score);
-                }
-                (
-                    true,
-                    semantics::send_score(
-                        scores,
-                        bool_value(frame, "persistent")?,
-                        channel.expect("complete Send has a channel").0.score,
-                        data,
-                        bool_value(frame, "connective_used")?,
-                    )?,
-                )
+        ParComponentTag::Send => reduce_component_send(frame, scores),
+        ParComponentTag::Receive => reduce_component_receive(frame, scores),
+        ParComponentTag::New => reduce_component_new(frame, scores),
+        ParComponentTag::Match => reduce_component_match(frame, scores),
+        ParComponentTag::Bundle => reduce_component_bundle(frame, scores),
+        ParComponentTag::If => reduce_component_if(frame, scores),
+        ParComponentTag::Expr | ParComponentTag::Connective | ParComponentTag::GUnforgeable =>
+            reduce_component_specialized(frame, family),
+    }?;
+    Ok(component_summary(family, score, complete, false))
+}
+
+fn reduce_component_send<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<(bool, CanonicalScoreHandle), CanonicalProtobufAdmissionError> {
+    Ok({
+        let channel = optional_par(frame, "chan")?;
+        let complete = channel.is_some();
+        if !complete {
+            (false, nonsemantic_score(scores)?)
+        } else {
+            let mut data = Vec::new();
+            for occurrence in semantic_slot(frame, "data")? {
+                data.push(par_occurrence(occurrence, frame)?.0.score);
+            }
+            (
+                true,
+                semantics::send_score(
+                    scores,
+                    bool_value(frame, "persistent")?,
+                    channel.expect("complete Send has a channel").0.score,
+                    data,
+                    bool_value(frame, "connective_used")?,
+                )?,
+            )
+        }
+    })
+}
+
+fn reduce_component_receive<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<(bool, CanonicalScoreHandle), CanonicalProtobufAdmissionError> {
+    Ok({
+        let body = optional_par(frame, "body")?;
+        let mut binds = Vec::new();
+        let mut all_sources = true;
+        for occurrence in semantic_slot(frame, "binds")? {
+            let summary = message_summary(occurrence, frame)?;
+            let SemanticSummary::ReceiveBind {
+                score,
+                source_present,
+            } = &summary.semantic
+            else {
+                return Err(frame.schema_error_at(
+                    1,
+                    occurrence.field_position,
+                    "Receive bind returned a different semantic summary",
+                ));
+            };
+            all_sources &= *source_present;
+            if let Some(score) = score {
+                binds.push(*score);
             }
         }
-        ParComponentTag::Receive => {
-            let body = optional_par(frame, "body")?;
-            let mut binds = Vec::new();
-            let mut all_sources = true;
-            for occurrence in semantic_slot(frame, "binds")? {
-                let summary = message_summary(occurrence, frame)?;
-                let SemanticSummary::ReceiveBind {
-                    score,
-                    source_present,
-                } = &summary.semantic
+        let complete = body.is_some() && all_sources;
+        if !complete {
+            (false, nonsemantic_score(scores)?)
+        } else {
+            let condition = optional_par(frame, "condition")?;
+            if condition.is_some_and(|(par, _)| par.semantic_default) {
+                return Err(fixed_point_error(
+                    frame,
+                    "Receive condition is a present semantic default",
+                ));
+            }
+            let condition_score = match condition {
+                Some((condition, _)) => condition.score,
+                None => empty_par_score(scores)?,
+            };
+            (
+                true,
+                semantics::receive_score(
+                    scores,
+                    bool_value(frame, "persistent")?,
+                    bool_value(frame, "peek")?,
+                    binds,
+                    body.expect("complete Receive has a body").0.score,
+                    i32_value(frame, "bind_count")?,
+                    bool_value(frame, "connective_used")?,
+                    condition_score,
+                )?,
+            )
+        }
+    })
+}
+
+fn reduce_component_new<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<(bool, CanonicalScoreHandle), CanonicalProtobufAdmissionError> {
+    Ok({
+        let body = optional_par(frame, "p")?;
+        if body.is_none() {
+            (false, nonsemantic_score(scores)?)
+        } else {
+            let uris = semantic_slot(frame, "uri")?;
+            let mut uri_scores = Vec::new();
+            let mut previous_uri: Option<AdmissionRegion<'src>> = None;
+            for occurrence in uris {
+                let SemanticValue::Scalar(SemanticScalar::String(uri)) = &occurrence.value
                 else {
                     return Err(frame.schema_error_at(
-                        1,
+                        3,
                         occurrence.field_position,
-                        "Receive bind returned a different semantic summary",
+                        "New URI returned a different semantic scalar",
                     ));
                 };
-                all_sources &= *source_present;
-                if let Some(score) = score {
-                    binds.push(*score);
-                }
-            }
-            let complete = body.is_some() && all_sources;
-            if !complete {
-                (false, nonsemantic_score(scores)?)
-            } else {
-                let condition = optional_par(frame, "condition")?;
-                if condition.is_some_and(|(par, _)| par.semantic_default) {
-                    return Err(fixed_point_error(
-                        frame,
-                        "Receive condition is a present semantic default",
+                if previous_uri
+                    .as_ref()
+                    .is_some_and(|previous| previous.compare(uri).is_gt())
+                {
+                    return Err(frame.schema_error_at(
+                        3,
+                        occurrence.field_position,
+                        "New URIs are outside canonical string order",
                     ));
                 }
-                let condition_score = match condition {
-                    Some((condition, _)) => condition.score,
+                previous_uri = Some(uri.clone());
+                uri_scores.push(scores.indexed_string(uri.clone())?.into_score());
+            }
+            if uri_scores.is_empty() {
+                uri_scores.push(scores.integer(i64::from(Score::ABSENT))?);
+            }
+
+            let mut injection_scores = Vec::new();
+            for occurrence in semantic_slot(frame, "injections")? {
+                let SemanticValue::Map(entry) = &occurrence.value else {
+                    return Err(frame.schema_error_at(
+                        4,
+                        occurrence.field_position,
+                        "New injection returned a different semantic summary",
+                    ));
+                };
+                let value_score = match &entry.value {
+                    Some(value) => value.score,
                     None => empty_par_score(scores)?,
                 };
-                (
-                    true,
-                    semantics::receive_score(
-                        scores,
-                        bool_value(frame, "persistent")?,
-                        bool_value(frame, "peek")?,
-                        binds,
-                        body.expect("complete Receive has a body").0.score,
-                        i32_value(frame, "bind_count")?,
-                        bool_value(frame, "connective_used")?,
-                        condition_score,
-                    )?,
-                )
+                let key = scores.indexed_string(entry.key.clone())?;
+                injection_scores.push(semantics::injection_score_pre_scored(
+                    scores,
+                    key,
+                    value_score,
+                )?);
             }
+            if injection_scores.is_empty() {
+                injection_scores.push(scores.integer(i64::from(Score::ABSENT))?);
+            }
+            (
+                true,
+                semantics::new_score(
+                    scores,
+                    i32_value(frame, "bind_count")?,
+                    uri_scores,
+                    injection_scores,
+                    body.expect("complete New has a body").0.score,
+                )?,
+            )
         }
-        ParComponentTag::New => {
-            let body = optional_par(frame, "p")?;
-            if body.is_none() {
-                (false, nonsemantic_score(scores)?)
-            } else {
-                let uris = semantic_slot(frame, "uri")?;
-                let mut uri_scores = Vec::new();
-                let mut previous_uri: Option<AdmissionRegion<'src>> = None;
-                for occurrence in uris {
-                    let SemanticValue::Scalar(SemanticScalar::String(uri)) = &occurrence.value
-                    else {
-                        return Err(frame.schema_error_at(
-                            3,
-                            occurrence.field_position,
-                            "New URI returned a different semantic scalar",
-                        ));
-                    };
-                    if previous_uri
-                        .as_ref()
-                        .is_some_and(|previous| previous.compare(uri).is_gt())
-                    {
-                        return Err(frame.schema_error_at(
-                            3,
-                            occurrence.field_position,
-                            "New URIs are outside canonical string order",
-                        ));
-                    }
-                    previous_uri = Some(uri.clone());
-                    uri_scores.push(scores.indexed_string(uri.clone())?.into_score());
-                }
-                if uri_scores.is_empty() {
-                    uri_scores.push(scores.integer(i64::from(Score::ABSENT))?);
-                }
+    })
+}
 
-                let mut injection_scores = Vec::new();
-                for occurrence in semantic_slot(frame, "injections")? {
-                    let SemanticValue::Map(entry) = &occurrence.value else {
-                        return Err(frame.schema_error_at(
-                            4,
-                            occurrence.field_position,
-                            "New injection returned a different semantic summary",
-                        ));
-                    };
-                    let value_score = match &entry.value {
-                        Some(value) => value.score,
-                        None => empty_par_score(scores)?,
-                    };
-                    let key = scores.indexed_string(entry.key.clone())?;
-                    injection_scores.push(semantics::injection_score_pre_scored(
-                        scores,
-                        key,
-                        value_score,
-                    )?);
-                }
-                if injection_scores.is_empty() {
-                    injection_scores.push(scores.integer(i64::from(Score::ABSENT))?);
-                }
-                (
-                    true,
-                    semantics::new_score(
-                        scores,
-                        i32_value(frame, "bind_count")?,
-                        uri_scores,
-                        injection_scores,
-                        body.expect("complete New has a body").0.score,
-                    )?,
-                )
+fn reduce_component_match<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<(bool, CanonicalScoreHandle), CanonicalProtobufAdmissionError> {
+    Ok({
+        let target = optional_par(frame, "target")?;
+        let mut cases = Vec::new();
+        let mut all_required = true;
+        let mut all_fixed = true;
+        for occurrence in semantic_slot(frame, "cases")? {
+            let summary = message_summary(occurrence, frame)?;
+            let SemanticSummary::MatchCase {
+                score,
+                required_present,
+                canonical_fixed_point,
+            } = &summary.semantic
+            else {
+                return Err(frame.schema_error_at(
+                    2,
+                    occurrence.field_position,
+                    "Match case returned a different semantic summary",
+                ));
+            };
+            all_required &= *required_present;
+            all_fixed &= *canonical_fixed_point;
+            if let Some(score) = score {
+                cases.push(*score);
             }
         }
-        ParComponentTag::Match => {
-            let target = optional_par(frame, "target")?;
-            let mut cases = Vec::new();
-            let mut all_required = true;
-            let mut all_fixed = true;
-            for occurrence in semantic_slot(frame, "cases")? {
-                let summary = message_summary(occurrence, frame)?;
-                let SemanticSummary::MatchCase {
-                    score,
-                    required_present,
-                    canonical_fixed_point,
-                } = &summary.semantic
-                else {
-                    return Err(frame.schema_error_at(
-                        2,
-                        occurrence.field_position,
-                        "Match case returned a different semantic summary",
-                    ));
-                };
-                all_required &= *required_present;
-                all_fixed &= *canonical_fixed_point;
-                if let Some(score) = score {
-                    cases.push(*score);
-                }
+        let complete = target.is_some() && all_required;
+        if !complete {
+            (false, nonsemantic_score(scores)?)
+        } else {
+            if !all_fixed {
+                return Err(fixed_point_error(
+                    frame,
+                    "Match guard is a present semantic default",
+                ));
             }
-            let complete = target.is_some() && all_required;
-            if !complete {
-                (false, nonsemantic_score(scores)?)
-            } else {
-                if !all_fixed {
-                    return Err(fixed_point_error(
-                        frame,
-                        "Match guard is a present semantic default",
-                    ));
-                }
-                (
-                    true,
-                    semantics::match_score(
-                        scores,
-                        target.expect("complete Match has a target").0.score,
-                        cases,
-                        bool_value(frame, "connective_used")?,
-                    )?,
-                )
-            }
+            (
+                true,
+                semantics::match_score(
+                    scores,
+                    target.expect("complete Match has a target").0.score,
+                    cases,
+                    bool_value(frame, "connective_used")?,
+                )?,
+            )
         }
-        ParComponentTag::Bundle => {
-            let body = optional_par(frame, "body")?;
-            if let Some((body, _)) = body {
-                (
-                    true,
-                    semantics::bundle_score(
-                        scores,
-                        bool_value(frame, "read_flag")?,
-                        bool_value(frame, "write_flag")?,
-                        body.score,
-                    )?,
-                )
-            } else {
-                (false, nonsemantic_score(scores)?)
-            }
+    })
+}
+
+fn reduce_component_bundle<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<(bool, CanonicalScoreHandle), CanonicalProtobufAdmissionError> {
+    Ok({
+        let body = optional_par(frame, "body")?;
+        if let Some((body, _)) = body {
+            (
+                true,
+                semantics::bundle_score(
+                    scores,
+                    bool_value(frame, "read_flag")?,
+                    bool_value(frame, "write_flag")?,
+                    body.score,
+                )?,
+            )
+        } else {
+            (false, nonsemantic_score(scores)?)
         }
-        ParComponentTag::If => {
-            let condition = optional_par(frame, "condition")?;
-            let if_true = optional_par(frame, "if_true")?;
-            let if_false = optional_par(frame, "if_false")?;
-            if let (Some((condition, _)), Some((if_true, _)), Some((if_false, _))) =
-                (condition, if_true, if_false)
-            {
-                (
-                    true,
-                    semantics::if_score(
-                        scores,
-                        condition.score,
-                        if_true.score,
-                        if_false.score,
-                        bool_value(frame, "connective_used")?,
-                    )?,
-                )
-            } else {
-                (false, nonsemantic_score(scores)?)
-            }
+    })
+}
+
+fn reduce_component_if<'src>(
+    frame: &MessageFrame<'src>,
+    scores: &mut CanonicalScoreArena<'src>,
+) -> Result<(bool, CanonicalScoreHandle), CanonicalProtobufAdmissionError> {
+    Ok({
+        let condition = optional_par(frame, "condition")?;
+        let if_true = optional_par(frame, "if_true")?;
+        let if_false = optional_par(frame, "if_false")?;
+        if let (Some((condition, _)), Some((if_true, _)), Some((if_false, _))) =
+            (condition, if_true, if_false)
+        {
+            (
+                true,
+                semantics::if_score(
+                    scores,
+                    condition.score,
+                    if_true.score,
+                    if_false.score,
+                    bool_value(frame, "connective_used")?,
+                )?,
+            )
+        } else {
+            (false, nonsemantic_score(scores)?)
         }
-        ParComponentTag::Expr | ParComponentTag::Connective | ParComponentTag::GUnforgeable => {
-            return Err(frame.schema_error(
-                u32::from(family.byte()),
-                "component reducer received a specialized component family",
-            ));
-        }
-    };
-    Ok(component_summary(family, score, complete, false))
+    })
+}
+
+fn reduce_component_specialized(
+    frame: &MessageFrame<'_>,
+    family: ParComponentTag,
+) -> Result<(bool, CanonicalScoreHandle), CanonicalProtobufAdmissionError> {
+    Err(frame.schema_error(
+        u32::from(family.byte()),
+        "component reducer received a specialized component family",
+    ))
 }
 
 fn reduce_expr<'src>(
@@ -2361,11 +2410,12 @@ impl<'src> CanonicalPathFrame<'src> {
 }
 
 impl<'src> EPathMapFrame<'src> {
-    fn from_epm1_region(
+    fn with_epm1_region<T>(
         owner: &'static RhoMatchProgram,
         field: u32,
         snapshot: AdmissionRegion<'src>,
-    ) -> Result<Self, CanonicalProtobufAdmissionError> {
+        finish: impl FnOnce(Self) -> Result<T, CanonicalProtobufAdmissionError>,
+    ) -> Result<T, CanonicalProtobufAdmissionError> {
         let start = snapshot
             .position_at(0)
             .expect("indexed EPM1 owns its start");
@@ -2380,13 +2430,15 @@ impl<'src> EPathMapFrame<'src> {
                 }
             })?;
         let mode = cursor.mode();
-        Ok(Self {
+        let path = CanonicalPathTopologyAdmission::new_with_source(cursor.source_window())
+            .map_err(|_| CanonicalProtobufAdmissionError::SizeOverflow)?;
+        finish(Self {
             owner,
             field,
             region_start,
             snapshot,
             cursor,
-            path: CanonicalPathTopologyAdmission::new(),
+            path,
             mode,
             entries_canonical_path_stable: true,
             waiting: None,
@@ -2490,31 +2542,79 @@ enum FrameRequest<'src> {
 }
 
 impl<'src> FrameRequest<'src> {
-    fn materialize(self) -> Result<Frame<'src>, CanonicalProtobufAdmissionError> {
+    fn push_into(
+        self,
+        frames: &mut Vec<Frame<'src>>,
+        stats: &mut CanonicalProtobufAdmissionStats,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
         match self {
             Self::Message { region, program } => {
-                MessageFrame::from_message_region(region, program).map(Frame::Message)
+                Self::push_message(frames, stats, region, program)
             }
             Self::Map {
                 region,
                 owner,
                 field,
                 value_type_id,
-            } => Ok(Frame::Map(MapFrame::from_map_region(
-                owner,
-                field,
-                value_type_id,
-                region,
-            ))),
+            } => {
+                Self::push_map(frames, stats, owner, field, value_type_id, region)
+            }
             Self::EPathMap {
                 region,
                 owner,
                 field,
-            } => EPathMapFrame::from_epm1_region(owner, field, region).map(Frame::EPathMap),
+            } => {
+                Self::push_epathmap(frames, stats, owner, field, region)
+            }
             Self::CanonicalPath(region) => {
-                Ok(Frame::CanonicalPath(CanonicalPathFrame::new(region)))
+                Self::push_canonical_path(frames, region);
+                Ok(())
             }
         }
+    }
+
+    fn push_message(
+        frames: &mut Vec<Frame<'src>>,
+        stats: &mut CanonicalProtobufAdmissionStats,
+        region: AdmissionRegion<'src>,
+        program: &'static RhoMatchProgram,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        let frame = MessageFrame::from_message_region(region, program)?;
+        increment_frame_count(&mut stats.messages)?;
+        frames.push(Frame::Message(frame));
+        Ok(())
+    }
+
+    fn push_map(
+        frames: &mut Vec<Frame<'src>>,
+        stats: &mut CanonicalProtobufAdmissionStats,
+        owner: &'static RhoMatchProgram,
+        field: u32,
+        value_type_id: u16,
+        region: AdmissionRegion<'src>,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        let frame = MapFrame::from_map_region(owner, field, value_type_id, region);
+        increment_frame_count(&mut stats.map_entries)?;
+        frames.push(Frame::Map(frame));
+        Ok(())
+    }
+
+    fn push_epathmap(
+        frames: &mut Vec<Frame<'src>>,
+        stats: &mut CanonicalProtobufAdmissionStats,
+        owner: &'static RhoMatchProgram,
+        field: u32,
+        region: AdmissionRegion<'src>,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        EPathMapFrame::with_epm1_region(owner, field, region, |frame| {
+            increment_frame_count(&mut stats.epathmaps)?;
+            frames.push(Frame::EPathMap(frame));
+            Ok(())
+        })
+    }
+
+    fn push_canonical_path(frames: &mut Vec<Frame<'src>>, region: AdmissionRegion<'src>) {
+        frames.push(Frame::CanonicalPath(CanonicalPathFrame::new(region)));
     }
 }
 
@@ -2891,6 +2991,14 @@ fn message_step<'src>(
             frame.finish(scores)?,
         )));
     };
+    message_field_step(frame, stats, field)
+}
+
+fn message_field_step<'src>(
+    frame: &mut MessageFrame<'src>,
+    stats: &mut CanonicalProtobufAdmissionStats,
+    field: IndexedCanonicalField<'src>,
+) -> Result<FrameAction<'src>, CanonicalProtobufAdmissionError> {
     stats.fields = stats
         .fields
         .checked_add(1)
@@ -3087,6 +3195,41 @@ fn map_step<'src>(
     }
 }
 
+fn try_epathmap_batch(frame: &mut EPathMapFrame<'_>) -> Result<bool, CanonicalProtobufAdmissionError> {
+    #[cfg(test)]
+    if standalone_path_admission::scalar_epm_transport() {
+        return Ok(false);
+    }
+    let Some(span) = frame.cursor.line_span() else {
+        return Ok(false);
+    };
+    let direction = span.direction();
+    let width = match direction {
+        CanonicalCompactTrieLineDirection::Forward => frame.path.forward_capacity(span.capacity()),
+        CanonicalCompactTrieLineDirection::Unwind => frame.path.reverse_capacity(span.capacity()),
+    };
+    if width == 0 {
+        return Ok(false);
+    }
+    let Some(prepared) = span.prepare(width) else {
+        return Ok(false);
+    };
+    let accepted = match direction {
+        CanonicalCompactTrieLineDirection::Forward => frame.path
+            .try_forward_source(prepared.source_range())
+            .map_err(|_| CanonicalProtobufAdmissionError::SizeOverflow)?,
+        CanonicalCompactTrieLineDirection::Unwind => frame.path.try_leave_run(width).is_some(),
+    };
+    if !accepted {
+        return Ok(false);
+    }
+    let source = prepared.commit();
+    frame.last_source = CanonicalPathSource::in_source(source.source, source.offset);
+    #[cfg(test)]
+    standalone_path_admission::record_epm_batch(direction, width);
+    Ok(true)
+}
+
 fn epathmap_step<'src>(
     frame: &mut EPathMapFrame<'src>,
     stats: &mut CanonicalProtobufAdmissionStats,
@@ -3100,6 +3243,9 @@ fn epathmap_step<'src>(
         });
     }
     loop {
+        if try_epathmap_batch(frame)? {
+            continue;
+        }
         let Some(event) = frame.cursor.next_event().map_err(|source| {
             CanonicalProtobufAdmissionError::EPathMap {
                 type_name: frame.owner.type_name,
@@ -3210,24 +3356,17 @@ fn first_score_difference<'src>(
     }
 }
 
+fn increment_frame_count(count: &mut usize) -> Result<(), CanonicalProtobufAdmissionError> {
+    *count = count.checked_add(1).ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+    Ok(())
+}
+
 fn push_admission_frame<'src>(
     frames: &mut Vec<Frame<'src>>,
     request: FrameRequest<'src>,
     stats: &mut CanonicalProtobufAdmissionStats,
 ) -> Result<(), CanonicalProtobufAdmissionError> {
-    let frame = request.materialize()?;
-    let count = match &frame {
-        Frame::Message(_) => Some(&mut stats.messages),
-        Frame::Map(_) => Some(&mut stats.map_entries),
-        Frame::EPathMap(_) => Some(&mut stats.epathmaps),
-        Frame::CanonicalPath(_) => None,
-    };
-    if let Some(count) = count {
-        *count = count
-            .checked_add(1)
-            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
-    }
-    frames.push(frame);
+    request.push_into(frames, stats)?;
     let frame_variant_bytes = std::mem::size_of::<Frame>();
     stats.max_frames = stats.max_frames.max(frames.len());
     stats.max_frame_storage_bytes = stats.max_frame_storage_bytes.max(
@@ -3285,7 +3424,7 @@ fn drive_admission<'src>(
             FrameAction::Continue => {}
             FrameAction::Push(request) => push_admission_frame(&mut frames, request, &mut stats)?,
             FrameAction::Complete(summary) => {
-                frames.pop();
+                frames.truncate(frames.len() - 1);
                 if let Some(parent) = frames.last_mut() {
                     match parent {
                         Frame::Message(frame) => frame.accept(summary, &scores)?,
