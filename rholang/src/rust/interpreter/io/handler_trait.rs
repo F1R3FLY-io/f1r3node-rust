@@ -537,6 +537,28 @@ pub struct FsHandlerEntry {
         (Vec<ListParWithRandom>, bool, Vec<Par>),
     )
         -> Pin<Box<dyn Future<Output = Result<Vec<Par>, InterpreterError>> + Send>>,
+
+    /// URN suffix appended to `"rho:io:fs:native:1.0.0/"` when
+    /// registering the handler at genesis (S3.12).  E.g. `"open"`,
+    /// `"readAt"`, `"removeFile"`.  camelCase per the pre-S3.12
+    /// `fs_native_def` call sites in `rho_runtime.rs`; the composed
+    /// source at `fs_genesis.rs` expects the exact same string.
+    ///
+    /// Pinned across the S3.12 refactor: an entry whose `urn_suffix`
+    /// drifts from the pre-S3.12 hard-coded string in
+    /// `rho_runtime.rs` would silently rename the URN, breaking
+    /// URN-map lookups from `Fs.rho`.  Guarded by the pre-S3.12
+    /// URN-suffix pin in `fs_genesis.rs`.
+    pub urn_suffix: &'static str,
+
+    /// Fixed-channel constructor: `FixedChannels::fs_x` fn pointer.
+    /// Loop body at S3.12 calls `(entry.fixed_channel)()` to obtain
+    /// the `Par` byte-name used as the rendezvous channel.
+    pub fixed_channel: fn() -> super::super::system_processes::Name,
+
+    /// BodyRef constant: `BodyRefs::FS_X`.  Rholang's built-in
+    /// dispatch table keys handler resolution on this i64.
+    pub body_ref: super::super::system_processes::BodyRef,
 }
 
 /// Distributed slice of every migrated handler's `FsHandlerEntry`.

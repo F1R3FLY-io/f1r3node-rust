@@ -40,6 +40,7 @@ use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
+use super::io::handler_trait::{FsHandlerEntry, FS_HANDLERS};
 use super::reduce::DebruijnInterpreter;
 use super::registry::registry_bootstrap::ast;
 use super::substitute::Substitute;
@@ -971,7 +972,7 @@ where
 }
 
 fn std_system_processes() -> Vec<Definition> {
-    vec![
+    let mut defs: Vec<Definition> = vec![
         // ------------------------------------------------------------------
         // Legacy stdio URNs (File I/O FIP §1122 — DEPRECATED as of
         // `rho:io:fs:1.0.0`; removal target `rho:io:fs:2.*`).
@@ -1226,294 +1227,91 @@ fn std_system_processes() -> Vec<Definition> {
             }),
             remainder: None,
         },
-        // ------------------------------------------------------------------
-        // File I/O native primitives (rho:io:fs:native:1.0.0/*).
-        //
-        // Registered here for fixed-channel dispatch.  Slice 31
-        // (2026-08-04) reinstated the URN filter as a phase-scoped
-        // flag on the reducer (`DebruijnInterpreter::filter_fs_native_urns`):
-        // ON by default so state-execution deploys reject fs-native
-        // URN bindings with `ReduceError`; the genesis entry
-        // (`casper::rholang::runtime::play_deploys_for_genesis`)
-        // toggles it OFF for the duration of the FsGenesis batch and
-        // back ON before returning.  User code can only reach the
-        // filesystem via the `Fs` cap published at genesis.
-        //
-        // URN naming: the "rho:io:fs:native:1.0.0/" prefix and the
-        // per-primitive suffixes below are duplicated in
-        // `casper/src/rust/genesis/contracts/fs_genesis.rs::FS_NATIVE_URN_PREFIX`
-        // and `FS_NATIVE_URN_SUFFIXES`.  A version bump or rename must
-        // edit ALL THREE sites (this comment, the composed source, and
-        // the constants).  The drift test at
-        // `fs_genesis.rs::fs_native_urn_suffixes_covers_composed_source`
-        // catches suffix-list-vs-composed-source mismatches but does
-        // NOT catch mismatches with this file — cross-check by hand.
-        // ------------------------------------------------------------------
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/open",
-            FixedChannels::fs_open(),
-            // Slice 29 (PB-M-14): arity is 5 = (root, rel, mode, cmode, ack).
-            // cmode plumbed to `FileHandle.cmode` for later WAL routing.
-            5,
-            BodyRefs::FS_OPEN,
-            |sp, args| Box::pin(async move { sp.fs.fs_open(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/close",
-            FixedChannels::fs_close(),
-            2,
-            BodyRefs::FS_CLOSE,
-            |sp, args| Box::pin(async move { sp.fs.fs_close(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/read",
-            FixedChannels::fs_read(),
-            3,
-            BodyRefs::FS_READ,
-            |sp, args| Box::pin(async move { sp.fs.fs_read(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/readAt",
-            FixedChannels::fs_read_at(),
-            4,
-            BodyRefs::FS_READ_AT,
-            |sp, args| Box::pin(async move { sp.fs.fs_read_at(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/write",
-            FixedChannels::fs_write(),
-            3,
-            BodyRefs::FS_WRITE,
-            |sp, args| Box::pin(async move { sp.fs.fs_write(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/writeAt",
-            FixedChannels::fs_write_at(),
-            4,
-            BodyRefs::FS_WRITE_AT,
-            |sp, args| Box::pin(async move { sp.fs.fs_write_at(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/seek",
-            FixedChannels::fs_seek(),
-            4,
-            BodyRefs::FS_SEEK,
-            |sp, args| Box::pin(async move { sp.fs.fs_seek(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/tell",
-            FixedChannels::fs_tell(),
-            2,
-            BodyRefs::FS_TELL,
-            |sp, args| Box::pin(async move { sp.fs.fs_tell(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/size",
-            FixedChannels::fs_size(),
-            2,
-            BodyRefs::FS_SIZE,
-            |sp, args| Box::pin(async move { sp.fs.fs_size(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/truncate",
-            FixedChannels::fs_truncate(),
-            3,
-            BodyRefs::FS_TRUNCATE,
-            |sp, args| Box::pin(async move { sp.fs.fs_truncate(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/flush",
-            FixedChannels::fs_flush(),
-            2,
-            BodyRefs::FS_FLUSH,
-            |sp, args| Box::pin(async move { sp.fs.fs_flush(args).await }),
-        ),
-        // Arities include the trailing ack channel.  Per B1 fix, every
-        // path-taking handler takes (rootCanon, rel, ...) — see handler
-        // signatures in handlers.rs.
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/stat",
-            FixedChannels::fs_stat(),
-            // Slice 26 (H-26-F1): arity is 4 = (rootCanon, rel, cmode, ack).
-            // `cmode` controls whether the record omits host-transient
-            // fields (mtime/ctime/atime/owner/group).
-            4,
-            BodyRefs::FS_STAT,
-            |sp, args| Box::pin(async move { sp.fs.fs_stat(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/exists",
-            FixedChannels::fs_exists(),
-            // Consensus ban-lift (2026-09-04): arity bumped 3 → 4
-            // to carry cmode.  See handlers.rs::fs_exists.
-            4, // (rootCanon, rel, cmode, ack)
-            BodyRefs::FS_EXISTS,
-            |sp, args| Box::pin(async move { sp.fs.fs_exists(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/entries",
-            FixedChannels::fs_entries(),
-            // Slice 26 (H-26-F1): arity is 4 = (rootCanon, rel, cmode, ack).
-            4,
-            BodyRefs::FS_ENTRIES,
-            |sp, args| Box::pin(async move { sp.fs.fs_entries(args).await }),
-        ),
-        // A8-M-1 (2026-09-03): the bulk `rho:io:fs:native:1.0.0/entriesStream`
-        // native was retired.  Dir.rho swapped to the per-fd streaming
-        // primitives (`entriesStreamOpen` / `_Next` / `_Close`) at Step 5;
-        // the bulk URN had no remaining callers and its handler stub
-        // (returned FSERR_UNSUPPORTED unconditionally) is gone.
-        //
-        // Streaming-backing slice (2026-08-25) — per-fd directory-entries
-        // streaming primitive.  Open allocates a stream fd, Next yields
-        // one entry per call, Close releases the fd.
-        // Under Consensus mode each Next reply is D3-WAL-journaled
-        // (Step 3); under Oracular the natives are best-effort.
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/entriesStreamOpen",
-            FixedChannels::fs_entries_stream_open(),
-            4, // (rootCanon, rel, cmode, ack)
-            BodyRefs::FS_ENTRIES_STREAM_OPEN,
-            |sp, args| Box::pin(async move { sp.fs.fs_entries_stream_open(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/entriesStreamNext",
-            FixedChannels::fs_entries_stream_next(),
-            2, // (streamFd, ack) — cmode captured in DirHandle at open
-            BodyRefs::FS_ENTRIES_STREAM_NEXT,
-            |sp, args| Box::pin(async move { sp.fs.fs_entries_stream_next(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/entriesStreamClose",
-            FixedChannels::fs_entries_stream_close(),
-            2, // (streamFd, ack)
-            BodyRefs::FS_ENTRIES_STREAM_CLOSE,
-            |sp, args| Box::pin(async move { sp.fs.fs_entries_stream_close(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/rename",
-            FixedChannels::fs_rename(),
-            // Slice 26 (H-26-F1): arity is 6 = (fromRootCanon, fromRel,
-            // toRootCanon, toRel, cmode, ack).
-            6,
-            BodyRefs::FS_RENAME,
-            |sp, args| Box::pin(async move { sp.fs.fs_rename(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/copyFile",
-            FixedChannels::fs_copy_file(),
-            // Slice 26 (H-26-F1): arity is 6 = (fromRootCanon, fromRel,
-            // toRootCanon, toRel, cmode, ack).
-            6,
-            BodyRefs::FS_COPY_FILE,
-            |sp, args| Box::pin(async move { sp.fs.fs_copy_file(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/removeFile",
-            FixedChannels::fs_remove_file(),
-            // Slice 26 (H-26-F1): arity is 4 = (rootCanon, rel, cmode, ack).
-            4,
-            BodyRefs::FS_REMOVE_FILE,
-            |sp, args| Box::pin(async move { sp.fs.fs_remove_file(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/removeDir",
-            FixedChannels::fs_remove_dir(),
-            // Slice 26 (H-26-F1): arity is 5 = (rootCanon, rel, recursive,
-            // cmode, ack).
-            5,
-            BodyRefs::FS_REMOVE_DIR,
-            |sp, args| Box::pin(async move { sp.fs.fs_remove_dir(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/chmod",
-            FixedChannels::fs_chmod(),
-            // Slice 26 (H-26-F1): arity is 5 = (rootCanon, rel, modeBits,
-            // cmode, ack).
-            5,
-            BodyRefs::FS_CHMOD,
-            |sp, args| Box::pin(async move { sp.fs.fs_chmod(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/chown",
-            FixedChannels::fs_chown(),
-            // Slice 26 (H-26-F1): arity is 6 = (rootCanon, rel, owner,
-            // group, cmode, ack).  `cmode` short-circuits chown on
-            // Consensus caps.
-            6,
-            BodyRefs::FS_CHOWN,
-            |sp, args| Box::pin(async move { sp.fs.fs_chown(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/quarantine",
-            FixedChannels::fs_quarantine(),
-            3,
-            BodyRefs::FS_QUARANTINE,
-            |sp, args| Box::pin(async move { sp.fs.fs_quarantine(args).await }),
-        ),
-        // Phase 8 slice 8a — range-lock natives (fd-based after
-        // review-2 fix, 2026-08-12).
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/lockRange",
-            FixedChannels::fs_lock_range(),
-            // Phase 8 arity tightening (2026-08-26): arity bumped
-            // 7 → 8 with an explicit `wait: Bool` at slot 7.  The
-            // legacy arity-7 shim in the handler was retired at the
-            // same time; File.rho callers all thread wait through.
-            // (fd, offset, length, mode, holder, cmode, wait, ack)
-            8,
-            BodyRefs::FS_LOCK_RANGE,
-            |sp, args| Box::pin(async move { sp.fs.fs_lock_range(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/lockSequential",
-            FixedChannels::fs_lock_sequential(),
-            // Phase 8 arity tightening (2026-08-26): arity bumped
-            // 4 → 5 with an explicit `wait: Bool` at slot 3.
-            // (fd, holder, cmode, wait, ack)
-            5,
-            BodyRefs::FS_LOCK_SEQUENTIAL,
-            |sp, args| Box::pin(async move { sp.fs.fs_lock_sequential(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/releaseLock",
-            FixedChannels::fs_release_lock(),
-            // (lockId, ack)
-            2,
-            BodyRefs::FS_RELEASE_LOCK,
-            |sp, args| Box::pin(async move { sp.fs.fs_release_lock(args).await }),
-        ),
-        fs_native_def(
-            "rho:io:fs:native:1.0.0/releaseAllForHolder",
-            FixedChannels::fs_release_all_for_holder(),
-            // (holder, ack)
-            2,
-            BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
-            |sp, args| Box::pin(async move { sp.fs.fs_release_all_for_holder(args).await }),
-        ),
-    ]
+    ];
+    // ------------------------------------------------------------------
+    // File I/O native primitives (rho:io:fs:native:1.0.0/*).
+    //
+    // Registered here for fixed-channel dispatch.  Slice 31
+    // (2026-08-04) reinstated the URN filter as a phase-scoped flag on
+    // the reducer (`DebruijnInterpreter::filter_fs_native_urns`): ON
+    // by default so state-execution deploys reject fs-native URN
+    // bindings with `ReduceError`; the genesis entry
+    // (`casper::rholang::runtime::play_deploys_for_genesis`) toggles
+    // it OFF for the duration of the FsGenesis batch and back ON
+    // before returning.  User code can only reach the filesystem via
+    // the `Fs` cap published at genesis.
+    //
+    // Wave-3 S3.12 (2026-09-09) replaced 27 explicit fs_native_def
+    // calls with a single loop over the `FS_HANDLERS` distributed
+    // slice.  Each entry carries its urn_suffix, fixed_channel,
+    // body_ref, arity, and typed dispatch fn (see
+    // `handler_trait.rs::FsHandlerEntry`).  fs_remove_dir stays
+    // trait-exempt (DD-RemoveDirReplyShape complexity — see
+    // wave-3-plan.md § S3.11) and gets its own explicit registration.
+    //
+    // URN naming: the "rho:io:fs:native:1.0.0/" prefix and the
+    // per-primitive suffixes are duplicated in
+    // `casper/src/rust/genesis/contracts/fs_genesis.rs::FS_NATIVE_URN_PREFIX`
+    // and `FS_NATIVE_URN_SUFFIXES`.  A version bump or rename must
+    // edit ALL THREE sites (this comment, the composed source, and
+    // the constants).  The drift test at
+    // `fs_genesis.rs::fs_native_urn_suffixes_covers_composed_source`
+    // catches suffix-list-vs-composed-source mismatches but does NOT
+    // catch mismatches with the urn_suffix fields on `FS_HANDLERS`
+    // entries — cross-check by hand.
+    // ------------------------------------------------------------------
+    defs.extend(FS_HANDLERS.iter().map(fs_native_def_from_entry));
+    // fs_remove_dir stays trait-exempt (wave-3-plan.md § S3.11).
+    // DD-RemoveDirReplyShape's 4 divergence reply shapes + per-entry
+    // WAL journaling inside recursive Consensus walk don't fit the
+    // FsHandler pre_syscall/journal hook contract.  Its consensus
+    // correctness is pinned by 3 fs_wal_spec tests
+    // (recursive_remove_dir_* + consensus_fs_remove_dir_*).
+    defs.push(fs_native_def(
+        "rho:io:fs:native:1.0.0/removeDir",
+        FixedChannels::fs_remove_dir(),
+        // Slice 26 (H-26-F1): arity is 5 = (rootCanon, rel, recursive,
+        // cmode, ack).
+        5,
+        BodyRefs::FS_REMOVE_DIR,
+        Arc::new(|sp: SystemProcesses, args| {
+            Box::pin(async move { sp.fs.fs_remove_dir(args).await })
+        }),
+    ));
+    defs
 }
 
-/// Compact factory for the 22 File I/O native `Definition` rows.  Cuts
-/// the boilerplate to two lines per row.
+/// Compact factory for File I/O native `Definition` rows.  Cuts the
+/// boilerplate to two lines per row.  Wave-3 S3.12 (2026-09-09)
+/// generalized `call` from an `fn` pointer to an `Arc<dyn Fn>` so
+/// `fs_native_def_from_entry` can capture the per-entry dispatch fn.
+/// The Arc lets the outer FnMut handler produce multiple inner Fn
+/// closures (each grabs its own Arc clone) without requiring `call`
+/// to itself be Clone.
+type FsNativeCall = Arc<
+    dyn Fn(
+            SystemProcesses,
+            (Vec<ListParWithRandom>, bool, Vec<Par>),
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<Par>, InterpreterError>> + Send>,
+        > + Send
+        + Sync,
+>;
+
 fn fs_native_def(
-    urn: &'static str,
+    urn: impl Into<String>,
     fixed_channel: Name,
     arity: Arity,
     body_ref: BodyRef,
-    call: fn(
-        SystemProcesses,
-        (Vec<ListParWithRandom>, bool, Vec<Par>),
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<Par>, InterpreterError>> + Send>,
-    >,
+    call: FsNativeCall,
 ) -> Definition {
     Definition {
-        urn: urn.to_string(),
+        urn: urn.into(),
         fixed_channel,
         arity,
         body_ref,
         handler: Box::new(move |ctx| {
+            let call = call.clone();
             Box::new(move |args| {
                 let sp = ctx.system_processes.clone();
                 call(sp, args)
@@ -1521,6 +1319,24 @@ fn fs_native_def(
         }),
         remainder: None,
     }
+}
+
+/// Builds a `Definition` from an FS_HANDLERS entry (S3.12 switchover).
+/// Loop callers pass in the `&'static FsHandlerEntry` from the
+/// distributed slice; this fn constructs the URN, extracts the fixed
+/// channel + body_ref, and adapts the entry's `fn(FsProcesses, ...)`
+/// dispatch fn into a `fn(SystemProcesses, ...)` shape by cloning
+/// `sp.fs` and delegating.
+fn fs_native_def_from_entry(entry: &'static FsHandlerEntry) -> Definition {
+    let dispatch = entry.dispatch;
+    let call: FsNativeCall = Arc::new(move |sp: SystemProcesses, args| dispatch(sp.fs, args));
+    fs_native_def(
+        format!("rho:io:fs:native:1.0.0/{}", entry.urn_suffix),
+        (entry.fixed_channel)(),
+        entry.arity as Arity,
+        entry.body_ref,
+        call,
+    )
 }
 
 fn std_rho_crypto_processes() -> Vec<Definition> {

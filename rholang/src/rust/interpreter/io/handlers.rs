@@ -48,6 +48,7 @@ use super::super::errors::{illegal_argument_error, InterpreterError};
 use super::super::metering::MeteredMachine;
 use super::super::rho_runtime::RhoISpace;
 use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
+use super::super::system_processes::{BodyRefs, FixedChannels};
 use super::dir_handle_table::{DirHandle, DirIter};
 use super::errors::*;
 use super::handle_table::{FileHandle, FileHandleTable};
@@ -4635,6 +4636,9 @@ static FS_FLUSH_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsFlushHandler as FsHandler>::ARITY,
     verifying: <FsFlushHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsFlushHandler>(fs, args)),
+    urn_suffix: "flush",
+    fixed_channel: FixedChannels::fs_flush,
+    body_ref: BodyRefs::FS_FLUSH,
 };
 
 // -------------------------------------------------------------------
@@ -4717,6 +4721,9 @@ static FS_TELL_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsTellHandler as FsHandler>::ARITY,
     verifying: <FsTellHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsTellHandler>(fs, args)),
+    urn_suffix: "tell",
+    fixed_channel: FixedChannels::fs_tell,
+    body_ref: BodyRefs::FS_TELL,
 };
 
 // -------------------------------------------------------------------
@@ -4797,6 +4804,9 @@ static FS_CLOSE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsCloseHandler as FsHandler>::ARITY,
     verifying: <FsCloseHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsCloseHandler>(fs, args)),
+    urn_suffix: "close",
+    fixed_channel: FixedChannels::fs_close,
+    body_ref: BodyRefs::FS_CLOSE,
 };
 
 // -------------------------------------------------------------------
@@ -4860,6 +4870,9 @@ static FS_RELEASE_LOCK_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsReleaseLockHandler as FsHandler>::ARITY,
     verifying: <FsReleaseLockHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsReleaseLockHandler>(fs, args)),
+    urn_suffix: "releaseLock",
+    fixed_channel: FixedChannels::fs_release_lock,
+    body_ref: BodyRefs::FS_RELEASE_LOCK,
 };
 
 // -------------------------------------------------------------------
@@ -4941,6 +4954,9 @@ static FS_QUARANTINE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsQuarantineHandler as FsHandler>::ARITY,
     verifying: <FsQuarantineHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsQuarantineHandler>(fs, args)),
+    urn_suffix: "quarantine",
+    fixed_channel: FixedChannels::fs_quarantine,
+    body_ref: BodyRefs::FS_QUARANTINE,
 };
 
 // -------------------------------------------------------------------
@@ -5015,6 +5031,9 @@ static FS_ENTRIES_STREAM_CLOSE_ENTRY: FsHandlerEntry = FsHandlerEntry {
             fs, args,
         ))
     },
+    urn_suffix: "entriesStreamClose",
+    fixed_channel: FixedChannels::fs_entries_stream_close,
+    body_ref: BodyRefs::FS_ENTRIES_STREAM_CLOSE,
 };
 
 // -------------------------------------------------------------------
@@ -5153,6 +5172,9 @@ static FS_LOCK_RANGE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsLockRangeHandler as FsHandler>::ARITY,
     verifying: <FsLockRangeHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsLockRangeHandler>(fs, args)),
+    urn_suffix: "lockRange",
+    fixed_channel: FixedChannels::fs_lock_range,
+    body_ref: BodyRefs::FS_LOCK_RANGE,
 };
 
 // -------------------------------------------------------------------
@@ -5262,6 +5284,9 @@ static FS_LOCK_SEQUENTIAL_ENTRY: FsHandlerEntry = FsHandlerEntry {
             fs, args,
         ))
     },
+    urn_suffix: "lockSequential",
+    fixed_channel: FixedChannels::fs_lock_sequential,
+    body_ref: BodyRefs::FS_LOCK_SEQUENTIAL,
 };
 
 // -------------------------------------------------------------------
@@ -5451,6 +5476,9 @@ static FS_ENTRIES_STREAM_OPEN_ENTRY: FsHandlerEntry = FsHandlerEntry {
             fs, args,
         ))
     },
+    urn_suffix: "entriesStreamOpen",
+    fixed_channel: FixedChannels::fs_entries_stream_open,
+    body_ref: BodyRefs::FS_ENTRIES_STREAM_OPEN,
 };
 
 // -------------------------------------------------------------------
@@ -5610,6 +5638,9 @@ static FS_ENTRIES_STREAM_NEXT_ENTRY: FsHandlerEntry = FsHandlerEntry {
             fs, args,
         ))
     },
+    urn_suffix: "entriesStreamNext",
+    fixed_channel: FixedChannels::fs_entries_stream_next,
+    body_ref: BodyRefs::FS_ENTRIES_STREAM_NEXT,
 };
 
 // -------------------------------------------------------------------
@@ -5736,6 +5767,9 @@ static FS_SIZE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsSizeHandler as FsHandler>::ARITY,
     verifying: <FsSizeHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsSizeHandler>(fs, args)),
+    urn_suffix: "size",
+    fixed_channel: FixedChannels::fs_size,
+    body_ref: BodyRefs::FS_SIZE,
 };
 
 // -------------------------------------------------------------------
@@ -5879,6 +5913,9 @@ static FS_STAT_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsStatHandler as FsHandler>::ARITY,
     verifying: <FsStatHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsStatHandler>(fs, args)),
+    urn_suffix: "stat",
+    fixed_channel: FixedChannels::fs_stat,
+    body_ref: BodyRefs::FS_STAT,
 };
 
 // -------------------------------------------------------------------
@@ -6025,6 +6062,9 @@ static FS_EXISTS_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsExistsHandler as FsHandler>::ARITY,
     verifying: <FsExistsHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsExistsHandler>(fs, args)),
+    urn_suffix: "exists",
+    fixed_channel: FixedChannels::fs_exists,
+    body_ref: BodyRefs::FS_EXISTS,
 };
 
 // -------------------------------------------------------------------
@@ -6162,6 +6202,9 @@ static FS_READ_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsReadHandler as FsHandler>::ARITY,
     verifying: <FsReadHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsReadHandler>(fs, args)),
+    urn_suffix: "read",
+    fixed_channel: FixedChannels::fs_read,
+    body_ref: BodyRefs::FS_READ,
 };
 
 // -------------------------------------------------------------------
@@ -6293,6 +6336,9 @@ static FS_READ_AT_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsReadAtHandler as FsHandler>::ARITY,
     verifying: <FsReadAtHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsReadAtHandler>(fs, args)),
+    urn_suffix: "readAt",
+    fixed_channel: FixedChannels::fs_read_at,
+    body_ref: BodyRefs::FS_READ_AT,
 };
 
 // -------------------------------------------------------------------
@@ -6449,6 +6495,9 @@ static FS_SEEK_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsSeekHandler as FsHandler>::ARITY,
     verifying: <FsSeekHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsSeekHandler>(fs, args)),
+    urn_suffix: "seek",
+    fixed_channel: FixedChannels::fs_seek,
+    body_ref: BodyRefs::FS_SEEK,
 };
 
 // -------------------------------------------------------------------
@@ -6616,6 +6665,9 @@ static FS_TRUNCATE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsTruncateHandler as FsHandler>::ARITY,
     verifying: <FsTruncateHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsTruncateHandler>(fs, args)),
+    urn_suffix: "truncate",
+    fixed_channel: FixedChannels::fs_truncate,
+    body_ref: BodyRefs::FS_TRUNCATE,
 };
 
 // -------------------------------------------------------------------
@@ -6811,6 +6863,9 @@ static FS_CHMOD_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsChmodHandler as FsHandler>::ARITY,
     verifying: <FsChmodHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsChmodHandler>(fs, args)),
+    urn_suffix: "chmod",
+    fixed_channel: FixedChannels::fs_chmod,
+    body_ref: BodyRefs::FS_CHMOD,
 };
 
 // -------------------------------------------------------------------
@@ -6962,6 +7017,9 @@ static FS_CHOWN_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsChownHandler as FsHandler>::ARITY,
     verifying: <FsChownHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsChownHandler>(fs, args)),
+    urn_suffix: "chown",
+    fixed_channel: FixedChannels::fs_chown,
+    body_ref: BodyRefs::FS_CHOWN,
 };
 
 // -------------------------------------------------------------------
@@ -7153,6 +7211,9 @@ static FS_WRITE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsWriteHandler as FsHandler>::ARITY,
     verifying: <FsWriteHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsWriteHandler>(fs, args)),
+    urn_suffix: "write",
+    fixed_channel: FixedChannels::fs_write,
+    body_ref: BodyRefs::FS_WRITE,
 };
 
 // -------------------------------------------------------------------
@@ -7317,6 +7378,9 @@ static FS_WRITE_AT_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsWriteAtHandler as FsHandler>::ARITY,
     verifying: <FsWriteAtHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsWriteAtHandler>(fs, args)),
+    urn_suffix: "writeAt",
+    fixed_channel: FixedChannels::fs_write_at,
+    body_ref: BodyRefs::FS_WRITE_AT,
 };
 
 // -------------------------------------------------------------------
@@ -7520,6 +7584,9 @@ static FS_ENTRIES_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsEntriesHandler as FsHandler>::ARITY,
     verifying: <FsEntriesHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsEntriesHandler>(fs, args)),
+    urn_suffix: "entries",
+    fixed_channel: FixedChannels::fs_entries,
+    body_ref: BodyRefs::FS_ENTRIES,
 };
 
 // -------------------------------------------------------------------
@@ -7718,6 +7785,9 @@ static FS_RENAME_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsRenameHandler as FsHandler>::ARITY,
     verifying: <FsRenameHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsRenameHandler>(fs, args)),
+    urn_suffix: "rename",
+    fixed_channel: FixedChannels::fs_rename,
+    body_ref: BodyRefs::FS_RENAME,
 };
 
 // -------------------------------------------------------------------
@@ -7912,6 +7982,9 @@ static FS_COPY_FILE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsCopyFileHandler as FsHandler>::ARITY,
     verifying: <FsCopyFileHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsCopyFileHandler>(fs, args)),
+    urn_suffix: "copyFile",
+    fixed_channel: FixedChannels::fs_copy_file,
+    body_ref: BodyRefs::FS_COPY_FILE,
 };
 
 // -------------------------------------------------------------------
@@ -8079,6 +8152,9 @@ static FS_OPEN_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsOpenHandler as FsHandler>::ARITY,
     verifying: <FsOpenHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsOpenHandler>(fs, args)),
+    urn_suffix: "open",
+    fixed_channel: FixedChannels::fs_open,
+    body_ref: BodyRefs::FS_OPEN,
 };
 
 // -------------------------------------------------------------------
@@ -8266,6 +8342,9 @@ static FS_REMOVE_FILE_ENTRY: FsHandlerEntry = FsHandlerEntry {
     arity: <FsRemoveFileHandler as FsHandler>::ARITY,
     verifying: <FsRemoveFileHandler as FsHandler>::VERIFYING,
     dispatch: |fs, args| Box::pin(dispatch_via_trait_owned::<FsRemoveFileHandler>(fs, args)),
+    urn_suffix: "removeFile",
+    fixed_channel: FixedChannels::fs_remove_file,
+    body_ref: BodyRefs::FS_REMOVE_FILE,
 };
 
 // -------------------------------------------------------------------
@@ -8345,6 +8424,9 @@ static FS_RELEASE_ALL_FOR_HOLDER_ENTRY: FsHandlerEntry = FsHandlerEntry {
             fs, args,
         ))
     },
+    urn_suffix: "releaseAllForHolder",
+    fixed_channel: FixedChannels::fs_release_all_for_holder,
+    body_ref: BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
 };
 
 // ---------------------------------------------------------------------
