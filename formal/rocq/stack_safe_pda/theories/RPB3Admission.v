@@ -9220,3 +9220,409 @@ Print Assumptions retaining_a_terminal_source_preserves_each_historical_window.
 Print Assumptions preserved_original_sources_preserve_every_historical_root_denotation.
 
 End BalancedSourceComposition.
+
+Module BalancedSourceConcatDriver.
+
+Import BalancedSourceComposition.
+
+Inductive continuation :=
+| Right2 (first : tree)
+| Right3 (first middle : tree)
+| Left2 (last : tree)
+| Left3 (middle last : tree).
+
+Definition absorb saved result :=
+  match saved with
+  | Right2 first => absorb_right2 first result
+  | Right3 first middle => absorb_right3 first middle result
+  | Left2 last => absorb_left2 result last
+  | Left3 middle last => absorb_left3 result middle last
+  end.
+
+Fixpoint resume frames result :=
+  match frames with
+  | [] => result
+  | saved :: rest => resume rest (absorb saved result)
+  end.
+
+Record boundary := Boundary {
+  pending_frames : list continuation;
+  boundary_left : tree;
+  boundary_right : tree
+}.
+
+Definition boundary_result stopped :=
+  Joined (Two (boundary_left stopped) (boundary_right stopped)) 1 0.
+
+Fixpoint seek_right first last frames :=
+  if height first =? height last then Boundary frames first last
+  else match first with
+  | Leaf _ => Boundary frames first last
+  | Join2 _ _ left_child right_child => seek_right right_child last (Right2 left_child :: frames)
+  | Join3 _ _ left_child middle right_child =>
+      seek_right right_child last (Right3 left_child middle :: frames)
+  end.
+
+Fixpoint seek_left first last frames {struct last} :=
+  if height first =? height last then Boundary frames first last
+  else match last with
+  | Leaf _ => Boundary frames first last
+  | Join2 _ _ left_child right_child => seek_left first left_child (Left2 right_child :: frames)
+  | Join3 _ _ left_child middle right_child =>
+      seek_left first left_child (Left3 middle right_child :: frames)
+  end.
+
+Definition run_boundary stopped := resume (pending_frames stopped) (boundary_result stopped).
+
+Definition driver first last :=
+  run_boundary (if height first <=? height last
+    then seek_left first last [] else seek_right first last []).
+
+Theorem continuation_pop_applies_exactly_the_selected_absorption saved frames result :
+  resume (saved :: frames) result = resume frames (absorb saved result).
+Proof. reflexivity. Qed.
+
+Theorem right_descent_and_pop_equal_the_recursive_join_with_every_counter first last frames :
+  run_boundary (seek_right first last frames) = resume frames (join_right first last).
+Proof.
+  revert last frames.
+  induction first as [view|count rank left_child left_IH right_child right_IH|
+    count rank left_child left_IH middle middle_IH right_child right_IH];
+    intros last frames; cbn [seek_right join_right];
+    destruct (height _ =? height last); try reflexivity.
+  - rewrite right_IH. reflexivity.
+  - rewrite right_IH. reflexivity.
+Qed.
+
+Theorem left_descent_and_pop_equal_the_recursive_join_with_every_counter first last frames :
+  run_boundary (seek_left first last frames) = resume frames (join_left first last).
+Proof.
+  revert first frames.
+  induction last as [view|count rank left_child left_IH right_child right_IH|
+    count rank left_child left_IH middle middle_IH right_child right_IH];
+    intros first frames; cbn [seek_left join_left];
+    destruct (height first =? height _); try reflexivity.
+  - rewrite left_IH. reflexivity.
+  - rewrite left_IH. reflexivity.
+Qed.
+
+Theorem explicit_stack_driver_returns_the_exact_recursive_pieces_visits_and_allocations first last :
+  driver first last = concatenate first last.
+Proof.
+  unfold driver, concatenate. destruct (height first <=? height last).
+  - apply left_descent_and_pop_equal_the_recursive_join_with_every_counter.
+  - apply right_descent_and_pop_equal_the_recursive_join_with_every_counter.
+Qed.
+
+Definition checked_driver limit first last :=
+  if size first + size last <=? limit
+  then Some (finish (joined_pieces (driver first last))) else None.
+
+Theorem explicit_stack_driver_preserves_the_exact_native_preflight_and_published_tree
+    limit first last :
+  checked_driver limit first last = checked_concatenate limit first last.
+Proof.
+  unfold checked_driver, checked_concatenate, concatenate_root.
+  now rewrite explicit_stack_driver_returns_the_exact_recursive_pieces_visits_and_allocations.
+Qed.
+
+Lemma resume_visits frames result :
+  boundary_visits (resume frames result) = length frames + boundary_visits result.
+Proof.
+  revert result. induction frames as [|saved rest IH]; intro result; cbn [resume length]; [reflexivity|].
+  rewrite IH. destruct saved; cbn [absorb absorb_right2 absorb_right3 absorb_left2 absorb_left3 boundary_visits]; lia.
+Qed.
+
+Theorem right_descent_stores_exactly_the_facing_height_gap first last frames :
+  balanced first -> balanced last -> height last <= height first ->
+  length (pending_frames (seek_right first last frames)) = length frames + height first - height last.
+Proof.
+  intros first_valid last_valid ordered.
+  pose proof (right_descent_and_pop_equal_the_recursive_join_with_every_counter first last frames) as same.
+  apply (f_equal boundary_visits) in same.
+  unfold run_boundary in same. rewrite !resume_visits in same.
+  cbn [boundary_result boundary_visits] in same.
+  destruct (concrete_right_join_preserves_balance_caches_terminals_and_boundary_work
+    first_valid last_valid ordered) as [_ [visits _]].
+  rewrite visits in same. lia.
+Qed.
+
+Theorem left_descent_stores_exactly_the_facing_height_gap first last frames :
+  balanced first -> balanced last -> height first <= height last ->
+  length (pending_frames (seek_left first last frames)) = length frames + height last - height first.
+Proof.
+  intros first_valid last_valid ordered.
+  pose proof (left_descent_and_pop_equal_the_recursive_join_with_every_counter first last frames) as same.
+  apply (f_equal boundary_visits) in same.
+  unfold run_boundary in same. rewrite !resume_visits in same.
+  cbn [boundary_result boundary_visits] in same.
+  destruct (concrete_left_join_preserves_balance_caches_terminals_and_boundary_work
+    last_valid first_valid ordered) as [_ [visits _]].
+  rewrite visits in same. lia.
+Qed.
+
+Inductive control :=
+| DescendRight (first last : tree)
+| DescendLeft (first last : tree)
+| Returning (result : join_result).
+
+Record machine := Machine {
+  active : control;
+  stack : list continuation
+}.
+
+Definition step current :=
+  match active current with
+  | DescendRight first last =>
+      if height first =? height last
+      then Some (Machine (Returning (Joined (Two first last) 1 0)) (stack current))
+      else match first with
+      | Leaf _ => Some (Machine (Returning (Joined (Two first last) 1 0)) (stack current))
+      | Join2 _ _ left_child right_child =>
+          Some (Machine (DescendRight right_child last) (Right2 left_child :: stack current))
+      | Join3 _ _ left_child middle right_child =>
+          Some (Machine (DescendRight right_child last) (Right3 left_child middle :: stack current))
+      end
+  | DescendLeft first last =>
+      if height first =? height last
+      then Some (Machine (Returning (Joined (Two first last) 1 0)) (stack current))
+      else match last with
+      | Leaf _ => Some (Machine (Returning (Joined (Two first last) 1 0)) (stack current))
+      | Join2 _ _ left_child right_child =>
+          Some (Machine (DescendLeft first left_child) (Left2 right_child :: stack current))
+      | Join3 _ _ left_child middle right_child =>
+          Some (Machine (DescendLeft first left_child) (Left3 middle right_child :: stack current))
+      end
+  | Returning result =>
+      match stack current with
+      | [] => None
+      | saved :: rest => Some (Machine (Returning (absorb saved result)) rest)
+      end
+  end.
+
+Inductive execution : machine -> nat -> machine -> Prop :=
+| Executed current : execution current 0 current
+| ExecutedStep current next final count :
+    step current = Some next -> execution next count final ->
+    execution current (S count) final.
+
+Lemma execution_append first middle last first_count last_count :
+  execution first first_count middle -> execution middle last_count last ->
+  execution first (first_count + last_count) last.
+Proof.
+  intros prefix suffix. induction prefix; cbn; [exact suffix|].
+  econstructor; eauto.
+Qed.
+
+Lemma popping_executes_exactly_the_saved_frame_count frames result :
+  execution (Machine (Returning result) frames) (length frames)
+    (Machine (Returning (resume frames result)) []).
+Proof.
+  revert result. induction frames as [|saved rest IH]; intro result; cbn [length resume].
+  - constructor.
+  - econstructor; [reflexivity|apply IH].
+Qed.
+
+Lemma right_descent_executes_to_its_explicit_boundary first last frames :
+  exists pushes,
+  execution (Machine (DescendRight first last) frames) (S pushes)
+    (Machine (Returning (boundary_result (seek_right first last frames)))
+      (pending_frames (seek_right first last frames))) /\
+  length (pending_frames (seek_right first last frames)) = pushes + length frames.
+Proof.
+  revert last frames.
+  induction first as [view|count rank left_child left_IH right_child right_IH|
+    count rank left_child left_IH middle middle_IH right_child right_IH];
+    intros last frames; cbn [seek_right];
+    destruct (height _ =? height last) eqn:equal.
+  all: try (exists 0; split; [econstructor; [cbn [step active stack]; rewrite equal; reflexivity|constructor]|reflexivity]).
+  - destruct (right_IH last (Right2 left_child :: frames)) as (pushes & ran & count_same).
+    exists (S pushes). split.
+    + econstructor; [cbn [step active stack]; rewrite equal; reflexivity|exact ran].
+    + cbn [length] in count_same. lia.
+  - destruct (right_IH last (Right3 left_child middle :: frames)) as (pushes & ran & count_same).
+    exists (S pushes). split.
+    + econstructor; [cbn [step active stack]; rewrite equal; reflexivity|exact ran].
+    + cbn [length] in count_same. lia.
+Qed.
+
+Lemma left_descent_executes_to_its_explicit_boundary first last frames :
+  exists pushes,
+  execution (Machine (DescendLeft first last) frames) (S pushes)
+    (Machine (Returning (boundary_result (seek_left first last frames)))
+      (pending_frames (seek_left first last frames))) /\
+  length (pending_frames (seek_left first last frames)) = pushes + length frames.
+Proof.
+  revert first frames.
+  induction last as [view|count rank left_child left_IH right_child right_IH|
+    count rank left_child left_IH middle middle_IH right_child right_IH];
+    intros first frames; cbn [seek_left];
+    destruct (height first =? height _) eqn:equal.
+  all: try (exists 0; split; [econstructor; [cbn [step active stack]; rewrite equal; reflexivity|constructor]|reflexivity]).
+  - destruct (left_IH first (Left2 right_child :: frames)) as (pushes & ran & count_same).
+    exists (S pushes). split.
+    + econstructor; [cbn [step active stack]; rewrite equal; reflexivity|exact ran].
+    + cbn [length] in count_same. lia.
+  - destruct (left_IH first (Left3 middle right_child :: frames)) as (pushes & ran & count_same).
+    exists (S pushes). split.
+    + econstructor; [cbn [step active stack]; rewrite equal; reflexivity|exact ran].
+    + cbn [length] in count_same. lia.
+Qed.
+
+Definition start first last :=
+  Machine (if height first <=? height last then DescendLeft first last else DescendRight first last) [].
+
+Theorem explicit_concat_loop_terminates_without_any_fuel_or_depth_cap first last :
+  exists count,
+  execution (start first last) count (Machine (Returning (concatenate first last)) []) /\
+  step (Machine (Returning (concatenate first last)) []) = None.
+Proof.
+  unfold start. destruct (height first <=? height last) eqn:direction.
+  - destruct (left_descent_executes_to_its_explicit_boundary first last []) as (pushes & descended & frames).
+    pose proof (popping_executes_exactly_the_saved_frame_count
+      (pending_frames (seek_left first last [])) (boundary_result (seek_left first last []))) as popped.
+    pose proof (execution_append descended popped) as ran.
+    fold (run_boundary (seek_left first last [])) in ran.
+    rewrite left_descent_and_pop_equal_the_recursive_join_with_every_counter in ran.
+    cbn [resume] in ran. unfold concatenate. rewrite direction.
+    eexists. split; [exact ran|reflexivity].
+  - destruct (right_descent_executes_to_its_explicit_boundary first last []) as (pushes & descended & frames).
+    pose proof (popping_executes_exactly_the_saved_frame_count
+      (pending_frames (seek_right first last [])) (boundary_result (seek_right first last []))) as popped.
+    pose proof (execution_append descended popped) as ran.
+    fold (run_boundary (seek_right first last [])) in ran.
+    rewrite right_descent_and_pop_equal_the_recursive_join_with_every_counter in ran.
+    cbn [resume] in ran. unfold concatenate. rewrite direction.
+    eexists. split; [exact ran|reflexivity].
+Qed.
+
+Definition frontier_bound bound current :=
+  match active current with
+  | DescendRight first last =>
+      balanced first /\ balanced last /\ height last <= height first /\
+      length (stack current) + height first - height last <= bound
+  | DescendLeft first last =>
+      balanced first /\ balanced last /\ height first <= height last /\
+      length (stack current) + height last - height first <= bound
+  | Returning _ => length (stack current) <= bound
+  end.
+
+Lemma frontier_bound_contains_current_stack bound current :
+  frontier_bound bound current -> length (stack current) <= bound.
+Proof.
+  destruct current as [[first last|first last|result] frames];
+    cbn [frontier_bound active stack]; intros; lia || tauto.
+Qed.
+
+Lemma one_loop_step_preserves_the_frontier_bound bound current next :
+  frontier_bound bound current -> step current = Some next -> frontier_bound bound next.
+Proof.
+  destruct current as [[first last|first last|result] frames];
+    cbn [frontier_bound step active stack].
+  - intros (first_valid & last_valid & ordered & bounded) stepped.
+    destruct (height first =? height last) eqn:equal.
+    + inversion stepped; subst next. cbn [frontier_bound active stack]. lia.
+    + apply Nat.eqb_neq in equal. destruct first as [view|count rank left_child right_child|
+        count rank left_child middle right_child].
+      * inversion stepped; subst next. cbn [frontier_bound active stack]. lia.
+      * destruct (balanced_shape2 first_valid) as (left_valid & right_valid & same & count_same & rank_same).
+        inversion stepped; subst next. cbn [frontier_bound active stack length].
+        cbn [height] in ordered, bounded, equal. subst rank.
+        repeat split; assumption || lia.
+      * destruct (balanced_shape3 first_valid) as
+          (left_valid & middle_valid & right_valid & same_middle & same & count_same & rank_same).
+        inversion stepped; subst next. cbn [frontier_bound active stack length].
+        cbn [height] in ordered, bounded, equal. subst rank.
+        repeat split; assumption || lia.
+  - intros (first_valid & last_valid & ordered & bounded) stepped.
+    destruct (height first =? height last) eqn:equal.
+    + inversion stepped; subst next. cbn [frontier_bound active stack]. lia.
+    + apply Nat.eqb_neq in equal. destruct last as [view|count rank left_child right_child|
+        count rank left_child middle right_child].
+      * inversion stepped; subst next. cbn [frontier_bound active stack]. lia.
+      * destruct (balanced_shape2 last_valid) as (left_valid & right_valid & same & count_same & rank_same).
+        inversion stepped; subst next. cbn [frontier_bound active stack length].
+        cbn [height] in ordered, bounded, equal. subst rank.
+        repeat split; assumption || lia.
+      * destruct (balanced_shape3 last_valid) as
+          (left_valid & middle_valid & right_valid & same_middle & same & count_same & rank_same).
+        inversion stepped; subst next. cbn [frontier_bound active stack length].
+        cbn [height] in ordered, bounded, equal. subst rank.
+        repeat split; assumption || lia.
+  - intros bounded stepped. destruct frames as [|saved rest]; [discriminate|].
+    inversion stepped; subst next. cbn [frontier_bound active stack].
+    cbn [length] in bounded. lia.
+Qed.
+
+Lemma execution_preserves_the_frontier_bound bound first count last :
+  execution first count last -> frontier_bound bound first -> frontier_bound bound last.
+Proof.
+  intro ran. induction ran; intro bounded; [exact bounded|].
+  apply IHran. eapply one_loop_step_preserves_the_frontier_bound; eassumption.
+Qed.
+
+Theorem every_reachable_loop_state_uses_at_most_the_original_height_gap_frames
+    first last count current :
+  balanced first -> balanced last ->
+  execution (start first last) count current ->
+  length (stack current) <= height_gap first last.
+Proof.
+  intros first_valid last_valid ran.
+  apply frontier_bound_contains_current_stack.
+  eapply execution_preserves_the_frontier_bound; [exact ran|].
+  unfold start, height_gap. cbn [frontier_bound active stack].
+  destruct (height first <=? height last) eqn:direction.
+  - apply Nat.leb_le in direction. rewrite Nat.max_r, Nat.min_l by exact direction.
+    cbn [frontier_bound active stack length]. repeat split; assumption || lia.
+  - apply Nat.leb_gt in direction. rewrite Nat.max_l, Nat.min_r by lia.
+    cbn [frontier_bound active stack length]. repeat split; assumption || lia.
+Qed.
+
+Theorem balanced_concat_loop_finishes_in_exactly_twice_the_height_gap_plus_one_steps
+    first last :
+  balanced first -> balanced last ->
+  execution (start first last) (S (2 * height_gap first last))
+    (Machine (Returning (concatenate first last)) []).
+Proof.
+  intros first_valid last_valid.
+  unfold start. destruct (height first <=? height last) eqn:direction.
+  - pose proof direction as ordered. apply Nat.leb_le in ordered.
+    destruct (left_descent_executes_to_its_explicit_boundary first last []) as (pushes & descended & frames).
+    pose proof (left_descent_stores_exactly_the_facing_height_gap [] first_valid last_valid ordered) as depth.
+    cbn [length] in frames, depth.
+    pose proof (popping_executes_exactly_the_saved_frame_count
+      (pending_frames (seek_left first last [])) (boundary_result (seek_left first last []))) as popped.
+    pose proof (execution_append descended popped) as ran.
+    fold (run_boundary (seek_left first last [])) in ran.
+    rewrite left_descent_and_pop_equal_the_recursive_join_with_every_counter in ran. cbn [resume] in ran.
+    unfold concatenate, height_gap. rewrite direction, Nat.max_r, Nat.min_l by exact ordered.
+    replace (S (2 * (height last - height first))) with
+      (S pushes + length (pending_frames (seek_left first last []))) by lia.
+    exact ran.
+  - pose proof direction as ordered. apply Nat.leb_gt in ordered.
+    destruct (right_descent_executes_to_its_explicit_boundary first last []) as (pushes & descended & frames).
+    pose proof (right_descent_stores_exactly_the_facing_height_gap [] first_valid last_valid ltac:(lia)) as depth.
+    cbn [length] in frames, depth.
+    pose proof (popping_executes_exactly_the_saved_frame_count
+      (pending_frames (seek_right first last [])) (boundary_result (seek_right first last []))) as popped.
+    pose proof (execution_append descended popped) as ran.
+    fold (run_boundary (seek_right first last [])) in ran.
+    rewrite right_descent_and_pop_equal_the_recursive_join_with_every_counter in ran. cbn [resume] in ran.
+    unfold concatenate, height_gap. rewrite direction, Nat.max_l, Nat.min_r by lia.
+    replace (S (2 * (height first - height last))) with
+      (S pushes + length (pending_frames (seek_right first last []))) by lia.
+    exact ran.
+Qed.
+
+Print Assumptions continuation_pop_applies_exactly_the_selected_absorption.
+Print Assumptions right_descent_and_pop_equal_the_recursive_join_with_every_counter.
+Print Assumptions left_descent_and_pop_equal_the_recursive_join_with_every_counter.
+Print Assumptions explicit_stack_driver_returns_the_exact_recursive_pieces_visits_and_allocations.
+Print Assumptions explicit_stack_driver_preserves_the_exact_native_preflight_and_published_tree.
+Print Assumptions right_descent_stores_exactly_the_facing_height_gap.
+Print Assumptions left_descent_stores_exactly_the_facing_height_gap.
+Print Assumptions explicit_concat_loop_terminates_without_any_fuel_or_depth_cap.
+Print Assumptions every_reachable_loop_state_uses_at_most_the_original_height_gap_frames.
+Print Assumptions balanced_concat_loop_finishes_in_exactly_twice_the_height_gap_plus_one_steps.
+
+End BalancedSourceConcatDriver.

@@ -10691,6 +10691,35 @@ records exact source/log hashes, diagnostic failures and qualification limits.
 No consensus-visible bytes, hashes, COMM or accounting behavior changes.
 
 
+#### 5.33.41 Explicit balanced-concat continuation proof (2026-09-10)
+
+Ten additional capstones prove exact correspondence between the recursive join
+specification and its explicit continuation machine. For height difference
+$`d`$, all reachable states use at most $`d`$ frames and the machine
+finishes in exactly $`2d+1`$ successful transitions, without a fuel parameter
+or artificial traversal limit. The formal README maps all ten invariants to
+required executable controls.
+
+Full compilation passes **289 closed checks**, followed by a successful
+independent kernel check. Compile: 234.955 seconds wall, 30.944 seconds CPU,
+1.1G peak, zero swap. Kernel: 21.280 seconds wall, 20.915 seconds CPU,
+487.4M peak, zero swap. Both retain the 1G soft/2G hard caps. Subsequent gates
+raise only the soft threshold to 1536M to avoid compiler-finalization
+throttling; the hard ceiling remains 2G and swap remains disabled.
+
+A separate finite split-model diagnostic passes every 38,453 cut across 1,887
+small balanced shapes and 323 selected shared-DAG cuts through height 40.
+A premature-finalization mutant is rejected at the expected work bound.
+These are model diagnostics, not Rust performance or universal split proofs.
+
+[J-124](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-124--2026-09-10-explicit-concat-loop-and-finite-split-model-control)
+records hashes, failed proof diagnostics, the terminal-window bound found by
+review, and the planned node-owned shared-source destructor. Split, release,
+cursor and joint ACT transport bindings remain open. No native-stack,
+whole-import slope, runtime activation or production ACT/LMDB completion
+claim follows from this proof-only checkpoint.
+
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

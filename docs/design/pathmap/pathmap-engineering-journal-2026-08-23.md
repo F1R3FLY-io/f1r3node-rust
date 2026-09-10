@@ -8788,6 +8788,123 @@ retested by this proof-only checkpoint. No consensus-visible semantics, bytes,
 hashes, COMM ordering or accounting changes are introduced.
 
 
+### J-124 — 2026-09-10: explicit concat loop and finite split-model control
+
+**FORMALLY VERIFIED.** `RPB3Admission.v::BalancedSourceConcatDriver` binds
+J-123's concrete join to four untouched-sibling continuation frames and explicit
+descending/returning control states. The loop produces exactly the recursive
+join's pieces, boundary visits and reconstructed-node count; checked preflight
+and the published tree are unchanged. For input-height difference $`d`$,
+every reachable state holds at most $`d`$ frames and execution reaches its
+empty returning stack in exactly $`2d+1`$ successful transitions. Observing
+the terminal stop is separate from those transitions. Termination uses no
+fuel parameter or artificial traversal-depth limit.
+
+The recursive seek/fold functions remain proof specifications. Rust must bind
+the one-step machine to actual loops and immutable references; the proof does
+not claim tail-call optimization, allocator equivalence, iterative destruction,
+range splitting or whole-import linearity. All ten exports have explicit
+required executable controls in the formal README.
+
+**Verification and resource envelope.** Full compilation passes 289 closed
+checks (279 previous plus ten new); independent kernel verification succeeds.
+Compile: 234.955 seconds wall, 30.944 seconds CPU, 1.1G peak, zero swap.
+Kernel: 21.280 seconds wall, 20.915 seconds CPU, 487.4M peak, zero swap.
+Both used MemoryHigh=1G, MemoryMax=2G, MemorySwapMax=0, CPUQuota=100%,
+TasksMax=64 and RuntimeMaxSec=900. Compiler artifact finalization was
+memory-high throttled; no success was inferred from the earlier printed checks.
+The gate's subsequent soft threshold is 1536M to avoid that avoidable stall,
+without changing its 2G hard limit or zero-swap policy. The reported run
+retained its original 1G threshold throughout.
+
+| Evidence | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/RPB3Admission.v` | `05039a7e5548cfa25e111aa6d493b46558d67899ddb7d8c74267b04e247a37de` |
+| `target/verification/epathmap-concat-driver-proof-final.log` | `c4d51356a3247d974d03092168d4d69687ce3d4a4c5551da07a3a31a18c880cf` |
+| `target/verification/epathmap-concat-driver-kernel-final.log` | `4cb2fd21ed5cbcd15a26417ad95abed30d9de69451a0a0bd2562b12f230f418e` |
+
+Early isolated checks rejected an incomplete visit-count lemma, an induction
+hypothesis applied without its suffix premise, an underconstrained machine
+placeholder, and unreduced initial-stack arithmetic. These are retained failed
+diagnostics, not accepted proof evidence. The final isolated source passed
+before full compilation and kernel checking; no semantic relaxation was used.
+
+**FINITE MODEL CHECK, not a split theorem.** A bounded executable transcription
+of the selected split/glue equations checks 1,887 balanced 2/3-tree shapes of
+heights zero through three, with unit-width leaves labeled by consecutive
+offsets. All 38,453 possible cuts preserve output order, original contents,
+lengths, balanced caches and boundary-root identity, and satisfy the proposed
+height/work bounds. Another 323 selected cuts of shared doubling DAGs through
+height 40 check structural and work invariants without expanding their huge
+logical denotations. These cases do not cover arbitrary leaf widths or source
+provenance and do not substitute for the remaining formal split proof.
+
+A causal control finalizes the intermediate join before attaching the second
+sibling. It exits one specifically at the per-glue visit bound
+$`\mathrm{visits} \le q-p+1`$, where $`p`$ and $`q`$ are the partial
+and resulting fragment heights. This detects extra reconstruction work; it
+does not establish that the alternative is asymptotically quadratic.
+Both diagnostic commands used MemoryHigh=192M, MemoryMax=256M,
+MemorySwapMax=0, CPUQuota=100%, TasksMax=64 and RuntimeMaxSec=60.
+
+Experiment 342 artifact 568 retains the complete reproducible model source.
+Local evidence remains under `target/verification/`:
+
+| Evidence filename | SHA-256 |
+|---|---|
+| `balanced-source-split-model-check.js` | `f534448f9b1ea9cb9d9aef7ef500b5b17d802268e936ee5c46a0e6ef2bed264b` |
+| `balanced-source-split-model-check-final-20260910.log` | `466728f28d0ca787e102bbc407f5be28bd36c379211b6455a6006b886663059f` |
+| `balanced-source-split-model-mutant-20260910.log` | `852d91d6f001840c384c8b62da71d9fc2f7913451cc2e9b09e6192a68ec1a385` |
+
+**DESIGN REVIEW: source ownership and split preconditions.**
+
+The source-DAG destructor will belong to each node. It takes the optional
+payload before queuing child references; extracting a child through
+`Arc::into_inner` requires taking that child's payload before its now-empty
+shell drops. Ordinary root, registry, cursor and temporary Arc drops therefore
+remain valid. Inside the drain, `try_unwrap` followed by dropping `Err` is
+not equivalent: simultaneous failed extractions can synchronously enter a
+populated child destructor on the same native stack.
+
+Existing `AnchorRoot` final-election models and the exclusive score-tree
+child-detachment pattern are reusable foundations, not a complete proof of the
+new shared source DAG. Required bindings include exactly-once payload transfer,
+empty-shell destruction, nonfinal-release preservation, repeated-child reference
+multiplicity, shared diamonds, strictly descending child heights, bounded LIFO
+frontier and source-owner survival. Leaf owners are original borrowed storage
+or flat frozen/page owners, never another composed tree or arbitrary user
+destructors. Allocate the bounded frontier before destructive traversal;
+allocator abort and arithmetic/unwind failures are distinct assurance boundaries.
+Installed Loom does not implement `Arc::into_inner`; its final-election model
+cannot be silently replaced by a `try_unwrap` test.
+
+Split requires more than valid sources and representable cached tree sizes:
+every terminal window's start plus width must also fit the native limit. For
+example, under a model limit of 10, a leaf starting at 11 with width 2 in a
+13-byte source satisfies cached-size and source-validity predicates but fails
+checked interior subwindow creation. The original checked-leaf constructor
+establishes the stronger terminal invariant and concat preserves exact terminal
+lists; carry that predicate into split's totality proof. This is a preimplementation
+model finding, not an observed runtime failure.
+
+Use one/two-peer join results directly when attaching two untouched siblings.
+For each output accumulator, charge glue work to its actual height increase;
+these increases telescope along the split ascent. The output-height bound is
+the original split subtree's height, not its child's. Proposed combined
+bounds of five times height plus one visit and six times height plus two rebuilt
+nodes still require the split proof. Explicit endpoints stay outside the tree:
+the left output ends at the original position of the cut and the right output
+inherits the original end. Discontinuous provenance forbids deriving the seam
+from the preceding leaf.
+
+
+**Scope.** This checkpoint changes no Rust production implementation,
+consensus-visible bytes, hash, COMM ordering or accounting rule. The J-121
+nested-import slope remains open. Source composition, release, retained
+cursors and joint ACT transport still require runtime qualification before
+production ACT/LMDB parity can be assessed.
+
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

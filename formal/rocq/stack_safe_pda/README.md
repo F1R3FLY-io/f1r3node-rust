@@ -2587,3 +2587,47 @@ and a 900-second deadline. Compilation was memory-high throttled during
 artifact finalization; early printed proof results were not treated as completion.
 No new Rust implementation or runtime test result is claimed by this checkpoint.
 See journal J-123 for source/log hashes and retained diagnostic failures.
+
+## Balanced source concat driver invariant catalogue (2026-09-10; task 6018)
+
+`BalancedSourceConcatDriver` refines the previous join into explicit control
+states and a LIFO continuation stack. `Right2`/`Right3` retain the untouched
+left siblings during right descent; `Left2`/`Left3` retain the untouched
+right siblings during left descent. Reaching equal heights starts a return
+phase. Each return step pops exactly one frame and applies its matching
+absorption rule. The empty return stack terminates the machine.
+
+The recursive `seek` and `resume` definitions are proof specifications.
+The separate `step`/execution relation is the intended Rust loop binding;
+Rocq structural recursion is not a claim that Rust optimizes tail calls.
+
+| Exported invariant | Required executable control |
+|---|---|
+| `continuation_pop_applies_exactly_the_selected_absorption` | Construct all four frame variants with One/Two returns; check child order, result metadata and counter increments against the recursive oracle. |
+| `right_descent_and_pop_equal_the_recursive_join_with_every_counter` | Generated right-facing descent with nonempty saved outer frames; compare complete output, untouched references and visit/rebuild counts. |
+| `left_descent_and_pop_equal_the_recursive_join_with_every_counter` | Symmetric left-facing descent with outer continuations; reject wrong-side absorption and swapped siblings. |
+| `explicit_stack_driver_returns_the_exact_recursive_pieces_visits_and_allocations` | Compare the iterative driver with the recursive test-only join over both orientations, equal heights, carry propagation and repeated shared children. Count reconstructed nodes rather than allocator internals. |
+| `explicit_stack_driver_preserves_the_exact_native_preflight_and_published_tree` | Exercise representable totals and actual checked-add overflow before publication; old roots and source owners remain unchanged on refusal. |
+| `right_descent_stores_exactly_the_facing_height_gap` | Record the actual maximal right-facing frame count and compare it with the cached input-height difference, plus any saved outer frames. |
+| `left_descent_stores_exactly_the_facing_height_gap` | Symmetric left-facing stack-depth counter, including equal-height zero-frame joins. |
+| `explicit_concat_loop_terminates_without_any_fuel_or_depth_cap` | Execute the exact transition loop to its empty returning stack; require no semantic depth limit and compare its final join result with the oracle. |
+| `every_reachable_loop_state_uses_at_most_the_original_height_gap_frames` | Instrument every push/pop transition, including carries and early boundary stops; maximum live frames must not exceed the original height gap. Check all prefixes, not only the final stack. |
+| `balanced_concat_loop_finishes_in_exactly_twice_the_height_gap_plus_one_steps` | Count successful control transitions; require exactly twice the input-height difference plus one, with an empty returning stack. Count the terminal None observation separately. |
+
+Native implementation must store immutable child references in frames rather
+than structurally cloning subtree values. Node-owned iterative destruction is
+a separate obligation: construction correspondence alone does not protect
+root, cursor, intermediate or concurrently released child ownership.
+
+### Driver proof qualification
+
+The module adds 10 exported capstones. Full compilation passes 289 closed-context
+checks; independent kernel checking succeeds. Compilation took 234.955 seconds
+wall and 30.944 seconds CPU, with a 1.1G peak and zero swap. Kernel checking took
+21.280 seconds wall and 20.915 seconds CPU, with a 487.4M peak and zero swap.
+Both used MemoryHigh=1G, MemoryMax=2G, MemorySwapMax=0, CPUQuota=100%,
+TasksMax=64 and RuntimeMaxSec=900. The soft threshold throttled compiler artifact
+finalization. The subsequent gate configuration raises only MemoryHigh to 1536M;
+the 2G hard ceiling and zero-swap policy remain unchanged. That new threshold was
+not used for these recorded measurements. J-124 records exact hashes and failed
+diagnostic history. No Rust activation or fresh runtime benchmark is claimed.
