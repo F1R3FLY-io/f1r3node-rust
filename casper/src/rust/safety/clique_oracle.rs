@@ -174,7 +174,7 @@ impl CliqueOracle {
         lm_a_j_b: &M,
         dag: &KeyValueDagRepresentation,
         target_msg: &M,
-        settled_floor: Option<i64>,
+        settle_unheld: bool,
         run_cache: &mut CliqueOracleRunCache,
     ) -> Result<bool, KvStoreError> {
         /// Check if there might be eventual disagreement between validators
@@ -183,7 +183,7 @@ impl CliqueOracle {
             lm_a_j_b: &M,
             dag: &KeyValueDagRepresentation,
             target_msg: &M,
-            settled_floor: Option<i64>,
+            settle_unheld: bool,
             run_cache: &mut CliqueOracleRunCache,
         ) -> Result<bool, KvStoreError> {
             let yield_check_interval = run_cache.yield_check_interval;
@@ -196,7 +196,7 @@ impl CliqueOracle {
                 // Veto on: an unheld justification is below the anchor, hence
                 // below the floor — the range it opens is settled.
                 let value = match dag.self_justification(lm_a_j_b) {
-                    Err(KvStoreError::MissingBlock { .. }) if settled_floor.is_some() => {
+                    Err(KvStoreError::MissingBlock { .. }) if settle_unheld => {
                         return Ok(false);
                     }
                     other => other?,
@@ -260,43 +260,39 @@ impl CliqueOracle {
                 // CI (stall instance i5, run 32397055615 — see
                 // tests/finalized_floor/oracle_stall_replay_spec.rs).
                 //
-                // Veto on: unheld means below the anchor, hence below the
-                // floor — settled and unreadable, stop. A held sub-floor
-                // block only skips its test: heights are not validated
-                // monotone along the chain, so a rival can sit deeper.
-                let mut settled_dip = false;
-                if let Some(floor) = settled_floor {
-                    match dag.lookup(&hash)? {
-                        None => break,
-                        Some(meta) => settled_dip = meta.block_number <= floor,
-                    }
+                // Veto on: an unheld block means below the anchor, hence in
+                // the settled prefix — and unreadable, so the walk stops. A
+                // HELD block always takes its test: height at or below the
+                // floor is not membership in the settled prefix (a rival-
+                // branch block can sit at any height), and genuinely settled
+                // spine-prefix blocks pass the test anyway.
+                if settle_unheld && dag.lookup(&hash)?.is_none() {
+                    break;
                 }
 
                 // (`ancestor_cache` memoizes the per-(target, hash) verdict:
                 // true = this visited block does not veto.)
-                if !settled_dip {
-                    let ancestor_key = (target_msg.clone(), hash.clone());
-                    let no_disagreement =
-                        if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
-                            *cached
+                let ancestor_key = (target_msg.clone(), hash.clone());
+                let no_disagreement =
+                    if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
+                        *cached
+                    } else {
+                        let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                        let value = if visited_height < target_height {
+                            dag.is_in_main_chain(&hash, target_msg)?
                         } else {
-                            let visited_height = dag.lookup_unsafe(&hash)?.block_number;
-                            let value = if visited_height < target_height {
-                                dag.is_in_main_chain(&hash, target_msg)?
-                            } else {
-                                dag.is_in_main_chain(target_msg, &hash)?
-                            };
-                            CliqueOracle::bounded_cache_insert(
-                                &mut run_cache.ancestor_cache,
-                                ancestor_key,
-                                value,
-                                run_cache.max_ancestor_cache_entries,
-                            );
-                            value
+                            dag.is_in_main_chain(target_msg, &hash)?
                         };
-                    if !no_disagreement {
-                        return Ok(true);
-                    }
+                        CliqueOracle::bounded_cache_insert(
+                            &mut run_cache.ancestor_cache,
+                            ancestor_key,
+                            value,
+                            run_cache.max_ancestor_cache_entries,
+                        );
+                        value
+                    };
+                if !no_disagreement {
+                    return Ok(true);
                 }
 
                 current = if let Some(cached) = run_cache.self_justification_cache.get(&hash) {
@@ -315,7 +311,7 @@ impl CliqueOracle {
             Ok(false)
         }
 
-        might_eventually_disagree(lm_b, lm_a_j_b, dag, target_msg, settled_floor, run_cache)
+        might_eventually_disagree(lm_b, lm_a_j_b, dag, target_msg, settle_unheld, run_cache)
             .await
             .map(|r| !r)
     }
@@ -326,7 +322,7 @@ impl CliqueOracle {
         dag: &KeyValueDagRepresentation,
         run_cache: &mut CliqueOracleRunCache,
         latest_messages: &BTreeMap<V, M>,
-        settled_floor: Option<i64>,
+        settle_unheld: bool,
     ) -> Result<i64, KvStoreError> {
         let __compute_start = std::time::Instant::now();
         // Using tracing events for async - Span[F].traceI("compute-max-clique-weight") from Scala
@@ -338,7 +334,7 @@ impl CliqueOracle {
             dag: &KeyValueDagRepresentation,
             run_cache: &mut CliqueOracleRunCache,
             latest_messages: &BTreeMap<V, M>,
-            settled_floor: Option<i64>,
+            settle_unheld: bool,
         ) -> Result<Vec<(V, V)>, KvStoreError> {
             let yield_check_interval = run_cache.yield_check_interval;
             let yield_timeslice = run_cache.yield_timeslice;
@@ -428,7 +424,7 @@ impl CliqueOracle {
                         lm_a_j_b,
                         dag,
                         target_msg,
-                        settled_floor,
+                        settle_unheld,
                         run_cache,
                     )
                     .await?;
@@ -437,7 +433,7 @@ impl CliqueOracle {
                         lm_b_j_a,
                         dag,
                         target_msg,
-                        settled_floor,
+                        settle_unheld,
                         run_cache,
                     )
                     .await?;
@@ -457,7 +453,7 @@ impl CliqueOracle {
             dag,
             run_cache,
             latest_messages,
-            settled_floor,
+            settle_unheld,
         )
         .await?;
         let max_weight = Clique::find_maximum_clique_by_weight(&edges, agreeing_weight_map);
@@ -488,14 +484,14 @@ impl CliqueOracle {
         if (agreeing_weight_map.values().sum::<i64>() as f32) <= total_stake / 2.0 {
             Ok(MIN_FAULT_TOLERANCE)
         } else {
-            // Display-only path: no settled-floor veto, absence stays an error.
+            // Display-only path: no unheld settlement, absence stays an error.
             let max_clique_weight = CliqueOracle::compute_max_clique_weight(
                 target_msg,
                 agreeing_weight_map,
                 dag,
                 run_cache,
                 latest_messages,
-                None,
+                false,
             )
             .await? as f32;
 
@@ -619,17 +615,12 @@ impl CliqueOracle {
         if (agreeing as i128) * 2 <= total_stake as i128 {
             return Ok(false);
         }
-        // θ >= 0: the finalized floor is irreversible, so the sees-walk
-        // treats everything at or below it as settled; θ < 0 finality is
-        // advisory and absence stays an error. The floor is node-local, but
-        // clipping is monotone and θ >= 0 floors share one spine, so a lower
-        // floor only under-certifies.
-        let settled_floor = if ftt.num >= 0 {
-            dag.lookup(&dag.last_finalized_block())?
-                .map(|meta| meta.block_number)
-        } else {
-            None
-        };
+        // θ >= 0 with a finalized floor: an unheld block is below the restore
+        // anchor, hence inside the floor's irreversible prefix — the sees-walk
+        // treats it as settled instead of erroring. θ < 0 finality is advisory
+        // and absence stays an error. Held blocks always take their test:
+        // height below the floor is not membership in the settled prefix.
+        let settle_unheld = ftt.num >= 0 && dag.lookup(&dag.last_finalized_block())?.is_some();
         let mut run_cache = Self::new_run_cache();
         let max_clique_weight = CliqueOracle::compute_max_clique_weight(
             target_msg,
@@ -637,7 +628,7 @@ impl CliqueOracle {
             dag,
             &mut run_cache,
             latest_messages,
-            settled_floor,
+            settle_unheld,
         )
         .await?;
         let decision = ft_decides_exact(

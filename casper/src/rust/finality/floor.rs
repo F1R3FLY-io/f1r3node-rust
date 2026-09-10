@@ -2554,7 +2554,7 @@ mod frontier_determinism_tests {
             false,
         )
         .await
-        .expect("under a BFT threshold the walk stops at the floor instead of crossing the anchor");
+        .expect("under a BFT threshold the walk settles at the anchor instead of crossing it");
         assert!(certified, "the settled range must not block certification");
     }
 
