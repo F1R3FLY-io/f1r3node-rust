@@ -320,7 +320,7 @@ impl HeartbeatProposer {
                         Err(CasperError::BlockNotHeld(missing, site)) => {
                             tracing::warn!(
                                 missing = %hex::encode(&missing[..8.min(missing.len())]),
-                                walk = site.lines().next().unwrap_or(""),
+                                walk = site.accessor(),
                                 "Heartbeat: check needs a block this node does not \
                                  hold; requesting it from peers and skipping this cycle"
                             );

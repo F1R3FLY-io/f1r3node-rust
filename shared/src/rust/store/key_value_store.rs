@@ -79,6 +79,53 @@ impl Clone for Box<dyn KeyValueStore> {
     fn clone(&self) -> Box<dyn KeyValueStore> { self.clone_box() }
 }
 
+/// Which accessor asked for a block that is not held, plus — when captured at
+/// the storage boundary — the caller backtrace. `Display` owns the separator,
+/// so accessors are bare names. Equality compares the accessor only.
+#[derive(Debug, Clone)]
+pub struct MissingBlockContext {
+    accessor: &'static str,
+    backtrace: Option<std::sync::Arc<std::backtrace::Backtrace>>,
+}
+
+impl MissingBlockContext {
+    pub fn new(accessor: &'static str) -> Self {
+        Self {
+            accessor,
+            backtrace: None,
+        }
+    }
+
+    /// `force_capture` so the trace does not depend on RUST_BACKTRACE being
+    /// set in the shard's environment; error path only.
+    pub fn with_backtrace(accessor: &'static str) -> Self {
+        Self {
+            accessor,
+            backtrace: Some(std::sync::Arc::new(
+                std::backtrace::Backtrace::force_capture(),
+            )),
+        }
+    }
+
+    pub fn accessor(&self) -> &'static str { self.accessor }
+}
+
+impl PartialEq for MissingBlockContext {
+    fn eq(&self, other: &Self) -> bool { self.accessor == other.accessor }
+}
+
+impl std::fmt::Display for MissingBlockContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if !self.accessor.is_empty() {
+            write!(f, " [{}]", self.accessor)?;
+        }
+        if let Some(backtrace) = &self.backtrace {
+            write!(f, "\n  caller backtrace:\n{}", backtrace)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum KvStoreError {
     KeyNotFound(String),
@@ -96,7 +143,7 @@ pub enum KvStoreError {
     /// anchor. Callers that judge blocks must be able to tell the two apart.
     MissingBlock {
         hash: prost::bytes::Bytes,
-        context: String,
+        context: MissingBlockContext,
     },
 }
 
@@ -167,10 +214,10 @@ mod tests {
         assert_eq!(
             KvStoreError::MissingBlock {
                 hash: prost::bytes::Bytes::from_static(&[0xab, 0xcd]),
-                context: " while merging".to_string(),
+                context: MissingBlockContext::new("while merging"),
             }
             .to_string(),
-            "DAG storage is missing hash abcd while merging"
+            "DAG storage is missing hash abcd [while merging]"
         );
     }
 

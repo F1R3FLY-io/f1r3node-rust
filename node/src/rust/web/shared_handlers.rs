@@ -829,7 +829,10 @@ mod tests {
                     "other_error",
                 ),
                 (
-                    CasperError::BlockNotHeld(vec![0xab].into(), String::new()),
+                    CasperError::BlockNotHeld(
+                        vec![0xab].into(),
+                        shared::rust::store::key_value_store::MissingBlockContext::new(""),
+                    ),
                     StatusCode::SERVICE_UNAVAILABLE,
                     "block_not_held",
                 ),

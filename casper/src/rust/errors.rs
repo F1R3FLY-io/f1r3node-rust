@@ -5,7 +5,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 
 use super::slashing_authorization::SlashAuthError;
 use super::util::rholang::replay_failure::ReplayFailure;
@@ -35,7 +35,7 @@ pub enum CasperError {
     /// processor can request the named block and retry, instead of folding it
     /// into the storage-failure class that becomes a slashable verdict.
     /// The second field names the walk that tripped.
-    BlockNotHeld(BlockHash, String),
+    BlockNotHeld(BlockHash, MissingBlockContext),
     /// The floor derivation found finalized candidates that are mutually
     /// incompatible (same-height certified siblings with no containment and
     /// no re-merge). Under a BFT threshold (θ ≥ 0) this is impossible
@@ -64,10 +64,9 @@ impl fmt::Display for CasperError {
             CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
             CasperError::BlockNotHeld(hash, site) => write!(
                 f,
-                "block not held by this node: {} — its history does not reach that block{}",
+                "block not held by this node: {} — its history does not reach that block [{}]",
                 PrettyPrinter::build_string_bytes(hash),
-                // The site may carry a multi-line backtrace; keep the accessor line.
-                site.lines().next().unwrap_or("")
+                site.accessor()
             ),
             // The detail is self-describing ("finalized-floor safety
             // violation: ... — incompatible finalized fork"), and harness
