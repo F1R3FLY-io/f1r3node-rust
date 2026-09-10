@@ -102,8 +102,10 @@ POST_FIX_CONFIGS=(
     recovery_leader/MC_RecoveryLeader
     replay_liveness/MC_ReplayHotLoop
     carrier_index/MC_CarrierIndex
+    deploy_storage/MC_DeployStorageBound
     soak_disk/MC_SoakDiskAdmission
     soak_disk/MC_SoakDiskGuardian
+    soak_disk/MC_SoakStorageBudget
 )
 
 TLC_WORKERS=auto
@@ -111,8 +113,10 @@ if [[ "$SOAK_PR" == true ]]; then
     POST_FIX_CONFIGS=(
         replay_liveness/MC_ReplayHotLoop
         carrier_index/MC_CarrierIndex
+        deploy_storage/MC_DeployStorageBound
         soak_disk/MC_SoakDiskAdmission
         soak_disk/MC_SoakDiskGuardian
+        soak_disk/MC_SoakStorageBudget
     )
     TLC_WORKERS=2
 fi
@@ -182,6 +186,10 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_client_only_pre_fix:ExitStopsWriters
     soak_disk/MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix:NoOverrun
     soak_disk/MC_SoakDiskGuardian_unconfirmed_stop_pre_fix:NoOverrun
+    soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
+    soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
+    soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget
+    deploy_storage/MC_DeployStorageBound_unmetered_pre_fix:RetainedWithinPhlo
 )
 
 # Areas whose expected-violation configurations are all registered. A
@@ -189,7 +197,7 @@ NEGATIVE_CONTROLS=(
 # directories that is absent from NEGATIVE_CONTROLS is a broken registration,
 # not a manual control. Other areas keep manual controls until they opt in
 # (docs/formal-verification.md).
-REGISTERED_CONTROL_AREAS=(carrier_index soak_disk)
+REGISTERED_CONTROL_AREAS=(carrier_index deploy_storage soak_disk)
 for entry in "${POST_FIX_CONFIGS[@]}"; do
     area="${entry%%/*}"
     printf '%s\n' "${REGISTERED_CONTROL_AREAS[@]}" | grep -Fxq "$area" || continue

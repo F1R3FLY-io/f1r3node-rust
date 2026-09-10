@@ -75,12 +75,17 @@ The per-cycle manifests were produced on the source branch and are retained outs
 
 `SoakDiskGuardian` now carries `NoOverrun`: free space stays positive from the last healthy sample through a completed stop. The theorem holds under `FloorCoversReaction` (the hard floor exceeds the writers' consumption over the 10-second reaction time) and `BoundTermination` (a completed stop ends consumption). Two controls, `rate_exceeds_floor` and `unconfirmed_stop`, each drop one premise and violate the invariant. With the default 4096 MiB floor the rate premise bounds consumption at about 205 MiB per second over any 10-second window. The timeline rows measure that rate. The termination premise is the open D2 item.
 
+## Consumer storage budget
+
+`SoakStorageBudget` derives the guardian's `WriteRateMax` from per-consumer caps and rates. `WithinBudget` holds with every cap enforced. Three controls drop the block, log, and history caps and violate it, which names the caps the node lacks. The deploy cap is the one bound with a proof: `deploy_storage/DeployStorageBound` shows a deploy retains at most its phlo limit divided by the storage rate. That area stays isolated from the soak models.
+
 ## Limits
 
 - The model-to-code maps are reviewed abstractions, not refinement proofs of Bash.
 - Fixtures replace `df`, `docker`, and the workload. They do not cover every malformed field, exit status, or Docker failure.
 - Local records prove neither durability, upload, nor confirmed writer termination. Fairness is not a time bound.
 - The no-overrun theorem is conditional. Its rate premise is unmeasured until a timeline run, and its termination premise is unmet until D2 confirms termination.
+- The storage budget assumes block, log, and history caps the node does not enforce. Until it does, the rate bound is an assumption checked by the timeline, not a derivation.
 - D2 remains open for confirmed termination and a composed emergency deadline. Hygiene now reclaims nothing from Docker, so D3 must identify the growing consumer and an owned reclamation path.
 
 ```json

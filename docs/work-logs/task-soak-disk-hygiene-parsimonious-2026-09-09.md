@@ -127,6 +127,14 @@ The user asked why the branch cannot prove that a disk overrun never occurs. The
 
 In production the reaction time is 10 seconds and the hard floor is 2048 MiB. The writers must then consume less than about 205 MiB per second over any 10-second window. The timeline rows give five-minute averages. A burst bound needs the guardian's own 5-second samples, which is the next evidence step.
 
+## Consumer storage budget (2026-09-10)
+
+The user asked whether the consumer side can carry theorems with bounds. It can, as event sources with per-event caps and per-unit rates. `SoakStorageBudget` sums the products into `RateBound`, the value the guardian takes as `WriteRateMax`, and `WithinBudget` holds with every cap enforced. Three controls drop the block, log, and history caps and violate the budget. Those are the caps the node does not enforce today, so the theorem doubles as a caps backlog.
+
+The deploy cap is derived, not assumed. `deploy_storage/DeployStorageBound` is a consensus-side area with its own README and control. It cites only the interpreter's cost table, where storage is charged one phlo per encoded byte, and it never refers to the soak models. The soak budget names the cap as a constant and cites the area. That keeps the Casper proofs separable when the consensus component moves to its own repository.
+
+Gate: six positive configurations and 33 controls. `deploy_storage` joined `REGISTERED_CONTROL_AREAS`.
+
 ## Notes for the source agent
 
 - New cycles fit the existing shape: add a constant and an invariant to one of the two modules, one `MC_*_pre_fix.cfg`, one line in `NEGATIVE_CONTROLS`, and one scenario in `SCENARIOS` plus its `--inside` branch. Nothing else needs a copy of the list.

@@ -103,6 +103,29 @@ In production one unit is one second. The guardian sleeps 5 seconds, the probe d
 The default floor of 4096 MiB puts the hard floor at 2048 MiB. The premise then requires the writers to consume less than about 205 MiB per second across any 10-second window. That rate is a measurement, not a derivation. The disk-usage timeline in the run artifact supplies it. The termination premise is the open D2 item: the driver does not confirm that the killed writers stopped.
 
 
+## SoakStorageBudget: the consumer side
+
+The guardian theorem takes `WriteRateMax` as given. This model derives it. Each consumer that fills the soak VM's volume is an event source with a per-event byte cap and a per-unit rate. `RateBound` is the sum of the products, and `WithinBudget` states that consumption over any prefix of the run stays within `RateBound` per unit. The gating configuration sums to 10, the value the guardian configuration uses.
+
+| Model action | Consumer | Cap in the node today |
+| --- | --- | --- |
+| `StoreBlock` | block storage | no per-block byte cap found in casper validation. The inbound admission pipeline bounds queued bytes, not stored bytes |
+| `ExecuteDeploy` | tuple-space state | `DeployStorageCap`, proven in [`deploy_storage`](../deploy_storage/README.md) from phlo accounting |
+| `Checkpoint` | rspace history | no pruning or growth cap found |
+| `Log` | node log files | daily rotation, no byte cap |
+| `ContainerLog` | Docker log driver | the driver's file cap, when configured |
+| `Tick` | one clock unit passes | |
+
+| Constant | Assumption | Control that drops it | Expected violation |
+| --- | --- | --- | --- |
+| `CapBlocks` | A stored block adds at most `BlockBytesCap` bytes | `MC_SoakStorageBudget_uncapped_blocks_pre_fix` | `WithinBudget` |
+| `CapLogs` | A unit of logging adds at most `LogBytesPerUnit` bytes | `MC_SoakStorageBudget_uncapped_logs_pre_fix` | `WithinBudget` |
+| `CapHistory` | A checkpoint adds at most `CheckpointBytesCap` bytes | `MC_SoakStorageBudget_uncapped_history_pre_fix` | `WithinBudget` |
+
+Each control shows that the budget fails without its cap. The three caps are the ones the node does not enforce. The theorem is therefore a list of the caps the node needs before the guardian's rate premise becomes a derivation. The deploy cap is the one bound that already is. `MC_SoakStorageBudget` completes with 5616 distinct states over a 3-unit horizon.
+
+The LMDB environments open with a map size, which is a hard ceiling on the state stores. The failure it produces is a write error inside the node, not a guardian refusal. That path is not modeled here.
+
 Clock units: the probe deadline is 3 units (a 2-second timeout plus a 1-second kill grace), a stalled `df` returns at 4 units, the stop budget is 2 units (TERM at 1, KILL at 2), and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
 
 ## Counterexamples
