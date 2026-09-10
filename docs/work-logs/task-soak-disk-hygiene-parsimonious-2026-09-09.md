@@ -135,6 +135,16 @@ The deploy cap is derived, not assumed. `deploy_storage/DeployStorageBound` is a
 
 Gate: six positive configurations and 33 controls. `deploy_storage` joined `REGISTERED_CONTROL_AREAS`.
 
+## Decision: split after the source agent finishes (2026-09-10)
+
+The maintainer decided that PR #406 does not merge as one unit. After the source agent's last cycle lands here, the branch is cut into three pull requests from dev. The legacy modules, wrappers, digest inventory, and generated evidence are not carried:
+
+1. Deploy storage bound, `formal/tlaplus/deploy_storage`, the execution-side area.
+2. Soak driver disk protection: the driver, the host suite, the Docker harness, and the two real-daemon checks. The driver evidence record and the release-process note go with it.
+3. Soak formal models: the two consolidated models, the storage budget, the gate registry and test, the README, and the claim.
+
+The formal tree then splits by component. Casper areas move with the consensus component. Those are slashing, finalized floor, fork choice, deploy recovery, deploy lifecycle, carrier index, deploy occurrence, recovery leader, and the Casper theory docs. Execution areas need a placement decision: merge algebra, runtime isolation, rspace guards, deploy storage, and replay liveness. Node areas stay: soak disk, block admission, and the gate scripts. Each repository keeps its own gate registry, and cross-citations become pinned references.
+
 ## Notes for the source agent
 
 - New cycles fit the existing shape: add a constant and an invariant to one of the two modules, one `MC_*_pre_fix.cfg`, one line in `NEGATIVE_CONTROLS`, and one scenario in `SCENARIOS` plus its `--inside` branch. Nothing else needs a copy of the list.
