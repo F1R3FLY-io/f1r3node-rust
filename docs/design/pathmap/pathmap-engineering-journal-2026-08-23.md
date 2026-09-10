@@ -8967,6 +8967,94 @@ It changes no production code, consensus bytes, hashes, COMM ordering or
 accounting. The measured nested-import slope in J-121 remains open; no
 production ACT-versus-LMDB performance conclusion follows.
 
+### J-126 — 2026-09-10: source-release ownership and trace invariants
+
+**DERIVED / VERIFIED MODEL PREREQUISITE.** The new
+`CanonicalSourceRelease.v` provides 31 closed, independently kernel-checked
+results for a single explicit release drain with fixed external owners.
+It is separate from the source-tree split specification so ownership
+reasoning does not depend on byte-content proofs or a particular reader.
+
+The model distinguishes a live heap node, a full extracted local shell,
+staged child references and a pending LIFO work list. A final extraction
+clears its original slot but retains the complete payload locally. Detach
+moves that payload into staging before the shell can be dropped. Enqueue
+transfers one child occurrence into the work list without changing its
+reference count. Source release consumes exactly one owned lease;
+borrowed source handles contribute no owned lease. Empty-shell destruction
+changes neither work nor ownership.
+
+**Results and scope.** Phase validity is preserved. Every finite modeled
+execution preserves the validity of surviving node references, leaves
+claimed slots empty, and claims each node identity at most once. Source
+reference counts plus recorded release occurrences are conserved across
+the complete trace. Backing IDs need not be unique: several leaves may own
+distinct leases on the same backing. An external reader keeps its backing
+reference count positive and therefore excludes the modeled zero-reference
+disposal guard; repeated physical disposal is not modeled by that guard.
+
+For a ranked LIFO frontier beneath height $`H`$, the model proves the bound
+$`1+2H`$. Replacing a parent by at most three strictly lower-ranked
+children decreases an abstract rank-weight sum using weight $`4^h`$
+for rank $`h`$. This sum is a mathematical termination ingredient,
+**not runtime-computed fuel, an allocation bound or a complete phased-loop
+termination theorem**. Detach/enqueue preserve combined local/staged/queued
+length. Completed staging orders work as reversed children followed by
+the old pending list.
+
+**Required next refinement.** Connect actual heap-node child ranks and
+fanout to the ranked frontier; identify the realized frontier across all
+phases; bound neutral staging transitions; and prove normal terminal
+progress. Ordinary final-root destruction, native `Arc::into_inner`
+control behavior, simultaneous drains, allocator/panic behavior and actual
+small-stack execution require their own refinement and tests. The standard
+library is not formally verified by this model. The source graph is intended
+to be finite and immutable, without identity reuse; ranked-tree obligations
+remain explicit rather than silently assumed for arbitrary heap states.
+Fixed external owners are not a proof of eventual global quiescence.
+
+The formal README enumerates all 31 exports and their required native test
+bindings before implementation. It distinguishes model identities from
+physical pointers and retains repeated-child, diamond, reader-survival,
+nonfinal-drop and source-occurrence controls. No native tests are claimed
+implemented by this checkpoint.
+
+**Verification and gate integration.** The final compiler emitted 31
+closed-context reports; independent `coqchk` exited zero with
+`Modules were successfully checked`. Both commands ran with MemoryHigh
+512M, MemoryMax 1G, MemorySwapMax 0, CPUQuota 100%, TasksMax 64 and a
+120-second watchdog. These are configured limits, not measured peaks.
+No runtime performance result is inferred.
+
+| Artifact | SHA-256 |
+|---|---|
+| `CanonicalSourceRelease.v` | `e5c5ac2c6297dc6096f021a4d3a58c76c956bc941495c224b0aec9802e710155` |
+| `CanonicalSourceRelease.vo` | `a389a619ed67629dae1034212903aae66c6ca9b01565f8ac44381307ee5903c0` |
+| `target/verification/canonical-source-release-proof-qualified.log` | `ae3d0b788506998a424369eaf164c12e9208ade730fda5cf8ef94cb82fe12391` |
+| `target/verification/canonical-source-release-kernel-qualified.log` | `ddc9ddbc932b3e0afce5ab95f0d33f9bcb885d6a459756c437d34c8bace6022c` |
+| `target/verification/canonical-source-release-integrated-gate.log` | `e7ecc78766eafc19537f6136e4b8054543540ce9329ace084350a8f08aa26e31` |
+
+Local failed proof diagnostics remain under `target/verification/`.
+They exposed proof-script projection/unfolding and argument-binding errors,
+not accepted model counterexamples. Read-only review also corrected a helper
+name: positive reference count is distinguished from the separate
+disposal-admissibility theorem.
+
+Registration adds the unit to `_CoqProject` and the shared canonical-key
+proof gate. Inspection found that the full gate still duplicated a stale
+40-report expectation while its focused counterpart expected 307. The full
+gate now calls the same helper; the ownership unit retains a separate
+31-report count and 1G cap. The dedicated
+`scripts/check-stack-safe-pda-proofs.sh --canonical-source-release` route
+passes its placeholder scan, exact 31-count compiler assertion and independent
+kernel check, exiting zero. Shell syntax and diff checks also pass. This does
+not claim the entire combined gate or workspace was rerun.
+
+**Campaign boundary.** No production code, PathMap crate, consensus byte,
+hash, COMM or accounting rule changes. Task 5976/6018 and experiment 342
+retain the result as a prerequisite; the import slope and production
+ACT-versus-LMDB comparison remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

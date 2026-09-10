@@ -2732,3 +2732,116 @@ Durable logs are `target/verification/epathmap-balanced-split-proof-final.log`
 and `target/verification/epathmap-balanced-split-kernel-final.log`; failed and
 successful isolated diagnostics remain alongside them. These checks cover the
 recursive model, not a native split implementation.
+
+## Canonical source release ownership invariant catalogue (2026-09-10; task 6018)
+
+Run `scripts/check-stack-safe-pda-proofs.sh --canonical-source-release` from the
+repository root to check this unit independently. Its placeholder scan, exact
+31-report compiler check and independent kernel check pass. The gate enforces
+a 512M soft/1G hard memory cap with swap disabled. The full and focused
+canonical-key routes also invoke the same helper; they are not requalified
+merely by this dedicated unit run.
+
+[`CanonicalSourceRelease`](theories/CanonicalSourceRelease.v) specifies one
+phased drain of counted ownership tokens. This is a bounded ownership-model
+prerequisite for the balanced source tree, not qualification of a native
+destructor. External node owners and external source readers are fixed during
+each modeled execution; concurrent clone/drop transitions are not present.
+The intended native graph is finite, immutable and acyclic, with no node-ID
+reuse, at most three child occurrences per node and strictly descending child
+ranks. The ranked-list results take the fanout and rank conditions explicitly;
+their connection to the model's heap and complete phased loop remains required.
+
+Node-reference counts include external roots, pending work, children still in
+the extracted local shell, detached children awaiting enqueue, and child slots
+of live heap nodes. Owned-source counts likewise include external readers and
+every owned lease in the heap, local shell or detached payload. Repeated child
+IDs and repeated owned-source IDs are allowed and counted by occurrence: two
+leases on one backing are not one lease. Borrowed source identifiers do not
+constitute owned leases; their native lifetime binding remains separate.
+
+The local phase invariant requires `Ready` to have no shell or staged payload,
+`Extracted` to have a full shell but no staged payload, and `Evacuated` to have
+no shell. Final extraction clears the heap slot while retaining its complete
+payload locally. Detachment empties the shell before child releases can begin.
+Child staging transfers one occurrence at a time to a LIFO worklist; source
+release records an owned-lease occurrence, not disposal of the entire backing.
+An empty-shell drop then returns to `Ready` without changing ownership.
+
+### Exhaustive exported invariants and required executable controls
+
+The following 31 names are the exported assumption-check catalogue. Each row
+specifies a required native or property-test binding, not an implemented-test
+claim. Trace preservation requires the stated initial invariants: unique claims
+with cleared slots, valid phases, or positive reference counts naming live heap
+slots, as applicable. Finite-trace theorems do not assert termination, eventual
+release of every node, or complete reclamation of initially unreachable nodes.
+
+| Exported invariant | Required executable control |
+|---|---|
+| `clearing_a_node_empties_exactly_its_original_slot` | Final-claim a live node and inspect its exact slot before any child release; reject a mutant clearing a sibling or leaving the payload installed. |
+| `clearing_a_node_preserves_every_other_complete_node` | Snapshot every other live node's full payload and identity across a final claim, including shared diamonds and repeated child references. |
+| `extraction_consumes_exactly_one_reference_and_preserves_all_other_counts` | From a valid idle state, compare occurrence counts before and after both final and nonfinal extraction. Include duplicate child IDs and held external roots; reject deduplication and double-decrement mutants. |
+| `final_extraction_keeps_child_occurrences_in_the_full_local_shell` | Pause immediately after a final claim and check the cleared heap slot, complete retained local payload, empty staged children and `Extracted` phase. No child token may disappear between heap removal and detachment. |
+| `nonfinal_extraction_keeps_the_heap_external_owners_and_release_ledgers` | Retain another owner, take the nonfinal path and compare the complete heap, external-owner lists and both ledgers. Permit the consumed pending token to change; do not assert whole-state identity. |
+| `detaching_moves_every_owned_child_without_changing_reference_counts` | Starting with empty staging, detach a two/three-child payload and an owned leaf payload; check exact node/source counts and an empty shell. A premature child drop must fail. |
+| `enqueueing_transfers_one_occurrence_without_changing_ownership` | Pause after each child transfer and count pending plus staged ownership together, including repeated IDs. Reject copying a token or dropping it before enqueue. |
+| `releasing_a_source_preserves_nodes_and_accounts_for_exactly_its_lease` | Test borrowed and owned leaves separately; owned release decreases its live lease count and adds exactly one matching ledger occurrence, while node counts are unchanged. Shared backing IDs must remain distinguishable by multiplicity. |
+| `empty_shell_drop_is_work_and_ownership_neutral` | Instrument the evacuated empty-shell return: pending work, heap, ownership counts and ledgers stay unchanged and the phase becomes idle. Populated-shell entry is a separate rejection/control case. |
+| `a_surviving_external_reader_keeps_its_source_reference_count_positive` | Keep an external frozen-source reader while draining all releasable tree nodes; the counted source ownership must remain positive. This is a positivity control, not a backing-destructor test. |
+| `a_cleared_node_cannot_be_extracted_again` | Construct a deliberately invalid pending token naming a cleared slot and require extraction refusal without another claim; distinguish this local refusal from progress on valid states. |
+| `every_successful_step_preserves_the_local_ownership_phase` | Enumerate valid phase states and successful transitions, checking empty staging at `Ready`/`Extracted` and the absent shell at `Evacuated`. Reject stale-local and overlapping-payload mutants. |
+| `extraction_preserves_every_original_source_lease` | Pause final and nonfinal extraction of owned leaves and compare every source's live occurrence count, including the retained local shell. Reject omitting local leases from the accounting oracle. |
+| `no_backing_disposal_is_admissible_while_an_external_reader_survives` | Check that the model's zero-source-reference disposal guard rejects a backing with an external reader. Bind the guard to an actual backing-disposal event separately before claiming native reader safety. |
+| `detaching_preserves_the_combined_local_and_queued_frontier` | Count child occurrences in the local shell, staging and pending work before and after detachment. This theorem controls their total size, not their list order. |
+| `enqueueing_preserves_the_combined_local_and_queued_frontier` | Check that each staged-to-pending transfer preserves the combined occurrence count, including intermediate staging states and duplicate children. |
+| `completed_child_staging_is_exactly_reverse_children_followed_by_old_work` | With distinct ordered children and existing pending work, finish staging and compare the exact list with reversed children followed by old work. Reject FIFO or accidental double-reversal mutants. |
+| `each_ranked_lifo_frontier_has_at_most_one_plus_twice_root_height` | Generate frontiers satisfying the ranked invariant and check the stated size bound, including rank-zero and maximal three-child boundaries. Actual loop high-water measurements require the remaining realized-frontier binding. |
+| `final_lifo_extraction_preserves_the_ranked_frontier` | Replace a parent head by its reversed children under fanout at most three and strict rank descent; test repeated children and saved siblings. Nondecreasing ranks and excess fanout must be rejected as invalid inputs. |
+| `nonfinal_lifo_extraction_preserves_the_ranked_frontier` | Remove a nonfinal head from valid ranked frontiers and check the unchanged saved-sibling suffix and frontier predicate. |
+| `every_final_extraction_strictly_decreases_rank_debt` | For bounded test ranks, compare the mathematical sum of base-four rank weights before and after a final macro replacement, including three children of maximal allowed rank. Do not compute this proof measure with unchecked native arithmetic. |
+| `every_nonfinal_extraction_strictly_decreases_rank_debt` | Remove a nonfinal head and check strict debt decrease even at rank zero. This extraction-level control does not establish progress through staging phases. |
+| `a_successful_step_only_preserves_storage_or_claims_one_live_slot` | Classify every successful event: heap and claim ledger are unchanged, or exactly one previously live slot is cleared and its ID prepended to the claim ledger. Compare complete storage rather than counts alone. |
+| `every_successful_step_preserves_all_previously_cleared_slots` | Carry cleared-slot sentinels through every transition and reject resurrection or ID-reuse mutants, including after unrelated final claims. |
+| `every_successful_step_preserves_unique_claims_and_their_empty_slots` | Start with a valid nonempty claim history and check unique claimed IDs plus empty corresponding slots after each step. A duplicate-claim ledger mutant must fail. |
+| `every_finite_release_trace_claims_each_node_at_most_once` | Exhaust short valid traces and run longer shared-DAG traces; check the complete claim ledger, including preexisting claims, for uniqueness and cleared slots. Do not require every reachable node to be claimed while external owners remain. |
+| `extraction_preserves_all_live_node_references` | From valid idle ownership, exercise final and nonfinal extraction and require every remaining positive node-reference count to name a live slot. Cover shared diamonds and retained external roots. |
+| `every_successful_step_preserves_all_live_node_references` | Check the same live-slot implication after each phase transition, with shell and staged tokens included in the independent count oracle. Reject early slot clearing and lost-local-token mutants. |
+| `every_finite_release_trace_preserves_live_reference_validity` | Run finite traces from valid phases and live references, checking both final invariants. Snapshot retained live payloads separately; the theorem states reference validity, not a full native observation-equivalence result. |
+| `every_successful_step_conserves_owned_source_leases_with_release_occurrences` | For every owner ID and successful phase step, compare live owned leases plus released-ledger occurrences. Include two leaves retaining one backing and a nonempty initial release ledger. |
+| `every_finite_release_trace_accounts_for_every_owned_source_lease` | Compare initial and final live-plus-released occurrence totals over finite traces with shared backings, borrowed leaves and retained readers. Reject both deduplicated release ledgers and missing/double lease releases; do not require unique backing IDs in the ledger. |
+
+### Remaining native and full-loop proof bindings
+
+The intended native pattern is node-owned `Drop` with an optional payload:
+detach children before draining them through `Arc::into_inner`, then let the
+extracted empty shell drop. Ordinary external root/cursor `Arc` tokens need not
+each gain a wrapper when every recursively owning node has the protected
+destructor. That pattern is not implemented or verified by this catalogue.
+
+The next required refinement connects the actual phased state to the ordered
+frontier `rev(local_shell.children) ++ rev(staged_children) ++ pending`, relates
+every live or extracted payload to the immutable original heap's ranks and
+fanout, and proves a decreasing phase measure between extraction events.
+Together with progress on valid states, these are needed to lift the list-level
+frontier and debt lemmas to the complete drain. The single-root height bound
+does not automatically apply to an arbitrary multi-root initial queue.
+
+Ordinary final-root `Arc` drop and final `Arc::into_inner` extraction need
+distinct native control bindings, even when they share final-owner election.
+The nonfinal extraction path must consume its token without invoking a
+populated node destructor. Required native controls include simultaneous final
+releases, shared diamonds, retained cursor/root/source owners, empty-shell
+reentry, and a causal `try_unwrap(...).ok()` race mutant; substituting that
+operation for `into_inner` does not establish the required contract. A model of
+finite concurrent drains must account for every drain's local tokens and
+permitted environment transfers. No quiescence claim applies to infinite
+external work, and no standard-library formal verification is claimed here.
+
+Leaf owners are the original borrowed/frozen sources with nonrecursive backing
+ownership, not arbitrary user-defined destructor callbacks. Native lifetime,
+backing-disposal, allocation and unwind behavior remain separate bindings.
+Normal allocation failure that aborts must not be conflated with arithmetic
+panic or unwinding; neither allocator behavior nor panic safety follows from
+the ownership conservation lemmas. This catalogue activates no balanced-source
+backend and makes no whole-import performance or native Drop-completion claim.

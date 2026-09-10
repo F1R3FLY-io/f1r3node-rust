@@ -299,6 +299,15 @@ canonical_key_protocol_proofs() {
   rocq_compile_with_closed_count theories/RPB3Admission.v 307 \
     "RPB3 fold, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
+  canonical_source_release_proofs
+}
+
+canonical_source_release_proofs() {
+  local TLC_MEMORY_HIGH=512M TLC_RSS=1G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
+  rocq_reject_placeholders theories/CanonicalSourceRelease.v
+  rocq_compile_with_closed_count theories/CanonicalSourceRelease.v 31 \
+    "canonical source ownership, release traces and ranked-frontier prerequisites"
+  rocq_check_modules "canonical source release prerequisites" StackSafePDA.CanonicalSourceRelease
 }
 
 epathmap_import_runtime() {
@@ -368,6 +377,14 @@ if [[ "${1:-}" == "--act-line-transport" ]]; then
   pushd "$repo_root" >/dev/null
   act_line_transport_runtime
   popd >/dev/null
+  exit 0
+fi
+
+if [[ "${1:-}" == "--canonical-source-release" ]]; then
+  pushd "$rocq_root" >/dev/null
+  canonical_source_release_proofs
+  popd >/dev/null
+  echo "stack-safe-pda: canonical source release prerequisite proofs passed"
   exit 0
 fi
 
@@ -554,17 +571,7 @@ if [[ "$rspace_commit_closed_capstones" != "6" ]]; then
   echo "stack-safe-pda: expected all six RSpace commit Rocq capstones to be closed; got $rspace_commit_closed_capstones" >&2
   exit 1
 fi
-rpb3_admission_rocq_output="$(
-  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RPB3Admission.v 2>&1
-)"
-printf '%s\n' "$rpb3_admission_rocq_output"
-rpb3_admission_closed_capstones="$({
-  printf '%s\n' "$rpb3_admission_rocq_output" | grep -c '^Closed under the global context$'
-} || true)"
-if [[ "$rpb3_admission_closed_capstones" != "40" ]]; then
-  echo "stack-safe-pda: expected forty RPB3 fold/key/storage reports to be closed; got $rpb3_admission_closed_capstones" >&2
-  exit 1
-fi
+canonical_key_protocol_proofs
 rpb3_admission_mutants_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RPB3AdmissionMutants.v 2>&1
 )"

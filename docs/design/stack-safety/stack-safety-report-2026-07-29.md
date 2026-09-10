@@ -10743,6 +10743,29 @@ shared-source release and retained cursor/ACT integration remain open.
 No production or consensus behavior changes, and the J-121 import-time
 slope and production ACT/LMDB comparison remain unresolved.
 
+#### 5.33.43 Source-release ownership prerequisite (2026-09-10)
+
+The independent `CanonicalSourceRelease.v` model passes 31 closed-context
+checks and kernel verification under a 1G hard cap with swap disabled.
+It proves phase-valid payload transfer, at-most-once node claims,
+surviving-reference validity and exact owned-source lease accounting across
+finite single-drain traces. Ranked-list helpers establish a
+$`1+2H`$ frontier bound and a decreasing mathematical rank-weight sum;
+their connection to the complete phased loop remains required.
+
+[J-126](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-126--2026-09-10-source-release-ownership-and-trace-invariants)
+records hashes, configured caps, proof diagnostics and the exhaustive
+invariant/test catalogue. Actual native `Drop`, concurrent drains,
+allocator behavior and small-stack tests are not qualified by this model.
+No native memory peak or timing improvement is claimed.
+
+The full and focused canonical-key gates now share one helper, removing
+the stale full-gate 40-report expectation. The ownership unit has its own
+31-check gate, whose dedicated `--canonical-source-release` route passes
+compilation, exact count, placeholder and kernel checks. This is not a complete
+workspace rerun. The remaining import-time slope and production ACT/LMDB
+comparison are unchanged.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
