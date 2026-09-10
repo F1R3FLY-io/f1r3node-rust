@@ -2829,7 +2829,10 @@ mod tests {
             if *hash == held {
                 Ok(Vec::new())
             } else {
-                Err(CasperError::BlockNotHeld(hash.clone(), String::new()))
+                Err(CasperError::BlockNotHeld(
+                    hash.clone(),
+                    shared::rust::store::key_value_store::MissingBlockContext::new(""),
+                ))
             }
         };
 

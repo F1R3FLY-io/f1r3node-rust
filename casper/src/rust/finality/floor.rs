@@ -31,6 +31,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
+use shared::rust::store::key_value_store::MissingBlockContext;
 
 use crate::rust::errors::CasperError;
 use crate::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
@@ -103,9 +104,9 @@ fn held_meta(
     dag: &KeyValueDagRepresentation,
     hash: &BlockHash,
 ) -> Result<models::rust::block_metadata::BlockMetadata, CasperError> {
-    dag.lookup(hash)
-        .map_err(CasperError::from)?
-        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone(), " [floor held_meta]".to_string()))
+    dag.lookup(hash).map_err(CasperError::from)?.ok_or_else(|| {
+        CasperError::BlockNotHeld(hash.clone(), MissingBlockContext::new("floor held_meta"))
+    })
 }
 
 /// The block number of a block a walk needs, or [`CasperError::BlockNotHeld`].

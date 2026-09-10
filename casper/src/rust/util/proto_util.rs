@@ -18,7 +18,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
@@ -177,7 +177,7 @@ pub fn weight_from_validator_by_dag(
         .lookup(block_hash)?
         .ok_or_else(|| KvStoreError::MissingBlock {
             hash: block_hash.clone(),
-            context: " [weight_from_validator_by_dag: traversed block]".to_string(),
+            context: MissingBlockContext::new("weight_from_validator_by_dag: traversed block"),
         })?;
 
     // Try to get parent's weight for this validator
@@ -188,7 +188,9 @@ pub fn weight_from_validator_by_dag(
                 dag.lookup(parent_hash)?
                     .ok_or_else(|| KvStoreError::MissingBlock {
                         hash: parent_hash.clone(),
-                        context: " [weight_from_validator_by_dag: main parent]".to_string(),
+                        context: MissingBlockContext::new(
+                            "weight_from_validator_by_dag: main parent",
+                        ),
                     })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
@@ -264,7 +266,10 @@ pub fn get_parents_metadata(
             dag.lookup(parent)
                 .map_err(CasperError::from)?
                 .ok_or_else(|| {
-                    CasperError::BlockNotHeld(parent.clone(), " [get_parents_metadata]".to_string())
+                    CasperError::BlockNotHeld(
+                        parent.clone(),
+                        MissingBlockContext::new("get_parents_metadata"),
+                    )
                 })
         })
         .collect()
@@ -301,7 +306,7 @@ pub fn parent_metadatas_above_block_number(
                 UnheldParent::Surface => {
                     return Err(CasperError::BlockNotHeld(
                         parent.clone(),
-                        " [parent_metadatas_above_block_number]".to_string(),
+                        MissingBlockContext::new("parent_metadatas_above_block_number"),
                     ))
                 }
                 UnheldParent::SkipSettled => {
@@ -774,7 +779,7 @@ mod fork_choice_b1_repro_tests {
             crate::rust::errors::CasperError::BlockNotHeld(hash, site) => {
                 assert_eq!(hash, missing);
                 assert!(
-                    site.contains('['),
+                    !site.accessor().is_empty(),
                     "the accessor tag must survive the collapse, got {site:?}"
                 );
             }

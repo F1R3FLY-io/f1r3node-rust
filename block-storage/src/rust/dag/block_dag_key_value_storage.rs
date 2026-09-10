@@ -54,7 +54,7 @@ use models::rust::validator::{self, Validator, ValidatorSerde};
 use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
@@ -1663,13 +1663,9 @@ impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorag
 /// run, escalating into propose failures). Captured only on the error path, and
 /// with `force_capture` so it does not depend on RUST_BACKTRACE being set in the
 /// shard's environment.
-fn missing_block(block_hash: &BlockHash, method: &str) -> KvStoreError {
+fn missing_block(block_hash: &BlockHash, method: &'static str) -> KvStoreError {
     KvStoreError::MissingBlock {
         hash: block_hash.clone(),
-        context: format!(
-            " [{}]\n  caller backtrace:\n{}",
-            method,
-            std::backtrace::Backtrace::force_capture()
-        ),
+        context: MissingBlockContext::with_backtrace(method),
     }
 }

@@ -51,6 +51,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy};
 use prost::bytes::Bytes;
+use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::floor::{in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
@@ -107,7 +108,7 @@ fn effect_in_state_of_above(
         let Some(block) = block_store.get(&cur)? else {
             return Err(CasperError::BlockNotHeld(
                 cur,
-                " [membership carrier-body read]".to_string(),
+                MissingBlockContext::new("membership carrier-body read"),
             ));
         };
         if block.body.state.block_number < min_height {
@@ -245,7 +246,7 @@ fn lineage_step_of(
         }
         return Err(CasperError::BlockNotHeld(
             block_hash.clone(),
-            " [lineage-step cache revalidation]".to_string(),
+            MissingBlockContext::new("lineage-step cache revalidation"),
         ));
     }
     // Miss path: two short lock acquisitions (lookup above, insert below)
@@ -254,7 +255,7 @@ fn lineage_step_of(
     let Some(block) = block_store.get(block_hash)? else {
         return Err(CasperError::BlockNotHeld(
             block_hash.clone(),
-            " [lineage-step body read]".to_string(),
+            MissingBlockContext::new("lineage-step body read"),
         ));
     };
     let next = if !block.body.merge_base.is_empty() {

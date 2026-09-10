@@ -425,8 +425,10 @@ mod tests {
     #[test]
     fn block_not_held_classifies_as_missing_block_to_request() {
         let hash = models::rust::block_hash::BlockHash::from(vec![0x5a; 32]);
-        let (failure, request) =
-            classify_propose_error(&CasperError::BlockNotHeld(hash.clone(), String::new()));
+        let (failure, request) = classify_propose_error(&CasperError::BlockNotHeld(
+            hash.clone(),
+            shared::rust::store::key_value_store::MissingBlockContext::new(""),
+        ));
         assert_eq!(
             request.as_ref(),
             Some(&hash),

@@ -350,7 +350,7 @@ mod tests {
 
         let undecidable = BlockError::from_validation_error(CasperError::BlockNotHeld(
             missing.clone(),
-            String::new(),
+            shared::rust::store::key_value_store::MissingBlockContext::new(""),
         ));
         assert_eq!(
             undecidable,
@@ -427,7 +427,9 @@ mod floor_data_tests {
         let missing = BlockHash::from(vec![0xAB; 32]);
         let status = BlockError::from(KvStoreError::MissingBlock {
             hash: missing.clone(),
-            context: "floor derivation".to_string(),
+            context: shared::rust::store::key_value_store::MissingBlockContext::new(
+                "floor derivation",
+            ),
         });
 
         assert_eq!(status, BlockError::Undecidable(missing));

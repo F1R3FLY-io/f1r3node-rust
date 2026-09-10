@@ -20,6 +20,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::replay_failure::ReplayFailure;
 use super::runtime_manager::RuntimeManager;
@@ -185,7 +186,7 @@ pub(crate) fn canonical_dispositions(
         let Some(block) = block_store.get(&hash)? else {
             return Err(CasperError::BlockNotHeld(
                 hash,
-                " [parents-post-state body read]".to_string(),
+                MissingBlockContext::new("parents-post-state body read"),
             ));
         };
         let bn = block.body.state.block_number;
@@ -1763,7 +1764,7 @@ pub async fn compute_parents_post_state(
                     let number = s.dag.block_number(&hash).ok_or_else(|| {
                         CasperError::BlockNotHeld(
                             hash.clone(),
-                            " [rejected-slash lineage walk]".to_string(),
+                            MissingBlockContext::new("rejected-slash lineage walk"),
                         )
                     })?;
                     if number < settled_walk_bound {

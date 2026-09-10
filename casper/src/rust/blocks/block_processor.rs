@@ -28,6 +28,7 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::store::key_value_store::MissingBlockContext;
 use tokio::sync::mpsc;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
@@ -87,7 +88,7 @@ pub(crate) fn guard_deferral(
         Either::Left(BlockError::Undecidable(hash)) if approved_block_number == 0 => {
             Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(
                 hash,
-                " [genesis-rooted node refuses deferral]".to_string(),
+                MissingBlockContext::new("genesis-rooted node refuses deferral"),
             )))
         }
         // Same rule for the state artifact: a genesis-rooted node computed or
@@ -482,10 +483,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                         return Err(CasperError::BlockNotHeld(missing, site));
                     }
                     tracing::warn!(
-                        "Snapshot for block {} needs {}, which this node does not hold. Walk:{}",
+                        "Snapshot for block {} needs {}, which this node does not hold. Walk: {}",
                         PrettyPrinter::build_string_bytes(&block.block_hash),
                         PrettyPrinter::build_string_bytes(&missing),
-                        site.lines().next().unwrap_or("")
+                        site.accessor()
                     );
                     let deps = HashSet::from([missing.clone()]);
                     self.dependencies
