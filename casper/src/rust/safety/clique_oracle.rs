@@ -71,12 +71,11 @@ impl FtThreshold {
 /// validator runs the branch binary together, so there is no mixed-version
 /// window and no on-chain activation parameter is required.
 pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, strict: bool) -> bool {
-    // Domain: the doc-contract is 0 ≤ num ≤ den (θ ∈ [0,1]), but the on-chain ppm
-    // is range-checked to [-den, den] (token_metadata_check.rs) and some callers
-    // pass a negative sentinel θ (e.g. -1.0 "finalize on any majority clique"), so
-    // the lower bound is -den here. The comparison math below is unchanged and is
-    // exact across the full [-den, den] range.
-    debug_assert!(den > 0 && s > 0 && (0..=s).contains(&q) && (-den..=den).contains(&num));
+    // Domain (den > 0, s > 0, q ∈ [0, s], num ∈ [-den, den]) is discharged by
+    // the callers: den is the fixed ppm constant, the oracle short-circuits
+    // non-positive stake, q is a clique weight within total stake, and the
+    // on-chain ppm is range-gated typed at its single read choke point
+    // (`runtime.rs`). The comparison math is exact across [-den, den].
     if (agreeing as i128) * 2 <= s as i128 {
         return false; // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized
     }

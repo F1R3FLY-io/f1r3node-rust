@@ -1100,11 +1100,11 @@ async fn conflicting_same_height_siblings_cannot_both_certify() {
 
         let thr = FtThreshold::from_f32_lossy(0.1);
         let s1_certified =
-            CliqueOracle::ft_witnessed_exact(&s1.block_hash, &dag, &snapshot, thr, false)
+            CliqueOracle::ft_witnessed_exact(&s1.block_hash, &dag, &snapshot, thr, false, None)
                 .await
                 .expect("ft_witnessed_exact(S1)");
         let s2_certified =
-            CliqueOracle::ft_witnessed_exact(&s2.block_hash, &dag, &snapshot, thr, false)
+            CliqueOracle::ft_witnessed_exact(&s2.block_hash, &dag, &snapshot, thr, false, None)
                 .await
                 .expect("ft_witnessed_exact(S2)");
 
@@ -1246,11 +1246,11 @@ async fn sound_certificates_form_on_both_fork_sides_across_time() {
         .into_iter()
         .collect();
         let c2_certified_snap1 =
-            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap1, thr, false)
+            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap1, thr, false, None)
                 .await
                 .expect("ft(c2) at snapshot 1");
         let sa_certified_snap1 =
-            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap1, thr, false)
+            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap1, thr, false, None)
                 .await
                 .expect("ft(s_a) at snapshot 1");
 
@@ -1282,11 +1282,11 @@ async fn sound_certificates_form_on_both_fork_sides_across_time() {
         .into_iter()
         .collect();
         let sa_certified_snap2 =
-            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap2, thr, false)
+            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap2, thr, false, None)
                 .await
                 .expect("ft(s_a) at snapshot 2");
         let c2_certified_snap2 =
-            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap2, thr, false)
+            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap2, thr, false, None)
                 .await
                 .expect("ft(c2) at snapshot 2");
 
@@ -1392,7 +1392,7 @@ async fn a_coincidence_never_mutually_seen_must_not_certify() {
         .into_iter()
         .collect();
         let certified_at_coincidence =
-            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &coincidence, thr, false)
+            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &coincidence, thr, false, None)
                 .await
                 .expect("ft_witnessed_exact(T) at the coincidence");
         assert!(
@@ -1422,7 +1422,7 @@ async fn a_coincidence_never_mutually_seen_must_not_certify() {
         .into_iter()
         .collect();
         let certified_at_mutual =
-            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &mutual, thr, false)
+            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &mutual, thr, false, None)
                 .await
                 .expect("ft_witnessed_exact(T) at mutual knowledge");
         assert!(
@@ -1760,10 +1760,16 @@ async fn spine_agreement_is_sound_only_because_merges_keep_main_parent_content()
              is the live #536's own recorded fault tolerance"
         );
 
-        let decision =
-            CliqueOracle::ft_witnessed_exact(&staged.a, &staged.dag, &staged.snapshot, thr, false)
-                .await
-                .expect("ft_witnessed_exact(A)");
+        let decision = CliqueOracle::ft_witnessed_exact(
+            &staged.a,
+            &staged.dag,
+            &staged.snapshot,
+            thr,
+            false,
+            None,
+        )
+        .await
+        .expect("ft_witnessed_exact(A)");
         assert!(
             decision,
             "A certifies on spine agreement alone. Nothing in the oracle prevents \
@@ -1797,10 +1803,16 @@ async fn an_ordinary_merge_still_certifies_the_main_parent_it_kept() {
         );
         let thr = FtThreshold::from_f32_lossy(0.1);
 
-        let decision =
-            CliqueOracle::ft_witnessed_exact(&staged.a, &staged.dag, &staged.snapshot, thr, false)
-                .await
-                .expect("ft_witnessed_exact(A)");
+        let decision = CliqueOracle::ft_witnessed_exact(
+            &staged.a,
+            &staged.dag,
+            &staged.snapshot,
+            thr,
+            false,
+            None,
+        )
+        .await
+        .expect("ft_witnessed_exact(A)");
         assert!(
             decision,
             "an ordinary merge keeps its main parent's content and A finalizes — \
