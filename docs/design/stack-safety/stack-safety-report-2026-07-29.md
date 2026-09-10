@@ -10928,8 +10928,29 @@ both live run coordinates and the original timeout evidence.
 
 The maintained combined EPathMap formal/runtime gate subsequently passes,
 including its exact proof/test-count checks and eight ACT-span compile-failure
-controls. The isolated debug conversion test remains active; its pending
-result must not be replaced by the combined gate's success.
+controls. The isolated unchanged debug conversion test subsequently passes
+in 1,103.72 seconds test time, 1,104.194 seconds service time, 1,095.034
+seconds CPU, 115.7M peak and zero swap. Exact name-set comparison confirms
+that the 441 first-run successes plus this isolated success equal the 442
+release test names, without omissions or overlap. This is complete aggregate
+coverage of that debug inventory, not a successful single full-debug
+invocation; the original timeout remains evidence. Task acceptance and later
+source-integration qualification are separate obligations.
+
+#### 5.33.51 Original-owner source coalescing (2026-09-10)
+
+Task 6018's source library now rejoins adjacent borrowed/frozen leaf windows
+retaining the same original owner into one height-zero leaf. This avoids an
+unnecessary branch after splitting a leaf, without copying payload bytes or
+changing the balanced join/split drivers. Three new controls fail before the
+change; all 15 source controls pass afterward in debug and release. The
+combined service peaks at 2.1G with zero swap, under a 6 GiB hard ceiling.
+This is a local structural optimization: importer integration, chunk copying
+and per-phase allocation/ownership measurements remain required. No production
+time or memory-slope improvement is inferred from these test results.
+[J-134](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-134--2026-09-10-original-owner-source-coalescing)
+records the proof reuse, native controls, regression corpus, resource scope
+and the selected-source provenance boundary required before integration.
 
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 

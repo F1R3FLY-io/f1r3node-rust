@@ -180,8 +180,69 @@ impl<'src> SourceTreeWindow<'src> {
             }
             (None, _) if self.len == 0 => Some(right.clone()),
             (_, None) if right.len == 0 => Some(self.clone()),
-            _ => None,
+            _ => self.coalesce_original_leaf(right, len),
         }
+    }
+
+    fn coalesce_original_leaf(&self, right: &Self, len: usize) -> Option<Self> {
+        let payload = match (
+            self.root.as_ref()?.payload.as_ref()?,
+            right.root.as_ref()?.payload.as_ref()?,
+        ) {
+            (
+                SourcePayload::Borrowed {
+                    bytes,
+                    start,
+                    source,
+                    absolute_start,
+                    ..
+                },
+                SourcePayload::Borrowed {
+                    bytes: right_bytes,
+                    start: right_start,
+                    source: right_source,
+                    absolute_start: right_absolute_start,
+                    ..
+                },
+            ) => {
+                if !std::ptr::eq(*bytes, *right_bytes)
+                    || source != right_source
+                    || absolute_start != right_absolute_start
+                {
+                    return None;
+                }
+                let start = start.checked_add(self.start)?;
+                if start.checked_add(self.len)? != right_start.checked_add(right.start)?
+                    || start.checked_add(len)? > bytes.len()
+                {
+                    return None;
+                }
+                absolute_start.checked_add(start)?.checked_add(len)?;
+                SourcePayload::Borrowed {
+                    bytes,
+                    start,
+                    len,
+                    source: *source,
+                    absolute_start: *absolute_start,
+                }
+            }
+            (SourcePayload::Frozen(left_value), SourcePayload::Frozen(right_value)) => {
+                let left_value =
+                    left_value.subview(self.start..self.start.checked_add(self.len)?)?;
+                let right_value =
+                    right_value.subview(right.start..right.start.checked_add(right.len)?)?;
+                SourcePayload::Frozen(left_value.try_coalesce(&right_value)?)
+            }
+            _ => return None,
+        };
+        if len == 0 {
+            return Some(self.clone());
+        }
+        Some(Self::from_root(Some(Arc::new(SourceNode {
+            len,
+            height: 0,
+            payload: Some(payload),
+        }))))
     }
 
     pub(crate) fn concat(&self, right: &Self) -> Option<Self> {
@@ -768,7 +829,7 @@ fn split_root<'src>(root: Root<'src>, mut cut: usize) -> Option<(Root<'src>, Roo
                 break (
                     Some(leaf_window(&node, 0..cut)?),
                     Some(leaf_window(&node, cut..node.len)?),
-                )
+                );
             }
         };
         node = next;

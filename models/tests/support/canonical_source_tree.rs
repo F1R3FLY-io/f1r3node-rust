@@ -35,11 +35,13 @@ fn assert_shape(source: &SourceTreeWindow<'_>) -> usize {
                 assert_eq!(node.height, 0);
                 assert_eq!(node.len, *len);
                 assert!(start.checked_add(*len).unwrap() <= bytes.len());
-                assert!(absolute_start
-                    .checked_add(*start)
-                    .unwrap()
-                    .checked_add(*len)
-                    .is_some());
+                assert!(
+                    absolute_start
+                        .checked_add(*start)
+                        .unwrap()
+                        .checked_add(*len)
+                        .is_some()
+                );
             }
             SourcePayload::Frozen(bytes) => {
                 assert_eq!(node.height, 0);
@@ -58,9 +60,11 @@ fn assert_shape(source: &SourceTreeWindow<'_>) -> usize {
                 pending.extend(children);
             }
             SourcePayload::Branch3(children) => {
-                assert!(children
-                    .iter()
-                    .all(|child| child.height == children[0].height));
+                assert!(
+                    children
+                        .iter()
+                        .all(|child| child.height == children[0].height)
+                );
                 assert_eq!(
                     usize::from(node.height),
                     usize::from(children[0].height) + 1
@@ -86,8 +90,21 @@ fn borrowed(bytes: &[u8], source: u32, offset: usize) -> SourceTreeWindow<'_> {
     SourceTreeWindow::from_borrowed(bytes, source, offset).unwrap()
 }
 
+fn property_config() -> ProptestConfig {
+    ProptestConfig {
+        cases: 128,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/canonical_source_tree.regressions"
+            )),
+        )),
+        ..ProptestConfig::default()
+    }
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(property_config())]
 
     #[test]
     fn concatenation_and_every_split_preserve_bytes_origins_and_balance(
@@ -208,11 +225,122 @@ fn coalescing_requires_original_owner_and_exact_adjacency() {
         observations(&root)
     );
     assert!(left.try_coalesce(&root.subview(1..4).unwrap()).is_none());
-    assert!(left
-        .try_coalesce(&borrowed(&other, 8, 20).subview(2..4).unwrap())
-        .is_none());
+    assert!(
+        left.try_coalesce(&borrowed(&other, 8, 20).subview(2..4).unwrap())
+            .is_none()
+    );
     assert_eq!(root.contiguous_bytes(1..3), Some(&bytes[1..3]));
     assert!(root.contiguous_bytes(3..5).is_none());
+}
+
+proptest! {
+    #![proptest_config(property_config())]
+    #[test]
+    fn original_leaf_borrowed_rejoins_every_cut_without_a_branch(bytes in prop::collection::vec(any::<u8>(), 2..65)) {
+        let root = borrowed(&bytes, 37, 101);
+        for cut in 0..=bytes.len() {
+            let (left, right) = root.split(cut).unwrap();
+            let joined = left.try_coalesce(&right).unwrap();
+            prop_assert_eq!(observations(&joined), observations(&root));
+            prop_assert_eq!(joined.height(), 0);
+            prop_assert_eq!(assert_shape(&joined), 1);
+            prop_assert_eq!(left.concat(&right).unwrap().height(), 0);
+            let independent = borrowed(&bytes, 37, 101).subview(cut..bytes.len()).unwrap();
+            let first = root.subview(0..cut).unwrap();
+            let joined = first.try_coalesce(&independent).unwrap();
+            prop_assert_eq!(observations(&joined), observations(&root));
+            prop_assert_eq!(joined.contiguous_bytes(0..joined.len()).unwrap().as_ptr(), bytes.as_ptr());
+        }
+    }
+}
+
+#[test]
+fn original_leaf_frozen_rejoins_preserve_backing_and_discontinuous_origins() {
+    let mut arena = CanonicalBytesArena::new();
+    let mut handle = arena.empty();
+    for at in 0..193 {
+        handle = arena
+            .append(
+                handle,
+                CanonicalLocatedByte::new(
+                    at as u8,
+                    CanonicalByteProvenance::new((at % 7) as u32, 1000 + at * 3),
+                ),
+            )
+            .unwrap();
+    }
+    let frozen = arena.freeze(handle);
+    let root = SourceTreeWindow::from_frozen(frozen.clone());
+    let expected = observations(&root);
+    let (left, tail) = root.split(63).unwrap();
+    let (middle, right) = tail.split(64).unwrap();
+    let joined_left = left
+        .try_coalesce(&middle)
+        .unwrap()
+        .try_coalesce(&right)
+        .unwrap();
+    let joined_right = left
+        .try_coalesce(&middle.try_coalesce(&right).unwrap())
+        .unwrap();
+    for joined in [&joined_left, &joined_right] {
+        assert_eq!(observations(joined), expected);
+        assert_eq!(assert_shape(joined), 1);
+        let SourcePayload::Frozen(value) = joined.root.as_ref().unwrap().payload.as_ref().unwrap()
+        else {
+            panic!("coalesced frozen windows retain one original frozen leaf")
+        };
+        assert!(value.shares_backing_with(&frozen));
+    }
+    for cut in [1, 63, 64, 65, 127, 192] {
+        let (left, right) = root.split(cut).unwrap();
+        let independent = SourceTreeWindow::from_frozen(frozen.clone())
+            .subview(cut..193)
+            .unwrap();
+        assert_eq!(
+            observations(&left.try_coalesce(&independent).unwrap()),
+            expected
+        );
+        assert_eq!(left.concat(&right).unwrap().height(), 0);
+    }
+    let separately_frozen = SourceTreeWindow::from_frozen(arena.freeze(handle));
+    assert!(
+        left.try_coalesce(&separately_frozen.subview(63..193).unwrap())
+            .is_none()
+    );
+    drop((root, left, middle, right, tail, frozen, arena));
+    assert_eq!(joined_left.located_bytes().collect::<Vec<_>>(), expected);
+    assert_eq!(joined_right.located_bytes().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn original_leaf_coalescing_rejects_identity_gaps_overlap_and_preserves_empty_views() {
+    let bytes = vec![1, 2, 3, 4];
+    let duplicate = bytes.clone();
+    let left = borrowed(&bytes, 7, usize::MAX - 4).subview(0..2).unwrap();
+    for other in [
+        borrowed(&duplicate, 7, usize::MAX - 4)
+            .subview(2..4)
+            .unwrap(),
+        borrowed(&bytes, 8, usize::MAX - 4).subview(2..4).unwrap(),
+        borrowed(&bytes, 7, 0).subview(2..4).unwrap(),
+        borrowed(&bytes[..3], 7, usize::MAX - 4)
+            .subview(2..3)
+            .unwrap(),
+        borrowed(&bytes, 7, usize::MAX - 4).subview(1..4).unwrap(),
+        borrowed(&bytes, 7, usize::MAX - 4).subview(3..4).unwrap(),
+    ] {
+        assert!(left.try_coalesce(&other).is_none());
+    }
+    let root = borrowed(&bytes, 7, usize::MAX - 4);
+    for cut in 0..=bytes.len() {
+        let empty = root.subview(cut..cut).unwrap();
+        let independent = borrowed(&bytes, 7, usize::MAX - 4)
+            .subview(cut..cut)
+            .unwrap();
+        let joined = empty.try_coalesce(&independent).unwrap();
+        assert!(joined.is_empty());
+        assert_shape(&joined);
+    }
 }
 
 #[test]
@@ -304,15 +432,28 @@ fn retained_leaf_cursors_avoid_frontier_allocation_and_preserve_skip_origins() {
     assert_eq!(cursor.0.pending.capacity(), 0);
     assert!(cursor.skip_exact(2));
     drop(root);
-    assert_eq!(cursor.collect::<Vec<_>>(), (2..5).map(|at| CanonicalLocatedByte::new(
-        bytes[at], CanonicalByteProvenance::new(31, 70 + at),
-    )).collect::<Vec<_>>());
+    assert_eq!(
+        cursor.collect::<Vec<_>>(),
+        (2..5)
+            .map(|at| CanonicalLocatedByte::new(
+                bytes[at],
+                CanonicalByteProvenance::new(31, 70 + at),
+            ))
+            .collect::<Vec<_>>()
+    );
     let cursor = {
         let mut arena = CanonicalBytesArena::new();
         let mut root = arena.empty();
         for at in 0..193 {
-            root = arena.append(root, CanonicalLocatedByte::new(at as u8,
-                CanonicalByteProvenance::new(32, 1000 + at))).unwrap();
+            root = arena
+                .append(
+                    root,
+                    CanonicalLocatedByte::new(
+                        at as u8,
+                        CanonicalByteProvenance::new(32, 1000 + at),
+                    ),
+                )
+                .unwrap();
         }
         let source = SourceTreeWindow::from_frozen(arena.freeze(root));
         let mut cursor = source.located_bytes();
@@ -320,9 +461,15 @@ fn retained_leaf_cursors_avoid_frontier_allocation_and_preserve_skip_origins() {
         assert!(cursor.skip_exact(127));
         cursor
     };
-    assert_eq!(cursor.collect::<Vec<_>>(), (127..193).map(|at| CanonicalLocatedByte::new(
-        at as u8, CanonicalByteProvenance::new(32, 1000 + at),
-    )).collect::<Vec<_>>());
+    assert_eq!(
+        cursor.collect::<Vec<_>>(),
+        (127..193)
+            .map(|at| CanonicalLocatedByte::new(
+                at as u8,
+                CanonicalByteProvenance::new(32, 1000 + at),
+            ))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -337,8 +484,13 @@ fn subtree_skip_is_constant_work_before_descent_and_failed_copy_is_atomic() {
     assert!(cursor.skip_exact(root.len() - 1));
     assert_eq!(cursor.0.pending.len(), 1);
     assert_eq!(cursor.len(), 1);
-    assert_eq!(cursor.next(), Some(CanonicalLocatedByte::new(53,
-        CanonicalByteProvenance::new(11, 91))));
+    assert_eq!(
+        cursor.next(),
+        Some(CanonicalLocatedByte::new(
+            53,
+            CanonicalByteProvenance::new(11, 91)
+        ))
+    );
     assert_eq!(cursor.next(), None);
     let mut output = [99; 4];
     assert!(!root.copy_exact(usize::MAX - 1, &mut output));
@@ -353,9 +505,9 @@ fn maximally_shared_ternary_teardown_keeps_combined_frontier_bounded() {
     let mut root = borrowed(&atom, 13, 101);
     while root.len().checked_mul(3).is_some() {
         let node = root.root.as_ref().unwrap();
-        root = SourceTreeWindow::from_root(Some(node3(
-            Arc::clone(node), Arc::clone(node), Arc::clone(node),
-        ).unwrap()));
+        root = SourceTreeWindow::from_root(Some(
+            node3(Arc::clone(node), Arc::clone(node), Arc::clone(node)).unwrap(),
+        ));
     }
     assert_shape(&root);
     let mut pending = vec![Arc::clone(root.root.as_ref().unwrap())];
@@ -377,8 +529,12 @@ fn maximally_shared_ternary_teardown_keeps_combined_frontier_bounded() {
     }
     assert_eq!(high_water, 1 + 2 * root.height());
     std::thread::scope(|scope| {
-        std::thread::Builder::new().stack_size(64 * 1024)
-            .spawn_scoped(scope, move || drop(root)).unwrap().join().unwrap();
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn_scoped(scope, move || drop(root))
+            .unwrap()
+            .join()
+            .unwrap();
     });
 }
 

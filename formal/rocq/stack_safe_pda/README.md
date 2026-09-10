@@ -3151,10 +3151,29 @@ These controls do not complete every per-phase native binding in the formal
 catalogue. Exact runtime claim/lease ledgers, allocation accounting, all
 interleaving schedules, integrated indexed-region anchors and importer
 publication/lifetime bindings remain required. Current fragmented copy and
-equality paths are linear retained-cursor loops; chunk-copy optimization and
-original-owner coalescing across distinct leaf nodes remain explicit next
-steps. No production speedup or whole-campaign completion follows from this
+equality paths are linear retained-cursor loops; chunk-copy optimization remains
+an explicit next step. No production speedup or whole-campaign completion follows from this
 initial module qualification.
+
+The subsequent original-owner coalescer reuses `NormalizedSourceSpans`:
+identity/adjacency/bounds, exact located bytes, normalized subviews and
+associative composition. Three additional controls bind these laws to native
+borrowed and frozen owners; all fail before implementation and all 15 source
+controls pass afterward in debug and release. See J-134 for exact logs.
+
+| Native control | Additional binding |
+|---|---|
+| `original_leaf_borrowed_rejoins_every_cut_without_a_branch` | Every cut of 128 generated borrowed corpora rejoins to one height-zero original-backed leaf, including independently created leaf nodes. |
+| `original_leaf_frozen_rejoins_preserve_backing_and_discontinuous_origins` | Both associations retain one flat-frozen owner, exact discontinuous provenance and payload survival after parent/arena release; separately frozen owners refuse coalescing. |
+| `original_leaf_coalescing_rejects_identity_gaps_overlap_and_preserves_empty_views` | Reject distinct slice/source/origin, gaps and overlap; preserve valid zero-width views and representable boundary cases. |
+
+These controls cover the current strict full borrowed-source constructor.
+Selected-window construction must distinguish logical terminal bounds from
+physical provenance and independently retained end anchors before indexed
+integration. In particular a final byte at `usize::MAX` with explicit EOF
+is not an overflowing logical window. Existing borrowed empty-tail refusal
+when its physical start overflows must remain explicit in the compatibility
+binding. No importer cutover is claimed by the local coalescing tests.
 
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
@@ -3358,5 +3377,9 @@ reported as a successful complete debug suite.
 
 The maintained `--epathmap-import` combined route subsequently passes its
 formal, runtime and ACT-span compiler controls. The separate unchanged deep
-debug conversion test is still pending; the combined gate does not substitute
-for that observation. See J-133 for the transcript and resource-accounting scope.
+debug conversion test subsequently passes separately in 1,103.72 seconds,
+with 115.7M peak and zero swap. Exact test-name comparison confirms the union
+of the 441 prior debug successes and this one success equals the full release
+inventory of 442, with no omissions or overlap. This is aggregate qualification
+across two invocations, not a successful single full-debug run. The original
+900-second timeout is retained. See J-133 for hashes and resource scope.

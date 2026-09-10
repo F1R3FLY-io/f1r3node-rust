@@ -9573,9 +9573,75 @@ The outer driver uses 234.775 seconds wall time. Its 2.543 seconds CPU and
 separate bounded systemd scope; they are not aggregate proof/test resource
 measurements. The complete transcript is
 `target/verification/canonical-admission-request-integrated.log`.
-The separate unchanged deep debug conversion test is still active. Neither
-the combined gate nor the passing release suite closes that outstanding
-debug observation.
+At this checkpoint the separate unchanged deep debug conversion test was
+still active; the combined gate did not substitute for its result.
+
+**AGGREGATE DEBUG INVENTORY COMPLETE.** The isolated unchanged conversion
+test subsequently passes: one passed, none failed or ignored, 441 filtered,
+1,103.72 seconds test time. Service time is 1,104.194 seconds, CPU 1,095.034
+seconds, peak 115.7M and zero swap under the previously stated 1,800-second
+envelope. Exact test-name comparison finds 442 release names, 441 first-run
+debug names and one isolated debug name: their debug union equals the release
+inventory, with no missing, extra or overlapping names. This is aggregate
+debug coverage across two invocations, not a successful single full-debug run.
+It applies to the repair's 442-test inventory, not subsequent source-library
+additions. The isolated log SHA-256 is
+`3056662a4024267509470ae7352bb3a8bf1dc74f4a8e9b1f969870617de5bd74`.
+
+### J-134 — 2026-09-10: original-owner source coalescing
+
+**DECISION / FORMAL REUSE / NATIVE CONTROLS FIRST.** The initial source-tree
+module coalesces adjacent windows only when they share the same source-node
+Arc. Splitting a leaf creates distinct leaf nodes retaining the same original
+backing, so rejoining those windows unnecessarily introduces a branch.
+Extend the existing public coalescing boundary to recognize those original
+owners. Borrowed leaves require the same full slice identity, source ID,
+absolute origin and exact logical adjacency; frozen leaves delegate to the
+existing checked flat-frozen coalescer after normalizing their windows.
+Do not coalesce inside the verified balanced join/split drivers, where doing
+so would change their exact terminal and reconstruction-count contracts.
+
+The already checked `NormalizedSourceSpans` laws in `RPB3Admission.v` cover
+identity/adjacency/bounds, exact located bytes, right-end preservation and
+associative source normalization. No new formal algorithm is required.
+Three new `original_leaf_` controls are written before the native change:
+128 generated borrowed corpora with every cut; frozen split/rejoin and
+associativity with discontinuous origins and retained original backing; and
+identity/gap/overlap/native-end/empty-view controls. Resulting nonempty roots
+must contain one height-zero leaf, not an intermediate composed wrapper.
+This is a source-library optimization; indexed protobuf regions have not yet
+switched to this backing.
+
+**NEGATIVE CONTROLS / POSITIVE QUALIFICATION.** Before the implementation,
+all three new controls fail; the generated borrowed case minimizes to
+`[0, 0]`. Preserve that seed under `models/tests/support/` and bind this
+module's property runner explicitly to it. After implementation all 15 source
+tests pass in debug (0.77 seconds) and release (0.10 seconds), with zero
+failures/ignores and 430 filtered tests per profile. The combined service
+uses 57.256 seconds wall, 132.671 seconds CPU, 2.1G peak and zero swap under
+High4G/Max6G/Swap0/CPU400%/Tasks512/Runtime900, with seed `41315976`.
+The negative service exits 101 after 9.099 seconds, CPU 12.729 seconds,
+1.7G peak and zero swap. Test times are qualification observations, not
+benchmarks or evidence of importer throughput improvement.
+
+| Evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-source-coalescing-negative.log` | `7c0384b4b99fc0b5c61a29642ab951d19e98c86e28f41d4d1d4756747315ded0` |
+| `canonical-source-coalescing-positive.log` | `e0afa4b6c10dc32609de5abe491755b8aab1eb09dffc8369868df3efb61f13c9` |
+
+**NEXT INTEGRATION BOUNDARY.** Independent review identifies a distinction
+between logical source indices and physical provenance. An indexed borrowed
+byte can have physical offset `usize::MAX` and a separately supplied explicit
+end anchor. A selected source constructor must check ordered indices inside
+the original slice, representable physical start and last represented byte,
+and preserve the indexed endpoint independently. Checking an unused physical
+one-past-end would incorrectly reject that case. The current full-source
+constructor still imposes that stricter guard; extending selected-source
+construction requires explicit controls before indexed integration. Preserve
+the existing borrowed empty-tail refusal when its physical start overflows;
+do not claim an anchor silently repairs it. The formal `legal_window` bound
+concerns logical indices, while `explicit_completion_anchor_changes_only_the_end`
+separates end provenance. No consensus encoding change is implied.
 
 ## Upstream PathMap integration request register
 
