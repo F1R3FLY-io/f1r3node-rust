@@ -3651,6 +3651,15 @@ dropped in place. These changes add no allocation or semantic transition;
 their debug-stack benefit requires the unchanged small-stack controls, not an
 assumption that the compiler performs tail-call optimization.
 
+`Frame::step` and `Frame::accept` additionally separate dispatch from result
+consumption. The driver constructs a requested child only after `step` returns,
+and removes a completed frame before invoking parent acceptance. EPM diagnostic
+observation remains after its step on both success and error. The expanded
+64 KiB control retains both 8192-byte opaque fixtures and enumerates all nine
+component families with precomputed typed body/score oracles. This binds the
+same scheduling laws while testing the smaller phase-specific activations;
+it does not extend the theorem to arbitrary native stack footprints.
+
 ### Proof evidence
 
 Full compilation passes 333 closed-context checks (327 existing plus six new),

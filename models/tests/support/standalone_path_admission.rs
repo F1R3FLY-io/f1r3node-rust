@@ -678,7 +678,15 @@ fn joint_epm_transport_preserves_opaque_children_scores_and_all_source_backings(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/proptest-regressions/support/standalone_path_admission.txt"
+            )),
+        )),
+        ..ProptestConfig::with_cases(64)
+    })]
     #[test]
     fn joint_epm_transport_matches_scalar_for_arbitrary_opaque_widths_and_branches(
         nested in any::<bool>(), map in any::<bool>(), width in 16usize..193,
@@ -732,17 +740,135 @@ fn joint_epm_transport_preserves_malformed_child_and_boundary_provenance() {
     }
 }
 
+struct ComponentStackFixture {
+    program: &'static RhoMatchProgram,
+    expected: CanonicalComponentAdmission,
+    body: Vec<u8>,
+    score: Vec<u8>,
+}
+
+fn component_stack_fixture<T: crate::rust::par_bag::ParBagComponent>(
+    value: &T,
+    program: &'static RhoMatchProgram,
+) -> ComponentStackFixture {
+    use crate::rust::par_bag::{with_component_key, PAR_BAG_KEY_DOMAIN};
+    assert!(T::semantic_shape_is_complete(value));
+    with_component_key(value, |key| {
+        let trailer = key.len() - std::mem::size_of::<u64>();
+        let score_len = usize::try_from(u64::from_be_bytes(
+            key[trailer..].try_into().unwrap(),
+        )).unwrap();
+        let score_start = PAR_BAG_KEY_DOMAIN.len() + 1;
+        let score_end = score_start + score_len;
+        ComponentStackFixture {
+            program,
+            expected: CanonicalComponentAdmission {
+                family: T::TAG,
+                complete: true,
+                canonical_path_stable: T::canonical_path_stable(value),
+            },
+            body: key[score_end..trailer].to_vec(),
+            score: key[score_start..score_end].to_vec(),
+        }
+    })
+}
+
+fn component_stack_fixtures() -> Vec<ComponentStackFixture> {
+    use crate::rhoapi::connective::ConnectiveInstance;
+    use crate::rhoapi::g_unforgeable::UnfInstance;
+    use crate::rhoapi::{
+        Bundle, Connective, ConnectiveBody, GPrivate, GUnforgeable, If, Match,
+        MatchCase, New, Receive, ReceiveBind,
+    };
+    use crate::rust::rholang::match_schema_tables::{
+        BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
+        GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM, MATCH_RHO_MATCH_PROGRAM,
+        NEW_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM, SEND_RHO_MATCH_PROGRAM,
+    };
+    let empty = Par::default();
+    let fixtures = vec![
+        component_stack_fixture(&Send {
+            chan: Some(empty.clone()), data: vec![integer(1)], persistent: true,
+            connective_used: true, ..Send::default()
+        }, &SEND_RHO_MATCH_PROGRAM),
+        component_stack_fixture(&Receive {
+            binds: vec![ReceiveBind {
+                patterns: vec![integer(2)], source: Some(empty.clone()),
+                ..ReceiveBind::default()
+            }],
+            body: Some(empty.clone()), condition: Some(integer(3)), persistent: true,
+            peek: true, bind_count: 1, connective_used: true, ..Receive::default()
+        }, &RECEIVE_RHO_MATCH_PROGRAM),
+        component_stack_fixture(&New {
+            bind_count: 2, p: Some(empty.clone()),
+            uri: vec!["rho:a".to_string(), "rho:z".to_string()],
+            injections: std::collections::BTreeMap::from([("x".to_string(), integer(4))]),
+            ..New::default()
+        }, &NEW_RHO_MATCH_PROGRAM),
+        component_stack_fixture(&Expr {
+            expr_instance: Some(ExprInstance::GInt(-7)),
+        }, &EXPR_RHO_MATCH_PROGRAM),
+        component_stack_fixture(&Match {
+            target: Some(empty.clone()),
+            cases: vec![MatchCase {
+                pattern: Some(integer(5)), source: Some(integer(6)),
+                guard: Some(integer(7)), ..MatchCase::default()
+            }],
+            connective_used: true, ..Match::default()
+        }, &MATCH_RHO_MATCH_PROGRAM),
+        component_stack_fixture(&Bundle {
+            body: Some(empty.clone()), read_flag: true, write_flag: false,
+        }, &BUNDLE_RHO_MATCH_PROGRAM),
+        component_stack_fixture(&Connective {
+            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                ps: vec![integer(8), integer(9)],
+            })),
+        }, &CONNECTIVE_RHO_MATCH_PROGRAM),
+        component_stack_fixture(&GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![1, 2, 3] })),
+        }, &GUNFORGEABLE_RHO_MATCH_PROGRAM),
+        component_stack_fixture(&If {
+            condition: Some(integer(10)), if_true: Some(empty), if_false: Some(integer(11)),
+            connective_used: true, ..If::default()
+        }, &IF_RHO_MATCH_PROGRAM),
+    ];
+    let families: Vec<_> = (0..=u8::MAX).filter_map(ParComponentTag::from_byte).collect();
+    assert_eq!(fixtures.len(), families.len());
+    for family in families {
+        assert_eq!(fixtures.iter().filter(|fixture| fixture.expected.family == family).count(), 1);
+    }
+    fixtures
+}
+
 #[test]
 fn joint_epm_transport_preserves_large_opaque_payloads_on_an_unchanged_small_stack() {
     let fixtures = [false, true].map(|nested| {
         joint_epm_fixture(true, [joint_epm_key(nested, 8192, 1)])
     });
+    let components = component_stack_fixtures();
     std::thread::Builder::new().name("joint-epm-opaque".to_owned()).stack_size(64 * 1024).spawn(move || {
-        for bytes in fixtures {
+        for (kind, bytes) in ["RawParEscape", "NestedEpm1"].into_iter().zip(fixtures) {
             let (result, batches) = assert_joint_epm_transport(
                 IndexedByteRegion::from_borrowed(&bytes, 7, 101));
             result.unwrap();
             assert!(batches.forward_bytes > 4096 && batches.unwind_bytes > 4096, "{batches:?}");
+            eprintln!("64 KiB admission: kind={kind}, encoded_bytes={}, {batches:?}", bytes.len());
+        }
+        for fixture in components {
+            let admit = || validate_canonical_protobuf_inner(
+                IndexedByteRegion::from_borrowed(&fixture.body, 7, 101),
+                fixture.program,
+                Some((fixture.expected.family, &fixture.score)),
+            );
+            let (scalar, scalar_batches) = with_epm_transport(true, admit);
+            let (batched, batches) = with_epm_transport(false, admit);
+            assert_eq!(scalar_batches, EpmBatchObservation::default());
+            assert_eq!(batched, scalar);
+            let admission = batched.unwrap();
+            assert_eq!(admission.score_bytes(), Some(fixture.score.as_slice()));
+            assert_eq!(admission.component(), Some(fixture.expected));
+            eprintln!("64 KiB admission: kind={:?}, encoded_bytes={}, {batches:?}",
+                fixture.expected.family, fixture.body.len());
         }
     }).unwrap().join().unwrap();
 }

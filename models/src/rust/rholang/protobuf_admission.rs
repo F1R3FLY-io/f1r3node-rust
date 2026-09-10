@@ -2522,6 +2522,40 @@ enum Frame<'src> {
     CanonicalPath(CanonicalPathFrame<'src>),
 }
 
+impl<'src> Frame<'src> {
+    fn step(
+        &mut self,
+        stats: &mut CanonicalProtobufAdmissionStats,
+        scores: &mut CanonicalScoreArena<'src>,
+    ) -> Result<FrameAction<'src>, CanonicalProtobufAdmissionError> {
+        match self {
+            Self::Message(frame) => message_step(frame, stats, scores),
+            Self::Map(frame) => map_step(frame, stats),
+            Self::EPathMap(frame) => {
+                let action = epathmap_step(frame, stats);
+                #[cfg(test)]
+                standalone_path_admission::record_full_admission_path(&frame.path);
+                action
+            }
+            Self::CanonicalPath(frame) => frame.step(stats),
+        }
+    }
+
+    fn accept(
+        &mut self,
+        summary: FrameSummary<'src>,
+        stats: &mut CanonicalProtobufAdmissionStats,
+        scores: &CanonicalScoreArena<'src>,
+    ) -> Result<(), CanonicalProtobufAdmissionError> {
+        match self {
+            Self::Message(frame) => frame.accept(summary, scores),
+            Self::Map(frame) => frame.accept(summary),
+            Self::EPathMap(frame) => frame.accept(summary, stats),
+            Self::CanonicalPath(frame) => frame.accept(summary, stats),
+        }
+    }
+}
+
 enum FrameRequest<'src> {
     Message {
         region: AdmissionRegion<'src>,
@@ -3406,32 +3440,17 @@ fn drive_admission<'src>(
     let mut frames: Vec<Frame<'src>> = Vec::with_capacity(1);
     push_admission_frame(&mut frames, initial, &mut stats)?;
     loop {
-        let action = match frames
+        let action = frames
             .last_mut()
             .expect("canonical protobuf admission retains its root frame")
-        {
-            Frame::Message(frame) => message_step(frame, &mut stats, &mut scores)?,
-            Frame::Map(frame) => map_step(frame, &mut stats)?,
-            Frame::EPathMap(frame) => {
-                let action = epathmap_step(frame, &mut stats);
-                #[cfg(test)]
-                standalone_path_admission::record_full_admission_path(&frame.path);
-                action?
-            }
-            Frame::CanonicalPath(frame) => frame.step(&mut stats)?,
-        };
+            .step(&mut stats, &mut scores)?;
         match action {
             FrameAction::Continue => {}
             FrameAction::Push(request) => push_admission_frame(&mut frames, request, &mut stats)?,
             FrameAction::Complete(summary) => {
                 frames.truncate(frames.len() - 1);
                 if let Some(parent) = frames.last_mut() {
-                    match parent {
-                        Frame::Message(frame) => frame.accept(summary, &scores)?,
-                        Frame::Map(frame) => frame.accept(summary)?,
-                        Frame::EPathMap(frame) => frame.accept(summary, &mut stats)?,
-                        Frame::CanonicalPath(frame) => frame.accept(summary, &mut stats)?,
-                    }
+                    parent.accept(summary, &mut stats, &scores)?;
                 } else {
                     return Ok((summary, scores, stats));
                 }

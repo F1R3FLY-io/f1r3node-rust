@@ -11183,6 +11183,18 @@ requirements are preserved in
 The independent PMU-006 failure and whole-pipeline resource obligations remain
 open; no ACT-versus-LMDB result is inferred.
 
+Follow-up qualification extends the same 64 KiB test to all nine component
+families without removing either opaque fixture. Its first run reveals
+remaining driver stack pressure during scalar ACT parsing. Separating frame
+stepping from result acceptance removes inactive phase temporaries from that
+call chain. All 37 expanded admission tests then pass in debug in 24.02 seconds.
+The opaque cases consume 8,206 and 8,238 bytes respectively in one forward
+batch; ordinary component cases correctly use none. These counters demonstrate
+actual batching, not throughput. The follow-up full release model-library run
+passes all 488 tests in 56.38 seconds, with no failures, ignored or filtered
+tests. J-143 preserves both the negative evidence and representative-coverage
+limits; this result does not close the independent PMU-006 or resource gates.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

@@ -10380,6 +10380,49 @@ whole-pipeline resource qualification remain required; one descriptor per
 span is not a claim of constant memory for arbitrary input. No serialization
 format, hash, consensus transcript or ACT-versus-LMDB improvement is claimed.
 
+**ALL-FAMILY QUALIFICATION FOLLOW-UP.** Checkpoint `42e2f50a1` records the
+passing results above, before the additional family fixtures were applied.
+The extension preserves both original opaque fixtures and checks one complete
+typed component from every currently recognized family: Send, Receive, New,
+Expr, Match, Bundle, Connective, GUnforgeable and If. A family-enumeration
+assertion prevents silent omission. Typed body/score oracles are prepared
+outside the constrained thread; both scalar and batched admission execute
+inside the same 64 KiB thread and must agree exactly.
+
+The larger test closure first re-exposes scalar ACT parser stack pressure,
+before either opaque case completes. This negative result is preserved in
+`canonical-joint-expanded-debug.log` and its headless debugger trace. The
+driver is then separated into `Frame::step` and `Frame::accept`: construction
+no longer runs beneath inactive result-acceptance temporaries. EPM observation
+recording still follows its step even on an error; completed frames are still
+removed before parent acceptance. No stack limit or fixture is weakened.
+
+All 37 expanded admission tests now pass in debug in 24.02 seconds. The
+following exact work observations come from the unchanged 64 KiB test; they
+are not timing measurements or whole-workload speedups.
+
+| Opaque fixture | Encoded bytes | Forward batches / bytes | Reverse batches / bytes |
+|---|---:|---:|---:|
+| RawParEscape | 8,266 | 1 / 8,206 | 4 / 8,210 |
+| NestedEpm1 | 8,298 | 1 / 8,238 | 6 / 8,244 |
+
+All nine ordinary component fixtures also pass in that thread; they have no
+EPM spans and correctly report zero batches. This is finite representative
+family coverage, not exhaustive enumeration of all possible component values.
+The generated regression seed is preserved under
+`models/proptest-regressions/support/standalone_path_admission.txt`, outside
+production sources, with manifest-relative test persistence. The final release
+model-library run passes all 488 tests in 56.38 seconds, with zero failures,
+ignored or filtered tests. All verification jobs for this follow-up are terminal.
+The separate PMU-006 gate and whole-pipeline resource obligations remain open.
+
+| Follow-up evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-joint-expanded-debug.log` (failed expanded gate) | `bf6851cd3b7559fc6636383e3864b5acd985816636fe911023df8ccc68f47393` |
+| `canonical-joint-expanded-debugger.log` | `fd7f8c879153bf7dc027a8a35674f0acc3607cce58dde176ae46f8551295248a` |
+| `canonical-joint-expanded-debug-r2.log` (37 passed) | `735f00e70cd5a2bc697c49e19f2176e92d01c44226cf72c34963117abda68f9e` |
+| `canonical-joint-expanded-release.log` (488 passed) | `58232eacc92fe07b5e8bcec707bd6c2fe31ea8062f215c8ba561667c88793dd0` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
