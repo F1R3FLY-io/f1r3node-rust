@@ -3349,3 +3349,9 @@ controls pass in both debug and release, including the unchanged 64 KiB
 J-133 in the PathMap engineering journal records source/log hashes and the
 debug activation reduction; these are bounded native observations, not a
 proof of Rust compiler stack layout or of the entire campaign.
+
+The complete debug run later reaches its 900-second time limit with 441
+passing tests and one unfinished Par-to-S-expression fixture. A separate
+unchanged-fixture run with a longer time allowance is pending. This timeout
+does not invalidate the 32 passing admission controls, but it cannot be
+reported as a successful complete debug suite.

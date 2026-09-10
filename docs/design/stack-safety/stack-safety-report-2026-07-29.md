@@ -10918,6 +10918,14 @@ debug library is still running; task closure and a full-debug success remain
 unclaimed. J-133 distinguishes the full-run source coordinate from subsequent
 test-only assertion strengthening and records capped resource use.
 
+The complete debug run subsequently times out at 900.155 seconds, with 441
+passing tests and one unfinished deep Par-to-S-expression test. Peak memory
+is 294.4M, swap zero; this is a time-limit termination, not an observed stack
+overflow or a passing full suite. The unfinished test is being checked
+separately with an 1,800-second allowance and unchanged memory/stack limits.
+The combined maintained proof/runtime gate is also pending; J-133 preserves
+both live run coordinates and the original timeout evidence.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

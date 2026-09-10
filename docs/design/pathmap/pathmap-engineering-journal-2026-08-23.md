@@ -9547,6 +9547,22 @@ test assertions. Logs are `canonical-admission-request-all-release.log` and
 This required qualification remains within admission task 6018; it does not
 start unrelated runtime work.
 
+**FULL DEBUG TIMEOUT, NOT SUCCESS.** The broader debug service eventually
+reaches its 900-second wall limit with 441 recorded passing tests and the
+existing `par_to_sexpr::tests::depth_256_uses_a_fixed_128_kib_native_stack`
+still unfinished. It terminates with SIGTERM after 900.155 seconds service
+time, 2,298.205 seconds CPU, 294.4M peak and zero swap. No assertion failure,
+stack overflow or memory-limit exhaustion is reported in that run. Its log
+SHA-256 is `73e7355de1cbb4fa2ade877d54c53fc11b0972ced467c010fc654c4d7cb06a6f`.
+The existing fixture constructs every immutable encoded list prefix before
+formatting; no fixture-depth reduction or constructor rewrite is made here.
+After confirming the original service was terminal, the one unfinished test
+is launched separately with Runtime1800 and unchanged High4G/Max6G/Swap0,
+CPU400% and Tasks512. Its result is pending in
+`target/verification/canonical-admission-request-debug-remaining.log`.
+The maintained combined EPathMap proof/runtime gate is also running; neither
+live command has yet supplied a completion result for task 8413.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
