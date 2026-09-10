@@ -391,7 +391,19 @@ behaviors:
     statement: A failed cleanup command prevents admission even when the later disk sample is sufficient.
     priority: must
     deep_module: false
-    done: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-cleanup-outcome-2026-09-10/manifest.jsonc
+        test: scripts/bench/test-soak-cleanup-outcomes.sh
+        red_revision: d64ae3bbf757de6089300191c23cc1796245c60c
+        scenarios: [list, remove, network, image, builder]
+        characterization_cases: [partial, sufficient]
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -534,6 +546,12 @@ B25 adds [temporary session preservation evidence](../cbc-evidence/soak-d2-clean
 The driver removes its age-only sweep and retains admission refusal when space remains insufficient. An existing regression now requires preservation instead of deletion.
 
 Twenty-two positive configurations, twenty-three exact controls, 161 classifier cases, six routing scenarios, and thirty-one emergency scenarios pass.
+
+B26 adds [cleanup failure evidence](../cbc-evidence/soak-d2-cleanup-outcome-2026-09-10/README.md). Five command errors now prevent admission despite a later sufficient disk sample.
+
+Two successful-cleanup cases preserve baseline behavior with partial and sufficient reclamation. The corrected model has 42 distinct states.
+
+Twenty-three positive configurations, twenty-four exact controls, 168 classifier cases, six routing scenarios, and thirty-eight emergency scenarios pass.
 
 ## Remaining D2 work
 

@@ -483,3 +483,23 @@ External commit `d64ae3bbf` contains the tested executable inputs. Their hashes 
 Preserving unowned data can cause earlier disk refusal. Safe reclamation requires ownership and termination evidence, not a longer age threshold.
 
 Other D2 faults, Docker ownership, complete shutdown, durability, deadline bounds, reserve bounds, hosted checks, and maintainer review remain pending.
+
+## D2 cleanup failure preservation B26
+
+B26 starts from `d64ae3bbf`. Five external command faults expose suppressed cleanup errors followed by sufficient disk samples.
+
+The baseline admits work after each failed container listing, container removal, network prune, image prune, or builder prune. The formal control violates `CleanupFailurePreventsAdmission`.
+
+The correction retains each failure across the cleanup group and enables pipeline failure detection. The existing failed-hygiene path refuses admission and records one protection failure.
+
+All five production GREEN cases pass. The corrected formal configuration has 42 distinct states.
+
+Partial and sufficient reclamation cases pass on both baseline and corrected source. These successful-cleanup cases provide characterization, not additional repairs.
+
+Twenty-three positive configurations, twenty-four exact controls, 168 classifier cases, six routing scenarios, and thirty-eight emergency scenarios pass.
+
+The [evidence package](../cbc-evidence/soak-d2-cleanup-outcome-2026-09-10/README.md) retains the matched failures, characterization cases, and complete regression logs.
+
+External commit `14ffb4d3a` contains the tested executable inputs. This session does not attest its hooks.
+
+D2 remains pending. Other faults, Docker ownership, image preservation, complete shutdown, durable publication, deadline and reserve bounds, hosted checks, and maintainer review remain open.

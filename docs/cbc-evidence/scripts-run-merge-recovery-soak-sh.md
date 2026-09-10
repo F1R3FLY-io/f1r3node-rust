@@ -3,7 +3,7 @@
 - **Status:** pending (local RED/GREEN complete; hosted execution and maintainer review open)
 - **Adapter:** embedded
 - **Claim:** [CLAIM-SOAK-001](../claims/soak-disk-protection.md), proposed and unratified
-- **Commit:** 14ffb4d3a (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3, 7f0f46923, 6e0b50f26, 59b90568c, 8ab599e5c, 706b11b6e, 9c99de84e, 4e9dd432b, d64ae3bbf, 14ffb4d3a)
+- **Commit:** 1e2dc07f4 (corrections landed in ca85cfe3e, 59430d59b, ac94c1755, 3d2aa7904, e6fdd343b, 3498fa4f3, 7f0f46923, 6e0b50f26, 59b90568c, 8ab599e5c, 706b11b6e, 9c99de84e, 4e9dd432b, d64ae3bbf, 14ffb4d3a)
 - **Verified:** locally, 2026-09-08 to 2026-09-09
 
 Each cycle ran the real driver inside a disposable container through `scripts/bench/test-soak-disk-admission.sh` (no host mounts, no network, no Docker socket, UID 65534, 256 MiB, one CPU). `df`, `docker`, and the workload command were fixtures. In every cycle the production regression failed on the pre-fix source, TLC reported the named invariant with exit 12 on the pre-fix configuration, and both passed after the correction.
@@ -63,7 +63,7 @@ The per-cycle manifests were produced on the source branch and are retained outs
 | `soak-d2-hygiene-2026-09-09/manifest.jsonc` (B23) | `17bc0ec164978c3b8f6ba4b59394bd666b650d3f29234ca5110aab7bb8b58bff` |
 | `soak-d2-settings-2026-09-10/manifest.jsonc` (B24) | `0f8ed4935155b3ca96d133e656a19da4edd2f340c192c77395a03cedc4d4db8b` |
 | `soak-d2-cleanup-session-2026-09-10/manifest.jsonc` (B25) | `0c7926aa4f0872c592321457ac2bbd797689198f4139e1d333db1475bb1171a4` |
-| B26: no manifest was committed yet; the source branch retains the raw store outside Git | (none) |
+| `soak-d2-cleanup-outcome-2026-09-10/manifest.jsonc` (B26) | `cce080274ac1cc657e7465e60c9a252f9aae023173d473d1b89043fb17610fb0` |
 | `soak-d2-guardian-progress-2026-09-09/manifest.jsonc` (B20 to B22) | `310280a8df04bcba0d34cc6d0bd3d8b6b8899bb87e85f5ff945be7f1ffb8618b` |
 | `soak-d2-benchmark-supervision-2026-09-09/manifest.jsonc` (B18, B19) | `33be0710c7d724988fa1e07797a6537f3ba5ae9f962eacce784cabe0a0d348fe` |
 | `soak-d2-benchmark-cases-2026-09-09/manifest.jsonc` (B17 coverage) | `c7671619622336d2ca493ea5b7597414b28f18a43bb5e4b3a659c50c9565661b` |
