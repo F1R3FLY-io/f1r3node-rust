@@ -11098,3 +11098,143 @@ Print Assumptions native_frontier_capacity_is_127_slots_for_64_bit_lengths.
 Print Assumptions native_frontier_capacity_is_63_slots_for_32_bit_lengths.
 
 End BalancedSourceNativeCapacity.
+
+Module CheckedConstructorScheduling.
+
+Section Scheduling.
+
+Context {Parent Stats Request Child Error : Type}.
+
+Variable prepare : Stats -> Request -> (Stats + Error)%type.
+Variable install_wait : Parent -> Request -> Parent.
+Variable construct : Request -> (Child + Error)%type.
+Variable publish : Parent -> Stats -> Child -> (Stats + Error)%type.
+
+Inductive event := PrepareAttempt | ConstructAttempt | PublishAttempt | ResumeAttempt.
+
+Inductive observation :=
+| Ready (parent : Parent) (stats : Stats) (child : Child)
+| Failed (error : Error).
+
+Record pending := Pending {
+  pending_parent : Parent;
+  pending_stats : Stats;
+  pending_request : Request
+}.
+
+Definition eager parent stats request : observation * list event :=
+  match prepare stats request with
+  | inr error => (Failed error, [PrepareAttempt])
+  | inl prepared =>
+      match construct request with
+      | inr error => (Failed error, [PrepareAttempt; ConstructAttempt])
+      | inl child =>
+          let waiting := install_wait parent request in
+          match publish waiting prepared child with
+          | inr error => (Failed error, [PrepareAttempt; ConstructAttempt; PublishAttempt])
+          | inl published => (Ready waiting published child,
+              [PrepareAttempt; ConstructAttempt; PublishAttempt])
+          end
+      end
+  end.
+
+Definition defer parent stats request : (pending + Error)%type :=
+  match prepare stats request with
+  | inr error => inr error
+  | inl prepared => inl (Pending (install_wait parent request) prepared request)
+  end.
+
+Definition realize waiting : observation * list event :=
+  match construct (pending_request waiting) with
+  | inr error => (Failed error, [ConstructAttempt])
+  | inl child =>
+      match publish (pending_parent waiting) (pending_stats waiting) child with
+      | inr error => (Failed error, [ConstructAttempt; PublishAttempt])
+      | inl published => (Ready (pending_parent waiting) published child,
+          [ConstructAttempt; PublishAttempt])
+      end
+  end.
+
+Definition deferred parent stats request : observation * list event :=
+  match defer parent stats request with
+  | inr error => (Failed error, [PrepareAttempt])
+  | inl waiting =>
+      let '(result, events) := realize waiting in
+      (result, PrepareAttempt :: events)
+  end.
+
+Definition resume (continuation : Parent -> Stats -> Child -> observation)
+    (result : observation * list event) : observation * list event :=
+  match result with
+  | (Failed error, events) => (Failed error, events)
+  | (Ready parent stats child, events) =>
+      (continuation parent stats child, events ++ [ResumeAttempt])
+  end.
+
+Theorem deferred_construction_preserves_terminal_observations_and_attempt_order
+    parent stats request :
+  deferred parent stats request = eager parent stats request.
+Proof.
+  unfold deferred, defer, eager.
+  destruct (prepare stats request) as [prepared|error]; [|reflexivity].
+  unfold realize. cbn [pending_parent pending_stats pending_request].
+  destruct (construct request) as [child|error]; [|reflexivity].
+  destruct (publish (install_wait parent request) prepared child); reflexivity.
+Qed.
+
+Theorem checked_preparation_errors_precede_construction_and_publication
+    parent stats request error :
+  prepare stats request = inr error ->
+  deferred parent stats request = (Failed error, [PrepareAttempt]).
+Proof. intro failed. unfold deferred, defer. now rewrite failed. Qed.
+
+Theorem constructor_errors_precede_publication_even_if_publication_would_fail
+    parent stats request prepared error :
+  prepare stats request = inl prepared -> construct request = inr error ->
+  deferred parent stats request = (Failed error, [PrepareAttempt; ConstructAttempt]).
+Proof.
+  intros prepared_exact failed. unfold deferred, defer.
+  rewrite prepared_exact. unfold realize. cbn [pending_request]. now rewrite failed.
+Qed.
+
+Theorem publication_errors_follow_exactly_one_successful_constructor
+    parent stats request prepared child error :
+  prepare stats request = inl prepared -> construct request = inl child ->
+  publish (install_wait parent request) prepared child = inr error ->
+  deferred parent stats request =
+    (Failed error, [PrepareAttempt; ConstructAttempt; PublishAttempt]).
+Proof.
+  intros prepared_exact constructed failed. unfold deferred, defer.
+  rewrite prepared_exact. unfold realize. cbn [pending_request pending_parent pending_stats].
+  now rewrite constructed, failed.
+Qed.
+
+Theorem successful_deferred_dispatch_preserves_exact_parent_child_and_published_counts
+    parent stats request prepared child published :
+  prepare stats request = inl prepared -> construct request = inl child ->
+  publish (install_wait parent request) prepared child = inl published ->
+  deferred parent stats request =
+    (Ready (install_wait parent request) published child,
+      [PrepareAttempt; ConstructAttempt; PublishAttempt]).
+Proof.
+  intros prepared_exact constructed counted. unfold deferred, defer.
+  rewrite prepared_exact. unfold realize. cbn [pending_request pending_parent pending_stats].
+  now rewrite constructed, counted.
+Qed.
+
+Theorem rejected_construction_or_publication_never_resumes_a_parent_or_child
+    parent stats request error events continuation :
+  deferred parent stats request = (Failed error, events) ->
+  resume continuation (deferred parent stats request) = (Failed error, events).
+Proof. intro failed. rewrite failed. reflexivity. Qed.
+
+End Scheduling.
+
+Print Assumptions deferred_construction_preserves_terminal_observations_and_attempt_order.
+Print Assumptions checked_preparation_errors_precede_construction_and_publication.
+Print Assumptions constructor_errors_precede_publication_even_if_publication_would_fail.
+Print Assumptions publication_errors_follow_exactly_one_successful_constructor.
+Print Assumptions successful_deferred_dispatch_preserves_exact_parent_child_and_published_counts.
+Print Assumptions rejected_construction_or_publication_never_resumes_a_parent_or_child.
+
+End CheckedConstructorScheduling.

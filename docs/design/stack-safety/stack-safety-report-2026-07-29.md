@@ -10895,6 +10895,29 @@ remaining native obligations. Required task 8413 is reachable from 6018 and
 the epic. Neither this module checkpoint nor debugger exit zero makes the
 full model-library gate green.
 
+#### 5.33.50 Debug admission activation diagnosis (2026-09-10)
+
+Task 8413 remains open. Isolated GDB measurements show 32,256 bytes in the
+admission driver activation, 12,480 bytes in the canonical-path step and
+6,672 bytes in the indexed-path entry point, before the first input byte
+completes. The current heap-frame enum is 568 bytes. The planned repair moves
+full child construction out of step return transport, using compact requests
+and the same heap frame vector. Stack size and fixture depth remain unchanged.
+
+[J-133](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-133--2026-09-10-admission-control-frame-transport-diagnosis)
+records the measurements, checked error-order contract and explicit terminal
+failure-state abstraction. After six new scheduling lemmas passed compilation
+and independent kernel checking, the request-based native repair passes the
+unchanged 64 KiB debug reproducer. Repeated debugger measurements show driver,
+step and entry activations of 13,216, 5,856 and 4,928 bytes, respectively; the
+driver activation is approximately 59% smaller. The inferior subsequently
+finishes its test normally. This is a debug-stack result, not an application
+speedup. All 442 models release library tests now pass, and the final 32
+standalone admission controls pass in both debug and release. The complete
+debug library is still running; task closure and a full-debug success remain
+unclaimed. J-133 distinguishes the full-run source coordinate from subsequent
+test-only assertion strengthening and records capped resource use.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

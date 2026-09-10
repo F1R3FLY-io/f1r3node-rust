@@ -2193,7 +2193,7 @@ fn obligation_frame<'src>(
     owner: &'static RhoMatchProgram,
     field: u32,
     stats: &mut CanonicalProtobufAdmissionStats,
-) -> Result<(PathObligationWait, Frame<'src>), CanonicalProtobufAdmissionError> {
+) -> Result<(PathObligationWait, FrameRequest<'src>), CanonicalProtobufAdmissionError> {
     let end =
         CanonicalByteProvenance::new(completed.payload_end.source, completed.payload_end.offset);
     let body = shorten_frozen_region(OwnedIndexedByteRegion::from_frozen(completed.payload, end));
@@ -2206,7 +2206,7 @@ fn obligation_region_frame<'src>(
     owner: &'static RhoMatchProgram,
     field: u32,
     stats: &mut CanonicalProtobufAdmissionStats,
-) -> Result<(PathObligationWait, Frame<'src>), CanonicalProtobufAdmissionError> {
+) -> Result<(PathObligationWait, FrameRequest<'src>), CanonicalProtobufAdmissionError> {
     let payload_len = body.len();
     stats.canonical_path_obligations = stats
         .canonical_path_obligations
@@ -2221,12 +2221,15 @@ fn obligation_region_frame<'src>(
         kind: obligation.kind,
     };
     let frame = match waiting.kind {
-        CanonicalPathObligationKind::RawParEscape => Frame::Message(
-            MessageFrame::from_message_region(body, &PAR_PROTOBUF_REGION_PROGRAM)?,
-        ),
-        CanonicalPathObligationKind::NestedEpm1 => {
-            Frame::EPathMap(EPathMapFrame::from_epm1_region(owner, field, body)?)
-        }
+        CanonicalPathObligationKind::RawParEscape => FrameRequest::Message {
+            region: body,
+            program: &PAR_PROTOBUF_REGION_PROGRAM,
+        },
+        CanonicalPathObligationKind::NestedEpm1 => FrameRequest::EPathMap {
+            region: body,
+            owner,
+            field,
+        },
     };
     Ok((waiting, frame))
 }
@@ -2469,6 +2472,54 @@ enum Frame<'src> {
     CanonicalPath(CanonicalPathFrame<'src>),
 }
 
+enum FrameRequest<'src> {
+    Message {
+        region: AdmissionRegion<'src>,
+        program: &'static RhoMatchProgram,
+    },
+    Map {
+        region: AdmissionRegion<'src>,
+        owner: &'static RhoMatchProgram,
+        field: u32,
+        value_type_id: u16,
+    },
+    EPathMap {
+        region: AdmissionRegion<'src>,
+        owner: &'static RhoMatchProgram,
+        field: u32,
+    },
+    CanonicalPath(AdmissionRegion<'src>),
+}
+
+impl<'src> FrameRequest<'src> {
+    fn materialize(self) -> Result<Frame<'src>, CanonicalProtobufAdmissionError> {
+        match self {
+            Self::Message { region, program } => {
+                MessageFrame::from_message_region(region, program).map(Frame::Message)
+            }
+            Self::Map {
+                region,
+                owner,
+                field,
+                value_type_id,
+            } => Ok(Frame::Map(MapFrame::from_map_region(
+                owner,
+                field,
+                value_type_id,
+                region,
+            ))),
+            Self::EPathMap {
+                region,
+                owner,
+                field,
+            } => EPathMapFrame::from_epm1_region(owner, field, region).map(Frame::EPathMap),
+            Self::CanonicalPath(region) => {
+                Ok(Frame::CanonicalPath(CanonicalPathFrame::new(region)))
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct MessageSummary<'src> {
     semantic: SemanticSummary<'src>,
@@ -2490,7 +2541,7 @@ enum FrameSummary<'src> {
 
 enum FrameAction<'src> {
     Continue,
-    Push(Frame<'src>),
+    Push(FrameRequest<'src>),
     Complete(FrameSummary<'src>),
 }
 
@@ -2880,9 +2931,10 @@ fn message_step<'src>(
                     body: body.clone(),
                     field_position,
                 });
-                Ok(FrameAction::Push(Frame::Message(
-                    MessageFrame::from_message_region(body, child)?,
-                )))
+                Ok(FrameAction::Push(FrameRequest::Message {
+                    region: body,
+                    program: child,
+                }))
             }
             _ => {
                 validate_scalar(frame, &field, variant.protobuf_kind, ScalarPresence::Oneof)?;
@@ -2923,9 +2975,10 @@ fn message_step<'src>(
                     body: body.clone(),
                     field_position,
                 });
-                Ok(FrameAction::Push(Frame::Message(
-                    MessageFrame::from_message_region(body, child)?,
-                )))
+                Ok(FrameAction::Push(FrameRequest::Message {
+                    region: body,
+                    program: child,
+                }))
             }
             RhoMatchFieldKind::StringMessageMap(type_id) => {
                 let field_number = field.number;
@@ -2934,12 +2987,12 @@ fn message_step<'src>(
                     slot,
                     field_position,
                 });
-                Ok(FrameAction::Push(Frame::Map(MapFrame::from_map_region(
-                    frame.program,
-                    field_number,
-                    type_id,
-                    body,
-                ))))
+                Ok(FrameAction::Push(FrameRequest::Map {
+                    owner: frame.program,
+                    field: field_number,
+                    value_type_id: type_id,
+                    region: body,
+                }))
             }
             RhoMatchFieldKind::PathMap => {
                 let field_number = field.number;
@@ -2948,9 +3001,11 @@ fn message_step<'src>(
                     slot,
                     field_position,
                 });
-                Ok(FrameAction::Push(Frame::EPathMap(
-                    EPathMapFrame::from_epm1_region(frame.program, field_number, body)?,
-                )))
+                Ok(FrameAction::Push(FrameRequest::EPathMap {
+                    owner: frame.program,
+                    field: field_number,
+                    region: body,
+                }))
             }
             RhoMatchFieldKind::Oneof(_) => {
                 Err(frame.field_error(&field, "unresolved oneof marker reached admission"))
@@ -3021,9 +3076,10 @@ fn map_step<'src>(
             frame.saw_value = true;
             frame.value_position = Some(field_position);
             frame.waiting_value = true;
-            Ok(FrameAction::Push(Frame::Message(
-                MessageFrame::from_message_region(value, program)?,
-            )))
+            Ok(FrameAction::Push(FrameRequest::Message {
+                region: value,
+                program,
+            }))
         }
         1 | 2 => Err(frame.field_error(&field, "canonical protobuf map-entry field is duplicated")),
         _ => Err(frame.field_error(
@@ -3127,9 +3183,10 @@ fn epathmap_step<'src>(
                 }
                 if let Some(value) = value_body {
                     frame.waiting = Some(EPathMapWait::MapValue);
-                    return Ok(FrameAction::Push(Frame::Message(
-                        MessageFrame::from_message_region(value, &PAR_PROTOBUF_REGION_PROGRAM)?,
-                    )));
+                    return Ok(FrameAction::Push(FrameRequest::Message {
+                        region: value,
+                        program: &PAR_PROTOBUF_REGION_PROGRAM,
+                    }));
                 }
             }
         }
@@ -3155,8 +3212,43 @@ fn first_score_difference<'src>(
     }
 }
 
+fn push_admission_frame<'src>(
+    frames: &mut Vec<Frame<'src>>,
+    request: FrameRequest<'src>,
+    stats: &mut CanonicalProtobufAdmissionStats,
+) -> Result<(), CanonicalProtobufAdmissionError> {
+    let frame = request.materialize()?;
+    let count = match &frame {
+        Frame::Message(_) => Some(&mut stats.messages),
+        Frame::Map(_) => Some(&mut stats.map_entries),
+        Frame::EPathMap(_) => Some(&mut stats.epathmaps),
+        Frame::CanonicalPath(_) => None,
+    };
+    if let Some(count) = count {
+        *count = count
+            .checked_add(1)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?;
+    }
+    frames.push(frame);
+    let frame_variant_bytes = std::mem::size_of::<Frame>();
+    stats.max_frames = stats.max_frames.max(frames.len());
+    stats.max_frame_storage_bytes = stats.max_frame_storage_bytes.max(
+        frames
+            .len()
+            .checked_mul(frame_variant_bytes)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?,
+    );
+    stats.max_frame_capacity_bytes = stats.max_frame_capacity_bytes.max(
+        frames
+            .capacity()
+            .checked_mul(frame_variant_bytes)
+            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?,
+    );
+    Ok(())
+}
+
 fn drive_admission<'src>(
-    initial: Frame<'src>,
+    initial: FrameRequest<'src>,
     input_bytes: usize,
 ) -> Result<
     (
@@ -3170,17 +3262,12 @@ fn drive_admission<'src>(
     let mut scores: CanonicalScoreArena<'src> = CanonicalScoreArena::new();
     let mut stats = CanonicalProtobufAdmissionStats {
         input_bytes,
-        messages: usize::from(matches!(&initial, Frame::Message(_))),
-        map_entries: usize::from(matches!(&initial, Frame::Map(_))),
-        epathmaps: usize::from(matches!(&initial, Frame::EPathMap(_))),
-        max_frames: 1,
         frame_variant_bytes,
-        max_frame_storage_bytes: frame_variant_bytes,
-        max_frame_capacity_bytes: frame_variant_bytes,
         byte_native_validations: 1,
         ..CanonicalProtobufAdmissionStats::default()
     };
-    let mut frames: Vec<Frame<'src>> = vec![initial];
+    let mut frames: Vec<Frame<'src>> = Vec::with_capacity(1);
+    push_admission_frame(&mut frames, initial, &mut stats)?;
     loop {
         let action = match frames
             .last_mut()
@@ -3198,43 +3285,7 @@ fn drive_admission<'src>(
         };
         match action {
             FrameAction::Continue => {}
-            FrameAction::Push(frame) => {
-                match frame {
-                    Frame::Message(_) => {
-                        stats.messages = stats
-                            .messages
-                            .checked_add(1)
-                            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?
-                    }
-                    Frame::Map(_) => {
-                        stats.map_entries = stats
-                            .map_entries
-                            .checked_add(1)
-                            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?
-                    }
-                    Frame::EPathMap(_) => {
-                        stats.epathmaps = stats
-                            .epathmaps
-                            .checked_add(1)
-                            .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?
-                    }
-                    Frame::CanonicalPath(_) => {}
-                }
-                frames.push(frame);
-                stats.max_frames = stats.max_frames.max(frames.len());
-                stats.max_frame_storage_bytes = stats.max_frame_storage_bytes.max(
-                    frames
-                        .len()
-                        .checked_mul(frame_variant_bytes)
-                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?,
-                );
-                stats.max_frame_capacity_bytes = stats.max_frame_capacity_bytes.max(
-                    frames
-                        .capacity()
-                        .checked_mul(frame_variant_bytes)
-                        .ok_or(CanonicalProtobufAdmissionError::SizeOverflow)?,
-                );
-            }
+            FrameAction::Push(request) => push_admission_frame(&mut frames, request, &mut stats)?,
             FrameAction::Complete(summary) => {
                 frames.pop();
                 if let Some(parent) = frames.last_mut() {
@@ -3258,10 +3309,7 @@ fn validate_canonical_path_indexed(
 {
     let input_bytes = input.len();
     let root_end = input.end_position().physical;
-    let (summary, _, mut stats) = drive_admission(
-        Frame::CanonicalPath(CanonicalPathFrame::new(input)),
-        input_bytes,
-    )?;
+    let (summary, _, mut stats) = drive_admission(FrameRequest::CanonicalPath(input), input_bytes)?;
     let FrameSummary::CanonicalPath(summary) = summary else {
         return Err(CanonicalProtobufAdmissionError::Schema {
             type_name: "CanonicalPath",
@@ -3289,7 +3337,10 @@ fn validate_canonical_protobuf_inner<'src>(
         .expect("indexed protobuf roots own their start")
         .physical;
     let (summary, scores, mut stats) = drive_admission(
-        Frame::Message(MessageFrame::from_message_region(input, root)?),
+        FrameRequest::Message {
+            region: input,
+            program: root,
+        },
         input_bytes,
     )?;
     let FrameSummary::Message(summary) = summary else {

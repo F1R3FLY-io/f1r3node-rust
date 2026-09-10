@@ -9454,6 +9454,99 @@ integrated indexed-region anchors, lifetime-threaded admission publication,
 per-phase native counters and full qualification remain required. No consensus
 encoding, hash, COMM accounting or storage-metering behavior changes.
 
+### J-133 — 2026-09-10: admission control-frame transport diagnosis
+
+**MEASURED / REPAIR IN PROGRESS.** Task 8413's isolated debug failure occurs
+before the first canonical-key byte completes, not after growing traversal
+depth. GDB stack-pointer differences attribute 32,256 bytes to
+`drive_admission`, 12,480 bytes to `CanonicalPathFrame::step`, and 6,672 bytes
+to `validate_canonical_path_indexed`. The current heap-frame enum is 568 bytes
+and its canonical-path variant is 560 bytes; historical larger enum-size
+measurements do not describe this binary. The evidence is
+`target/verification/canonical-admission-stack-pointers.log`. These are debug
+activation measurements, not retained heap sizes or application timings.
+
+**DECISION.** Replace child-frame return transport with compact construction
+requests. Materialize each child in the driver after the parent step returns;
+retain the existing heap vector of frames. Root admission likewise receives a
+request. Constructor validation must precede message/map/EPathMap count
+publication. Obligation and payload counters retain their existing earlier
+checked updates. No format, canonicalization, semantic or accounting change
+is intended, and no additional per-byte allocation is introduced.
+
+The existing formal request-dispatch model covers child identity, region
+provenance, parent suspension and terminal child refusal. It does not itself
+model fallible native constructors or checked publication counters. The
+bounded proof extension must establish their exact success/error ordering
+before implementation. Installing a private obligation wait before a deferred
+constructor fails is permissible only under the explicitly terminal result
+abstraction: the failed driver returns neither the parent nor its statistics
+and cannot resume. This is not a claim of identical private rejected states.
+
+**FORMALLY CHECKED / IMPLEMENTED / FOCUSED DEBUG PASS.** Before the native
+patch, all six new scheduling lemmas compiled and passed independent kernel
+checking. The RPB3 unit now has 333 closed reports. Compiler service time was
+37.475 seconds, CPU 36.951 seconds, peak 1.1G and swap zero; kernel service
+time was 21.216 seconds, CPU 20.408 seconds, peak 473.4M and swap zero.
+Both ran under High1536M/Max2G/Swap0/CPU100%/Tasks64/Runtime900. The initial
+launch lacked a working-directory property, and the next run found a proof
+reduction tactic error. Both failures are retained; neither is counted as a
+passing check. Final evidence is in `canonical-constructor-scheduling-proof-r3.log`
+and `canonical-constructor-scheduling-kernel.log` under `target/verification`.
+
+The native repair preserves all eight producers' constructor arguments and
+reuses a single checked materialization/publication helper for roots and
+children. Five tests bind the new proof catalogue to constructor errors,
+preparation/publication overflow, all four frame variants, compact control
+layout and a 128-case borrowed/frozen malformed-input differential. Existing
+parent-suspension and child-error-before-parent-suffix controls remain intact.
+
+The unchanged 64 KiB debug reproducer now passes: one test passed, none failed
+or ignored, 441 filtered out, 0.04 seconds test time. Compile/test service used
+16.749 seconds wall, 19.946 seconds CPU, 2.2G peak and zero swap, under
+High4G/Max6G/Swap0/CPU400%/Tasks512/Runtime900. Independent code review found
+no semantic or error-order defect; its requested explicit child construction
+in the existing resource matrix was retained to avoid losing test coverage.
+
+A new GDB observation at the same first-byte feed chain measures the driver
+at 13,216 bytes, the path step at 5,856 bytes and the indexed entry point at
+4,928 bytes. The driver activation is approximately 59% smaller. The request
+argument is 76 bytes; the debugger could not resolve the not-yet-bound local
+`action`, so no action-size measurement is inferred. After disabling the
+breakpoint, the test passes and the inferior exits normally. Debugger service
+time was 2.768 seconds, CPU 2.442 seconds, peak 380.9M and swap zero under
+High4G/Max6G/Swap0/CPU100%/Tasks64/Runtime120. Logs are
+`canonical-admission-request-debug.log` and `canonical-admission-request-stack.log`.
+
+**FULL RELEASE PASS / FINAL NATIVE CONTROLS PASS.** The full models release
+library passes all 442 tests with zero failures, ignores or filters, in
+52.03 seconds test time. Service wall time is 87.066 seconds, CPU 205.685
+seconds, peak 1.8G and swap zero. After the final test-only review additions,
+all 32 standalone admission tests pass again in both profiles: 23.99 seconds
+debug and 1.11 seconds release, with zero failures/ignores and 410 filtered
+tests per invocation. The combined rebuild/control service uses 63.760 seconds
+wall, 126.118 seconds CPU, 2.3G peak and zero swap. All Rust services retain
+the High4G/Max6G/Swap0/CPU400%/Tasks512/Runtime900 envelope and property seed
+`41315976` for these complete/control runs.
+
+The full debug library remains running its existing deep construction and
+conversion tests; its earlier first-byte overflow no longer occurs. This is
+not yet a full-debug pass, a task closure, or an application throughput claim.
+The production source is unchanged across the successful full release run
+and final control rerun; the latter additionally verifies the strengthened
+test assertions. Logs are `canonical-admission-request-all-release.log` and
+`canonical-admission-request-final-controls.log` under `target/verification`.
+
+| Evidence coordinate | SHA-256 |
+|---|---|
+| `models/src/rust/rholang/protobuf_admission.rs` | `65eb08eb8da7de29d873d2bd6c96ec6727b1a40c9587bb4e9f9343f93e15af3d` |
+| `models/tests/support/standalone_path_admission.rs` after final review | `b097ab8230f4965942019ac3bb8003942ac24bd64d64bccf2635e3509bf5486d` |
+| Full release log | `1884f9079974a02b0ec9dc1088dd3155f4c1df37a928f7c57930f1a97786dff5` |
+| Debugger activation log | `a404ba5a0d4b8398b21ff6ebe6370747030f1231932de9a8b1c36a9a368d2ac6` |
+
+This required qualification remains within admission task 6018; it does not
+start unrelated runtime work.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

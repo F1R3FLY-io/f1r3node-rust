@@ -20,6 +20,209 @@ fn expr(value: ExprInstance) -> Par {
 
 fn integer(value: i64) -> Par { expr(ExprInstance::GInt(value)) }
 
+#[test]
+fn deferred_request_transport_is_smaller_than_frames() {
+    assert!(std::mem::size_of::<FrameRequest>() < std::mem::size_of::<Frame>());
+    assert!(std::mem::size_of::<FrameAction>() < std::mem::size_of::<Frame>());
+}
+
+#[test]
+fn deferred_request_constructor_errors_precede_publication() {
+    static INVALID_PROGRAM: RhoMatchProgram = RhoMatchProgram {
+        type_id: 0,
+        type_name: "InvalidAdmissionControl",
+        fields: &[super::super::match_schema::RhoMatchField {
+            tag: 1,
+            name: "invalid",
+            kind: RhoMatchFieldKind::Bool,
+        }],
+        protobuf_fields: &[],
+    };
+    let input = IndexedByteRegion::from_borrowed(&[], 37, 101);
+    let message_error = MessageFrame::from_message_region(input.clone(), &INVALID_PROGRAM)
+        .err()
+        .unwrap();
+    let epm_error = EPathMapFrame::from_epm1_region(&PAR_PROTOBUF_REGION_PROGRAM, 7, input.clone())
+        .err()
+        .unwrap();
+    for (request, expected) in [
+        (
+            FrameRequest::Message {
+                region: input.clone(),
+                program: &INVALID_PROGRAM,
+            },
+            message_error,
+        ),
+        (
+            FrameRequest::EPathMap {
+                region: input,
+                owner: &PAR_PROTOBUF_REGION_PROGRAM,
+                field: 7,
+            },
+            epm_error,
+        ),
+    ] {
+        let mut frames = Vec::new();
+        let mut stats = CanonicalProtobufAdmissionStats {
+            messages: usize::MAX,
+            map_entries: usize::MAX,
+            epathmaps: usize::MAX,
+            ..Default::default()
+        };
+        let before = stats;
+        assert_eq!(
+            push_admission_frame(&mut frames, request, &mut stats).unwrap_err(),
+            expected
+        );
+        assert!(frames.is_empty());
+        assert_eq!(stats, before);
+    }
+    let mut frames = Vec::new();
+    let mut stats = CanonicalProtobufAdmissionStats {
+        messages: usize::MAX,
+        ..Default::default()
+    };
+    let before = stats;
+    let request = FrameRequest::Message {
+        region: IndexedByteRegion::from_borrowed(&[], 37, 101),
+        program: &PAR_PROTOBUF_REGION_PROGRAM,
+    };
+    assert_eq!(
+        push_admission_frame(&mut frames, request, &mut stats).unwrap_err(),
+        CanonicalProtobufAdmissionError::SizeOverflow
+    );
+    assert!(frames.is_empty());
+    assert_eq!(stats, before);
+}
+
+#[test]
+fn deferred_request_variants_publish_exactly_once() {
+    let map = EPathMap::new_map([(integer(1), integer(2))], Vec::new(), false, None);
+    let mut frames = Vec::new();
+    let mut stats = CanonicalProtobufAdmissionStats::default();
+    let input = IndexedByteRegion::from_borrowed(&[], 37, 101);
+    let requests = [
+        FrameRequest::Message {
+            region: input.clone(),
+            program: &PAR_PROTOBUF_REGION_PROGRAM,
+        },
+        FrameRequest::Map {
+            region: input.clone(),
+            owner: &PAR_PROTOBUF_REGION_PROGRAM,
+            field: 7,
+            value_type_id: PAR_PROTOBUF_REGION_PROGRAM.type_id,
+        },
+        FrameRequest::EPathMap {
+            region: IndexedByteRegion::from_borrowed(map.trie_snapshot(), 39, 201),
+            owner: &PAR_PROTOBUF_REGION_PROGRAM,
+            field: 8,
+        },
+        FrameRequest::CanonicalPath(input),
+    ];
+    for (index, request) in requests.into_iter().enumerate() {
+        push_admission_frame(&mut frames, request, &mut stats).unwrap();
+        assert_eq!(frames.len(), index + 1);
+        assert_eq!(stats.messages, 1);
+        assert_eq!(stats.map_entries, usize::from(index >= 1));
+        assert_eq!(stats.epathmaps, usize::from(index >= 2));
+        assert_eq!(stats.max_frames, frames.len());
+        assert_eq!(
+            stats.max_frame_storage_bytes,
+            frames.len() * std::mem::size_of::<Frame>()
+        );
+        assert_eq!(
+            stats.max_frame_capacity_bytes,
+            frames.capacity() * std::mem::size_of::<Frame>()
+        );
+    }
+    let Frame::Message(message) = &frames[0] else {
+        panic!("expected message")
+    };
+    assert!(std::ptr::eq(message.program, &PAR_PROTOBUF_REGION_PROGRAM));
+    assert!(message.body.is_empty());
+    assert_eq!(message.region_start, CanonicalByteProvenance::new(37, 101));
+    assert!(message.waiting.is_none());
+    let Frame::Map(entry) = &frames[1] else {
+        panic!("expected map entry")
+    };
+    assert!(std::ptr::eq(entry.owner, &PAR_PROTOBUF_REGION_PROGRAM));
+    assert_eq!(entry.outer_field, 7);
+    assert_eq!(entry.value_type_id, PAR_PROTOBUF_REGION_PROGRAM.type_id);
+    assert!(entry.region.is_empty());
+    assert_eq!(entry.region_start, CanonicalByteProvenance::new(37, 101));
+    assert!(!entry.waiting_value);
+    let Frame::EPathMap(epm) = &frames[2] else {
+        panic!("expected EPathMap")
+    };
+    assert!(std::ptr::eq(epm.owner, &PAR_PROTOBUF_REGION_PROGRAM));
+    assert_eq!(epm.field, 8);
+    assert_eq!(epm.mode, EPathMapMode::Map);
+    assert_eq!(epm.region_start, CanonicalByteProvenance::new(39, 201));
+    assert_eq!(
+        epm.snapshot.bytes().collect::<Vec<_>>(),
+        map.trie_snapshot()
+    );
+    assert!(epm.waiting.is_none());
+    let Frame::CanonicalPath(path) = &frames[3] else {
+        panic!("expected canonical path")
+    };
+    assert!(path.input.is_empty());
+    assert_eq!(
+        path.input.end_position().physical,
+        CanonicalByteProvenance::new(37, 101)
+    );
+    assert_eq!(path.cursor.bytes_yielded(), 0);
+    assert_eq!(path.reducer.consumed_len(), 0);
+    assert!(path.waiting.is_none());
+}
+
+#[test]
+fn deferred_obligation_preparation_overflow_precedes_constructor_failure() {
+    let key = [0x10, 1, 0xff];
+    for payload_overflow in [false, true] {
+        let mut parent = CanonicalPathFrame::new(IndexedByteRegion::from_borrowed(&key, 37, 101));
+        let mut stats = CanonicalProtobufAdmissionStats {
+            canonical_path_obligations: if payload_overflow { 0 } else { usize::MAX },
+            canonical_path_payload_bytes: if payload_overflow { usize::MAX } else { 0 },
+            ..Default::default()
+        };
+        let mut expected = stats;
+        if payload_overflow {
+            expected.canonical_path_obligations = 1;
+        }
+        assert_eq!(
+            parent.step(&mut stats).err().unwrap(),
+            CanonicalProtobufAdmissionError::SizeOverflow
+        );
+        assert_eq!(stats, expected);
+        assert!(parent.waiting.is_none());
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn deferred_epathmap_constructor_matches_direct_constructor(bytes in prop::collection::vec(any::<u8>(), 0..192)) {
+        for input in [IndexedByteRegion::from_borrowed(&bytes, 37, 101), fragmented(&bytes)] {
+            let direct = EPathMapFrame::from_epm1_region(&PAR_PROTOBUF_REGION_PROGRAM, 7, input.clone());
+            let deferred = FrameRequest::EPathMap {
+                region: input, owner: &PAR_PROTOBUF_REGION_PROGRAM, field: 7,
+            }.materialize();
+            match (direct, deferred) {
+                (Err(expected), Err(actual)) => prop_assert_eq!(actual, expected),
+                (Ok(expected), Ok(Frame::EPathMap(actual))) => {
+                    prop_assert_eq!(actual.mode, expected.mode);
+                    prop_assert_eq!(actual.region_start, expected.region_start);
+                    prop_assert_eq!(actual.snapshot.len(), expected.snapshot.len());
+                    prop_assert_eq!(actual.snapshot.end_position(), expected.snapshot.end_position());
+                    prop_assert_eq!(actual.snapshot.bytes().collect::<Vec<_>>(), expected.snapshot.bytes().collect::<Vec<_>>());
+                }
+                _ => prop_assert!(false, "deferred constructor differs from direct constructor"),
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FullAdmissionPathObservation {
     edges: usize,
@@ -50,8 +253,11 @@ pub(super) fn record_full_admission_path(path: &CanonicalPathTopologyAdmission) 
             observation.frame_bytes = observation.frame_bytes.max(frame_bytes);
             observation.restore_bytes = observation.restore_bytes.max(restore_bytes);
             observation.repeated_owner_work = observation.repeated_owner_work.max(
-                stats.region_descents + work.active_queries + work.completed_queries
-                    + work.rebuilds + work.reifications,
+                stats.region_descents
+                    + work.active_queries
+                    + work.completed_queries
+                    + work.rebuilds
+                    + work.reifications,
             );
             observation.observations += 1;
             cell.set(Some(observation));
@@ -73,13 +279,22 @@ fn observe_full_admission<T>(action: impl FnOnce() -> T) -> (T, FullAdmissionPat
     (result, FULL_ADMISSION_PATH.with(|cell| cell.get().unwrap()))
 }
 
-fn full_admission_fixture(depth: usize, width: usize, endpoints: usize, malformed: bool) -> Vec<u8> {
+fn full_admission_fixture(
+    depth: usize,
+    width: usize,
+    endpoints: usize,
+    malformed: bool,
+) -> Vec<u8> {
     use crate::rust::epathmap_trie_codec::{self, EPathMapRepr};
     use crate::rust::rholang::canonical_path_admission::frame_storage_tests::nested_persistent_key;
 
     fn field(number: u32, body: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
-        prost::encoding::encode_key(number, prost::encoding::WireType::LengthDelimited, &mut bytes);
+        prost::encoding::encode_key(
+            number,
+            prost::encoding::WireType::LengthDelimited,
+            &mut bytes,
+        );
         prost::encoding::encode_varint(body.len() as u64, &mut bytes);
         bytes.extend_from_slice(body);
         bytes
@@ -118,7 +333,9 @@ fn full_admission_shared_region_checkpoint_matrix() {
                 let restored = ParBag::from_compact_bytes(&compact).unwrap();
                 assert_eq!(restored, *expected.components());
                 let mut expected_score = Vec::new();
-                expected.components().append_par_score_key(false, &mut expected_score);
+                expected
+                    .components()
+                    .append_par_score_key(false, &mut expected_score);
                 let mut control = None;
                 for (backing, input) in [
                     ("borrowed", IndexedByteRegion::from_borrowed(&bytes, 0, 0)),
@@ -140,13 +357,23 @@ fn full_admission_shared_region_checkpoint_matrix() {
                     assert!(observed.frames <= 2 * observed.edges + 1);
                     assert!(observed.observations >= endpoints);
                     assert!(stats.max_frames <= 8);
-                    if let Some(before) = control { assert_eq!(observed, before); }
-                    else { control = Some(observed); }
+                    if let Some(before) = control {
+                        assert_eq!(observed, before);
+                    } else {
+                        control = Some(observed);
+                    }
                     println!(
                         "full-admission depth={depth} endpoints={endpoints} width={width} backing={backing} encoded={} edges={} states={} frames={} state_owner_bytes={} frame_bytes={} restore_bytes={} outer_frame_capacity={} repeated_owner_work={} observations={}",
-                        bytes.len(), observed.edges, observed.states, observed.frames,
-                        observed.state_owner_bytes, observed.frame_bytes, observed.restore_bytes,
-                        stats.max_frame_capacity_bytes, observed.repeated_owner_work, observed.observations,
+                        bytes.len(),
+                        observed.edges,
+                        observed.states,
+                        observed.frames,
+                        observed.state_owner_bytes,
+                        observed.frame_bytes,
+                        observed.restore_bytes,
+                        stats.max_frame_capacity_bytes,
+                        observed.repeated_owner_work,
+                        observed.observations,
                     );
                 }
             }
@@ -158,7 +385,10 @@ fn full_admission_shared_region_checkpoint_matrix() {
 fn full_admission_incomplete_endpoint_preserves_failure_provenance() {
     let good = full_admission_fixture(32, 1_024, 256, false);
     let bad = full_admission_fixture(32, 1_024, 256, true);
-    for input in [IndexedByteRegion::from_borrowed(&good, 0, 0), fragmented(&good)] {
+    for input in [
+        IndexedByteRegion::from_borrowed(&good, 0, 0),
+        fragmented(&good),
+    ] {
         validate_canonical_protobuf_inner(input, &PAR_PROTOBUF_REGION_PROGRAM, None).unwrap();
     }
     let mut first = None;
@@ -169,7 +399,10 @@ fn full_admission_incomplete_endpoint_preserves_failure_provenance() {
         let (result, observed) = observe_full_admission(|| {
             validate_canonical_protobuf_inner(input, &PAR_PROTOBUF_REGION_PROGRAM, None)
         });
-        let CanonicalProtobufAdmissionError::CanonicalPath { position, detail, .. } = result.unwrap_err() else {
+        let CanonicalProtobufAdmissionError::CanonicalPath {
+            position, detail, ..
+        } = result.unwrap_err()
+        else {
             panic!("incomplete valued endpoint must fail canonical path admission");
         };
         assert!(detail.contains("Truncated"), "{detail}");
@@ -179,13 +412,18 @@ fn full_admission_incomplete_endpoint_preserves_failure_provenance() {
         assert!(observed.observations > 0);
         if let Some((offset, previous)) = first {
             let expected = origin(offset);
-            assert_eq!(position, CanonicalPathSource::in_source(expected.source, expected.offset));
+            assert_eq!(
+                position,
+                CanonicalPathSource::in_source(expected.source, expected.offset)
+            );
             assert_eq!(observed, previous);
         } else {
             assert_eq!(position.source, 0);
             first = Some((position.offset, observed));
         }
-        println!("full-admission malformed backing={backing} position={position:?} observation={observed:?}");
+        println!(
+            "full-admission malformed backing={backing} position={position:?} observation={observed:?}"
+        );
     }
 }
 
@@ -959,8 +1197,7 @@ fn standalone_children_share_borrowed_payloads_and_survive_parent_drop() {
             child
         };
         let region = match &child {
-            Frame::Message(message) => &message.body,
-            Frame::EPathMap(epm) => &epm.snapshot,
+            FrameRequest::Message { region, .. } | FrameRequest::EPathMap { region, .. } => region,
             _ => panic!("unexpected child kind"),
         };
         let retained =
@@ -1087,10 +1324,10 @@ fn opaque_batching_seeks_without_traversing_payload_interiors() {
             assert_eq!(parent.cursor.bytes_traversed(), header + 1);
             assert_eq!(parent.reducer.stats().bulk_operations, 1);
             assert_eq!(parent.reducer.stats().bulk_bytes, body.len() - 1);
-            let Frame::Message(ref message) = child else {
+            let FrameRequest::Message { ref region, .. } = child else {
                 panic!("expected RawPar child")
             };
-            assert_eq!(message.body.end_position().physical, anchor);
+            assert_eq!(region.end_position().physical, anchor);
             let (summary, _, _) = drive_admission(child, 0).unwrap();
             parent.accept(summary, &mut stats).unwrap();
             assert!(parent.step(&mut stats).is_err());
@@ -1135,12 +1372,15 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
                 let expected_anchor = input.position_at(completed_at - 1).unwrap().physical;
                 let mut parent = CanonicalPathFrame::new(input);
                 let mut stats = CanonicalProtobufAdmissionStats::default();
-                let FrameAction::Push(Frame::EPathMap(child)) = parent.step(&mut stats).unwrap()
-                else {
+                let FrameAction::Push(request) = parent.step(&mut stats).unwrap() else {
                     panic!("nested map payload must suspend before the suffix");
                 };
-                assert_eq!(child.snapshot.len(), map.trie_snapshot().len());
-                assert_eq!(child.snapshot.end_position().physical, expected_anchor);
+                let Frame::EPathMap(child) = request.materialize().unwrap() else {
+                    panic!("nested map request must construct an EPathMap child");
+                };
+                let region = &child.snapshot;
+                assert_eq!(region.len(), map.trie_snapshot().len());
+                assert_eq!(region.end_position().physical, expected_anchor);
                 assert_eq!(parent.reducer.consumed_len(), completed_at);
                 assert_eq!(parent.cursor.bytes_yielded(), completed_at);
                 assert!(parent.cursor.bytes_traversed() <= completed_at);
@@ -1170,7 +1410,7 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
                 assert_eq!(parent.cursor.bytes_yielded(), completed_at);
                 println!(
                     "opaque payload {backing}: width={width}, depth={depth}, payload={}, consumed={}, traversed={}, frame_backing={}, batches={}, skipped={}, region_descents={}, scalar_region_descents={}",
-                    child.snapshot.len(),
+                    region.len(),
                     completed_at,
                     parent.cursor.bytes_traversed(),
                     parent.reducer.retained_frame_bytes(),
