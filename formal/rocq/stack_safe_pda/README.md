@@ -3355,3 +3355,8 @@ passing tests and one unfinished Par-to-S-expression fixture. A separate
 unchanged-fixture run with a longer time allowance is pending. This timeout
 does not invalidate the 32 passing admission controls, but it cannot be
 reported as a successful complete debug suite.
+
+The maintained `--epathmap-import` combined route subsequently passes its
+formal, runtime and ACT-span compiler controls. The separate unchanged deep
+debug conversion test is still pending; the combined gate does not substitute
+for that observation. See J-133 for the transcript and resource-accounting scope.

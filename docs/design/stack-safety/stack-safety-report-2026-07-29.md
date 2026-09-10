@@ -10922,9 +10922,14 @@ The complete debug run subsequently times out at 900.155 seconds, with 441
 passing tests and one unfinished deep Par-to-S-expression test. Peak memory
 is 294.4M, swap zero; this is a time-limit termination, not an observed stack
 overflow or a passing full suite. The unfinished test is being checked
-separately with an 1,800-second allowance and unchanged memory/stack limits.
+separately with a 1,800-second allowance and unchanged memory/stack limits.
 The combined maintained proof/runtime gate is also pending; J-133 preserves
 both live run coordinates and the original timeout evidence.
+
+The maintained combined EPathMap formal/runtime gate subsequently passes,
+including its exact proof/test-count checks and eight ACT-span compile-failure
+controls. The isolated debug conversion test remains active; its pending
+result must not be replaced by the combined gate's success.
 
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 

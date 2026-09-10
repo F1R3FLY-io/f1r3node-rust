@@ -9563,6 +9563,20 @@ CPU400% and Tasks512. Its result is pending in
 The maintained combined EPathMap proof/runtime gate is also running; neither
 live command has yet supplied a completion result for task 8413.
 
+**COMBINED GATE PASS.** The maintained
+`scripts/check-stack-safe-pda-proofs.sh --epathmap-import` route subsequently
+exits successfully, checking the formal units (including the 333-report RPB3
+and 68-report source-release units), all registered runtime groups, and the
+positive ACT-span compilation plus eight expected compiler-rejection controls.
+The outer driver uses 234.775 seconds wall time. Its 2.543 seconds CPU and
+43.2M peak account only for the driver, because each heavy child runs in a
+separate bounded systemd scope; they are not aggregate proof/test resource
+measurements. The complete transcript is
+`target/verification/canonical-admission-request-integrated.log`.
+The separate unchanged deep debug conversion test is still active. Neither
+the combined gate nor the passing release suite closes that outstanding
+debug observation.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
