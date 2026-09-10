@@ -10,7 +10,7 @@ SOURCE_FILES=(
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
 case "$SCENARIO" in
-band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark | benchmark-band | benchmark-active-disk | benchmark-equal | benchmark-sufficient | benchmark-missing | benchmark-disabled | benchmark-cancel-death | benchmark-cancel-breach | benchmark-guardian-boundary | benchmark-guardian-interleaved | benchmark-cancel-stall | guardian-stall | guardian-progress-boundary | benchmark-progress-boundary | hygiene-timeout | disk-floor-range | disk-band-range | disk-sum-range) ;;
+band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark | benchmark-band | benchmark-active-disk | benchmark-equal | benchmark-sufficient | benchmark-missing | benchmark-disabled | benchmark-cancel-death | benchmark-cancel-breach | benchmark-guardian-boundary | benchmark-guardian-interleaved | benchmark-cancel-stall | guardian-stall | guardian-progress-boundary | benchmark-progress-boundary | hygiene-timeout | disk-floor-range | disk-band-range | disk-sum-range | disk-max-floor | disk-max-band) ;;
 *)
     printf 'ERROR: Unknown disk fixture scenario.\n' >&2
     exit 2
@@ -295,6 +295,8 @@ SH
         disk-floor-range) disk_floor=9223372036854775808 ;;
         disk-band-range) disk_band=9223372036854775808 ;;
         disk-sum-range) disk_band=9223372036854771712 ;;
+        disk-max-floor) disk_floor=9223372036854775807; disk_band=0 ;;
+        disk-max-band) disk_floor=0; disk_band=9223372036854775807 ;;
     esac
     [[ "$SCENARIO" != benchmark-disabled ]] || disk_floor=0
     printf 'floor=%s\nband=%s\n' "$disk_floor" "$disk_band" >evidence/disk-settings.txt
@@ -515,6 +517,19 @@ SH
         exit 2
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
+    if [[ "$SCENARIO" == disk-max-floor || "$SCENARIO" == disk-max-band ]]; then
+        expected_iterations=0
+        expected_failures=1
+        if [[ "$SCENARIO" == disk-max-band ]]; then expected_iterations=1; expected_failures=0; fi
+        if [[ "$status" != "$expected_failures" || "$iterations" != "$expected_iterations" ]] ||
+            ! jq -e --argjson count "$expected_iterations" --argjson failures "$expected_failures" \
+                '.iterations == $count and .failures == $failures and .bench_segments == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: A valid maximum disk setting changed admission behavior (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        printf 'PASS: A valid maximum disk setting preserved admission behavior (%s).\n' "$SCENARIO"
+        exit 0
+    fi
     if [[ "$SCENARIO" == hygiene-timeout ]]; then
         if [[ ! -s evidence/hygiene-client-pid.txt ]] ||
             ! grep -Fxq 'builder prune -af' evidence/docker-commands.txt ||

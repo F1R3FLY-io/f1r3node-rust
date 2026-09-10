@@ -120,6 +120,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_GuardianProgress
     soak_disk/MC_GuardianProgressAdmission
     soak_disk/MC_DiskHygieneDeadline
+    soak_disk/MC_DiskSettingsAdmission
 )
 
 TLC_WORKERS=auto
@@ -145,6 +146,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_GuardianProgress
         soak_disk/MC_GuardianProgressAdmission
         soak_disk/MC_DiskHygieneDeadline
+        soak_disk/MC_DiskSettingsAdmission
     )
     TLC_WORKERS=2
 fi
@@ -202,6 +204,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_GuardianProgress_alive_only_pre_fix:StaleGuardianRequiresInterrupt
     soak_disk/MC_GuardianProgressAdmission_unchecked_pre_fix:StaleProgressPreventsAdmission
     soak_disk/MC_DiskHygieneDeadline_unbounded_pre_fix:HygieneWithinBudget
+    soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix:AdmissionRequiresValidDiskSettings
 )
 
 failed=0

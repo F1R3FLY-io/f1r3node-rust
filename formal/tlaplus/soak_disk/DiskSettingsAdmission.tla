@@ -1,8 +1,8 @@
 ---------------------- MODULE DiskSettingsAdmission ----------------------
 EXTENDS Naturals, Sequences, TLC
 CONSTANT CheckRange
-VARIABLES settings, phase, admitted, rejected
-vars == <<settings, phase, admitted, rejected>>
+VARIABLES settings, phase, admitted, rejected, column, carry, sumText
+vars == <<settings, phase, admitted, rejected, column, carry, sumText>>
 Digits == "0123456789"
 Maximum == "9223372036854775807"
 Cases == {
@@ -26,35 +26,45 @@ DecimalLE(a, b) ==
            /\ SubSeq(x, 1, k - 1) = SubSeq(y, 1, k - 1)
            /\ DigitAt(x, k) < DigitAt(y, k))
 Padded(s) == SubSeq("00000000000000000000", 1, 20 - Len(s)) \o s
-RECURSIVE AddDigits(_, _, _)
-AddDigits(a, b, carry) ==
-    IF Len(a) = 0 THEN IF carry = 0 THEN "" ELSE "1"
-    ELSE LET n == Len(a)
-             sum == DigitAt(a, n) + DigitAt(b, n) + carry
-         IN AddDigits(SubSeq(a, 1, n - 1), SubSeq(b, 1, n - 1), sum \div 10)
-            \o SubSeq(Digits, (sum % 10) + 1, (sum % 10) + 1)
-Valid(s) ==
-    /\ DecimalLE(s.floorText, Maximum)
-    /\ DecimalLE(s.bandText, Maximum)
-    /\ DecimalLE(AddDigits(Padded(s.floorText), Padded(s.bandText), 0), Maximum)
+Valid ==
+    /\ DecimalLE(settings.floorText, Maximum)
+    /\ DecimalLE(settings.bandText, Maximum)
+    /\ carry = 0
+    /\ DecimalLE(sumText, Maximum)
 Init ==
     /\ settings \in Cases
-    /\ phase = "config"
+    /\ phase = "adding"
     /\ admitted = FALSE
     /\ rejected = FALSE
+    /\ column = 20
+    /\ carry = 0
+    /\ sumText = ""
+AddColumn ==
+    /\ phase = "adding"
+    /\ LET total == DigitAt(Padded(settings.floorText), column)
+                     + DigitAt(Padded(settings.bandText), column) + carry
+       IN /\ sumText' = SubSeq(Digits, (total % 10) + 1, (total % 10) + 1) \o sumText
+          /\ carry' = total \div 10
+    /\ column' = column - 1
+    /\ phase' = IF column = 1 THEN "config" ELSE "adding"
+    /\ UNCHANGED <<settings, admitted, rejected>>
 Decide ==
     /\ phase = "config"
-    /\ admitted' = (~CheckRange \/ Valid(settings))
+    /\ admitted' = (~CheckRange \/ Valid)
     /\ rejected' = ~admitted'
     /\ phase' = "checked"
-    /\ UNCHANGED settings
-Spec == Init /\ [][Decide]_vars /\ WF_vars(Decide)
+    /\ UNCHANGED <<settings, column, carry, sumText>>
+Next == AddColumn \/ Decide
+Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 TypeOK ==
     /\ settings \in Cases
-    /\ phase \in {"config", "checked"}
+    /\ phase \in {"adding", "config", "checked"}
     /\ admitted \in BOOLEAN
     /\ rejected \in BOOLEAN
-AdmissionRequiresValidDiskSettings == admitted => Valid(settings)
+    /\ column \in 0..20
+    /\ carry \in 0..1
+    /\ Len(sumText) = 20 - column
+AdmissionRequiresValidDiskSettings == admitted => Valid
 RefusalRecorded == (phase = "checked" /\ ~admitted) => rejected
 Completes == <>(phase = "checked")
 =============================================================================

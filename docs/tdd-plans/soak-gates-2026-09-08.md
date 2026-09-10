@@ -354,6 +354,11 @@ behaviors:
         reused_model: DiskStopDeadline
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B24
+    statement: Disk settings outside the signed arithmetic range cannot permit workload admission.
+    priority: must
+    deep_module: false
+    done: false
 ---
 
 # Soak Gate Development Cycles

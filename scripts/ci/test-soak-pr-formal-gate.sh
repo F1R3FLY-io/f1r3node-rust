@@ -64,6 +64,7 @@ case "$config" in
     MC_GuardianProgress_alive_only_pre_fix.cfg) invariant=StaleGuardianRequiresInterrupt ;;
     MC_GuardianProgressAdmission_unchecked_pre_fix.cfg) invariant=StaleProgressPreventsAdmission ;;
     MC_DiskHygieneDeadline_unbounded_pre_fix.cfg) invariant=HygieneWithinBudget ;;
+    MC_DiskSettingsAdmission_unchecked_pre_fix.cfg) invariant=AdmissionRequiresValidDiskSettings ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -111,6 +112,8 @@ pr_configs=(
     soak_disk/MC_GuardianProgressAdmission_unchecked_pre_fix
     soak_disk/MC_DiskHygieneDeadline
     soak_disk/MC_DiskHygieneDeadline_unbounded_pre_fix
+    soak_disk/MC_DiskSettingsAdmission
+    soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )
