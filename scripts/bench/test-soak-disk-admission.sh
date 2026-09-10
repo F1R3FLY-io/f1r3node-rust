@@ -292,11 +292,17 @@ SH
     disk_floor=4096
     disk_band=4096
     case "$SCENARIO" in
-        disk-floor-range) disk_floor=9223372036854775808 ;;
-        disk-band-range) disk_band=9223372036854775808 ;;
-        disk-sum-range) disk_band=9223372036854771712 ;;
-        disk-max-floor) disk_floor=9223372036854775807; disk_band=0 ;;
-        disk-max-band) disk_floor=0; disk_band=9223372036854775807 ;;
+    disk-floor-range) disk_floor=9223372036854775808 ;;
+    disk-band-range) disk_band=9223372036854775808 ;;
+    disk-sum-range) disk_band=9223372036854771712 ;;
+    disk-max-floor)
+        disk_floor=9223372036854775807
+        disk_band=0
+        ;;
+    disk-max-band)
+        disk_floor=0
+        disk_band=9223372036854775807
+        ;;
     esac
     [[ "$SCENARIO" != benchmark-disabled ]] || disk_floor=0
     printf 'floor=%s\nband=%s\n' "$disk_floor" "$disk_band" >evidence/disk-settings.txt
@@ -520,7 +526,10 @@ SH
     if [[ "$SCENARIO" == disk-max-floor || "$SCENARIO" == disk-max-band ]]; then
         expected_iterations=0
         expected_failures=1
-        if [[ "$SCENARIO" == disk-max-band ]]; then expected_iterations=1; expected_failures=0; fi
+        if [[ "$SCENARIO" == disk-max-band ]]; then
+            expected_iterations=1
+            expected_failures=0
+        fi
         if [[ "$status" != "$expected_failures" || "$iterations" != "$expected_iterations" ]] ||
             ! jq -e --argjson count "$expected_iterations" --argjson failures "$expected_failures" \
                 '.iterations == $count and .failures == $failures and .bench_segments == 0' evidence/output/summary.json >/dev/null; then

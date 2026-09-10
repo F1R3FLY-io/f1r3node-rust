@@ -431,3 +431,29 @@ The user committed and pushed the correction as `9c99de84e`. Its executable sour
 The configured hygiene budget defaults to ten seconds. It is not a measured complete response deadline or a reserve justification.
 
 D2 remains pending. Cleanup ownership, daemon operations, detached descendants, durable publication, other faults, hosted checks, and maintainer review remain open.
+
+## D2 disk settings B24
+
+B24 starts from `9c99de84e`. Three digit-only configurations exceed individual or combined signed arithmetic limits and still permit workload admission.
+
+Separate production RED cases retain the oversized floor, oversized band, and overflowing sum. The initial formal control violates `AdmissionRequiresValidDiskSettings` with exit 12.
+
+The correction normalizes decimal strings and checks their ranges before arithmetic. It also checks the band against the maximum minus the floor.
+
+All three production GREEN cases return configuration error 2 before admission. They produce no soak summary because configuration validation precedes the run.
+
+ShellCheck flagged the initial numeric-looking string comparison. An equal text prefix makes the lexical comparison explicit, and C collation keeps that comparison stable.
+
+The initial recursive model reached its 120-second positive verification limit. That result is not behavioral RED. Its original source and logs remain unchanged.
+
+The replacement model uses explicit decimal column steps. Its fresh negative control returns 12 on the same invariant, and its positive run has 88 distinct states.
+
+Two valid maximum-value cases pass on both baseline and corrected source. The expanded fixture also reproduces all three original faults against the frozen baseline.
+
+Twenty-one positive configurations, twenty-two exact controls, 154 classifier cases, six routing scenarios, and thirty emergency scenarios pass. All supporting regressions pass.
+
+The [evidence package](../cbc-evidence/soak-d2-settings-2026-09-10/README.md) separates invalid configuration refusal from maximum-value characterization and retains the model timeout.
+
+External commits `4e9dd432b` and `556b944f3` contain the correction and final verification inputs. Those inputs match the pre-verification snapshot. Their hooks remain unattested by this session.
+
+B24 does not complete D2. Other input faults, cleanup ownership, complete shutdown, durable publication, reserve bounds, hosted checks, and maintainer review remain pending.
