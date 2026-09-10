@@ -32,6 +32,7 @@
 #   guardian-stall        the guardian is SIGSTOPped during an iteration; no progress -> stop it
 #   guardian-progress-boundary driver and guardian paused across the iteration probe; stale progress -> refuse
 #   benchmark-progress-boundary same, across the opening benchmark probe -> refuse
+#   hygiene-timeout       docker builder prune ignores TERM inside the band; hygiene is bounded -> refuse
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -51,7 +52,8 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     restart-counted stop-timeout guardian-death-boundary restart-benchmark benchmark-band
     benchmark-active-disk benchmark-equal benchmark-sufficient benchmark-missing benchmark-disabled
     benchmark-cancel-death benchmark-cancel-breach benchmark-guardian-boundary benchmark-guardian-interleaved
-    benchmark-cancel-stall guardian-stall guardian-progress-boundary benchmark-progress-boundary)
+    benchmark-cancel-stall guardian-stall guardian-progress-boundary benchmark-progress-boundary
+    hygiene-timeout)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -260,6 +262,12 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-cancel-* &&
     exit 1
 fi
 if [[ "$*" == 'builder prune -af' ]]; then
+    if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == hygiene-timeout ]]; then
+        trap '' TERM
+        printf '%s\n' "$$" >/case/evidence/hygiene-client-pid.txt
+        touch /case/evidence/hygiene-fault-ready
+        while [[ ! -e /case/evidence/release-hygiene ]]; do sleep 0.05; done
+    fi
     touch /case/evidence/hygiene-completed
 fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == stop-timeout ]]; then
@@ -346,6 +354,29 @@ SH
             "$(date +%s)" >evidence/output/.soak-state
     fi
     observer=""
+    if [[ "$SCENARIO" == hygiene-timeout ]]; then
+        (
+            for _ in $(seq 1 200); do
+                [[ ! -e evidence/hygiene-fault-ready ]] || break
+                sleep 0.05
+            done
+            [[ -e evidence/hygiene-fault-ready ]] || exit 2
+            sleep 5
+            ps -eo pid,ppid,pgid,stat,args >evidence/hygiene-observed-processes.txt
+            outcome=met
+            if [[ -s evidence/output/summary.json ]]; then
+                cp evidence/output/summary.json evidence/hygiene-observed-summary.json
+            else
+                outcome=exceeded
+            fi
+            pid="$(<evidence/hygiene-client-pid.txt)"
+            client_state="$(ps -o stat= -p "$pid" || true)"
+            [[ -z "$client_state" || "$client_state" == Z* ]] || outcome=exceeded
+            printf '%s\n' "$outcome" >evidence/hygiene-cancellation.txt
+            touch evidence/release-hygiene
+        ) &
+        observer=$!
+    fi
     if [[ "$SCENARIO" == guardian-progress-boundary || "$SCENARIO" == benchmark-progress-boundary ]]; then
         (
             for _ in $(seq 1 200); do
@@ -482,6 +513,7 @@ SH
         SOAK_DISK_HYGIENE_BAND_MB=4096 \
         SOAK_DISK_DIAGNOSTIC_SECONDS=1 \
         SOAK_DISK_STOP_SECONDS=1 \
+        SOAK_DISK_HYGIENE_SECONDS=1 \
         SOAK_TMP_ROOT=/tmp \
         SOAK_RUNNER_ROOT=/case/runner \
         SOAK_RUN_BENCHMARKS="$run_benchmarks" \
@@ -504,6 +536,26 @@ SH
         exit 2
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
+    if [[ "$SCENARIO" == hygiene-timeout ]]; then
+        if [[ ! -s evidence/hygiene-client-pid.txt ]] ||
+            ! grep -Fxq 'builder prune -af' evidence/docker-commands.txt ||
+            ! grep -Fxq 'valid=7000' evidence/probe-samples.txt; then
+            printf 'ERROR: The fixture did not stall cleanup inside the hygiene band.\n' >&2
+            exit 2
+        fi
+        if ! grep -Fxq met evidence/hygiene-cancellation.txt; then
+            printf 'FAIL: Stalled disk hygiene prevented client cancellation and failure publication before fixture release.\n' >&2
+            exit 1
+        fi
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt ]] ||
+            ! grep -Fxq 'early_exit_reason=host_protection_breach' evidence/output/summary.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/hygiene-observed-summary.json >/dev/null; then
+            printf 'FAIL: Disk hygiene timeout lost its protection failure or admitted work.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: The driver canceled the stalled hygiene client and published failure before fixture release.\n'
+        exit 0
+    fi
     if [[ "$SCENARIO" == restart-uncounted || "$SCENARIO" == restart-counted ]]; then
         expected_failures=1
         [[ "$SCENARIO" != restart-counted ]] || expected_failures=2

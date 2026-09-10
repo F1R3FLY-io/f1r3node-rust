@@ -338,6 +338,11 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B23
+    statement: Stalled disk hygiene causes client cancellation and failure publication before fixture release.
+    priority: must
+    deep_module: false
+    done: false
 ---
 
 # Soak Gate Development Cycles

@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Nine Boolean    *)
+(* decide, after the opening benchmark on the first segment. Ten Boolean     *)
 (* constants switch the corrections on and off so that each pre-fix          *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -17,6 +17,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           MonitorOpening, \* the guardian is started before the opening benchmark
           WatchGuardian,  \* a guardian fault during the benchmark cancels it (B18)
           CheckProgress,  \* stale guardian progress cannot admit (B22)
+          EnforceHygieneDeadline, \* hygiene commands run under a deadline (B23)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -26,10 +27,12 @@ ASSUME /\ FloorMiB \in Nat \ {0}
        /\ MalformedPrefixMiB \in Nat
        /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
            CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
-           CheckProgress} \subseteq BOOLEAN
+           CheckProgress, EnforceHygieneDeadline} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
+
+HygieneBudget == 2  \* SOAK_DISK_HYGIENE_SECONDS: TERM at 1, KILL at 2
 
 MissingRaw   == [kind |-> "missing", mib |-> 0]
 MalformedRaw == [kind |-> "malformed", mib |-> MalformedPrefixMiB]
@@ -58,12 +61,17 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkGuardianAlive, \* the guardian was alive when the benchmark was admitted (B19)
           guardianFresh,  \* the guardian's progress record is within the silence limit
           admissionFresh, \* progress was fresh when the iteration was admitted (B22)
-          benchmarkFresh  \* progress was fresh when the benchmark was admitted (B22)
+          benchmarkFresh, \* progress was fresh when the benchmark was admitted (B22)
+          hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent
+            \* a hygiene command group that ignores TERM, under the deadline (B23)
+
+HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
 vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence, retained, benchmark,
           benchmarkSample, benchmarkFault, benchmarkObserved, benchmarkCancelled,
-          benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh>>
+          benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
+          hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
 Init ==
     /\ phase = "benchmark"
@@ -81,6 +89,10 @@ Init ==
     /\ guardianFresh = TRUE
     /\ admissionFresh = TRUE
     /\ benchmarkFresh = TRUE
+    /\ hygieneStalled = FALSE
+    /\ hygieneElapsed = 0
+    /\ hygieneTermSent = FALSE
+    /\ hygieneKillSent = FALSE
     /\ guardianAlive = TRUE
     /\ admitted = FALSE
     /\ admissionRaw = MissingRaw
@@ -177,6 +189,39 @@ Hygiene ==
     /\ UNCHANGED <<raw, sample, guardian, guardianAlive, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
+\* B23: a hygiene client (docker builder prune) ignores TERM and stalls. Under
+\* the deadline, timeout sends TERM at one unit and KILL at two; a killed group
+\* is a protection breach, the marker is written, and the driver refuses work.
+HygieneStall ==
+    /\ phase = "hygiene"
+    /\ ~hygieneStalled
+    /\ hygieneStalled' = TRUE
+    /\ phase' = "hygiene-stalled"
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
+                   admissionRaw, admissionSample, stopReason, evidence,
+                   hygieneElapsed, hygieneTermSent, hygieneKillSent>>
+
+HygieneTick ==
+    /\ phase = "hygiene-stalled"
+    /\ hygieneElapsed < 3
+    /\ hygieneElapsed' = hygieneElapsed + 1
+    /\ hygieneTermSent' = (EnforceHygieneDeadline /\ hygieneElapsed' >= 1)
+    /\ hygieneKillSent' = (EnforceHygieneDeadline /\ hygieneElapsed' = HygieneBudget)
+    /\ phase' = IF hygieneKillSent' THEN "stopped" ELSE "hygiene-stalled"
+    /\ stopReason' = IF hygieneKillSent' THEN "hygiene" ELSE stopReason
+    /\ guardian' = (guardian \/ hygieneKillSent')
+    /\ UNCHANGED <<free, raw, sample, guardianAlive, admitted, admissionRaw,
+                   admissionSample, evidence, hygieneStalled>>
+
+\* The stalled client returns on its own; hygiene completes as usual.
+HygieneReturns ==
+    /\ phase = "hygiene-stalled"
+    /\ free' \in {v \in FreeSamples : v >= free}
+    /\ phase' = "post-guard"
+    /\ UNCHANGED <<raw, sample, guardian, guardianAlive, admitted,
+                   admissionRaw, admissionSample, stopReason, evidence,
+                   HygieneVars>>
+
 ProbeAfterHygiene ==
     /\ phase = "post-probe"
     /\ Probe("post-decide")
@@ -259,25 +304,28 @@ FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
                           benchmarkGuardianAlive, benchmarkFresh>>
 
-Next == Benchmark
+Next == (Benchmark /\ UNCHANGED HygieneVars)
         \/ (/\ Admit
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED guardianFresh)
+            /\ UNCHANGED <<guardianFresh, HygieneVars>>)
         \/ (/\ GuardianStall
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED admissionFresh)
+            /\ UNCHANGED <<admissionFresh, HygieneVars>>)
+        \/ (/\ HygieneStall \/ HygieneTick \/ HygieneReturns
+            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<guardianFresh, admissionFresh>>)
         \/ (/\ CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
                \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<guardianFresh, admissionFresh>>)
+            /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneVars>>)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 TypeOK ==
     /\ phase \in {"benchmark", "guard", "probe", "boundary-decide", "hygiene",
-                  "post-guard", "post-probe", "post-decide", "admission-check",
-                  "admit", "running", "stopped", "done"}
+                  "hygiene-stalled", "post-guard", "post-probe", "post-decide",
+                  "admission-check", "admit", "running", "stopped", "done"}
     /\ free \in FreeSamples
     /\ raw \in RawSamples
     /\ sample \in ParsedSamples
@@ -286,7 +334,7 @@ TypeOK ==
     /\ admitted \in BOOLEAN
     /\ admissionRaw \in RawSamples
     /\ admissionSample \in ParsedSamples
-    /\ stopReason \in {"none", "disk", "probe", "guardian"}
+    /\ stopReason \in {"none", "disk", "probe", "guardian", "hygiene"}
     /\ evidence \in BOOLEAN
     /\ retained \in BOOLEAN
     /\ benchmark \in BOOLEAN
@@ -298,6 +346,10 @@ TypeOK ==
     /\ guardianFresh \in BOOLEAN
     /\ admissionFresh \in BOOLEAN
     /\ benchmarkFresh \in BOOLEAN
+    /\ hygieneStalled \in BOOLEAN
+    /\ hygieneElapsed \in 0..3
+    /\ hygieneTermSent \in BOOLEAN
+    /\ hygieneKillSent \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -315,6 +367,8 @@ BenchmarkCancellationObserved ==
 StaleProgressPreventsAdmission ==
     /\ admitted => admissionFresh
     /\ benchmark => benchmarkFresh
+HygieneWithinBudget == phase = "hygiene-stalled" => hygieneElapsed < HygieneBudget
+HygieneKillFollowsTerm == hygieneKillSent => hygieneTermSent
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
 Completes == <>(admitted \/ (phase = "done" /\ evidence))

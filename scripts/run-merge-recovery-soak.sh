@@ -198,6 +198,11 @@ if ! [[ "$GUARDIAN_MAX_SILENCE_SECONDS" =~ ^([89]|[12][0-9]|30)$ ]]; then
 	printf 'SOAK_GUARDIAN_MAX_SILENCE_SECONDS must be an integer from 8 through 30\n' >&2
 	exit 2
 fi
+DISK_HYGIENE_SECONDS="${SOAK_DISK_HYGIENE_SECONDS:-10}"
+if ! [[ "$DISK_HYGIENE_SECONDS" =~ ^([1-9]|[12][0-9]|30)$ ]]; then
+	printf 'SOAK_DISK_HYGIENE_SECONDS must be an integer from 1 through 30\n' >&2
+	exit 2
+fi
 DISK_DIAGNOSTIC_SECONDS="${SOAK_DISK_DIAGNOSTIC_SECONDS:-10}"
 if ! [[ "$DISK_DIAGNOSTIC_SECONDS" =~ ^([1-9]|10)$ ]]; then
 	printf 'SOAK_DISK_DIAGNOSTIC_SECONDS must be an integer from 1 through 10\n' >&2
@@ -266,7 +271,7 @@ stop_node_writers() (
 # than 60 minutes is past pytest's own 1200s per-test timeout, so no live
 # iteration can still own it. Never prunes tagged images (the image under
 # test) or running containers.
-reclaim_disk_space() {
+reclaim_disk_space_commands() {
 	local before after
 	before="$(disk_free_mb)" || before=""
 	if command -v docker >/dev/null 2>&1; then
@@ -280,6 +285,13 @@ reclaim_disk_space() {
 	after="$(disk_free_mb)" || after=""
 	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
 }
+
+reclaim_disk_space() (
+	export OUTPUT_DIR SOAK_TMP_ROOT
+	export -f disk_free_mb reclaim_disk_space_commands
+	timeout --signal=TERM --kill-after=1 "$DISK_HYGIENE_SECONDS" \
+		bash -c 'trap "" TERM; reclaim_disk_space_commands'
+)
 
 # Run a command under a wall-clock bound where timeout(1) exists, and bare
 # where it does not (macOS without coreutils). Attribution is best-effort and
@@ -1209,7 +1221,16 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
 			printf 'free disk %sMB inside hygiene band (floor %sMB + band %sMB); reclaiming\n' \
 				"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
-			reclaim_disk_space
+			if ! reclaim_disk_space; then
+				if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+					printf 'Disk hygiene failed or exceeded its command budget. Cleanup termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+				fi
+				EARLY_EXIT_REASON="host_protection_breach"
+				head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: disk hygiene incomplete\n' >"$OUTPUT_DIR/early-exit.txt"
+				FAILURES="$((FAILURES + 1))"
+				break
+			fi
 			disk_usage_snapshot 2>/dev/null | sed 's/^/disk usage: /'
 			# The guardian may have fired while hygiene ran (a builder prune
 			# can outlast the soft floor's 15s window), and it exits after
