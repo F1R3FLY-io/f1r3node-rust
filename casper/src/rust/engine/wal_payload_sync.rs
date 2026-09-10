@@ -592,7 +592,7 @@ async fn try_reproduce_via_block_storage_replay(
 ) -> Result<Option<Vec<u8>>, String> {
     use crate::rust::rholang::replay_runtime::ReplayBlockKind;
     use crate::rust::util::rholang::acceptance::{
-        replay_purse_snapshot, RuntimeManagerSupplyReader,
+        replay_state_snapshot, RuntimeManagerSupplyReader,
     };
 
     // Chain step 1: payload_hash → deploy_sig.
@@ -628,16 +628,16 @@ async fn try_reproduce_via_block_storage_replay(
     } else {
         ReplayBlockKind::Ordinary
     };
-    let purse_snapshot = match block_kind {
+    let state_snapshot = match block_kind {
         ReplayBlockKind::Genesis => None,
         ReplayBlockKind::Ordinary => {
             let supply_reader = RuntimeManagerSupplyReader {
                 runtime_manager: &ctx.runtime_manager,
                 pre_state_hash: block.body.state.pre_state_hash.clone(),
             };
-            match replay_purse_snapshot(&processed, &supply_reader).await {
+            match replay_state_snapshot(&processed, &supply_reader).await {
                 Ok(s) => Some(s),
-                Err(e) => return Err(format!("replay_purse_snapshot: {e}")),
+                Err(e) => return Err(format!("replay_state_snapshot: {e}")),
             }
         }
     };
@@ -647,7 +647,7 @@ async fn try_reproduce_via_block_storage_replay(
         &pre_state,
         &processed,
         block_kind,
-        purse_snapshot.as_ref(),
+        state_snapshot.as_ref(),
     )
     .await
     {
@@ -1079,7 +1079,7 @@ pub async fn capture_consensus_writes_by_replaying_deploy(
     pre_state_hash: &models::rust::block::state_hash::StateHash,
     processed_deploy: &models::rust::casper::protocol::casper_message::ProcessedDeploy,
     block_kind: crate::rust::rholang::replay_runtime::ReplayBlockKind,
-    purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
+    state_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayStateSnapshot>,
 ) -> Result<HashMap<[u8; 32], Vec<u8>>, crate::rust::errors::CasperError> {
     use rholang::rust::interpreter::rho_runtime::RhoRuntime;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -1131,7 +1131,7 @@ pub async fn capture_consensus_writes_by_replaying_deploy(
     // stale purse snapshot, missing certificate) doesn't silently
     // return an empty map that a caller might mistake for
     // "deploy did no Consensus writes".
-    ops.replay_deploy_e_with_snapshot(block_kind, processed_deploy, purse_snapshot)
+    ops.replay_deploy_e_with_snapshot(block_kind, processed_deploy, state_snapshot)
         .await?;
 
     Ok(capture.snapshot())

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,8 +18,8 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use futures::stream::StreamExt;
+use futures::FutureExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
@@ -36,7 +37,9 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use crate::rust::block_status::ValidBlock;
-use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
+use crate::rust::blocks::block_processing_queue::{
+    BlockProcessingIdentities, BlockProcessingQueueSender,
+};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
@@ -60,6 +63,105 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
 use crate::rust::validator_identity::ValidatorIdentity;
 
+const MAX_RESTORE_FAILURES: u64 = 3;
+const SYNC_CHANNEL_CAPACITY: usize = 50;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestorePhase {
+    Idle,
+    Restoring,
+    Running,
+    Terminal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RestoreLifecycle {
+    phase: RestorePhase,
+    failures: u64,
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RestoreLease(u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestoreFailureDisposition {
+    Retry,
+    Terminal,
+}
+
+impl RestoreLifecycle {
+    fn new() -> Self {
+        Self {
+            phase: RestorePhase::Idle,
+            failures: 0,
+            generation: 0,
+        }
+    }
+
+    fn try_begin(&mut self, valid: bool) -> Option<RestoreLease> {
+        if valid && self.phase == RestorePhase::Idle {
+            self.generation = self.generation.saturating_add(1);
+            self.phase = RestorePhase::Restoring;
+            Some(RestoreLease(self.generation))
+        } else {
+            None
+        }
+    }
+
+    fn record_failure(&mut self, lease: RestoreLease) -> Option<RestoreFailureDisposition> {
+        if self.phase != RestorePhase::Restoring || self.generation != lease.0 {
+            return None;
+        }
+        self.failures = self.failures.saturating_add(1);
+        if self.failures >= MAX_RESTORE_FAILURES {
+            self.phase = RestorePhase::Terminal;
+            Some(RestoreFailureDisposition::Terminal)
+        } else {
+            Some(RestoreFailureDisposition::Retry)
+        }
+    }
+
+    fn release_retry(&mut self, lease: RestoreLease) -> bool {
+        if self.phase == RestorePhase::Restoring
+            && self.generation == lease.0
+            && self.failures < MAX_RESTORE_FAILURES
+        {
+            self.phase = RestorePhase::Idle;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn commit_running(&mut self, lease: RestoreLease) -> bool {
+        if self.phase == RestorePhase::Restoring && self.generation == lease.0 {
+            self.phase = RestorePhase::Running;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn terminate_active(&mut self, lease: RestoreLease) -> bool {
+        if self.phase == RestorePhase::Restoring && self.generation == lease.0 {
+            self.phase = RestorePhase::Terminal;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn terminate_retry_request(&mut self, lease: RestoreLease) -> bool {
+        if self.phase == RestorePhase::Idle && self.generation == lease.0 {
+            self.phase = RestorePhase::Terminal;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Scala equivalent: `class Initializing[F[_]](...) extends Engine[F]`
 ///
 /// Initializing engine makes sure node receives Approved State and transitions to Running after
@@ -78,7 +180,7 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     // Block processing queue - matches Scala's blockProcessingQueue: Queue[F, (Casper[F], BlockMessage)]
     // Using trait object to support different MultiParentCasper implementations
     block_processing_queue_tx: BlockProcessingQueueSender,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    blocks_in_processing: Arc<BlockProcessingIdentities>,
     casper_shard_conf: CasperShardConf,
     required_genesis_signatures: i32,
     validator_id: Option<ValidatorIdentity>,
@@ -95,8 +197,7 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     trim_state: bool,
     disable_state_exporter: bool,
 
-    // TEMP: flag for single call for process approved block (Scala: `val startRequester = Ref.unsafe(true)`)
-    start_requester: Arc<Mutex<bool>>,
+    restore_lifecycle: Arc<Mutex<RestoreLifecycle>>,
     init_started_at: Arc<Mutex<Option<Instant>>>,
     no_approved_block_retries: Arc<Mutex<u64>>,
     /// Event publisher for F1r3fly events
@@ -128,7 +229,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
         block_processing_queue_tx: BlockProcessingQueueSender,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        blocks_in_processing: Arc<BlockProcessingIdentities>,
         casper_shard_conf: CasperShardConf,
         required_genesis_signatures: i32,
         validator_id: Option<ValidatorIdentity>,
@@ -174,7 +275,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             tuple_space_queue_pending: Arc::new(AtomicUsize::new(0)),
             trim_state,
             disable_state_exporter,
-            start_requester: Arc::new(Mutex::new(true)),
+            restore_lifecycle: Arc::new(Mutex::new(RestoreLifecycle::new())),
             init_started_at: Arc::new(Mutex::new(None)),
             no_approved_block_retries: Arc::new(Mutex::new(0)),
             event_publisher,
@@ -396,20 +497,16 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
             initializing.request_approved_state(approved_block).await?;
 
-            initializing
-                .block_store
-                .put_approved_block(approved_block)?;
-
-            {
-                let mut last_approved = initializing.last_approved_block.lock().unwrap();
-                *last_approved = Some(approved_block.clone());
-            }
-
             let _ = initializing
                 .event_publisher
                 .publish(F1r3flyEvent::approved_block_received(
                     PrettyPrinter::build_string_no_limit(&block.block_hash),
                 ));
+
+            tracing::info!("Approved state is ready; transitioning to Running");
+            initializing
+                .create_casper_and_transition_to_running(approved_block)
+                .await?;
 
             tracing::info!(
                 "Approved state for block {} is successfully restored.",
@@ -440,24 +537,15 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             );
         }
 
-        let start = {
-            let mut requester = self.start_requester.lock().map_err(|_| {
-                CasperError::RuntimeError("Failed to acquire start_requester lock".to_string())
-            })?;
-            match (*requester, is_valid) {
-                (true, true) => {
-                    *requester = false;
-                    true
-                }
-                (true, false) => {
-                    // *requester stays true (no change needed)
-                    false
-                }
-                _ => false,
-            }
-        };
+        let start = self
+            .restore_lifecycle
+            .lock()
+            .map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire restore_lifecycle lock".to_string())
+            })?
+            .try_begin(is_valid);
 
-        if start {
+        if let Some(lease) = start {
             metrics::counter!(
                 CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC,
                 "source" => CASPER_METRICS_SOURCE
@@ -484,8 +572,170 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     "Approved block accepted during initialization"
                 );
             }
-            handle_approved_block(self, &approved_block).await?;
+            match AssertUnwindSafe(handle_approved_block(self, &approved_block))
+                .catch_unwind()
+                .await
+            {
+                Ok(Ok(())) => {
+                    let committed = self
+                        .restore_lifecycle
+                        .lock()
+                        .map_err(|_| {
+                            CasperError::RuntimeError(
+                                "Failed to acquire restore_lifecycle lock".to_string(),
+                            )
+                        })?
+                        .commit_running(lease);
+                    if !committed {
+                        tracing::error!("Approved-state restore completed outside Restoring phase");
+                    }
+                }
+                Ok(Err(error)) => self.recover_from_restore_failure(lease, error).await?,
+                Err(_) => {
+                    self.recover_from_restore_failure(
+                        lease,
+                        CasperError::RuntimeError(
+                            "approved-state restore panicked while validating received state"
+                                .to_string(),
+                        ),
+                    )
+                    .await?
+                }
+            }
         }
+        Ok(())
+    }
+
+    async fn recover_from_restore_failure(
+        &self,
+        lease: RestoreLease,
+        error: CasperError,
+    ) -> Result<(), CasperError> {
+        let (disposition, failures) = {
+            let mut lifecycle = self.restore_lifecycle.lock().map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire restore_lifecycle lock".to_string())
+            })?;
+            (lifecycle.record_failure(lease), lifecycle.failures)
+        };
+
+        let Some(disposition) = disposition else {
+            tracing::error!(error = %error, "Ignored restore failure outside Restoring phase");
+            return Ok(());
+        };
+
+        tracing::error!(
+            error = %error,
+            failures,
+            "Approved-state restore failed"
+        );
+
+        if disposition == RestoreFailureDisposition::Terminal {
+            let terminal_error = CasperError::RuntimeError(format!(
+                "approved-state restore failed {} times; last error: {}",
+                failures, error
+            ));
+            self.engine_cell
+                .report_startup_failure(terminal_error.clone());
+            return Err(terminal_error);
+        }
+
+        if let Err(channel_error) = self.reinstall_sync_channels() {
+            return self.terminate_active_restore(lease, channel_error);
+        }
+
+        let released = self
+            .restore_lifecycle
+            .lock()
+            .map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire restore_lifecycle lock".to_string())
+            })?
+            .release_retry(lease);
+        if !released {
+            return self.terminate_active_restore(
+                lease,
+                CasperError::RuntimeError(
+                    "restore retry ownership could not return to Idle".to_string(),
+                ),
+            );
+        }
+
+        tracing::info!(
+            failures,
+            "Requesting another approved block after restore failure"
+        );
+        if let Err(comm_error) = self
+            .transport_layer
+            .request_approved_block(&self.rp_conf_ask, Some(self.trim_state))
+            .await
+        {
+            return self.resolve_retry_request_failure(lease, CasperError::CommError(comm_error));
+        }
+        Ok(())
+    }
+
+    fn terminate_active_restore(
+        &self,
+        lease: RestoreLease,
+        error: CasperError,
+    ) -> Result<(), CasperError> {
+        let terminated = self
+            .restore_lifecycle
+            .lock()
+            .map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire restore_lifecycle lock".to_string())
+            })?
+            .terminate_active(lease);
+        if terminated {
+            self.engine_cell.report_startup_failure(error.clone());
+        }
+        Err(error)
+    }
+
+    fn resolve_retry_request_failure(
+        &self,
+        lease: RestoreLease,
+        error: CasperError,
+    ) -> Result<(), CasperError> {
+        let terminated = self
+            .restore_lifecycle
+            .lock()
+            .map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire restore_lifecycle lock".to_string())
+            })?
+            .terminate_retry_request(lease);
+        if terminated {
+            self.engine_cell.report_startup_failure(error.clone());
+            Err(error)
+        } else {
+            tracing::info!(
+                generation = lease.0,
+                error = %error,
+                "Ignored superseded approved-block retry request failure"
+            );
+            Ok(())
+        }
+    }
+
+    fn reinstall_sync_channels(&self) -> Result<(), CasperError> {
+        let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(SYNC_CHANNEL_CAPACITY);
+        let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(SYNC_CHANNEL_CAPACITY);
+
+        *self.block_message_tx.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire block_message_tx lock".to_string())
+        })? = Some(block_tx);
+        *self.block_message_rx.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire block_message_rx lock".to_string())
+        })? = Some(block_rx);
+        *self.tuple_space_tx.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire tuple_space_tx lock".to_string())
+        })? = Some(tuple_tx);
+        *self.tuple_space_rx.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire tuple_space_rx lock".to_string())
+        })? = Some(tuple_rx);
+
+        self.block_message_queue_pending.store(0, Ordering::Release);
+        self.tuple_space_queue_pending.store(0, Ordering::Release);
+        self.update_init_queue_metrics();
         Ok(())
     }
 
@@ -761,12 +1011,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // locally replayed block instead.
         self.replay_blocks_for_mergeable_channels(approved_block, min_state_block_number)
             .await?;
-
-        // Transition to Running state
-        tracing::info!("request_approved_state: transitioning to Running");
-        self.create_casper_and_transition_to_running(approved_block)
-            .await?;
-        tracing::info!("request_approved_state: transition_to_running completed");
 
         Ok(())
     }
@@ -1126,7 +1370,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .estimator
             .lock()
             .unwrap()
-            .take()
+            .as_ref()
+            .cloned()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
         // The on-chain fault-tolerance threshold is read and adopted by
         // `hash_set_casper` (the single adoption point shared by all three
@@ -1160,11 +1405,19 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             "create_casper_and_transition_to_running: MultiParentCasper instance created"
         );
 
+        self.block_store.put_approved_block(approved_block)?;
+        {
+            let mut last_approved = self.last_approved_block.lock().map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire last_approved_block lock".to_string())
+            })?;
+            *last_approved = Some(approved_block.clone());
+        }
+
         // **Scala equivalent**: `transitionToRunning[F](...)`
         tracing::info!("create_casper_and_transition_to_running: calling transition_to_running");
 
         // Create empty async init (matches Scala ().pure[F])
-        let the_init = Arc::new(|| {
+        let the_init = Arc::new(|_| {
             Box::pin(async { Ok(()) })
                 as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
@@ -1273,25 +1526,33 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         )
         .await?;
 
-        if let Some(started_at) = *self.init_started_at.lock().map_err(|_| {
-            CasperError::RuntimeError("Failed to acquire init_started_at lock".to_string())
-        })? {
-            let elapsed = started_at.elapsed();
-            metrics::histogram!(
-                CASPER_INIT_TIME_TO_RUNNING_METRIC,
-                "source" => CASPER_METRICS_SOURCE
-            )
-            .record(elapsed.as_secs_f64());
+        self.estimator.lock().unwrap().take();
+
+        if let Ok(started_at) = self.init_started_at.lock() {
+            if let Some(started_at) = *started_at {
+                let elapsed = started_at.elapsed();
+                metrics::histogram!(
+                    CASPER_INIT_TIME_TO_RUNNING_METRIC,
+                    "source" => CASPER_METRICS_SOURCE
+                )
+                .record(elapsed.as_secs_f64());
+            }
         }
 
         tracing::info!(
             "create_casper_and_transition_to_running: transition_to_running completed successfully"
         );
 
-        self.transport_layer
+        if let Err(error) = self
+            .transport_layer
             .send_fork_choice_tip_request(&self.connections_cell, &self.rp_conf_ask)
             .await
-            .map_err(CasperError::CommError)?;
+        {
+            tracing::warn!(
+                error = %error,
+                "Fork-choice tip request failed after Running commit"
+            );
+        }
 
         Ok(())
     }
@@ -1410,8 +1671,8 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
             page_size,
             skip,
             get_from_history,
-        );
-        Ok(())
+        )
+        .map_err(CasperError::RuntimeError)
     }
 }
 
@@ -1453,5 +1714,142 @@ impl<T: TransportLayer + Send + Sync>
             .send_to_bootstrap(self.rp_conf_ask, Arc::new(message_proto))
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod restore_lifecycle_tests {
+    use proptest::prelude::*;
+
+    use super::{RestoreFailureDisposition, RestoreLifecycle, RestorePhase, MAX_RESTORE_FAILURES};
+
+    #[test]
+    fn duplicate_approved_blocks_do_not_acquire_a_second_restore() {
+        let mut lifecycle = RestoreLifecycle::new();
+        assert!(lifecycle.try_begin(true).is_some());
+        assert!(lifecycle.try_begin(true).is_none());
+        assert_eq!(lifecycle.phase, RestorePhase::Restoring);
+    }
+
+    #[test]
+    fn terminal_failure_cannot_reopen_restore() {
+        let mut lifecycle = RestoreLifecycle::new();
+        for expected in 1..=MAX_RESTORE_FAILURES {
+            let lease = lifecycle.try_begin(true).unwrap();
+            let disposition = lifecycle.record_failure(lease).unwrap();
+            assert_eq!(lifecycle.failures, expected);
+            if expected < MAX_RESTORE_FAILURES {
+                assert_eq!(disposition, RestoreFailureDisposition::Retry);
+                assert!(lifecycle.release_retry(lease));
+            } else {
+                assert_eq!(disposition, RestoreFailureDisposition::Terminal);
+            }
+        }
+        assert!(lifecycle.try_begin(true).is_none());
+        assert_eq!(lifecycle.phase, RestorePhase::Terminal);
+    }
+
+    proptest! {
+        #[test]
+        fn retry_ownership_matches_the_failure_budget(
+            recoverable_failures in 0_u64..MAX_RESTORE_FAILURES,
+            duplicate_count in 0_usize..32,
+        ) {
+            let mut lifecycle = RestoreLifecycle::new();
+            for _ in 0..recoverable_failures {
+                let lease = lifecycle.try_begin(true).unwrap();
+                for _ in 0..duplicate_count {
+                    prop_assert!(lifecycle.try_begin(true).is_none());
+                }
+                prop_assert_eq!(
+                    lifecycle.record_failure(lease),
+                    Some(RestoreFailureDisposition::Retry)
+                );
+                prop_assert!(lifecycle.release_retry(lease));
+                prop_assert_eq!(lifecycle.phase, RestorePhase::Idle);
+            }
+        }
+
+        #[test]
+        fn running_commit_is_permanent(
+            terminal_attempts in 0_usize..32,
+            duplicate_count in 0_usize..32,
+        ) {
+            let mut lifecycle = RestoreLifecycle::new();
+            let lease = lifecycle.try_begin(true).unwrap();
+            prop_assert!(lifecycle.commit_running(lease));
+            for _ in 0..duplicate_count {
+                prop_assert!(lifecycle.try_begin(true).is_none());
+                prop_assert_eq!(lifecycle.record_failure(lease), None);
+            }
+            for _ in 0..terminal_attempts {
+                prop_assert!(!lifecycle.terminate_active(lease));
+                prop_assert!(!lifecycle.terminate_retry_request(lease));
+            }
+            prop_assert_eq!(lifecycle.phase, RestorePhase::Running);
+        }
+
+        #[test]
+        fn invalid_approved_blocks_do_not_change_restore_ownership(
+            invalid_count in 0_usize..64,
+        ) {
+            let mut lifecycle = RestoreLifecycle::new();
+            for _ in 0..invalid_count {
+                prop_assert!(lifecycle.try_begin(false).is_none());
+            }
+            prop_assert_eq!(lifecycle, RestoreLifecycle::new());
+        }
+
+        #[test]
+        fn stale_retry_results_cannot_mutate_newer_generations(
+            stale_result_count in 0_usize..32,
+        ) {
+            let mut lifecycle = RestoreLifecycle::new();
+            let stale_lease = lifecycle.try_begin(true).unwrap();
+            prop_assert_eq!(
+                lifecycle.record_failure(stale_lease),
+                Some(RestoreFailureDisposition::Retry)
+            );
+            prop_assert!(lifecycle.release_retry(stale_lease));
+            let current_lease = lifecycle.try_begin(true).unwrap();
+
+            for _ in 0..stale_result_count {
+                prop_assert!(!lifecycle.terminate_retry_request(stale_lease));
+                prop_assert!(!lifecycle.terminate_active(stale_lease));
+            }
+
+            prop_assert_eq!(lifecycle.phase, RestorePhase::Restoring);
+            prop_assert_eq!(lifecycle.generation, current_lease.0);
+            prop_assert!(lifecycle.commit_running(current_lease));
+        }
+
+        #[test]
+        fn aba_stale_retry_results_preserve_newer_idle_generation(
+            stale_result_count in 0_usize..32,
+        ) {
+            let mut lifecycle = RestoreLifecycle::new();
+            let stale_lease = lifecycle.try_begin(true).unwrap();
+            prop_assert_eq!(
+                lifecycle.record_failure(stale_lease),
+                Some(RestoreFailureDisposition::Retry)
+            );
+            prop_assert!(lifecycle.release_retry(stale_lease));
+
+            let current_lease = lifecycle.try_begin(true).unwrap();
+            prop_assert_eq!(
+                lifecycle.record_failure(current_lease),
+                Some(RestoreFailureDisposition::Retry)
+            );
+            prop_assert!(lifecycle.release_retry(current_lease));
+            let current_state = lifecycle;
+
+            for _ in 0..stale_result_count {
+                prop_assert!(!lifecycle.terminate_retry_request(stale_lease));
+                prop_assert_eq!(lifecycle, current_state);
+            }
+
+            prop_assert!(lifecycle.terminate_retry_request(current_lease));
+            prop_assert_eq!(lifecycle.phase, RestorePhase::Terminal);
+        }
     }
 }

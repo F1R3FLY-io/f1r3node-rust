@@ -86,6 +86,36 @@ longer correspond to a second `RuntimeBudget` ledger.
   rejected==rejected_deploys. Determinism guards: pure analyzer, `BTreeMap` groups, Σ_s from deterministic
   merged pre-state, canonical deploy order.
 
+### D2.1 — checkpoint retry recertification
+
+`prepare_user_deploys` returns canonical raw users. Checkpoint capacity does not
+authorize a later slice of its admitted result.
+
+Each attempt selects a raw-user prefix and retains every dummy. The runtime
+certifies that complete window against the same authenticated pre-state.
+
+`StateBoundAdmission` binds the ordered candidate identities. Its constructor
+requires one complete, disjoint, canonically ordered admission partition.
+
+`CertifiedCheckpointAttempt` owns the generation, limit, window, partition,
+user identities, and certificate. The checkpoint observer receives this exact
+attempt.
+
+When checkpoint creation fails, no attempt state becomes block state. The
+proposer increments the generation and strictly reduces the user limit.
+
+When checkpoint creation succeeds, the proposer uses only that attempt. It
+packages that attempt's rejections and drains its admitted or rejected users.
+
+Deferred users remain available. Users outside the selected prefix also
+remain available for a later proposal.
+
+This design preserves validator concurrency. It adds no shared retry lock and
+changes no Casper vote or finality rule.
+
+The formal and executable conformance identifiers are DR-63, CA-P-209,
+TM-CA-199, UC-CA-188, and E2E-056.
+
 ### D3 — DC phlo→token (fresh-genesis per DR-6) — **LANDED** (`bf082ee8`/`20705442`/`d2a47fbd`)
 The plan below LANDED as the 4 D3 commits. Annotations record where the
 implementation refined the plan (b1 diagnostic-refinement: annotate, don't

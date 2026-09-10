@@ -1,33 +1,68 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/ReplayCache.scala
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use indexmap::IndexMap;
+use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::block::state_hash::StateHash;
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{Event, Peek, ProduceEvent};
+use models::rust::validator::Validator;
+use rholang::rust::interpreter::system_processes::BlockData;
 
-/// Cache key: parent state + block identity (sender, seqNum) + replay payload fingerprint.
-/// Including a payload fingerprint prevents unsafe cache hits for mutated deploy content
-/// that happens to share (parent, sender, seqNum).
+use super::replay_cache_state::ReplayCacheState;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReplayCacheContext {
+    sender_pk: Vec<u8>,
+    seq_num: i32,
+    timestamp: i64,
+    height: i64,
+    invalid_blocks_hash: [u8; 32],
+}
+
+impl ReplayCacheContext {
+    pub fn new(block_data: &BlockData, invalid_blocks: &HashMap<BlockHash, Validator>) -> Self {
+        let mut entries: Vec<_> = invalid_blocks.iter().collect();
+        entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        let invalid_blocks_hash = Blake2b256::hash_stream(|update| {
+            update(b"f1r3node:replay-invalid-blocks:v1");
+            update(&(entries.len() as u64).to_le_bytes());
+            for (block, validator) in entries {
+                update(&(block.len() as u64).to_le_bytes());
+                update(block.as_ref());
+                update(&(validator.len() as u64).to_le_bytes());
+                update(validator.as_ref());
+            }
+        });
+        Self {
+            sender_pk: block_data.sender.bytes.to_vec(),
+            seq_num: block_data.seq_num,
+            timestamp: block_data.time_stamp,
+            height: block_data.block_number,
+            invalid_blocks_hash: invalid_blocks_hash
+                .try_into()
+                .expect("Blake2b256 produces 32 bytes"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReplayCacheKey {
     pub parent_state: StateHash,
-    pub sender_pk: Vec<u8>,
-    pub seq_num: i64,
+    pub context: ReplayCacheContext,
     pub payload_hash: Vec<u8>,
 }
 
 impl ReplayCacheKey {
     pub fn new(
         parent_state: StateHash,
-        sender_pk: Vec<u8>,
-        seq_num: i64,
+        context: ReplayCacheContext,
         payload_hash: Vec<u8>,
     ) -> Self {
         Self {
             parent_state,
-            sender_pk,
-            seq_num,
+            context,
             payload_hash,
         }
     }
@@ -35,7 +70,7 @@ impl ReplayCacheKey {
     fn heap_bytes(&self) -> usize {
         self.parent_state
             .len()
-            .saturating_add(self.sender_pk.len())
+            .saturating_add(self.context.sender_pk.len())
             .saturating_add(self.payload_hash.len())
     }
 
@@ -186,11 +221,6 @@ pub trait ReplayCache: Send + Sync {
     fn clear(&self);
 }
 
-struct ReplayCacheState {
-    map: IndexMap<ReplayCacheKey, ReplayCacheEntry>,
-    retained_bytes: usize,
-}
-
 /// Uses lengths rather than capacities so two equal keys always charge the
 /// same amount — the byte accounting must be reproducible from the stored
 /// (key, entry) pair alone when an eviction credits it back.
@@ -200,7 +230,7 @@ fn charged_bytes(key: &ReplayCacheKey, entry: &ReplayCacheEntry) -> usize {
 
 /// Simple in-memory LRU replay cache (thread-safe).
 pub struct InMemoryReplayCache {
-    state: Mutex<ReplayCacheState>,
+    state: Mutex<ReplayCacheState<ReplayCacheKey, ReplayCacheEntry>>,
     max_entries: usize,
     max_bytes: usize,
 }
@@ -210,10 +240,7 @@ impl InMemoryReplayCache {
 
     pub fn with_limits(max_entries: usize, max_bytes: usize) -> Self {
         Self {
-            state: Mutex::new(ReplayCacheState {
-                map: IndexMap::with_capacity(max_entries),
-                retained_bytes: 0,
-            }),
+            state: Mutex::new(ReplayCacheState::new(max_entries)),
             max_entries,
             max_bytes,
         }
@@ -224,7 +251,7 @@ impl InMemoryReplayCache {
 
     pub fn stats(&self) -> (usize, usize) {
         let state = self.state.lock().expect("ReplayCache lock poisoned");
-        (state.map.len(), state.retained_bytes)
+        state.stats()
     }
 
     pub fn len(&self) -> usize { self.stats().0 }
@@ -237,62 +264,143 @@ impl InMemoryReplayCache {
 impl ReplayCache for InMemoryReplayCache {
     fn get(&self, key: &ReplayCacheKey) -> Option<ReplayCacheEntry> {
         let mut state = self.state.lock().expect("ReplayCache lock poisoned");
-        // Move-to-back keeps the stored key: re-inserting the caller's clone
-        // could swap a compact key for one backed by a larger shared
-        // allocation, silently changing what the cache actually retains.
-        let index = state.map.get_index_of(key)?;
-        let last = state.map.len() - 1;
-        state.map.move_index(index, last);
-        state.map.get_index(last).map(|(_, entry)| entry.clone())
+        state.get(key)
     }
 
     fn put(&self, key: ReplayCacheKey, entry: ReplayCacheEntry) -> bool {
         let key = key.into_owned();
-        let charged = charged_bytes(&key, &entry);
         let mut state = self.state.lock().expect("ReplayCache lock poisoned");
-
-        if self.max_entries == 0 || charged > self.max_bytes {
-            return false;
-        }
-
-        if let Some((replaced_key, replaced)) = state.map.shift_remove_entry(&key) {
-            state.retained_bytes = state
-                .retained_bytes
-                .saturating_sub(charged_bytes(&replaced_key, &replaced));
-        }
-
-        state.retained_bytes = state.retained_bytes.saturating_add(charged);
-        state.map.insert(key, entry);
-
-        while state.map.len() > self.max_entries || state.retained_bytes > self.max_bytes {
-            let Some((removed_key, removed)) = state.map.shift_remove_index(0) else {
-                state.retained_bytes = 0;
-                break;
-            };
-            state.retained_bytes = state
-                .retained_bytes
-                .saturating_sub(charged_bytes(&removed_key, &removed));
-        }
-
-        true
+        state.put(key, entry, self.max_entries, self.max_bytes, charged_bytes)
     }
 
     fn clear(&self) {
         let mut state = self.state.lock().expect("ReplayCache lock poisoned");
-        state.map.clear();
-        state.retained_bytes = 0;
+        state.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
-    fn make_key(parent: &str, sender: &str, seq: i64) -> ReplayCacheKey {
+    proptest! {
+        #[test]
+        fn replay_cache_context_binds_every_input(
+            timestamp in any::<i64>(),
+            height in any::<i64>(),
+            sequence in any::<i32>(),
+            entries in proptest::collection::btree_map(0u8..200, any::<u16>(), 1..12),
+        ) {
+            let mut data = BlockData::empty();
+            data.time_stamp = timestamp;
+            data.block_number = height;
+            data.seq_num = sequence;
+            let invalid: HashMap<BlockHash, Validator> = entries.iter().map(|(key, value)| (
+                vec![*key; 32].into(), value.to_le_bytes().to_vec().into(),
+            )).collect();
+            let context = ReplayCacheContext::new(&data, &invalid);
+            let original = ReplayCacheKey::new(vec![1; 32].into(), context, vec![2; 32]);
+            let cache = InMemoryReplayCache::with_limits(16, 65536);
+            prop_assert!(cache.put(original.clone(), make_entry("expected")));
+
+            for axis in 0..8 {
+                let mut changed_data = data.clone();
+                let mut changed_invalid = invalid.clone();
+                let mut parent = vec![1; 32];
+                let mut payload = vec![2; 32];
+                match axis {
+                    0 => parent[0] ^= 1,
+                    1 => payload[0] ^= 1,
+                    2 => changed_data.sender = crypto::rust::public_key::PublicKey::from_bytes(&[1]),
+                    3 => changed_data.seq_num = sequence.wrapping_add(1),
+                    4 => changed_data.time_stamp = timestamp.wrapping_add(1),
+                    5 => changed_data.block_number = height.wrapping_add(1),
+                    6 => { changed_invalid.insert(vec![255; 32].into(), vec![3; 32].into()); }
+                    7 => {
+                        let (key, value) = entries.first_key_value().unwrap();
+                        changed_invalid.insert(
+                            vec![*key; 32].into(),
+                            value.wrapping_add(1).to_le_bytes().to_vec().into(),
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                let changed = ReplayCacheKey::new(
+                    parent.into(), ReplayCacheContext::new(&changed_data, &changed_invalid), payload,
+                );
+                prop_assert_ne!(&original, &changed, "context axis {}", axis);
+                prop_assert!(cache.get(&changed).is_none(), "context axis {}", axis);
+            }
+            prop_assert_eq!(cache.get(&original).unwrap().post_state, make_entry("expected").post_state);
+        }
+
+        #[test]
+        fn replay_cache_invalid_map_order_is_irrelevant(
+            entries in proptest::collection::btree_map(any::<u8>(), any::<u16>(), 0..32),
+        ) {
+            let encode = |(key, value): (&u8, &u16)| -> (BlockHash, Validator) {
+                (vec![*key; 32].into(), value.to_le_bytes().to_vec().into())
+            };
+            let forward = entries.iter().map(encode).collect();
+            let reverse = entries.iter().rev().map(encode).collect();
+            prop_assert_eq!(
+                ReplayCacheContext::new(&BlockData::empty(), &forward),
+                ReplayCacheContext::new(&BlockData::empty(), &reverse),
+            );
+        }
+    }
+
+    #[test]
+    fn replay_cache_invalid_map_encoding_separates_key_and_value() {
+        let left = HashMap::from([(vec![1].into(), vec![2, 3].into())]);
+        let right = HashMap::from([(vec![1, 2].into(), vec![3].into())]);
+        assert_ne!(
+            ReplayCacheContext::new(&BlockData::empty(), &left),
+            ReplayCacheContext::new(&BlockData::empty(), &right),
+        );
+    }
+
+    #[test]
+    fn concurrent_cache_callers_keep_distinct_runtime_contexts() {
+        let cache = Arc::new(InMemoryReplayCache::with_limits(2, 65536));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let callers: Vec<_> = (1..=2)
+            .map(|timestamp| {
+                let cache = cache.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut data = BlockData::empty();
+                    data.time_stamp = timestamp;
+                    let key = ReplayCacheKey::new(
+                        vec![1; 32].into(),
+                        ReplayCacheContext::new(&data, &HashMap::new()),
+                        vec![2; 32],
+                    );
+                    let post_state: StateHash = vec![timestamp as u8; 32].into();
+                    assert!(cache.put(
+                        key.clone(),
+                        ReplayCacheEntry::new(Vec::new(), post_state.clone())
+                    ));
+                    barrier.wait();
+                    assert_eq!(cache.get(&key).unwrap().post_state, post_state);
+                })
+            })
+            .collect();
+        for caller in callers {
+            caller.join().unwrap();
+        }
+        assert_eq!(cache.len(), 2);
+    }
+
+    fn make_key(parent: &str, sender: &str, seq: i32) -> ReplayCacheKey {
+        let mut block_data = BlockData::empty();
+        block_data.sender = crypto::rust::public_key::PublicKey::from_bytes(sender.as_bytes());
+        block_data.seq_num = seq;
         ReplayCacheKey::new(
             parent.as_bytes().to_vec().into(),
-            sender.as_bytes().to_vec(),
-            seq,
+            ReplayCacheContext::new(&block_data, &HashMap::new()),
             vec![0u8; 32],
         )
     }
@@ -456,13 +564,14 @@ mod tests {
     fn test_put_copies_shared_key_backing() {
         let backing = prost::bytes::Bytes::from(vec![9u8; 4096]);
         let parent_slice = backing.slice(0..8);
-        let key = ReplayCacheKey::new(parent_slice.clone(), b"s".to_vec(), 1, vec![0u8; 32]);
+        let mut key = make_key("p", "s", 1);
+        key.parent_state = parent_slice.clone();
         let cache = InMemoryReplayCache::default_capacity();
 
         assert!(cache.put(key.clone(), make_entry("post")));
 
         let state = cache.state.lock().unwrap();
-        let (stored_key, _) = state.map.get_index(0).unwrap();
+        let (stored_key, _) = state.entries().next().unwrap();
         assert_eq!(stored_key.parent_state.as_ref(), parent_slice.as_ref());
         assert_ne!(
             stored_key.parent_state.as_ref().as_ptr(),
@@ -563,7 +672,9 @@ mod tests {
             ]
         }
 
-        fn prop_key(i: u8) -> ReplayCacheKey { make_key("prop-parent", "prop-sender", i as i64) }
+        fn prop_key(i: u8) -> ReplayCacheKey {
+            make_key("prop-parent", "prop-sender", i32::from(i))
+        }
 
         fn sized_entry(payload_len: usize, with_event: bool) -> ReplayCacheEntry {
             let event_log = if with_event {
@@ -597,11 +708,21 @@ mod tests {
                 ops in prop::collection::vec(op_strategy(), 1..48),
             ) {
                 let cache = InMemoryReplayCache::with_limits(max_entries, max_bytes);
+                let mut reference: Vec<(ReplayCacheKey, ReplayCacheEntry)> = Vec::new();
                 for op in ops {
                     match op {
                         Op::Put { key, payload_len, with_event } => {
                             let entry = sized_entry(payload_len, with_event);
                             let charged = charged_bytes(&prop_key(key), &entry);
+                            if max_entries > 0 && charged <= max_bytes {
+                                reference.retain(|(stored, _)| stored != &prop_key(key));
+                                reference.push((prop_key(key), entry.clone()));
+                                while reference.len() > max_entries
+                                    || reference.iter().map(|(k, v)| charged_bytes(k, v)).sum::<usize>() > max_bytes
+                                {
+                                    reference.remove(0);
+                                }
+                            }
                             let admitted = cache.put(prop_key(key), entry);
                             prop_assert_eq!(
                                 admitted,
@@ -609,27 +730,42 @@ mod tests {
                             );
                         }
                         Op::Get { key } => {
-                            if cache.get(&prop_key(key)).is_some() {
+                            let expected = reference.iter().position(|(stored, _)| stored == &prop_key(key))
+                                .map(|index| {
+                                    let pair = reference.remove(index);
+                                    let value = pair.1.clone();
+                                    reference.push(pair);
+                                    value
+                                });
+                            let actual = cache.get(&prop_key(key));
+                            prop_assert_eq!(actual.as_ref().map(|v| &v.post_state), expected.as_ref().map(|v| &v.post_state));
+                            prop_assert_eq!(actual.as_ref().map(|v| &v.event_log), expected.as_ref().map(|v| &v.event_log));
+                            if actual.is_some() {
                                 let state = cache.state.lock().unwrap();
-                                let (last_key, _) =
-                                    state.map.get_index(state.map.len() - 1).unwrap();
+                                let (last_key, _) = state.entries().next_back().unwrap();
                                 prop_assert!(last_key == &prop_key(key));
                             }
                         }
                         Op::Clear => {
+                            reference.clear();
                             cache.clear();
                             prop_assert_eq!(cache.stats(), (0, 0));
                         }
                     }
                     let state = cache.state.lock().unwrap();
-                    prop_assert!(state.map.len() <= max_entries);
-                    prop_assert!(state.retained_bytes <= max_bytes);
+                    prop_assert!(state.stats().0 <= max_entries);
+                    prop_assert!(state.stats().1 <= max_bytes);
                     let live_sum: usize = state
-                        .map
-                        .iter()
+                        .entries()
                         .map(|(key, entry)| charged_bytes(key, entry))
                         .sum();
-                    prop_assert_eq!(state.retained_bytes, live_sum);
+                    prop_assert_eq!(state.stats().1, live_sum);
+                    prop_assert_eq!(state.stats().0, reference.len());
+                    for ((key, entry), (expected_key, expected_entry)) in state.entries().zip(&reference) {
+                        prop_assert_eq!(key, expected_key);
+                        prop_assert_eq!(&entry.post_state, &expected_entry.post_state);
+                        prop_assert_eq!(&entry.event_log, &expected_entry.event_log);
+                    }
                 }
             }
         }

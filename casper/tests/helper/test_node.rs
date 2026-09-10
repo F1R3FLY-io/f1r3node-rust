@@ -16,7 +16,7 @@ use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::new_proposer;
 use casper::rust::casper::{Casper, CasperShardConf, DeployError, MultiParentCasper};
-use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
+use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::engine::running::{Running, RunningRecoveryContext};
@@ -40,7 +40,6 @@ use comm::rust::transport::grpc_transport_server::TransportLayerServer;
 use comm::rust::transport::transport_layer::Blob;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::{Cosigned, Signed};
-use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -77,7 +76,6 @@ pub struct TestNode {
     >,
     pub runtime_manager: RuntimeManager,
     // Note: no log field, logging will come from log crate
-    pub requested_blocks: RequestedBlocks,
     pub connections_cell: ConnectionsCell,
     pub rp_conf: RPConf,
     // Casper instance (Arc<Mutex> for shared ownership with interior mutability)
@@ -432,38 +430,14 @@ impl TestNode {
         &mut self,
         deploy_datums: &[Signed<DeployData>],
     ) -> Result<BlockMessage, CasperError> {
-        let mut finalization_deadline = None;
-        let mut first_attempt = true;
-        loop {
-            let result = if first_attempt {
-                first_attempt = false;
-                self.create_block(deploy_datums).await?
-            } else {
-                self.create_block(&[]).await?
-            };
-            match result {
-                BlockCreatorResult::Created(block, ..) => return Ok(block),
-                BlockCreatorResult::RecoveryDeferred(
-                    casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::FinalizedFloorMaterializationPending,
-                ) => {
-                    let deadline = *finalization_deadline.get_or_insert_with(|| {
-                        tokio::time::Instant::now() + std::time::Duration::from_secs(30)
-                    });
-                    if tokio::time::Instant::now() >= deadline {
-                        return Err(CasperError::RuntimeError(
-                            "Timed out waiting for finalized-floor materialization".to_string(),
-                        ));
-                    }
-                    self.casper.request_finalization()?;
-                    self.wait_for_finalizer_quiescence(deadline).await?;
-                }
-                other => {
-                    return Err(CasperError::RuntimeError(format!(
-                        "Failed creating block: {:?}",
-                        other
-                    )))
-                }
-            }
+        let result = self.create_block(deploy_datums).await?;
+
+        match result {
+            BlockCreatorResult::Created(block, ..) => Ok(block),
+            _ => Err(CasperError::RuntimeError(format!(
+                "Failed creating block: {:?}",
+                result
+            ))),
         }
     }
 
@@ -853,7 +827,7 @@ impl TestNode {
 
         // Check if all synced
         let mut done = {
-            let requested = self.requested_blocks.lock().unwrap();
+            let requested = self.casper.block_retriever.request_states();
             !requested.values().any(|req| !req.received)
         };
 
@@ -863,7 +837,7 @@ impl TestNode {
         while cnt < MAX_SYNC_ATTEMPTS && !done {
             // Get list of peers we're waiting for
             let asked_peers: Vec<PeerNode> = {
-                let requested = self.requested_blocks.lock().unwrap();
+                let requested = self.casper.block_retriever.request_states();
                 requested
                     .values()
                     .flat_map(|req| {
@@ -889,7 +863,7 @@ impl TestNode {
 
             // Check if we're done
             done = {
-                let requested = self.requested_blocks.lock().unwrap();
+                let requested = self.casper.block_retriever.request_states();
                 !requested.values().any(|req| !req.received)
             };
             cnt += 1;
@@ -897,7 +871,7 @@ impl TestNode {
 
         // Log results
         if !done {
-            let requested = self.requested_blocks.lock().unwrap();
+            let requested = self.casper.block_retriever.request_states();
             let pending: Vec<String> = requested
                 .iter()
                 .filter(|(_, req)| !req.received)
@@ -946,7 +920,7 @@ impl TestNode {
 
         // Check if in requested blocks
         let in_requested = {
-            let requested = self.requested_blocks.lock().unwrap();
+            let requested = self.casper.block_retriever.request_states();
             requested.contains_key(block_hash)
         };
 
@@ -1522,11 +1496,9 @@ impl TestNode {
             rp_conf.bootstrap = Some(bootstrap_peer);
         }
         let event_publisher = F1r3flyEvents::new();
-        // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F, Map[BlockHash, RequestState]](Map.empty)
-        let requested_blocks = Arc::new(Mutex::new(HashMap::<BlockHash, RequestState>::new()));
         // Scala: implicit val blockRetriever: BlockRetriever[F] = BlockRetriever.of[F]
         let block_retriever = BlockRetriever::new(
-            requested_blocks.clone(),
+            casper_buffer_storage.clone(),
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
@@ -1560,14 +1532,14 @@ impl TestNode {
 
         let bp_dependencies = BlockProcessorDependencies::new(
             block_store.clone(),
-            casper_buffer_storage.clone(),
             block_dag_storage.clone(),
             block_retriever.clone(),
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
             None,
-        );
+        )
+        .unwrap();
 
         let block_processor = BlockProcessor::new(bp_dependencies);
 
@@ -1676,14 +1648,14 @@ impl TestNode {
 
         let running_engine = Running::new(
             block_processor_queue_tx.clone(), // block_processing_queue_tx
-            Arc::new(DashSet::new()),         // blocks_in_processing
+            block_processor_queue_tx.identities(),
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
-            _approved_block.clone(),          // approved_block
-            the_init,                         // the_init
-            true,                             // disable_state_exporter
-            tle.clone(),                      // transport
-            rp_conf.clone(),                  // conf
-            block_retriever.clone(),          // block_retriever
+            _approved_block.clone(),                                    // approved_block
+            the_init,                                                   // the_init
+            true,                                                       // disable_state_exporter
+            tle.clone(),                                                // transport
+            rp_conf.clone(),                                            // conf
+            block_retriever.clone(),                                    // block_retriever
             Some(RunningRecoveryContext {
                 connections_cell: connections_cell.clone(),
             }),
@@ -1709,7 +1681,6 @@ impl TestNode {
             deploy_storage,
             rejected_deploy_buffer,
             runtime_manager,
-            requested_blocks,
             connections_cell,
             rp_conf,
             casper,

@@ -486,5 +486,325 @@ Proof.
   now subst right.
 Qed.
 
+Record reusable_execution_result := {
+  result_deploy_identity : nat;
+  result_pre_state : nat;
+  result_schedule : nat;
+  result_witness : nat;
+  result_cost_surface : nat;
+  result_grade : nat;
+  result_context : nat;
+  result_user_post_state : nat;
+  result_mergeable_evidence : nat
+}.
+
+Definition reusable_execution_result_eq_dec :
+  forall left right : reusable_execution_result,
+    {left = right} + {left <> right}.
+Proof.
+  decide equality; apply Nat.eq_dec.
+Defined.
+
+Record verified_execution_reuse := {
+  reuse_expected : reusable_execution_result;
+  reuse_observed : reusable_execution_result;
+  reuse_result_exact : reuse_observed = reuse_expected
+}.
+
+Definition certify_execution_reuse
+  (expected observed : reusable_execution_result)
+  : option verified_execution_reuse :=
+  match reusable_execution_result_eq_dec observed expected with
+  | left exact =>
+      Some {|
+        reuse_expected := expected;
+        reuse_observed := observed;
+        reuse_result_exact := exact
+      |}
+  | right _ => None
+  end.
+
+Theorem exact_execution_result_is_reusable :
+  forall expected,
+    exists proof,
+      certify_execution_reuse expected expected = Some proof.
+Proof.
+  intros expected.
+  unfold certify_execution_reuse.
+  destruct (reusable_execution_result_eq_dec expected expected) as [exact | different].
+  - eexists. reflexivity.
+  - contradiction.
+Qed.
+
+Theorem changed_execution_result_is_not_reusable :
+  forall expected observed,
+    expected <> observed ->
+    certify_execution_reuse expected observed = None.
+Proof.
+  intros expected observed different.
+  unfold certify_execution_reuse.
+  destruct (reusable_execution_result_eq_dec observed expected) as [exact | not_exact].
+  - exfalso. apply different. symmetry. exact exact.
+  - reflexivity.
+Qed.
+
+Theorem certified_execution_reuse_binds_every_consensus_field :
+  forall expected observed proof,
+    certify_execution_reuse expected observed = Some proof ->
+    result_deploy_identity observed = result_deploy_identity expected /\
+    result_pre_state observed = result_pre_state expected /\
+    result_schedule observed = result_schedule expected /\
+    result_witness observed = result_witness expected /\
+    result_cost_surface observed = result_cost_surface expected /\
+    result_grade observed = result_grade expected /\
+    result_context observed = result_context expected /\
+    result_user_post_state observed = result_user_post_state expected /\
+    result_mergeable_evidence observed = result_mergeable_evidence expected.
+Proof.
+  intros expected observed proof certified.
+  unfold certify_execution_reuse in certified.
+  destruct (reusable_execution_result_eq_dec observed expected) as [exact | different].
+  - subst observed. repeat split.
+  - discriminate.
+Qed.
+
+Inductive validation_execution_phase :=
+| Discovering
+| Retained
+| SystemsChecked
+| ResultPublished
+| ExecutionRejected
+| ExecutionCancelled.
+
+Record validation_execution_state := {
+  validation_phase : validation_execution_phase;
+  validation_attempts : nat;
+  validation_retained_results : nat
+}.
+
+Definition validation_initial_state : validation_execution_state :=
+  {| validation_phase := Discovering;
+     validation_attempts := 0;
+     validation_retained_results := 0 |}.
+
+Inductive validation_execution_step :
+  validation_execution_state -> validation_execution_state -> Prop :=
+| AttemptDiscovery : forall attempts,
+    validation_execution_step
+      {| validation_phase := Discovering;
+         validation_attempts := attempts;
+         validation_retained_results := 0 |}
+      {| validation_phase := Discovering;
+         validation_attempts := S attempts;
+         validation_retained_results := 0 |}
+| RetainDiscovery : forall attempts,
+    attempts > 0 ->
+    validation_execution_step
+      {| validation_phase := Discovering;
+         validation_attempts := attempts;
+         validation_retained_results := 0 |}
+      {| validation_phase := Retained;
+         validation_attempts := attempts;
+         validation_retained_results := 1 |}
+| CheckSystems : forall attempts,
+    validation_execution_step
+      {| validation_phase := Retained;
+         validation_attempts := attempts;
+         validation_retained_results := 1 |}
+      {| validation_phase := SystemsChecked;
+         validation_attempts := attempts;
+         validation_retained_results := 1 |}
+| PublishRetained : forall attempts,
+    validation_execution_step
+      {| validation_phase := SystemsChecked;
+         validation_attempts := attempts;
+         validation_retained_results := 1 |}
+      {| validation_phase := ResultPublished;
+         validation_attempts := attempts;
+         validation_retained_results := 1 |}
+| RejectExecution : forall phase attempts results,
+    phase <> ResultPublished ->
+    phase <> ExecutionRejected ->
+    phase <> ExecutionCancelled ->
+    validation_execution_step
+      {| validation_phase := phase;
+         validation_attempts := attempts;
+         validation_retained_results := results |}
+      {| validation_phase := ExecutionRejected;
+         validation_attempts := attempts;
+         validation_retained_results := results |}
+| CancelExecution : forall phase attempts results,
+    phase <> ResultPublished ->
+    phase <> ExecutionRejected ->
+    phase <> ExecutionCancelled ->
+    validation_execution_step
+      {| validation_phase := phase;
+         validation_attempts := attempts;
+         validation_retained_results := results |}
+      {| validation_phase := ExecutionCancelled;
+         validation_attempts := attempts;
+         validation_retained_results := results |}.
+
+Definition validation_execution_invariant (state : validation_execution_state) : Prop :=
+  validation_retained_results state <= 1 /\
+  validation_retained_results state <= validation_attempts state /\
+  (validation_phase state = Discovering -> validation_retained_results state = 0) /\
+  (In (validation_phase state) [Retained; SystemsChecked; ResultPublished] ->
+   validation_retained_results state = 1).
+
+Lemma validation_initial_invariant :
+  validation_execution_invariant validation_initial_state.
+Proof.
+  unfold validation_execution_invariant, validation_initial_state.
+  simpl. intuition (try discriminate; lia).
+Qed.
+
+Lemma validation_step_preserves_invariant :
+  forall before after,
+    validation_execution_invariant before ->
+    validation_execution_step before after ->
+    validation_execution_invariant after.
+Proof.
+  intros before after valid step.
+  inversion step; subst;
+    unfold validation_execution_invariant in *; simpl in *;
+    intuition (try discriminate; lia).
+Qed.
+
+Theorem retained_execution_has_no_second_user_evaluation :
+  forall before after,
+    validation_execution_step before after ->
+    validation_phase before <> Discovering ->
+    validation_attempts after = validation_attempts before.
+Proof.
+  intros before after step retained.
+  inversion step; subst; simpl in *; congruence.
+Qed.
+
+Theorem discovery_attempts_can_exceed_retained_results :
+  validation_execution_step validation_initial_state
+    {| validation_phase := Discovering;
+       validation_attempts := 1;
+       validation_retained_results := 0 |} /\
+  validation_execution_step
+    {| validation_phase := Discovering;
+       validation_attempts := 1;
+       validation_retained_results := 0 |}
+    {| validation_phase := Discovering;
+       validation_attempts := 2;
+       validation_retained_results := 0 |} /\
+  validation_execution_step
+    {| validation_phase := Discovering;
+       validation_attempts := 2;
+       validation_retained_results := 0 |}
+    {| validation_phase := Retained;
+       validation_attempts := 2;
+       validation_retained_results := 1 |}.
+Proof.
+  repeat split; constructor; lia.
+Qed.
+
+Definition validation_workers := nat -> validation_execution_state.
+
+Definition update_validation_worker
+  (workers : validation_workers) (worker : nat) (state : validation_execution_state)
+  : validation_workers :=
+  fun other => if Nat.eq_dec other worker then state else workers other.
+
+Inductive parallel_validation_step : validation_workers -> validation_workers -> Prop :=
+| StepValidationWorker : forall workers worker after,
+    validation_execution_step (workers worker) after ->
+    parallel_validation_step workers (update_validation_worker workers worker after).
+
+Inductive parallel_validation_reachable : validation_workers -> Prop :=
+| InitialValidationWorkers :
+    parallel_validation_reachable (fun _ => validation_initial_state)
+| AdvanceValidationWorkers : forall before after,
+    parallel_validation_reachable before ->
+    parallel_validation_step before after ->
+    parallel_validation_reachable after.
+
+Theorem parallel_validation_preserves_each_worker_invariant :
+  forall workers,
+    parallel_validation_reachable workers ->
+    forall worker, validation_execution_invariant (workers worker).
+Proof.
+  intros workers reachable.
+  induction reachable as [| before after reachable IH step]; intros worker.
+  - apply validation_initial_invariant.
+  - inversion step; subst. unfold update_validation_worker.
+    destruct (Nat.eq_dec worker worker0) as [same | different].
+    + subst worker. eapply validation_step_preserves_invariant; eauto.
+    + apply IH.
+Qed.
+
+Theorem parallel_validation_retains_one_successful_result :
+  forall workers worker,
+    parallel_validation_reachable workers ->
+    validation_phase (workers worker) = ResultPublished ->
+    validation_retained_results (workers worker) = 1 /\
+    1 <= validation_attempts (workers worker).
+Proof.
+  intros workers worker reachable published.
+  pose proof (parallel_validation_preserves_each_worker_invariant workers reachable worker)
+    as [bounded [attempted [discovering retained]]].
+  assert (one : validation_retained_results (workers worker) = 1).
+  { apply retained. rewrite published. simpl. auto. }
+  split; lia.
+Qed.
+
+Theorem cancellation_preserves_other_validation_workers :
+  forall workers worker other cancelled,
+    worker <> other ->
+    update_validation_worker workers worker cancelled other = workers other.
+Proof.
+  intros workers worker other cancelled distinct.
+  unfold update_validation_worker.
+  destruct (Nat.eq_dec other worker); congruence.
+Qed.
+
+Definition cache_verified_result
+  (proof : verified_execution_reuse)
+  : reusable_execution_result := reuse_observed proof.
+
+Theorem cached_verified_result_is_expected :
+  forall proof, cache_verified_result proof = reuse_expected proof.
+Proof.
+  intros [expected observed exact].
+  exact exact.
+Qed.
+
+Definition persistent_installation_charge (attempts : nat) : nat :=
+  if Nat.eqb attempts 0 then 0 else 1.
+
+Definition persistent_firing_charge (firings : nat) : nat := firings.
+
+Theorem persistent_installation_retries_charge_once :
+  forall attempts,
+    attempts > 0 -> persistent_installation_charge attempts = 1.
+Proof.
+  intros attempts positive.
+  destruct attempts.
+  - lia.
+  - reflexivity.
+Qed.
+
+Theorem persistent_base_rewrite_firings_preserve_multiplicity :
+  forall prior completed,
+    persistent_firing_charge (prior + completed) =
+      persistent_firing_charge prior + persistent_firing_charge completed.
+Proof.
+  reflexivity.
+Qed.
+
 Print Assumptions post_state_mismatch_preserves_durable_evidence_and_cache.
 Print Assumptions changed_replay_publication_requires_post_state_equality.
+Print Assumptions certified_execution_reuse_binds_every_consensus_field.
+Print Assumptions cached_verified_result_is_expected.
+Print Assumptions persistent_base_rewrite_firings_preserve_multiplicity.
+Print Assumptions validation_step_preserves_invariant.
+Print Assumptions retained_execution_has_no_second_user_evaluation.
+Print Assumptions discovery_attempts_can_exceed_retained_results.
+Print Assumptions parallel_validation_preserves_each_worker_invariant.
+Print Assumptions parallel_validation_retains_one_successful_result.
+Print Assumptions cancellation_preserves_other_validation_workers.

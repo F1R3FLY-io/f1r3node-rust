@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::{CostAuthority, CostRegion, CostSignature, CostSignatureCompound};
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::Sig;
+use crate::rust::interpreter::host_work::HostWorkBudget;
 
 const CERTIFICATE_DOMAIN: &[u8] = b"f1r3node:authority-funding-certificate:v8";
 const WITNESS_DOMAIN: &[u8] = b"f1r3node:authority-cost-witness:v8";
@@ -365,6 +367,15 @@ pub fn authority_funding_signatures_for_events(
     byte_events: &[AuthorityByteEvent],
     presentations: &[CostSignature],
 ) -> Result<BTreeMap<[u8; 32], CostSignature>, AuthorityError> {
+    authority_funding_signatures_for_events_with_host_work(events, byte_events, presentations, None)
+}
+
+pub fn authority_funding_signatures_for_events_with_host_work(
+    events: &[AuthorityEvent<[u8; 32]>],
+    byte_events: &[AuthorityByteEvent],
+    presentations: &[CostSignature],
+    host_work: Option<&HostWorkBudget>,
+) -> Result<BTreeMap<[u8; 32], CostSignature>, AuthorityError> {
     fn insert(
         signatures: &mut BTreeMap<[u8; 32], CostSignature>,
         signature: CostSignature,
@@ -385,6 +396,7 @@ pub fn authority_funding_signatures_for_events(
         }
     }
 
+    reserve_authority_discovery(events, byte_events, presentations, host_work)?;
     let mut signatures = BTreeMap::new();
     for event in events {
         let atoms = event_atoms(event)?;
@@ -416,6 +428,92 @@ pub fn authority_funding_signatures_for_events(
         insert(&mut signatures, presentation.clone())?;
     }
     Ok(signatures)
+}
+
+fn reserve_authority_discovery(
+    events: &[AuthorityEvent<[u8; 32]>],
+    byte_events: &[AuthorityByteEvent],
+    presentations: &[CostSignature],
+    host_work: Option<&HostWorkBudget>,
+) -> Result<(), AuthorityError> {
+    let Some(host_work) = host_work else {
+        return Ok(());
+    };
+    let mut observed_depth = 0_u64;
+    for event in events {
+        for region in &event.authority.regions {
+            if let Some(signature) = &region.signature {
+                reserve_authority_signature_tree(signature, host_work, &mut observed_depth)?;
+            }
+        }
+    }
+    for event in byte_events {
+        for region in &event.authority.regions {
+            if let Some(signature) = &region.signature {
+                reserve_authority_signature_tree(signature, host_work, &mut observed_depth)?;
+            }
+        }
+    }
+    for signature in presentations {
+        reserve_authority_signature_tree(signature, host_work, &mut observed_depth)?;
+    }
+    Ok(())
+}
+
+fn reserve_authority_signature_tree(
+    signature: &CostSignature,
+    host_work: &HostWorkBudget,
+    observed_depth: &mut u64,
+) -> Result<(), AuthorityError> {
+    reserve_host_work(host_work, HostWorkDimension::AuthorityNodes, 1)?;
+    reserve_authority_depth(host_work, observed_depth, 1)?;
+    let mut pending = vec![(signature, 1_u64)];
+    while let Some((signature, depth)) = pending.pop() {
+        let Some(CostSignatureValue::Compound(compound)) = signature.value.as_ref() else {
+            continue;
+        };
+        let child_depth = depth
+            .checked_add(1)
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        reserve_authority_depth(host_work, observed_depth, child_depth)?;
+        let child_count = u64::try_from(compound.elements.len())
+            .map_err(|_| AuthorityError::ArithmeticOverflow)?;
+        reserve_host_work(host_work, HostWorkDimension::AuthorityNodes, child_count)?;
+        pending.extend(
+            compound
+                .elements
+                .iter()
+                .rev()
+                .map(|element| (element, child_depth)),
+        );
+    }
+    Ok(())
+}
+
+fn reserve_authority_depth(
+    host_work: &HostWorkBudget,
+    observed_depth: &mut u64,
+    depth: u64,
+) -> Result<(), AuthorityError> {
+    if depth <= *observed_depth {
+        return Ok(());
+    }
+    reserve_host_work(
+        host_work,
+        HostWorkDimension::AuthorityDepth,
+        depth - *observed_depth,
+    )?;
+    *observed_depth = depth;
+    Ok(())
+}
+
+fn reserve_host_work(
+    host_work: &HostWorkBudget,
+    dimension: HostWorkDimension,
+    units: u64,
+) -> Result<(), AuthorityError> {
+    host_work.reserve(dimension, HostWorkUnits::new(units))?;
+    Ok(())
 }
 
 pub fn allocate_authority_events(
@@ -499,6 +597,57 @@ pub fn allocate_quantitative_events(
         .ok_or(AuthorityError::InsufficientAuthority)
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuthorityBalanceSettlement<K: Ord = [u8; 32]> {
+    pub logical_debit: ResourceMultiset<K>,
+    pub custody_debit: ResourceMultiset<K>,
+}
+
+pub fn allocate_authority_events_with_custody(
+    events: &[AuthorityEvent<[u8; 32]>],
+    available: &ResourceMultiset<[u8; 32]>,
+    balance_custody: &BTreeMap<[u8; 32], [u8; 32]>,
+) -> Result<AuthorityBalanceSettlement<[u8; 32]>, AuthorityError> {
+    let options = events
+        .iter()
+        .map(authority_funding_options)
+        .collect::<Result<Vec<_>, _>>()?;
+    allocate_event_options_with_custody(&options, available, balance_custody)
+}
+
+pub fn allocate_quantitative_events_with_custody(
+    events: &[AuthorityByteEvent],
+    available: &ResourceMultiset<[u8; 32]>,
+    balance_custody: &BTreeMap<[u8; 32], [u8; 32]>,
+) -> Result<AuthorityBalanceSettlement<[u8; 32]>, AuthorityError> {
+    let mut events = events.iter().collect::<Vec<_>>();
+    events.sort_by_key(|event| event.canonical_key());
+    let options = events
+        .iter()
+        .map(|event| {
+            event.verify_authority()?;
+            authority_funding_options(&event.funding_event()?)?
+                .into_iter()
+                .map(|option| {
+                    option.0.into_iter().try_fold(
+                        ResourceMultiset::default(),
+                        |mut allocation, (key, units)| {
+                            let debit = units
+                                .checked_mul(event.amount)
+                                .ok_or(AuthorityError::ArithmeticOverflow)?;
+                            if debit > 0 {
+                                allocation.0.insert(key, debit);
+                            }
+                            Ok(allocation)
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, AuthorityError>>()
+        })
+        .collect::<Result<Vec<_>, AuthorityError>>()?;
+    allocate_event_options_with_custody(&options, available, balance_custody)
+}
+
 pub fn allocate_authority_event_draws(
     events: &[AuthorityEvent<[u8; 32]>],
     available: &ResourceMultiset<[u8; 32]>,
@@ -575,6 +724,80 @@ fn allocate_event_options(
         }
     }
     None
+}
+
+fn allocate_event_options_with_custody(
+    options: &[Vec<ResourceMultiset<[u8; 32]>>],
+    available: &ResourceMultiset<[u8; 32]>,
+    balance_custody: &BTreeMap<[u8; 32], [u8; 32]>,
+) -> Result<AuthorityBalanceSettlement<[u8; 32]>, AuthorityError> {
+    struct Frame {
+        index: usize,
+        next_option: usize,
+        available: ResourceMultiset<[u8; 32]>,
+    }
+
+    if options.iter().flatten().any(|option| {
+        option
+            .0
+            .keys()
+            .any(|lane| !balance_custody.contains_key(lane))
+    }) {
+        return Err(AuthorityError::UnknownPhysicalCustody);
+    }
+
+    let mut frames = vec![Frame {
+        index: 0,
+        next_option: 0,
+        available: available.clone(),
+    }];
+    let mut draws = Vec::with_capacity(options.len());
+    let mut failed = BTreeSet::new();
+    while let Some(frame) = frames.last_mut() {
+        if frame.index == options.len() {
+            let logical_debit = draws
+                .iter()
+                .try_fold(ResourceMultiset::default(), |total, draw| {
+                    total.checked_add(draw)
+                })?;
+            let custody_debit = physicalize_balance_debit(&logical_debit, balance_custody)?;
+            return Ok(AuthorityBalanceSettlement {
+                logical_debit,
+                custody_debit,
+            });
+        }
+        let state = (
+            frame.index,
+            frame
+                .available
+                .0
+                .iter()
+                .map(|(key, amount)| (*key, *amount))
+                .collect::<Vec<_>>(),
+        );
+        if failed.contains(&state) || frame.next_option == options[frame.index].len() {
+            failed.insert(state);
+            let had_parent = frame.index != 0;
+            frames.pop();
+            if had_parent {
+                draws.pop();
+            }
+            continue;
+        }
+        let draw = options[frame.index][frame.next_option].clone();
+        let custody_draw = physicalize_balance_debit(&draw, balance_custody)?;
+        let next_index = frame.index + 1;
+        frame.next_option += 1;
+        if let Ok(remaining) = frame.available.checked_sub(&custody_draw) {
+            draws.push(draw);
+            frames.push(Frame {
+                index: next_index,
+                next_option: 0,
+                available: remaining,
+            });
+        }
+    }
+    Err(AuthorityError::InsufficientAuthority)
 }
 
 pub fn instantiate_persistent_regions(
@@ -698,6 +921,8 @@ impl<K: CanonicalAuthorityKey + Ord> ResourceMultiset<K> {
 ))]
 pub struct AuthorityPhysicalInventory<K: Ord = [u8; 32]> {
     pub balances: ResourceMultiset<K>,
+    #[serde(default)]
+    pub balance_custody: BTreeMap<K, K>,
     pub stacks: BTreeMap<[u8; 32], Vec<CostSignature>>,
     #[serde(default)]
     pub born_stacks: BTreeMap<[u8; 32], [u8; 32]>,
@@ -722,7 +947,83 @@ pub struct AuthorityPhysicalEventDraw<K: Ord = [u8; 32]> {
 pub struct AuthorityPhysicalSettlement<K: Ord = [u8; 32]> {
     pub draws: Vec<AuthorityPhysicalEventDraw<K>>,
     pub balance_debit: ResourceMultiset<K>,
+    pub custody_debit: ResourceMultiset<K>,
     pub stack_pops: BTreeMap<[u8; 32], u64>,
+}
+
+impl<K: Ord + Clone> AuthorityPhysicalInventory<K> {
+    pub fn insert_balance_lane(
+        &mut self,
+        lane: K,
+        custody: K,
+        balance: u64,
+    ) -> Result<(), AuthorityError> {
+        if self
+            .balance_custody
+            .get(&lane)
+            .is_some_and(|existing| existing != &custody)
+        {
+            return Err(AuthorityError::PhysicalCustodyMismatch);
+        }
+        let known = self
+            .balance_custody
+            .values()
+            .any(|existing| existing == &custody);
+        if known && self.balances.get(&custody) != balance {
+            return Err(AuthorityError::PhysicalCustodyMismatch);
+        }
+        if !known && balance > 0 {
+            self.balances.0.insert(custody.clone(), balance);
+        }
+        self.balance_custody.insert(lane, custody);
+        Ok(())
+    }
+
+    pub fn physical_debit(
+        &self,
+        logical: &ResourceMultiset<K>,
+    ) -> Result<ResourceMultiset<K>, AuthorityError> {
+        physicalize_balance_debit(logical, &self.balance_custody)
+    }
+
+    pub fn logical_balance_view(&self) -> ResourceMultiset<K> {
+        logical_balance_view(&self.balances, &self.balance_custody)
+    }
+}
+
+pub fn physicalize_balance_debit<K: Ord + Clone>(
+    logical: &ResourceMultiset<K>,
+    balance_custody: &BTreeMap<K, K>,
+) -> Result<ResourceMultiset<K>, AuthorityError> {
+    let mut physical = ResourceMultiset::default();
+    for (lane, amount) in &logical.0 {
+        let custody = balance_custody
+            .get(lane)
+            .ok_or(AuthorityError::UnknownPhysicalCustody)?;
+        let total = physical
+            .get(custody)
+            .checked_add(*amount)
+            .ok_or(AuthorityError::ArithmeticOverflow)?;
+        if total > 0 {
+            physical.0.insert(custody.clone(), total);
+        }
+    }
+    Ok(physical)
+}
+
+pub fn logical_balance_view<K: Ord + Clone>(
+    physical: &ResourceMultiset<K>,
+    balance_custody: &BTreeMap<K, K>,
+) -> ResourceMultiset<K> {
+    ResourceMultiset(
+        balance_custody
+            .iter()
+            .filter_map(|(lane, custody)| {
+                let balance = physical.get(custody);
+                (balance > 0).then(|| (lane.clone(), balance))
+            })
+            .collect(),
+    )
 }
 
 fn add_signature_atoms(
@@ -763,6 +1064,7 @@ pub fn verify_physical_settlement(
     let mut remaining = inventory.balances.clone();
     let mut stack_positions = BTreeMap::<[u8; 32], usize>::new();
     let mut balance_debit = ResourceMultiset::default();
+    let mut custody_debit = ResourceMultiset::default();
     let mut stack_pops = BTreeMap::<[u8; 32], u64>::new();
     let event_positions = events
         .iter()
@@ -798,8 +1100,10 @@ pub fn verify_physical_settlement(
         if draw.stack_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(AuthorityError::NonCanonicalStackDraw);
         }
-        remaining = remaining.checked_sub(&draw.balances)?;
+        let physical_draw = inventory.physical_debit(&draw.balances)?;
+        remaining = remaining.checked_sub(&physical_draw)?;
         balance_debit = balance_debit.checked_add(&draw.balances)?;
+        custody_debit = custody_debit.checked_add(&physical_draw)?;
 
         let mut expected = ResourceMultiset::default();
         let mut expected_signatures = BTreeMap::new();
@@ -850,13 +1154,14 @@ pub fn verify_physical_settlement(
     Ok(AuthorityPhysicalSettlement {
         draws: draws.to_vec(),
         balance_debit,
+        custody_debit,
         stack_pops,
     })
 }
 
 #[derive(Clone)]
 enum PhysicalCandidate {
-    Balance([u8; 32]),
+    Balance { lane: [u8; 32], custody: [u8; 32] },
     Stack([u8; 32]),
 }
 
@@ -889,11 +1194,113 @@ enum PhysicalSearchWork {
     MarkFailed(PhysicalSearchState),
 }
 
+const SEARCH_KEY_BYTES: u64 = 32;
+const SEARCH_COUNT_BYTES: u64 = 8;
+const SEARCH_RESOURCE_ENTRY_BYTES: u64 = SEARCH_KEY_BYTES + SEARCH_COUNT_BYTES;
+const SEARCH_CANDIDATE_BYTES: u64 = 2 + SEARCH_COUNT_BYTES + SEARCH_KEY_BYTES * 3;
+
+fn checked_collection_bytes(length: usize, entry_bytes: u64) -> Result<u64, AuthorityError> {
+    u64::try_from(length)
+        .map_err(|_| AuthorityError::ArithmeticOverflow)?
+        .checked_mul(entry_bytes)
+        .and_then(|bytes| bytes.checked_add(SEARCH_COUNT_BYTES))
+        .ok_or(AuthorityError::ArithmeticOverflow)
+}
+
+fn checked_search_state_bytes(
+    event_remaining: usize,
+    balances: usize,
+    stack_positions: usize,
+    event_balances: usize,
+    event_stacks: usize,
+) -> Result<u64, AuthorityError> {
+    [
+        SEARCH_COUNT_BYTES,
+        checked_collection_bytes(event_remaining, SEARCH_RESOURCE_ENTRY_BYTES)?,
+        checked_collection_bytes(balances, SEARCH_RESOURCE_ENTRY_BYTES)?,
+        checked_collection_bytes(stack_positions, SEARCH_RESOURCE_ENTRY_BYTES)?,
+        checked_collection_bytes(event_balances, SEARCH_RESOURCE_ENTRY_BYTES)?,
+        checked_collection_bytes(event_stacks, SEARCH_KEY_BYTES)?,
+        SEARCH_COUNT_BYTES,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |total, bytes| {
+        total
+            .checked_add(bytes)
+            .ok_or(AuthorityError::ArithmeticOverflow)
+    })
+}
+
+fn search_node_bytes(node: &PhysicalSearchNode) -> Result<u64, AuthorityError> {
+    checked_search_state_bytes(
+        node.event_remaining.0.len(),
+        node.balances.0.len(),
+        node.stack_positions.len(),
+        node.event_balances.0.len(),
+        node.event_stacks.len(),
+    )
+}
+
+fn failed_state_bytes(node: &PhysicalSearchNode) -> Result<u64, AuthorityError> {
+    [
+        SEARCH_COUNT_BYTES,
+        checked_collection_bytes(node.event_remaining.0.len(), SEARCH_RESOURCE_ENTRY_BYTES)?,
+        checked_collection_bytes(node.balances.0.len(), SEARCH_RESOURCE_ENTRY_BYTES)?,
+        checked_collection_bytes(node.stack_positions.len(), SEARCH_RESOURCE_ENTRY_BYTES)?,
+        checked_collection_bytes(node.event_stacks.len(), SEARCH_KEY_BYTES)?,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |total, bytes| {
+        total
+            .checked_add(bytes)
+            .ok_or(AuthorityError::ArithmeticOverflow)
+    })
+}
+
+fn draw_bytes(balance_count: usize, stack_count: usize) -> Result<u64, AuthorityError> {
+    [
+        SEARCH_KEY_BYTES,
+        checked_collection_bytes(balance_count, SEARCH_RESOURCE_ENTRY_BYTES)?,
+        checked_collection_bytes(stack_count, SEARCH_KEY_BYTES)?,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |total, bytes| {
+        total
+            .checked_add(bytes)
+            .ok_or(AuthorityError::ArithmeticOverflow)
+    })
+}
+
+fn reserve_search_work(
+    host_work: Option<&HostWorkBudget>,
+    dimension: HostWorkDimension,
+    units: u64,
+) -> Result<(), AuthorityError> {
+    if let Some(host_work) = host_work {
+        reserve_host_work(host_work, dimension, units)?;
+    }
+    Ok(())
+}
+
+fn reserve_search_state_with<F>(
+    host_work: Option<&HostWorkBudget>,
+    measure: F,
+) -> Result<(), AuthorityError>
+where
+    F: FnOnce() -> Result<u64, AuthorityError>,
+{
+    let Some(host_work) = host_work else {
+        return Ok(());
+    };
+    reserve_host_work(host_work, HostWorkDimension::SearchStateBytes, measure()?)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn search_physical_settlement(
     events: &[AuthorityEvent<[u8; 32]>],
     expected: &[ResourceMultiset<[u8; 32]>],
     balance_atoms: &BTreeMap<[u8; 32], ResourceMultiset<[u8; 32]>>,
+    balance_custody: &BTreeMap<[u8; 32], [u8; 32]>,
     stack_atoms: &BTreeMap<[u8; 32], Vec<ResourceMultiset<[u8; 32]>>>,
     event_index: usize,
     event_remaining: ResourceMultiset<[u8; 32]>,
@@ -903,8 +1310,9 @@ fn search_physical_settlement(
     event_stacks: BTreeSet<[u8; 32]>,
     born_available_after: &BTreeMap<[u8; 32], usize>,
     failed: &mut BTreeSet<PhysicalSearchState>,
-) -> Option<Vec<AuthorityPhysicalEventDraw<[u8; 32]>>> {
-    let mut work = vec![PhysicalSearchWork::Search(PhysicalSearchNode {
+    host_work: Option<&HostWorkBudget>,
+) -> Result<Option<Vec<AuthorityPhysicalEventDraw<[u8; 32]>>>, AuthorityError> {
+    let initial = PhysicalSearchNode {
         event_index,
         event_remaining,
         balances,
@@ -912,7 +1320,9 @@ fn search_physical_settlement(
         event_balances,
         event_stacks,
         draws: None,
-    })];
+    };
+    reserve_search_state_with(host_work, || search_node_bytes(&initial))?;
+    let mut work = vec![PhysicalSearchWork::Search(initial)];
 
     while let Some(next_work) = work.pop() {
         let mut node = match next_work {
@@ -927,6 +1337,20 @@ fn search_physical_settlement(
             if !node.event_remaining.0.is_empty() {
                 continue;
             }
+            reserve_search_state_with(host_work, || {
+                let mut result_bytes = SEARCH_COUNT_BYTES;
+                let mut measured_link = node.draws.as_ref();
+                while let Some(current) = measured_link {
+                    result_bytes = result_bytes
+                        .checked_add(draw_bytes(
+                            current.draw.balances.0.len(),
+                            current.draw.stack_ids.len(),
+                        )?)
+                        .ok_or(AuthorityError::ArithmeticOverflow)?;
+                    measured_link = current.previous.as_ref();
+                }
+                Ok(result_bytes)
+            })?;
             let mut draws = Vec::with_capacity(events.len());
             let mut link = node.draws;
             while let Some(current) = link {
@@ -934,17 +1358,36 @@ fn search_physical_settlement(
                 link = current.previous.clone();
             }
             draws.reverse();
-            return Some(draws);
+            return Ok(Some(draws));
         }
 
         if node.event_remaining.0.is_empty() {
+            let next_index = node
+                .event_index
+                .checked_add(1)
+                .ok_or(AuthorityError::ArithmeticOverflow)?;
+            let next_expected = expected.get(next_index);
+            reserve_search_state_with(host_work, || {
+                checked_search_state_bytes(
+                    next_expected.map_or(0, |value| value.0.len()),
+                    node.balances.0.len(),
+                    node.stack_positions.len(),
+                    0,
+                    0,
+                )?
+                .checked_add(draw_bytes(
+                    node.event_balances.0.len(),
+                    node.event_stacks.len(),
+                )?)
+                .ok_or(AuthorityError::ArithmeticOverflow)
+            })?;
             let draw = AuthorityPhysicalEventDraw {
                 event_id: events[node.event_index].event_id,
                 balances: std::mem::take(&mut node.event_balances),
                 stack_ids: std::mem::take(&mut node.event_stacks).into_iter().collect(),
             };
-            node.event_index += 1;
-            node.event_remaining = expected.get(node.event_index).cloned().unwrap_or_default();
+            node.event_index = next_index;
+            node.event_remaining = next_expected.cloned().unwrap_or_default();
             node.draws = Some(Arc::new(PhysicalDrawLink {
                 previous: node.draws,
                 draw,
@@ -953,6 +1396,7 @@ fn search_physical_settlement(
             continue;
         }
 
+        reserve_search_state_with(host_work, || failed_state_bytes(&node))?;
         let state = (
             node.event_index,
             node.event_remaining
@@ -975,24 +1419,38 @@ fn search_physical_settlement(
             continue;
         }
 
-        let pivot = *node.event_remaining.0.keys().next()?;
+        let Some(pivot) = node.event_remaining.0.keys().next().copied() else {
+            continue;
+        };
         let mut candidates =
             Vec::<(std::cmp::Reverse<u64>, u8, [u8; 32], PhysicalCandidate)>::new();
-        for (key, amount) in &node.balances.0 {
-            if *amount == 0 {
+        for (lane, custody) in balance_custody {
+            reserve_search_work(host_work, HostWorkDimension::SearchCandidates, 1)?;
+            if node.balances.get(custody) == 0 {
                 continue;
             }
-            let atoms = balance_atoms.get(key)?;
+            let Some(atoms) = balance_atoms.get(lane) else {
+                return Ok(None);
+            };
             if atoms.get(&pivot) > 0 && node.event_remaining.dominates(atoms) {
+                reserve_search_work(
+                    host_work,
+                    HostWorkDimension::SearchStateBytes,
+                    SEARCH_CANDIDATE_BYTES,
+                )?;
                 candidates.push((
                     std::cmp::Reverse(atoms.0.values().copied().sum()),
                     1,
-                    *key,
-                    PhysicalCandidate::Balance(*key),
+                    *lane,
+                    PhysicalCandidate::Balance {
+                        lane: *lane,
+                        custody: *custody,
+                    },
                 ));
             }
         }
         for (stack_id, cells) in stack_atoms {
+            reserve_search_work(host_work, HostWorkDimension::SearchCandidates, 1)?;
             if node.event_stacks.contains(stack_id) {
                 continue;
             }
@@ -1011,6 +1469,11 @@ fn search_physical_settlement(
                 continue;
             };
             if atoms.get(&pivot) > 0 && node.event_remaining.dominates(atoms) {
+                reserve_search_work(
+                    host_work,
+                    HostWorkDimension::SearchStateBytes,
+                    SEARCH_CANDIDATE_BYTES,
+                )?;
                 candidates.push((
                     std::cmp::Reverse(atoms.0.values().copied().sum()),
                     0,
@@ -1023,39 +1486,79 @@ fn search_physical_settlement(
         work.push(PhysicalSearchWork::MarkFailed(state));
 
         for (_, _, _, candidate) in candidates.into_iter().rev() {
+            let growth = match &candidate {
+                PhysicalCandidate::Balance { .. } => SEARCH_RESOURCE_ENTRY_BYTES,
+                PhysicalCandidate::Stack(_) => SEARCH_RESOURCE_ENTRY_BYTES
+                    .checked_add(SEARCH_KEY_BYTES)
+                    .ok_or(AuthorityError::ArithmeticOverflow)?,
+            };
+            reserve_search_state_with(host_work, || {
+                search_node_bytes(&node)?
+                    .checked_add(growth)
+                    .ok_or(AuthorityError::ArithmeticOverflow)
+            })?;
             let mut next = node.clone();
             let atoms = match candidate {
-                PhysicalCandidate::Balance(key) => {
-                    next.balances = next
+                PhysicalCandidate::Balance { lane, custody } => {
+                    let Some(balances) = next
                         .balances
-                        .checked_sub(&ResourceMultiset::singleton(key, 1))
-                        .ok()?;
-                    next.event_balances = next
+                        .checked_sub(&ResourceMultiset::singleton(custody, 1))
+                        .ok()
+                    else {
+                        return Ok(None);
+                    };
+                    next.balances = balances;
+                    let Some(event_balances) = next
                         .event_balances
-                        .checked_add(&ResourceMultiset::singleton(key, 1))
-                        .ok()?;
-                    balance_atoms.get(&key)?.clone()
+                        .checked_add(&ResourceMultiset::singleton(lane, 1))
+                        .ok()
+                    else {
+                        return Ok(None);
+                    };
+                    next.event_balances = event_balances;
+                    let Some(atoms) = balance_atoms.get(&lane) else {
+                        return Ok(None);
+                    };
+                    atoms.clone()
                 }
                 PhysicalCandidate::Stack(stack_id) => {
                     let position = next.stack_positions.entry(stack_id).or_default();
-                    let atoms = stack_atoms.get(&stack_id)?.get(*position)?.clone();
+                    let Some(atoms) = stack_atoms
+                        .get(&stack_id)
+                        .and_then(|cells| cells.get(*position))
+                    else {
+                        return Ok(None);
+                    };
+                    let atoms = atoms.clone();
                     *position += 1;
                     next.event_stacks.insert(stack_id);
                     atoms
                 }
             };
-            next.event_remaining = next.event_remaining.checked_sub(&atoms).ok()?;
+            let Some(event_remaining) = next.event_remaining.checked_sub(&atoms).ok() else {
+                return Ok(None);
+            };
+            next.event_remaining = event_remaining;
             work.push(PhysicalSearchWork::Search(next));
         }
     }
 
-    None
+    Ok(None)
 }
 
 pub fn allocate_physical_settlement(
     events: &[AuthorityEvent<[u8; 32]>],
     signatures: &BTreeMap<[u8; 32], CostSignature>,
     inventory: &AuthorityPhysicalInventory<[u8; 32]>,
+) -> Result<AuthorityPhysicalSettlement<[u8; 32]>, AuthorityError> {
+    allocate_physical_settlement_with_host_work(events, signatures, inventory, None)
+}
+
+pub fn allocate_physical_settlement_with_host_work(
+    events: &[AuthorityEvent<[u8; 32]>],
+    signatures: &BTreeMap<[u8; 32], CostSignature>,
+    inventory: &AuthorityPhysicalInventory<[u8; 32]>,
+    host_work: Option<&HostWorkBudget>,
 ) -> Result<AuthorityPhysicalSettlement<[u8; 32]>, AuthorityError> {
     let mut atom_signatures = BTreeMap::new();
     let mut expected = Vec::with_capacity(events.len());
@@ -1068,7 +1571,7 @@ pub fn allocate_physical_settlement(
         expected.push(atoms);
     }
     let mut balance_atoms = BTreeMap::new();
-    for key in inventory.balances.0.keys() {
+    for key in inventory.balance_custody.keys() {
         let signature = signatures
             .get(key)
             .ok_or(AuthorityError::UnknownPhysicalSignature)?;
@@ -1118,6 +1621,7 @@ pub fn allocate_physical_settlement(
         events,
         &expected,
         &balance_atoms,
+        &inventory.balance_custody,
         &stack_atoms,
         0,
         expected.first().cloned().unwrap_or_default(),
@@ -1127,7 +1631,8 @@ pub fn allocate_physical_settlement(
         BTreeSet::new(),
         &born_available_after,
         &mut BTreeSet::new(),
-    )
+        host_work,
+    )?
     .ok_or(AuthorityError::InsufficientAuthority)?;
     verify_physical_settlement(events, signatures, inventory, &draws)
 }
@@ -1136,7 +1641,7 @@ pub fn apply_physical_settlement(
     inventory: &mut AuthorityPhysicalInventory<[u8; 32]>,
     settlement: &AuthorityPhysicalSettlement<[u8; 32]>,
 ) -> Result<(), AuthorityError> {
-    inventory.balances = inventory.balances.checked_sub(&settlement.balance_debit)?;
+    inventory.balances = inventory.balances.checked_sub(&settlement.custody_debit)?;
     for (stack_id, pop_count) in &settlement.stack_pops {
         let cells = inventory
             .stacks
@@ -1319,6 +1824,40 @@ impl<K: CanonicalAuthorityKey + Ord + Clone + Eq> FundingCertificate<K> {
             .checked_add(&self.byte_allocation)?
             .checked_add(&self.fee_allocation)?;
         if !available.dominates(&total_allocation) {
+            return Err(AuthorityError::InsufficientAuthority);
+        }
+        Ok(())
+    }
+
+    pub fn verify_with_custody<F, A>(
+        &self,
+        protocol_version: u32,
+        program_hash: [u8; 32],
+        pre_state_root: [u8; 32],
+        available: &ResourceMultiset<K>,
+        balance_custody: &BTreeMap<K, K>,
+        verify_finite_bound: F,
+        verify_allocation: A,
+    ) -> Result<(), AuthorityError>
+    where
+        F: FnOnce(&ResourceMultiset<K>, &[u8]) -> bool,
+        A: FnOnce(&ResourceMultiset<K>, &ResourceMultiset<K>) -> bool,
+    {
+        let logical_available = logical_balance_view(available, balance_custody);
+        self.verify_with_allocation(
+            protocol_version,
+            program_hash,
+            pre_state_root,
+            &logical_available,
+            verify_finite_bound,
+            verify_allocation,
+        )?;
+        let total_allocation = self
+            .allocation
+            .checked_add(&self.byte_allocation)?
+            .checked_add(&self.fee_allocation)?;
+        let custody_allocation = physicalize_balance_debit(&total_allocation, balance_custody)?;
+        if !available.dominates(&custody_allocation) {
             return Err(AuthorityError::InsufficientAuthority);
         }
         Ok(())
@@ -1736,6 +2275,8 @@ impl AuthorityCostWitness<[u8; 32]> {
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum AuthorityError {
+    #[error("host work limit rejected authority processing")]
+    HostWorkRejected,
     #[error("cost authority is missing a signature")]
     MissingSignature,
     #[error("a billable communication has no cost-authority wrapper")]
@@ -1804,6 +2345,10 @@ pub enum AuthorityError {
     NonCanonicalStackDraw,
     #[error("physical settlement references an unknown signature")]
     UnknownPhysicalSignature,
+    #[error("physical settlement references an unknown custody identity")]
+    UnknownPhysicalCustody,
+    #[error("logical authority aliases disagree on their physical custody state")]
+    PhysicalCustodyMismatch,
     #[error("physical settlement references an unknown stack resource")]
     UnknownStackResource,
     #[error("physical settlement attempts to pop an exhausted stack resource")]
@@ -1812,11 +2357,16 @@ pub enum AuthorityError {
     PhysicalAuthorityMismatch,
 }
 
+impl From<models::rust::host_work::HostWorkReservationError> for AuthorityError {
+    fn from(_: models::rust::host_work::HostWorkReservationError) -> Self { Self::HostWorkRejected }
+}
+
 #[cfg(test)]
 mod tests {
     use models::rhoapi::cost_signature::Value as CostSignatureValue;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{CostAuthority, CostRegion, CostSignature, GPrivate, GUnforgeable, Par};
+    use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsage};
     use proptest::prelude::*;
 
     use super::*;
@@ -1945,6 +2495,60 @@ mod tests {
     }
 
     #[test]
+    fn authority_discovery_counts_all_roots_and_maximum_depth() {
+        let event = event(&[ground(b"a"), ground(b"b")]);
+        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(16)));
+
+        authority_funding_signatures_for_events_with_host_work(
+            std::slice::from_ref(&event),
+            &[],
+            &[],
+            Some(&host_work),
+        )
+        .unwrap();
+
+        assert_eq!(
+            host_work.usage(HostWorkDimension::AuthorityNodes),
+            HostWorkUsage::new(2)
+        );
+        assert_eq!(
+            host_work.usage(HostWorkDimension::AuthorityDepth),
+            HostWorkUsage::new(1)
+        );
+    }
+
+    #[test]
+    fn authority_depth_rejects_before_recursive_validation() {
+        let nested = CostSignature {
+            value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+                elements: vec![ground(b"a"), CostSignature {
+                    value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+                        elements: vec![ground(b"b"), ground(b"c")],
+                    })),
+                }],
+            })),
+        };
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(16));
+        limits.set(HostWorkDimension::AuthorityDepth, HostWorkLimit::new(2));
+        let host_work = HostWorkBudget::new(limits);
+
+        assert_eq!(
+            authority_funding_signatures_for_events_with_host_work(
+                &[],
+                &[],
+                std::slice::from_ref(&nested),
+                Some(&host_work),
+            ),
+            Err(AuthorityError::HostWorkRejected)
+        );
+        assert_eq!(
+            host_work.usage(HostWorkDimension::AuthorityDepth),
+            HostWorkUsage::new(2)
+        );
+        assert!(host_work.is_rejected());
+    }
+
+    #[test]
     fn event_debit_must_exactly_match_declared_authority() {
         let event = event(&[ground(b"a"), ground(b"b")]);
         event.verify_authority().unwrap();
@@ -1978,6 +2582,7 @@ mod tests {
         let exposed_key = cost_signature_to_sig(&exposed_name).unwrap().lane_hash();
         let inventory = AuthorityPhysicalInventory {
             balances: ResourceMultiset::singleton(exposed_key, u64::MAX),
+            balance_custody: BTreeMap::from([(exposed_key, exposed_key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
         };
@@ -2009,6 +2614,7 @@ mod tests {
             let exposed_key = cost_signature_to_sig(&exposed_name).unwrap().lane_hash();
             let inventory = AuthorityPhysicalInventory {
                 balances: ResourceMultiset::singleton(exposed_key, available),
+                balance_custody: BTreeMap::from([(exposed_key, exposed_key)]),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
             };
@@ -2244,6 +2850,7 @@ mod tests {
         let signatures = BTreeMap::from([(ab_key, ab), (cd_key, cd)]);
         let inventory = AuthorityPhysicalInventory {
             balances: balances.clone(),
+            balance_custody: balances.0.keys().map(|key| (*key, *key)).collect(),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
         };
@@ -2270,6 +2877,74 @@ mod tests {
     }
 
     #[test]
+    fn physical_search_budget_rejects_before_candidate_expansion() {
+        let signature = ground(b"bounded-search");
+        let key = cost_signature_to_sig(&signature).unwrap().lane_hash();
+        let authority_event = event(std::slice::from_ref(&signature));
+        let signatures = BTreeMap::from([(key, signature)]);
+        let inventory = AuthorityPhysicalInventory {
+            balances: ResourceMultiset::singleton(key, 1),
+            balance_custody: BTreeMap::from([(key, key)]),
+            stacks: BTreeMap::new(),
+            born_stacks: BTreeMap::new(),
+        };
+        let original = inventory.clone();
+        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(10_000));
+        limits.set(HostWorkDimension::SearchCandidates, HostWorkLimit::new(0));
+        let host_work = HostWorkBudget::new(limits);
+
+        assert_eq!(
+            allocate_physical_settlement_with_host_work(
+                std::slice::from_ref(&authority_event),
+                &signatures,
+                &inventory,
+                Some(&host_work),
+            ),
+            Err(AuthorityError::HostWorkRejected)
+        );
+        assert_eq!(inventory, original);
+        assert_eq!(
+            host_work.usage(HostWorkDimension::SearchCandidates),
+            HostWorkUsage::ZERO
+        );
+        assert!(host_work.is_rejected());
+    }
+
+    #[test]
+    fn bounded_physical_search_matches_unbounded_settlement() {
+        let signature = ground(b"bounded-search-equivalence");
+        let key = cost_signature_to_sig(&signature).unwrap().lane_hash();
+        let authority_event = event(std::slice::from_ref(&signature));
+        let signatures = BTreeMap::from([(key, signature)]);
+        let inventory = AuthorityPhysicalInventory {
+            balances: ResourceMultiset::singleton(key, 1),
+            balance_custody: BTreeMap::from([(key, key)]),
+            stacks: BTreeMap::new(),
+            born_stacks: BTreeMap::new(),
+        };
+        let expected = allocate_physical_settlement(
+            std::slice::from_ref(&authority_event),
+            &signatures,
+            &inventory,
+        )
+        .unwrap();
+        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000)));
+
+        let actual = allocate_physical_settlement_with_host_work(
+            std::slice::from_ref(&authority_event),
+            &signatures,
+            &inventory,
+            Some(&host_work),
+        )
+        .unwrap();
+
+        assert_eq!(actual, expected);
+        assert!(host_work.usage(HostWorkDimension::SearchCandidates).get() > 0);
+        assert!(host_work.usage(HostWorkDimension::SearchStateBytes).get() > 0);
+        assert!(!host_work.is_rejected());
+    }
+
+    #[test]
     fn explicit_region_cannot_spend_an_unrelated_default_balance() {
         let default = ground(b"default envelope payer");
         let explicit = ground(b"explicit region payer");
@@ -2280,6 +2955,7 @@ mod tests {
         let signatures = BTreeMap::from([(default_key, default)]);
         let without_explicit_stack = AuthorityPhysicalInventory {
             balances: ResourceMultiset::singleton(default_key, 100),
+            balance_custody: BTreeMap::from([(default_key, default_key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
         };
@@ -2295,6 +2971,7 @@ mod tests {
 
         let inventory = AuthorityPhysicalInventory {
             balances: ResourceMultiset::singleton(default_key, 100),
+            balance_custody: BTreeMap::from([(default_key, default_key)]),
             stacks: BTreeMap::from([(stack_id, vec![explicit])]),
             born_stacks: BTreeMap::new(),
         };
@@ -2326,6 +3003,7 @@ mod tests {
             .collect::<Vec<_>>();
         let inventory = AuthorityPhysicalInventory {
             balances: ResourceMultiset::singleton(key, event_count),
+            balance_custody: BTreeMap::from([(key, key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
         };
@@ -2342,6 +3020,174 @@ mod tests {
     }
 
     #[test]
+    fn aliased_logical_lanes_share_one_physical_balance() {
+        let lane_a = [1; 32];
+        let lane_b = [2; 32];
+        let lane_c = [3; 32];
+        let custody = [9; 32];
+        let mut inventory = AuthorityPhysicalInventory::default();
+
+        inventory.insert_balance_lane(lane_a, custody, 7).unwrap();
+        inventory.insert_balance_lane(lane_b, custody, 7).unwrap();
+
+        assert_eq!(inventory.balances, ResourceMultiset::singleton(custody, 7));
+        assert_eq!(
+            inventory.logical_balance_view(),
+            ResourceMultiset(BTreeMap::from([(lane_a, 7), (lane_b, 7)]))
+        );
+        assert_eq!(
+            inventory.insert_balance_lane(lane_c, custody, 8),
+            Err(AuthorityError::PhysicalCustodyMismatch)
+        );
+        assert_eq!(
+            inventory.insert_balance_lane(lane_a, [8; 32], 7),
+            Err(AuthorityError::PhysicalCustodyMismatch)
+        );
+    }
+
+    #[test]
+    fn aliased_lanes_cannot_double_spend_one_physical_cell() {
+        let signature_a = ground(b"alias-a");
+        let signature_b = ground(b"alias-b");
+        let lane_a = cost_signature_to_sig(&signature_a).unwrap().lane_hash();
+        let lane_b = cost_signature_to_sig(&signature_b).unwrap().lane_hash();
+        let custody = [9; 32];
+        let mut event_a = event(std::slice::from_ref(&signature_a));
+        let mut event_b = event(std::slice::from_ref(&signature_b));
+        event_a.event_id = [1; 32];
+        event_b.event_id = [2; 32];
+        let available = ResourceMultiset::singleton(custody, 1);
+        let aliases = BTreeMap::from([(lane_a, custody), (lane_b, custody)]);
+
+        let one = allocate_authority_events_with_custody(
+            std::slice::from_ref(&event_a),
+            &available,
+            &aliases,
+        )
+        .unwrap();
+        assert_eq!(one.logical_debit, ResourceMultiset::singleton(lane_a, 1));
+        assert_eq!(one.custody_debit, ResourceMultiset::singleton(custody, 1));
+        assert_eq!(
+            allocate_authority_events_with_custody(&[event_a, event_b], &available, &aliases),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+    }
+
+    #[test]
+    fn physical_settlement_rejects_alias_overdraw() {
+        let signature_a = ground(b"settlement-alias-a");
+        let signature_b = ground(b"settlement-alias-b");
+        let lane_a = cost_signature_to_sig(&signature_a).unwrap().lane_hash();
+        let lane_b = cost_signature_to_sig(&signature_b).unwrap().lane_hash();
+        let custody = [7; 32];
+        let mut event_a = event(std::slice::from_ref(&signature_a));
+        let mut event_b = event(std::slice::from_ref(&signature_b));
+        event_a.event_id = [1; 32];
+        event_b.event_id = [2; 32];
+        let inventory = AuthorityPhysicalInventory {
+            balances: ResourceMultiset::singleton(custody, 1),
+            balance_custody: BTreeMap::from([(lane_a, custody), (lane_b, custody)]),
+            stacks: BTreeMap::new(),
+            born_stacks: BTreeMap::new(),
+        };
+        let draws = [
+            AuthorityPhysicalEventDraw {
+                event_id: event_a.event_id,
+                balances: ResourceMultiset::singleton(lane_a, 1),
+                stack_ids: Vec::new(),
+            },
+            AuthorityPhysicalEventDraw {
+                event_id: event_b.event_id,
+                balances: ResourceMultiset::singleton(lane_b, 1),
+                stack_ids: Vec::new(),
+            },
+        ];
+
+        assert_eq!(
+            verify_physical_settlement(
+                &[event_a, event_b],
+                &BTreeMap::from([(lane_a, signature_a), (lane_b, signature_b)]),
+                &inventory,
+                &draws,
+            ),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+    }
+
+    #[test]
+    fn compute_byte_and_fee_allocations_share_physical_capacity() {
+        let signature_a = ground(b"phase-alias-a");
+        let signature_b = ground(b"phase-alias-b");
+        let lane_a = cost_signature_to_sig(&signature_a).unwrap().lane_hash();
+        let lane_b = cost_signature_to_sig(&signature_b).unwrap().lane_hash();
+        let custody = [5; 32];
+        let aliases = BTreeMap::from([(lane_a, custody), (lane_b, custody)]);
+        let available = ResourceMultiset::singleton(custody, 1);
+        let bytes = [
+            byte_event(1, AuthorityByteEventKind::Comm, &[signature_a], 1),
+            byte_event(2, AuthorityByteEventKind::Comm, &[signature_b], 1),
+        ];
+
+        assert_eq!(
+            allocate_quantitative_events_with_custody(&bytes, &available, &aliases),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+
+        let mut certificate = certificate(ResourceMultiset::singleton(lane_a, 1));
+        certificate.fee_allocation = ResourceMultiset::singleton(lane_b, 1);
+        assert_eq!(
+            certificate.verify_with_custody(
+                AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
+                certificate.program_hash,
+                certificate.pre_state_root,
+                &available,
+                &aliases,
+                |_, _| false,
+                |demand, allocation| demand == allocation,
+            ),
+            Err(AuthorityError::InsufficientAuthority)
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn aliased_lane_allocation_never_exceeds_physical_capacity(
+            demand_a in 0_usize..24,
+            demand_b in 0_usize..24,
+            capacity in 0_u64..48,
+        ) {
+            let signature_a = ground(b"property-alias-a");
+            let signature_b = ground(b"property-alias-b");
+            let lane_a = cost_signature_to_sig(&signature_a).unwrap().lane_hash();
+            let lane_b = cost_signature_to_sig(&signature_b).unwrap().lane_hash();
+            let custody = [4; 32];
+            let mut events = Vec::with_capacity(demand_a + demand_b);
+            for index in 0..demand_a {
+                let mut authority_event = event(std::slice::from_ref(&signature_a));
+                authority_event.event_id[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                authority_event.event_id[8] = 1;
+                events.push(authority_event);
+            }
+            for index in 0..demand_b {
+                let mut authority_event = event(std::slice::from_ref(&signature_b));
+                authority_event.event_id[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                authority_event.event_id[8] = 2;
+                events.push(authority_event);
+            }
+            let available = ResourceMultiset::singleton(custody, capacity);
+            let aliases = BTreeMap::from([(lane_a, custody), (lane_b, custody)]);
+            let result = allocate_authority_events_with_custody(&events, &available, &aliases);
+            let demand = (demand_a + demand_b) as u64;
+
+            prop_assert_eq!(result.is_ok(), demand <= capacity);
+            if let Ok(settlement) = result {
+                prop_assert_eq!(settlement.custody_debit.get(&custody), demand);
+                prop_assert!(available.dominates(&settlement.custody_debit));
+            }
+        }
+    }
+
+    #[test]
     fn physical_presentation_rejects_weakening_a_compound_cell() {
         let a = ground(b"a");
         let b = ground(b"b");
@@ -2351,6 +3197,7 @@ mod tests {
         let balances = ResourceMultiset::singleton(ab_key, 1);
         let inventory = AuthorityPhysicalInventory {
             balances: balances.clone(),
+            balance_custody: BTreeMap::from([(ab_key, ab_key)]),
             stacks: BTreeMap::new(),
             born_stacks: BTreeMap::new(),
         };
@@ -2382,6 +3229,7 @@ mod tests {
         let stack_id = [9; 32];
         let inventory = AuthorityPhysicalInventory {
             balances: ResourceMultiset::default(),
+            balance_custody: BTreeMap::new(),
             stacks: BTreeMap::from([(stack_id, vec![a, b])]),
             born_stacks: BTreeMap::new(),
         };
@@ -2451,6 +3299,7 @@ mod tests {
         let signatures = BTreeMap::from([(key, a.clone())]);
         let unfunded = AuthorityPhysicalInventory {
             balances: ResourceMultiset::default(),
+            balance_custody: BTreeMap::new(),
             stacks: BTreeMap::from([(stack_id, vec![a.clone()])]),
             born_stacks: BTreeMap::from([(stack_id, produce_hash)]),
         };
@@ -2462,6 +3311,7 @@ mod tests {
 
         let funded = AuthorityPhysicalInventory {
             balances: ResourceMultiset::singleton(key, 1),
+            balance_custody: BTreeMap::from([(key, key)]),
             ..unfunded
         };
         assert_eq!(
@@ -3042,6 +3892,73 @@ mod tests {
 
     proptest! {
         #[test]
+        fn authority_discovery_units_match_arbitrary_tree_shape(leaf_count in 1_u64..17) {
+            let mut signature = ground(&[0]);
+            for index in 1..leaf_count {
+                signature = CostSignature {
+                    value: Some(CostSignatureValue::Compound(CostSignatureCompound {
+                        elements: vec![signature, ground(&[index as u8])],
+                    })),
+                };
+            }
+            let host_work =
+                HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000)));
+
+            let result = authority_funding_signatures_for_events_with_host_work(
+                &[],
+                &[],
+                std::slice::from_ref(&signature),
+                Some(&host_work),
+            );
+
+            prop_assert!(!matches!(result, Err(AuthorityError::HostWorkRejected)));
+            prop_assert_eq!(
+                host_work.usage(HostWorkDimension::AuthorityNodes),
+                HostWorkUsage::new(leaf_count * 2 - 1)
+            );
+            prop_assert_eq!(
+                host_work.usage(HostWorkDimension::AuthorityDepth),
+                HostWorkUsage::new(leaf_count)
+            );
+        }
+
+        #[test]
+        fn bounded_search_preserves_unbounded_results(
+            event_count in 1_u64..33,
+            slack in 0_u64..33,
+        ) {
+            let signature = ground(b"bounded-search-property");
+            let key = cost_signature_to_sig(&signature).unwrap().lane_hash();
+            let events = (0..event_count)
+                .map(|index| {
+                    let mut authority_event = event(std::slice::from_ref(&signature));
+                    authority_event.event_id[..8].copy_from_slice(&index.to_le_bytes());
+                    authority_event
+                })
+                .collect::<Vec<_>>();
+            let signatures = BTreeMap::from([(key, signature)]);
+            let inventory = AuthorityPhysicalInventory {
+                balances: ResourceMultiset::singleton(key, event_count + slack),
+                balance_custody: BTreeMap::from([(key, key)]),
+                stacks: BTreeMap::new(),
+                born_stacks: BTreeMap::new(),
+            };
+            let expected = allocate_physical_settlement(&events, &signatures, &inventory);
+            let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(
+                10_000_000,
+            )));
+            let actual = allocate_physical_settlement_with_host_work(
+                &events,
+                &signatures,
+                &inventory,
+                Some(&host_work),
+            );
+
+            prop_assert_eq!(actual, expected);
+            prop_assert!(!host_work.is_rejected());
+        }
+
+        #[test]
         fn worklist_settlement_preserves_event_order_and_exact_debits(
             choices in prop::collection::vec(any::<bool>(), 1..257),
         ) {
@@ -3070,6 +3987,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let inventory = AuthorityPhysicalInventory {
                 balances: balances.clone(),
+                balance_custody: balances.0.keys().map(|key| (*key, *key)).collect(),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
             };
@@ -3117,6 +4035,7 @@ mod tests {
             }
             let inventory = AuthorityPhysicalInventory {
                 balances: balances.clone(),
+                balance_custody: balances.0.keys().map(|key| (*key, *key)).collect(),
                 stacks: BTreeMap::new(),
                 born_stacks: BTreeMap::new(),
             };

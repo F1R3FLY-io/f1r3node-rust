@@ -32,7 +32,7 @@ database    "Σ⟦Ground(pk)⟧\n(client wallet)" as C #BBDEFB
 database    "F_v\n(fee pool)"          as F #C8E6C9
 
 == Stage 1 — epoch mint (epoch boundary only) ==
-CB -[#2E7D32]-> V : Σ⟦v⟧ += epochPhlogiston\n(mintedEpochs (pk,e) guard; random_state lo ≥ 0)
+CB -[#2E7D32]-> V : Σ⟦v⟧ += epochPhlogiston\n(mintedThroughEpoch frontier; random_state lo ≥ 0)
 
 == Stage 2 — cost settlement debit (WD-D2 / §D2.9) ==
 CB -[#C62828]-> C : Σ⟦Ground(pk)⟧ −= ΣΔ_s\n(the gate's admitted demand; checked_sub; random_state −0x2b)

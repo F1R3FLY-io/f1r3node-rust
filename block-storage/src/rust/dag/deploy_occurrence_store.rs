@@ -788,6 +788,7 @@ mod tests {
             admission_ruleset_digest: vec![1; 32],
             admission_context_digest: vec![2; 32],
             sender_authority_digest: vec![3; 32],
+            settled_history_admission_digest: Vec::new(),
             is_failed: false,
         }
     }
@@ -906,6 +907,8 @@ mod tests {
         ));
         let mut settled = occurrence(id, 5, 5);
         settled.admission_mode = OccurrenceAdmissionMode::SettledHistory;
+        settled.sender_authority_digest.clear();
+        settled.settled_history_admission_digest = vec![4; 32];
 
         occurrence_store.insert(settled).unwrap();
 

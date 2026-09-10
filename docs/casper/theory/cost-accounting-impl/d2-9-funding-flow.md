@@ -104,10 +104,8 @@ commit allocations as F1r3flyState.genesis_supply
 
 With empty `client_fuel_allocations`, arbitrary client cost purses are absent and therefore have
 effective supply zero. Their deployments are rejected before execution. The
-block-1 PoS transition installs the validator's `@W_v` draw but does not credit
-`Σ⟦v⟧` again. Replay requires the committed list to already have this canonical
-shape before any cache lookup; it never repairs authenticated ordering or
-duplicates.
+current native refinement has no block-one mirror. Replay reconstructs the same
+blessed SystemVault state and verifies the same genesis root.
 
 ### 3.2 Funding-key derivation (with the placeholder filter)
 
@@ -256,7 +254,7 @@ every non-placeholder `sig` against its `pk`, so a forger cannot present a victi
 |---|---|
 | **Configured client** | Seed `Σ⟦Ground(client_pk)⟧` in the committed genesis state through `client_fuel_allocations`. A deployment is admitted only when the live residual funds its certified reservation plus fee. |
 | **Unconfigured client** | The wallet is absent, hence its effective supply is zero and the deployment is rejected before execution. |
-| **Validator heartbeat or proposer dummy** | It is an ordinary signed block-body deployment for funding purposes and draws from the validator's initial-phlogiston wallet. |
+| **Validator heartbeat or proposer dummy** | It is an ordinary signed block-body deployment. It draws from genesis funding and later epoch credits in the validator's canonical vault. |
 | **Protocol system deploy** | It is routed through `evaluate_system_source`, outside the signed block-body gate, and follows its separately verified system transition. |
 
 ---

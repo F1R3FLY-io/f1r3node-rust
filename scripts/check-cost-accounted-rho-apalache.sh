@@ -83,6 +83,33 @@ run_expected_violation() {
 echo "Checking cost-accounted rho with Apalache 0.58.3+..."
 
 overall=0
+run_check replay-cache-context \
+  "concurrent cache lookup, publication, cancellation, eviction, and metadata removal preserve complete replay context" \
+  --config=ReplayCacheContext.cfg --length=8 ReplayCacheContext.tla || overall=1
+run_expected_violation replay-cache-context-omittimestamp \
+  "reject the OmitTimestamp replay-cache defect" \
+  ReplayUsesExactContext \
+  --config=ReplayCacheContextOmitTimestampUnsafeApalache.cfg --length=8 ReplayCacheContext.tla || overall=1
+run_expected_violation replay-cache-context-omitheight \
+  "reject the OmitHeight replay-cache defect" \
+  ReplayUsesExactContext \
+  --config=ReplayCacheContextOmitHeightUnsafeApalache.cfg --length=8 ReplayCacheContext.tla || overall=1
+run_expected_violation replay-cache-context-omitinvalidblocks \
+  "reject the OmitInvalidBlocks replay-cache defect" \
+  ReplayUsesExactContext \
+  --config=ReplayCacheContextOmitInvalidBlocksUnsafeApalache.cfg --length=8 ReplayCacheContext.tla || overall=1
+run_expected_violation replay-cache-context-ignorehostlimit \
+  "reject the IgnoreHostLimit replay-cache defect" \
+  BoundedWorkCannotHitCache \
+  --config=ReplayCacheContextIgnoreHostLimitUnsafeApalache.cfg --length=8 ReplayCacheContext.tla || overall=1
+run_expected_violation replay-cache-context-ignoremetadata \
+  "reject the IgnoreMetadata replay-cache defect" \
+  HitHadMetadata \
+  --config=ReplayCacheContextIgnoreMetadataUnsafeApalache.cfg --length=8 ReplayCacheContext.tla || overall=1
+run_expected_violation replay-cache-context-publishunvalidated \
+  "reject the PublishUnvalidated replay-cache defect" \
+  NoUnvalidatedPublication \
+  --config=ReplayCacheContextPublishUnvalidatedUnsafeApalache.cfg --length=8 ReplayCacheContext.tla || overall=1
 run_check nary-join \
   "symbolic authority conservation, partition invariance, and no weakening" \
   --init=Init --next=Next --inv=Inv --length=1 NaryJoin.tla || overall=1
@@ -95,9 +122,351 @@ run_check search-frontier \
 run_check replay-root \
   "two-validator, two-deploy root materialization and replay agreement through length 8" \
   --config=ReplayRootMaterializationApalache.cfg --length=8 ReplayRootMaterialization.tla || overall=1
+run_check replay-supply-snapshot \
+  "maximal-prefix admission and independent root-bound replay preserve exact validator fuel settlement" \
+  --config=ReplaySupplySnapshotApalache.cfg --length=12 MCReplaySupplySnapshot.tla || overall=1
+run_expected_violation replay-supply-live-query-unsafe \
+  "querying validator fuel after replay rigging is independently refuted" \
+  ExactRecordedReplayTrace \
+  --config=ReplaySupplySnapshotLiveQueryUnsafeApalache.cfg --length=8 MCReplaySupplySnapshot.tla || overall=1
+run_expected_violation replay-supply-replay-runtime-unsafe \
+  "capturing validator fuel through ReplayRSpace is independently refuted" \
+  SnapshotsUseOrdinaryRuntime \
+  --config=ReplaySupplySnapshotReplayRuntimeUnsafeApalache.cfg --length=6 MCReplaySupplySnapshot.tla || overall=1
+run_expected_violation replay-supply-late-capture-unsafe \
+  "capturing validator fuel after certificate rigging is independently refuted" \
+  SnapshotsPrecedeRigging \
+  --config=ReplaySupplySnapshotLateCaptureUnsafeApalache.cfg --length=6 MCReplaySupplySnapshot.tla || overall=1
+run_expected_violation replay-supply-wrong-root-unsafe \
+  "capturing validator fuel from a different state root is independently refuted" \
+  SnapshotsUseCurrentRoot \
+  --config=ReplaySupplySnapshotWrongRootUnsafeApalache.cfg --length=6 MCReplaySupplySnapshot.tla || overall=1
+run_expected_violation replay-supply-wrong-proposer-unsafe \
+  "binding validator fuel to a different proposer is independently refuted" \
+  SnapshotsUseCertifiedProposer \
+  --config=ReplaySupplySnapshotWrongProposerUnsafeApalache.cfg --length=6 MCReplaySupplySnapshot.tla || overall=1
+run_expected_violation replay-supply-recorded-balance-unsafe \
+  "reusing the recorded initial balance at a later root is independently refuted" \
+  SnapshotsMatchActualFuel \
+  --config=ReplaySupplySnapshotRecordedBalanceUnsafeApalache.cfg --length=10 MCReplaySupplySnapshot.tla || overall=1
+run_expected_violation replay-supply-no-settlement-unsafe \
+  "trusting a snapshot without applying physical settlement is independently refuted" \
+  ActualSettlementRequired \
+  --config=ReplaySupplySnapshotNoSettlementUnsafeApalache.cfg --length=8 MCReplaySupplySnapshot.tla || overall=1
+run_expected_violation replay-supply-deferred-burn-unsafe \
+  "burning validator fuel for a deferred candidate is independently refuted" \
+  DeferredCandidatesDoNotBurn \
+  --config=ReplaySupplySnapshotDeferredBurnUnsafeApalache.cfg --length=4 MCReplaySupplySnapshot.tla || overall=1
+run_check execution-result-reuse \
+  "validation reuses one exact user execution result and publishes it only after complete validation" \
+  --config=ExecutionResultReuseApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-deploy-identity-unsafe \
+  "reuse without the exact deploy identity is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitDeployIdentityUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-pre-state-unsafe \
+  "reuse without the exact pre-state is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitPreStateUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-schedule-unsafe \
+  "reuse without the exact schedule is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitScheduleUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-witness-unsafe \
+  "reuse without the exact cost witness is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitWitnessUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-cost-surface-unsafe \
+  "reuse without the exact cost surface is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitCostSurfaceUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-grade-unsafe \
+  "reuse without the exact resource grade is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitGradeUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-context-unsafe \
+  "reuse without the exact execution context is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitContextUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-user-post-state-unsafe \
+  "reuse without the exact user post-state is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitUserPostStateUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-mergeable-unsafe \
+  "reuse without the exact mergeable evidence is independently refuted" \
+  ValidatedReuseIsExact \
+  --config=ExecutionResultReuseOmitMergeableUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-cache-first-unsafe \
+  "cache publication before durable validation is independently refuted" \
+  CacheFollowsExactDurability \
+  --config=ExecutionResultReuseCacheBeforeValidationUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-duplicate-user-replay-unsafe \
+  "a second user execution during validation is independently refuted" \
+  UserExecutionOccursOnce \
+  --config=ExecutionResultReuseDuplicateUserReplayUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-persistent-reinstall-unsafe \
+  "charging a persistent listener after its first installation is independently refuted" \
+  PersistentIntroductionChargedOnce \
+  --config=ExecutionResultReuseRechargePersistentIntroductionUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_expected_violation execution-result-reuse-persistent-firing-collapse-unsafe \
+  "collapsing distinct persistent firings into one charge is independently refuted" \
+  PersistentFiringsChargedSeparately \
+  --config=ExecutionResultReuseCollapsePersistentFiringsUnsafeApalache.cfg --length=8 ExecutionResultReuse.tla || overall=1
+run_check checkpoint-admission-recertification \
+  "parallel validators recertify each raw-prefix attempt and publish one complete final partition" \
+  --config=CheckpointAdmissionRecertificationApalache.cfg --length=8 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-reuse-old-certificate-unsafe \
+  "reusing an earlier generation certificate after shrink is independently refuted" \
+  CertificateUsesCurrentGeneration \
+  --config=CheckpointAdmissionRecertificationReuseOldCertificateUnsafeApalache.cfg --length=3 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-preserve-old-rejections-unsafe \
+  "retaining rejection decisions from an earlier candidate window is independently refuted" \
+  CertifiedPartitionIsCompleteAndDisjoint \
+  --config=CheckpointAdmissionRecertificationPreserveOldRejectionsUnsafeApalache.cfg --length=3 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-drop-final-rejections-unsafe \
+  "dropping rejections from the successful candidate window is independently refuted" \
+  PublishedPartitionIsCompleteAndDisjoint \
+  --config=CheckpointAdmissionRecertificationDropFinalRejectionsUnsafeApalache.cfg --length=2 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-recertify-admitted-only-unsafe \
+  "recertifying only previously admitted deploys is independently refuted" \
+  CertifiedPartitionIsCompleteAndDisjoint \
+  --config=CheckpointAdmissionRecertificationRecertifyAcceptedOnlyUnsafeApalache.cfg --length=3 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-context-drift-unsafe \
+  "changing authenticated context between certification and execution is independently refuted" \
+  CertificateUsesFrozenContext \
+  --config=CheckpointAdmissionRecertificationContextDriftUnsafeApalache.cfg --length=1 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-shrink-initially-admitted-unsafe \
+  "shrinking a prior admitted set instead of the raw canonical prefix is independently refuted" \
+  CertifiedWindowIsCanonicalRawPrefix \
+  --config=CheckpointAdmissionRecertificationShrinkInitiallyAdmittedUnsafeApalache.cfg --length=3 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-drain-original-candidates-unsafe \
+  "draining candidates outside the successful terminal partition is independently refuted" \
+  StorageDrainsOnlyFinalTerminalUsers \
+  --config=CheckpointAdmissionRecertificationDrainOriginalCandidatesUnsafeApalache.cfg --length=4 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-publish-before-success-unsafe \
+  "publishing or settling a failed checkpoint attempt is independently refuted" \
+  FailedAttemptsPublishNothing \
+  --config=CheckpointAdmissionRecertificationPublishBeforeSuccessUnsafeApalache.cfg --length=2 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-deferred-as-rejected-unsafe \
+  "publishing deferred candidates as rejected is independently refuted" \
+  PeerRecomputationMatchesPublication \
+  --config=CheckpointAdmissionRecertificationTreatDeferredAsRejectedUnsafeApalache.cfg --length=2 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-arrival-order-unsafe \
+  "using arrival order instead of canonical deploy order is independently refuted" \
+  CertifiedWindowIsCanonicalRawPrefix \
+  --config=CheckpointAdmissionRecertificationArrivalOrderUnsafeApalache.cfg --length=1 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-shared-attempt-unsafe \
+  "sharing mutable retry state between validators is independently refuted" \
+  ValidatorAttemptStateIsIndependent \
+  --config=CheckpointAdmissionRecertificationSharedMutableAttemptUnsafeApalache.cfg --length=1 CheckpointAdmissionRecertification.tla || overall=1
+run_expected_violation checkpoint-nondecreasing-retry-unsafe \
+  "a retry that does not reduce its user window is independently refuted" \
+  RetryLimitsStrictlyDecrease \
+  --config=CheckpointAdmissionRecertificationNonDecreasingRetryUnsafeApalache.cfg --length=2 CheckpointAdmissionRecertification.tla || overall=1
 run_check parallel-stack-materialization \
   "same-configuration declaration barrier, nested causality, conservation, and replay agreement" \
   --config=ParallelStackMaterialization.cfg --length=8 ParallelStackMaterialization.tla || overall=1
+run_check canonical-custody-aliasing \
+  "shared physical purse capacity, logical attribution, stack authority, and concurrent replay agreement" \
+  --config=CanonicalCustodyAliasingApalache.cfg --length=8 MCCanonicalCustodyAliasing.tla || overall=1
+run_expected_violation canonical-custody-aliasing-duplicate-lane-capacity-unsafe \
+  "duplicating one physical purse across logical authority lanes is independently refuted" \
+  NoDoubleCapacity \
+  --config=CanonicalCustodyAliasingDuplicateLaneCapacityUnsafeApalache.cfg --length=8 MCCanonicalCustodyAliasing.tla || overall=1
+run_check bond-issuance-lifecycle \
+  "genesis-only initial allocation and guarded epoch issuance across concurrent validator lifecycles" \
+  --config=BondIssuanceLifecycleApalache.cfg --length=10 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-fresh-bond-subsidy-unsafe \
+  "an initial grant after a fresh bond is independently refuted" \
+  InitialIssuanceOccursOnlyAtGenesis \
+  --config=BondIssuanceLifecycleFreshBondSubsidyUnsafeApalache.cfg --length=2 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-rebond-subsidy-unsafe \
+  "an initial grant after rebonding is independently refuted" \
+  InitialIssuanceOccursOnlyAtGenesis \
+  --config=BondIssuanceLifecycleRebondSubsidyUnsafeApalache.cfg --length=5 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-inactive-validator-unsafe \
+  "epoch issuance to an inactive validator is independently refuted" \
+  EpochIssuanceRequiresActiveMembership \
+  --config=BondIssuanceLifecycleInactiveValidatorIssuanceUnsafeApalache.cfg --length=2 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-off-boundary-unsafe \
+  "epoch issuance outside an epoch boundary is independently refuted" \
+  EpochIssuanceRequiresBoundary \
+  --config=BondIssuanceLifecycleOffBoundaryIssuanceUnsafeApalache.cfg --length=1 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-halted-validator-unsafe \
+  "epoch issuance to a halted validator is independently refuted" \
+  HaltedValidatorsReceiveNoIssuance \
+  --config=BondIssuanceLifecycleHaltedValidatorIssuanceUnsafeApalache.cfg --length=4 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-duplicate-epoch-unsafe \
+  "a second issuance for one validator epoch is independently refuted" \
+  AtMostOneCreditPerValidatorEpoch \
+  --config=BondIssuanceLifecycleDuplicateEpochIssuanceUnsafeApalache.cfg --length=3 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-generation-epoch-unsafe \
+  "changing bond generation during epoch issuance is independently refuted" \
+  GenerationChangesOnlyOnSuccessfulBond \
+  --config=BondIssuanceLifecycleGenerationDuringEpochUnsafeApalache.cfg --length=2 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-play-only-subsidy-unsafe \
+  "a play-only bond subsidy is independently refuted" \
+  PlayReplayIssuanceAgree \
+  --config=BondIssuanceLifecyclePlayOnlySubsidyUnsafeApalache.cfg --length=2 MC_BondIssuanceLifecycle.tla || overall=1
+run_expected_violation bond-issuance-replay-only-subsidy-unsafe \
+  "a replay-only bond subsidy is independently refuted" \
+  PlayReplayIssuanceAgree \
+  --config=BondIssuanceLifecycleReplayOnlySubsidyUnsafeApalache.cfg --length=2 MC_BondIssuanceLifecycle.tla || overall=1
+run_check epoch-mint-atomicity \
+  "fallible multi-validator epoch minting publishes one complete state or the exact pre-state" \
+  --config=EpochMintAtomicityApalache.cfg --length=10 MC_EpochMintAtomicity.tla || overall=1
+run_check epoch-mint-zero-issuance \
+  "zero epoch issuance records completion without calling the positive-only mint primitive" \
+  --config=EpochMintAtomicityZeroApalache.cfg --length=8 MC_EpochMintAtomicity.tla || overall=1
+run_expected_violation epoch-mint-swallowed-failure-unsafe \
+  "swallowing one validator mint failure is independently refuted" \
+  CommitRequiresAllEligibleMints \
+  --config=EpochMintAtomicitySwallowFailureUnsafeApalache.cfg --length=8 MC_EpochMintAtomicity.tla || overall=1
+run_expected_violation epoch-mint-early-balance-unsafe \
+  "publishing a validator balance before epoch commit is independently refuted" \
+  NoPartialBalancePublication \
+  --config=EpochMintAtomicityEarlyBalanceUnsafeApalache.cfg --length=3 MC_EpochMintAtomicity.tla || overall=1
+run_expected_violation epoch-mint-early-receipt-unsafe \
+  "publishing a mint receipt before epoch commit is independently refuted" \
+  NoPartialReceiptPublication \
+  --config=EpochMintAtomicityEarlyReceiptUnsafeApalache.cfg --length=3 MC_EpochMintAtomicity.tla || overall=1
+run_expected_violation epoch-mint-missing-rollback-unsafe \
+  "retaining staged epoch state after failure is independently refuted" \
+  AbortRestoresCommittedState \
+  --config=EpochMintAtomicityMissingRuntimeRollbackUnsafeApalache.cfg --length=5 MC_EpochMintAtomicity.tla || overall=1
+run_expected_violation epoch-mint-replay-partial-unsafe \
+  "replaying only a prefix of validator mints is independently refuted" \
+  PlayReplayCommittedStateEqual \
+  --config=EpochMintAtomicityReplayPartialUnsafeApalache.cfg --length=8 MC_EpochMintAtomicity.tla || overall=1
+run_expected_violation epoch-mint-zero-strict-mint-unsafe \
+  "sending zero issuance to a positive-only mint primitive is independently refuted" \
+  ZeroIssuanceCompletesWithoutFailure \
+  --config=EpochMintAtomicityZeroCallsStrictMintUnsafeApalache.cfg --length=4 MC_EpochMintAtomicity.tla || overall=1
+run_check validator-economics-lifecycle \
+  "role-separated validator fuel, general custody, stake, issuance, settlement, slash, replay, and concurrent reservations" \
+  --config=ValidatorEconomicsLifecycleApalache.cfg --length=4 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-address-role-collapse-unsafe \
+  "address-only custody identity is independently refuted" \
+  AddressAndRoleIdentifyCustody \
+  --config=ValidatorEconomicsLifecycleAddressOnlyRoleCollapseUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-burn-supply-unsafe \
+  "burning custody without reducing circulating supply is independently refuted" \
+  BurnReducesCirculatingSupply \
+  --config=ValidatorEconomicsLifecycleBurnWithoutSupplyReductionUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-general-capacity-unsafe \
+  "using general custody for proposer capacity is independently refuted" \
+  CapacityUsesValidatorFuel \
+  --config=ValidatorEconomicsLifecycleCapacityFromGeneralUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-redemption-mint-unsafe \
+  "creating validator fuel during redemption is independently refuted" \
+  RedemptionCreatesNoFuel \
+  --config=ValidatorEconomicsLifecycleDirectRedemptionMintUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-duplicate-penalty-unsafe \
+  "applying a guilty penalty twice is independently refuted" \
+  GuiltyResolutionIsIdempotent \
+  --config=ValidatorEconomicsLifecycleDuplicateGuiltyPenaltyUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-epoch-general-unsafe \
+  "crediting epoch issuance to general custody is independently refuted" \
+  EpochCreditsValidatorFuel \
+  --config=ValidatorEconomicsLifecycleEpochToGeneralUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-fee-fuel-unsafe \
+  "crediting client fees to validator fuel is independently refuted" \
+  FeeCreditsGeneralCustody \
+  --config=ValidatorEconomicsLifecycleFeeToFuelUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-fresh-bond-subsidy-unsafe \
+  "creating validator fuel during a fresh bond is independently refuted" \
+  FreshBondCreatesNoFuel \
+  --config=ValidatorEconomicsLifecycleFreshBondSubsidyUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-fuel-withdrawal-unsafe \
+  "withdrawing validator fuel into general custody is independently refuted" \
+  FuelHasNoWithdrawalPath \
+  --config=ValidatorEconomicsLifecycleFuelToGeneralWithdrawalUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-global-lock-unsafe \
+  "serializing independent validator economics behind one global lock is independently refuted" \
+  ValidatorOperationsRemainIndependent \
+  --config=ValidatorEconomicsLifecycleGlobalValidatorEconomicsLockUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-handler-general-unsafe \
+  "charging validator handlers from general custody is independently refuted" \
+  HandlerUsesValidatorFuel \
+  --config=ValidatorEconomicsLifecycleHandlerFromGeneralUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-partial-epoch-unsafe \
+  "publishing only part of an epoch issuance is independently refuted" \
+  EpochPublicationIsAtomic \
+  --config=ValidatorEconomicsLifecyclePartialEpochPublicationUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-partial-slash-unsafe \
+  "publishing only part of a slash resolution is independently refuted" \
+  SlashResolutionIsAtomic \
+  --config=ValidatorEconomicsLifecyclePartialSlashRedemptionUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-rebond-subsidy-unsafe \
+  "creating validator fuel during rebonding is independently refuted" \
+  RebondCreatesNoFuel \
+  --config=ValidatorEconomicsLifecycleRebondSubsidyUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-replay-role-unsafe \
+  "substituting a custody role during replay is independently refuted" \
+  PlayReplayRolesAgree \
+  --config=ValidatorEconomicsLifecycleReplayRoleSubstitutionUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-self-funding-unsafe \
+  "using same-candidate top-up for its handler is independently refuted" \
+  CandidateCannotSelfFundHandler \
+  --config=ValidatorEconomicsLifecycleSameCandidateTopUpUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-sibling-overdraw-unsafe \
+  "accepting sibling reservations beyond aggregate fuel is independently refuted" \
+  SiblingReservationsAreBounded \
+  --config=ValidatorEconomicsLifecycleSiblingAggregateFuelOverdrawUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-slash-general-unsafe \
+  "quarantining general custody during slash is independently refuted" \
+  SlashPreservesGeneralCustody \
+  --config=ValidatorEconomicsLifecycleSlashGeneralUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-slash-fuel-unsafe \
+  "leaving validator fuel available after slash is independently refuted" \
+  SlashRemovesAvailableFuel \
+  --config=ValidatorEconomicsLifecycleSlashLeavesFuelUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-stale-generation-unsafe \
+  "resolving validator fuel with stale generation evidence is independently refuted" \
+  ResolutionUsesCurrentGeneration \
+  --config=ValidatorEconomicsLifecycleStaleGenerationResolutionUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_expected_violation validator-economics-top-up-conservation-unsafe \
+  "crediting validator fuel without the matching general debit is independently refuted" \
+  TopUpConservesCustody \
+  --config=ValidatorEconomicsLifecycleTopUpWithoutGeneralDebitUnsafeApalache.cfg --length=3 MC_ValidatorEconomicsLifecycle.tla || overall=1
+run_check minted-epoch-frontier-bounded \
+  "all epoch values and lifecycle transitions preserve one retained frontier from genesis" \
+  --config=MintedEpochFrontierApalache.cfg --length=4 MintedEpochFrontier.tla || overall=1
+run_check minted-epoch-frontier-inductive \
+  "the frontier invariant is closed under every transition from every invariant state" \
+  --config=MintedEpochFrontierInductiveApalache.cfg --length=1 MintedEpochFrontier.tla || overall=1
+run_expected_violation minted-epoch-frontier-init-zero-unsafe \
+  "initializing the retained frontier as completed epoch zero is independently refuted" \
+  InitialFrontierIsUnminted \
+  --config=MintedEpochFrontierInitAtZeroUnsafe.cfg --length=0 MintedEpochFrontier.tla || overall=1
+run_expected_violation minted-epoch-frontier-reject-bootstrap-unsafe \
+  "rejecting the first production epoch from an unminted genesis is independently refuted" \
+  RequiredBootstrapIsAccepted \
+  --config=MintedEpochFrontierRejectBootstrapUnsafe.cfg --length=1 MintedEpochFrontier.tla || overall=1
+run_expected_violation minted-epoch-frontier-gap-unsafe \
+  "accepting a close beyond the immediate successor epoch is independently refuted" \
+  GapCloseIsRejected \
+  --config=MintedEpochFrontierGapUnsafe.cfg --length=1 MintedEpochFrontier.tla || overall=1
+run_expected_violation minted-epoch-frontier-double-sibling-unsafe \
+  "publishing both sibling epoch-close effects is independently refuted" \
+  SiblingCloseKeepsExactlyOne \
+  --config=MintedEpochFrontierDoubleSiblingUnsafe.cfg --length=1 MintedEpochFrontier.tla || overall=1
+run_expected_violation minted-epoch-frontier-drop-sibling-unsafe \
+  "dropping every sibling epoch-close effect is independently refuted" \
+  SiblingCloseKeepsExactlyOne \
+  --config=MintedEpochFrontierDropSiblingUnsafe.cfg --length=1 MintedEpochFrontier.tla || overall=1
+run_expected_violation minted-epoch-frontier-catchup-bond-unsafe \
+  "retroactively minting for a new bond is independently refuted" \
+  LifecycleDoesNotMint \
+  --config=MintedEpochFrontierCatchupBondUnsafe.cfg --length=2 MintedEpochFrontier.tla || overall=1
+run_expected_violation minted-epoch-frontier-clear-redemption-unsafe \
+  "clearing the retained frontier during redemption is independently refuted" \
+  LifecyclePreservesFrontier \
+  --config=MintedEpochFrontierClearRedemptionUnsafe.cfg --length=2 MintedEpochFrontier.tla || overall=1
+run_expected_violation minted-epoch-frontier-retroactive-redemption-unsafe \
+  "retroactively minting during redemption is independently refuted" \
+  LifecycleDoesNotMint \
+  --config=MintedEpochFrontierRetroactiveMintUnsafe.cfg --length=2 MintedEpochFrontier.tla || overall=1
 run_expected_violation parallel-stack-materialization-unsafe \
   "scheduler-dependent sibling reduction before purse materialization is independently refuted" \
   CausallyFundedProgramIsAccepted \

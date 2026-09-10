@@ -201,6 +201,10 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         ),
         // CasperBuffer
         (
+            Db::new("pending-request-policy-v1".to_string(), None),
+            casper_buffer_env_config(),
+        ),
+        (
             Db::new("parents-map".to_string(), None),
             casper_buffer_env_config(),
         ),

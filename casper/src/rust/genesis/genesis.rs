@@ -18,6 +18,7 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use super::contracts::proof_of_stake::ProofOfStake;
 use super::contracts::standard_deploys;
 use super::contracts::vault::Vault;
+use super::contracts::vaults_generator::GenesisVaultAllocation;
 use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -109,13 +110,13 @@ impl Genesis {
         proof_of_stake: &ProofOfStake,
         vaults: &[Vault],
         client_fuel_allocations: &[(PublicKey, i64)],
-    ) -> Result<Vec<Vault>, CasperError> {
+    ) -> Result<Vec<GenesisVaultAllocation>, CasperError> {
         Self::validate_cost_accounting_parameters(proof_of_stake, client_fuel_allocations)?;
-        let mut balances = std::collections::BTreeMap::<String, (VaultAddress, u64)>::new();
+        let mut balances = std::collections::BTreeMap::<String, (VaultAddress, u64, u64)>::new();
         for vault in vaults {
             let entry = balances
                 .entry(vault.vault_address.to_base58())
-                .or_insert_with(|| (vault.vault_address.clone(), 0));
+                .or_insert_with(|| (vault.vault_address.clone(), 0, 0));
             entry.1 = entry.1.checked_add(vault.initial_balance).ok_or_else(|| {
                 CasperError::RuntimeError("genesis vault balance overflow".to_string())
             })?;
@@ -132,8 +133,8 @@ impl Genesis {
             })?;
             let entry = balances
                 .entry(address.to_base58())
-                .or_insert_with(|| (address, 0));
-            entry.1 = entry.1.checked_add(initial_phlogiston).ok_or_else(|| {
+                .or_insert_with(|| (address, 0, 0));
+            entry.2 = entry.2.checked_add(initial_phlogiston).ok_or_else(|| {
                 CasperError::RuntimeError("genesis validator fuel balance overflow".to_string())
             })?;
         }
@@ -148,16 +149,19 @@ impl Genesis {
             })?;
             let entry = balances
                 .entry(address.to_base58())
-                .or_insert_with(|| (address, 0));
+                .or_insert_with(|| (address, 0, 0));
             entry.1 = entry.1.checked_add(amount).ok_or_else(|| {
                 CasperError::RuntimeError("genesis client fuel balance overflow".to_string())
             })?;
         }
         Ok(balances
             .into_values()
-            .map(|(vault_address, initial_balance)| Vault {
-                vault_address,
-                initial_balance,
+            .map(|(vault_address, general_balance, validator_fuel_balance)| {
+                GenesisVaultAllocation {
+                    vault_address,
+                    general_balance,
+                    validator_fuel_balance,
+                }
             })
             .collect())
     }
@@ -189,17 +193,26 @@ impl Genesis {
                 proof_of_stake.epoch_phlogiston
             )));
         }
+        let mut validator_identities = std::collections::BTreeSet::new();
+        let mut validator_addresses = std::collections::BTreeSet::new();
         for validator in &proof_of_stake.validators {
             if validator.pk.bytes.is_empty() {
                 return Err(CasperError::RuntimeError(
                     "validator public key must be non-empty".to_string(),
                 ));
             }
-            VaultAddress::from_public_key(&validator.pk).ok_or_else(|| {
+            let address = VaultAddress::from_public_key(&validator.pk).ok_or_else(|| {
                 CasperError::RuntimeError(
                     "validator public key has no native vault address".to_string(),
                 )
             })?;
+            if !validator_identities.insert(validator.pk.bytes.clone())
+                || !validator_addresses.insert(address.to_base58())
+            {
+                return Err(CasperError::RuntimeError(
+                    "genesis validators contain a duplicate identity".to_string(),
+                ));
+            }
         }
         for (public_key, amount) in client_fuel_allocations {
             if public_key.bytes.is_empty() {
@@ -235,7 +248,7 @@ impl Genesis {
     pub fn default_blessed_terms_with_timestamp(
         timestamp: i64,
         pos_params: &ProofOfStake,
-        vaults: &Vec<Vault>,
+        vaults: &[GenesisVaultAllocation],
         supply: i64,
         shard_id: &str,
         native_token_name: &str,
@@ -332,7 +345,7 @@ impl Genesis {
 
     pub fn default_blessed_terms(
         pos_params: &ProofOfStake,
-        vaults: &Vec<Vault>,
+        vaults: &[GenesisVaultAllocation],
         supply: i64,
         shard_id: &str,
         native_token_name: &str,

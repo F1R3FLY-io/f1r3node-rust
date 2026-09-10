@@ -6,3 +6,5 @@
 # everyone who runs the test benefits from these saved cases.
 cc 0bce4e06659515850ba9aae0826b6c1a5f197c068f0afb95e5f3b65475eb81f6 # shrinks to intermediate_rounds = 1
 cc 7aee9e1f2bf1d646dc4f3470ae9d340f37471f37605e449e1d7ba0f50dcc5197 # shrinks to priorities = [0]
+cc 68d22aa884e84dab8b47873a50c5253d87c9cf5c93abaaeca846cbf531a5b220 # shrinks to rounds = 6, projection = 0, effects = 6, compaction = 0
+cc 6760c1d5a550903cc6ae48b7e7ba8530749a57e1dd36a1609881f279e7cc1f2a # shrinks to episode_tag = 1, raw = []

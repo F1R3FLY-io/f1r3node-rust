@@ -46,6 +46,7 @@ metrics = { workspace = true }
 parking_lot = "0.12"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 casper = { path = ".", features = ["test-utils"] }
 # P2-16: enable block-storage's test-only RMW bypass helpers for
 # detector-totality / record-lifecycle integration tests. Production

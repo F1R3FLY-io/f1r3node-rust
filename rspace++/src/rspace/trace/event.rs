@@ -312,6 +312,21 @@ mod tests {
         assert_ne!(original.cost_identity(), changed.cost_identity());
     }
 
+    proptest::proptest! {
+        #[test]
+        fn cost_identity_distinguishes_all_completed_persistent_firing_counts(
+            first in 0i32..1_000_000,
+            second in 0i32..1_000_000,
+        ) {
+            proptest::prop_assume!(first != second);
+            let mut left = comm();
+            let mut right = comm();
+            left.times_repeated.insert(left.produces[0].clone(), first);
+            right.times_repeated.insert(right.produces[0].clone(), second);
+            proptest::prop_assert_ne!(left.cost_identity(), right.cost_identity());
+        }
+    }
+
     #[test]
     fn cost_identity_canonicalizes_producer_order() {
         let mut original = comm();

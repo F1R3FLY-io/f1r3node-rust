@@ -18,6 +18,56 @@ Run `/review-codebase --glossary-only` to audit anchor integrity.
 
 ## Canonical Terms
 
+### Validator fuel
+
+Validator fuel is role-separated SystemVault custody. It pays the fixed
+proposer handler charge for each admitted user deployment.
+
+General purse custody cannot substitute for validator fuel. Admission defers a
+candidate when the proposing validator lacks this custody.
+
+**Preferred usage.** Use this term for the `ValidatorFuel` SystemVault role.
+Distinguish it from client execution authority and general validator custody.
+
+### Replay economic snapshot
+
+A replay economic snapshot is an immutable view of all economic inputs for one
+deployment replay. An ordinary runtime captures the view at the authenticated
+pre-state.
+
+The snapshot binds authority purses, validator fuel, the state root, and the
+certified proposer. ReplayRSpace cannot create or refresh this snapshot.
+
+**Preferred usage.** Use this term for the complete replay input. Avoid
+`purse snapshot` when the view also includes validator fuel.
+
+### Retained execution result
+
+A retained execution result contains one validator's complete authenticated
+user execution. It includes processed results, the user post-state, and
+mergeable evidence.
+
+Validation can reuse this result only after exact comparison with the block's
+state-bound evidence. System replay then starts from the retained user
+post-state.
+
+**Preferred usage.** Use this term for the exact value reused within one
+validator. Do not use it for untrusted proposer output or partial evidence.
+
+### Certified checkpoint attempt
+
+A certified checkpoint attempt is one immutable proposal candidate window and
+its state-bound admission certificate.
+
+The attempt binds its retry generation, canonical candidates, authenticated
+context, admission partition, and user identities.
+
+Only a successful attempt can supply block state, rejection evidence,
+settlement, or terminal storage removal.
+
+**Preferred usage.** Use this term for the complete retry-generation value.
+Distinguish it from a prior admission result or a checkpoint result alone.
+
 ### Verification tier
 
 A verification tier is the CI budget class a formal check runs under: the
@@ -170,6 +220,39 @@ Epoch changes, slash actions, and redemption do not advance the counter.
 epoch, which limits evidence eligibility but does not identify a lifetime.
 *Avoid*: bond epoch.
 
+### Complete bond ledger
+
+The complete bond ledger contains every replayed validator bond, including
+positive bonds that do not yet grant proposal or voting authority.
+
+**Preferred usage.** Use this term for the `.bonds` API projection and the
+PoS `allBonds` state. *Distinguish from* the [active validator set](#active-validator-set).
+*Avoid*: active bonds.
+
+### Active validator set
+
+The active validator set contains the bounded validators that can propose and
+vote at the current finalized floor.
+
+An [activation boundary](#activation-boundary) selects this set from positive
+bonds in the [complete bond ledger](#complete-bond-ledger).
+
+**Preferred usage.** Use this term for the `.activeBonds` API projection and
+the PoS `activeValidators` state. *Distinguish from* all positive bonds.
+*Avoid*: bond ledger.
+
+### Activation boundary
+
+An activation boundary is a replayed PoS transition that selects the next
+[active validator set](#active-validator-set).
+
+Registration outside this boundary changes the
+[complete bond ledger](#complete-bond-ledger), but it does not grant authority.
+
+**Preferred usage.** Use this term for the transition that grants validator
+authority. *Distinguish from* bond registration and an ordinary epoch change.
+*Avoid*: immediate activation.
+
 ### Validator lifetime
 
 A validator lifetime is the pair of a validator public key and its
@@ -179,6 +262,18 @@ boundaries.
 **Preferred usage.** Use this term for validator identity across consensus,
 evidence, and slashing. *Distinguish from* an activation epoch and a public
 key without a bond generation. *Avoid*: validator epoch.
+
+### Mint frontier
+
+The mint frontier is the greatest epoch whose collective validator issuance
+completed in canonical PoS state. The initial value is `-1`.
+
+The frontier advances only through one successful epoch-close transaction.
+Completed epochs are no-ops, and skipped epochs fail without state change.
+
+**Preferred usage.** Use this term for the PoS `mintedThroughEpoch` value.
+*Distinguish from* logical per-validator receipts, which exist only in proofs.
+*Avoid*: mint history, because production does not retain every epoch entry.
 
 ### Equivocation detector
 
@@ -365,33 +460,48 @@ error and cannot abstain.
 
 ### Finalized floor
 
-The finalized floor of a block is the finalized ancestor that the block's
-own frozen justifications witness. Both floor sources are block-structural
-facts, so every node derives the same floor for the same block. The floor
-bounds the [merge scope](#merge-scope), anchors the
-[merge base](#merge-base) fallback, supplies the validation committee,
-and paces the [retry gate](#retry-gate). The normative rules live in
+The finalized floor is the finalized state that bounds one block transition.
+For protocol 6, the block signs a commitment to the floor hash, post-state,
+certificate, and authority context. Each receiver verifies that certificate
+and reconstructs replay from the committed floor. Earlier protocols derive the
+floor from frozen parents and justifications. The floor bounds the
+[merge scope](#merge-scope), anchors the [merge base](#merge-base), supplies
+the validation committee, and paces the [retry gate](#retry-gate). The
+normative rules live in
 [finalized-floor-specification.md](./theory/finalized-floor/finalized-floor-specification.md).
 
-**Preferred usage.** Use for the block-derived finalization bound that
+**Preferred usage.** Use for the block-structural finalization bound that
 consensus rules read.
 *Distinguish from* [Last finalized block (LFB)](#last-finalized-block-lfb):
-the floor is a pure function of the block; the LFB is a node-local
-observation.
+the proposer captures its local LFB certificate, while receivers use only the
+signed block data.
 *Avoid*: "floor" unqualified in a document that also discusses numeric
 floors or limits.
 
+### Certified replay floor
+
+A certified replay floor is the protocol-6 finalized floor bound by a verified
+signed commitment. The commitment includes the floor hash, post-state,
+certificate digest, and authority-context digest.
+
+**Preferred usage.** Use for the exact state that protocol-6 proposal and
+validation replay use.
+*Distinguish from* finalizer candidate evidence, which can change concurrently
+and cannot replace the committed replay floor.
+*Avoid*: "current floor" when the signed identity is required.
+
 ### Last finalized block (LFB)
 
-The last finalized block is the highest block a node's finalization
-oracle has finalized in its own view. The LFB is node-local: two healthy
-nodes can briefly hold different LFBs. No consensus rule may read the
-LFB, because a node-local input would fork the network.
+The last finalized block is the highest block a node's finalization oracle has
+finalized in its own view. Two healthy nodes can briefly hold different LFBs.
+A proposer can capture its LFB and certificate into a protocol-6 block.
+Receivers must verify the signed commitment. Receivers must not substitute
+their local LFB during validation.
 
 **Preferred usage.** Use for the node's own finalization progress marker,
 such as metrics, pruning, and API output.
-*Distinguish from* [Finalized floor](#finalized-floor): the merge scope
-and the validation committee read the block-derived floor, never the LFB.
+*Distinguish from* [Finalized floor](#finalized-floor): consensus reads the
+block commitment, not the receiver's current LFB.
 *Avoid*: "finalized block" unqualified when the node-local marker is
 intended.
 
@@ -437,6 +547,28 @@ exact effects.
 inherited floor states.
 *Distinguish from* one selected finalized floor.
 *Avoid*: "current floor" when the rule quantifies over the complete set.
+
+### Settled-history admission proof
+
+A settled-history admission proof is durable metadata for one historical block below an approved sync anchor.
+It binds the target to that anchor and to one verified bonded citer.
+An opaque witness verifies content hashes and signatures before storage accepts the proof.
+The proof also binds protocol, generation, stake, schema, and ruleset values.
+
+**Preferred usage.** Use this term for the proof stored with a settled-history DAG entry.
+*Distinguish from* a finality certificate, which certifies a consensus floor.
+*Avoid*: "validation certificate", because settled-history admission does not create an ordinary validation verdict.
+
+### Settled-history admission ticket
+
+A settled-history admission ticket is the transaction ownership for one target block.
+It includes durable citation evidence, one volatile claim, and an optional budget reservation.
+Certified DAG insertion commits the ticket before cleanup.
+A retained postcommit buffer edge records pending idempotent cleanup.
+
+**Preferred usage.** Use this term for the complete claim, reservation, commit, and cleanup lifecycle.
+*Distinguish from* the settled-history admission proof, which remains durable after the transaction ends.
+*Avoid*: "settlement ticket", which can incorrectly suggest a cost-settlement operation.
 
 ### Lowest common ancestor (LCA)
 

@@ -45,6 +45,21 @@ struct FaultInjectingStore {
 impl KeyValueStore for FaultInjectingStore {
     fn as_any(&self) -> &dyn Any { self }
 
+    fn with_value(
+        &self,
+        key: &ByteBuffer,
+        reader: &mut shared::rust::store::key_value_store::ValueReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        self.inner.with_value(key, reader)
+    }
+
+    fn visit_entries(
+        &self,
+        reader: &mut shared::rust::store::key_value_store::EntryReader<'_>,
+    ) -> Result<(), KvStoreError> {
+        self.inner.visit_entries(reader)
+    }
+
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
         self.inner.get(keys)
     }

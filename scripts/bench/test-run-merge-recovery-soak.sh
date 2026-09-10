@@ -10,6 +10,11 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$TMP/bin" "$TMP/system-integration"
+export FAKE_PKILL_LOG="$TMP/pkill.log"
+cat >"$TMP/bin/pkill" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_PKILL_LOG"
+SH
 cat >"$TMP/bin/poetry" <<'SH'
 #!/usr/bin/env bash
 trap 'exit 143' TERM INT
@@ -91,7 +96,7 @@ block_processing_parallel_limit{source="block-processor"} 2
 block_processing_queue_pending{source="block-processor"} 7
 METRICS
 SH
-chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl"
+chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/curl" "$TMP/bin/pkill"
 
 test ! -e "$TMP/output"
 PATH="$TMP/bin:$PATH" \
@@ -103,6 +108,7 @@ PATH="$TMP/bin:$PATH" \
 	SOAK_OUTPUT_DIR="$TMP/output" \
 	SOAK_RSS_CEILING_MB=0 \
 	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_DISK_FREE_FLOOR_MB=0 \
 	SOAK_GUARDIAN_POLL_SECONDS=1 \
 	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
 	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver.log" 2>&1 &
@@ -154,6 +160,7 @@ status=$?
 set -e
 DRIVER_PID=""
 [ "$status" -eq 1 ]
+grep -q '/tmp/rnode' "$FAKE_PKILL_LOG"
 
 test "$(find "$TMP/output" -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')" = 1
 grep -q '^host_protection_breach:' "$TMP/output/early-exit.txt"
@@ -197,6 +204,7 @@ PATH="$TMP/bin:$PATH" \
 	SOAK_OUTPUT_DIR="$TMP/output2" \
 	SOAK_RSS_CEILING_MB=0 \
 	SOAK_HOST_FREE_FLOOR_MB=0 \
+	SOAK_DISK_FREE_FLOOR_MB=0 \
 	SOAK_GUARDIAN_POLL_SECONDS=1 \
 	SOAK_MONITOR_SNAPSHOT_SECONDS=0.1 \
 	"$ROOT/scripts/run-merge-recovery-soak.sh" >"$TMP/driver2.log" 2>&1 &

@@ -285,12 +285,7 @@ impl Validate {
             );
             return false;
         }
-        let verified = Self::verify_signature(
-            &b.sig_algorithm,
-            &b.block_hash.to_vec(),
-            &b.sig.to_vec(),
-            &b.sender.to_vec(),
-        );
+        let verified = b.has_valid_block_signature();
         if !verified {
             tracing::warn!("{}", Self::ignore(b, "signature is invalid."));
         }
@@ -1921,6 +1916,7 @@ mod merge_recovery_validation_tests {
             protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             objective_equivocation_evidence_delta: Vec::new(),
             sender_authority: None,
+            settled_history_admission: None,
             finalized_floor_commitment: None,
             admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,

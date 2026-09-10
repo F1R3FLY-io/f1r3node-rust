@@ -349,7 +349,7 @@ async fn multi_parent_casper_should_add_a_valid_block_from_peer() {
         .unwrap();
 
     let no_more_requested_blocks = {
-        let requested_blocks = nodes[1].requested_blocks.lock().unwrap();
+        let requested_blocks = nodes[1].casper.block_retriever.request_states();
         !requested_blocks.values().any(|state| !state.received)
     };
 

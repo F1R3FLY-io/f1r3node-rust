@@ -23,6 +23,10 @@ use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
 
+mod dependency_readiness;
+#[cfg(test)]
+mod recovery_dependency_tests;
+
 pub fn get_main_chain_until_depth(
     block_store: &KeyValueBlockStore,
     estimate: BlockMessage,
@@ -429,24 +433,7 @@ pub fn unsigned_block_proto(
     block
 }
 
-pub fn hash_block(block: &BlockMessage) -> BlockHash {
-    use prost::Message;
-
-    let bytes: Vec<u8> = block
-        .header
-        .to_proto()
-        .encode_to_vec()
-        .into_iter()
-        .chain(block.body.to_proto().encode_to_vec().into_iter())
-        .chain(block.sender.clone().into_iter())
-        .chain(block.sig_algorithm.as_bytes().to_vec().into_iter())
-        .chain(block.seq_num.to_le_bytes().into_iter())
-        .chain(block.shard_id.as_bytes().to_vec().into_iter())
-        .chain(block.extra_bytes.clone().into_iter())
-        .collect();
-
-    Blake2b256::hash(bytes).into()
-}
+pub fn hash_block(block: &BlockMessage) -> BlockHash { block.computed_block_hash() }
 
 pub fn hash_string(b: &BlockMessage) -> BlockHash {
     use prost::Message;
@@ -567,6 +554,66 @@ pub fn all_dependencies_have_admitted_metadata(
 ) -> Result<bool, KvStoreError> {
     let (_, missing) = dependency_metadata_partition(block, dag)?;
     Ok(missing.is_empty())
+}
+
+pub(crate) fn dependency_hashes_iter(block: &BlockMessage) -> impl Iterator<Item = &BlockHash> {
+    block
+        .header
+        .parents_hash_list
+        .iter()
+        .chain(
+            block
+                .justifications
+                .iter()
+                .map(|item| &item.latest_block_hash),
+        )
+        .chain(block.body.system_deploys.iter().flat_map(|deploy| {
+            match deploy {
+                ProcessedSystemDeploy::Succeeded {
+                    system_deploy:
+                        SystemDeployData::Slash {
+                            invalid_block_hash,
+                            equivocation_block_hash,
+                            ..
+                        },
+                    ..
+                } => Some(invalid_block_hash)
+                    .into_iter()
+                    .chain(equivocation_block_hash.as_ref()),
+                _ => None.into_iter().chain(None),
+            }
+        }))
+        .chain(
+            block
+                .header
+                .objective_equivocation_evidence_delta
+                .iter()
+                .flat_map(|evidence| [&evidence.first_block_hash, &evidence.second_block_hash]),
+        )
+        .chain(
+            block
+                .finalized_floor_certificate
+                .iter()
+                .flat_map(|certificate| {
+                    certificate
+                        .exact_latest_messages
+                        .values()
+                        .map(|hash| &hash.0)
+                        .chain([
+                            &certificate.predecessor_floor_hash.0,
+                            &certificate.predecessor_certificate_block_hash.0,
+                            &certificate.target_floor_hash.0,
+                        ])
+                        .filter(|hash| hash.iter().any(|byte| *byte != 0))
+                }),
+        )
+}
+
+pub(crate) fn dependencies_have_admitted_metadata<E>(
+    block: &BlockMessage,
+    mut lookup: impl FnMut(&BlockHash) -> Result<bool, E>,
+) -> Result<bool, E> {
+    dependency_readiness::all_observed(dependency_hashes_iter(block).map(&mut lookup))
 }
 
 pub fn dependency_metadata_partition(
@@ -837,6 +884,7 @@ mod fork_choice_b1_repro_tests {
                 protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 objective_equivocation_evidence_delta: Vec::new(),
                 sender_authority: None,
+                settled_history_admission: None,
                 finalized_floor_commitment: None,
                 admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
                 approved_genesis: false,

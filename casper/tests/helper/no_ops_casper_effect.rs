@@ -173,6 +173,32 @@ impl NoOpsCasperEffect {
 
 #[async_trait]
 impl MultiParentCasper for NoOpsCasperEffect {
+    fn retry_candidate_count(&self) -> usize { 0 }
+
+    fn next_retry_candidate(&self) -> Option<BlockHash> { None }
+
+    fn prepare_retry_candidate(
+        &self,
+        _hash: &BlockHash,
+    ) -> Result<casper::rust::casper::RetryCandidate, CasperError> {
+        Ok(casper::rust::casper::RetryCandidate::Absent)
+    }
+
+    fn prepare_startup_candidate(
+        &self,
+        hash: &BlockHash,
+    ) -> Result<casper::rust::casper::RetryCandidate, CasperError> {
+        use casper::rust::casper::RetryCandidate;
+        let Some(block) = self.block_store.get(hash)? else {
+            return Ok(RetryCandidate::MissingBody);
+        };
+        if self.block_dag_storage.contains(hash) {
+            Ok(RetryCandidate::AlreadyAdmitted)
+        } else {
+            Ok(RetryCandidate::Ready(Box::new(block)))
+        }
+    }
+
     async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
 
     fn normalized_initial_fault(&self, _target: &BlockHash) -> Result<f32, CasperError> { Ok(0.0) }

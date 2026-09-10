@@ -1,6 +1,7 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/errors.scala
 use std::fmt;
 
+use models::rust::host_work::HostWorkReservationError;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 
 // PartialEq here is needed for testing purposes
@@ -18,6 +19,7 @@ pub enum InterpreterError {
     UnexpectedBundleContent(String),
     UnrecognizedNormalizerError(String),
     OutOfPhlogistonsError,
+    HostWorkRejected,
     UserAbortError,
     TopLevelWildcardsNotAllowedError(String),
     TopLevelFreeVariablesNotAllowedError(String),
@@ -153,6 +155,10 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::OutOfPhlogistonsError => {
                 write!(f, "Computation ran out of phlogistons.")
+            }
+
+            InterpreterError::HostWorkRejected => {
+                write!(f, "Host work budget rejected evaluation.")
             }
 
             InterpreterError::UserAbortError => {
@@ -351,6 +357,10 @@ impl From<RSpaceError> for InterpreterError {
             other => InterpreterError::RSpaceError(other),
         }
     }
+}
+
+impl From<HostWorkReservationError> for InterpreterError {
+    fn from(_: HostWorkReservationError) -> Self { Self::HostWorkRejected }
 }
 
 impl From<InterpreterError> for RSpaceError {

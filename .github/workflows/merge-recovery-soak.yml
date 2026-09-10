@@ -25,13 +25,14 @@ on:
         default: dev
         type: string
       duration:
-        description: Requested soak duration; weekend-60h is the 60h stability soak, daily-24h the dev integration soak (ignored when window_end_epoch is set)
+        description: Select the scheduled profile or the separate 24-hour qualification profile.
         required: true
         default: daily-24h
         type: choice
         options:
           - daily-24h
           - weekend-60h
+          - qualification-24h
       preflight_only:
         description: Run only the full integration preflight
         required: false
@@ -252,6 +253,7 @@ jobs:
     outputs:
       should_run: ${{ steps.resolve.outputs.should_run }}
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
+      qualification: ${{ steps.resolve.outputs.qualification }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
       target_sha: ${{ steps.resolve.outputs.target_sha }}
       run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
@@ -305,6 +307,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
+          qualification=false
+          if [ "$INPUT_DURATION" = "qualification-24h" ]; then
+            qualification=true
+            if [ "$EVENT_NAME" != workflow_dispatch ] || [ -n "$INPUT_SCHEDULED_SLOT" ] || [ -n "$INPUT_WINDOW_END" ] || [ -n "$INPUT_SERIES" ] || [ -n "$INPUT_CANDIDATE_TAG" ] || [ -n "$INPUT_RESTART_OF_RUN_ID" ] || [ "${INPUT_RETRY_ATTEMPT:-0}" != 0 ] || [ "${GITHUB_RUN_ATTEMPT:-1}" != 1 ] || [ "${INPUT_CANARY:-false}" = true ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = true ] || [ "${INPUT_SKIP_PREFLIGHT:-false}" = true ] || [ "${INPUT_INJECT_PROTECTION_BREACH:-false}" = true ]; then
+              echo "::error::qualification requires a fresh manual run with full preflight and no schedule, candidate, canary, or restart overrides"
+              exit 1
+            fi
+          fi
           case "${INPUT_PREFLIGHT_ONLY:-false}" in
             true|false|"") ;;
             *) echo "::error::preflight_only must be true or false"; exit 1 ;;
@@ -396,7 +406,9 @@ jobs:
               fi
             fi
           elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            if [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
+            if [ "$qualification" = true ]; then
+              duration_seconds=86400
+            elif [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
               duration_seconds=14400
             elif [ "$INPUT_DURATION" = "weekend-60h" ]; then
               duration_seconds=216000
@@ -650,6 +662,9 @@ jobs:
             fi
           fi
           kind=daily
+          if [ "$qualification" = true ]; then
+            kind=qualification
+          fi
           if [ "$duration_seconds" = "216000" ]; then
             kind=weekend
           fi
@@ -687,6 +702,9 @@ jobs:
           # Sundays and dailies run Mon–Thu. GitHub cannot generate a variable
           # number of steps, so unused slots are emitted empty and skip.
           end_epoch=$((slot_epoch + duration_seconds))
+          if [ "$qualification" = true ]; then
+            end_epoch=$((slot_epoch + 115200))
+          fi
           base_day="$(TZ=America/Los_Angeles date -d "@${slot_epoch}" +%F)"
           checkpoints=()
           for d in 0 1 2 3; do
@@ -701,6 +719,9 @@ jobs:
             done
           done
           if [ "${INPUT_CANARY:-false}" = "true" ] || [ "${INPUT_PREFLIGHT_ONLY:-false}" = "true" ]; then
+            checkpoints=()
+          fi
+          if [ "$qualification" = true ]; then
             checkpoints=()
           fi
           cp1=""; cp2=""; cp3=""; cp4=""; cp5=""
@@ -783,6 +804,7 @@ jobs:
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
+            echo "qualification=$qualification"
             echo "target_ref=$target_ref"
             echo "target_sha=$target_sha"
             echo "trigger_source=${trigger_source:-manual}"
@@ -1316,6 +1338,7 @@ jobs:
       !cancelled() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
       needs.schedule_gate.outputs.retry_attempt == '0' &&
+      needs.schedule_gate.outputs.qualification != 'true' &&
       needs.schedule_gate.outputs.canary != 'true' &&
       needs.schedule_gate.outputs.preflight_only != 'true' &&
       (needs.launch_runner.result == 'failure' ||
@@ -1377,6 +1400,14 @@ jobs:
     # land on a CI-launched VM. See "Bind the soak runner to a dedicated
     # label" for why that matters beyond scheduling.
     runs-on: [self-hosted, linux, x64, f1r3fly-rust-soak, oracle-cloud]
+    env:
+      SOAK_QUALIFICATION: ${{ needs.schedule_gate.outputs.qualification }}
+      SOAK_QUALIFICATION_SEEDS: '[216]'
+      SOAK_TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
+      SOAK_TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+      SOAK_CONTROL_SHA: ${{ github.workflow_sha }}
+      SOAK_NODE_REPO_DIR: ${{ github.workspace }}/node-under-test
+      SOAK_OUTPUT_DIR: /tmp/merge-recovery-soak
     outputs:
       # Set by the job's last step. Empty means the VM died mid-run — the
       # signal retry_within_window keys on to tell infrastructure death from
@@ -1390,6 +1421,7 @@ jobs:
       instance_id: ${{ steps.selftag.outputs.instance_id }}
       preflight: ${{ steps.integration_preflight.outputs.result }}
       telemetry_reset: ${{ steps.reset_telemetry.outcome }}
+      qualification_identity_sha256: ${{ steps.qualification_inputs.outputs.identity_sha256 }}
     # actions: write is needed only so a segment can dispatch the checkpoint
     # publish workflow. Without it `gh workflow run` is rejected and — because
     # that dispatch is deliberately fail-soft — checkpoints would silently
@@ -1406,7 +1438,7 @@ jobs:
     # daily soak at 22h the ceiling is a true 24h. Keyed on kind, not the raw
     # duration: an in-window restart's remainder is arbitrary, and a
     # restarted weekend with >24h left must still get the weekend ceiling.
-    timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 190 || (needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440) }}
+    timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 190 || (needs.schedule_gate.outputs.qualification == 'true' && 1920 || (needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440)) }}
     concurrency:
       # Same preflight-only carve-out as the launch job: a per-run group so
       # a diagnostic preflight and the scheduled series never cancel each
@@ -1614,10 +1646,21 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Extract subprocess binary
+      - name: Pin the qualification image before binary extraction
+        id: qualification_image
+        if: needs.schedule_gate.outputs.qualification == 'true'
         shell: bash -euo pipefail {0}
         run: |
-          container_id="$(docker create "$DOCKER_IMAGE_NAME:latest")"
+          image_id=$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE_NAME:latest")
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+
+      - name: Extract subprocess binary
+        env:
+          EXTRACTION_IMAGE: ${{ steps.qualification_image.outputs.image_id || format('{0}:latest', env.DOCKER_IMAGE_NAME) }}
+        shell: bash -euo pipefail {0}
+        run: |
+          container_id="$(docker create "$EXTRACTION_IMAGE")"
           docker cp "$container_id:/opt/docker/bin/node" /tmp/rnode
           docker rm "$container_id"
           chmod +x /tmp/rnode
@@ -1638,11 +1681,25 @@ jobs:
           test "$total_mb" -gt 0
           echo "SOAK_HOST_FREE_FLOOR_MB=$((total_mb + 1024))" >> "$GITHUB_ENV"
 
+      - name: Pin qualification inputs before preflight
+        id: qualification_inputs
+        if: needs.schedule_gate.outputs.qualification == 'true'
+        env:
+          SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
+          SOAK_QUALIFICATION_IMAGE: ${{ steps.qualification_image.outputs.image_id }}
+          F1R3FLY_NODE_BINARY: /tmp/rnode
+        shell: bash -euo pipefail {0}
+        run: |
+          image_id=$(python3 ci-control/scripts/soak/collect_qualification.py prepare)
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+          identity_sha256=$(sha256sum /tmp/merge-recovery-soak/qualification/identity.json | cut -d ' ' -f1)
+          echo "identity_sha256=$identity_sha256" >> "$GITHUB_OUTPUT"
+
       - name: Run full integration preflight
         id: integration_preflight
         if: needs.schedule_gate.outputs.canary != 'true' && needs.schedule_gate.outputs.skip_integration_preflight != 'true'
         env:
-          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_IMAGE: ${{ steps.qualification_inputs.outputs.image_id || format('{0}:latest', env.DOCKER_IMAGE_NAME) }}
           F1R3FLY_NODE_BINARY: /tmp/rnode
           F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
           SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
@@ -1659,6 +1716,9 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           started="$(date +%s)"
+          if [ "$SOAK_QUALIFICATION" = true ]; then
+            export PYTHONHASHSEED=216
+          fi
           timeout_seconds="$PREFLIGHT_TIMEOUT_SECONDS"
           if [ "$PREFLIGHT_ONLY" = "true" ]; then
             window_budget="$(( PREFLIGHT_END_EPOCH - started - 600 ))"
@@ -1678,6 +1738,9 @@ jobs:
           fi
           elapsed="$(( $(date +%s) - started ))"
           remaining="$(( DURATION_SECONDS - elapsed ))"
+          if [ "$SOAK_QUALIFICATION" = true ]; then
+            remaining="$DURATION_SECONDS"
+          fi
           if [ "$PREFLIGHT_ONLY" != "true" ] && [ "$remaining" -lt 3600 ]; then
             echo "::error::integration preflight left less than one hour for the soak"
             status=1
@@ -1920,7 +1983,9 @@ jobs:
           window_seconds: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           node_repo_dir: ${{ github.workspace }}/node-under-test
           system_integration_dir: ${{ github.workspace }}/system-integration
-          node_image: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          node_image: ${{ steps.qualification_inputs.outputs.image_id || format('{0}:latest', env.DOCKER_IMAGE_NAME) }}
+          qualification: ${{ needs.schedule_gate.outputs.qualification }}
+          preflight_result: ${{ steps.integration_preflight.outputs.result }}
           gh_token: ${{ github.token }}
 
       # Runs for dailies too. The aggregator needs no benchmark segments — it
@@ -1929,7 +1994,7 @@ jobs:
       # and its numbers die with the 14-day artifact.
       - name: Aggregate soak report + verdict
         id: aggregate
-        if: always() && needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'))
+        if: always() && needs.schedule_gate.outputs.qualification != 'true' && needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.canary == 'true' || needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'))
         shell: bash -euo pipefail {0}
         env:
           SOAK_DIR: /tmp/merge-recovery-soak
@@ -2050,7 +2115,7 @@ jobs:
         with:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/merge-recovery-soak
-          retention-days: 14
+          retention-days: ${{ needs.schedule_gate.outputs.qualification == 'true' && 30 || 14 }}
 
       - name: Mark soak job complete
         id: complete
@@ -2063,6 +2128,43 @@ jobs:
         # real result, even a red one, and a restart would only spend a
         # second VM reproducing it.
         run: echo "completed=true" >> "$GITHUB_OUTPUT"
+
+  qualification_gate:
+    name: Verify 24-hour Qualification
+    needs: [schedule_gate, soak]
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.duration == 'qualification-24h'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: merge-recovery-soak-86400s-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qualification-evidence
+      - name: Verify pinned identity and terminal result
+        env:
+          SOAK_RESULT: ${{ needs.soak.result }}
+          PINNED_IDENTITY_SHA256: ${{ needs.soak.outputs.qualification_identity_sha256 }}
+          TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          [[ "$PINNED_IDENTITY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  qualification-evidence/qualification/identity.json\n' "$PINNED_IDENTITY_SHA256" | sha256sum -c
+          jq -e --arg sha "$TARGET_SHA" '.target_sha == $sha' qualification-evidence/qualification/identity.json
+          python3 scripts/soak/qualification.py qualification-evidence/qualification/trace.json \
+            --expected-identity qualification-evidence/qualification/identity.json \
+            --evidence-root qualification-evidence --workflow-conclusion "$SOAK_RESULT" \
+            --output qualification-evidence/qualification-manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: qualification-evidence/qualification-manifest.json
+          if-no-files-found: error
+          retention-days: 30
 
   # Exact-candidate mode only: publish the section 8.1 stability-soak
   # document and the regression verdict on the candidate prerelease, and
@@ -2288,7 +2390,7 @@ jobs:
     # Both series publish. Gating this on run_benchmarks made it weekend-only,
     # so the dashboard's Daily tab had no producer and nightly results expired
     # with the artifact.
-    if: needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (needs.soak.outputs.preflight == 'passed' && needs.soak.outputs.telemetry_reset == 'success')) && !cancelled()
+    if: needs.schedule_gate.outputs.qualification != 'true' && needs.schedule_gate.outputs.should_run == 'true' && needs.schedule_gate.outputs.canary != 'true' && needs.schedule_gate.outputs.preflight_only != 'true' && (needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (needs.soak.outputs.preflight == 'passed' && needs.soak.outputs.telemetry_reset == 'success')) && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

@@ -603,6 +603,37 @@ pub struct BlockMessage {
 }
 
 impl BlockMessage {
+    pub fn computed_block_hash(&self) -> ByteString {
+        let bytes = self
+            .header
+            .to_proto()
+            .encode_to_vec()
+            .into_iter()
+            .chain(self.body.to_proto().encode_to_vec())
+            .chain(self.sender.iter().copied())
+            .chain(self.sig_algorithm.as_bytes().iter().copied())
+            .chain(self.seq_num.to_le_bytes())
+            .chain(self.shard_id.as_bytes().iter().copied())
+            .chain(self.extra_bytes.iter().copied())
+            .collect::<Vec<_>>();
+        Blake2b256::hash(bytes).into()
+    }
+
+    pub fn has_valid_content_hash(&self) -> bool { self.block_hash == self.computed_block_hash() }
+
+    pub fn has_valid_block_signature(&self) -> bool {
+        let supported = match self.sig_algorithm.as_str() {
+            "secp256k1" => true,
+            #[cfg(feature = "schnorr_secp256k1_experimental")]
+            "schnorr-secp256k1" | "frost-secp256k1" => true,
+            _ => false,
+        };
+        supported
+            && SignaturesAlgFactory::apply(&self.sig_algorithm).is_some_and(|algorithm| {
+                algorithm.verify(&self.block_hash, &self.sig, &self.sender)
+            })
+    }
+
     pub fn from_proto(proto: BlockMessageProto) -> Result<Self, String> {
         Ok(Self {
             block_hash: proto.block_hash,
@@ -1206,20 +1237,20 @@ impl RejectedDeployReason {
         }
     }
 
-    fn from_proto(value: i32) -> Self {
+    fn from_proto(value: i32) -> Result<Self, String> {
         match RejectedDeployReasonProto::try_from(value)
-            .unwrap_or(RejectedDeployReasonProto::RejectedDeployReasonUnspecified)
+            .map_err(|_| format!("unknown rejected deploy reason: {value}"))?
         {
-            RejectedDeployReasonProto::RejectedDeployReasonUnspecified => Self::Unspecified,
-            RejectedDeployReasonProto::RejectedDeployReasonMergeConflict => Self::MergeConflict,
+            RejectedDeployReasonProto::RejectedDeployReasonUnspecified => Ok(Self::Unspecified),
+            RejectedDeployReasonProto::RejectedDeployReasonMergeConflict => Ok(Self::MergeConflict),
             RejectedDeployReasonProto::RejectedDeployReasonDuplicateOccurrence => {
-                Self::DuplicateOccurrence
+                Ok(Self::DuplicateOccurrence)
             }
             RejectedDeployReasonProto::RejectedDeployReasonCollateralChainDrop => {
-                Self::CollateralChainDrop
+                Ok(Self::CollateralChainDrop)
             }
             RejectedDeployReasonProto::RejectedDeployReasonValidityWindowClosed => {
-                Self::ValidityWindowClosed
+                Ok(Self::ValidityWindowClosed)
             }
         }
     }
@@ -1316,7 +1347,7 @@ impl RejectedDeploy {
         } else {
             proto.source_block_hash
         };
-        let reason = RejectedDeployReason::from_proto(proto.reason);
+        let reason = RejectedDeployReason::from_proto(proto.reason)?;
         let reason = if reason == RejectedDeployReason::Unspecified && proto.duplicate {
             RejectedDeployReason::DuplicateOccurrence
         } else if reason == RejectedDeployReason::Unspecified && !source_block_hash.is_empty() {
@@ -1674,12 +1705,12 @@ pub enum DeployAdmissionStatus {
 }
 
 impl DeployAdmissionStatus {
-    fn from_proto(value: i32) -> Self {
+    fn from_proto(value: i32) -> Result<Self, String> {
         match DeployAdmissionStatusProto::try_from(value)
-            .unwrap_or(DeployAdmissionStatusProto::DeployAdmissionStatusExecuted)
+            .map_err(|_| format!("unknown deploy admission status: {value}"))?
         {
-            DeployAdmissionStatusProto::DeployAdmissionStatusExecuted => Self::Executed,
-            DeployAdmissionStatusProto::DeployAdmissionStatusRejected => Self::Rejected,
+            DeployAdmissionStatusProto::DeployAdmissionStatusExecuted => Ok(Self::Executed),
+            DeployAdmissionStatusProto::DeployAdmissionStatusRejected => Ok(Self::Rejected),
         }
     }
 
@@ -1989,7 +2020,7 @@ impl ProcessedDeploy {
             post_state_hash: proto.post_state_hash,
             authority_funding_certificate: proto.authority_funding_certificate,
             authority_cost_witness: proto.authority_cost_witness,
-            admission_status: DeployAdmissionStatus::from_proto(proto.admission_status),
+            admission_status: DeployAdmissionStatus::from_proto(proto.admission_status)?,
         };
         processed.to_cosigned()?;
         Ok(processed)
@@ -3937,11 +3968,212 @@ mod tests {
             authority_context_digest: Bytes::from(vec![9; block_hash::LENGTH]),
             ..commitment
         };
+        assert_ne!(
+            candidate_specific_context.authority_context_digest,
+            certificate.authority_context_digest.0
+        );
         certificate
             .validate_commitment(&candidate_specific_context)
             .expect(
                 "candidate authority context is bound by the signed block, not the certificate",
             );
+    }
+
+    #[test]
+    fn every_finalization_certificate_field_is_digest_bound() {
+        let certificate = finalization_certificate();
+        let commitment = certificate.commitment(Bytes::from(vec![9; block_hash::LENGTH]));
+        let mut mutations = Vec::new();
+
+        let mut mutated = certificate.clone();
+        mutated.schema_version += 1;
+        mutations.push(("schema_version", mutated));
+
+        let mut mutated = certificate.clone();
+        mutated.protocol_version += 1;
+        mutations.push(("protocol_version", mutated));
+
+        let mut mutated = certificate.clone();
+        mutated.shard_id.push('x');
+        mutations.push(("shard_id", mutated));
+
+        let hash_mutations: [(&str, fn(&mut FinalizationCertificate)); 9] = [
+            (
+                "genesis_hash",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.genesis_hash =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+            (
+                "predecessor_floor_hash",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.predecessor_floor_hash =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+            (
+                "predecessor_certificate_digest",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.predecessor_certificate_digest =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+            (
+                "predecessor_certificate_block_hash",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.predecessor_certificate_block_hash =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+            (
+                "target_floor_hash",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.target_floor_hash =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+            (
+                "target_post_state_hash",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.target_post_state_hash =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+            (
+                "authority_context_digest",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.authority_context_digest =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+            (
+                "supporting_manifest_digest",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.supporting_manifest_digest =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+            (
+                "finalized_manifest_digest",
+                |certificate: &mut FinalizationCertificate| {
+                    certificate.finalized_manifest_digest =
+                        BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]))
+                },
+            ),
+        ];
+        for (name, mutate) in hash_mutations {
+            let mut mutated = certificate.clone();
+            mutate(&mut mutated);
+            mutations.push((name, mutated));
+        }
+
+        let mut mutated = certificate.clone();
+        mutated.target_block_number += 1;
+        mutations.push(("target_block_number", mutated));
+
+        let mut mutated = certificate.clone();
+        mutated.fault_tolerance_numerator += 1;
+        mutations.push(("fault_tolerance_numerator", mutated));
+
+        let mut mutated = certificate.clone();
+        mutated.fault_tolerance_denominator += 1;
+        mutations.push(("fault_tolerance_denominator", mutated));
+
+        let mut mutated = certificate.clone();
+        let latest = mutated
+            .exact_latest_messages
+            .values_mut()
+            .next()
+            .expect("latest message");
+        latest.0 = Bytes::from(vec![10; block_hash::LENGTH]);
+        mutations.push(("exact_latest_message_hash", mutated));
+
+        let mut mutated = certificate.clone();
+        let latest = mutated
+            .exact_latest_messages
+            .pop_first()
+            .expect("latest message");
+        mutated.exact_latest_messages.insert(
+            ValidatorSerde(Bytes::from(vec![10; validator::LENGTH])),
+            latest.1,
+        );
+        mutations.push(("exact_latest_message_validator", mutated));
+
+        let mut mutated = certificate.clone();
+        mutated.supporting_block_count += 1;
+        mutations.push(("supporting_block_count", mutated));
+
+        let mut mutated = certificate.clone();
+        mutated.finalized_block_count += 1;
+        mutations.push(("finalized_block_count", mutated));
+
+        for (name, mutated) in mutations {
+            assert_ne!(
+                mutated.digest(),
+                commitment.certificate_digest,
+                "{name} must change the certificate digest"
+            );
+            assert!(
+                mutated.validate_commitment(&commitment).is_err(),
+                "{name} must invalidate the signed commitment"
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn finalization_certificate_rejects_each_bound_commitment_byte_mutation(
+            field in 0usize..3,
+            byte_index in 0usize..block_hash::LENGTH,
+            bit_index in 0u8..8,
+        ) {
+            let certificate = finalization_certificate();
+            let mut commitment =
+                certificate.commitment(certificate.authority_context_digest.0.clone());
+            let target = match field {
+                0 => &mut commitment.floor_hash,
+                1 => &mut commitment.floor_post_state_hash,
+                _ => &mut commitment.certificate_digest,
+            };
+            let mut bytes = target.to_vec();
+            bytes[byte_index] ^= 1u8 << bit_index;
+            *target = Bytes::from(bytes);
+
+            prop_assert!(certificate.validate_commitment(&commitment).is_err());
+        }
+
+        #[test]
+        fn finalization_certificate_rejects_each_signed_floor_tuple_mutation(
+            field in 0usize..3,
+            byte_index in 0usize..block_hash::LENGTH,
+            bit_index in 0u8..8,
+        ) {
+            let certificate = finalization_certificate();
+            let commitment =
+                certificate.commitment(certificate.authority_context_digest.0.clone());
+            let mut tampered = certificate;
+            match field {
+                0 => {
+                    let mut bytes = tampered.target_floor_hash.0.to_vec();
+                    bytes[byte_index] ^= 1u8 << bit_index;
+                    tampered.target_floor_hash = BlockHashSerde(Bytes::from(bytes));
+                }
+                1 => {
+                    let mut bytes = tampered.target_post_state_hash.0.to_vec();
+                    bytes[byte_index] ^= 1u8 << bit_index;
+                    tampered.target_post_state_hash = BlockHashSerde(Bytes::from(bytes));
+                }
+                _ => {
+                    let height_bit = ((byte_index * 8 + usize::from(bit_index)) % 64) as u32;
+                    tampered.target_block_number ^= 1i64 << height_bit;
+                }
+            }
+
+            prop_assert!(tampered.validate_commitment(&commitment).is_err());
+        }
     }
 
     #[test]
@@ -4226,16 +4458,38 @@ mod tests {
 
     #[test]
     fn rejected_deploy_occurrence_round_trips_through_proto() {
-        let rejected = RejectedDeploy::occurrence_legacy(
-            LegacyDeploySignature::new(b"deploy".to_vec()),
-            Bytes::from_static(b"source"),
+        for reason in [
+            RejectedDeployReason::Unspecified,
+            RejectedDeployReason::MergeConflict,
             RejectedDeployReason::DuplicateOccurrence,
-        );
+            RejectedDeployReason::CollateralChainDrop,
+            RejectedDeployReason::ValidityWindowClosed,
+        ] {
+            let rejected = RejectedDeploy::occurrence_legacy(
+                LegacyDeploySignature::new(b"deploy".to_vec()),
+                Bytes::new(),
+                reason,
+            );
+            let encoded = rejected.clone().to_proto().encode_to_vec();
+            let decoded = RejectedDeployProto::decode(encoded.as_slice()).unwrap();
 
-        assert_eq!(
-            RejectedDeploy::from_proto(rejected.clone().to_proto()).unwrap(),
-            rejected
-        );
+            assert_eq!(RejectedDeploy::from_proto(decoded).unwrap(), rejected);
+        }
+    }
+
+    #[test]
+    fn rejected_deploy_proto_rejects_unknown_reason() {
+        for reason in [-1, 5, i32::MAX] {
+            let proto = RejectedDeployProto {
+                sig: Bytes::from_static(b"deploy"),
+                reason,
+                ..Default::default()
+            };
+            assert_eq!(
+                RejectedDeploy::from_proto(proto),
+                Err(format!("unknown rejected deploy reason: {reason}"))
+            );
+        }
     }
 
     #[test]
@@ -4347,11 +4601,12 @@ mod tests {
     }
 
     fn rejection_reason_from_byte(value: u8) -> RejectedDeployReason {
-        match value % 4 {
+        match value % 5 {
             0 => RejectedDeployReason::Unspecified,
             1 => RejectedDeployReason::CollateralChainDrop,
             2 => RejectedDeployReason::MergeConflict,
-            _ => RejectedDeployReason::DuplicateOccurrence,
+            3 => RejectedDeployReason::DuplicateOccurrence,
+            _ => RejectedDeployReason::ValidityWindowClosed,
         }
     }
 
@@ -4378,6 +4633,29 @@ mod tests {
         fn rejection_reason_join_is_idempotent(reason: u8) {
             let reason = rejection_reason_from_byte(reason);
             prop_assert_eq!(reason.canonical_join(reason), reason);
+        }
+
+        #[test]
+        fn rejected_deploy_proto_rejects_every_unknown_reason(reason: i32) {
+            prop_assume!(!(0..=4).contains(&reason));
+            let proto = RejectedDeployProto {
+                sig: Bytes::from_static(b"deploy"),
+                reason,
+                ..Default::default()
+            };
+            let encoded = proto.encode_to_vec();
+            let decoded = RejectedDeployProto::decode(encoded.as_slice()).unwrap();
+            prop_assert!(RejectedDeploy::from_proto(decoded).is_err());
+        }
+
+        #[test]
+        fn processed_deploy_proto_rejects_every_unknown_admission_status(status: i32) {
+            prop_assume!(!(0..=1).contains(&status));
+            let mut proto = ProcessedDeploy::empty(signed_deploy(deploy_data())).to_proto();
+            proto.admission_status = status;
+            let encoded = proto.encode_to_vec();
+            let decoded = ProcessedDeployProto::decode(encoded.as_slice()).unwrap();
+            prop_assert!(ProcessedDeploy::from_proto(decoded).is_err());
         }
     }
 
@@ -4810,6 +5088,18 @@ mod tests {
             rejected
         );
         assert!(!rejected.has_committed_state_effect());
+    }
+
+    #[test]
+    fn processed_deploy_proto_rejects_unknown_admission_status() {
+        for status in [-1, 2, i32::MAX] {
+            let mut proto = ProcessedDeploy::empty(signed_deploy(deploy_data())).to_proto();
+            proto.admission_status = status;
+            assert_eq!(
+                ProcessedDeploy::from_proto(proto),
+                Err(format!("unknown deploy admission status: {status}"))
+            );
+        }
     }
 
     #[test]

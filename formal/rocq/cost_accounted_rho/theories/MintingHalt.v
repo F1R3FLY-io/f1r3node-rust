@@ -5,6 +5,9 @@
    Cost-Accounted Rho Stage C halt INTERFACE (proved at Stage B; DR-3 / DR-13,
    docs/casper/theory/cost-accounting-impl/stageb-minting-halt-interface.md Decision 4).
 
+   [pb_minted] is a ghost logical history. Production uses the monotonic
+   [mintedThroughEpoch] frontier from [MintedEpochRetention.v].
+
    Slashing halts a validator's phlogiston minting via the "mintingHalted" set
    (modeled as [pb_halted] in MintingInjection.v's [pos_state]); the Stage-B
    epoch-mint fold SKIPS any [v ∈ mintingHalted] across ALL epochs (the cross-

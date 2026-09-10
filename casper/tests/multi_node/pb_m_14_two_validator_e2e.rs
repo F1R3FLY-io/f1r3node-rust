@@ -551,7 +551,7 @@ async fn pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay() {
     use casper::rust::engine::wal_payload_sync::capture_consensus_writes_by_replaying_deploy;
     use casper::rust::rholang::replay_runtime::ReplayBlockKind;
     use casper::rust::util::rholang::acceptance::{
-        replay_purse_snapshot, RuntimeManagerSupplyReader,
+        replay_state_snapshot, RuntimeManagerSupplyReader,
     };
     use crypto::rust::hash::blake2b256::Blake2b256;
 
@@ -736,16 +736,16 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
         runtime_manager: &nodes[0].runtime_manager,
         pre_state_hash: pre_state.clone(),
     };
-    let purse_snapshot = replay_purse_snapshot(&chain_processed, &supply_reader)
+    let state_snapshot = replay_state_snapshot(&chain_processed, &supply_reader)
         .await
-        .expect("replay_purse_snapshot must succeed for a well-formed processed deploy");
+        .expect("replay_state_snapshot must succeed for a well-formed processed deploy");
 
     let captured = capture_consensus_writes_by_replaying_deploy(
         &nodes[0].runtime_manager,
         &pre_state,
         &chain_processed,
         ReplayBlockKind::Ordinary,
-        Some(&purse_snapshot),
+        Some(&state_snapshot),
     )
     .await
     .expect("capture_consensus_writes must succeed on the recorded deploy");

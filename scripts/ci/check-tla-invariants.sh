@@ -88,6 +88,8 @@ POST_FIX_CONFIGS=(
     deploy_occurrence/MC_DeployOccurrence
     'deploy_occurrence/MC_DeployOccurrenceStorage|MC_DeployOccurrenceStorage'
     deploy_recovery/MC_DeployRecovery
+    'deploy_recovery/MC_RequestQuarantineLifecycle|RequestQuarantineLifecycle'
+    'deploy_recovery/MC_SettledTicketTransaction|SettledTicketTransaction'
     'deploy_recovery/MC_CarrierIndexSoundness|CarrierIndexSoundness'
     deploy_recovery/MC_MergeRecoveryCoherence
     deploy_recovery/MC_RejectionReasonConfluence
@@ -106,6 +108,8 @@ POST_FIX_CONFIGS=(
     'finalized_floor/MC_PendingDeployHeartbeatComposition_ingress_safety|PendingDeployHeartbeatComposition'
     'finalized_floor/MC_ProposerAdmissionCoalescing|ProposerAdmissionCoalescing'
     'finalized_floor/MC_RecoveryCommitteeTransition|RecoveryCommitteeTransition'
+    'finalized_floor/MC_ActiveValidatorBoundaryConvergence|ActiveValidatorBoundaryConvergence'
+    'finalized_floor/MC_StatePreservingForkChoice|StatePreservingForkChoice'
     'finalized_floor/MC_AuthorityFloorStateBinding|AuthorityFloorStateBinding'
     'finalized_floor/MC_ObjectiveEquivocation|ObjectiveEquivocation'
     'finalized_floor/MC_ObjectiveEvidenceAuthorization|ObjectiveEvidenceAuthorization'

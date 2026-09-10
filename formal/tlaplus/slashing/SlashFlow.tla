@@ -12,6 +12,8 @@
 (*   - eventually slash fires given a fair proposer schedule                *)
 (*                                                                          *)
 (* Reference: docs/casper/theory/slashing/slashing-verification.md §6, §7.         *)
+(* mintedEpochs is a ghost logical history. Production PoS stores the        *)
+(* bounded mintedThroughEpoch frontier specified by DR-61.                   *)
 (****************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC
@@ -41,7 +43,7 @@ VARIABLES
     quarantinedFuel,    \* [Validators -> Nat]: slashed SystemVault balance
     burnedFuel,         \* Nat: quarantined execution balance destroyed on burn
     protocolMinted,     \* [Validators -> Nat]: cumulative authorized epoch mint
-    mintedEpochs,       \* SUBSET (Validators \X {EpochIndex}): the "mintedEpochs" ledger
+    mintedEpochs,       \* SUBSET (Validators \X {EpochIndex}): ghost logical receipts
 
     \* DAG state:
     blocks,             \* [Validators -> [seq -> SUBSET BlockId]]

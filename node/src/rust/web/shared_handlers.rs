@@ -419,6 +419,11 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             ie.to_string(),
         ),
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
+        HostWorkRejected => (
+            S::UNPROCESSABLE_ENTITY,
+            "host_work_rejected",
+            ie.to_string(),
+        ),
 
         ReduceError(_)
         | IfConditionTypeError { .. }
@@ -926,6 +931,19 @@ mod tests {
                 assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
                 assert_eq!(kind, "rholang_execution_error");
             }
+        }
+
+        #[test]
+        fn host_work_rejection_is_a_distinct_deterministic_execution_rejection() {
+            assert_eq!(
+                classify(CasperError::InterpreterError(
+                    InterpreterError::HostWorkRejected
+                )),
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "host_work_rejected".to_string()
+                )
+            );
         }
 
         #[test]

@@ -1225,19 +1225,25 @@ Qed.
    optimization cannot reuse a cached result across cost-trace mutations. *)
 (* TM-CA-151: diagnostic-refinement level — digest is NOT consensus; see banner above. *)
 Theorem uc_ca_048_replay_cache_key_authenticates_cost_trace_payload :
-  forall state sender seq p1 p2,
+  forall state sender seq timestamp height invalid_blocks p1 p2,
     ~ rb_full_replay_payload_equiv p1 p2 ->
     ~ rb_replay_cache_key_equiv
       {|
         rb_cache_start_state := state;
         rb_cache_sender := sender;
         rb_cache_seq_num := seq;
+        rb_cache_timestamp := timestamp;
+        rb_cache_height := height;
+        rb_cache_invalid_blocks := invalid_blocks;
         rb_cache_replay_payload := p1
       |}
       {|
         rb_cache_start_state := state;
         rb_cache_sender := sender;
         rb_cache_seq_num := seq;
+        rb_cache_timestamp := timestamp;
+        rb_cache_height := height;
+        rb_cache_invalid_blocks := invalid_blocks;
         rb_cache_replay_payload := p2
       |}.
 Proof.

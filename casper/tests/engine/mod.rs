@@ -11,4 +11,5 @@ pub mod lfs_state_requester_state_spec;
 pub mod running_handle_has_block_request_spec;
 pub mod running_handle_has_block_spec;
 pub mod running_spec;
+pub mod admission_ownership_spec;
 pub mod setup;

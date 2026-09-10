@@ -327,6 +327,8 @@ async fn apply_finalization_effects(
     revision: u64,
     finalized_set: &HashSet<BlockHash>,
 ) -> Result<(), KvStoreError> {
+    ctx.block_dag_storage
+        .require_finalization_effect_projection(revision)?;
     ctx.finalization_in_progress
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
             current.checked_add(1)
@@ -665,21 +667,25 @@ async fn apply_finalization_effects(
         }
     }
     ctx.block_dag_storage
-        .record_finalization_round_effects_completed(revision)?;
+        .record_finalization_round_effects_completed_async(revision)
+        .await?;
     Ok(())
 }
 
 async fn reconcile_finalization_effects(ctx: &FinalizationContext) -> Result<(), KvStoreError> {
     ctx.block_dag_storage.reconcile_finalization_projection()?;
     ctx.block_dag_storage
-        .reconcile_finalization_effect_compaction()?;
-    for FinalizationRecord {
+        .reconcile_finalization_effects_cursor_async()
+        .await?;
+    ctx.block_dag_storage
+        .reconcile_finalization_effect_compaction_async()
+        .await?;
+    let mut effects_scan = ctx.block_dag_storage.pending_finalization_effect_scan()?;
+    while let Some(FinalizationRecord {
         revision,
         finalized,
         ..
-    } in ctx
-        .block_dag_storage
-        .pending_finalization_effect_records()?
+    }) = effects_scan.next_record()?
     {
         let finalized = finalized.into_iter().map(|hash| hash.0).collect();
         apply_finalization_effects(ctx, revision, &finalized).await?;
@@ -1049,11 +1055,201 @@ fn publish_finalization_request(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::time::Duration;
 
+    use block_storage::rust::finality::{FinalizationAppendOutcome, FinalizationLedger};
     use proptest::prelude::*;
+    use rholang::rust::interpreter::external_services::ExternalServices;
+    use rspace_plus_plus::rspace::rspace::RSpaceStore;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use shared::rust::store::key_value_store::KeyValueStore;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
     use super::*;
+
+    fn effect_test_hash(value: u8) -> BlockHash {
+        Bytes::from(vec![value; models::rust::block_hash::LENGTH])
+    }
+
+    async fn effect_entry_fixture() -> (
+        FinalizationContext,
+        FinalizationLedger,
+        Arc<dyn KeyValueStore>,
+    ) {
+        let mut manager = InMemoryStoreManager::new();
+        let block_dag_storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let ledger = FinalizationLedger::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        ledger.ensure_genesis(effect_test_hash(0), 0).unwrap();
+        let raw_ledger = manager
+            .store(FinalizationLedger::STORE_NAME.to_string())
+            .await
+            .unwrap();
+        let runtime_manager = RuntimeManager::create_with_store(
+            RSpaceStore {
+                history: Arc::new(InMemoryKeyValueStore::new()),
+                roots: Arc::new(InMemoryKeyValueStore::new()),
+                cold: Arc::new(InMemoryKeyValueStore::new()),
+            },
+            KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            Arc::new(Default::default()),
+            ExternalServices::noop(),
+        );
+        let ctx = FinalizationContext {
+            block_dag_storage,
+            block_store: KeyValueBlockStore::create_from_kvm(&mut manager)
+                .await
+                .unwrap(),
+            deploy_storage: Arc::new(Mutex::new(
+                KeyValueDeployStorage::new(&mut manager).await.unwrap(),
+            )),
+            rejected_deploy_buffer: Arc::new(std::sync::Mutex::new(
+                KeyValueRejectedDeployBuffer::new(&mut manager)
+                    .await
+                    .unwrap(),
+            )),
+            deploy_lifecycle: Arc::new(Default::default()),
+            runtime_manager: Arc::new(runtime_manager),
+            event_publisher: F1r3flyEvents::new(),
+            finalization_in_progress: Arc::new(AtomicU64::new(0)),
+            enable_mergeable_channel_gc: false,
+            protocol_version: 6,
+            deploy_lifespan: 50,
+            max_parent_depth: 100,
+            shard_id: "root".to_string(),
+            ftt: FtThreshold::from_ppm(100_000),
+            finalization_schedule: Arc::new(FinalizationSchedule::new(2)),
+            divergence_monitor: Arc::new(DivergenceMonitor::default()),
+        };
+        (ctx, ledger, raw_ledger)
+    }
+
+    fn append_effect_test_round(ledger: &FinalizationLedger) -> FinalizationRecord {
+        let expected = ledger.head().unwrap().unwrap();
+        let revision = expected.revision + 1;
+        let hash = effect_test_hash(u8::try_from(revision).unwrap());
+        let finalized = BTreeSet::from([BlockHashSerde(hash.clone())]);
+        let mut supporting = finalized.clone();
+        let carrier = if expected.revision == 0 {
+            effect_test_hash(0)
+        } else {
+            supporting.insert(expected.block_hash.clone());
+            expected.block_hash.0.clone()
+        };
+        let witness = FinalizationLedger::prepare_witness(
+            6,
+            "root".to_string(),
+            effect_test_hash(0),
+            &expected,
+            hash.clone(),
+            expected.certificate_digest.0.clone(),
+            carrier,
+            i64::try_from(revision).unwrap(),
+            effect_test_hash(200),
+            1,
+            1,
+            BTreeMap::from([(
+                ValidatorSerde(Bytes::from(vec![1; models::rust::validator::LENGTH])),
+                BlockHashSerde(hash.clone()),
+            )]),
+            supporting,
+            BlockHashSerde(effect_test_hash(201)),
+            finalized.clone(),
+        )
+        .unwrap();
+        ledger.persist_witness(&expected, &witness).unwrap();
+        let record = FinalizationLedger::prepare_record(
+            &expected,
+            hash,
+            i64::try_from(revision).unwrap(),
+            1.0,
+            finalized,
+            &witness,
+        )
+        .unwrap();
+        assert!(matches!(
+            ledger.try_append(&expected, &record).unwrap(),
+            FinalizationAppendOutcome::Committed(_)
+        ));
+        record
+    }
+
+    #[tokio::test]
+    async fn effect_entry_rejects_append_after_projection_before_counter_or_block_access() {
+        let (ctx, ledger, raw_ledger) = effect_entry_fixture().await;
+        let mut captured = ctx
+            .block_dag_storage
+            .pending_finalization_effect_scan()
+            .unwrap();
+        let record = append_effect_test_round(&ledger);
+        assert!(captured.next_record().unwrap().is_none());
+        let finalized = HashSet::from([record.directly_finalized.0]);
+        let before = raw_ledger.to_map().unwrap();
+
+        for counter in [0, 1, u64::MAX] {
+            ctx.finalization_in_progress
+                .store(counter, Ordering::SeqCst);
+            assert_eq!(
+                apply_finalization_effects(&ctx, record.revision, &finalized).await,
+                Err(KvStoreError::FinalizationProjectionPending {
+                    revision: 1,
+                    projected_revision: 0,
+                })
+            );
+            assert_eq!(ctx.finalization_in_progress.load(Ordering::SeqCst), counter);
+            assert_eq!(raw_ledger.to_map().unwrap(), before);
+        }
+        assert!(ctx
+            .event_publisher
+            .startup_buffer()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_empty());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn effect_entry_obeys_every_generated_projection_prefix(
+            rounds in 1u8..12,
+            requested in any::<u8>(),
+            projected in any::<u8>(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async {
+                let (ctx, ledger, raw_ledger) = effect_entry_fixture().await;
+                for _ in 0..rounds {
+                    append_effect_test_round(&ledger);
+                }
+                let requested = 1 + u64::from(requested % rounds);
+                let projected = u64::from(projected % (rounds + 1));
+                for revision in 1..=projected {
+                    ledger.record_projection_completed(revision).unwrap();
+                }
+                let before = raw_ledger.to_map().unwrap();
+                let finalized = HashSet::from([effect_test_hash(u8::try_from(requested).unwrap())]);
+                let result = apply_finalization_effects(&ctx, requested, &finalized).await;
+                if requested > projected {
+                    prop_assert_eq!(result, Err(KvStoreError::FinalizationProjectionPending {
+                        revision: requested,
+                        projected_revision: projected,
+                    }));
+                } else {
+                    prop_assert!(matches!(result, Err(KvStoreError::KeyNotFound(_))));
+                }
+                prop_assert_eq!(ctx.finalization_in_progress.load(Ordering::SeqCst), 0);
+                prop_assert_eq!(raw_ledger.to_map().unwrap(), before);
+                Ok(())
+            })?;
+        }
+    }
 
     #[test]
     fn failed_worker_is_retryable_instead_of_completed() {

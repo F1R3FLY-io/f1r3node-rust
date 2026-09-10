@@ -14,7 +14,6 @@ use rholang::rust::build::compile_rholang_source::{
 };
 
 use super::proof_of_stake::ProofOfStake;
-use super::vault::Vault;
 use super::vaults_generator::VaultsGenerator;
 use super::{embedded_rho, fs_genesis};
 
@@ -414,7 +413,6 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
             ),
             ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
-            ("initialPhlogiston", &pos.initial_phlogiston.to_string()),
             ("epochPhlogiston", &pos.epoch_phlogiston.to_string()),
         ]),
         POS_GENERATOR_PK,
@@ -494,13 +492,13 @@ pub fn exchange(shard_id: &str) -> Signed<DeployData> {
 }
 
 pub fn vaults_generator(
-    vaults: Vec<Vault>,
+    vaults: Vec<super::vaults_generator::GenesisVaultAllocation>,
     supply: i64,
     timestamp: i64,
     is_last_batch: bool,
     shard_id: &str,
 ) -> Signed<DeployData> {
-    let vaults_generator = VaultsGenerator::create_from_user_vaults(vaults, supply, is_last_batch);
+    let vaults_generator = VaultsGenerator::create_from_allocations(vaults, supply, is_last_batch);
     to_deploy(
         CompiledRholangSource::new(
             vaults_generator.code,

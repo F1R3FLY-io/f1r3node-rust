@@ -58,13 +58,6 @@
 (*     makes deferral sound (`pending` here retains deferred blocks when   *)
 (*     DeferralRerequests; a later Deliver is the re-delivery).            *)
 (*                                                                         *)
-(* Size abstraction: each block carries a nondeterministic size in         *)
-(* 1..MaxBlockBytes chosen at broadcast, so TLC explores every size        *)
-(* pattern. The ASSUME below (MaxBlockBytes <= ByteCap) is a REAL          *)
-(* obligation on the implementation: the byte cap must be no smaller      *)
-(* than the protocol's max block size (validate.rs block-size limit),     *)
-(* otherwise an oversized block is unadmittable forever and liveness is    *)
-(* forfeit by configuration rather than by design.                         *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, Apalache
 

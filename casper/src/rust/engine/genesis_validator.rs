@@ -15,7 +15,6 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
@@ -24,7 +23,9 @@ use models::rust::casper::protocol::casper_message::{
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
-use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
+use crate::rust::blocks::block_processing_queue::{
+    BlockProcessingIdentities, BlockProcessingQueueSender,
+};
 use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
 use crate::rust::engine::block_retriever::BlockRetriever;
@@ -40,7 +41,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
     block_processing_queue_tx: BlockProcessingQueueSender,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    blocks_in_processing: Arc<BlockProcessingIdentities>,
     casper_shard_conf: CasperShardConf,
     validator_id: ValidatorIdentity,
     block_approver: BlockApproverProtocol<T>,
@@ -119,7 +120,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         block_processing_queue_tx: BlockProcessingQueueSender,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        blocks_in_processing: Arc<BlockProcessingIdentities>,
         casper_shard_conf: CasperShardConf,
         validator_id: ValidatorIdentity,
         block_approver: BlockApproverProtocol<T>,

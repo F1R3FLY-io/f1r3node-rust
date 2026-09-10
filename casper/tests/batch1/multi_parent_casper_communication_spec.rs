@@ -54,9 +54,8 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
 
     // Scala: r <- nodes(2).requestedBlocks.get.map(v => v.get(signedBlock1.blockHash)).map { ... }
     // Check if signedBlock1 is in requestedBlocks of node(2)
-    // TestNode.requested_blocks should be shared with BlockRetriever.requested_blocks
     let is_requested = {
-        let state = nodes[2].requested_blocks.lock().unwrap();
+        let state = nodes[2].casper.block_retriever.request_states();
         state.contains_key(&signed_block1.block_hash)
     };
 

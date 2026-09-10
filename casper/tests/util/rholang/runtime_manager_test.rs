@@ -16,7 +16,10 @@ use casper::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use casper::rust::util::rholang::costacc::vault_cost_deploy::{
     ApplyCostDeploy, ProtocolBurnDeploy, ProtocolMintDeploy, VaultAllocation, VaultSettlement,
 };
-use casper::rust::util::rholang::costacc::vault_payer::{balance_query_source, vault_payer};
+use casper::rust::util::rholang::costacc::vault_payer::{
+    balance_query_source, validator_fuel_balance_query_source, vault_payer,
+};
+use casper::rust::util::rholang::replay_cache::ReplayCache;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
@@ -35,6 +38,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, DeployData, Event, F1r3flyState, Header, ProcessedDeploy,
     ProcessedSystemDeploy,
 };
+use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::utils::new_gstring_par;
 use rholang::rust::interpreter::accounting::authority::{
     allocate_quantitative_events, authority_demand, sig_to_cost_signature, AuthorityByteEvent,
@@ -43,7 +47,7 @@ use rholang::rust::interpreter::accounting::authority::{
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNumber, RhoString};
+use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNil, RhoNumber, RhoString};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
@@ -53,6 +57,9 @@ use rspace_plus_plus::rspace::history::Either;
 
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 use crate::util::rholang::resources::{self, with_runtime_manager};
+
+#[path = "replay_cache_lifecycle.rs"]
+mod replay_cache_lifecycle;
 
 enum SystemDeployReplayResult<A> {
     ReplaySucceeded {
@@ -76,6 +83,24 @@ fn protocol_v6_envelope(
         .expect("protocol-v6 test envelope")
 }
 
+fn protocol_v6_source(
+    source: String,
+    timestamp: i64,
+    private_key: PrivateKey,
+) -> Cosigned<DeployData> {
+    let signed = construct_deploy::source_deploy(
+        source,
+        timestamp,
+        None,
+        None,
+        Some(private_key.clone()),
+        None,
+        Some("root".to_string()),
+    )
+    .unwrap();
+    protocol_v6_envelope(signed, private_key)
+}
+
 async fn system_vault_balance(
     runtime_manager: &RuntimeManager,
     state_hash: &StateHash,
@@ -83,6 +108,23 @@ async fn system_vault_balance(
 ) -> i64 {
     let (values, _) = runtime_manager
         .play_exploratory_deploy(balance_query_source(address), state_hash, None)
+        .await
+        .unwrap();
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).unwrap()
+}
+
+async fn validator_fuel_balance(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    address: &VaultAddress,
+) -> i64 {
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(
+            validator_fuel_balance_query_source(address),
+            state_hash,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
@@ -535,6 +577,64 @@ async fn protocol_mint_to_vault(
     )
 }
 
+async fn protocol_mint_validator_fuel(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator: &crypto::rust::public_key::PublicKey,
+    amount: i64,
+    seed: u8,
+) -> StateHash {
+    let runtime = runtime_manager.spawn_runtime().await;
+    let mut ops = RuntimeOps::new(runtime);
+    match ops
+        .play_system_deploy(state_hash, &mut MintPhlogistonDeploy {
+            validator_pk: validator.clone(),
+            amount,
+            rand: Blake2b512Random::create_from_bytes(&[seed]),
+        })
+        .await
+        .unwrap()
+    {
+        SystemDeployResult::PlaySucceeded {
+            state_hash, result, ..
+        } => {
+            assert!(result);
+            state_hash
+        }
+        SystemDeployResult::PlayFailed { .. } => {
+            panic!("validator fuel mint unexpectedly failed")
+        }
+    }
+}
+
+async fn protocol_burn_validator_fuel(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    address: &VaultAddress,
+    amount: i64,
+    seed: u8,
+) -> StateHash {
+    let address = address.to_base58();
+    let runtime = runtime_manager.spawn_runtime().await;
+    let mut ops = RuntimeOps::new(runtime);
+    let reservation_id = [seed; 32];
+    successful_system_state(
+        ops.play_system_deploy(
+            state_hash,
+            &mut ApplyCostDeploy::new(
+                reservation_id,
+                vec![VaultAllocation::validator_fuel(address.clone(), amount).unwrap()],
+                vec![VaultSettlement::validator_fuel(address.clone(), amount).unwrap()],
+                address,
+                Blake2b512Random::create_from_bytes(&[seed]),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap(),
+    )
+}
+
 async fn measured_authority_cost(
     runtime_manager: &RuntimeManager,
     state_hash: &StateHash,
@@ -632,6 +732,59 @@ async fn play_close(
             processed_system_deploy,
         } => panic!("close failed: {processed_system_deploy:?}"),
     }
+}
+
+async fn play_close_with_replay(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    block_data: BlockData,
+) -> StateHash {
+    let runtime = runtime_manager.spawn_runtime().await;
+    runtime.set_block_data(block_data.clone()).await;
+    let mut ops = RuntimeOps::new(runtime);
+    let mut close = CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            block_data.sender.clone(),
+            block_data.seq_num,
+        ),
+    );
+    let (play_state, processed) = match ops
+        .play_system_deploy(state_hash, &mut close)
+        .await
+        .unwrap()
+    {
+        SystemDeployResult::PlaySucceeded {
+            state_hash,
+            processed_system_deploy,
+            ..
+        } => (state_hash, processed_system_deploy),
+        SystemDeployResult::PlayFailed {
+            processed_system_deploy,
+        } => panic!("close failed: {processed_system_deploy:?}"),
+    };
+
+    let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+    replay_runtime.set_block_data(block_data.clone()).await;
+    let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+    replay_ops
+        .runtime_ops
+        .runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
+        .await
+        .unwrap();
+    replay_ops
+        .replay_block_system_deploy(&block_data, &processed)
+        .await
+        .unwrap();
+    let replay_state = replay_ops
+        .runtime_ops
+        .runtime
+        .create_checkpoint()
+        .await
+        .root
+        .to_bytes_prost();
+    assert_eq!(play_state, replay_state);
+    play_state
 }
 
 fn recorded_removal_pair_count(events: &[Event]) -> usize {
@@ -1450,8 +1603,10 @@ async fn close_block_protocol_mint_is_play_replay_deterministic() {
             let start_state = genesis_block.body.state.post_state_hash.clone();
             let sender = genesis_context.validator_pks()[0].clone();
             let sender_address = VaultAddress::from_public_key(&sender).unwrap();
-            let initial_balance =
+            let initial_general =
                 system_vault_balance(&runtime_manager, &start_state, &sender_address).await;
+            let initial_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &sender_address).await;
             let block_data = BlockData {
                 time_stamp: 0,
                 block_number: 0,
@@ -1486,12 +1641,17 @@ async fn close_block_protocol_mint_is_play_replay_deterministic() {
                 } => panic!("close-block play failed: {:?}", processed_system_deploy),
             };
 
-            let play_balance =
-                system_vault_balance(&runtime_manager, &final_play_state_hash, &sender_address);
-            let play_balance = play_balance.await;
             assert_eq!(
-                play_balance,
-                initial_balance + casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON
+                system_vault_balance(&runtime_manager, &final_play_state_hash, &sender_address)
+                    .await,
+                initial_general
+            );
+            let play_fuel =
+                validator_fuel_balance(&runtime_manager, &final_play_state_hash, &sender_address)
+                    .await;
+            assert_eq!(
+                play_fuel,
+                initial_fuel + casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON
             );
 
             // ---- REPLAY (production path: replay_block_system_deploy) ----
@@ -1520,12 +1680,14 @@ async fn close_block_protocol_mint_is_play_replay_deterministic() {
                 "play and replay post-state hashes diverged on the Stage-B supply mint"
             );
 
-            let replay_balance =
-                system_vault_balance(&runtime_manager, &final_replay_state_hash, &sender_address)
-                    .await;
             assert_eq!(
-                play_balance, replay_balance,
-                "Σ⟦v⟧ balance diverged between play and replay"
+                play_fuel,
+                validator_fuel_balance(
+                    &runtime_manager,
+                    &final_replay_state_hash,
+                    &sender_address,
+                )
+                .await
             );
         },
     )
@@ -1534,7 +1696,7 @@ async fn close_block_protocol_mint_is_play_replay_deterministic() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn block_one_initial_draw_does_not_double_genesis_supply() {
+async fn block_one_epoch_issuance_does_not_repeat_genesis_allocation() {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
     parameters.2.proof_of_stake.epoch_length = 1;
     parameters.2.proof_of_stake.initial_phlogiston = 11;
@@ -1551,9 +1713,11 @@ async fn block_one_initial_draw_does_not_double_genesis_supply() {
     let start_state = genesis_block.body.state.post_state_hash.clone();
     let sender = genesis_context.validator_pks()[0].clone();
     let sender_address = VaultAddress::from_public_key(&sender).unwrap();
-    let genesis_balance =
+    let genesis_general =
         system_vault_balance(&runtime_manager, &start_state, &sender_address).await;
-    assert_eq!(genesis_balance, 11);
+    let genesis_fuel =
+        validator_fuel_balance(&runtime_manager, &start_state, &sender_address).await;
+    assert_eq!(genesis_fuel, 11);
 
     let block_data = BlockData {
         time_stamp: 0,
@@ -1579,11 +1743,15 @@ async fn block_one_initial_draw_does_not_double_genesis_supply() {
         } => (state_hash, processed_system_deploy),
         SystemDeployResult::PlayFailed {
             processed_system_deploy,
-        } => panic!("block-one close failed: {processed_system_deploy:?}"),
+        } => panic!("block-one epoch close failed: {processed_system_deploy:?}"),
     };
     assert_eq!(
         system_vault_balance(&runtime_manager, &play_root, &sender_address).await,
-        genesis_balance + 7
+        genesis_general
+    );
+    assert_eq!(
+        validator_fuel_balance(&runtime_manager, &play_root, &sender_address).await,
+        genesis_fuel + 7
     );
     let replay_runtime = runtime_manager.spawn_replay_runtime().await;
     replay_runtime.set_block_data(block_data.clone()).await;
@@ -1608,12 +1776,527 @@ async fn block_one_initial_draw_does_not_double_genesis_supply() {
     assert_eq!(replay_root, play_root);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn epoch_mint_frontier_rejects_a_skipped_boundary_without_state_change() {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    parameters.2.proof_of_stake.epoch_length = 1;
+    parameters.2.proof_of_stake.initial_phlogiston = 11;
+    parameters.2.proof_of_stake.epoch_phlogiston = 7;
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let genesis_block = genesis_context.genesis_block.clone();
+    let mut kvm = resources::mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) =
+        resources::mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let start_state = genesis_block.body.state.post_state_hash.clone();
+    let sender = genesis_context.validator_pks()[0].clone();
+    let block_data = BlockData {
+        time_stamp: 0,
+        block_number: 2,
+        sender: sender.clone(),
+        seq_num: 0,
+    };
+    let runtime = runtime_manager.spawn_runtime().await;
+    runtime.set_block_data(block_data.clone()).await;
+    let mut ops = RuntimeOps::new(runtime);
+    let mut close = CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(sender, 0),
+    );
+    let result = ops
+        .play_system_deploy(&start_state, &mut close)
+        .await
+        .unwrap();
+    match result {
+        SystemDeployResult::PlayFailed {
+            processed_system_deploy,
+        } => match processed_system_deploy {
+            ProcessedSystemDeploy::Failed { error_msg, .. } => {
+                assert!(error_msg.contains("Epoch mint frontier gap"));
+            }
+            ProcessedSystemDeploy::Succeeded { .. } => {
+                panic!("skipped epoch produced a successful deploy record")
+            }
+        },
+        SystemDeployResult::PlaySucceeded { state_hash, .. } => {
+            panic!("skipped epoch committed state {state_hash:?}")
+        }
+    }
+    let failed_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+    assert_eq!(failed_root, start_state);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn epoch_mint_frontier_advances_across_consecutive_replayed_epochs() {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    parameters.2.proof_of_stake.epoch_length = 1;
+    parameters.2.proof_of_stake.initial_phlogiston = 11;
+    parameters.2.proof_of_stake.epoch_phlogiston = 7;
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let genesis_block = genesis_context.genesis_block.clone();
+    let mut kvm = resources::mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) =
+        resources::mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let sender = genesis_context.validator_pks()[0].clone();
+    let sender_address = VaultAddress::from_public_key(&sender).unwrap();
+    let mut state = genesis_block.body.state.post_state_hash.clone();
+    let initial_general = system_vault_balance(&runtime_manager, &state, &sender_address).await;
+    let initial_fuel = validator_fuel_balance(&runtime_manager, &state, &sender_address).await;
+
+    for epoch in 1..=8 {
+        let block_data = BlockData {
+            time_stamp: epoch,
+            block_number: epoch,
+            sender: sender.clone(),
+            seq_num: epoch as i32,
+        };
+        state = play_close_with_replay(&runtime_manager, &state, block_data).await;
+        assert_eq!(
+            system_vault_balance(&runtime_manager, &state, &sender_address).await,
+            initial_general
+        );
+        assert_eq!(
+            validator_fuel_balance(&runtime_manager, &state, &sender_address).await,
+            initial_fuel + epoch * 7
+        );
+    }
+
+    let older = BlockData {
+        time_stamp: 9,
+        block_number: 3,
+        sender,
+        seq_num: 9,
+    };
+    let older_state = play_close_with_replay(&runtime_manager, &state, older).await;
+    assert_eq!(
+        system_vault_balance(&runtime_manager, &older_state, &sender_address).await,
+        initial_general
+    );
+    assert_eq!(
+        validator_fuel_balance(&runtime_manager, &older_state, &sender_address).await,
+        initial_fuel + 8 * 7
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn epoch_mint_failure_rolls_back_every_validator_and_retries_exactly_once() {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    parameters.2.proof_of_stake.epoch_length = 1;
+    parameters.2.proof_of_stake.initial_phlogiston = 11;
+    parameters.2.proof_of_stake.epoch_phlogiston = 7;
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let genesis_block = genesis_context.genesis_block.clone();
+    let mut kvm = resources::mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) =
+        resources::mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let start_state = genesis_block.body.state.post_state_hash.clone();
+    let validators = genesis_context.validator_pks();
+    assert_eq!(validators.len(), 3);
+    let addresses = validators
+        .iter()
+        .map(|validator| VaultAddress::from_public_key(validator).unwrap())
+        .collect::<Vec<_>>();
+
+    for failing_index in 0..validators.len() {
+        let failing_balance =
+            validator_fuel_balance(&runtime_manager, &start_state, &addresses[failing_index]).await;
+        let overflow_state = protocol_mint_validator_fuel(
+            &runtime_manager,
+            &start_state,
+            &validators[failing_index],
+            i64::MAX - failing_balance,
+            0xC0 + failing_index as u8,
+        )
+        .await;
+        let mut general_before_failure = Vec::new();
+        let mut fuel_before_failure = Vec::new();
+        for address in &addresses {
+            general_before_failure
+                .push(system_vault_balance(&runtime_manager, &overflow_state, address).await);
+            fuel_before_failure
+                .push(validator_fuel_balance(&runtime_manager, &overflow_state, address).await);
+        }
+        assert_eq!(fuel_before_failure[failing_index], i64::MAX);
+
+        let block_data = BlockData {
+            time_stamp: 0,
+            block_number: 1,
+            sender: validators[0].clone(),
+            seq_num: failing_index as i32,
+        };
+        let failed_runtime = runtime_manager.spawn_runtime().await;
+        failed_runtime.set_block_data(block_data.clone()).await;
+        let mut failed_ops = RuntimeOps::new(failed_runtime);
+        let mut failed_close = CloseBlockDeploy::new(
+            system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                block_data.sender.clone(),
+                block_data.seq_num,
+            ),
+        );
+        let failed = failed_ops
+            .play_system_deploy(&overflow_state, &mut failed_close)
+            .await
+            .unwrap();
+        match failed {
+            SystemDeployResult::PlayFailed {
+                processed_system_deploy,
+            } => match processed_system_deploy {
+                ProcessedSystemDeploy::Failed { error_msg, .. } => {
+                    assert!(error_msg.contains("Epoch phlogiston mint failed"));
+                }
+                ProcessedSystemDeploy::Succeeded { .. } => {
+                    panic!("failed close produced a successful deploy record")
+                }
+            },
+            SystemDeployResult::PlaySucceeded { state_hash, .. } => {
+                panic!("overflowing epoch mint committed state {state_hash:?}")
+            }
+        }
+        let failed_root = failed_ops
+            .runtime
+            .create_checkpoint()
+            .await
+            .root
+            .to_bytes_prost();
+        assert_eq!(failed_root, overflow_state);
+        for ((address, expected_general), expected_fuel) in addresses
+            .iter()
+            .zip(&general_before_failure)
+            .zip(&fuel_before_failure)
+        {
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &failed_root, address).await,
+                *expected_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &failed_root, address).await,
+                *expected_fuel
+            );
+        }
+
+        let retry_start = protocol_burn_validator_fuel(
+            &runtime_manager,
+            &overflow_state,
+            &addresses[failing_index],
+            100,
+            0xD0 + failing_index as u8,
+        )
+        .await;
+        let mut general_before_retry = Vec::new();
+        let mut fuel_before_retry = Vec::new();
+        for address in &addresses {
+            general_before_retry
+                .push(system_vault_balance(&runtime_manager, &retry_start, address).await);
+            fuel_before_retry
+                .push(validator_fuel_balance(&runtime_manager, &retry_start, address).await);
+        }
+        let retry_runtime = runtime_manager.spawn_runtime().await;
+        retry_runtime.set_block_data(block_data.clone()).await;
+        let mut retry_ops = RuntimeOps::new(retry_runtime);
+        let mut retry_close = CloseBlockDeploy::new(
+            system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                block_data.sender.clone(),
+                block_data.seq_num,
+            ),
+        );
+        let (retry_root, retry_processed) = match retry_ops
+            .play_system_deploy(&retry_start, &mut retry_close)
+            .await
+            .unwrap()
+        {
+            SystemDeployResult::PlaySucceeded {
+                state_hash,
+                processed_system_deploy,
+                ..
+            } => (state_hash, processed_system_deploy),
+            SystemDeployResult::PlayFailed {
+                processed_system_deploy,
+            } => panic!("valid epoch mint retry failed: {processed_system_deploy:?}"),
+        };
+        for ((address, general_before), fuel_before) in addresses
+            .iter()
+            .zip(&general_before_retry)
+            .zip(&fuel_before_retry)
+        {
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &retry_root, address).await,
+                *general_before
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &retry_root, address).await,
+                *fuel_before + 7
+            );
+        }
+
+        let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+        replay_runtime.set_block_data(block_data.clone()).await;
+        let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+        replay_ops
+            .runtime_ops
+            .runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(&retry_start))
+            .await
+            .unwrap();
+        replay_ops
+            .replay_block_system_deploy(&block_data, &retry_processed)
+            .await
+            .unwrap();
+        let replay_root = replay_ops
+            .runtime_ops
+            .runtime
+            .create_checkpoint()
+            .await
+            .root
+            .to_bytes_prost();
+        assert_eq!(replay_root, retry_root);
+
+        let duplicate_block_data = BlockData {
+            seq_num: block_data.seq_num + 10,
+            ..block_data
+        };
+        let duplicate_root = play_close(&runtime_manager, &retry_root, duplicate_block_data).await;
+        for ((address, general_before), fuel_before) in addresses
+            .iter()
+            .zip(&general_before_retry)
+            .zip(&fuel_before_retry)
+        {
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &duplicate_root, address).await,
+                *general_before
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &duplicate_root, address).await,
+                *fuel_before + 7
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn zero_epoch_mint_records_completion_without_balance_change() {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    parameters.2.proof_of_stake.epoch_length = 1;
+    parameters.2.proof_of_stake.initial_phlogiston = 11;
+    parameters.2.proof_of_stake.epoch_phlogiston = 0;
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let genesis_block = genesis_context.genesis_block.clone();
+    let mut kvm = resources::mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) =
+        resources::mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let start_state = genesis_block.body.state.post_state_hash.clone();
+    let validators = genesis_context.validator_pks();
+    let addresses = validators
+        .iter()
+        .map(|validator| VaultAddress::from_public_key(validator).unwrap())
+        .collect::<Vec<_>>();
+    let mut initial_general = Vec::new();
+    let mut initial_fuel = Vec::new();
+    for address in &addresses {
+        initial_general.push(system_vault_balance(&runtime_manager, &start_state, address).await);
+        initial_fuel.push(validator_fuel_balance(&runtime_manager, &start_state, address).await);
+    }
+    let block_data = BlockData {
+        time_stamp: 0,
+        block_number: 1,
+        sender: validators[0].clone(),
+        seq_num: 0,
+    };
+    let runtime = runtime_manager.spawn_runtime().await;
+    runtime.set_block_data(block_data.clone()).await;
+    let mut ops = RuntimeOps::new(runtime);
+    let mut close = CloseBlockDeploy::new(
+        system_deploy_util::generate_close_deploy_random_seed_from_pk(
+            block_data.sender.clone(),
+            block_data.seq_num,
+        ),
+    );
+    let (closed_root, processed) = match ops
+        .play_system_deploy(&start_state, &mut close)
+        .await
+        .unwrap()
+    {
+        SystemDeployResult::PlaySucceeded {
+            state_hash,
+            processed_system_deploy,
+            ..
+        } => (state_hash, processed_system_deploy),
+        SystemDeployResult::PlayFailed {
+            processed_system_deploy,
+        } => panic!("zero epoch issuance failed: {processed_system_deploy:?}"),
+    };
+    for ((address, general), fuel) in addresses.iter().zip(&initial_general).zip(&initial_fuel) {
+        assert_eq!(
+            system_vault_balance(&runtime_manager, &closed_root, address).await,
+            *general
+        );
+        assert_eq!(
+            validator_fuel_balance(&runtime_manager, &closed_root, address).await,
+            *fuel
+        );
+    }
+
+    let replay_runtime = runtime_manager.spawn_replay_runtime().await;
+    replay_runtime.set_block_data(block_data.clone()).await;
+    let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
+    replay_ops
+        .runtime_ops
+        .runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+        .await
+        .unwrap();
+    replay_ops
+        .replay_block_system_deploy(&block_data, &processed)
+        .await
+        .unwrap();
+    let replay_root = replay_ops
+        .runtime_ops
+        .runtime
+        .create_checkpoint()
+        .await
+        .root
+        .to_bytes_prost();
+    assert_eq!(replay_root, closed_root);
+
+    let second_root = play_close(&runtime_manager, &closed_root, BlockData {
+        seq_num: 1,
+        ..block_data
+    })
+    .await;
+    for ((address, general), fuel) in addresses.iter().zip(&initial_general).zip(&initial_fuel) {
+        assert_eq!(
+            system_vault_balance(&runtime_manager, &second_root, address).await,
+            *general
+        );
+        assert_eq!(
+            validator_fuel_balance(&runtime_manager, &second_root, address).await,
+            *fuel
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fresh_bond_has_no_subsidy_and_epoch_issuance_replays() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let proposer = genesis_context.validator_pks()[0].clone();
+            let candidate_secret = genesis_context.genesis_vaults[0].0.clone();
+            let candidate = genesis_context.genesis_vaults[0].1.clone();
+            let candidate_address = VaultAddress::from_public_key(&candidate).unwrap();
+            let stake_address = pos_stake_vault_address(&runtime_manager, &start_state).await;
+            let bond = 100;
+            let candidate_general_before =
+                system_vault_balance(&runtime_manager, &start_state, &candidate_address).await;
+            let candidate_fuel_before =
+                validator_fuel_balance(&runtime_manager, &start_state, &candidate_address).await;
+            let stake_before =
+                system_vault_balance(&runtime_manager, &start_state, &stake_address).await;
+
+            let bonded_state = submit_validator_bond(
+                &runtime_manager,
+                &start_state,
+                &proposer,
+                &candidate_secret,
+                bond,
+                1,
+                1,
+            )
+            .await;
+            let candidate_general_after_bond =
+                system_vault_balance(&runtime_manager, &bonded_state, &candidate_address).await;
+            assert!(candidate_general_after_bond <= candidate_general_before - bond);
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &bonded_state, &candidate_address).await,
+                candidate_fuel_before
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &bonded_state, &stake_address).await,
+                stake_before + bond
+            );
+            assert_eq!(
+                pos_validator_lifecycle(&runtime_manager, &bonded_state, &candidate).await,
+                "Bonded"
+            );
+            assert_eq!(
+                pos_validator_lifecycle_generation(&runtime_manager, &bonded_state, &candidate,)
+                    .await,
+                0
+            );
+
+            let closed_state = play_close_with_replay(&runtime_manager, &bonded_state, BlockData {
+                time_stamp: 0,
+                block_number: 1,
+                sender: proposer.clone(),
+                seq_num: 2,
+            })
+            .await;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &closed_state, &candidate_address).await,
+                candidate_general_after_bond
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &closed_state, &candidate_address).await,
+                candidate_fuel_before
+            );
+            assert!(!pos_validator_is_active(&runtime_manager, &closed_state, &candidate).await);
+
+            let epoch_length = pos_epoch_length(&runtime_manager, &closed_state).await;
+            let active_state = play_close_with_replay(&runtime_manager, &closed_state, BlockData {
+                time_stamp: 0,
+                block_number: epoch_length,
+                sender: proposer.clone(),
+                seq_num: 3,
+            })
+            .await;
+            assert!(pos_validator_is_active(&runtime_manager, &active_state, &candidate).await);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &active_state, &candidate_address).await,
+                candidate_general_after_bond
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &active_state, &candidate_address).await,
+                candidate_fuel_before + casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON
+            );
+
+            let duplicate_state =
+                play_close_with_replay(&runtime_manager, &active_state, BlockData {
+                    time_stamp: 0,
+                    block_number: epoch_length,
+                    sender: proposer,
+                    seq_num: 4,
+                })
+                .await;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &duplicate_state, &candidate_address,).await,
+                candidate_general_after_bond
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &duplicate_state, &candidate_address,)
+                    .await,
+                candidate_fuel_before + casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
 /// Consensus-critical play/replay determinism test for slash quarantine. It
 /// first gives the offender a nonzero canonical vault balance through epoch
 /// minting, then verifies that slash play and replay quarantine the same exact
 /// amount, halt future minting, and produce byte-identical state roots.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn slash_drains_validator_vault_is_play_replay_deterministic() {
+async fn slash_quarantines_validator_fuel_and_preserves_general_custody() {
     use rholang::rust::interpreter::rho_runtime::RhoRuntime as _;
 
     with_runtime_manager(
@@ -1650,12 +2333,14 @@ async fn slash_drains_validator_vault_is_play_replay_deterministic() {
             };
 
             let offender_address = VaultAddress::from_public_key(&offender).unwrap();
-            let pre_slash_balance =
+            let pre_slash_general =
                 system_vault_balance(&runtime_manager, &funded_state, &offender_address).await;
+            let pre_slash_fuel =
+                validator_fuel_balance(&runtime_manager, &funded_state, &offender_address).await;
             assert!(
-                pre_slash_balance > 0,
-                "non-vacuity: offender Σ⟦v⟧ must be positive before slash, got {}",
-                pre_slash_balance
+                pre_slash_fuel > 0,
+                "validator fuel must be positive before slash, got {}",
+                pre_slash_fuel
             );
 
             // ── Step 2: seed invalidBlocks (blockHash -> offender) ────────────
@@ -1706,13 +2391,19 @@ async fn slash_drains_validator_vault_is_play_replay_deterministic() {
                 } => panic!("slash play failed: {:?}", processed_system_deploy),
             };
 
-            let play_post_balance =
-                system_vault_balance(&runtime_manager, &final_play_state_hash, &offender_address)
-                    .await;
             assert_eq!(
-                play_post_balance, 0,
-                "slash must zero Σ⟦offender⟧ on play, got {}",
-                play_post_balance
+                system_vault_balance(&runtime_manager, &final_play_state_hash, &offender_address,)
+                    .await,
+                pre_slash_general
+            );
+            assert_eq!(
+                validator_fuel_balance(
+                    &runtime_manager,
+                    &final_play_state_hash,
+                    &offender_address,
+                )
+                .await,
+                0
             );
 
             // ── Step 4: REPLAY the slash (production path) ────────────────────
@@ -1743,16 +2434,23 @@ async fn slash_drains_validator_vault_is_play_replay_deterministic() {
                 "play and replay post-state hashes diverged on the Stage-C slash Σ⟦v⟧-zero"
             );
 
-            let replay_post_balance = system_vault_balance(
-                &runtime_manager,
-                &final_replay_state_hash,
-                &offender_address,
-            )
-            .await;
             assert_eq!(
-                replay_post_balance, 0,
-                "Σ⟦offender⟧ must be zero on replay too, got {}",
-                replay_post_balance
+                system_vault_balance(
+                    &runtime_manager,
+                    &final_replay_state_hash,
+                    &offender_address,
+                )
+                .await,
+                pre_slash_general
+            );
+            assert_eq!(
+                validator_fuel_balance(
+                    &runtime_manager,
+                    &final_replay_state_hash,
+                    &offender_address,
+                )
+                .await,
+                0
             );
         },
     )
@@ -2072,8 +2770,10 @@ async fn redemption_restores_exact_pending_and_withdrawing_lifecycle() {
                     .await;
             let pending_active =
                 pos_validator_is_active(&runtime_manager, &pending_state, &offender).await;
-            let pending_fuel =
+            let pending_general =
                 system_vault_balance(&runtime_manager, &pending_state, &offender_address).await;
+            let pending_fuel =
+                validator_fuel_balance(&runtime_manager, &pending_state, &offender_address).await;
             let pending_reward =
                 pos_validator_reward(&runtime_manager, &pending_state, &offender).await;
             assert!(pending_reward > 0);
@@ -2173,6 +2873,11 @@ async fn redemption_restores_exact_pending_and_withdrawing_lifecycle() {
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &pending_restored, &offender_address).await,
+                pending_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &pending_restored, &offender_address,)
+                    .await,
                 pending_fuel
             );
             assert_eq!(
@@ -2205,8 +2910,11 @@ async fn redemption_restores_exact_pending_and_withdrawing_lifecycle() {
                     .await;
             let withdrawing_active =
                 pos_validator_is_active(&runtime_manager, &withdrawing_state, &offender).await;
-            let withdrawing_fuel =
+            let withdrawing_general =
                 system_vault_balance(&runtime_manager, &withdrawing_state, &offender_address).await;
+            let withdrawing_fuel =
+                validator_fuel_balance(&runtime_manager, &withdrawing_state, &offender_address)
+                    .await;
             let withdrawing_stake =
                 pos_validator_locked_stake(&runtime_manager, &withdrawing_state, &offender).await;
             let withdrawing_reward =
@@ -2317,6 +3025,11 @@ async fn redemption_restores_exact_pending_and_withdrawing_lifecycle() {
             assert_eq!(
                 system_vault_balance(&runtime_manager, &withdrawing_restored, &offender_address,)
                     .await,
+                withdrawing_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &withdrawing_restored, &offender_address,)
+                    .await,
                 withdrawing_fuel - 1_i64.min(withdrawing_fuel)
             );
             assert_eq!(
@@ -2419,6 +3132,9 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
             );
             let wallet_before_payout =
                 system_vault_balance(&runtime_manager, &withdrawing_state, &offender_address).await;
+            let fuel_before_payout =
+                validator_fuel_balance(&runtime_manager, &withdrawing_state, &offender_address)
+                    .await;
             let stake_vault_before_payout =
                 system_vault_balance(&runtime_manager, &withdrawing_state, &stake_vault_address)
                     .await;
@@ -2450,9 +3166,20 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
                 wallet_before_payout + original_bond + original_reward
             );
             assert_eq!(
+                validator_fuel_balance(&runtime_manager, &paid_state, &offender_address).await,
+                fuel_before_payout
+            );
+            assert_eq!(
                 system_vault_balance(&runtime_manager, &paid_state, &stake_vault_address).await,
                 stake_vault_before_payout - original_bond - original_reward
             );
+
+            let wallet_before_rebond =
+                system_vault_balance(&runtime_manager, &paid_state, &offender_address).await;
+            let fuel_before_rebond =
+                validator_fuel_balance(&runtime_manager, &paid_state, &offender_address).await;
+            let stake_before_rebond =
+                system_vault_balance(&runtime_manager, &paid_state, &stake_vault_address).await;
 
             let rebonded_state = submit_validator_bond(
                 &runtime_manager,
@@ -2501,6 +3228,17 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
                     .await,
                 generation_one.get()
             );
+            let wallet_after_rebond =
+                system_vault_balance(&runtime_manager, &rebonded_state, &offender_address).await;
+            assert!(wallet_after_rebond <= wallet_before_rebond - original_bond);
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &rebonded_state, &offender_address).await,
+                fuel_before_rebond
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &rebonded_state, &stake_vault_address).await,
+                stake_before_rebond + original_bond
+            );
             let activated_state = play_close(&runtime_manager, &rebonded_state, BlockData {
                 time_stamp: 0,
                 block_number: deadline + epoch_length,
@@ -2509,6 +3247,14 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
             })
             .await;
             assert!(pos_validator_is_active(&runtime_manager, &activated_state, &offender).await);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &activated_state, &offender_address).await,
+                wallet_after_rebond
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &activated_state, &offender_address).await,
+                fuel_before_rebond + casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON
+            );
             let second_reward_seeded_state = protocol_mint_to_vault(
                 &runtime_manager,
                 &activated_state,
@@ -2525,8 +3271,11 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
                     seq_num: 37,
                 })
                 .await;
-            let generation_one_fuel =
+            let generation_one_general =
                 system_vault_balance(&runtime_manager, &generation_one_state, &offender_address)
+                    .await;
+            let generation_one_fuel =
+                validator_fuel_balance(&runtime_manager, &generation_one_state, &offender_address)
                     .await;
             let generation_one_reward =
                 pos_validator_reward(&runtime_manager, &generation_one_state, &offender).await;
@@ -2590,6 +3339,10 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &slashed_state, &offender_address).await,
+                generation_one_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &slashed_state, &offender_address).await,
                 0
             );
 
@@ -2624,6 +3377,11 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &duplicate_slash_root, &offender_address)
+                    .await,
+                generation_one_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &duplicate_slash_root, &offender_address,)
                     .await,
                 0
             );
@@ -2676,6 +3434,15 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
             assert_eq!(
                 system_vault_balance(&runtime_manager, &conflicting_slash_root, &offender_address)
                     .await,
+                generation_one_general
+            );
+            assert_eq!(
+                validator_fuel_balance(
+                    &runtime_manager,
+                    &conflicting_slash_root,
+                    &offender_address,
+                )
+                .await,
                 0
             );
             assert_eq!(
@@ -2753,6 +3520,10 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &restored_state, &offender_address).await,
+                generation_one_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &restored_state, &offender_address).await,
                 generation_one_fuel
             );
             assert_eq!(
@@ -2855,8 +3626,10 @@ async fn redeem_outcomes_and_multisig_gate() {
             let coop_address = pos_coop_vault_address(&runtime_manager, &funded_state).await;
             let stake_vault_address =
                 pos_stake_vault_address(&runtime_manager, &funded_state).await;
-            let original_fuel =
+            let original_general =
                 system_vault_balance(&runtime_manager, &funded_state, &offender_address).await;
+            let original_fuel =
+                validator_fuel_balance(&runtime_manager, &funded_state, &offender_address).await;
             let original_bond =
                 pos_validator_bond(&runtime_manager, &funded_state, &offender).await;
             let original_coop_fuel =
@@ -2878,6 +3651,10 @@ async fn redeem_outcomes_and_multisig_gate() {
             .await;
             assert_eq!(
                 system_vault_balance(&runtime_manager, &slashed_state, &offender_address).await,
+                original_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &slashed_state, &offender_address).await,
                 0
             );
             assert_eq!(
@@ -2964,6 +3741,11 @@ async fn redeem_outcomes_and_multisig_gate() {
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &under_post_state, &offender_address).await,
+                original_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &under_post_state, &offender_address)
+                    .await,
                 0
             );
             assert_eq!(
@@ -3011,6 +3793,10 @@ async fn redeem_outcomes_and_multisig_gate() {
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &ok_post_state, &offender_address).await,
+                original_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &ok_post_state, &offender_address).await,
                 original_fuel
             );
             assert_eq!(
@@ -3039,6 +3825,11 @@ async fn redeem_outcomes_and_multisig_gate() {
             .await;
             assert_eq!(
                 system_vault_balance(&runtime_manager, &same_epoch_state, &offender_address).await,
+                original_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &same_epoch_state, &offender_address)
+                    .await,
                 original_fuel
             );
             let next_epoch_state = play_close(&runtime_manager, &same_epoch_state, BlockData {
@@ -3048,8 +3839,13 @@ async fn redeem_outcomes_and_multisig_gate() {
                 seq_num: 10,
             })
             .await;
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &next_epoch_state, &offender_address).await,
+                original_general
+            );
             let next_epoch_fuel =
-                system_vault_balance(&runtime_manager, &next_epoch_state, &offender_address).await;
+                validator_fuel_balance(&runtime_manager, &next_epoch_state, &offender_address)
+                    .await;
             assert!(next_epoch_fuel > original_fuel);
             let repeated_epoch_state = play_close(&runtime_manager, &next_epoch_state, BlockData {
                 time_stamp: 0,
@@ -3060,6 +3856,11 @@ async fn redeem_outcomes_and_multisig_gate() {
             .await;
             assert_eq!(
                 system_vault_balance(&runtime_manager, &repeated_epoch_state, &offender_address)
+                    .await,
+                original_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &repeated_epoch_state, &offender_address,)
                     .await,
                 next_epoch_fuel
             );
@@ -3094,6 +3895,10 @@ async fn redeem_outcomes_and_multisig_gate() {
             );
             assert_eq!(
                 system_vault_balance(&runtime_manager, &slashed_state, &offender_address).await,
+                original_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &slashed_state, &offender_address).await,
                 0
             );
             assert_eq!(
@@ -3129,6 +3934,10 @@ async fn redeem_outcomes_and_multisig_gate() {
             let fuel_penalty = stake_penalty.min(original_fuel);
             assert_eq!(
                 system_vault_balance(&runtime_manager, &guilty_state, &offender_address).await,
+                original_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &guilty_state, &offender_address).await,
                 original_fuel - fuel_penalty
             );
             assert_eq!(
@@ -3171,6 +3980,10 @@ async fn redeem_outcomes_and_multisig_gate() {
             };
             assert_eq!(
                 system_vault_balance(&runtime_manager, &burned_state, &offender_address).await,
+                original_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &burned_state, &offender_address).await,
                 0
             );
             assert_eq!(
@@ -3392,6 +4205,233 @@ async fn pos_validator_is_halted(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_handler_charge_consumes_exactly_three_validator_fuel_and_replays() {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    parameters.2.proof_of_stake.initial_phlogiston = 3;
+    parameters.2.proof_of_stake.epoch_phlogiston = 0;
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let mut kvm = resources::mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) =
+        resources::mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let start_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+    let proposer = genesis_context.validator_pks()[0].clone();
+    let proposer_address = VaultAddress::from_public_key(&proposer).unwrap();
+    let deploy = protocol_v6_source(
+        "Nil".to_string(),
+        1,
+        genesis_context.genesis_vaults[0].0.clone(),
+    );
+    let block_data = BlockData {
+        time_stamp: 1,
+        block_number: 2,
+        sender: proposer,
+        seq_num: 1,
+    };
+    let admission = runtime_manager
+        .certify_state_bound_admission(&start_state, vec![deploy], &block_data, &HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(admission.outcome().admitted.len(), 1);
+    assert!(admission.outcome().deferred.is_empty());
+    assert!(admission.outcome().rejected.is_empty());
+    let (state, processed, system_deploys, _) = runtime_manager
+        .compute_state_with_bonds_cosigned_admitted(admission, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        validator_fuel_balance(&runtime_manager, &state, &proposer_address).await,
+        0
+    );
+    let replay = runtime_manager
+        .replay_compute_state(
+            &start_state,
+            processed,
+            system_deploys,
+            &block_data,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay, state);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_candidate_top_up_cannot_fund_an_unfunded_handler() {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    parameters.2.proof_of_stake.initial_phlogiston = 0;
+    parameters.2.proof_of_stake.epoch_phlogiston = 0;
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let mut kvm = resources::mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) =
+        resources::mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let start_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+    let proposer = genesis_context.validator_pks()[0].clone();
+    let proposer_address = VaultAddress::from_public_key(&proposer).unwrap();
+    let source_key = genesis_context.genesis_vaults[0].0.clone();
+    let source_address =
+        VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+    let source_general =
+        system_vault_balance(&runtime_manager, &start_state, &source_address).await;
+    let source = format!(
+        r#"
+        new rl(`rho:registry:lookup`), systemVaultCh, sourceVaultCh, authKeyCh, result,
+            deployerId(`rho:system:deployerId`) in {{
+          rl!(`rho:vault:system`, *systemVaultCh) |
+          for (@(_, SystemVault) <- systemVaultCh) {{
+            @SystemVault!("find", "{}", *sourceVaultCh) |
+            @SystemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+            for (@(true, sourceVault) <- sourceVaultCh & authKey <- authKeyCh) {{
+              @sourceVault!("fundValidatorFuel", "{}", 3, *authKey, *result)
+            }}
+          }}
+        }}
+        "#,
+        source_address.to_base58(),
+        proposer_address.to_base58()
+    );
+    let deploy = protocol_v6_source(source, 1, source_key);
+    let deploy_id = deploy.envelope_commitment().unwrap();
+    let block_data = BlockData {
+        time_stamp: 1,
+        block_number: 2,
+        sender: proposer,
+        seq_num: 1,
+    };
+    let admission = runtime_manager
+        .certify_state_bound_admission(&start_state, vec![deploy], &block_data, &HashMap::new())
+        .await
+        .unwrap();
+    assert!(admission.outcome().admitted.is_empty());
+    assert!(admission.outcome().rejected.is_empty());
+    assert_eq!(admission.outcome().deferred.len(), 1);
+    assert_eq!(
+        admission.outcome().deferred[0].as_bytes(),
+        deploy_id.as_ref()
+    );
+    let (state, processed, system_deploys, _) = runtime_manager
+        .compute_state_with_bonds_cosigned_admitted(admission, Vec::new())
+        .await
+        .unwrap();
+    assert!(processed.is_empty());
+    assert_eq!(
+        system_vault_balance(&runtime_manager, &state, &source_address).await,
+        source_general
+    );
+    assert_eq!(
+        validator_fuel_balance(&runtime_manager, &state, &proposer_address).await,
+        0
+    );
+    let replay = runtime_manager
+        .replay_compute_state(
+            &start_state,
+            processed,
+            system_deploys,
+            &block_data,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay, state);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn six_validator_fuel_admits_two_handlers_and_defers_the_third() {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    parameters.2.proof_of_stake.initial_phlogiston = 6;
+    parameters.2.proof_of_stake.epoch_phlogiston = 0;
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let mut kvm = resources::mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) =
+        resources::mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let start_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+    let proposer = genesis_context.validator_pks()[0].clone();
+    let proposer_address = VaultAddress::from_public_key(&proposer).unwrap();
+    let payer_key = genesis_context.genesis_vaults[0].0.clone();
+    let candidates = (1..=3)
+        .map(|timestamp| protocol_v6_source("Nil".to_string(), timestamp, payer_key.clone()))
+        .collect::<Vec<_>>();
+    let block_data = BlockData {
+        time_stamp: 4,
+        block_number: 2,
+        sender: proposer,
+        seq_num: 1,
+    };
+    let admission = runtime_manager
+        .certify_state_bound_admission(&start_state, candidates, &block_data, &HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(admission.outcome().admitted.len(), 2);
+    assert_eq!(admission.outcome().deferred.len(), 1);
+    assert!(admission.outcome().rejected.is_empty());
+    let (state, processed, system_deploys, _) = runtime_manager
+        .compute_state_with_bonds_cosigned_admitted(admission, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(processed.len(), 2);
+    assert_eq!(
+        validator_fuel_balance(&runtime_manager, &state, &proposer_address).await,
+        0
+    );
+    let replay = runtime_manager
+        .replay_compute_state(
+            &start_state,
+            processed,
+            system_deploys,
+            &block_data,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay, state);
+}
+
+#[tokio::test]
+async fn active_replay_runtime_rejects_live_validator_fuel_queries() {
+    let runtime_manager = resources::mk_runtime_manager("replay-validator-fuel-query", None).await;
+    let runtime_ops = RuntimeOps::new(runtime_manager.spawn_replay_runtime().await);
+    let reader = acceptance::RuntimeOpsSupplyReader {
+        runtime_ops: &runtime_ops,
+        pre_state_root: [42; 32],
+    };
+    let validator = Secp256k1.to_public(&PrivateKey::from_bytes(&[74; 32]));
+    let address = VaultAddress::from_public_key(&validator).unwrap();
+
+    let error = acceptance::SupplyReader::read_validator_fuel(&reader, &address)
+        .await
+        .expect_err("an active replay runtime must reject live validator fuel queries");
+    assert!(error
+        .to_string()
+        .contains("cannot query an active replay runtime"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn state_bound_settlement_charges_the_realized_branch_and_replays_identically() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
@@ -3405,6 +4445,8 @@ async fn state_bound_settlement_charges_the_realized_branch_and_replays_identica
                 system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
             let initial_proposer =
                 system_vault_balance(&runtime_manager, &start_state, &proposer_address).await;
+            let initial_proposer_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &proposer_address).await;
             let deploy = construct_deploy::source_deploy(
                 "if (true) { new x in { x!(0) | for(@0 <- x){ Nil } } } else { new x, y, z in { x!(0) | for(@0 <- x){ Nil } | y!(1) | for(@1 <- y){ Nil } | z!(2) | for(@2 <- z){ Nil } } }".to_string(),
                 1,
@@ -3424,6 +4466,26 @@ async fn state_bound_settlement_charges_the_realized_branch_and_replays_identica
                 sender: genesis_context.validator_pks()[0].clone(),
                 seq_num: 2,
             };
+            let mut rejecting_limits =
+                HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            rejecting_limits.set(
+                HostWorkDimension::StructuralBytes,
+                HostWorkLimit::new(0),
+            );
+            let (bounded_processed, bounded_rejected, bounded_deferred) = runtime_manager
+                .state_bound_cost_evidence_with_host_work(
+                    &start_state,
+                    vec![cosigned.clone()],
+                    block_data.clone(),
+                    HashMap::new(),
+                    rejecting_limits,
+                )
+                .await
+                .unwrap();
+            assert!(bounded_processed.is_empty());
+            assert_eq!(bounded_rejected.len(), 1);
+            assert!(bounded_deferred.is_empty());
+
             let admission = runtime_manager
                 .certify_state_bound_admission(
                     &start_state,
@@ -3478,6 +4540,40 @@ async fn state_bound_settlement_charges_the_realized_branch_and_replays_identica
                 .await
                 .unwrap();
             assert_eq!(play_post, replay_post);
+            let bounded_replay_post = runtime_manager
+                .replay_compute_state_with_host_work(
+                    &start_state,
+                    processed.clone(),
+                    processed_system.clone(),
+                    &block_data,
+                    None,
+                    false,
+                    HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)),
+                )
+                .await
+                .unwrap();
+            assert_eq!(play_post, bounded_replay_post);
+            let mut replay_rejecting_limits =
+                HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            replay_rejecting_limits.set(
+                HostWorkDimension::WitnessBytes,
+                HostWorkLimit::new(0),
+            );
+            let bounded_replay_error = runtime_manager
+                .replay_compute_state_with_host_work(
+                    &start_state,
+                    processed.clone(),
+                    processed_system.clone(),
+                    &block_data,
+                    None,
+                    false,
+                    replay_rejecting_limits,
+                )
+                .await
+                .unwrap_err();
+            assert!(bounded_replay_error
+                .to_string()
+                .contains("host work limit rejected authority witness processing"));
             let certificate = processed[0]
                 .authority_funding_certificate
                 .as_ref()
@@ -3538,6 +4634,10 @@ async fn state_bound_settlement_charges_the_realized_branch_and_replays_identica
             assert_eq!(
                 system_vault_balance(&runtime_manager, &play_post, &proposer_address).await,
                 initial_proposer + i64::try_from(fee).unwrap()
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &play_post, &proposer_address).await,
+                initial_proposer_fuel
                     - casper::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY
             );
 
@@ -3579,8 +4679,15 @@ async fn failed_state_bound_body_rolls_back_writes_and_commits_its_charge() {
             let payer_key = genesis_context.genesis_vaults[0].0.clone();
             let payer_address =
                 VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let proposer_address =
+                VaultAddress::from_public_key(&genesis_context.validator_pks()[0]).unwrap();
+            assert_ne!(payer_address, proposer_address);
             let initial_balance =
                 system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
+            let initial_proposer =
+                system_vault_balance(&runtime_manager, &start_state, &proposer_address).await;
+            let initial_proposer_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &proposer_address).await;
             let deploy = construct_deploy::source_deploy(
                 r#"new x in { x!(1) | for(@value <- x){ @"failed-user-write"!(value + "not-a-number") } }"#.to_string(),
                 1,
@@ -3629,6 +4736,23 @@ async fn failed_state_bound_body_rolls_back_writes_and_commits_its_charge() {
             assert_ne!(processed[0].post_state_hash, processed[0].pre_state_hash);
             assert!(processed[0].authority_funding_certificate.is_some());
             assert!(processed[0].authority_cost_witness.is_some());
+            let certificate = processed[0]
+                .authority_funding_certificate
+                .as_ref()
+                .unwrap();
+            let witness = processed[0].authority_cost_witness.as_ref().unwrap();
+            let realized = witness
+                .settlement
+                .iter()
+                .chain(witness.byte_settlement.iter())
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            let fee = certificate
+                .fee_allocation
+                .iter()
+                .map(|resource| resource.amount)
+                .sum::<u64>();
+            assert_eq!(fee, 1);
             assert!(runtime_manager
                 .get_data(
                     play_post.clone(),
@@ -3637,9 +4761,18 @@ async fn failed_state_bound_body_rolls_back_writes_and_commits_its_charge() {
                 .await
                 .unwrap()
                 .is_empty());
-            assert!(
-                system_vault_balance(&runtime_manager, &play_post, &payer_address).await
-                    < initial_balance
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await,
+                initial_balance - i64::try_from(realized + fee).unwrap()
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &play_post, &proposer_address).await,
+                initial_proposer + i64::try_from(fee).unwrap()
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &play_post, &proposer_address).await,
+                initial_proposer_fuel
+                    - casper::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY
             );
 
             let replay_pre_state = processed[0].pre_state_hash.clone();
@@ -3805,6 +4938,8 @@ async fn state_bound_reservation_failure_rolls_back_the_retained_user_execution(
                 system_vault_balance(&runtime_manager, &start_state, &target_address).await;
             let initial_proposer =
                 system_vault_balance(&runtime_manager, &start_state, &proposer_address).await;
+            let initial_proposer_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &proposer_address).await;
             let source = format!(
                 r#"
                 new rl(`rho:registry:lookup`), systemVaultCh,
@@ -3886,6 +5021,10 @@ async fn state_bound_reservation_failure_rolls_back_the_retained_user_execution(
             assert_eq!(
                 system_vault_balance(&runtime_manager, &play_post, &proposer_address).await,
                 initial_proposer
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &play_post, &proposer_address).await,
+                initial_proposer_fuel
             );
             let markers = runtime_manager
                 .get_data(
@@ -5753,12 +6892,13 @@ async fn state_bound_parser_rejection_has_no_processed_cost_evidence() {
                 sender: genesis_context.validator_pks()[0].clone(),
                 seq_num: 2,
             };
-            let (evidence, rejected) = runtime_manager
+            let (evidence, rejected, deferred) = runtime_manager
                 .state_bound_cost_evidence(&start_state, vec![deploy], block_data, HashMap::new())
                 .await
                 .unwrap();
             assert!(evidence.is_empty());
             assert_eq!(rejected, vec![crate::legacy_deploy_id(&deploy_id)]);
+            assert!(deferred.is_empty());
             assert_eq!(
                 system_vault_balance(&runtime_manager, &start_state, &payer_address).await,
                 initial_payer
@@ -6646,6 +7786,247 @@ async fn rejected_replay_post_state_witness_restores_block_pre_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn user_evaluation_attempt_metric_counts_successes_and_failures() {
+    use std::future::Future;
+
+    with_runtime_manager(|runtime_manager, _, genesis_block| async move {
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let runtime = runtime_manager.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        for (index, source) in ["Nil", "@0!(0)", "@"].into_iter().enumerate() {
+            runtime_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(
+                    &genesis_block.body.state.post_state_hash,
+                ))
+                .await
+                .unwrap();
+            let deploy = protocol_v6_source(
+                source.to_string(),
+                43,
+                construct_deploy::DEFAULT_SEC.clone(),
+            );
+            let mut evaluation = Box::pin(runtime_ops.evaluate_cosigned(&deploy));
+            let result = std::future::poll_fn(|cx| {
+                metrics::with_local_recorder(&recorder, || evaluation.as_mut().poll(cx))
+            })
+            .await;
+            let evaluated = result.expect("evaluator result");
+            if source == "@" {
+                assert!(
+                    evaluated.errors.iter().any(|error| matches!(
+                        error,
+                        rholang::rust::interpreter::errors::InterpreterError::ParserError(_)
+                    )),
+                    "invalid syntax must produce a parser error: {:?}",
+                    evaluated.errors
+                );
+            } else {
+                assert!(
+                    evaluated.errors.is_empty(),
+                    "valid evaluator invocation: {:?}",
+                    evaluated.errors
+                );
+            }
+            let attempts = snapshotter
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .filter_map(|(key, _, _, value)| {
+                    if key.key().name()
+                        == casper::rust::metrics_constants::USER_DEPLOY_EVALUATION_ATTEMPTS_METRIC
+                        && key
+                            .key()
+                            .labels()
+                            .any(|label| label.key() == "origin" && label.value() == "unattributed")
+                    {
+                        match value {
+                            metrics_util::debugging::DebugValue::Counter(count) => Some(count),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .sum::<u64>();
+            assert_eq!(attempts, index as u64 + 1, "source {source}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replay_cache_rejects_runtime_context_substitution() {
+    use std::future::Future;
+
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let deploy = protocol_v6_source(
+                r#"new blockData(`rho:block:data`), invalidBlocks(`rho:casper:invalidBlocks`) in {
+                    blockData!("cached-block-data") |
+                    invalidBlocks!("cached-invalid-blocks")
+                }"#
+                .to_string(),
+                42,
+                construct_deploy::DEFAULT_SEC.clone(),
+            );
+            let block_data = BlockData {
+                time_stamp: 42,
+                block_number: 1,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 1,
+            };
+            let (post_state, deploys, system_deploys) = runtime_manager
+                .compute_state_cosigned(
+                    &start_state,
+                    vec![deploy],
+                    Vec::new(),
+                    block_data.clone(),
+                    None,
+                )
+                .await
+                .expect("produce context-dependent replay evidence");
+            assert!(!deploys[0].is_failed);
+            assert!(!runtime_manager.replay_cache.as_ref().unwrap().is_empty());
+            for invalid_blocks in [None, Some(HashMap::new())] {
+                let replayed = runtime_manager
+                    .replay_compute_state(
+                        &start_state,
+                        deploys.clone(),
+                        system_deploys.clone(),
+                        &block_data,
+                        invalid_blocks,
+                        false,
+                    )
+                    .await
+                    .expect("identical normalized context");
+                assert_eq!(replayed, post_state);
+            }
+            let mut cold_runtime = runtime_manager.clone();
+            cold_runtime.replay_cache = None;
+            let mut changed_timestamp = block_data.clone();
+            changed_timestamp.time_stamp += 1;
+            let mut changed_height = block_data.clone();
+            changed_height.block_number += 1;
+            let invalid_blocks =
+                HashMap::from([(vec![0x91; 32].into(), block_data.sender.bytes.clone())]);
+            for (name, context, invalid_blocks) in [
+                ("timestamp", changed_timestamp, None),
+                ("height", changed_height, None),
+                ("invalid blocks", block_data.clone(), Some(invalid_blocks)),
+            ] {
+                let warm = runtime_manager
+                    .replay_compute_state(
+                        &start_state,
+                        deploys.clone(),
+                        system_deploys.clone(),
+                        &context,
+                        invalid_blocks.clone(),
+                        false,
+                    )
+                    .await;
+                let cold = cold_runtime
+                    .replay_compute_state(
+                        &start_state,
+                        deploys.clone(),
+                        system_deploys.clone(),
+                        &context,
+                        invalid_blocks,
+                        false,
+                    )
+                    .await;
+                assert!(
+                    cold.is_err(),
+                    "{name}: fresh replay accepted changed context: {cold:?}"
+                );
+                assert_eq!(
+                    format!("{warm:?}"),
+                    format!("{cold:?}"),
+                    "{name}: warm and cold replay must reject the same evidence"
+                );
+            }
+
+            let cache = runtime_manager.replay_cache.as_ref().unwrap();
+            let mut rejecting_limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
+            rejecting_limits.set(HostWorkDimension::WitnessBytes, HostWorkLimit::new(0));
+            for replay in [&runtime_manager, &cold_runtime] {
+                let error = replay
+                    .replay_compute_state_with_host_work(
+                        &start_state,
+                        deploys.clone(),
+                        system_deploys.clone(),
+                        &block_data,
+                        None,
+                        false,
+                        rejecting_limits,
+                    )
+                    .await
+                    .expect_err("bounded replay bypassed witness work through cached evidence");
+                assert!(error
+                    .to_string()
+                    .contains("host work limit rejected authority witness processing"));
+            }
+            assert!(
+                !cache.is_empty(),
+                "bounded rejection destroyed valid cache evidence"
+            );
+            cache.clear();
+            let replay_lock = runtime_manager.replay_lock();
+            let permit = replay_lock.acquire_reporting().await.unwrap();
+            let mut cancelled = Box::pin(runtime_manager.replay_compute_state(
+                &start_state,
+                deploys.clone(),
+                system_deploys.clone(),
+                &block_data,
+                None,
+                false,
+            ));
+            let mut survivor = Box::pin(runtime_manager.replay_compute_state(
+                &start_state,
+                deploys,
+                system_deploys,
+                &block_data,
+                None,
+                false,
+            ));
+            std::future::poll_fn(|cx| {
+                assert!(cancelled.as_mut().poll(cx).is_pending());
+                assert!(survivor.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            drop(cancelled);
+            assert!(
+                cache.is_empty(),
+                "a cancelled waiter published cache evidence"
+            );
+            drop(permit);
+            let replayed = tokio::time::timeout(std::time::Duration::from_secs(45), survivor)
+                .await
+                .expect("surviving replay remained blocked after another caller cancelled")
+                .expect("surviving replay failed");
+            assert_eq!(replayed, post_state);
+            assert!(
+                cache.is_empty(),
+                "uncommitted replay published cache evidence"
+            );
+            let _released = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                replay_lock.acquire_reporting(),
+            )
+            .await
+            .expect("replay leaked a waiter or permit")
+            .unwrap();
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
@@ -6669,7 +8050,7 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
             let (valid_post_state, processed_deploys, processed_system_deploys) = runtime_manager
                 .compute_state_cosigned(
                     &start_state,
-                    vec![deploy],
+                    vec![deploy.clone()],
                     Vec::new(),
                     block_data.clone(),
                     None,
@@ -6722,6 +8103,8 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                 .unwrap());
             assert!(!runtime_manager.has_mergeable_entry(&valid_block).unwrap());
 
+            let cache = runtime_manager.replay_cache.as_ref().expect("replay cache");
+            cache.clear();
             let mut forged_block = valid_block.clone();
             forged_block.block_hash = vec![0x72; 32].into();
             forged_block.body.state.post_state_hash = vec![0xb6; 32].into();
@@ -6739,6 +8122,49 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
             );
             assert!(!runtime_manager.has_mergeable_entry(&valid_block).unwrap());
             assert!(!runtime_manager.has_mergeable_entry(&forged_block).unwrap());
+            assert!(
+                cache.is_empty(),
+                "rejected final state published a replay cache entry"
+            );
+
+            let failing_store = crate::util::test_mocks::FailingWriteKeyValueStore::new(
+                runtime_manager.mergeable_store.raw_store().clone(),
+            );
+            let mut failing_runtime = runtime_manager.clone();
+            failing_runtime.mergeable_store =
+                shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl::new(
+                    std::sync::Arc::new(failing_store.clone()),
+                );
+            let failed_replay = failing_runtime
+                .replay_block_from_consensus_data(&start_state, &valid_block, None)
+                .await;
+            assert!(
+                matches!(failed_replay, Err(CasperError::RuntimeError(ref message))
+                    if message.contains("injected persistence failure")),
+                "replay did not propagate persistence failure: {failed_replay:?}"
+            );
+            assert_eq!(failing_store.write_attempts(), 1);
+            assert!(
+                cache.is_empty(),
+                "failed persistence published replay cache state"
+            );
+            assert!(!runtime_manager.has_mergeable_entry(&valid_block).unwrap());
+
+            let failed_proposal = failing_runtime
+                .compute_state_cosigned(&start_state, vec![deploy], Vec::new(), block_data, None)
+                .await;
+            assert!(
+                matches!(failed_proposal, Err(CasperError::KvStoreError(
+                    shared::rust::store::key_value_store::KvStoreError::IoError(ref message)
+                )) if message == "injected persistence failure"),
+                "proposal did not propagate persistence failure: {failed_proposal:?}"
+            );
+            assert_eq!(failing_store.write_attempts(), 2);
+            assert!(
+                cache.is_empty(),
+                "failed proposal published replay cache state"
+            );
+            assert!(!runtime_manager.has_mergeable_entry(&valid_block).unwrap());
 
             let replayed = runtime_manager
                 .replay_block_from_consensus_data(&start_state, &valid_block, None)
@@ -6746,6 +8172,10 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                 .unwrap();
             assert_eq!(replayed, valid_post_state);
             assert!(runtime_manager.has_mergeable_entry(&valid_block).unwrap());
+            assert!(
+                !cache.is_empty(),
+                "validated replay did not publish its cache entry"
+            );
         },
     )
     .await
@@ -9095,6 +10525,159 @@ impl SystemDeployTrait for MintPhlogistonDeploy {
     }
 }
 
+struct FundValidatorFuelDeploy {
+    deployer_pk: crypto::rust::public_key::PublicKey,
+    source_address: String,
+    target_address: String,
+    amount: i64,
+    rand: Blake2b512Random,
+}
+
+impl SystemDeployTrait for FundValidatorFuelDeploy {
+    type Output = (RhoBoolean, Either<RhoString, RhoNil>);
+    type Result = ();
+
+    fn source() -> &'static str {
+        r#"
+          new rl(`rho:registry:lookup`), systemVaultCh, authKeyCh, sourceVaultCh,
+              deployerId(`sys:casper:deployerId`),
+              sourceAddress(`sys:casper:sourceAddress`),
+              targetAddress(`sys:casper:targetAddress`),
+              amount(`sys:casper:amount`),
+              return(`sys:casper:return`) in {
+            rl!(`rho:vault:system`, *systemVaultCh) |
+            for (@(_, SystemVault) <- systemVaultCh) {
+              @SystemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+              @SystemVault!("find", *sourceAddress, *sourceVaultCh) |
+              for (@(true, sourceVault) <- sourceVaultCh & authKey <- authKeyCh) {
+                @sourceVault!("fundValidatorFuel", *targetAddress, *amount, *authKey, *return)
+              }
+            }
+          }
+        "#
+    }
+
+    fn process_result(
+        value: <Self::Output as Extractor>::RustType,
+    ) -> Either<SystemDeployUserError, Self::Result> {
+        match value {
+            (true, _) => Either::Right(()),
+            (false, Either::Left(error)) => Either::Left(SystemDeployUserError::new(error)),
+            _ => Either::Left(SystemDeployUserError::new(
+                "validator fuel top-up failed without a cause".to_string(),
+            )),
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
+
+    fn env(&mut self) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+        env.insert(
+            "sys:casper:sourceAddress".to_string(),
+            RhoString::create_par(self.source_address.clone()),
+        );
+        env.insert(
+            "sys:casper:targetAddress".to_string(),
+            RhoString::create_par(self.target_address.clone()),
+        );
+        env.insert(
+            "sys:casper:amount".to_string(),
+            RhoNumber::create_par(self.amount),
+        );
+        let (key, value) = self.mk_deployer_id(&self.deployer_pk);
+        env.insert(key, value);
+        let (key, value) = self.mk_return_channel();
+        env.insert(key, value);
+        env
+    }
+
+    fn return_channel(&mut self) -> Result<Par, CasperError> {
+        self.env()
+            .get("sys:casper:return")
+            .cloned()
+            .ok_or_else(|| CasperError::RuntimeError("return channel is absent".to_string()))
+    }
+}
+
+#[derive(Clone)]
+struct ForgedValidatorFuelProtocolOpsDeploy {
+    validator_pk: crypto::rust::public_key::PublicKey,
+    penalty_address: String,
+    rand: Blake2b512Random,
+}
+
+impl SystemDeployTrait for ForgedValidatorFuelProtocolOpsDeploy {
+    type Output = RhoBoolean;
+    type Result = ();
+
+    fn source() -> &'static str {
+        r#"
+          new rl(`rho:registry:lookup`), systemVaultCh,
+              validatorPk(`sys:casper:forgedFuelValidatorPk`),
+              penaltyAddress(`sys:casper:forgedFuelPenaltyAddress`),
+              return(`sys:casper:return`), forgedToken,
+              mintCh, quarantineCh, resolveCh in {
+            rl!(`rho:vault:system`, *systemVaultCh) |
+            for (@(_, SystemVault) <- systemVaultCh) {
+              @SystemVault!("protocolMintValidatorFuel", *validatorPk, 1, *forgedToken, *mintCh) |
+              @SystemVault!("protocolQuarantineValidatorFuel", *validatorPk, 0, *forgedToken, *quarantineCh) |
+              @SystemVault!("protocolResolveValidatorFuel", *validatorPk, 0, "Vindicated", *penaltyAddress, 0, *forgedToken, *resolveCh) |
+              for (@(mintOk, _) <- mintCh &
+                   @(quarantineOk, _) <- quarantineCh &
+                   @(resolveOk, _) <- resolveCh) {
+                return!(not mintOk and not quarantineOk and not resolveOk)
+              }
+            }
+          }
+        "#
+    }
+
+    fn process_result(
+        value: <Self::Output as Extractor>::RustType,
+    ) -> Either<SystemDeployUserError, Self::Result> {
+        if value {
+            Either::Right(())
+        } else {
+            Either::Left(SystemDeployUserError::new(
+                "forged validator fuel operation succeeded".to_string(),
+            ))
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
+
+    fn env(&mut self) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+        env.insert(
+            "sys:casper:forgedFuelValidatorPk".to_string(),
+            models::rust::utils::new_gbytearray_par(
+                self.validator_pk.bytes.to_vec(),
+                Vec::new(),
+                false,
+            ),
+        );
+        env.insert(
+            "sys:casper:forgedFuelPenaltyAddress".to_string(),
+            RhoString::create_par(self.penalty_address.clone()),
+        );
+        let (ret_key, ret_value) = self.mk_return_channel();
+        env.insert(ret_key, ret_value);
+        env
+    }
+
+    fn return_channel(&mut self) -> Result<Par, CasperError> {
+        self.env()
+            .get("sys:casper:return")
+            .cloned()
+            .ok_or_else(|| CasperError::RuntimeError("return channel is absent".to_string()))
+    }
+}
+
 struct MutateThenRejectSystemDeploy {
     rand: Blake2b512Random,
 }
@@ -9120,6 +10703,130 @@ impl SystemDeployTrait for MutateThenRejectSystemDeploy {
         } else {
             Either::Left(SystemDeployUserError::new(
                 "intentional system deploy rejection".to_string(),
+            ))
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
+
+    fn env(&mut self) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+        let (return_key, return_value) = self.mk_return_channel();
+        env.insert(return_key, return_value);
+        env
+    }
+
+    fn return_channel(&mut self) -> Result<Par, CasperError> {
+        self.env()
+            .get("sys:casper:return")
+            .cloned()
+            .ok_or_else(|| CasperError::RuntimeError("return channel not found".to_string()))
+    }
+}
+
+struct ProtocolMintThenRejectSystemDeploy {
+    target_address: String,
+    amount: i64,
+    rand: Blake2b512Random,
+}
+
+impl SystemDeployTrait for ProtocolMintThenRejectSystemDeploy {
+    type Output = RhoBoolean;
+    type Result = ();
+
+    fn source() -> &'static str {
+        r#"
+          new rl(`rho:registry:lookup`), systemVaultCh,
+              targetAddress(`sys:casper:atomicMintTarget`),
+              amount(`sys:casper:atomicMintAmount`),
+              sysAuthToken(`sys:casper:authToken`),
+              return(`sys:casper:return`), mintCh
+          in {
+            rl!(`rho:vault:system`, *systemVaultCh) |
+            for (@(_, SystemVault) <- systemVaultCh) {
+              @SystemVault!("protocolMint", *targetAddress, *amount, *sysAuthToken, *mintCh) |
+              for (@mintResult <- mintCh) {
+                match mintResult {
+                  (true, _) => { return!(false) }
+                  _ => { return!(false) }
+                }
+              }
+            }
+          }
+        "#
+    }
+
+    fn process_result(
+        value: <Self::Output as Extractor>::RustType,
+    ) -> Either<SystemDeployUserError, Self::Result> {
+        if value {
+            Either::Right(())
+        } else {
+            Either::Left(SystemDeployUserError::new(
+                "intentional rejection after protocol mint".to_string(),
+            ))
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
+
+    fn env(&mut self) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+        env.insert(
+            "sys:casper:atomicMintTarget".to_string(),
+            models::rust::utils::new_gstring_par(self.target_address.clone(), Vec::new(), false),
+        );
+        env.insert(
+            "sys:casper:atomicMintAmount".to_string(),
+            models::rust::utils::new_gint_par(self.amount, Vec::new(), false),
+        );
+        let (sys_key, sys_value) = self.mk_sys_auth_token();
+        env.insert(sys_key, sys_value);
+        let (return_key, return_value) = self.mk_return_channel();
+        env.insert(return_key, return_value);
+        env
+    }
+
+    fn return_channel(&mut self) -> Result<Par, CasperError> {
+        self.env()
+            .get("sys:casper:return")
+            .cloned()
+            .ok_or_else(|| CasperError::RuntimeError("return channel not found".to_string()))
+    }
+}
+
+struct MutateThenErrorSystemDeploy {
+    rand: Blake2b512Random,
+}
+
+impl SystemDeployTrait for MutateThenErrorSystemDeploy {
+    type Output = RhoBoolean;
+    type Result = ();
+
+    fn source() -> &'static str {
+        r#"
+          new return(`sys:casper:return`) in {
+            @"system-deploy-platform-rollback-probe"!!(1) |
+            for (_ <- @"system-deploy-platform-rollback-probe") {
+              @"system-deploy-platform-error"!(1 / 0) |
+              return!(true)
+            }
+          }
+        "#
+    }
+
+    fn process_result(
+        value: <Self::Output as Extractor>::RustType,
+    ) -> Either<SystemDeployUserError, Self::Result> {
+        if value {
+            Either::Right(())
+        } else {
+            Either::Left(SystemDeployUserError::new(
+                "unexpected false result".to_string(),
             ))
         }
     }
@@ -9173,6 +10880,79 @@ async fn rejected_system_deploy_restores_pre_state_root() {
     .unwrap()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_system_deploy_rolls_back_protocol_mint() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let validator = genesis_context.validator_pks()[0].clone();
+            let address = VaultAddress::from_public_key(&validator).unwrap();
+            let balance_before =
+                system_vault_balance(&runtime_manager, &start_state, &address).await;
+            let runtime = runtime_manager.spawn_runtime().await;
+            runtime
+                .set_block_data(BlockData {
+                    time_stamp: 0,
+                    block_number: 1,
+                    sender: validator,
+                    seq_num: 2,
+                })
+                .await;
+            let mut ops = RuntimeOps::new(runtime);
+            let result = ops
+                .play_system_deploy(&start_state, &mut ProtocolMintThenRejectSystemDeploy {
+                    target_address: address.to_base58(),
+                    amount: 17,
+                    rand: Blake2b512Random::create_from_bytes(&[0xE2]),
+                })
+                .await
+                .unwrap();
+            assert!(matches!(result, SystemDeployResult::PlayFailed { .. }));
+            let current_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+            assert_eq!(current_root, start_state);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &current_root, &address).await,
+                balance_before
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn errored_system_deploy_restores_pre_state_root() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let runtime = runtime_manager.spawn_runtime().await;
+            runtime
+                .set_block_data(BlockData {
+                    time_stamp: 0,
+                    block_number: 1,
+                    sender: genesis_context.validator_pks()[0].clone(),
+                    seq_num: 3,
+                })
+                .await;
+            let mut ops = RuntimeOps::new(runtime);
+            let error = match ops
+                .play_system_deploy(&start_state, &mut MutateThenErrorSystemDeploy {
+                    rand: Blake2b512Random::create_from_bytes(&[0xE3]),
+                })
+                .await
+            {
+                Ok(_) => panic!("errored system deploy unexpectedly returned a result"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, CasperError::SystemRuntimeError(_)));
+            let current_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+            assert_eq!(current_root, start_state);
+        },
+    )
+    .await
+    .unwrap()
+}
+
 /// Accept path: a system deploy holding a real `GSysAuthToken` credits exactly
 /// the requested amount to the validator's canonical SystemVault.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -9182,8 +10962,10 @@ async fn mintphlogiston_accepts_valid_sys_auth_token_and_credits_canonical_vault
             let validator_pk = genesis_context.validator_pks()[0].clone();
             let validator_address = VaultAddress::from_public_key(&validator_pk).unwrap();
             let start_state = genesis_block.body.state.post_state_hash.clone();
-            let balance_before =
+            let general_before =
                 system_vault_balance(&runtime_manager, &start_state, &validator_address).await;
+            let fuel_before =
+                validator_fuel_balance(&runtime_manager, &start_state, &validator_address).await;
 
             let runtime = runtime_manager.spawn_runtime().await;
             runtime
@@ -9219,7 +11001,310 @@ async fn mintphlogiston_accepts_valid_sys_auth_token_and_credits_canonical_vault
             };
             assert_eq!(
                 system_vault_balance(&runtime_manager, &state_hash, &validator_address).await,
-                balance_before + 1_000
+                general_before
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &state_hash, &validator_address).await,
+                fuel_before + 1_000
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validator_fuel_top_up_moves_exact_general_custody_and_replays() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let source_pk = genesis_context.genesis_vaults[0].1.clone();
+            let source_address = VaultAddress::from_public_key(&source_pk).unwrap();
+            let target_address =
+                VaultAddress::from_public_key(&genesis_context.validator_pks()[0]).unwrap();
+            assert_ne!(source_address, target_address);
+            let source_general =
+                system_vault_balance(&runtime_manager, &start_state, &source_address).await;
+            let source_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &source_address).await;
+            let target_general =
+                system_vault_balance(&runtime_manager, &start_state, &target_address).await;
+            let target_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &target_address).await;
+            let amount = 17;
+            let mut play = FundValidatorFuelDeploy {
+                deployer_pk: source_pk.clone(),
+                source_address: source_address.to_base58(),
+                target_address: target_address.to_base58(),
+                amount,
+                rand: Blake2b512Random::create_from_bytes(&[0xF1]),
+            };
+            let mut replay = FundValidatorFuelDeploy {
+                deployer_pk: source_pk,
+                source_address: source_address.to_base58(),
+                target_address: target_address.to_base58(),
+                amount,
+                rand: Blake2b512Random::create_from_bytes(&[0xF1]),
+            };
+            let final_state = compare_successful_system_deploys(
+                &mut runtime_manager,
+                &genesis_context,
+                &start_state,
+                &mut play,
+                &mut replay,
+                |_| true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &final_state, &source_address).await,
+                source_general - amount
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &final_state, &source_address).await,
+                source_fuel
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &final_state, &target_address).await,
+                target_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &final_state, &target_address).await,
+                target_fuel + amount
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validator_fuel_top_up_waits_for_vindication_and_then_replays() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let proposer = genesis_context.validator_pks()[0].clone();
+            let offender = genesis_context.validator_pks()[1].clone();
+            let offender_address = VaultAddress::from_public_key(&offender).unwrap();
+            let source_pk = genesis_context.genesis_vaults[0].1.clone();
+            let source_address = VaultAddress::from_public_key(&source_pk).unwrap();
+            assert_ne!(source_address, offender_address);
+            let source_general =
+                system_vault_balance(&runtime_manager, &start_state, &source_address).await;
+            let offender_general =
+                system_vault_balance(&runtime_manager, &start_state, &offender_address).await;
+            let quarantined_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &offender_address).await;
+            let slashed_state = play_one_slash(
+                &runtime_manager,
+                &start_state,
+                &proposer,
+                &offender,
+                &prost::bytes::Bytes::from_static(b"quarantined-fuel-top-up"),
+                1,
+                1,
+            )
+            .await;
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &slashed_state, &offender_address).await,
+                0
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &slashed_state, &offender_address).await,
+                offender_general
+            );
+
+            let amount = 17;
+            let mut blocked_top_up = FundValidatorFuelDeploy {
+                deployer_pk: source_pk.clone(),
+                source_address: source_address.to_base58(),
+                target_address: offender_address.to_base58(),
+                amount,
+                rand: Blake2b512Random::create_from_bytes(&[0xF4]),
+            };
+            let blocked_runtime = runtime_manager.spawn_runtime().await;
+            let mut blocked_ops = RuntimeOps::new(blocked_runtime);
+            let blocked = blocked_ops
+                .play_system_deploy(&slashed_state, &mut blocked_top_up)
+                .await
+                .unwrap();
+            assert!(matches!(blocked, SystemDeployResult::PlayFailed { .. }));
+            let blocked_state = blocked_ops
+                .runtime
+                .create_checkpoint()
+                .await
+                .root
+                .to_bytes_prost();
+            assert_eq!(blocked_state, slashed_state);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &blocked_state, &source_address).await,
+                source_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &blocked_state, &offender_address).await,
+                0
+            );
+
+            let mut redeem = authorized_redeem(
+                &proposer,
+                &offender,
+                BondGeneration::GENESIS,
+                RedemptionOutcome::Vindicated,
+                2,
+            );
+            let mut redeem_replay = redeem.clone();
+            let restored_state = compare_successful_system_deploys(
+                &mut runtime_manager,
+                &genesis_context,
+                &slashed_state,
+                &mut redeem,
+                &mut redeem_replay,
+                |_| true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &restored_state, &offender_address).await,
+                offender_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &restored_state, &offender_address).await,
+                quarantined_fuel
+            );
+
+            let mut top_up = FundValidatorFuelDeploy {
+                deployer_pk: source_pk.clone(),
+                source_address: source_address.to_base58(),
+                target_address: offender_address.to_base58(),
+                amount,
+                rand: Blake2b512Random::create_from_bytes(&[0xF6]),
+            };
+            let mut top_up_replay = FundValidatorFuelDeploy {
+                deployer_pk: source_pk,
+                source_address: source_address.to_base58(),
+                target_address: offender_address.to_base58(),
+                amount,
+                rand: Blake2b512Random::create_from_bytes(&[0xF6]),
+            };
+            let topped_state = compare_successful_system_deploys(
+                &mut runtime_manager,
+                &genesis_context,
+                &restored_state,
+                &mut top_up,
+                &mut top_up_replay,
+                |_| true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &topped_state, &source_address).await,
+                source_general - amount
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &topped_state, &offender_address).await,
+                quarantined_fuel + amount
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validator_fuel_top_up_rejects_wrong_authority_and_insufficient_general_custody() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let owner_pk = genesis_context.genesis_vaults[0].1.clone();
+            let attacker_pk = genesis_context.genesis_vaults[1].1.clone();
+            let source_address = VaultAddress::from_public_key(&owner_pk).unwrap();
+            let target_address =
+                VaultAddress::from_public_key(&genesis_context.validator_pks()[0]).unwrap();
+            let source_general =
+                system_vault_balance(&runtime_manager, &start_state, &source_address).await;
+            let target_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &target_address).await;
+
+            for (deployer_pk, amount, seed) in
+                [(attacker_pk, 1, 0xF2), (owner_pk, source_general + 1, 0xF3)]
+            {
+                let runtime = runtime_manager.spawn_runtime().await;
+                let mut ops = RuntimeOps::new(runtime);
+                let result = ops
+                    .play_system_deploy(&start_state, &mut FundValidatorFuelDeploy {
+                        deployer_pk,
+                        source_address: source_address.to_base58(),
+                        target_address: target_address.to_base58(),
+                        amount,
+                        rand: Blake2b512Random::create_from_bytes(&[seed]),
+                    })
+                    .await
+                    .unwrap();
+                assert!(matches!(result, SystemDeployResult::PlayFailed { .. }));
+                let root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+                assert_eq!(root, start_state);
+                assert_eq!(
+                    system_vault_balance(&runtime_manager, &root, &source_address).await,
+                    source_general
+                );
+                assert_eq!(
+                    validator_fuel_balance(&runtime_manager, &root, &target_address).await,
+                    target_fuel
+                );
+            }
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forged_validator_fuel_protocol_operations_change_no_custody_and_replay() {
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let validator = genesis_context.validator_pks()[0].clone();
+            let validator_address = VaultAddress::from_public_key(&validator).unwrap();
+            let penalty_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let validator_general =
+                system_vault_balance(&runtime_manager, &start_state, &validator_address).await;
+            let validator_fuel =
+                validator_fuel_balance(&runtime_manager, &start_state, &validator_address).await;
+            let penalty_general =
+                system_vault_balance(&runtime_manager, &start_state, &penalty_address).await;
+            let mut play = ForgedValidatorFuelProtocolOpsDeploy {
+                validator_pk: validator.clone(),
+                penalty_address: penalty_address.to_base58(),
+                rand: Blake2b512Random::create_from_bytes(&[0xF5]),
+            };
+            let mut replay = ForgedValidatorFuelProtocolOpsDeploy {
+                validator_pk: validator,
+                penalty_address: penalty_address.to_base58(),
+                rand: Blake2b512Random::create_from_bytes(&[0xF5]),
+            };
+            let final_state = compare_successful_system_deploys(
+                &mut runtime_manager,
+                &genesis_context,
+                &start_state,
+                &mut play,
+                &mut replay,
+                |_| true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(final_state, start_state);
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &final_state, &validator_address).await,
+                validator_general
+            );
+            assert_eq!(
+                validator_fuel_balance(&runtime_manager, &final_state, &validator_address).await,
+                validator_fuel
+            );
+            assert_eq!(
+                system_vault_balance(&runtime_manager, &final_state, &penalty_address).await,
+                penalty_general
             );
         },
     )

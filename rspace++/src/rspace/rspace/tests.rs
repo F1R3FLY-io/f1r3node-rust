@@ -12,6 +12,8 @@ use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::trace::event::{Event, IOEvent};
 
+mod checkpoint_failure_tests;
+
 // ── minimal types ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]

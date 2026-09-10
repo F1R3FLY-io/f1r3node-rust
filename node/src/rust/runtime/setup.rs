@@ -11,7 +11,6 @@ use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
-use casper::rust::engine::running::enqueue_dependency_free_blocks;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
@@ -22,7 +21,6 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::p2p::packet_handler::PacketHandler;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::ApprovedBlock;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -51,7 +49,6 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
     rp_connections: ConnectionsCell,
     rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
     transport_layer: Arc<T>,
-    block_retriever: BlockRetriever<T>,
     conf: NodeConf,
     event_publisher: F1r3flyEvents,
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
@@ -71,7 +68,7 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         mpsc::Receiver<ProposeQueueEntry>,
         Option<Arc<RwLock<ProposerState>>>,
         BlockProcessor<T>,
-        Arc<dashmap::DashSet<BlockHash>>,
+        Arc<casper::rust::blocks::block_processing_queue::BlockProcessingIdentities>,
         BlockProcessingQueueSender,
         BlockProcessingQueueReceiver,
         Option<Arc<ProposeFunction>>,
@@ -156,6 +153,13 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
 
         CasperBufferKeyValueStorage::new_from_kvm(&mut rnode_store_manager).await?
     };
+
+    let block_retriever = BlockRetriever::new(
+        casper_buffer_storage.clone(),
+        transport_layer.clone(),
+        rp_connections.clone(),
+        rp_conf_cell.read()?,
+    );
 
     // Deploy storage
     let (deploy_storage, deploy_storage_arc) = {
@@ -606,7 +610,7 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
     .map_err(|error| CasperError::Other(error.to_string()))?;
 
     // Block processing state - set of items currently in processing
-    let block_processor_state_ref = Arc::new(dashmap::DashSet::<BlockHash>::new());
+    let block_processor_state_ref = block_processor_queue_tx.identities();
 
     // Read RPConf once for use in multiple places
     let rp_conf = rp_conf_cell
@@ -633,14 +637,13 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
     // Block processor
     let block_processor = casper::rust::blocks::block_processor::new_block_processor(
         block_store.clone(),
-        casper_buffer_storage.clone(),
         block_dag_storage.clone(),
         block_retriever.clone(),
         transport_layer.clone(),
         rp_connections.clone(),
         rp_conf.clone(),
         Some(state_requester_handles.fetch_tx.clone()),
-    );
+    )?;
 
     // Proposer instance
     let validator_identity_opt = {
@@ -1035,7 +1038,6 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         let engine_cell_clone = engine_cell.clone();
         let block_retriever_clone = block_retriever.clone();
         let block_processing_queue_tx_clone = block_processor_queue_tx.clone();
-        let blocks_in_processing_clone = block_processor_state_ref.clone();
         let requested_blocks_timeout = conf.casper.requested_blocks_timeout;
         let casper_loop_interval = conf.casper.casper_loop_interval;
 
@@ -1043,7 +1045,6 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             let engine_cell = engine_cell_clone.clone();
             let block_retriever = block_retriever_clone.clone();
             let block_processing_queue_tx = block_processing_queue_tx_clone.clone();
-            let blocks_in_processing = blocks_in_processing_clone.clone();
 
             Box::pin(async move {
                 // Read the engine from engine cell
@@ -1055,16 +1056,7 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
                     if let Err(err) = casper.fetch_dependencies().await {
                         tracing::warn!("Casper dependency fetch failed: {}", err);
                     }
-                    if let Err(err) = enqueue_dependency_free_blocks(
-                        casper,
-                        &block_processing_queue_tx,
-                        &blocks_in_processing,
-                        &block_retriever,
-                    )
-                    .await
-                    {
-                        tracing::warn!("Casper dependency wakeup failed: {}", err);
-                    }
+                    block_processing_queue_tx.recovery().signal().request(false);
                 } else {
                     warn!("Casper engine present but Casper not initialized yet");
                 }

@@ -30,8 +30,10 @@ pub mod state_preservation;
 
 pub use finalization_ledger::{
     EnsureGenesisOutcome, FinalizationAppendOutcome, FinalizationEffectId, FinalizationEffectKind,
-    FinalizationGenesisAnchor, FinalizationHead, FinalizationLedger, FinalizationRecord,
-    LocalFinalizationWitness,
+    FinalizationEffectsAdvance, FinalizationGenesisAnchor, FinalizationHead,
+    FinalizationIntegrityScan, FinalizationLedger, FinalizationReceiptCompaction,
+    FinalizationRecord, FinalizationRecordScan, LocalFinalizationWitness, RecoveryEpisodeId,
+    SettledRecoveryCharge, RECOVERY_STATE_SCHEMA_VERSION, SETTLED_RECOVERY_EPISODE_CAPACITY,
 };
 pub use last_finalized_key_value_storage::LastFinalizedKeyValueStorage;
 pub use last_finalized_memory_storage::LastFinalizedMemoryStorage;

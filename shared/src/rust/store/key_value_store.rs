@@ -20,6 +20,9 @@ pub struct AtomicStoreMutation<'a> {
     pub operation: AtomicStoreOperation,
 }
 
+pub type ValueReader<'a> = dyn FnMut(Option<&[u8]>) -> Result<(), KvStoreError> + 'a;
+pub type EntryReader<'a> = dyn FnMut(&[u8], &[u8]) -> Result<(), KvStoreError> + 'a;
+
 pub fn strict_atomic_mutate(mutations: &[AtomicStoreMutation<'_>]) -> Result<(), KvStoreError> {
     match mutations.first() {
         Some(first) => first.store.strict_atomic_mutate(mutations),
@@ -38,6 +41,14 @@ pub trait KeyValueStore: Send + Sync + 'static {
     fn as_any(&self) -> &dyn std::any::Any;
 
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError>;
+
+    fn with_value(
+        &self,
+        key: &ByteBuffer,
+        reader: &mut ValueReader<'_>,
+    ) -> Result<(), KvStoreError>;
+
+    fn visit_entries(&self, reader: &mut EntryReader<'_>) -> Result<(), KvStoreError>;
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError>;
 
@@ -145,10 +156,18 @@ pub enum KvStoreError {
         expected_revision: u64,
         actual_revision: u64,
     },
+    FinalizationProjectionPending {
+        revision: u64,
+        projected_revision: u64,
+    },
     FinalizationCertificateCarrierPending {
         expected_revision: u64,
         floor_hash: Vec<u8>,
         certificate_digest: Vec<u8>,
+    },
+    RecoveryBudgetExhausted {
+        domain: &'static str,
+        capacity: u64,
     },
     /// Returned when a DAG representation is requested before the
     /// approved-block / last-finalized-block bootstrap has completed.
@@ -195,6 +214,16 @@ impl std::fmt::Display for KvStoreError {
                 hex::encode(floor_hash),
                 hex::encode(certificate_digest)
             ),
+            KvStoreError::FinalizationProjectionPending {
+                revision,
+                projected_revision,
+            } => write!(
+                f,
+                "finalization effects for revision {revision} require projection beyond revision {projected_revision}"
+            ),
+            KvStoreError::RecoveryBudgetExhausted { domain, capacity } => {
+                write!(f, "{domain} recovery budget exhausted at capacity {capacity}")
+            }
             KvStoreError::LastFinalizedBlockUninitialized => write!(
                 f,
                 "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"

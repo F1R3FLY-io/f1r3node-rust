@@ -20,6 +20,7 @@ use models::rhoapi::{
     ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
     TaggedContinuation, Var,
 };
+use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
@@ -59,6 +60,7 @@ use super::deterministic_reduction::{
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::host_work::HostWorkBudget;
 use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
@@ -70,7 +72,9 @@ use super::metrics_constants::{
 use super::rho_runtime::RhoISpace;
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
-use super::util::{allocate_new_bindings, evaluation_random, evaluation_terms, GeneratedMessage};
+use super::util::{
+    allocate_new_bindings, evaluation_random, owned_evaluation_terms, GeneratedMessage,
+};
 use crate::rust::interpreter::accounting::costs::{
     add_cost, bytes_to_hex_cost, concat_bytes_cost, decode_utf8_cost, diff_cost, hex_to_bytes_cost,
     interpolate_cost, keys_method_cost, length_method_cost, lookup_cost, match_eval_cost,
@@ -202,6 +206,23 @@ impl DebruijnInterpreter {
         child
     }
 
+    fn reserve_host_primitive<M: Message>(&self, input: &M) -> Result<(), InterpreterError> {
+        let input_bytes = u64::try_from(input.encoded_len()).map_err(|_| {
+            InterpreterError::BugFoundError(
+                "primitive input byte count does not fit in u64".to_string(),
+            )
+        })?;
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::PrimitiveCalls,
+            HostWorkUnits::new(1),
+        )?;
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::PrimitiveInputBytes,
+            HostWorkUnits::new(input_bytes),
+        )?;
+        Ok(())
+    }
+
     pub fn eval<'a>(
         &'a self,
         par: Par,
@@ -217,6 +238,28 @@ impl DebruijnInterpreter {
                 self.space.clone(),
                 self.metering.budget(),
                 self.reduction_coordinator.clone(),
+                self.eval_inner(par, env, rand, CostAuthority::default()),
+            ),
+        })
+    }
+
+    pub fn eval_with_host_work<'a>(
+        &'a self,
+        par: Par,
+        env: &'a Env<Par>,
+        rand: Blake2b512Random,
+        host_work: HostWorkBudget,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
+        >,
+    > {
+        Box::pin(StackGrowingFuture {
+            inner: deterministic_reduction::root_with_host_work(
+                self.space.clone(),
+                self.metering.budget(),
+                self.reduction_coordinator.clone(),
+                Some(host_work),
                 self.eval_inner(par, env, rand, CostAuthority::default()),
             ),
         })
@@ -250,7 +293,7 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
         authority: CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let terms = evaluation_terms(&par);
+        let terms = owned_evaluation_terms(par);
         if terms.len() > i16::MAX as usize {
             Err(InterpreterError::ReduceError(format!(
                 "The number of terms in the Par is {}, which exceeds the limit of {}",
@@ -260,7 +303,7 @@ impl DebruijnInterpreter {
         } else {
             let term_count = terms.len();
             let (stack_terms, reduction_terms): (Vec<_>, Vec<_>) = terms
-                .iter()
+                .into_iter()
                 .enumerate()
                 .partition(|(_, term)| matches!(term, GeneratedMessage::CostStack(_)));
 
@@ -270,7 +313,7 @@ impl DebruijnInterpreter {
                 let rand_split = evaluation_random(&rand, index, term_count)
                     .expect("term count and index were validated");
                 if let Err(error) = reducer
-                    .generated_message_eval(term, env, rand_split, &authority)
+                    .generated_message_eval(&term, env, rand_split, &authority)
                     .await
                 {
                     declaration_errors.push(error);
@@ -311,19 +354,13 @@ impl DebruijnInterpreter {
                 .into_iter()
                 .map(|(index, term)| {
                     let self_clone = self.with_metering_child(index);
-                    let term_clone = term.clone();
                     let env_clone = env.clone();
                     let authority_clone = authority.clone();
                     let rand_split = evaluation_random(&rand, index, term_count)
                         .expect("term count and index were validated");
                     Box::pin(async move {
                         self_clone
-                            .generated_message_eval(
-                                &term_clone,
-                                &env_clone,
-                                rand_split,
-                                &authority_clone,
-                            )
+                            .generated_message_eval(&term, &env_clone, rand_split, &authority_clone)
                             .await
                     })
                         as Pin<
@@ -391,6 +428,16 @@ impl DebruijnInterpreter {
 
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
         self.eval(par, &Env::new(), rand).await
+    }
+
+    pub async fn inj_with_host_work(
+        &self,
+        par: Par,
+        rand: Blake2b512Random,
+        host_work: HostWorkBudget,
+    ) -> Result<(), InterpreterError> {
+        self.eval_with_host_work(par, &Env::new(), rand, host_work)
+            .await
     }
 
     /**
@@ -1032,6 +1079,14 @@ impl DebruijnInterpreter {
             err_list
                 if err_list
                     .iter()
+                    .any(|error| matches!(error, InterpreterError::HostWorkRejected)) =>
+            {
+                Err(InterpreterError::HostWorkRejected)
+            }
+
+            err_list
+                if err_list
+                    .iter()
                     .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
                     .is_some() =>
             {
@@ -1055,6 +1110,19 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::ReductionSteps,
+            HostWorkUnits::new(1),
+        )?;
+        let term_bytes = u64::try_from(term.encoded_len()).map_err(|_| {
+            InterpreterError::BugFoundError(
+                "reduction term byte count does not fit in u64".to_string(),
+            )
+        })?;
+        deterministic_reduction::reserve_host_work(
+            HostWorkDimension::ReductionTermBytes,
+            HostWorkUnits::new(term_bytes),
+        )?;
         match term {
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
@@ -1328,6 +1396,7 @@ impl DebruijnInterpreter {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        self.reserve_host_primitive(valproc)?;
         self.metering.reserve_primitive(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
@@ -1686,6 +1755,12 @@ impl DebruijnInterpreter {
 
     // Public here for testing purposes
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        if matches!(
+            expr.expr_instance.as_ref(),
+            Some(ExprInstance::EMethodBody(_))
+        ) {
+            self.reserve_host_primitive(expr)?;
+        }
         match unwrap_option_safe(expr.expr_instance.clone())? {
             ExprInstance::EVarBody(evar) => {
                 let p = self.eval_var(&unwrap_option_safe(evar.v)?, env)?;
@@ -1718,6 +1793,39 @@ impl DebruijnInterpreter {
     }
 
     fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        if matches!(
+            expr.expr_instance.as_ref(),
+            Some(
+                ExprInstance::ENotBody(_)
+                    | ExprInstance::ENegBody(_)
+                    | ExprInstance::EMultBody(_)
+                    | ExprInstance::EDivBody(_)
+                    | ExprInstance::EPlusBody(_)
+                    | ExprInstance::EMinusBody(_)
+                    | ExprInstance::ELtBody(_)
+                    | ExprInstance::ELteBody(_)
+                    | ExprInstance::EGtBody(_)
+                    | ExprInstance::EGteBody(_)
+                    | ExprInstance::EEqBody(_)
+                    | ExprInstance::ENeqBody(_)
+                    | ExprInstance::EAndBody(_)
+                    | ExprInstance::EOrBody(_)
+                    | ExprInstance::EListBody(_)
+                    | ExprInstance::ETupleBody(_)
+                    | ExprInstance::ESetBody(_)
+                    | ExprInstance::EMapBody(_)
+                    | ExprInstance::EMethodBody(_)
+                    | ExprInstance::EPathmapBody(_)
+                    | ExprInstance::EZipperBody(_)
+                    | ExprInstance::EMatchesBody(_)
+                    | ExprInstance::EPercentPercentBody(_)
+                    | ExprInstance::EPlusPlusBody(_)
+                    | ExprInstance::EMinusMinusBody(_)
+                    | ExprInstance::EModBody(_)
+            )
+        ) {
+            self.reserve_host_primitive(expr)?;
+        }
         let relop = |p1: &Par,
                      p2: &Par,
                      relopb: fn(bool, bool) -> bool,

@@ -24,6 +24,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::FinalizedFloorCommitment;
 use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -31,6 +32,48 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use super::floor::{self, Floor};
 use crate::rust::errors::CasperError;
 use crate::rust::safety::clique_oracle::FtThreshold;
+
+#[derive(Debug, thiserror::Error)]
+pub enum CertifiedFloorContextError {
+    #[error("invalid certified floor context: {0}")]
+    Invalid(String),
+    #[error("missing certified floor dependency {0:?}")]
+    MissingDependency(BlockHash),
+    #[error("certified floor context failed locally: {0}")]
+    Local(#[from] CasperError),
+}
+
+#[derive(Clone, Copy)]
+struct CertifiedFloorBinding<'a> {
+    requested_hash: &'a [u8],
+    committed_state: &'a [u8],
+    stored_hash: &'a [u8],
+    stored_block_state: &'a [u8],
+    stored_metadata_state: &'a [u8],
+    stored_block_number: i64,
+    stored_metadata_number: i64,
+    accepted: bool,
+}
+
+impl CertifiedFloorBinding<'_> {
+    fn is_exact(&self) -> bool {
+        self.stored_hash == self.requested_hash
+            && self.stored_block_state == self.committed_state
+            && self.stored_metadata_state == self.committed_state
+            && self.stored_metadata_number == self.stored_block_number
+            && self.accepted
+    }
+}
+
+impl CertifiedFloorContextError {
+    pub fn into_casper_error(self) -> CasperError {
+        match self {
+            Self::Invalid(message) => CasperError::RuntimeError(message),
+            Self::MissingDependency(hash) => CasperError::BlockNotHeld(hash),
+            Self::Local(error) => error,
+        }
+    }
+}
 
 /// Per-sig canonical disposition facts over the operation's parents — the
 /// latest disposition, the latest kept rejection record, and the first
@@ -104,6 +147,88 @@ impl FloorContext {
             floor,
             floor_state,
             settled_floors,
+            parents: parents.to_vec(),
+            protocol_version,
+            dispositions: parking_lot::Mutex::new(HashMap::new()),
+            disposition_sets: parking_lot::Mutex::new(HashMap::new()),
+            effect_memo: parking_lot::Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub fn from_certified_floor(
+        dag: &KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        parents: &[BlockHash],
+        commitment: &FinalizedFloorCommitment,
+        protocol_version: i64,
+    ) -> Result<Self, CertifiedFloorContextError> {
+        commitment
+            .validate_shape()
+            .map_err(CertifiedFloorContextError::Invalid)?;
+        if parents.is_empty() {
+            return Err(CertifiedFloorContextError::Invalid(
+                "certified non-genesis floor context has no parent".to_string(),
+            ));
+        }
+
+        let floor_hash = commitment.floor_hash.clone();
+        let floor_block = block_store
+            .get(&floor_hash)
+            .map_err(|error| CertifiedFloorContextError::Local(error.into()))?
+            .ok_or_else(|| CertifiedFloorContextError::MissingDependency(floor_hash.clone()))?;
+        let floor_metadata = dag
+            .lookup(&floor_hash)
+            .map_err(|error| CertifiedFloorContextError::Local(error.into()))?
+            .ok_or_else(|| CertifiedFloorContextError::MissingDependency(floor_hash.clone()))?;
+        if !(CertifiedFloorBinding {
+            requested_hash: &floor_hash,
+            committed_state: &commitment.floor_post_state_hash,
+            stored_hash: &floor_block.block_hash,
+            stored_block_state: &floor_block.body.state.post_state_hash,
+            stored_metadata_state: &floor_metadata.post_state_hash,
+            stored_block_number: floor_block.body.state.block_number,
+            stored_metadata_number: floor_metadata.block_number,
+            accepted: floor_metadata.is_accepted(),
+        })
+        .is_exact()
+        {
+            return Err(CertifiedFloorContextError::Invalid(
+                "certified floor does not bind one accepted stored block state".to_string(),
+            ));
+        }
+
+        let mut floor_is_causal_input = false;
+        for parent in parents {
+            if dag
+                .lookup(parent)
+                .map_err(|error| CertifiedFloorContextError::Local(error.into()))?
+                .is_none()
+            {
+                return Err(CertifiedFloorContextError::MissingDependency(
+                    parent.clone(),
+                ));
+            }
+            if dag
+                .is_dag_ancestor(&floor_hash, parent)
+                .map_err(|error| CertifiedFloorContextError::Local(error.into()))?
+            {
+                floor_is_causal_input = true;
+            }
+        }
+        if !floor_is_causal_input {
+            return Err(CertifiedFloorContextError::Invalid(
+                "certified floor is absent from the causal parent frontier".to_string(),
+            ));
+        }
+
+        let floor = Floor {
+            hash: floor_hash,
+            block_number: floor_metadata.block_number,
+        };
+        Ok(Self {
+            floor: floor.clone(),
+            floor_state: commitment.floor_post_state_hash.clone(),
+            settled_floors: vec![floor],
             parents: parents.to_vec(),
             protocol_version,
             dispositions: parking_lot::Mutex::new(HashMap::new()),
@@ -308,5 +433,74 @@ impl FloorContext {
         )?;
         self.effect_memo.lock().insert(sig.clone(), settled);
         Ok(settled)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::CertifiedFloorBinding;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn certified_floor_binding_accepts_only_one_exact_hash_state_and_height(
+            hash in any::<[u8; 32]>(),
+            state in any::<[u8; 32]>(),
+            height in 0i64..i64::MAX,
+            hash_index in 0usize..32,
+            state_index in 0usize..32,
+        ) {
+            let exact = CertifiedFloorBinding {
+                requested_hash: &hash,
+                committed_state: &state,
+                stored_hash: &hash,
+                stored_block_state: &state,
+                stored_metadata_state: &state,
+                stored_block_number: height,
+                stored_metadata_number: height,
+                accepted: true,
+            };
+            prop_assert!(exact.is_exact());
+
+            let mut different_hash = hash;
+            different_hash[hash_index] ^= 1;
+            let wrong_hash = CertifiedFloorBinding {
+                stored_hash: &different_hash,
+                ..exact
+            };
+            prop_assert!(!wrong_hash.is_exact());
+
+            let mut different_state = state;
+            different_state[state_index] ^= 1;
+            let wrong_block_state = CertifiedFloorBinding {
+                stored_block_state: &different_state,
+                ..exact
+            };
+            prop_assert!(!wrong_block_state.is_exact());
+            let wrong_metadata_state = CertifiedFloorBinding {
+                stored_metadata_state: &different_state,
+                ..exact
+            };
+            prop_assert!(!wrong_metadata_state.is_exact());
+
+            let wrong_height = CertifiedFloorBinding {
+                stored_metadata_number: height.saturating_add(1),
+                ..exact
+            };
+            prop_assert!(!wrong_height.is_exact());
+            let wrong_block_height = CertifiedFloorBinding {
+                stored_block_number: height.saturating_add(1),
+                ..exact
+            };
+            prop_assert!(!wrong_block_height.is_exact());
+            let rejected = CertifiedFloorBinding {
+                accepted: false,
+                ..exact
+            };
+            prop_assert!(!rejected.is_exact());
+        }
     }
 }

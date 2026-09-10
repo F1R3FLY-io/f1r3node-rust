@@ -276,7 +276,7 @@ message BlockMetadataInternal {
   int64 blockNum                             = 6;
   int32 seqNum                               = 7;
   reserved 8;
-  reserved "intrinsicallyInvalid";
+  reserved "invalid";
   bool directlyFinalized                     = 9; // whether the block has been last finalized block (LFB)
   bool finalized                             = 10;// whether the block is finalized
   float faultToleranceValue                  = 11;// cached normalized FT at finalization time
@@ -297,6 +297,7 @@ message BlockMetadataInternal {
   optional CertifiedAdmissionOutcomeProto admissionOutcome = 24;
   optional FinalizedFloorCommitmentProto finalizedFloorCommitment = 25;
   repeated StateEffectIdProto appliedStateEffects = 26;
+  optional CertifiedSettledHistoryAdmissionProto settledHistoryAdmission = 27;
 }
 
 message CertifiedSenderAuthorityProto {
@@ -321,6 +322,24 @@ message CertifiedAdmissionOutcomeProto {
   bytes senderAuthorityDigest = 6;
   uint32 disposition = 7;
   uint32 rejectionReason = 8;
+}
+
+message CertifiedSettledHistoryAdmissionProto {
+  bytes targetBlockHash = 1;
+  int64 targetProtocolVersion = 2;
+  bytes targetSender = 3;
+  int64 targetBondGeneration = 4;
+  bytes anchorBlockHash = 5;
+  int64 anchorBlockHeight = 6;
+  bytes anchorPostStateHash = 7;
+  bytes citerBlockHash = 8;
+  int64 citerProtocolVersion = 9;
+  bytes citerSender = 10;
+  int64 citerBondGeneration = 11;
+  int64 citerStake = 12;
+  uint32 admissionSchemaVersion = 13;
+  bytes rulesetDigest = 14;
+  int64 targetBlockHeight = 15;
 }
 
 message HeaderProto {

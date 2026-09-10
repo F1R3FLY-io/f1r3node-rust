@@ -461,16 +461,23 @@ publication MUST satisfy all of the following requirements:
   an older retry, but completed coverage MUST NOT regress. Worker bounds MUST
   constrain resource use without serializing immutable evaluation.
 - **R-FINALIZATION-PROPOSAL-READINESS.** Before deploy selection or replay, a
-  proposer MUST derive the exact candidate consensus context from its captured
-  parents and latest messages and classify its relation to the durable context.
-  Exact equality is ready. A strict state-preserving descendant is
-  `FinalizedFloorMaterializationPending`, retains pending deploys, and
-  idempotently requests finalization. A candidate ancestor of the durable floor
-  is `CandidateFloorRegression`; a same-floor context mismatch is
-  `CertifiedContextMismatch`; every other incomparable candidate is
-  `CandidateFloorConflict`. Those permanent failures, incomplete committee
-  slots, inactive candidate authority, and stale recovery permits fail closed
-  without scheduling finalization.
+  protocol-6 proposer MUST bind one captured finalization certificate to its
+  durable finalized floor $`F`$. The proposer MUST use $`F`$ for authority,
+  replay, merge scope, and the block header commitment. The proposer MUST NOT
+  replace $`F`$ with a floor candidate $`G`$ from current justifications.
+  Candidate equality, descent, regression, or conflict MUST NOT delay a valid
+  $`F`$-rooted proposal. Incomplete certified committee slots, inactive
+  certified authority, and stale recovery permits MUST fail closed. The
+  independent finalizer MAY evaluate $`G`$ concurrently. It MAY publish $`G`$
+  only through the finalization rules above. Protocol versions before 6 retain
+  deterministic floor derivation from frozen parents and justifications.
+- **R-CERTIFIED-REPLAY-ANCHOR.** A protocol-6 receiver MUST verify the block's
+  finalization certificate before replay. The receiver MUST load the exact
+  accepted block named by $`F`$. Its stored block state, metadata state, height,
+  and hash MUST match the commitment. At least one declared parent MUST
+  DAG-descend from $`F`$. Missing data MUST defer validation. A mismatch MUST
+  invalidate the block. The receiver MUST reconstruct replay from $`F`$ and the
+  deterministic accepted parent closure above $`F`$.
 
 The durable revision $`H`$, projection cursor $`P`$, effects cursor $`E`$, and
 compaction cursor $`C`$ MUST always satisfy:
@@ -826,13 +833,14 @@ either certificate.
   same committee. A bond transition in `B.post_state` MUST NOT authorize `B`
   itself. After the accepted block registers the validator and a later floor
   includes the transition, the new committee MAY authorize a later block.
-- **R-PROPOSAL-AUTHORITY.** Immediately before replay, a proposer MUST derive
-  the prospective structural floor from its selected parents and frozen
+- **R-PROPOSAL-AUTHORITY.** For protocols before 6, a proposer MUST derive the
+  prospective structural floor from its selected parents and frozen
   justifications. It MUST defer when that committee differs from the captured
-  LFB committee, when justifications are not exact, or when the sender is not a
-  positive member. This prevents a locally selected block from being
-  deterministically rejected by another honest validator at the same evidence
-  boundary.
+  LFB committee. It MUST also require exact justifications and a positive
+  committee member as sender. Protocol 6 MUST use the snapshot's durable,
+  certified floor as the replay and authority anchor. A newer candidate floor
+  MAY start independent finalizer work. The candidate MUST NOT replace or gate
+  the signed floor.
 - **R-ADMISSION-CLOSURE.** A non-genesis block MUST remain buffered until DAG
   metadata is available for its parents, justifications, every historical
   unary-slash evidence hash, both hashes of every objective-equivocation proof,
@@ -1085,6 +1093,31 @@ authorization for an in-place protocol upgrade.
   MUST NOT release an ordinary child. Dependency resolution MUST re-evaluate
   the child's serialized parent set against consensus-terminal state; only a
   validated parent satisfies an ordinary parent edge.
+- **R-SETTLED-EVIDENCE.** Settled-history admission MUST require a durable
+  target-to-citer dependency edge. Claim, receipt, retry exhaustion, and
+  precommit failure MUST NOT consume this evidence.
+- **R-SETTLED-AUTHORITY.** The citer MUST have a valid block signature and a
+  direct serialized reference to the target. Its positive stake and bond
+  generation MUST match the approved anchor.
+- **R-SETTLED-AUTHENTICITY.** Target and citer signatures MUST be valid. Target,
+  anchor, and citer content hashes MUST match their serialized blocks.
+- **R-SETTLED-BOUNDARY.** The target height MUST NOT exceed the approved anchor
+  height. When the target sender has a latest message, the target sequence MUST
+  precede that message.
+- **R-SETTLED-TRANSACTION.** One target MUST have at most one active claim and
+  one budget reservation. Precommit failure MUST release both resources.
+  Certified DAG insertion MUST occur before buffer cleanup and retriever
+  acknowledgment. A retained postcommit buffer edge MUST cause idempotent cleanup.
+- **R-SETTLED-PROOF.** The durable proof MUST bind target, anchor, citer,
+  protocol, generation, stake, admission schema, and ruleset identity.
+  Storage MUST reject settled-history insertion without this proof.
+- **R-SETTLED-NONCONSENSUS.** Settled-history admission MUST NOT update latest
+  messages, finality state, committee authority, or ordinary validation
+  verdicts.
+- **R-SETTLED-DUPLICATE.** Equal concurrent deliveries MUST commit at most once.
+  A duplicate MUST NOT enter ordinary validation. Restart MUST recognize the
+  durable proof without volatile claim state. Restart MUST reconstruct durable
+  budget use and MUST revalidate each proof against the approved anchor.
 
 ### 5.4 Terminal funding admission
 
@@ -1175,6 +1208,7 @@ authorization for an in-place protocol upgrade.
 | **S43** | Certified validation erases a missing block hash or replay-state root, requests the wrong artifact type, drops the inconclusive block, leaks ready-path request ownership, releases a child from the wrong recovery, duplicates same-artifact requests, or globally serializes independent validators (violates R-LOCAL-FAULT-DEFER/R-RECOVERY-ARTIFACT-IDENTITY/R-RECOVERY-HISTORY-GUARD/R-RECOVERY-DEDUPLICATION). |
 | **S44** | A candidate's declared parents omit all ancestry of its signed finalized floor, or receiver-local fork choice rejects an otherwise replay-safe parent subset (violates R-PARENT-FLOOR). |
 | **S45** | Restore-horizon handling deletes an exact slot, removes its stake, changes a certified context from local heldness, drops a live cost effect, or treats an arbitrary missing dependency as an abstention (violates R-FINALIZER-RESTORE-HORIZON). |
+| **S46** | Settled-history admission consumes evidence before commit, loses budget after restart, accepts forged evidence, validates a duplicate, or reopens after cleanup (violates R-SETTLED-*). |
 
 ## 7. Liveness invariants — MUST eventually happen
 

@@ -71,6 +71,12 @@ inputs:
   gh_token:
     required: true
     description: Token used to dispatch the publish workflow.
+  qualification:
+    description: Require the separate 24-hour qualification contract.
+    default: "false"
+  preflight_result:
+    description: Full integration preflight result for qualification.
+    default: ""
 
 runs:
   using: composite
@@ -155,6 +161,8 @@ runs:
         SOAK_MERGE_EXIT_MIN_SECONDS: ${{ inputs.merge_exit_min_seconds }}
         SOAK_NODE_REPO_DIR: ${{ inputs.node_repo_dir }}
         SYSTEM_INTEGRATION_DIR: ${{ inputs.system_integration_dir }}
+        SOAK_QUALIFICATION: ${{ inputs.qualification }}
+        SOAK_PREFLIGHT_RESULT: ${{ inputs.preflight_result }}
       shell: bash -e {0}
       run: ci-control/scripts/run-merge-recovery-soak.sh
 

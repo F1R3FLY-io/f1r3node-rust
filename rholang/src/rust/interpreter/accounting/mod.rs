@@ -3033,6 +3033,7 @@ mod runtime_budget_tests {
                 (first_key, 4),
                 (second_key, 4),
             ])),
+            balance_custody: BTreeMap::from([(first_key, first_key), (second_key, second_key)]),
             ..Default::default()
         };
         let physical = authority::allocate_physical_settlement(
@@ -3044,18 +3045,23 @@ mod runtime_budget_tests {
         assert_eq!(physical.balance_debit, allocation);
         let after_compute = inventory
             .balances
-            .checked_sub(&physical.balance_debit)
+            .checked_sub(&physical.custody_debit)
             .unwrap();
-        let bytes = authority::allocate_quantitative_events(
+        let bytes = authority::allocate_quantitative_events_with_custody(
             &budget.authority_byte_events(),
             &after_compute,
+            &inventory.balance_custody,
         )
         .unwrap();
         assert_eq!(
-            bytes,
+            bytes.logical_debit,
             authority::ResourceMultiset(BTreeMap::from([(first_key, 3), (second_key, 3),]))
         );
-        assert!(after_compute.checked_sub(&bytes).unwrap().0.is_empty());
+        assert!(after_compute
+            .checked_sub(&bytes.custody_debit)
+            .unwrap()
+            .0
+            .is_empty());
     }
 
     #[test]
@@ -3227,6 +3233,60 @@ mod runtime_budget_tests {
     }
 
     proptest::proptest! {
+        #[test]
+        fn persistent_introduction_retry_count_does_not_change_its_charge(
+            retries in 1usize..65,
+            byte_cost in 1u64..65,
+        ) {
+            let budget = RuntimeBudget::new(Cost::create(64, "persistent retry property"));
+            let _scope = budget.enter_comm_accounting_scope();
+            for _ in 0..retries {
+                budget
+                    .reserve_produce_introduction_identity(
+                        [41; 32],
+                        &test_authority(),
+                        byte_cost,
+                        true,
+                    )
+                    .unwrap();
+            }
+            proptest::prop_assert_eq!(budget.quantitative_byte_cost(), byte_cost);
+            proptest::prop_assert_eq!(budget.authority_byte_events().len(), 1);
+        }
+
+        #[test]
+        fn completed_persistent_firings_retain_full_multiplicity(firings in 1usize..65) {
+            use models::rhoapi::cost_signature::Value;
+            use models::rhoapi::{CostAuthority, CostSignature};
+
+            let signature = CostSignature {
+                value: Some(Value::Ground(b"payer".to_vec())),
+            };
+            let authority = CostAuthority {
+                regions: vec![authority::cost_region(&signature, b"persistent", 0).unwrap()],
+            };
+            let lane = authority::cost_signature_to_sig(&signature)
+                .unwrap()
+                .lane_hash();
+            let firing_count = u64::try_from(firings).unwrap();
+            let budget = RuntimeBudget::new(Cost::create(firings as i64, "persistent firings"));
+            let _scope = budget.enter_comm_accounting_scope();
+            budget.install_authority_allocation(authority::ResourceMultiset::singleton(
+                lane,
+                firing_count,
+            ));
+            for firing in 0..firings {
+                let mut identity = [0; 32];
+                identity[..8].copy_from_slice(&(firing as u64).to_le_bytes());
+                budget
+                    .reserve_comm_authority_identity(identity, &authority)
+                    .unwrap();
+            }
+            proptest::prop_assert_eq!(budget.total_cost().value, firing_count as i64);
+            proptest::prop_assert_eq!(budget.authority_realized().get(&lane), firing_count);
+            proptest::prop_assert_eq!(budget.authority_events().len(), firings);
+        }
+
         #[test]
         fn stack_transfer_reserves_exactly_one_authority_cell_per_output(
             cells in 1usize..65,

@@ -4,6 +4,9 @@
 
    Stage-0 "layering theorem" of the Cost-Accounted Rho realization.
 
+   [pb_minted] below is a ghost logical history. Production stores the bounded
+   [mintedThroughEpoch] frontier specified by [MintedEpochRetention.v].
+
    The cost-accounted calculus conserves fuel: every [ca_step] consumes a
    strictly positive quantum of token-fuel and never creates any
    (TokenConservation.v: [token_monotone_step], [token_consumed_per_step],

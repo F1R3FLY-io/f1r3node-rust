@@ -21,10 +21,7 @@ pub struct ProofOfStake {
     /// protocol configuration. Default `64`; configurable per shard via
     /// `casper_conf.rs::max_cosigners_per_deploy`.
     pub max_cosigners_per_deploy: u32,
-    /// Initial validator fuel credited to the validator's canonical SystemVault.
-    /// Genesis validators receive it in the blessed vault generator; a newly
-    /// bonded validator receives it from the PoS-authorized protocol mint at
-    /// the terminal close of the bonding block.
+    /// Initial validator fuel credited through authenticated genesis only.
     pub initial_phlogiston: i64,
     /// Fuel credited to each eligible active validator's canonical SystemVault
     /// at every epoch boundary. Validator-handler reservations debit this vault.

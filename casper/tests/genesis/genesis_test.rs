@@ -25,9 +25,12 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
+use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::bonds_parser::BondsParser;
-use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
+use casper::rust::util::rholang::costacc::vault_payer::{
+    balance_query_source, validator_fuel_balance_query_source,
+};
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::tools::Tools;
@@ -41,6 +44,7 @@ use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 use tempfile::TempDir;
 
@@ -364,7 +368,20 @@ async fn genesis_system_vault_funding_is_committed_and_replay_deterministic() {
             assert_eq!(values.len(), 1);
             assert_eq!(
                 RhoNumber::unapply(&values[0]).unwrap(),
-                i64::try_from(vault.initial_balance).unwrap()
+                i64::try_from(vault.general_balance).unwrap()
+            );
+            let (values, _) = runtime_manager
+                .play_exploratory_deploy(
+                    validator_fuel_balance_query_source(&vault.vault_address),
+                    &genesis_block.body.state.post_state_hash,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(values.len(), 1);
+            assert_eq!(
+                RhoNumber::unapply(&values[0]).unwrap(),
+                i64::try_from(vault.validator_fuel_balance).unwrap()
             );
         }
 
@@ -500,6 +517,18 @@ fn genesis_protocol_funding_rejects_invalid_economic_parameters() {
     )
     .is_err());
 
+    let mut duplicate_validator = baseline.clone();
+    duplicate_validator
+        .proof_of_stake
+        .validators
+        .push(duplicate_validator.proof_of_stake.validators[0].clone());
+    assert!(Genesis::vaults_with_protocol_funding(
+        &duplicate_validator.proof_of_stake,
+        &duplicate_validator.vaults,
+        &duplicate_validator.client_fuel_allocations,
+    )
+    .is_err());
+
     let mut empty_client_key = baseline;
     empty_client_key
         .client_fuel_allocations
@@ -510,6 +539,39 @@ fn genesis_protocol_funding_rejects_invalid_economic_parameters() {
         &empty_client_key.client_fuel_allocations,
     )
     .is_err());
+}
+
+#[test]
+fn genesis_protocol_funding_keeps_general_and_validator_fuel_roles_distinct() {
+    let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    let validator = genesis.proof_of_stake.validators[0].pk.clone();
+    let address = VaultAddress::from_public_key(&validator).unwrap();
+    let prior_general = genesis
+        .vaults
+        .iter()
+        .filter(|vault| vault.vault_address == address)
+        .map(|vault| vault.initial_balance)
+        .sum::<u64>();
+    genesis.vaults.push(Vault {
+        vault_address: address.clone(),
+        initial_balance: 19,
+    });
+    genesis.client_fuel_allocations.push((validator, 23));
+    let allocations = Genesis::vaults_with_protocol_funding(
+        &genesis.proof_of_stake,
+        &genesis.vaults,
+        &genesis.client_fuel_allocations,
+    )
+    .unwrap();
+    let allocation = allocations
+        .iter()
+        .find(|allocation| allocation.vault_address == address)
+        .unwrap();
+    assert_eq!(allocation.general_balance, prior_general + 19 + 23);
+    assert_eq!(
+        allocation.validator_fuel_balance,
+        u64::try_from(genesis.proof_of_stake.initial_phlogiston).unwrap()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

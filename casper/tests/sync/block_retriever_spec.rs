@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use casper::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
@@ -35,7 +34,7 @@ mod tests {
     }
 
     impl TestFixture {
-        fn new() -> Self {
+        async fn new() -> Self {
             let hash = BlockHash::from(TEST_HASH_BYTES.to_vec());
             let local_peer = setup::peer_node("src", 40400);
             let peer = setup::peer_node("peer", 40400);
@@ -46,13 +45,11 @@ mod tests {
             };
             let rp_conf = create_rp_conf_ask(local_peer.clone(), None, None);
             let transport_layer = Arc::new(TransportLayerStub::new());
-            let requested_blocks = Arc::new(Mutex::new(HashMap::new()));
-            let block_retriever = BlockRetriever::new(
-                requested_blocks,
-                transport_layer.clone(),
-                connections_cell,
-                rp_conf,
-            );
+            let mut manager =
+                rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+            let buffer = block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage::new_from_kvm(&mut manager).await.unwrap();
+            let block_retriever =
+                BlockRetriever::new(buffer, transport_layer.clone(), connections_cell, rp_conf);
 
             Self {
                 hash,
@@ -86,7 +83,7 @@ mod tests {
 
             #[tokio::test]
             async fn should_add_record_for_hash() {
-                let fixture = TestFixture::new();
+                let fixture = TestFixture::new().await;
                 let test_reason = TestReason;
 
                 // Call admitHash with unknown hash
@@ -120,7 +117,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_broadcast_has_block_request_and_only_has_block_request() {
-                    let fixture = TestFixture::new();
+                    let fixture = TestFixture::new().await;
                     fixture.reset();
                     let test_reason = TestReason;
 
@@ -156,7 +153,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_send_block_request_and_only_block_request() {
-                    let fixture = TestFixture::new();
+                    let fixture = TestFixture::new().await;
                     fixture.reset();
                     let test_reason = TestReason;
 
@@ -198,7 +195,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_ignore_hash() {
-                    let fixture = TestFixture::new();
+                    let fixture = TestFixture::new().await;
                     fixture.setup_known_hash().await;
                     let test_reason = TestReason;
 
@@ -223,7 +220,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_request_block_from_peer_if_sources_list_was_empty() {
-                    let fixture = TestFixture::new();
+                    let fixture = TestFixture::new().await;
                     fixture.setup_known_hash().await;
                     let test_reason = TestReason;
 
@@ -257,7 +254,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_ignore_hash_if_peer_is_already_in_sources_list() {
-                    let fixture = TestFixture::new();
+                    let fixture = TestFixture::new().await;
                     fixture.setup_known_hash().await;
 
                     // First call to add peer to sources list
@@ -295,7 +292,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_add_peer_to_sources_list_if_it_is_absent() {
-                    let fixture = TestFixture::new();
+                    let fixture = TestFixture::new().await;
                     fixture.setup_known_hash().await;
 
                     // Add first peer
@@ -335,7 +332,7 @@ mod tests {
 
                 #[tokio::test]
                 async fn should_not_request_for_block_from_peer_if_sources_list_was_not_empty() {
-                    let fixture = TestFixture::new();
+                    let fixture = TestFixture::new().await;
                     fixture.setup_known_hash().await;
 
                     // Add first peer (this will send a request since list is empty)
@@ -383,7 +380,7 @@ mod tests {
 
         #[tokio::test]
         async fn missing_dependency_marks_the_request_and_gossip_does_not() {
-            let fixture = TestFixture::new();
+            let fixture = TestFixture::new().await;
             let dep_hash = fixture.hash.clone();
 
             fixture

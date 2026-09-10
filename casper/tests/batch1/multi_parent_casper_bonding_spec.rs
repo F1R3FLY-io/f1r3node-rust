@@ -14,7 +14,12 @@ use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
+use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use crypto::rust::public_key::PublicKey;
+use models::rust::block::state_hash::StateHash;
+use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 use crate::helper::bonding_util;
 use crate::helper::test_node::TestNode;
@@ -58,6 +63,19 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
     BlockAPI::bond_status(&engine_cell, &public_key.bytes.to_vec())
         .await
         .expect("bondStatus should not fail")
+}
+
+async fn system_vault_balance(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    address: &VaultAddress,
+) -> i64 {
+    let (values, _) = runtime_manager
+        .play_exploratory_deploy(balance_query_source(address), state_hash, None)
+        .await
+        .expect("SystemVault balance query");
+    assert_eq!(values.len(), 1);
+    RhoNumber::unapply(&values[0]).expect("numeric SystemVault balance")
 }
 
 #[tokio::test]
@@ -230,4 +248,96 @@ async fn a_finalized_bond_survives_an_epoch_boundary_merge() {
         bonded_status(&DEFAULT_PUB, &nodes[0]).await,
         "n4's finalized bond must survive epoch-boundary merges (issue #341)"
     );
+}
+
+#[tokio::test]
+async fn sibling_epoch_closes_publish_one_validator_mint() {
+    let validator_key_pairs = DEFAULT_VALIDATOR_KEY_PAIRS.to_vec();
+    let validator_pks: Vec<PublicKey> = validator_key_pairs
+        .iter()
+        .map(|(_, public_key)| public_key.clone())
+        .collect();
+    let bonds: HashMap<PublicKey, i64> = validator_pks
+        .iter()
+        .enumerate()
+        .map(|(index, public_key)| (public_key.clone(), 2 * index as i64 + 1))
+        .collect();
+    let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
+    parameters.2.proof_of_stake.epoch_length = 2;
+    parameters.2.proof_of_stake.epoch_phlogiston = 7;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("build epoch-frontier genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+        .await
+        .expect("create epoch-frontier network");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let tracked_address =
+        VaultAddress::from_public_key(&validator_pks[3]).expect("tracked validator address");
+
+    let first_deploy = construct_deploy::basic_deploy_data(7001, None, Some(shard_id.clone()))
+        .expect("first deploy");
+    let first_block = TestNode::propagate_block_at_index(&mut nodes, 0, &[first_deploy])
+        .await
+        .expect("propagate first block");
+    let balance_before = system_vault_balance(
+        &nodes[0].runtime_manager,
+        &first_block.body.state.post_state_hash,
+        &tracked_address,
+    )
+    .await;
+
+    let left_deploy = construct_deploy::basic_deploy_data(7002, None, Some(shard_id.clone()))
+        .expect("left sibling deploy");
+    let right_deploy = construct_deploy::basic_deploy_data(7003, None, Some(shard_id.clone()))
+        .expect("right sibling deploy");
+    let left = nodes[0]
+        .add_block_from_deploys(&[left_deploy])
+        .await
+        .expect("left epoch-boundary sibling");
+    let right = nodes[1]
+        .add_block_from_deploys(&[right_deploy])
+        .await
+        .expect("right epoch-boundary sibling");
+
+    let left_balance = system_vault_balance(
+        &nodes[0].runtime_manager,
+        &left.body.state.post_state_hash,
+        &tracked_address,
+    )
+    .await;
+    let right_balance = system_vault_balance(
+        &nodes[1].runtime_manager,
+        &right.body.state.post_state_hash,
+        &tracked_address,
+    )
+    .await;
+    assert_eq!(left_balance, balance_before + 7);
+    assert_eq!(right_balance, balance_before + 7);
+
+    {
+        let mut node_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut node_refs)
+            .await
+            .expect("propagate epoch-boundary siblings");
+    }
+
+    let merge_deploy =
+        construct_deploy::basic_deploy_data(7004, None, Some(shard_id)).expect("merge deploy");
+    let merged = TestNode::propagate_block_at_index(&mut nodes, 2, &[merge_deploy])
+        .await
+        .expect("propagate sibling merge");
+    assert!(merged.header.parents_hash_list.contains(&left.block_hash));
+    assert!(merged.header.parents_hash_list.contains(&right.block_hash));
+
+    for node in &nodes {
+        let balance = system_vault_balance(
+            &node.runtime_manager,
+            &merged.body.state.post_state_hash,
+            &tracked_address,
+        )
+        .await;
+        assert_eq!(balance, balance_before + 7);
+    }
 }

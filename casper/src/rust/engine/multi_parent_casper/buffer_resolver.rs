@@ -7,12 +7,51 @@
 use std::collections::HashSet;
 
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHash;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
 use super::types::MultiParentCasperImpl;
+use crate::rust::casper::RetryCandidate;
 use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
+
+pub(crate) fn prepare_retry_candidate<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    hash: &BlockHash,
+) -> Result<RetryCandidate, CasperError> {
+    let key = BlockHashSerde(hash.clone());
+    if !this.casper_buffer_storage.contains(&key) && !this.casper_buffer_storage.is_pendant(&key) {
+        return Ok(RetryCandidate::Absent);
+    }
+    if this.casper_buffer_storage.is_waiting_on_certificate(&key) {
+        return Ok(RetryCandidate::WaitingCertificate);
+    }
+    if this.block_dag_storage.has_admitted_metadata(hash)? {
+        return Ok(RetryCandidate::AlreadyAdmitted);
+    }
+    let Some(block) = this.block_store.get(hash)? else {
+        return Ok(RetryCandidate::MissingBody);
+    };
+    if !proto_util::dependencies_have_admitted_metadata(&block, |dependency| {
+        this.block_dag_storage.has_admitted_metadata(dependency)
+    })? {
+        return Ok(RetryCandidate::MissingMetadata);
+    }
+    Ok(RetryCandidate::Ready(Box::new(block)))
+}
+
+pub(crate) fn prepare_startup_candidate<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    hash: &BlockHash,
+) -> Result<RetryCandidate, CasperError> {
+    let Some(block) = this.block_store.get(hash)? else {
+        return Ok(RetryCandidate::MissingBody);
+    };
+    if this.block_dag_storage.has_admitted_metadata(hash)? {
+        return Ok(RetryCandidate::AlreadyAdmitted);
+    }
+    Ok(RetryCandidate::Ready(Box::new(block)))
+}
 
 fn select_dependency_free<K, V, O, E>(
     candidate_hashes: HashSet<K>,
@@ -56,8 +95,6 @@ fn select_dependency_free_from_buffer<T, O>(
 where
     T: TransportLayer + Send + Sync,
 {
-    let dag = this.block_dag_storage.get_representation()?;
-
     let mut candidate_hashes: HashSet<BlockHash> = HashSet::new();
 
     let pendants = this.casper_buffer_storage.get_pendants();
@@ -81,7 +118,10 @@ where
             Ok(this.block_store.get(candidate_hash)?)
         },
         |block| {
-            proto_util::all_dependencies_have_admitted_metadata(block, &dag).map_err(Into::into)
+            proto_util::dependencies_have_admitted_metadata(block, |hash| {
+                this.block_dag_storage.has_admitted_metadata(hash)
+            })
+            .map_err(Into::into)
         },
         project,
     )
@@ -105,6 +145,9 @@ pub(crate) fn buffer_get_all_from_buffer<T: TransportLayer + Send + Sync>(
 
     Ok(blocks)
 }
+
+#[cfg(test)]
+mod recovery_metadata_tests;
 
 #[cfg(test)]
 mod tests {

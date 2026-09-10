@@ -14,6 +14,8 @@ load(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "scenario_schem
 # persistent balance is the canonical SystemVault, while the acceptance residual
 # is located authority reserved for the current execution. The model is the Sage
 # companion of:
+#   - MintedEpochRetention.v (the production frontier refines this model's
+#                              logical per-validator receipt history)
 #   - MintingInjection.v   (epoch_mint idempotency on the balance; user steps
 #                            never move a supply balance)
 #   - MintingHalt.v        (halted ⇒ no mint, no supply increase)

@@ -11,7 +11,6 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
@@ -23,7 +22,10 @@ use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExp
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
 use tokio::sync::mpsc;
 
-use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
+use crate::rust::blocks::block_processing_queue::{
+    BlockAdmissionFailure, BlockProcessingIdentities, BlockProcessingQueueSender,
+    BlockPublicationError,
+};
 use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
@@ -117,37 +119,6 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
     Ok(())
 }
 
-pub async fn enqueue_dependency_free_blocks<T: TransportLayer + Send + Sync>(
-    casper: Arc<dyn MultiParentCasper + Send + Sync>,
-    block_processing_queue_tx: &BlockProcessingQueueSender,
-    blocks_in_processing: &Arc<DashSet<BlockHash>>,
-    block_retriever: &BlockRetriever<T>,
-) -> Result<(), CasperError> {
-    let _scan_guard = block_processing_queue_tx.acquire_dependency_scan().await;
-    for block in casper.get_dependency_free_from_buffer()? {
-        let hash = block.block_hash.clone();
-        if casper.dag_contains(&hash) {
-            casper.remove_buffered_hash(&hash)?;
-            block_retriever.forget_hash_tracking(&hash)?;
-            continue;
-        }
-        if !blocks_in_processing.insert(hash.clone()) {
-            continue;
-        }
-        match block_processing_queue_tx.try_enqueue(casper.clone(), block) {
-            Ok(()) => block_retriever.ack_receive(hash).await?,
-            Err(error) if error.failure.is_temporary() => {
-                blocks_in_processing.remove(&hash);
-            }
-            Err(error) => {
-                blocks_in_processing.remove(&hash);
-                return Err(CasperError::Other(error.to_string()));
-            }
-        }
-    }
-    Ok(())
-}
-
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
     async fn init(&self) -> Result<(), CasperError> {
@@ -200,20 +171,29 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                     let block_hash = b.block_hash.clone();
-                    if !self.blocks_in_processing.insert(block_hash.clone()) {
+                    if self.blocks_in_processing.contains(&block_hash) {
                         tracing::debug!(
                             "Skipping BlockMessage {} enqueue because it is already queued/in-processing",
                             PrettyPrinter::build_string_bytes(&block_hash)
                         );
                         return Ok(());
                     }
-                    match self
-                        .block_processing_queue_tx
-                        .try_enqueue(self.casper.clone(), b)
-                    {
-                        Ok(()) => self.block_retriever.ack_receive(block_hash).await?,
-                        Err(error) if error.failure.is_temporary() => {
-                            self.blocks_in_processing.remove(&block_hash);
+                    match self.block_processing_queue_tx.try_enqueue_with_receipt(
+                        self.casper.clone(),
+                        b,
+                        |hash| {
+                            self.block_retriever
+                                .record_received(hash.clone())
+                                .map(|_| ())
+                        },
+                    ) {
+                        Ok(()) => {}
+                        Err(BlockPublicationError::Receipt(error)) => return Err(error),
+                        Err(BlockPublicationError::Admission(error))
+                            if error.failure == BlockAdmissionFailure::Duplicate => {}
+                        Err(BlockPublicationError::Admission(error))
+                            if error.failure.is_temporary() =>
+                        {
                             let tracked = self
                                 .block_retriever
                                 .defer_for_admission(block_hash.clone(), Some(peer))
@@ -232,8 +212,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                                 );
                             }
                         }
-                        Err(error) => {
-                            self.blocks_in_processing.remove(&block_hash);
+                        Err(BlockPublicationError::Admission(error)) => {
                             return Err(CasperError::RuntimeError(error.to_string()));
                         }
                     }
@@ -454,7 +433,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
 // based on discussion with Steven for TestFixture compatibility - avoids ?Sized issues
 pub struct Running<T: TransportLayer + Send + Sync> {
     block_processing_queue_tx: BlockProcessingQueueSender,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    blocks_in_processing: Arc<BlockProcessingIdentities>,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
     // Scala: theInit: F[Unit] - lazy async computation
@@ -551,7 +530,7 @@ pub struct WalPayloadContext {
 impl<T: TransportLayer + Send + Sync> Running<T> {
     pub fn new(
         block_processing_queue_tx: BlockProcessingQueueSender,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        blocks_in_processing: Arc<BlockProcessingIdentities>,
         casper: Arc<dyn MultiParentCasper + Send + Sync>,
         approved_block: ApprovedBlock,
         the_init: Arc<
@@ -812,13 +791,11 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             .resolve_finalization_certificate_dependency(&response.digest)?;
         self.block_retriever
             .complete_finalization_certificate_request(&response.digest)?;
-        enqueue_dependency_free_blocks(
-            self.casper.clone(),
-            &self.block_processing_queue_tx,
-            &self.blocks_in_processing,
-            &self.block_retriever,
-        )
-        .await
+        self.block_processing_queue_tx
+            .recovery()
+            .signal()
+            .request(false);
+        Ok(())
     }
 
     pub async fn handle_has_block_request(

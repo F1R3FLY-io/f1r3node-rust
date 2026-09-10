@@ -1,3 +1,4 @@
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -12,6 +13,7 @@ use thiserror::Error;
 pub struct VaultPayer {
     pub signature: CostSignature,
     pub lane_key: [u8; 32],
+    pub custody_key: [u8; 32],
     pub address: VaultAddress,
 }
 
@@ -87,9 +89,15 @@ pub fn vault_payer(signature: &CostSignature) -> Result<VaultPayer, VaultPayerEr
             id: lane_key.to_vec(),
         }),
     };
+    let mut custody_identity = b"f1r3node:system-vault-custody:v1".to_vec();
+    custody_identity.extend_from_slice(address.to_base58().as_bytes());
+    let custody_key = Blake2b256::hash(custody_identity)
+        .try_into()
+        .expect("Blake2b-256 digest length");
     Ok(VaultPayer {
         signature,
         lane_key,
+        custody_key,
         address,
     })
 }
@@ -104,6 +112,26 @@ pub fn balance_query_source(address: &VaultAddress) -> String {
             for (@result <- vaultCh) {{
               match result {{
                 (true, vault) => {{ @vault!("balance", *return) }}
+                _ => {{ return!(0) }}
+              }}
+            }}
+          }}
+        }}
+        "#,
+        address.to_base58()
+    )
+}
+
+pub fn validator_fuel_balance_query_source(address: &VaultAddress) -> String {
+    format!(
+        r#"
+        new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh in {{
+          rl!(`rho:vault:system`, *systemVaultCh) |
+          for (@(_, systemVault) <- systemVaultCh) {{
+            @systemVault!("find", "{}", *vaultCh) |
+            for (@result <- vaultCh) {{
+              match result {{
+                (true, vault) => {{ @vault!("validatorFuelBalance", *return) }}
                 _ => {{ return!(0) }}
               }}
             }}
@@ -165,13 +193,14 @@ mod tests {
         let legacy = vault_payer(&ground(bytes.clone())).unwrap();
         let principal = vault_payer(&principal_ground(1, &bytes)).unwrap();
         assert_eq!(principal.address, legacy.address);
+        assert_eq!(principal.custody_key, legacy.custody_key);
         assert_ne!(principal.lane_key, legacy.lane_key);
     }
 
     #[test]
     fn malformed_protocol_principals_do_not_alias_public_key_custody() {
         let public_key = valid_public_key();
-        let expected = vault_payer(&ground(public_key.clone())).unwrap().address;
+        let expected = vault_payer(&ground(public_key.clone())).unwrap();
 
         let mut trailing = principal_ground(1, &public_key);
         match trailing.value.as_mut().unwrap() {
@@ -186,8 +215,20 @@ mod tests {
             principal_ground(1, &invalid_key),
             trailing,
         ] {
-            assert_ne!(vault_payer(&signature).unwrap().address, expected);
+            let actual = vault_payer(&signature).unwrap();
+            assert_ne!(actual.address, expected.address);
+            assert_ne!(actual.custody_key, expected.custody_key);
         }
+    }
+
+    #[test]
+    fn validator_fuel_query_uses_the_distinct_vault_method() {
+        let address =
+            VaultAddress::from_public_key(&PublicKey::from_bytes(&valid_public_key())).unwrap();
+        let source = validator_fuel_balance_query_source(&address);
+        assert!(source.contains("validatorFuelBalance"));
+        assert!(!source.contains("@vault!(\"balance\""));
+        assert!(source.contains(&address.to_base58()));
     }
 
     proptest! {
@@ -196,9 +237,10 @@ mod tests {
             key_family in any::<u16>().prop_filter("family 1 is native custody", |value| *value != 1)
         ) {
             let public_key = valid_public_key();
-            let expected = vault_payer(&ground(public_key.clone())).unwrap().address;
-            let actual = vault_payer(&principal_ground(key_family, &public_key)).unwrap().address;
-            prop_assert_ne!(actual, expected);
+            let expected = vault_payer(&ground(public_key.clone())).unwrap();
+            let actual = vault_payer(&principal_ground(key_family, &public_key)).unwrap();
+            prop_assert_ne!(actual.address, expected.address);
+            prop_assert_ne!(actual.custody_key, expected.custody_key);
         }
 
         #[test]
@@ -206,13 +248,14 @@ mod tests {
             declared_length in (0u32..=130).prop_filter("65 is the canonical key length", |value| *value != 65)
         ) {
             let public_key = valid_public_key();
-            let expected = vault_payer(&ground(public_key.clone())).unwrap().address;
+            let expected = vault_payer(&ground(public_key.clone())).unwrap();
             let mut encoded = Vec::with_capacity(6 + public_key.len());
             encoded.extend_from_slice(&1u16.to_be_bytes());
             encoded.extend_from_slice(&declared_length.to_be_bytes());
             encoded.extend_from_slice(&public_key);
-            let actual = vault_payer(&ground(encoded)).unwrap().address;
-            prop_assert_ne!(actual, expected);
+            let actual = vault_payer(&ground(encoded)).unwrap();
+            prop_assert_ne!(actual.address, expected.address);
+            prop_assert_ne!(actual.custody_key, expected.custody_key);
         }
     }
 

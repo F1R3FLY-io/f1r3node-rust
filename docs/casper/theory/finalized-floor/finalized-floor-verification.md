@@ -1147,14 +1147,10 @@ newer successful worker subsumes any older failed ticket, preventing late retrie
 from regressing coverage. Expensive evaluations remain parallel; no validator,
 admission, replay, or candidate-selection path is serialized.
 
-Proposal deferral is now typed at the same boundary. Only a certified candidate
-context that is ahead of the materialized floor produces
-`FinalizedFloorMaterializationPending` and issues an idempotent finalization
-request. Missing committee slots, inactive candidate authority, and stale
-recovery permits remain distinguishable and cannot create a scheduler hot loop.
-The exhaustive classification test covers all eight combinations of context
-equality, slot completeness, and proposer membership; the slashing merge
-regressions exercise deferral followed by successful materialization and retry.
+Proposal deferral is typed at the same boundary. Missing certified committee
+slots, inactive certified authority, and stale recovery permits remain
+distinguishable. None of these results schedules finalizer work. Candidate
+finalizer evidence does not enter proposal readiness.
 
 `FinalizationWorkerRetry.tla` exhausts 658 generated / 311 distinct states at
 depth 13 with two workers, repeated bounded failures, retry waits, and
@@ -1165,18 +1161,16 @@ failure-inertness, retry obligation, success certification, and newer-success
 subsumption contract without assumptions. Rust schedule/runner tests and Loom
 exercise the same interleavings against the implementation boundary.
 
-`ProposalFloorReadiness.tla` then composes two independently evolving nodes
-with candidate-floor advancement, local materialization, committee-slot
-availability, candidate-validator activity, and recovery-permit freshness. TLC
-exhausts 1,612,009 generated / 93,636 distinct states at depth 21; Apalache
-checks the safe transition system through length 8. Missing a materialization
-request, scheduling finalization for an authority defect, and creating through
-an unready context are separate mutation controls, and both checkers reproduce
-all three counterexamples. The axiom-free Rocq refinement proves readiness
-necessity, exact request classification, non-materialization isolation, and the
-end-to-end proposal-readiness contract. Rust exhausts the eight Boolean
-readiness combinations and verifies at the injected proposer boundary that only
-`FinalizedFloorMaterializationPending` schedules finalization.
+`ProposalFloorReadiness.tla` composes proposal and finalizer actions across two
+independently evolving nodes. Proposal reads only certified authority and
+permit state. Finalizer observation reads independent candidate evidence. TLC
+exhausts 4,325,377 generated states and 147,456 distinct states at depth 19.
+The complete safe graph has no error. Ten controls expose missing requests,
+invalid requests, readiness bypass, three candidate gates, finalizer
+cancellation, and three unsafe materializations. Rocq proves candidate-evidence
+independence and complete certified-authority readiness without assumptions.
+Rust exhausts certified authority combinations. An injected proposer test
+proves that typed authority deferrals do not schedule finalization.
 
 ### H18 (LIVENESS/CONSENSUS PROGRESS) — durable finalizer discovery remained main-parent-only
 
@@ -1184,11 +1178,10 @@ Commit `1b19efea66c31e6b9fd73c2db635fff87a284301` made complete
 causal, state-certified off-main promotion an ordinary part of this branch. The
 per-block floor path then used all-parent coverage, but the durable LFB finalizer
 still propagated validator support only down each latest message's main-parent
-spine. A candidate carried solely through a secondary parent could therefore be
-the exact state-certified proposal floor while remaining permanently invisible
-to the component responsible for materializing that floor. Proposals correctly
-returned `FinalizedFloorMaterializationPending`; repeated finalizer runs could
-never release them.
+spine. A candidate carried solely through a secondary parent could remain
+invisible to finalizer evaluation. The then-current proposal path also waited
+for that candidate. H24 removes this coupling. Complete discovery remains
+necessary for independent finalizer progress.
 
 This was not a threshold, clique, or majority-voting failure. The finalizer never
 submitted the missing target to those unchanged decisions. The repair shares the
@@ -1289,6 +1282,27 @@ independence. It also proves that a parent-only validator cannot enter the
 certified finality committee. `loom_committee_transition.rs` checks concurrent
 inactive bond updates during finality reads.
 
+PoS keeps the complete bond ledger separate from the active authority set. An
+accepted bond appears in the ledger before it can become active. Only an epoch
+boundary can select a new active set.
+
+The boundary selection uses the canonical bond-map order and the configured
+validator limit. Equal replay state therefore produces equal bounded active
+sets, regardless of local arrival order.
+
+`ActiveValidatorBoundaryConvergence.tla` models two replicas with opposite local
+orders. TLC exhausts all nine states and thirteen transitions through depth
+five. Apalache checks the same invariants through symbolic length six.
+
+The arrival-order control selects each local prefix and produces different
+committees. The immediate-activation control grants authority before a boundary.
+TLC and Apalache reproduce both defects.
+
+`CommitteeTransition.v` proves the ledger, active set, boundary, limit, and API
+projection laws. `bonded_active_committee_lifecycle_correct` combines those laws
+without axioms. Thirteen Rust properties and six Loom models enforce the same
+realization boundaries.
+
 Rust example and property tests vary active membership, stake, and insertion
 order. A storage-backed regression checks the production metadata lookup path.
 
@@ -1381,6 +1395,100 @@ proves that a finalized state floor cannot serve as an occurrence carrier.
 Rust property tests vary both hashes independently. Loom checks that concurrent
 commit and effect execution publish each anchor in its correct role.
 
+### H24 (SAFETY/LIVENESS) — proposal replay and finalizer evidence used different floors
+
+A six-node lifecycle run reproduced a stable proposal wedge. The durable LFB
+advanced to block 1. Later justification snapshots derived candidates through
+block 31. Those candidates did not preserve block 1 state, so the finalizer
+correctly refused promotion.
+
+Protocol 6 signed durable floor $`F`$ in each block. However, proposal replay
+could derive a different candidate $`G`$ from current justifications. A later
+gate required $`G`$ to equal the durable context. The correct finalizer hold
+therefore stopped all proposals, and the pending deploy had no rejection.
+
+This exact mismatch is branch-specific. `dev` uses one frozen parent and
+justification floor for proposal replay. It does not compare that floor with a
+separate signed durable certificate. `dev` can still contain other
+state-preservation defects. The repair does not copy or claim all `dev`
+behavior as correct.
+
+The repair restores the `dev` concurrency boundary and adds the protocol-6
+certificate invariant. Proposal captures the valid signed floor $`F`$. It uses
+$`F`$ for proposal authority, replay, merge scope, retry scope, and the block
+header. Candidate $`G`$ remains independent finalizer evidence. Its relation to
+$`F`$ cannot gate proposal.
+
+Certificate decision authority and proposal sender authority are different
+contexts. Certificate verification reconstructs decision authority from the
+predecessor floor. Proposal verification reconstructs sender authority from
+the target signed floor. Their digests can differ across a valid committee
+transition. Requiring equality would reject valid transitions.
+
+A receiver first verifies the finalization certificate. It then loads the
+exact accepted floor block and metadata. Their hash, state, and height must
+match the commitment. Replay uses $`F`$ plus deterministic accepted effects
+above $`F`$. Missing data defers validation, while inconsistent data invalidates
+the block.
+
+State delivery has a separate authenticated-import obligation. A receiver can publish a state root only after it validates the complete canonical trie closure.
+
+The import must bind every page to its requested root and cursor. Invalid pages must not write data or change the current root.
+
+The signed-floor models treat this completed publication as the `state available` transition. They do not prove the RSpace page-transfer protocol.
+
+The current network importer does not yet satisfy that obligation. Therefore, the Rust evidence in this section covers trusted local state availability only.
+
+Do not use this proof as evidence for authenticated network state import. That subsystem needs its own TLA+, Rocq, property, and recovery tests.
+
+The floor hash determines one canonical state root. The certificate digest
+binds the target height transitively. Stored block and metadata heights must
+equal the certificate height. Agreement between incorrect artifacts cannot
+make an inconsistent signed tuple valid.
+
+The certificate binds the exact shard threshold. Its decision uses strict
+integer majority and fault-tolerance comparisons. Equality at either boundary
+cannot finalize a target.
+
+The repair does not change LMD-GHOST, parent selection, stake weights, clique
+membership, fault-tolerance thresholds, or finalizer promotion. It removes a
+branch-only coupling between two concurrent Casper activities.
+
+`CertifiedReplayAnchor.v` proves that accepted replay preserves the committed
+floor state. It also proves independence from derived candidate evidence.
+`ProposalFloorReadiness.v` proves that certified authority alone controls
+proposal readiness.
+
+`SignedFloorReplayReadiness.tla` composes proposal capture, artifact delivery,
+receiver validation, replay, authority selection, and finalizer progress.
+Two receivers can execute these actions in different orders.
+
+The safe model checks the canonical signed tuple, accepted occurrence,
+ancestry, state availability, both authority contexts, strict threshold use,
+and receiver agreement. Missing receiver data can only defer validation.
+Missing proposer state prevents proposal creation. Finalizer progress cannot
+replace the captured floor or cancel a created proposal.
+
+TLC exhausts 70,876 generated states and 13,417 distinct states to depth 20.
+It checks eventual acceptance under weak fairness. Thirty-one mutation controls
+reproduce one isolated defect each.
+
+The bounded Apalache gate checks every complete acceptance schedule through
+length 10. The replay-floor control extends through length 11. This extra step
+reaches the post-acceptance replay choice.
+
+Rust tests bind protocol-6 proposal and receiver replay to the exact certificate
+floor. One 256-case property checks block and metadata identity independently.
+Another property mutates every bound commitment byte and bit. An exhaustive
+example mutates every certificate field. A third property mutates each signed
+floor hash, state, and height component.
+
+The multi-node regression creates a proposal at floor $`F`$. It promotes a newer
+floor $`G`$ before peer validation. The peer must still validate and store the
+proposal against $`F`$.
+
+This regression gives the peer a trusted local floor root. It does not send RSpace pages through the current network importer.
+
 ---
 
 ## 4. Invariant catalog → artifact map
@@ -1399,7 +1507,11 @@ commit and effect execution publish each anchor in its correct role.
 | **C14 — finalizer materialization alignment** | a proposal floor discovered through secondary-parent evidence must be discoverable by the durable finalizer; its selected target must carry its own exact causal and state certificates, preserve the current LFB, and be the deterministic greatest eligible `(block_number, block_hash)` | Rocq `FinalizerFloorMaterialization.{validated_materialization_is_exact_and_dual_certified, target_substitution_is_rejected, finalizer_discovery_matches_pairwise_certificate, highest_exact_candidate_is_unique, finalizer_floor_materialization_trace_correct}` and `MainTheorem.finalized_floor_materialization_target_alignment_correct`; TLC/Apalache `FinalizerFloorMaterialization` safe model plus main-parent-only and causal-only controls; Rust exhaustive-oracle, strict-boundary, rejected-state, secondary-parent, reconvergence, property, and full finalizer regressions; Loom frozen-target/latest-message-arrival interleaving |
 | **T-CERTIFICATE-RETRIEVAL** | a protocol-6 block missing its committed certificate remains detached on a typed persistent dependency; bounded retries survive transport failure and restart; only an expected, shape-valid, digest-matching response may persist; duplicate responses converge to one resolution and one queue wake; every fetchable persistent obligation eventually queues under weak fairness | Rocq `FinalizationCertificateRetrieval` and `MainTheorem.finalized_floor_certificate_retrieval_correct`; TLC `FinalizationCertificateRetrieval` safe model (58,184 generated / 11,879 distinct states, depth 18) plus six isolated controls; Apalache through symbolic length 12 plus the same controls; Rust content-addressed sidecar, restart, parser, retriever, property, async Running-engine, and Loom duplicate-response regressions |
 | **T-CERTIFICATE-PARENT-FRONTIER / S44** | receiver admission accepts replay-safe declared-parent subsets, preserves frozen non-parent justifications, and rejects any candidate whose parents omit all ancestry of the signed floor | Rocq fork-choice `GuardBridge` refinement, projection, strict-subset witness, and disconnected witness; TLC `CertifiedFloorCommitment` safe model (294,193 generated / 31,738 distinct states, depth 32) plus causal-input control; Apalache safe length 8 plus the control at length 6; Rust exact-error unit test and protocol-6 multi-validator positive and negative replay tests |
+| **T-SIGNED-FLOOR-READINESS** | accepted protocol-6 replay uses one exact signed floor occurrence for state, height, ancestry, proposal committee, and sender authority; certificate decisions use predecessor-floor authority; missing artifacts defer; finalizer progress cannot replace or cancel it | Rocq `CertifiedReplayAnchor`, `ProposalFloorReadiness`, and both `MainTheorem` capstones; TLC `SignedFloorReplayReadiness` safe model plus 31 controls; Apalache safe lengths 10 and 11 plus matching controls; Rust floor-context and certificate-mutation properties plus the concurrent promotion regression |
 | **T-DEPENDENCY-MAINTENANCE** | one local maintenance invocation attempts every ordinary-block and certificate obligation in its frozen snapshot before returning the first dispatch error; a failed block request cannot suppress certificate progress, and parallel LFS requests are all awaited rather than cancelled on the first failure | Rocq `DependencyMaintenanceRound` and `MainTheorem.finalized_floor_dependency_maintenance_correct`; TLC safe model (348 generated / 158 distinct states, depth 7) plus abort-on-first-failure control; Apalache through symbolic length 8 plus the same control at length 3; Rust direct `MultiParentCasper::fetch_dependencies`, block-processor ordinary/stale, block-retriever mixed-maintenance, and LFS await-all regressions |
+| **T-QUARANTINE-EVIDENCE** | retry exhaustion, receipt, and admission deferral preserve bounded dependency evidence; only durable admission or certified obsolescence can retire it; pruning cannot falsely wake a sibling | Rocq `RequestQuarantineLifecycle.request_quarantine_lifecycle_correct`; TLC exhausts 18,197 generated and 2,912 distinct states to depth 17 plus cleanup, receipt, and parent-pruning controls; Apalache checks length 12 plus all three controls; Rust retry, receipt, expiry, capacity, validation-error, and dependency-pruning regressions |
+| **T-SETTLED-TICKET** | one target has one owner; precommit failure retains evidence and releases budget; an authentic DAG record commits before retryable cleanup; duplicates never enter validation; restart restores admission and budget | Rocq `SettledTicketTransaction.settled_ticket_transaction_contract`; TLC generates 1,744 states and 294 distinct states to depth 12 plus seven controls and a liveness check; Apalache checks length 12 plus seven controls; Rust proof, failure-injection, duplicate, restart, storage, property, and Loom regressions |
+| **T-RECOVERY-BUDGET** | durable charges and episode usage survive restart; volatile keys remain bounded; private dispatch identities prevent stale completion; timeout and cancellation restore paced retry | Rocq `RecoveryBudgetEpisodes.recovery_budget_episodes_correct`; TLC safe ledger, window, composition, and liveness models plus 15 controls; bounded Apalache composition and controls; reference-model, long-horizon, transport, and Loom regressions |
 | **T-TARGET-TERMINAL** | an external wait succeeds only on the exact target's canonical `Finalized` status observed within both budgets; the first LFB sample is only a baseline, strict later height progress may renew a stall budget, revision/regression fails loudly, no progress can renew the absolute bound, and a boundary response cannot bypass an expired deadline | Rocq `TargetDeployTerminality` and `MainTheorem.finalized_floor_target_deploy_wait_correct`; TLC/Apalache `TargetDeployTerminality` safe model plus fixed-timeout, history-anomaly, inexact-success, late-terminal, and first-baseline-renewal controls; pyf1r3fly fake-clock/RPC-deadline regressions; system-integration timeout/wrapper regressions and positive exact-terminal integrations |
 | **C5 — snapshot advancement** | growth modeled as latest-message ADVANCEMENT (each binding → a DAG-descendant), not just preservation; L-SNAP holds for it, and preservation ⇒ advancement so the old L-SNAP is subsumed | Rocq `CliqueOracle.snap_advances`, `agrees_snap_advance_mono`, **`L_SNAP_advance`**, `L_ANC_SNAP_advance`, `L_SNAP_advance_ft`, `snap_extends_snap_advances`, `L_SNAP_of_extends` (original L-SNAP re-derived) |
 | **T-CACHE** | warm up-walk == cold walk (no fork from cache, S1) | Rocq `Floor.frontier_cache_transparent` (takes `AdjDC`) **+ `GuardBridge.chain_adj_AdjDC` / `guard_constant_committee_transparent`** — the committee-constancy guard *derives* `AdjDC` from L-ANC, so the seam is bridged, not assumed; Rust test `guard_trip_committee_change_falls_back_to_cold` |
@@ -1426,13 +1538,14 @@ commit and effect execution publish each anchor in its correct role.
 | **T-LIN** | a Case-A base is a common DAG-ancestor (one chain) | Rocq `Selection.case_a_common_ancestor`; Rust test `derive_floor_case_a_floor_is_common_ancestor_of_all_parents` (the Case-A floor is `is_dag_ancestor` of every parent) |
 | **T-FIN** | the chosen floor is finalized | Rocq **`GuardBridge.upgo_finalized`** (the warm up-walk's result is `Finalized` — discharges the premise unconditionally) + `Selection.select_finalized` (a floor drawn from finalized candidates is finalized); Rust test `derive_floor_result_is_finalized_over_justifications` (the result clears `CliqueOracle::ft_witnessed_exact` over the justification snapshot) |
 | **T-PS** | safety for ANY parent list (unconstrained oracle) | Rocq `Selection.T_PS`; TLA⁺ `FinalizedFloorScan` (nondeterministic parent set); Rust test `derive_floor_incompatible_fork_errors` |
-| **T-COMM** | authorization committee = `bonds_of(post_state(floor))`, a pure function of the floor; exact justifications, sender membership, and synchrony share it (S8) | Rocq `Selection.committee_is_floor_bonds`; Rust `Validate::floor_authority`, proposal authority preflight, and finalized-floor synchrony weights |
-| **T-COMMITTEE-TRANSITION** | Serialized bonds equal replayed post-state bonds. Same-block transitions cannot self-authorize. Only accepted caches register identities. Registered transitions become authoritative only after floor promotion. | Rocq checks `CommitteeTransition` and `MainTheorem.committee_transition_correct`. TLA⁺, TLC, and Apalache check `RecoveryCommitteeTransition` and fifteen unsafe controls. Rust checks post-state caches, registration, transitions, justifications, senders, head drift, and Loom interleavings. |
+| **T-COMM** | Authorization uses positive bonds from the active set committed by `post_state(floor)`. Exact justifications, sender membership, synchrony, and finality share that set. | Rocq `Selection.committee_is_floor_bonds` and `CommitteeTransition.active_weight_committee_exact`; Rust `Validate::floor_authority`, proposal authority preflight, and finalized-floor synchrony weights. |
+| **T-COMMITTEE-TRANSITION** | Serialized bonds and active validators equal one replayed post-state. Bonds become visible immediately. Only a later activation boundary can grant bounded authority. | Rocq checks `CommitteeTransition` and both `MainTheorem` committee capstones. TLC and Apalache check `RecoveryCommitteeTransition`, seventeen controls, and two-replica boundary convergence. Rust checks thirteen properties and six Loom concurrency models. |
 | **T-ACTIVE-FINALITY-COMMITTEE** | The finality denominator contains positive bonds from the certified active authority-floor committee. The certificate binds the floor hash to its exact replay state. Other committee changes cannot change the certified decision. | Rocq checks `CommitteeTransition` and the active committee capstones in `MainTheorem`. TLC and Apalache check the committee models and exact unsafe controls. Rust checks membership, state binding, inactive stake, storage-backed authority, and Loom races. |
 | **T-FINALIZATION-ATOMICITY** | concurrent finalizer evaluations publish at most one immutable state-preserving successor per exact durable predecessor; a changed revision or block identity forces fresh evaluation; stale workers have no effects; request/release races cannot lose a wake; failed or panicked workers cannot complete coverage and remain retryable until a successful equal-or-newer worker subsumes them | Rocq `FinalizationAtomicity` and `MainTheorem.{finalized_floor_atomic_commit_correct,finalized_floor_worker_retry_correct,finalized_floor_bound_head_correct}`; TLA⁺/TLC/Apalache `FinalizationAtomicity`, `FinalizationWorkerRetry`, and `FinalizationBoundHead` plus split-commit, early-effect, stale-overwrite, failure-as-completion, late-bound-state-regression, regressive-publication, and lost-wake controls; Rust finalization-ledger and worker-exit races, `bound_finalization_rejects_stale_certificates_and_dropped_finalized_state`, and `loom_finalization_atomicity` |
 | **T-FINALIZATION-SNAPSHOT-CAPTURE** | A reader publishes one coherent durable head, projection cursor, DAG floor, and certificate. The captured revision remains a durable prefix after later monotonic advances. Projection lag or endpoint change is stale. Stable projected mismatch is corruption. | Rocq [`FinalizationAtomicity.v`](../../../../formal/rocq/finalized_floor/theories/FinalizationAtomicity.v) proves classification, retry, and historical-prefix preservation. TLA+, TLC, and Apalache check [`FinalizationSnapshotRetry.tla`](../../../../formal/tlaplus/finalized_floor/FinalizationSnapshotRetry.tla), stale publication, and false future-head equality. [Loom](../../../../formal/loom/cost_accounting/tests/loom_finalization_atomicity.rs) checks concurrent capture and capture-before-advance. Block-storage tests check immutable historical captures and 128 generated revision pairs. Casper tests check capture retry and non-stale error propagation. |
 | **T-APPLIED-STATE-VALIDATION-PRECEDENCE** | Canonical and exact vector checks occur before dependency lookup. Unequal vectors are invalid. Only an exact vector with a missing required source can defer. | Rocq [`StateEffectProvenance.v`](../../../../formal/rocq/finalized_floor/theories/StateEffectProvenance.v) proves validation precedence. TLA+, TLC, and Apalache check [`AppliedStateValidationPrecedence.tla`](../../../../formal/tlaplus/finalized_floor/AppliedStateValidationPrecedence.tla) and claims-first controls. [Loom](../../../../formal/loom/cost_accounting/tests/loom_applied_state_validation_precedence.rs) checks finite concurrent schedules and the validation property. Rust properties in [`interpreter_util.rs`](../../../../casper/src/rust/util/rholang/interpreter_util.rs) generate exact, extra, duplicate, and misordered vectors. [`state_facts_spec.rs`](../../../../casper/tests/batch2/state_facts_spec.rs) binds false claims and absent extras to production admission. |
-| **T-PROPOSAL-FLOOR-READINESS** | proposal creation requires an exactly materialized candidate floor, complete candidate committee slots, active candidate-floor validator authority, and a fresh required recovery permit; only missing floor materialization schedules finalization, while authority and permit defects cannot create retry traffic | Rocq `ProposalFloorReadiness` and `MainTheorem.finalized_floor_proposal_readiness_correct`; TLA⁺/TLC/Apalache `ProposalFloorReadiness` plus pending-without-request, non-floor-request, and readiness-bypass controls; Rust exhaustive classifier and injected proposer scheduling tests |
+| **T-CERTIFIED-REPLAY-ANCHOR** | Protocol-6 proposal and validation replay from the exact accepted floor named by the verified signed commitment. Derived candidate evidence cannot replace that floor. | Rocq `CertifiedReplayAnchor` and `MainTheorem.finalized_floor_certified_replay_anchor_correct`; TLC/Apalache `StatePreservingForkChoice.Inv_ReplayUsesCommittedFloor` plus replay-substitution control; Rust exact-binding property, proposer replay-context test, receiver validation path, merge replay regression, and two Loom interleavings. |
+| **T-PROPOSAL-FLOOR-READINESS** | Proposal creation requires complete certified committee slots, active certified authority, and a fresh required recovery permit. Candidate evidence cannot gate proposal. Finalizer progress cannot cancel a created proposal. | Rocq `ProposalFloorReadiness` and `MainTheorem.finalized_floor_proposal_readiness_correct`; TLA⁺/TLC/Apalache `ProposalFloorReadiness` plus ten isolated controls; Rust exhaustive classifier and injected proposer scheduling tests. |
 | **T-PENDING-WORK-READINESS** | Heartbeat and proposal selection use one classifier over fresh work, retry custody, terminality, parent scope, time, and floor-window expiry. | Rocq checks `ProposalFloorReadiness.pending_work_readiness_contract`. TLC and Apalache check `PendingWorkReadiness` and the retry-blind control. Rust checks the five-input property and Loom transfer and terminalization races. |
 | **T-DEPLOY-LIFECYCLE-FLOOR-EFFECT** | Every durable floor commit runs an idempotent lifecycle effect. A failed settlement terminates only after exact adopted-LFB state membership. Markers and frozen proposal floors cannot authorize cleanup. Unreadable history retains custody. | Rocq checks `DeployLifecycleFinalization`, `restore_readiness_contract`, and their `MainTheorem` capstones. TLC and Apalache check the safe model and four controls. Rust checks decisions, projections, adopted state, restore horizons, and Loom races. |
 | **T-LIFECYCLE-ANCHOR-SEPARATION** | A terminal occurrence anchor names a block that contains the deploy. A separate finalized floor names the replay state that determined the verdict. | Rocq checks `DeployLifecycleFinalization.deploy_lifecycle_finalization_contract` and its `MainTheorem` capstone. TLC and Apalache check anchor invariants and the floor-substitution control. Rust checks independent hashes and Loom publication races. |
@@ -1505,7 +1618,10 @@ the trust root under every capstone.
 | `CommitteeTransition.v` | Foundation, CliqueOracle | Separation of replayed post-state bond serialization from finalized-floor authority. It proves exact committee weights, inactive-stake independence, exact authority, accepted-only registration, promotion ordering, and delayed eligibility. |
 | `HeartbeatFinalityBackpressure.v` | — | finalized-height-offset leader membership and uniqueness; earliest-uncompleted cadence, minimality, completeness, and skipped-wake preservation; node-local delivered latest messages and captured views; selected-layer creator identity and state/causal descent; concrete A→B→A dual mutual-clique witness; serialized proposal reservation; nonstarting/starting outcome refinement; pending-plus-recovery composition; selected-leader and no-eager-support authority; ordered completion and floor-reset behavior; and the axiom-free `proposal_scheduler_end_to_end` and `heartbeat_backpressure_end_to_end` contracts |
 | `FinalizationAtomicity.v` | — | one-winner compare-and-append, exact predecessor/state-lineage binding, stale revision/head inertness, fresh-evaluation necessity, validation/commit race closure, stale snapshot non-publication, historical-prefix durability, finite-prefix retry, DAG-ancestry-insufficiency witness, failed-worker non-completion and retry, newer-success subsumption, immutable-record idempotence and commutation, monotonic publication, atomic rooted-genesis bootstrap, write-free exact genesis assertion, conflicting/partial genesis rejection, append-preserved root identity, crash-preserved records, ordered projection, contiguous effect completion, compaction bounds, and restart-preserved root and cursors |
-| `ProposalFloorReadiness.v` | — | Proposal creation requires materialized state and complete authority. Only floor-materialization deferral requests finalization. The module proves retry classification, transfer readiness, terminal exclusion, and the combined contracts. |
+| `RestoreRetryOwnership.v` | — | exclusive generation ownership, bounded retry, stale-result noninterference, ABA resistance, terminal failure publication, estimator preservation, restart renewal, and permanent Running commit |
+| `SettledTicketTransaction.v` | — | exclusive claim ownership, precommit evidence and budget rollback, durable commit, duplicate stuttering, idempotent retry, postcommit cleanup, and restart reconciliation |
+| `CertifiedReplayAnchor.v` | — | Protocol-6 replay reads the exact committed floor state. Derived finalizer evidence cannot change accepted replay. |
+| `ProposalFloorReadiness.v` | — | Proposal creation reads certified authority and permit state. Candidate finalizer evidence cannot change readiness. The module also proves pending-work classification. |
 | `DeployLifecycleFinalization.v` | — | Successful effects have priority. Unreadable history abstains. Adopted failed settlements terminate immediately. Restore readiness gates evaluation. Markers and frozen floors are not settlement evidence. Occurrence and state anchors remain separate. |
 | `FinalizerFloorMaterialization.v` | CertifiedFloorPromotion | target-bound dual-certificate validation, target-substitution rejection, propagated-coverage decision equivalence, unique highest exact candidate, and the concrete state-certified secondary-parent witness missed by main-parent-only discovery |
 | `DivergentFinalizationHistories.v` | — | same-target convergence with distinct local revisions and digests, and rejection of cross-node local-ledger identity as consensus authority |
@@ -1517,7 +1633,7 @@ the trust root under every capstone.
 | `FtExact.v` | — | **A9 exact-integer FT** (`ft_exact_iff_ratio`/`_strict`, `ft_exact_mono_q`, `ft_exact_no_overflow`): the exact test `2q·den ≥ S(den+num)` IS the f32 ratio test cleared of denominators, monotone in `q`, overflow-free in i128 |
 | `FinalizerProgress.v` | — | finite scan result distinguishes `Selected`, `Exhausted`, and `Inconclusive`; selected candidates are ready, exhaustive absence covers every candidate, complete scanning reaches any ready candidate, and enqueue-time deduplication preserves exact membership while prohibiting duplicate scheduled work; a fixed prefix admits a starvation witness |
 | `StateLineageFinality.v` | — | abstract certification/admissibility separation; concrete stale-merge counterexample and safe off-main-spine rebase; proof that main ancestry is irrelevant to certified state-preserving admission; promotion preserves every committed state under any reflexive/transitive preservation relation |
-| `MainTheorem.v` | all | capstones including exact-source occurrence disposition, recovery admission and leadership, protocol-tagged deploy identity separation, merge/recovery activation, terminal funding admission, admission/effect alignment, the C1/C5/C1′ bundle, complete finalizer progress, abstract admission safety, concrete state-effect provenance, exact occurrence selection, certificate refinement, universal certified-floor promotion, latest-message coverage equivalence, linear-snapshot reuse, exact finalizer materialization alignment, exact target-deploy observation, snapshot floor-materialization closure, committee-transition safety, heartbeat recovery/backpressure refinement, atomic finalization publication, typed proposal readiness, crash-recovery cursor safety, local-witness identity separation, live minority-fork recovery, and exact stale-sibling settlement/rehome recovery |
+| `MainTheorem.v` | all | capstones including exact-source occurrence disposition, recovery admission and leadership, protocol-tagged deploy identity separation, merge/recovery activation, terminal funding admission, admission/effect alignment, the C1/C5/C1′ bundle, complete finalizer progress, abstract admission safety, concrete state-effect provenance, exact occurrence selection, certificate refinement, universal certified-floor promotion, latest-message coverage equivalence, linear-snapshot reuse, exact finalizer materialization alignment, exact target-deploy observation, snapshot floor-materialization closure, committee-transition safety, heartbeat recovery/backpressure refinement, atomic finalization publication, approved-state restoration ownership, settled-ticket transaction safety, typed proposal readiness, crash-recovery cursor safety, local-witness identity separation, live minority-fork recovery, and exact stale-sibling settlement/rehome recovery |
 
 The finalization model is a faithful monotone abstraction of `ft_witnessed`:
 `Finalized c J b` := *some majority-weight sub-committee all agree on `b`* (a
@@ -1728,7 +1844,7 @@ The exhaustive node-local TLC configuration proves non-empty parents, exact back
 vote-subset-causal, stale-tip retention without voting, intrinsic-invalidity
 exclusion, maximal-antichain coverage, GHOST-head preservation, evidence-root
 retention, floor-aware recovery narrowing, exact floor rebasing, funding-effect
-retention, promotion, and eventual proposal from `F`. It generates 17,169 states,
+retention, promotion, and eventual proposal from `F`. It generates 17,589 states,
 finds 808 distinct states, and closes the complete graph at depth 10. A separate safe
 zero-depth configuration proves that deterministic causal expiry restores liveness.
 Nine controls independently reproduce finalized-effect loss without floor rebasing,
@@ -1980,6 +2096,46 @@ deferrals cannot collapse, mismatched artifacts cannot release a waiter,
 duplicate requests are pointwise idempotent, and independent requests commute.
 `typed_local_validation_recovery_correct` is axiom-free and is included in the
 bootstrap replay and recovery capstone.
+
+`SettledTicketTransaction.tla` covers the next historical-dependency boundary.
+A restored node can receive a target below its approved anchor after a bonded citer requests that target.
+The model schedules two target hashes and two workers independently.
+
+The safe transaction retains citation evidence until certified DAG insertion.
+It gives one claim owner one budget reservation and releases both after precommit failure.
+The durable DAG record becomes authoritative before local buffer and retriever cleanup.
+Equal concurrent deliveries therefore commit once and never enter ordinary validation.
+
+TLC generates 1,744 states and 294 distinct states through depth 12.
+Apalache checks the complete invariant set through symbolic length 12.
+Seven controls also isolate forged proof acceptance and lost restart budget.
+The weakly fair TLC specification proves eventual cleanup of each committed edge.
+
+`SettledTicketTransaction.v` proves the corresponding rules for unbounded evidence and budget values.
+The module also proves cleanup permanence and restart reconciliation.
+The finalized-floor capstone imports the theorem without assumptions.
+
+Production refinement uses an opaque validated witness at the storage boundary.
+The witness checks content hashes, signatures, citation, approved anchor, bond generations, positive stake, schema, and ruleset.
+The DAG rejects uncertified settled-history insertion.
+Startup rejects altered records and reconstructs durable admission budget.
+Failure-injection, generated digest, restart, concurrent-delivery, and Loom regressions test the refinement boundaries.
+
+`RecoveryBudgetEpisodes.tla` composes durable settled-admission accounting with volatile keyed artifact recovery.
+The durable episode advances only after certified finalization-ledger progress.
+Restart preserves its unique charges and exact usage.
+
+The volatile window tracks one entry for each exact artifact key.
+Private generative identities distinguish current dispatches from retained stale handles.
+Timeout and cancellation restore retry eligibility through finite maximum backoff.
+
+TLC exhausts separate finite ledger, window, composition, and liveness configurations.
+Apalache checks the bounded typed composition.
+Fifteen unsafe controls isolate identity reuse, stale mutation, durability loss, capacity eviction, reset, and unbounded batching.
+
+`RecoveryBudgetEpisodes.v` proves the unbounded transition contract without unexpected assumptions.
+Rust properties compare every generated transition with an independent logical model.
+Nine Loom tests explore completion, replacement, resolution, progress, deferral, timeout, cancellation, and restart races.
 
 `FundingAdmissionLifecycle.tla` covers the state-bound admission decision from
 proposal through finalization. The safe model records the exact supply view and
@@ -2265,17 +2421,17 @@ multi-node integration suite to pass for the candidate binary.
 | Rust build | `cargo check -p casper --all-targets` / `-p rspace_plus_plus` clean |
 | Convergence green-gate | 3/3 pass; 400+-block soak holds all fix invariants (422 blocks) |
 | Rust unit/regression | combine + terminal-apply launder (`checked_add`), discriminating true-launder (sum wraps non-negative), wrapping-group diff recovery, guard-trip cold-fallback, Case-B dominating-tip, incompatible-fork `Err`, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip, complete finalizer scan, clique-certified stale-state rejection, causal-certificate/state-support separation, asymmetric $`60/20/15`$ off-main advancement, $`40/35/25`$ multi-voter parallel promotion, universal dual-certified floor promotion at exact `FTT=0.1`, all six parent permutations, generated branch-depth/order cases with pairwise coverage/support/weight/verdict equivalence, non-descending coverage rejection, narrow linear-reuse controls, state-rejection control, exact three-way/repeated/permutation effect preservation, unrelated-rejection scan precision, wire/metadata round trips, validation tamper rejection, state-frontier property cases, and real conflicting-deploy floor rebase — all pass |
-| Rocq | Full development builds use `-j1`. **104 headline results are axiom-free.** The results include lifecycle restore readiness and the cataloged consensus properties. |
+| Rocq | Full development builds use `-j1`. **105 headline results are axiom-free.** The results include bonded-active lifecycle laws and the cataloged consensus properties. |
 | Rocq kernel (coqchk) | **independent kernel re-check** of `FinalizedFloor.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3) |
-| TLA⁺ / Apalache | `SpecFixed`, `FinalizedFloorScan`, `FinalizerProgress`, the 4,155-generated / 961-distinct-state `WitnessEquivalentCarrier` model, the complete 144-state two-node asymmetric-stake `StateLineageFinality` model, the 144-state / 649-generated exact `StateEffectProvenance` model, the 808-distinct-state / 17,169-generated node-local `StatePreservingForkChoice` safety/liveness model at depth 10 plus the axiom-free arbitrary-node product lifting, the 3,411-state / 12,877-generated three-validator `ParallelValidatorConsensus` split-transition model, its 58-state / 150-generated stale-candidate concurrency window, the 225-state / 1,051-generated `CertifiedFloorPromotion` model, the 16-state / 27-generated `LatestMessageCoverage` worklist model, the 10-state / 18-generated `SnapshotFloorMaterialization` interleaving model, the 4,194-state / 22,468-generated eventual-synchrony `HeartbeatFinalityBackpressure` model and its `1/4/5` exact-weight variant, its 4,338-state / 22,960-generated existing-candidate variant, the 17,766-state / 113,968-generated asynchronous heartbeat safety model, the 287,496-state / 1,123,849-generated arbitrary-wake `HeartbeatRecoveryCadence` model, the 296,424-state / 1,885,257-generated `PendingDeployHeartbeatComposition` model, its 551,136-state / 2,892,275-generated ingress-safety projection, the 1,002-state / 2,542-generated `ProposerAdmissionCoalescing` model, the 8-generated / 6-distinct-state `DivergentFinalizationHistories` model, the 264,205-generated / 16,984-distinct-state `LiveMinorityForkRecovery` model, the 1,061,249-generated / 153,856-distinct-state `RecoveryCommitteeTransition` model at depth 18, the 58,321-generated / 11,880-distinct-state `ObjectiveEquivocation` model at depth 27, and the 769-generated / 256-distinct-state `ObjectiveEvidenceAuthorization` model at depth 17 pass under TLC. `WitnessEquivalentCarrier` also passes Apalache through length 5, while all four exact controls fail under both checkers by length 3. The recovery controls reject remote local-ledger identity, remote-head mutation, missing dependency closure, and global proposal pausing. `RecoveryCommitteeTransition` also passes Apalache through length 6 with separate replayed-post-state and serialized-cache variables; its fourteen TLC/Apalache controls cover authority, registration, root, sender-key, latest-message, positivity, cache, and legacy-index boundaries. `ObjectiveEquivocation` passes Apalache through length 8 with fourteen controls spanning objective discovery, incarnation grouping, authority, repair, unary selection, and vote projection. `ObjectiveEvidenceAuthorization` passes through length 12; its seven controls independently expose pair-before-epoch selection, cross-epoch acceptance, stale snapshot generation, stale snapshot bond, offender-wide unary suppression, pair-only activation loss, and proposer/receiver predicate drift. `ProtocolV5EndToEnd` passes its 19-invariant symbolic composition through length 5; all twelve guided defect traces reproduce their named violation under both TLC and Apalache, while the unconstrained action product is covered compositionally by the exhaustive component models and axiom-free Rocq capstone. Heartbeat Apalache checks pass at safe bounds 5, 4, and 10 respectively and reach explicit promotion/missing-state/backlog/cadence witnesses; the pending-composition and proposer-coalescing symbolic checks remain separately bounded; the other completed bounded Apalache model families and `EffectCausalClosure` pass; the node-local Apalache projection checks every `StatePreservingForkChoice` invariant through bound 10, the parallel-validator model through routine bound 6 and deep bound 8, the stale-window guard through bound 2, and the one-step unsafe stale-promotion counterexample; TLC exhausts each finite local schedule graph while Rocq lifts node-local preservation and independent-action commutation to arbitrary node products; write-loss, cut-above-floor, cap-starvation, budget-restart, timeout-restart, stale-state promotion, unsupported-state-floor promotion, erroneous main-spine admission, single-base accepted-effect loss, floor-unprotected parent replay, early support, promotion without local replay, shared-root authority/publication, non-atomic promotion, main-spine-only certified-floor starvation, unordered late coverage, parent-only incomplete snapshot provenance, eager heartbeat backlog, fixed-offline-leader starvation, causal-only promotion, collapsed heartbeat cadence, pending-masked recovery, premature round completion, preterminal pool removal, missing recovery reservation, unbounded duplicate admission, ambient empty authority, lost pending wake, stale recovery permit, blanket block-lineage rejection, direct-only rejection, pair-before-epoch authorization, split-root slash authority, pair-only activation loss, and authorization-predicate drift controls reproduce their counterexamples |
+| TLA⁺ / Apalache | `SpecFixed`, `FinalizedFloorScan`, `FinalizerProgress`, the 4,155-generated / 961-distinct-state `WitnessEquivalentCarrier` model, the complete 144-state two-node asymmetric-stake `StateLineageFinality` model, the 144-state / 649-generated exact `StateEffectProvenance` model, the 808-distinct-state / 17,589-generated node-local `StatePreservingForkChoice` safety/liveness model at depth 10 plus the axiom-free arbitrary-node product lifting, the 3,411-state / 12,877-generated three-validator `ParallelValidatorConsensus` split-transition model, its 58-state / 150-generated stale-candidate concurrency window, the 225-state / 1,051-generated `CertifiedFloorPromotion` model, the 16-state / 27-generated `LatestMessageCoverage` worklist model, the 10-state / 18-generated `SnapshotFloorMaterialization` interleaving model, the 4,194-state / 22,468-generated eventual-synchrony `HeartbeatFinalityBackpressure` model and its `1/4/5` exact-weight variant, its 4,338-state / 22,960-generated existing-candidate variant, the 17,766-state / 113,968-generated asynchronous heartbeat safety model, the 287,496-state / 1,123,849-generated arbitrary-wake `HeartbeatRecoveryCadence` model, the 296,424-state / 1,885,257-generated `PendingDeployHeartbeatComposition` model, its 551,136-state / 2,892,275-generated ingress-safety projection, the 1,002-state / 2,542-generated `ProposerAdmissionCoalescing` model, the 8-generated / 6-distinct-state `DivergentFinalizationHistories` model, the 264,205-generated / 16,984-distinct-state `LiveMinorityForkRecovery` model, the 2,118,145-generated / 330,752-distinct-state `RecoveryCommitteeTransition` model at depth 20, the 13-generated / 9-distinct-state two-replica `ActiveValidatorBoundaryConvergence` model at depth 5, the 58,321-generated / 11,880-distinct-state `ObjectiveEquivocation` model at depth 27, and the 769-generated / 256-distinct-state `ObjectiveEvidenceAuthorization` model at depth 17 pass under TLC. `WitnessEquivalentCarrier` also passes Apalache through length 5, while all four exact controls fail under both checkers by length 3. The recovery controls reject remote local-ledger identity, remote-head mutation, missing dependency closure, and global proposal pausing. `RecoveryCommitteeTransition` also passes Apalache through length 6 with separate replayed bond-ledger and active-set caches; its seventeen controls cover authority, registration, root, sender-key, latest-message, positivity, cache, activation, and legacy-index boundaries. `ActiveValidatorBoundaryConvergence` passes Apalache through length 6; arrival-order and immediate-activation controls fail under both checkers. `ObjectiveEquivocation` passes Apalache through length 8 with fourteen controls spanning objective discovery, incarnation grouping, authority, repair, unary selection, and vote projection. `ObjectiveEvidenceAuthorization` passes through length 12; its seven controls independently expose pair-before-epoch selection, cross-epoch acceptance, stale snapshot generation, stale snapshot bond, offender-wide unary suppression, pair-only activation loss, and proposer/receiver predicate drift. `ProtocolV5EndToEnd` passes its 19-invariant symbolic composition through length 5; all twelve guided defect traces reproduce their named violation under both TLC and Apalache, while the unconstrained action product is covered compositionally by the exhaustive component models and axiom-free Rocq capstone. Heartbeat Apalache checks pass at safe bounds 5, 4, and 10 respectively and reach explicit promotion/missing-state/backlog/cadence witnesses; the pending-composition and proposer-coalescing symbolic checks remain separately bounded; the other completed bounded Apalache model families and `EffectCausalClosure` pass; the node-local Apalache projection checks every `StatePreservingForkChoice` invariant through bound 10, the parallel-validator model through routine bound 6 and deep bound 8, the stale-window guard through bound 2, and the one-step unsafe stale-promotion counterexample; TLC exhausts each finite local schedule graph while Rocq lifts node-local preservation and independent-action commutation to arbitrary node products; write-loss, cut-above-floor, cap-starvation, budget-restart, timeout-restart, stale-state promotion, unsupported-state-floor promotion, erroneous main-spine admission, single-base accepted-effect loss, floor-unprotected parent replay, replay-floor substitution, early support, promotion without local replay, shared-root authority/publication, non-atomic promotion, main-spine-only certified-floor starvation, unordered late coverage, parent-only incomplete snapshot provenance, eager heartbeat backlog, fixed-offline-leader starvation, causal-only promotion, collapsed heartbeat cadence, pending-masked recovery, premature round completion, preterminal pool removal, missing recovery reservation, unbounded duplicate admission, ambient empty authority, lost pending wake, stale recovery permit, blanket block-lineage rejection, direct-only rejection, pair-before-epoch authorization, split-root slash authority, pair-only activation loss, and authorization-predicate drift controls reproduce their counterexamples |
 | Finalizer materialization refinement | `FinalizerFloorMaterialization` exhausts 9,289 generated / 1,849 distinct states to depth 15 with two independently delivered node views and proves strict-boundary rejection, state-rejected-sibling exclusion, complete secondary-parent discovery, exact target binding, dual certification, non-starvation, and eventual materialization. Apalache checks the safe model through length 8. Main-parent-only discovery and causal-only target substitution reproduce their exact named violations under TLC and Apalache. |
-| Deploy recovery TLA⁺ | `DeployRecovery` checks both validators online, concurrent source-owner custody, bounded retry expiry, and finalization progress; its heartbeat, foreign-custody, and parallel-owner witness configurations distinguish liveness failure from valid independent recovery. `RecoveryFrontierCoverage` checks collective selected-parent coverage, bounded lease escape, owner retry, and independent ordinary progress; its one-parent control reproduces split-frontier deferral. `DeployIdentitySeparation` passes under TLC and Apalache, while the raw-key controls reproduce cross-protocol rejection aliasing. `MergeRecoveryCoherence`, `EffectCausalClosure`, `RejectionReasonConfluence`, `ProtocolActivationCoherence`, all three `ProtocolVersionLifecycle` safe configurations, `ApprovedStateReplay`, the 9,025-state concurrent `LocalValidationRecovery`, `FundingAdmissionLifecycle`, and `AdmissionEffectAlignment` pass; their targeted unsafe controls reproduce finalized-receipt masking, partial-chain retention, exact independent-effect loss, orphaned transitive-effect acceptance, state-record mismatch, identity mismatch, last-writer reason divergence, floor-version selection, mixed scope, malformed encoding, stale ceremony, version non-adoption, proposer bypass, receiver disagreement, unsupported startup, current-context historical root divergence, immediate local-fault self-requeue, block/state artifact-identity collapse, inconclusive-block drop, false objective invalidity from local absence, live-state funding disagreement, indefinitely pending underfunding, and validator proposal failure from raw status counting |
+| Deploy recovery TLA⁺ | `DeployRecovery` checks both validators online, concurrent source-owner custody, bounded retry expiry, and finalization progress; its heartbeat, foreign-custody, and parallel-owner witness configurations distinguish liveness failure from valid independent recovery. `RequestQuarantineLifecycle` preserves bounded dependency evidence across retry exhaustion, receipt, deferral, quarantine expiry, and waiter pruning; three controls reproduce premature cleanup and false sibling wakeup. `SettledTicketTransaction` preserves evidence, budget ownership, authentic certified commit, duplicate safety, retryable cleanup, and restart state. TLC generates 1,744 states and 294 distinct states. Seven controls reproduce each unsafe boundary under TLC and Apalache. The fair TLC specification proves eventual cleanup after durable commit. `RecoveryFrontierCoverage` checks collective selected-parent coverage, bounded lease escape, owner retry, and independent ordinary progress; its one-parent control reproduces split-frontier deferral. `DeployIdentitySeparation` passes under TLC and Apalache, while the raw-key controls reproduce cross-protocol rejection aliasing. `MergeRecoveryCoherence`, `EffectCausalClosure`, `RejectionReasonConfluence`, `ProtocolActivationCoherence`, all three `ProtocolVersionLifecycle` safe configurations, `ApprovedStateReplay`, the 9,025-state concurrent `LocalValidationRecovery`, `FundingAdmissionLifecycle`, and `AdmissionEffectAlignment` pass; their targeted unsafe controls reproduce finalized-receipt masking, partial-chain retention, exact independent-effect loss, orphaned transitive-effect acceptance, state-record mismatch, identity mismatch, last-writer reason divergence, floor-version selection, mixed scope, malformed encoding, stale ceremony, version non-adoption, proposer bypass, receiver disagreement, unsupported startup, current-context historical root divergence, immediate local-fault self-requeue, block/state artifact-identity collapse, inconclusive-block drop, false objective invalidity from local absence, live-state funding disagreement, indefinitely pending underfunding, and validator proposal failure from raw status counting |
 | Z3 | FT-algebra + BitVec-64 IntegerAdd launder (exists on wrap; checked-combine launder-free) + **G2 `ft_ppm_roundtrip`** (FPA Float32/64 RNE: `to_ppm` monotone/range, ½ppm round-trip, exact-decision display-invariance) |
 | Sage | FT-algebra identity + finalization-margin monotonicity |
 | Wolfram (optional) | with `RUN_WOLFRAM=1`, service-rate regimes, exact weighted-quorum regions, and correctness-constrained repair-design/crossover analyses pass under the licensed kernel; 227,264 small rational and 232,064 production-PPM quorum cases have no mismatch; exact-frontier deferral is the sole feasible bounded parent policy among four modeled families; the default gate acquires no license |
-| Loom (concurrency) | **C10** `loom_frontier_floor_cache` — the write-once `floor_index`/`frontier_index` memoization observes no torn/regressed value on any interleaving (the concurrent realization of the sequentially-proved T-CACHE; real guarantee = idempotence + LMDB single-key MVCC). `loom_committee_transition` explores concurrent registration, promotion, and head drift: same-block post-state cannot self-authorize, no unregistered validator gains authority, and head drift cannot change authority or synchrony. `loom_objective_equivocation` exhausts six models covering concurrent successful sibling admission, opposite local-invalid classifications, interleaved old-generation/old-epoch/current siblings, proposer/receiver predicate parity, non-positive authority, and exact-key unary suppression. `loom_live_minority_fork_recovery` exhausts remote-tip/local-finalizer races, duplicate and reordered advice, post-capture admission retry, atomic local head/effect publication, and independent validator progress without a shared publication lock. `loom_local_validation_recovery` exhausts duplicate same-block waiters racing artifact arrival, block/state release isolation, and independent genesis/restored validator recovery without shared request state. `loom_finalization_carrier_wakeup` exhausts park/admit races, duplicate wake coalescing, different honest digests for one floor/state, and wrong-state non-wakeup. |
+| Loom (concurrency) | `loom_frontier_floor_cache` checks write-once floor cache publication. `loom_committee_transition` checks six registration, boundary, promotion, atomic projection, inactive-weight, and head-drift models. `loom_settled_ticket_transaction` checks equal delivery, rollback, cleanup failure, duplicate cleanup, and restart schedules. Other Loom suites check objective evidence, minority-fork recovery, local validation, carrier wakeups, and finalization races. |
 | Finalizer concurrency refinement | `loom_finalization_atomicity::frozen_target_cannot_mix_with_a_concurrent_latest_message_arrival` proves that a frozen requested/selected target and its publication cannot be retargeted by a concurrent ambient latest-message update. The concrete finalizer property compares optimized all-parent coverage, every per-target causal decision, the state/current-floor eligible set, and greatest-candidate selection with an exhaustive pairwise oracle. |
-| Rust proptest | **G2** `prop_ft_ppm_provenance` (`reconcile==onchain`, real `to_ppm` round-trip/range, genesis embed↔read) plus **P1** `prop_bonds_from_floor`: seven transition properties cover exact replayed post-state serialization, no same-block self-authorization, accepted-only registration, authorization after promoted registration, head/post-state independence, cache mutation and duplicate rejection, and exact floor justifications. `carrier_selection_is_permutation_invariant_and_preserves_digest_pairing` covers 256 generated carrier identities, witness digests, and insertion orders. |
+| Rust proptest | `prop_bonds_from_floor` checks thirteen ledger, active-set, boundary, cap, authority, cache, identity, and ordering properties. Other properties check threshold provenance and carrier selection. |
 
 **Coverage matrix (§4).** After the Phase-7 strengthening every catalog item maps to
 a concrete Rocq/TLA⁺/Z3/Sage artifact or Rust test — including the two seams the
@@ -2432,7 +2588,7 @@ full-resolution SVG.
 
 [![Diagram 10 — parallel immutable finalizer evaluations converge at one compare-and-append ledger transaction; the winning immutable manifest is projected in order before idempotent receipted effects, while stale workers are inert and durable cursors resume unfinished work after restart](./diagrams/10-finalization-atomicity-recovery.svg)](./diagrams/10-finalization-atomicity-recovery.svg)
 
-*Provenance: specification R-FINALIZATION-APPEND through R-FINALIZATION-SCHEDULER; Rocq `FinalizationAtomicity.v` and `ProposalFloorReadiness.v`; TLA⁺/Apalache `FinalizationAtomicity.tla`, `FinalizationWorkerRetry.tla`, `ProposalFloorReadiness.tla`, `FinalizationBoundHead.tla`, `FinalizationRecovery.tla`, and `FinalizationGenesisIdentity.tla`; Rust finalization-ledger unit/property/thread tests, typed proposal-deferral regressions, the exact state-regression and rooted-restart storage tests, and `loom_finalization_atomicity`.*
+*Provenance: specification R-FINALIZATION-APPEND through R-CERTIFIED-REPLAY-ANCHOR; Rocq `FinalizationAtomicity.v`, `CertifiedReplayAnchor.v`, and `ProposalFloorReadiness.v`; TLA⁺/Apalache finalization and proposal-readiness models; Rust ledger, replay-anchor, proposal, state-regression, and restart tests; Loom finalization and replay-anchor interleavings.*
 
 ### 8.11 Exact target-deploy observation across intermediate LFB progress
 

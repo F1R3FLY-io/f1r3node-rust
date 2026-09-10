@@ -13,6 +13,8 @@ pub mod lfs_block_requester;
 pub mod lfs_horizon_requester;
 pub mod lfs_tuple_space_requester;
 pub mod multi_parent_casper;
+mod recovery_actor_inbox;
+mod recovery_service_rotation;
 pub mod running;
 pub mod runtime_state_requester;
 pub mod snapshot_chunk_retriever;

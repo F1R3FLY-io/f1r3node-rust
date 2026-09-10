@@ -15,10 +15,9 @@ This document specifies how a node turns a valid finalization result into a cras
 A **finalization request** asks the local node to recompute its last finalized block (LFB). A request is scheduling work, not a vote.
 
 A **recovery deferral reason** is a typed explanation for refusing to create a
-block from a proposal snapshot. `FinalizedFloorMaterializationPending` is the
-only reason that schedules finalization automatically. Incomplete committee
-slots, an inactive proposer, and a stale recovery permit are authority failures
-and remain distinct fail-closed outcomes.
+block from a proposal snapshot. Incomplete certified committee slots, an
+inactive certified proposer, and a stale recovery permit are distinct
+fail-closed outcomes. Proposal deferral does not schedule finalizer work.
 
 A **finalization evaluation** reads an immutable DAG snapshot and applies the existing Casper finalizer. Evaluations may overlap.
 
@@ -122,6 +121,10 @@ remain a valid endpoint. A retry after revision $`H>0`$ therefore returns
 `AlreadyCanonical` without writing any key. A conflict, partial bootstrap, or
 unrooted historical head fails closed.
 
+The [bounded ledger audit](bounded-finalization-ledger-audit.md) specifies the pending paging repair and its formal models.
+The repair preserves full validation before startup readiness.
+Its resource contract distinguishes total historical work from bounded individual steps.
+
 ### 3.1 Genesis identity algorithm
 
 ```text
@@ -173,15 +176,14 @@ rules, or ledger publication. It repeats the same complete evaluation boundary
 from a fresh coherent base. Backoff limits local resource pressure; it is not a
 consensus timeout and cannot turn failure into a negative vote.
 
-Before replay or deploy selection, block creation derives the candidate's exact
-certified consensus context and compares it with the context rooted at the
-durable materialized floor. A mismatch returns
-`FinalizedFloorMaterializationPending`; the proposer idempotently issues a new
-finalization request and leaves all deploys in storage. Once materialization
-completes, a fresh snapshot retries ordinary creation. A matching context with
-incomplete latest-message slots or an inactive proposer returns its own typed
-deferral without scheduling finalization, because advancing the local ledger
-cannot repair either authority defect.
+Before replay or deploy selection, protocol-6 block creation captures one
+durable finalization certificate. The certificate identifies replay floor
+$`F`$, its state, and its authority context. Block creation does not compare
+$`F`$ with a new floor candidate from current justifications. The independent
+finalizer can evaluate that candidate while block creation replays from $`F`$.
+Finalizer progress cannot cancel a created proposal. Candidate disagreement
+cannot create proposal backpressure. Incomplete certified slots, inactive
+certified authority, and stale recovery permits remain typed deferrals.
 
 ### 4.1 Evaluation and append
 
@@ -334,10 +336,74 @@ by receiver-local witness identity. This boundary is specified and verified in
 
 Block admission remains concurrent with finalization evaluation. The global DAG write lock is held only while projecting a committed immutable manifest into metadata; it is not held while computing clique support, scanning candidates, replaying contracts, or waiting for a worker permit.
 
+### 6.1 Settled-history admission transaction
+
+Approved-state restoration can omit a historical dependency that a later bonded block cites.
+The receiving node must restore that dependency without applying live-chain validation to incomplete local history.
+
+The settled-history admission transaction has three phases.
+
+| Phase | Owned state | Permitted result |
+| --- | --- | --- |
+| Prepare | durable citation evidence, one target claim, and one budget reservation | continue, reject, or roll back |
+| Commit | target block and its certified settled-history proof in the DAG | publish one durable admission |
+| Cleanup | Casper-buffer entry, state-root requests, and retriever acknowledgment | complete or retry cleanup |
+
+The commit point is the successful certified DAG insertion.
+Before that point, every error releases the claim and reservation.
+The error cannot remove durable citation evidence.
+After that point, cleanup failure cannot restore the ticket or route the block into ordinary validation.
+
+The proof binds target identity to one approved anchor and one verified bonded citer.
+The opaque witness checks target and citer signatures and all three content hashes.
+It also binds protocols, bond generations, citer stake, admission schema, and ruleset digest.
+An uncertified settled-history insertion is invalid at the storage boundary.
+
+The DAG and Casper-buffer stores use one ordered local critical section.
+This critical section prevents an observable cleanup-before-insert state.
+The durable record can temporarily coexist with its buffer edge after a cleanup failure.
+Live delivery and startup reconciliation remove that edge without reopening admission.
+Storage preparation, signature checks, state-root requests, and network acknowledgment remain outside the critical section.
+
+`SettledTicketTransaction.tla` generates 1,744 states and 294 distinct safe states through depth 12.
+Apalache checks the same invariants through symbolic length 12.
+Seven controls also reproduce forged proof acceptance and lost restart budget.
+The fair TLC specification proves eventual cleanup of each committed edge.
+
+`SettledTicketTransaction.v` proves the unbounded transaction rules without axioms.
+The Rocq capstone includes its ownership, rollback, durability, duplicate, cleanup, and restart theorems.
+Loom explores delivery, rollback, cleanup failure, duplicate cleanup, and restart schedules.
+
+Rust regressions inject a precommit storage failure and then retry the same target.
+Other tests cover proof authenticity, budget reconstruction, concurrent duplicates, restart, unbonded citers, and atomic cleanup.
+
+### 6.2 Recovery budgets and dispatch identities
+
+Settled-history admission uses one durable budget for each certified recovery episode.
+The episode binds one finalization-ledger revision to its shard, protocol, floor, post-state, and certificate digest.
+
+Each committed target creates one durable `SettledRecoveryCharge`.
+Restart reconstructs usage from these records and cannot restore consumed capacity.
+A later certified episode receives a separate capacity.
+
+State-root and finalization-certificate recovery use bounded volatile keyed windows.
+Each exact key has one active private dispatch identity and one finite lease.
+A stale completion cannot mutate a replacement entry.
+
+Transport timeout applies maximum backoff.
+Caller cancellation drops the strong dispatch identity.
+Lease expiry then restores retry eligibility after maximum backoff.
+
+Restart reconstructs unresolved keys from durable dependency evidence.
+Volatile attempt history restarts at zero.
+Finite key capacity and per-turn batch size bound reconstructed work.
+
+[Recovery budgets and dispatch identities](recovery-budget-episodes.md) specifies the complete design, formal model, and executable evidence.
+
 ## 7. Schema and operations
 
-Protocol-6 admission schema version `12` commits the certified admission and
-atomically rooted hash-chain ledger rules. The immutable `Genesis` record
+Protocol-6 admission schema version `15` commits the certified admission,
+settled-history proof, and atomically rooted hash-chain ledger rules. The immutable `Genesis` record
 requires atomic bootstrap of that anchor, the revision-zero head, and all
 cursors. Existing data with an older schema, without a ledger, or with a partial
 or unrooted ledger is rejected; the node requires a fresh protocol-6 genesis or
@@ -373,6 +439,48 @@ Increasing this value permits more immutable evaluations but also raises peak CP
 | Out-of-order effects close only contiguous prefix | Recovery model; Rocq prefix-extension theorem | property test over arbitrary completion orders; Loom cursor test |
 | Receipt compaction never outruns completion | Recovery invariant; Rocq compaction theorem | restart and compaction regressions |
 | Candidate preserves finalized floor | finalized-floor lineage models and storage precondition | DAG finalization contract tests |
+| Approved-state restoration retains progress | `RestoreRetryOwnership.tla`; Rocq `restore_retry_ownership_contract` | lifecycle properties, `stale_retry_request_failure_cannot_terminate_newer_restore`, and `loom_restore_retry_ownership` |
+| Quarantine retains dependency evidence | `RequestQuarantineLifecycle.tla`; Rocq `request_quarantine_lifecycle_correct` | retry, receipt, expiry, capacity, validation-error, and dependency-pruning regressions |
+| Settled admission commits before cleanup | `SettledTicketTransaction.tla`; Rocq `settled_ticket_transaction_contract` | storage failure and retry, concurrent duplicate, restart, unbonded-citer, atomic-transition, and Loom regressions |
+| Recovery charges survive restart and volatile dispatch stays bounded | `RecoveryBudgetEpisodes.tla`; Rocq `recovery_budget_episodes_correct` | reference-model properties, timeout and cancellation tests, and Loom dispatch races |
+
+### 8.1 Approved-state restoration
+
+An initializing node accepts an approved block only from its configured bootstrap node.
+The approved block must also pass shard and signature validation.
+
+One accepted block increments the restoration generation and changes `Idle` to `Restoring`.
+The new generation identifies the restoration lease.
+Concurrent duplicates cannot acquire another restoration lease.
+The restoration consumes one block receiver and one tuple-space receiver.
+
+A recoverable failure installs both new channel pairs before it restores `Idle` ownership.
+The node then requests another approved block.
+The estimator remains available for the next attempt.
+
+Each replacement request retains the generation that created the request.
+A delayed result can change only the matching `Idle` generation.
+A stale failure cannot terminate an active, `Running`, or newer `Idle` generation.
+This rule also closes the `Idle`-to-`Restoring`-to-`Idle` ABA race.
+
+Three consecutive restoration failures publish one terminal startup error through `EngineCell`.
+The process supervisor can then stop the failed startup.
+A process restart creates a fresh lifecycle and fresh channels.
+
+Successful synchronization creates Casper before it stores the approved block.
+The node stores the approved block before it publishes the Running engine.
+The transition consumes the estimator only after Running publication succeeds.
+
+The fork-choice tip request occurs after Running publication.
+Its failure produces a warning and cannot reopen initialization.
+No fallible post-commit operation can return the node to `Idle`.
+
+`RestoreRetryOwnership.tla` checks the concurrent lifecycle with TLC and Apalache.
+The unsafe controls reproduce four historical and generated failure classes.
+Rocq proves retry, generation, terminal, restart, estimator, and permanent-commit rules.
+Loom checks duplicate delivery, channel publication, terminal bounds, stale results, and post-commit stability.
+The integration regression holds generation A's request result until generation B starts restoration.
+It then proves that A cannot stop B or publish a startup failure.
 
 Run the focused gate:
 
@@ -380,6 +488,7 @@ Run the focused gate:
 ./scripts/check-finalization-atomicity.sh
 cargo test -p block-storage --features test-internals -- --test-threads=1
 cargo test --manifest-path formal/loom/cost_accounting/Cargo.toml --test loom_finalization_atomicity
+cargo test --manifest-path formal/loom/cost_accounting/Cargo.toml --test loom_restore_retry_ownership
 make -C formal/rocq/finalized_floor -j1 theories/MainTheorem.vo
 ```
 

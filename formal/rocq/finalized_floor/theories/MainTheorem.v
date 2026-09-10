@@ -62,6 +62,7 @@ From FinalizedFloor Require Import FundingAdmissionLifecycle.
 From FinalizedFloor Require Import EffectCausalClosure.
 From FinalizedFloor Require Import SettledEffectProbe.
 From FinalizedFloor Require Import StateEffectProvenance.
+From FinalizedFloor Require Import CertifiedReplayAnchor.
 From FinalizedFloor Require Import StateLineageFinality.
 From FinalizedFloor Require Import CertifiedFloorPromotion.
 From FinalizedFloor Require Import SnapshotFloorMaterialization.
@@ -87,10 +88,14 @@ From FinalizedFloor Require Import CandidateScopeDeployRehome.
 From FinalizedFloor Require Import RecoveryFrontierCoverage.
 From FinalizedFloor Require Import StaleSiblingRecovery.
 From FinalizedFloor Require Import CertifiedFloorCommitment.
+From FinalizedFloor Require Import RequestQuarantineLifecycle.
+From FinalizedFloor Require Import SettledTicketTransaction.
+From FinalizedFloor Require Import RecoveryBudgetEpisodes.
 From FinalizedFloor Require Import FinalizationCertificateRetrieval.
 From FinalizedFloor Require Import DependencyMaintenanceRound.
 From FinalizedFloor Require Import WitnessEquivalentCarrier.
 From FinalizedFloor Require Import ObjectiveEvidenceSequenceEligibility.
+From FinalizedFloor Require Import RestoreRetryOwnership.
 
 Theorem finalized_floor_merge_correct :
   (* T-TERM: the main-parent spine walk always reaches genesis. *)
@@ -525,27 +530,33 @@ Theorem committee_transition_correct :
      serialized_post_state_bonds post_state_bonds block =
      post_state_bonds (blk_hash block))
   /\
-  (forall floor_bonds floor_of block
+  (forall floor_bonds floor_active floor_of block
       (post_state_bonds_left post_state_bonds_right : BlockHash -> Committee),
-     authority_committee floor_bonds floor_of block =
-     authority_committee floor_bonds floor_of block)
+     authority_committee floor_bonds floor_active floor_of block =
+     authority_committee floor_bonds floor_active floor_of block)
   /\
-  (forall floor_bonds post_state_bonds floor_of block validator,
-     ~ authorized (authority_committee floor_bonds floor_of block) validator ->
+  (forall floor_bonds floor_active post_state_bonds floor_of block validator,
+     ~ authorized
+         (authority_committee floor_bonds floor_active floor_of block)
+         validator ->
      In validator
        (committee_validators (serialized_post_state_bonds post_state_bonds block)) ->
-     ~ authorized (authority_committee floor_bonds floor_of block) validator)
+     ~ authorized
+         (authority_committee floor_bonds floor_active floor_of block)
+         validator)
   /\
-  (forall floor_bonds floor_of block sender,
-     authority_context_valid floor_bonds floor_of block sender ->
+  (forall floor_bonds floor_active floor_of block sender,
+     authority_context_valid floor_bonds floor_active floor_of block sender ->
      same_validator_set
        (justification_validators block)
        (positive_committee_validators
-         (authority_committee floor_bonds floor_of block)))
+         (authority_committee floor_bonds floor_active floor_of block)))
   /\
-  (forall floor_bonds floor_of block sender,
-     authority_context_valid floor_bonds floor_of block sender ->
-     authorized (authority_committee floor_bonds floor_of block) sender)
+  (forall floor_bonds floor_active floor_of block sender,
+     authority_context_valid floor_bonds floor_active floor_of block sender ->
+     authorized
+       (authority_committee floor_bonds floor_active floor_of block)
+       sender)
   /\
   (forall registered post_state_bonds candidate validator,
      In validator
@@ -567,17 +578,21 @@ Theorem committee_transition_correct :
   (forall registered post_state_bonds candidate,
      ~ promotion_ready false registered post_state_bonds candidate)
   /\
-  (forall floor_bonds post_state_bonds floor_of registered source promoted validator,
+  (forall floor_bonds floor_active post_state_bonds floor_of
+      registered source promoted validator,
      promotion_ready true
        (register_transition true registered post_state_bonds (blk_hash source))
        post_state_bonds
        (blk_hash source) ->
      floor_of promoted = blk_hash source ->
      floor_bonds (blk_hash source) = post_state_bonds (blk_hash source) ->
+     In validator (floor_active (blk_hash source)) ->
      In validator
        (positive_committee_validators
          (serialized_post_state_bonds post_state_bonds source)) ->
-     authorized (authority_committee floor_bonds floor_of promoted) validator)
+     authorized
+       (authority_committee floor_bonds floor_active floor_of promoted)
+       validator)
   /\
   (forall canonical_genesis block,
      admission_valid canonical_genesis OrdinaryReceivedAdmission block ->
@@ -657,7 +672,7 @@ Proof.
                     (conj rejected_transition_cannot_register_new_validator
                       (conj promotion_requires_accepted_registration
                         (conj rejected_transition_cannot_promote
-                          (conj registered_transition_is_eligible_after_floor_promotion
+                          (conj registered_active_transition_is_eligible_after_floor_promotion
                             (conj ordinary_received_block_has_parent
                               (conj approved_genesis_is_the_only_admitted_root
                                 (conj counterfeit_root_is_not_admitted
@@ -673,6 +688,59 @@ Proof.
 Qed.
 
 Print Assumptions committee_transition_correct.
+
+Theorem bonded_active_committee_lifecycle_correct :
+  (forall limit bonds,
+    length (canonical_active limit bonds) <= limit)
+  /\
+  (forall limit bonds validator,
+    In validator (canonical_active limit bonds) ->
+    In validator (positive_committee_validators bonds))
+  /\
+  (forall limit prior_active post_state_bonds,
+    transition_active false limit prior_active post_state_bonds = prior_active)
+  /\
+  (forall limit prior_active post_state_bonds,
+    transition_active true limit prior_active post_state_bonds =
+    canonical_active limit post_state_bonds)
+  /\
+  (forall limit prior_active post_state_bonds validator,
+    ~ In validator prior_active ->
+    ~ In validator
+      (transition_active false limit prior_active post_state_bonds))
+  /\
+  (forall bonds active validator,
+    ~ In validator active ->
+    ~ authorized (active_weight_committee bonds active) validator)
+  /\
+  (forall bonds active,
+    projection_bonds (promote_projection bonds active) = bonds /\
+    projection_active (promote_projection bonds active) = active)
+  /\
+  (forall bonds active,
+    api_bonds (promote_projection bonds active) = bonds)
+  /\
+  (forall bonds active,
+    api_active_bonds (promote_projection bonds active) =
+    active_weight_committee bonds active)
+  /\
+  (forall limit bonds_left bonds_right,
+    bonds_left = bonds_right ->
+    canonical_active limit bonds_left = canonical_active limit bonds_right).
+Proof.
+  exact (conj canonical_active_respects_limit
+          (conj canonical_active_contains_only_positive_bonds
+            (conj off_boundary_transition_preserves_active_committee
+              (conj activation_boundary_selects_canonical_committee
+                (conj off_boundary_bond_does_not_grant_active_membership
+                  (conj inactive_validator_is_not_authorized
+                    (conj promoted_projection_keeps_bonds_and_active_together
+                      (conj api_bonds_exposes_complete_ledger
+                        (conj api_active_bonds_exposes_selected_positive_committee
+                          equal_boundary_inputs_select_equal_active_committees))))))))).
+Qed.
+
+Print Assumptions bonded_active_committee_lifecycle_correct.
 
 Theorem finalized_floor_active_finality_committee_correct :
   (forall weights active bond,
@@ -1092,31 +1160,7 @@ Proof. exact finalization_worker_retry_contract. Qed.
 Print Assumptions finalized_floor_worker_retry_correct.
 
 Theorem finalized_floor_proposal_readiness_correct :
-  (forall permit_required permit_fresh relation slots_complete proposer_active,
-     classify_proposal_readiness permit_required permit_fresh relation
-       slots_complete proposer_active = ProposalReady ->
-     relation = MatchingContext /\
-     slots_complete = true /\
-     proposer_active = true /\
-     (permit_required = false \/ permit_fresh = true))
-  /\
-  (forall permit_required permit_fresh relation slots_complete proposer_active,
-     classify_proposal_readiness permit_required permit_fresh relation
-       slots_complete proposer_active = FloorMaterializationPending ->
-     relation = StrictStatePreservingDescendant /\
-     (permit_required = false \/ permit_fresh = true))
-  /\
-  (forall permit_required permit_fresh relation slots_complete proposer_active,
-     requests_finalization
-       (classify_proposal_readiness permit_required permit_fresh relation
-         slots_complete proposer_active) = true ->
-     materializable relation = true /\ preserves_committed_state relation = true)
-  /\
-  (forall reason,
-     reason = CandidateFloorRegression \/
-     reason = CandidateFloorConflict \/
-     reason = CertifiedContextMismatch ->
-     requests_finalization reason = false).
+  proposal_floor_readiness_spec.
 Proof. exact proposal_floor_readiness_contract. Qed.
 
 Print Assumptions finalized_floor_proposal_readiness_correct.
@@ -1684,6 +1728,69 @@ Proof.
 Qed.
 
 Print Assumptions finalized_floor_state_effect_provenance_correct.
+
+Theorem finalized_floor_certified_replay_anchor_correct :
+  forall (Effect Floor : Type), @certified_replay_anchor_contract Effect Floor.
+Proof.
+  intros Effect Floor.
+  exact certified_replay_anchor_correct.
+Qed.
+
+Print Assumptions finalized_floor_certified_replay_anchor_correct.
+
+Theorem finalized_floor_signed_replay_readiness_correct :
+  forall (Floor State Digest Validator Generation Effect : Type)
+    (floor_eq_dec : forall left right : Floor, {left = right} + {left <> right})
+    (state_eq_dec : forall left right : State, {left = right} + {left <> right})
+    (digest_eq_dec : forall left right : Digest, {left = right} + {left <> right})
+    (validator_eq_dec :
+      forall left right : Validator, {left = right} + {left <> right})
+    (generation_eq_dec :
+      forall left right : Generation, {left = right} + {left <> right})
+    (committee_of_state : State -> list Validator)
+    (state_of_floor : Floor -> State)
+    (height_of_floor : Floor -> nat)
+    (digest_certificate :
+      (@signed_floor_certificate Floor State Digest) -> Digest),
+    @signed_floor_replay_readiness_contract
+      Floor State Digest Validator Generation Effect
+      floor_eq_dec state_eq_dec digest_eq_dec validator_eq_dec generation_eq_dec
+      committee_of_state state_of_floor height_of_floor digest_certificate.
+Proof.
+  intros Floor State Digest Validator Generation Effect
+    floor_eq_dec state_eq_dec digest_eq_dec validator_eq_dec generation_eq_dec
+    committee_of_state state_of_floor height_of_floor digest_certificate.
+  apply signed_floor_replay_readiness_correct.
+Qed.
+
+Print Assumptions finalized_floor_signed_replay_readiness_correct.
+
+Theorem finalized_floor_validated_proposal_readiness_correct :
+  forall (Floor State Digest Validator Generation Effect : Type)
+    (floor_eq_dec : forall left right : Floor, {left = right} + {left <> right})
+    (state_eq_dec : forall left right : State, {left = right} + {left <> right})
+    (digest_eq_dec : forall left right : Digest, {left = right} + {left <> right})
+    (validator_eq_dec :
+      forall left right : Validator, {left = right} + {left <> right})
+    (generation_eq_dec :
+      forall left right : Generation, {left = right} + {left <> right})
+    (committee_of_state : State -> list Validator)
+    (state_of_floor : Floor -> State)
+    (height_of_floor : Floor -> nat)
+    (digest_certificate :
+      (@signed_floor_certificate Floor State Digest) -> Digest),
+    @validated_signed_floor_readiness_contract
+      Floor State Digest Validator Generation Effect
+      floor_eq_dec state_eq_dec digest_eq_dec validator_eq_dec generation_eq_dec
+      committee_of_state state_of_floor height_of_floor digest_certificate.
+Proof.
+  intros Floor State Digest Validator Generation Effect
+    floor_eq_dec state_eq_dec digest_eq_dec validator_eq_dec generation_eq_dec
+    committee_of_state state_of_floor height_of_floor digest_certificate.
+  apply validated_signed_floor_readiness_correct.
+Qed.
+
+Print Assumptions finalized_floor_validated_proposal_readiness_correct.
 
 Theorem finalized_floor_exact_selection_correct :
   exact_floor_selection_contract.
@@ -2455,3 +2562,23 @@ Definition finalized_floor_applied_state_acceptance_correct :=
   @applied_state_acceptance_requires_exact_vector_and_projection.
 
 Print Assumptions finalized_floor_applied_state_acceptance_correct.
+
+Definition finalized_floor_restore_retry_ownership_correct :=
+  restore_retry_ownership_contract.
+
+Print Assumptions finalized_floor_restore_retry_ownership_correct.
+
+Definition finalized_floor_request_quarantine_lifecycle_correct :=
+  request_quarantine_lifecycle_correct.
+
+Print Assumptions finalized_floor_request_quarantine_lifecycle_correct.
+
+Definition finalized_floor_settled_ticket_transaction_correct :=
+  settled_ticket_transaction_contract.
+
+Print Assumptions finalized_floor_settled_ticket_transaction_correct.
+
+Definition finalized_floor_recovery_budget_episode_correct :=
+  recovery_budget_episode_correct.
+
+Print Assumptions finalized_floor_recovery_budget_episode_correct.

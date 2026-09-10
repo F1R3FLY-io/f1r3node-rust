@@ -4,6 +4,9 @@ Import ListNotations.
 From CostAccountedRho Require Import MintingInjection.
 From CostAccountedRho Require Import WalletNaming.
 
+(* [pb_minted] specifies logical history. Production redemption preserves the
+   bounded [mintedThroughEpoch] frontier from [MintedEpochRetention.v]. *)
+
 Definition remove_validator (v : pubkey) (validators : list pubkey) : list pubkey :=
   filter (fun candidate => negb (pubkey_eqb v candidate)) validators.
 

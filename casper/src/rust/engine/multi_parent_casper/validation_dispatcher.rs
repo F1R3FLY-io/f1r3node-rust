@@ -32,7 +32,7 @@ use crate::rust::block_status::{
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::equivocation_detector::EquivocationDetector;
 use crate::rust::errors::CasperError;
-use crate::rust::finality::floor_context::FloorContext;
+use crate::rust::finality::floor_context::{CertifiedFloorContextError, FloorContext};
 use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC, BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
@@ -242,6 +242,35 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     }
     let floor_ctx = if block.header.parents_hash_list.is_empty() {
         None
+    } else if let Some((commitment, _)) = committed_floor {
+        match FloorContext::from_certified_floor(
+            &snapshot.dag,
+            &this.block_store,
+            &block.header.parents_hash_list,
+            commitment,
+            block.header.version,
+        ) {
+            Ok(context) => Some(context),
+            Err(CertifiedFloorContextError::MissingDependency(hash)) => {
+                return Ok(CertifiedBlockValidation::MissingDependency(
+                    ValidationDeferral::AwaitingBlock(hash),
+                ))
+            }
+            Err(CertifiedFloorContextError::Invalid(_)) => {
+                return CertifiedBlockValidation::certified(
+                    block,
+                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidFollows)),
+                    baseline_authority,
+                )
+            }
+            Err(CertifiedFloorContextError::Local(error)) => {
+                return CertifiedBlockValidation::certified(
+                    block,
+                    Either::Left(BlockError::from_validation_error(error)),
+                    baseline_authority,
+                )
+            }
+        }
     } else {
         match FloorContext::derive(
             &snapshot.dag,
@@ -262,7 +291,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
             Err(error) => {
                 return CertifiedBlockValidation::certified(
                     block,
-                    Either::Left(BlockError::BlockException(error)),
+                    Either::Left(BlockError::from_validation_error(error)),
                     baseline_authority,
                 )
             }

@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use prost::bytes::Bytes;
@@ -9,23 +10,36 @@ use prost::Message;
 
 use super::casper::protocol::casper_message::{
     BlockMessage, F1r3flyState, FinalizedFloorCommitment, Justification,
-    ObjectiveEquivocationEvidence, ProcessedSystemDeploy, StateEffectId,
+    ObjectiveEquivocationEvidence, ProcessedSystemDeploy, StateEffectId, SystemDeployData,
 };
 use crate::casper::{
-    BlockMetadataInternal, BondProto, CertifiedAdmissionOutcomeProto, CertifiedSenderAuthorityProto,
+    BlockMetadataInternal, BondProto, CertifiedAdmissionOutcomeProto,
+    CertifiedSenderAuthorityProto, CertifiedSettledHistoryAdmissionProto,
 };
 use crate::rust::bond_generation::BondGeneration;
 use crate::rust::{block_hash, validator};
 
-pub const ADMISSION_SCHEMA_VERSION: u32 = 13;
+pub const ADMISSION_SCHEMA_VERSION: u32 = 15;
 pub const CERTIFIED_ADMISSION_PROTOCOL_VERSION: i64 = 6;
 pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 = 3;
 pub const APPLIED_STATE_EFFECTS_PROTOCOL_VERSION: i64 = 6;
-pub const ADMISSION_RULESET_MANIFEST: &str = "f1r3fly-certified-admission-v13|0:accepted|1:invalid-format|2:invalid-signature|3:invalid-sender|4:invalid-version|5:invalid-timestamp|6:deploy-not-signed|7:invalid-block-number|8:invalid-repeat-deploy|9:invalid-parents|10:invalid-follows|11:invalid-sequence-number|12:invalid-shard-id|13:justification-regression|14:neglected-invalid-block|15:neglected-equivocation|16:invalid-transaction|17:invalid-bonds-cache|18:invalid-equivocation-evidence|19:invalid-block-hash|20:unauthorized-slash-deploy|21:invalid-rejected-deploy|22:contains-expired-deploy|23:contains-time-expired-deploy|24:contains-future-deploy|25:not-of-interest|26:low-deploy-cost|finalization-ledger:atomic-rooted-hash-chain-v2|finalized-floor:durable-exact-state-occurrence-v2|certificate-cache:exact-state-candidate-v2|candidate-authority-context:signed-exact-v1|certificate-sidecar:manifest-digests-and-counts-v2";
+const ADMISSION_RULESET_DOMAIN: &str = "f1r3fly-certified-admission-v15";
+const ADMISSION_RULESET_SUBSYSTEMS: &str = "finalization-ledger:atomic-rooted-hash-chain-v2|finalized-floor:durable-exact-state-occurrence-v2|certificate-cache:exact-state-candidate-v2|candidate-authority-context:signed-exact-v1|certificate-sidecar:manifest-digests-and-counts-v2|settled-history:durable-citation-ticket-v1";
+static ADMISSION_RULESET_MANIFEST: LazyLock<String> = LazyLock::new(|| {
+    let mut manifest = format!("{ADMISSION_RULESET_DOMAIN}|0:accepted");
+    for reason in AdmissionRejectionReason::ALL {
+        manifest.push_str(&format!("|{}:{}", reason as u32, reason.manifest_label()));
+    }
+    manifest.push('|');
+    manifest.push_str(ADMISSION_RULESET_SUBSYSTEMS);
+    manifest
+});
+static ADMISSION_RULESET_DIGEST: LazyLock<Bytes> =
+    LazyLock::new(|| Blake2b256::hash(ADMISSION_RULESET_MANIFEST.as_bytes().to_vec()).into());
 
-pub fn admission_ruleset_digest() -> Bytes {
-    Blake2b256::hash(ADMISSION_RULESET_MANIFEST.as_bytes().to_vec()).into()
-}
+pub fn admission_ruleset_manifest() -> &'static str { ADMISSION_RULESET_MANIFEST.as_str() }
+
+pub fn admission_ruleset_digest() -> Bytes { ADMISSION_RULESET_DIGEST.clone() }
 
 fn append_digest_bytes(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(&(value.len() as u64).to_be_bytes());
@@ -270,6 +284,495 @@ impl CertifiedSenderAuthority {
 
 #[derive(
     Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub struct CertifiedSettledHistoryAdmission {
+    #[serde(with = "shared::rust::serde_bytes")]
+    target_block_hash: Bytes,
+    target_protocol_version: i64,
+    target_block_height: i64,
+    #[serde(with = "shared::rust::serde_bytes")]
+    target_sender: Bytes,
+    target_generation: BondGeneration,
+    #[serde(with = "shared::rust::serde_bytes")]
+    anchor_block_hash: Bytes,
+    anchor_block_height: i64,
+    #[serde(with = "shared::rust::serde_bytes")]
+    anchor_post_state_hash: Bytes,
+    #[serde(with = "shared::rust::serde_bytes")]
+    citer_block_hash: Bytes,
+    citer_protocol_version: i64,
+    #[serde(with = "shared::rust::serde_bytes")]
+    citer_sender: Bytes,
+    citer_generation: BondGeneration,
+    citer_stake: i64,
+    admission_schema_version: u32,
+    #[serde(with = "shared::rust::serde_bytes")]
+    ruleset_digest: Bytes,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CertifiedSettledHistoryAdmissionError {
+    #[error("settled-history target hash must be {expected} bytes, got {actual}")]
+    InvalidTargetHash { expected: usize, actual: usize },
+    #[error("settled-history target sender must be {expected} bytes, got {actual}")]
+    InvalidTargetSender { expected: usize, actual: usize },
+    #[error("settled-history anchor hash must be {expected} bytes, got {actual}")]
+    InvalidAnchorHash { expected: usize, actual: usize },
+    #[error("settled-history anchor post-state hash must be {expected} bytes, got {actual}")]
+    InvalidAnchorPostStateHash { expected: usize, actual: usize },
+    #[error("settled-history citer hash must be {expected} bytes, got {actual}")]
+    InvalidCiterHash { expected: usize, actual: usize },
+    #[error("settled-history citer sender must be {expected} bytes, got {actual}")]
+    InvalidCiterSender { expected: usize, actual: usize },
+    #[error("settled-history ruleset digest must be {expected} bytes, got {actual}")]
+    InvalidRulesetDigest { expected: usize, actual: usize },
+    #[error("settled-history proof target does not match the block")]
+    TargetMismatch,
+    #[error("settled-history proof uses unsupported target protocol {0}")]
+    UnsupportedTargetProtocol(i64),
+    #[error("settled-history proof uses unsupported citer protocol {0}")]
+    UnsupportedCiterProtocol(i64),
+    #[error("settled-history proof uses unsupported admission schema {0}")]
+    UnsupportedSchema(u32),
+    #[error("settled-history proof ruleset digest does not match the compiled ruleset")]
+    RulesetDigestMismatch,
+    #[error("settled-history proof anchor height must be positive")]
+    InvalidAnchorHeight,
+    #[error("settled-history proof target is above its anchor")]
+    TargetAboveAnchor,
+    #[error("settled-history proof target height must be nonnegative")]
+    InvalidTargetHeight,
+    #[error("settled-history proof citer stake must be positive, got {0}")]
+    InvalidCiterStake(i64),
+    #[error("settled-history target is missing its bond generation")]
+    MissingTargetGeneration,
+    #[error("settled-history proof target generation does not match the block")]
+    TargetGenerationMismatch,
+    #[error("settled-history proof contains an invalid target generation: {0}")]
+    InvalidTargetGeneration(String),
+    #[error("settled-history proof contains an invalid citer generation: {0}")]
+    InvalidCiterGeneration(String),
+    #[error("settled-history citer does not reference the target")]
+    MissingCitation,
+    #[error("settled-history citer is not bonded at the anchor")]
+    CiterNotBonded,
+    #[error("settled-history citer generation does not match the anchor")]
+    CiterGenerationMismatch,
+    #[error("settled-history target content hash is invalid")]
+    InvalidTargetContentHash,
+    #[error("settled-history target signature is invalid")]
+    InvalidTargetSignature,
+    #[error("settled-history anchor content hash is invalid")]
+    InvalidAnchorContentHash,
+    #[error("settled-history citer content hash is invalid")]
+    InvalidCiterContentHash,
+    #[error("settled-history citer signature is invalid")]
+    InvalidCiterSignature,
+    #[error("settled-history record does not match its validated evidence")]
+    EvidenceMismatch,
+}
+
+impl CertifiedSettledHistoryAdmission {
+    pub fn new(
+        target: &BlockMessage,
+        anchor: &BlockMessage,
+        citer: &BlockMessage,
+        citer_generation: BondGeneration,
+        citer_stake: i64,
+    ) -> Result<Self, CertifiedSettledHistoryAdmissionError> {
+        if !Self::cites(citer, &target.block_hash) {
+            return Err(CertifiedSettledHistoryAdmissionError::MissingCitation);
+        }
+        let anchor_stake = anchor
+            .body
+            .state
+            .bonds
+            .iter()
+            .find(|bond| bond.validator == citer.sender && bond.stake > 0)
+            .map(|bond| bond.stake)
+            .ok_or(CertifiedSettledHistoryAdmissionError::CiterNotBonded)?;
+        let anchor_generation = anchor
+            .body
+            .state
+            .bond_generations
+            .iter()
+            .find(|entry| entry.validator == citer.sender)
+            .map(|entry| entry.generation)
+            .ok_or(CertifiedSettledHistoryAdmissionError::CiterNotBonded)?;
+        if anchor_stake != citer_stake
+            || anchor_generation != citer_generation
+            || citer.header.sender_bond_generation != Some(citer_generation)
+        {
+            return Err(CertifiedSettledHistoryAdmissionError::CiterGenerationMismatch);
+        }
+        let target_generation = target
+            .header
+            .sender_bond_generation
+            .ok_or(CertifiedSettledHistoryAdmissionError::MissingTargetGeneration)?;
+        let proof = Self {
+            target_block_hash: target.block_hash.clone(),
+            target_protocol_version: target.header.version,
+            target_block_height: target.body.state.block_number,
+            target_sender: target.sender.clone(),
+            target_generation,
+            anchor_block_hash: anchor.block_hash.clone(),
+            anchor_block_height: anchor.body.state.block_number,
+            anchor_post_state_hash: anchor.body.state.post_state_hash.clone(),
+            citer_block_hash: citer.block_hash.clone(),
+            citer_protocol_version: citer.header.version,
+            citer_sender: citer.sender.clone(),
+            citer_generation,
+            citer_stake,
+            admission_schema_version: ADMISSION_SCHEMA_VERSION,
+            ruleset_digest: admission_ruleset_digest(),
+        };
+        proof.validate_for(target)?;
+        Ok(proof)
+    }
+
+    fn cites(citer: &BlockMessage, target: &Bytes) -> bool {
+        citer
+            .header
+            .parents_hash_list
+            .iter()
+            .any(|hash| hash == target)
+            || citer
+                .justifications
+                .iter()
+                .any(|justification| justification.latest_block_hash == target)
+            || citer
+                .body
+                .system_deploys
+                .iter()
+                .filter_map(|deploy| match deploy {
+                    ProcessedSystemDeploy::Succeeded {
+                        system_deploy:
+                            SystemDeployData::Slash {
+                                invalid_block_hash,
+                                equivocation_block_hash,
+                                ..
+                            },
+                        ..
+                    } => Some((invalid_block_hash, equivocation_block_hash.as_ref())),
+                    _ => None,
+                })
+                .any(|(first, second)| first == target || second == Some(target))
+            || citer
+                .header
+                .objective_equivocation_evidence_delta
+                .iter()
+                .any(|evidence| {
+                    evidence.first_block_hash == target || evidence.second_block_hash == target
+                })
+            || citer
+                .finalized_floor_certificate
+                .as_ref()
+                .is_some_and(|certificate| {
+                    certificate
+                        .exact_latest_messages
+                        .values()
+                        .any(|hash| hash.0 == target)
+                        || certificate.predecessor_floor_hash.0 == target
+                        || certificate.predecessor_certificate_block_hash.0 == target
+                        || certificate.target_floor_hash.0 == target
+                })
+    }
+
+    pub fn validate_for(
+        &self,
+        target: &BlockMessage,
+    ) -> Result<(), CertifiedSettledHistoryAdmissionError> {
+        self.validate_shape()?;
+        if self.target_block_hash != target.block_hash
+            || self.target_protocol_version != target.header.version
+            || self.target_sender != target.sender
+        {
+            return Err(CertifiedSettledHistoryAdmissionError::TargetMismatch);
+        }
+        if target.header.sender_bond_generation != Some(self.target_generation) {
+            return Err(CertifiedSettledHistoryAdmissionError::TargetGenerationMismatch);
+        }
+        if target.body.state.block_number != self.target_block_height {
+            return Err(CertifiedSettledHistoryAdmissionError::TargetMismatch);
+        }
+        if self.target_block_height < 0 {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidTargetHeight);
+        }
+        if self.target_block_height > self.anchor_block_height {
+            return Err(CertifiedSettledHistoryAdmissionError::TargetAboveAnchor);
+        }
+        Ok(())
+    }
+
+    pub fn validate_metadata(
+        &self,
+        block_hash: &Bytes,
+        protocol_version: i64,
+        sender: &Bytes,
+    ) -> Result<(), CertifiedSettledHistoryAdmissionError> {
+        self.validate_shape()?;
+        if self.target_block_hash != *block_hash
+            || self.target_protocol_version != protocol_version
+            || self.target_sender != *sender
+        {
+            return Err(CertifiedSettledHistoryAdmissionError::TargetMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn validate_shape(&self) -> Result<(), CertifiedSettledHistoryAdmissionError> {
+        let hash_length = block_hash::LENGTH;
+        if self.target_block_hash.len() != hash_length {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidTargetHash {
+                expected: hash_length,
+                actual: self.target_block_hash.len(),
+            });
+        }
+        if self.target_sender.len() != validator::LENGTH {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidTargetSender {
+                expected: validator::LENGTH,
+                actual: self.target_sender.len(),
+            });
+        }
+        if self.anchor_block_hash.len() != hash_length {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidAnchorHash {
+                expected: hash_length,
+                actual: self.anchor_block_hash.len(),
+            });
+        }
+        if self.anchor_post_state_hash.len() != hash_length {
+            return Err(
+                CertifiedSettledHistoryAdmissionError::InvalidAnchorPostStateHash {
+                    expected: hash_length,
+                    actual: self.anchor_post_state_hash.len(),
+                },
+            );
+        }
+        if self.citer_block_hash.len() != hash_length {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidCiterHash {
+                expected: hash_length,
+                actual: self.citer_block_hash.len(),
+            });
+        }
+        if self.citer_sender.len() != validator::LENGTH {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidCiterSender {
+                expected: validator::LENGTH,
+                actual: self.citer_sender.len(),
+            });
+        }
+        if self.ruleset_digest.len() != hash_length {
+            return Err(
+                CertifiedSettledHistoryAdmissionError::InvalidRulesetDigest {
+                    expected: hash_length,
+                    actual: self.ruleset_digest.len(),
+                },
+            );
+        }
+        if self.target_protocol_version != CERTIFIED_ADMISSION_PROTOCOL_VERSION {
+            return Err(
+                CertifiedSettledHistoryAdmissionError::UnsupportedTargetProtocol(
+                    self.target_protocol_version,
+                ),
+            );
+        }
+        if self.citer_protocol_version != CERTIFIED_ADMISSION_PROTOCOL_VERSION {
+            return Err(
+                CertifiedSettledHistoryAdmissionError::UnsupportedCiterProtocol(
+                    self.citer_protocol_version,
+                ),
+            );
+        }
+        if self.admission_schema_version != ADMISSION_SCHEMA_VERSION {
+            return Err(CertifiedSettledHistoryAdmissionError::UnsupportedSchema(
+                self.admission_schema_version,
+            ));
+        }
+        if self.ruleset_digest != admission_ruleset_digest() {
+            return Err(CertifiedSettledHistoryAdmissionError::RulesetDigestMismatch);
+        }
+        if self.anchor_block_height <= 0 {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidAnchorHeight);
+        }
+        if self.target_block_height < 0 {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidTargetHeight);
+        }
+        if self.target_block_height > self.anchor_block_height {
+            return Err(CertifiedSettledHistoryAdmissionError::TargetAboveAnchor);
+        }
+        if self.citer_stake <= 0 {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidCiterStake(
+                self.citer_stake,
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn target_generation(&self) -> BondGeneration { self.target_generation }
+
+    pub fn anchor_block_hash(&self) -> &Bytes { &self.anchor_block_hash }
+
+    pub const fn anchor_block_height(&self) -> i64 { self.anchor_block_height }
+
+    pub fn anchor_post_state_hash(&self) -> &Bytes { &self.anchor_post_state_hash }
+
+    pub fn citer_block_hash(&self) -> &Bytes { &self.citer_block_hash }
+
+    pub fn citer_sender(&self) -> &Bytes { &self.citer_sender }
+
+    pub fn citer_generation(&self) -> BondGeneration { self.citer_generation }
+
+    pub const fn citer_stake(&self) -> i64 { self.citer_stake }
+
+    pub fn ruleset_digest(&self) -> &Bytes { &self.ruleset_digest }
+
+    pub fn context_digest(&self) -> Bytes {
+        let mut bytes = Vec::new();
+        append_digest_bytes(&mut bytes, b"f1r3fly-settled-history-context-v1");
+        append_digest_bytes(&mut bytes, &self.anchor_block_hash);
+        append_digest_i64(&mut bytes, self.anchor_block_height);
+        append_digest_bytes(&mut bytes, &self.anchor_post_state_hash);
+        append_digest_bytes(&mut bytes, &self.citer_sender);
+        append_digest_i64(&mut bytes, self.citer_generation.get());
+        append_digest_i64(&mut bytes, self.citer_stake);
+        Blake2b256::hash(bytes).into()
+    }
+
+    pub fn digest(&self) -> Bytes {
+        let mut bytes = Vec::new();
+        append_digest_bytes(&mut bytes, b"f1r3fly-certified-settled-history-v1");
+        append_digest_bytes(&mut bytes, &self.target_block_hash);
+        append_digest_i64(&mut bytes, self.target_protocol_version);
+        append_digest_i64(&mut bytes, self.target_block_height);
+        append_digest_bytes(&mut bytes, &self.target_sender);
+        append_digest_i64(&mut bytes, self.target_generation.get());
+        append_digest_bytes(&mut bytes, &self.anchor_block_hash);
+        append_digest_i64(&mut bytes, self.anchor_block_height);
+        append_digest_bytes(&mut bytes, &self.anchor_post_state_hash);
+        append_digest_bytes(&mut bytes, &self.citer_block_hash);
+        append_digest_i64(&mut bytes, self.citer_protocol_version);
+        append_digest_bytes(&mut bytes, &self.citer_sender);
+        append_digest_i64(&mut bytes, self.citer_generation.get());
+        append_digest_i64(&mut bytes, self.citer_stake);
+        append_digest_i64(&mut bytes, i64::from(self.admission_schema_version));
+        append_digest_bytes(&mut bytes, &self.ruleset_digest);
+        Blake2b256::hash(bytes).into()
+    }
+
+    pub fn to_proto(&self) -> CertifiedSettledHistoryAdmissionProto {
+        CertifiedSettledHistoryAdmissionProto {
+            target_block_hash: self.target_block_hash.clone(),
+            target_protocol_version: self.target_protocol_version,
+            target_block_height: self.target_block_height,
+            target_sender: self.target_sender.clone(),
+            target_bond_generation: self.target_generation.get(),
+            anchor_block_hash: self.anchor_block_hash.clone(),
+            anchor_block_height: self.anchor_block_height,
+            anchor_post_state_hash: self.anchor_post_state_hash.clone(),
+            citer_block_hash: self.citer_block_hash.clone(),
+            citer_protocol_version: self.citer_protocol_version,
+            citer_sender: self.citer_sender.clone(),
+            citer_bond_generation: self.citer_generation.get(),
+            citer_stake: self.citer_stake,
+            admission_schema_version: self.admission_schema_version,
+            ruleset_digest: self.ruleset_digest.clone(),
+        }
+    }
+
+    pub fn from_proto(
+        proto: CertifiedSettledHistoryAdmissionProto,
+    ) -> Result<Self, CertifiedSettledHistoryAdmissionError> {
+        let proof = Self {
+            target_block_hash: proto.target_block_hash,
+            target_protocol_version: proto.target_protocol_version,
+            target_block_height: proto.target_block_height,
+            target_sender: proto.target_sender,
+            target_generation: BondGeneration::try_from(proto.target_bond_generation).map_err(
+                |error| {
+                    CertifiedSettledHistoryAdmissionError::InvalidTargetGeneration(
+                        error.to_string(),
+                    )
+                },
+            )?,
+            anchor_block_hash: proto.anchor_block_hash,
+            anchor_block_height: proto.anchor_block_height,
+            anchor_post_state_hash: proto.anchor_post_state_hash,
+            citer_block_hash: proto.citer_block_hash,
+            citer_protocol_version: proto.citer_protocol_version,
+            citer_sender: proto.citer_sender,
+            citer_generation: BondGeneration::try_from(proto.citer_bond_generation).map_err(
+                |error| {
+                    CertifiedSettledHistoryAdmissionError::InvalidCiterGeneration(error.to_string())
+                },
+            )?,
+            citer_stake: proto.citer_stake,
+            admission_schema_version: proto.admission_schema_version,
+            ruleset_digest: proto.ruleset_digest,
+        };
+        proof.validate_shape()?;
+        Ok(proof)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidatedSettledHistoryAdmission(CertifiedSettledHistoryAdmission);
+
+impl ValidatedSettledHistoryAdmission {
+    pub fn new(
+        target: &BlockMessage,
+        anchor: &BlockMessage,
+        citer: &BlockMessage,
+        citer_generation: BondGeneration,
+        citer_stake: i64,
+    ) -> Result<Self, CertifiedSettledHistoryAdmissionError> {
+        if !target.has_valid_content_hash() {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidTargetContentHash);
+        }
+        if !target.has_valid_block_signature() {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidTargetSignature);
+        }
+        if !anchor.has_valid_content_hash() {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidAnchorContentHash);
+        }
+        if !citer.has_valid_content_hash() {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidCiterContentHash);
+        }
+        if !citer.has_valid_block_signature() {
+            return Err(CertifiedSettledHistoryAdmissionError::InvalidCiterSignature);
+        }
+        CertifiedSettledHistoryAdmission::new(target, anchor, citer, citer_generation, citer_stake)
+            .map(Self)
+    }
+
+    pub fn from_record(
+        record: &CertifiedSettledHistoryAdmission,
+        target: &BlockMessage,
+        anchor: &BlockMessage,
+        citer: &BlockMessage,
+    ) -> Result<Self, CertifiedSettledHistoryAdmissionError> {
+        let validated = Self::new(
+            target,
+            anchor,
+            citer,
+            record.citer_generation(),
+            record.citer_stake(),
+        )?;
+        if validated.record() != record {
+            return Err(CertifiedSettledHistoryAdmissionError::EvidenceMismatch);
+        }
+        Ok(validated)
+    }
+
+    pub fn record(&self) -> &CertifiedSettledHistoryAdmission { &self.0 }
+}
+
+#[derive(
+    Clone,
     Copy,
     Debug,
     PartialEq,
@@ -314,6 +817,72 @@ pub enum AdmissionRejectionReason {
 }
 
 impl AdmissionRejectionReason {
+    pub const ALL: [Self; 29] = [
+        Self::InvalidFormat,
+        Self::InvalidSignature,
+        Self::InvalidSender,
+        Self::InvalidVersion,
+        Self::InvalidTimestamp,
+        Self::DeployNotSigned,
+        Self::InvalidBlockNumber,
+        Self::InvalidRepeatDeploy,
+        Self::InvalidParents,
+        Self::InvalidFollows,
+        Self::InvalidSequenceNumber,
+        Self::InvalidShardId,
+        Self::JustificationRegression,
+        Self::NeglectedInvalidBlock,
+        Self::NeglectedEquivocation,
+        Self::InvalidTransaction,
+        Self::InvalidBondsCache,
+        Self::InvalidEquivocationEvidence,
+        Self::InvalidBlockHash,
+        Self::UnauthorizedSlashDeploy,
+        Self::InvalidRejectedDeploy,
+        Self::ContainsExpiredDeploy,
+        Self::ContainsTimeExpiredDeploy,
+        Self::ContainsFutureDeploy,
+        Self::NotOfInterest,
+        Self::LowDeployCost,
+        Self::PrematureDeployRetry,
+        Self::AdmissibleEquivocation,
+        Self::IgnorableEquivocation,
+    ];
+
+    pub const fn manifest_label(self) -> &'static str {
+        match self {
+            Self::InvalidFormat => "invalid-format",
+            Self::InvalidSignature => "invalid-signature",
+            Self::InvalidSender => "invalid-sender",
+            Self::InvalidVersion => "invalid-version",
+            Self::InvalidTimestamp => "invalid-timestamp",
+            Self::DeployNotSigned => "deploy-not-signed",
+            Self::InvalidBlockNumber => "invalid-block-number",
+            Self::InvalidRepeatDeploy => "invalid-repeat-deploy",
+            Self::InvalidParents => "invalid-parents",
+            Self::InvalidFollows => "invalid-follows",
+            Self::InvalidSequenceNumber => "invalid-sequence-number",
+            Self::InvalidShardId => "invalid-shard-id",
+            Self::JustificationRegression => "justification-regression",
+            Self::NeglectedInvalidBlock => "neglected-invalid-block",
+            Self::NeglectedEquivocation => "neglected-equivocation",
+            Self::InvalidTransaction => "invalid-transaction",
+            Self::InvalidBondsCache => "invalid-bonds-cache",
+            Self::InvalidEquivocationEvidence => "invalid-equivocation-evidence",
+            Self::InvalidBlockHash => "invalid-block-hash",
+            Self::UnauthorizedSlashDeploy => "unauthorized-slash-deploy",
+            Self::InvalidRejectedDeploy => "invalid-rejected-deploy",
+            Self::ContainsExpiredDeploy => "contains-expired-deploy",
+            Self::ContainsTimeExpiredDeploy => "contains-time-expired-deploy",
+            Self::ContainsFutureDeploy => "contains-future-deploy",
+            Self::NotOfInterest => "not-of-interest",
+            Self::LowDeployCost => "low-deploy-cost",
+            Self::PrematureDeployRetry => "premature-deploy-retry",
+            Self::AdmissibleEquivocation => "admissible-equivocation",
+            Self::IgnorableEquivocation => "ignorable-equivocation",
+        }
+    }
+
     pub const fn is_slash_evidence_eligible(self) -> bool {
         match self {
             Self::AdmissibleEquivocation | Self::IgnorableEquivocation => true,
@@ -703,6 +1272,7 @@ pub struct BlockMetadata {
     pub protocol_version: i64,
     pub objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
     pub sender_authority: Option<CertifiedSenderAuthority>,
+    pub settled_history_admission: Option<CertifiedSettledHistoryAdmission>,
     pub finalized_floor_commitment: Option<FinalizedFloorCommitment>,
     pub admission_schema_version: u32,
     pub approved_genesis: bool,
@@ -736,6 +1306,8 @@ pub enum BlockMetadataError {
     InvalidAuthorityCertificate(#[from] CertifiedSenderAuthorityError),
     #[error("block metadata contains an invalid admission outcome: {0}")]
     InvalidAdmissionOutcome(#[from] CertifiedAdmissionOutcomeError),
+    #[error("block metadata contains an invalid settled-history proof: {0}")]
+    InvalidSettledHistoryAdmission(#[from] CertifiedSettledHistoryAdmissionError),
     #[error("block metadata contains an invalid finalized-floor commitment: {0}")]
     InvalidFinalizedFloorCommitment(String),
     #[error("non-genesis block metadata is missing its authority certificate")]
@@ -748,6 +1320,12 @@ pub enum BlockMetadataError {
     UnexpectedGenesisAuthorityCertificate,
     #[error("genesis block metadata must not contain an admission outcome")]
     UnexpectedGenesisAdmissionOutcome,
+    #[error("genesis block metadata must not contain a settled-history proof")]
+    UnexpectedGenesisSettledHistoryAdmission,
+    #[error("certified block metadata must not contain a settled-history proof")]
+    UnexpectedSettledHistoryAdmission,
+    #[error("settled-history block metadata must not contain ordinary admission certificates")]
+    UnexpectedSettledHistoryCertificates,
     #[error("genesis block metadata must not contain a finalized-floor commitment")]
     UnexpectedGenesisFinalizedFloorCommitment,
     #[error("authority certificate does not match block metadata")]
@@ -842,6 +1420,7 @@ impl PartialEq for BlockMetadata {
             && self.objective_equivocation_evidence_delta
                 == other.objective_equivocation_evidence_delta
             && self.sender_authority == other.sender_authority
+            && self.settled_history_admission == other.settled_history_admission
             && self.finalized_floor_commitment == other.finalized_floor_commitment
             && self.admission_schema_version == other.admission_schema_version
             && self.approved_genesis == other.approved_genesis
@@ -878,6 +1457,7 @@ impl std::hash::Hash for BlockMetadata {
         self.protocol_version.hash(state);
         self.objective_equivocation_evidence_delta.hash(state);
         self.sender_authority.hash(state);
+        self.settled_history_admission.hash(state);
         self.finalized_floor_commitment.hash(state);
         self.admission_schema_version.hash(state);
         self.approved_genesis.hash(state);
@@ -941,12 +1521,24 @@ impl BlockMetadata {
             .admission_outcome
             .map(CertifiedAdmissionOutcome::from_proto)
             .transpose()?;
+        let settled_history_admission = proto
+            .settled_history_admission
+            .map(CertifiedSettledHistoryAdmission::from_proto)
+            .transpose()?;
         let finalized_floor_commitment = proto
             .finalized_floor_commitment
             .map(FinalizedFloorCommitment::from_proto)
             .transpose()
             .map_err(BlockMetadataError::InvalidFinalizedFloorCommitment)?;
-        if sender_generation_claim != sender_authority.as_ref().map(|cert| cert.generation()) {
+        let certified_generation = sender_authority
+            .as_ref()
+            .map(CertifiedSenderAuthority::generation)
+            .or_else(|| {
+                settled_history_admission
+                    .as_ref()
+                    .map(CertifiedSettledHistoryAdmission::target_generation)
+            });
+        if sender_generation_claim != certified_generation {
             return Err(BlockMetadataError::AuthorityCertificateMismatch);
         }
         let metadata = BlockMetadata {
@@ -981,6 +1573,7 @@ impl BlockMetadata {
             protocol_version: proto.protocol_version,
             objective_equivocation_evidence_delta,
             sender_authority,
+            settled_history_admission,
             finalized_floor_commitment,
             admission_schema_version: proto.admission_schema_version,
             approved_genesis: proto.approved_genesis,
@@ -1047,6 +1640,10 @@ impl BlockMetadata {
                 .sender_authority
                 .as_ref()
                 .map(CertifiedSenderAuthority::to_proto),
+            settled_history_admission: self
+                .settled_history_admission
+                .as_ref()
+                .map(CertifiedSettledHistoryAdmission::to_proto),
             admission_schema_version: self.admission_schema_version,
             approved_genesis: self.approved_genesis,
             admission_outcome: self
@@ -1149,6 +1746,7 @@ impl BlockMetadata {
                 .objective_equivocation_evidence_delta
                 .clone(),
             sender_authority: None,
+            settled_history_admission: None,
             finalized_floor_commitment: b.header.finalized_floor.clone(),
             admission_schema_version: ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
@@ -1172,6 +1770,17 @@ impl BlockMetadata {
         Ok(metadata)
     }
 
+    pub fn from_settled_history_block(
+        b: &BlockMessage,
+        proof: &CertifiedSettledHistoryAdmission,
+    ) -> Result<Self, BlockMetadataError> {
+        proof.validate_for(b)?;
+        let mut metadata = Self::from_block(b, None, None);
+        metadata.settled_history_admission = Some(proof.clone());
+        metadata.validate()?;
+        Ok(metadata)
+    }
+
     pub fn from_approved_genesis(b: &BlockMessage) -> Result<Self, BlockMetadataError> {
         let mut metadata = Self::from_block(b, Some(true), Some(true));
         metadata.approved_genesis = true;
@@ -1183,10 +1792,16 @@ impl BlockMetadata {
         self.sender_authority
             .as_ref()
             .map(CertifiedSenderAuthority::generation)
+            .or_else(|| {
+                self.settled_history_admission
+                    .as_ref()
+                    .map(CertifiedSettledHistoryAdmission::target_generation)
+            })
     }
 
     pub fn is_accepted(&self) -> bool {
         self.approved_genesis
+            || self.settled_history_admission.is_some()
             || self
                 .admission_outcome
                 .as_ref()
@@ -1254,14 +1869,28 @@ impl BlockMetadata {
         match (
             &self.sender_authority,
             &self.admission_outcome,
+            &self.settled_history_admission,
             self.approved_genesis,
         ) {
-            (None, None, true) => Ok(()),
-            (Some(_), _, true) => Err(BlockMetadataError::UnexpectedGenesisAuthorityCertificate),
-            (_, Some(_), true) => Err(BlockMetadataError::UnexpectedGenesisAdmissionOutcome),
-            (None, _, false) => Err(BlockMetadataError::MissingAuthorityCertificate),
-            (_, None, false) => Err(BlockMetadataError::MissingAdmissionOutcome),
-            (Some(certificate), Some(outcome), false) => {
+            (None, None, None, true) => Ok(()),
+            (Some(_), _, _, true) => Err(BlockMetadataError::UnexpectedGenesisAuthorityCertificate),
+            (_, Some(_), _, true) => Err(BlockMetadataError::UnexpectedGenesisAdmissionOutcome),
+            (_, _, Some(_), true) => {
+                Err(BlockMetadataError::UnexpectedGenesisSettledHistoryAdmission)
+            }
+            (None, None, Some(proof), false) => {
+                if self.directly_finalized || self.finalized {
+                    return Err(BlockMetadataError::InvalidBlockFinalized);
+                }
+                proof.validate_metadata(&self.block_hash, self.protocol_version, &self.sender)?;
+                Ok(())
+            }
+            (Some(_), _, Some(_), false) | (_, Some(_), Some(_), false) => {
+                Err(BlockMetadataError::UnexpectedSettledHistoryCertificates)
+            }
+            (None, _, None, false) => Err(BlockMetadataError::MissingAuthorityCertificate),
+            (_, None, None, false) => Err(BlockMetadataError::MissingAdmissionOutcome),
+            (Some(certificate), Some(outcome), None, false) => {
                 let commitment = self
                     .finalized_floor_commitment
                     .as_ref()
@@ -1293,6 +1922,7 @@ impl BlockMetadata {
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
@@ -1301,8 +1931,72 @@ mod tests {
     use super::*;
     use crate::rhoapi::PCost;
     use crate::rust::casper::protocol::casper_message::{
-        Body, DeployAdmissionStatus, DeployData, Header, ProcessedDeploy, SystemDeployData,
+        Body, Bond, DeployAdmissionStatus, DeployData, Header, ProcessedDeploy, SystemDeployData,
+        ValidatorBondGeneration,
     };
+
+    #[test]
+    fn admission_ruleset_manifest_covers_each_rejection_reason_once() {
+        let manifest = admission_ruleset_manifest();
+        let mut labels = BTreeSet::new();
+        let mut discriminants = BTreeSet::new();
+        let expected_rules = AdmissionRejectionReason::ALL
+            .iter()
+            .map(|reason| format!("{}:{}", *reason as u32, reason.manifest_label()))
+            .collect::<Vec<_>>();
+        let rules = manifest
+            .strip_prefix(&format!("{ADMISSION_RULESET_DOMAIN}|0:accepted|"))
+            .unwrap()
+            .strip_suffix(&format!("|{ADMISSION_RULESET_SUBSYSTEMS}"))
+            .unwrap()
+            .split('|')
+            .collect::<Vec<_>>();
+
+        for (index, reason) in AdmissionRejectionReason::ALL.iter().copied().enumerate() {
+            let discriminant = reason as u32;
+            assert_eq!(discriminant, u32::try_from(index + 1).unwrap());
+            assert_eq!(AdmissionRejectionReason::try_from(discriminant), Ok(reason));
+            assert!(labels.insert(reason.manifest_label()));
+            assert!(discriminants.insert(discriminant));
+        }
+
+        assert_eq!(rules, expected_rules);
+        assert_eq!(labels.len(), AdmissionRejectionReason::ALL.len());
+        assert_eq!(discriminants.len(), AdmissionRejectionReason::ALL.len());
+        assert!(manifest.starts_with("f1r3fly-certified-admission-v15|0:accepted"));
+        assert!(manifest.ends_with(ADMISSION_RULESET_SUBSYSTEMS));
+    }
+
+    #[test]
+    fn admission_ruleset_digest_binds_schema_and_every_rule() {
+        let manifest = admission_ruleset_manifest();
+        let digest = admission_ruleset_digest();
+        let digest_of =
+            |value: &str| -> Bytes { Blake2b256::hash(value.as_bytes().to_vec()).into() };
+
+        assert_eq!(digest, digest_of(manifest));
+        assert_ne!(
+            digest,
+            digest_of(&manifest.replacen(ADMISSION_RULESET_DOMAIN, "changed-domain", 1))
+        );
+
+        for reason in AdmissionRejectionReason::ALL {
+            let entry = format!("|{}:{}", reason as u32, reason.manifest_label());
+            assert_ne!(digest, digest_of(&manifest.replacen(&entry, "", 1)));
+            assert_ne!(
+                digest,
+                digest_of(&manifest.replacen(
+                    &entry,
+                    &format!("|{}:{}", reason as u32 + 100, reason.manifest_label()),
+                    1,
+                ))
+            );
+            assert_ne!(
+                digest,
+                digest_of(&manifest.replacen(&entry, &format!("{entry}-changed"), 1))
+            );
+        }
+    }
 
     fn processed_deploy(is_failed: bool) -> ProcessedDeploy {
         let algorithm: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
@@ -1396,6 +2090,200 @@ mod tests {
             BondGeneration::GENESIS,
             stake,
         )
+    }
+
+    fn settled_history_fixture() -> (
+        BlockMessage,
+        BlockMessage,
+        BlockMessage,
+        CertifiedSettledHistoryAdmission,
+    ) {
+        let mut target = authority_block();
+        target.block_hash = Bytes::from(vec![20; block_hash::LENGTH]);
+        target.sender = Bytes::from(vec![21; validator::LENGTH]);
+        target.body.state.block_number = 3;
+        target.header.sender_bond_generation = Some(BondGeneration::GENESIS);
+
+        let citer_sender = Bytes::from(vec![22; validator::LENGTH]);
+        let mut citer = authority_block();
+        citer.block_hash = Bytes::from(vec![23; block_hash::LENGTH]);
+        citer.sender = citer_sender.clone();
+        citer.header.parents_hash_list = vec![target.block_hash.clone()];
+        citer.header.sender_bond_generation = Some(BondGeneration::GENESIS);
+        citer.body.state.block_number = 11;
+
+        let mut anchor = authority_block();
+        anchor.block_hash = Bytes::from(vec![24; block_hash::LENGTH]);
+        anchor.body.state.block_number = 10;
+        anchor.body.state.post_state_hash = Bytes::from(vec![25; block_hash::LENGTH]);
+        anchor.body.state.bonds = vec![Bond {
+            validator: citer_sender.clone(),
+            stake: 100,
+        }];
+        anchor.body.state.bond_generations = vec![ValidatorBondGeneration {
+            validator: citer_sender,
+            generation: BondGeneration::GENESIS,
+        }];
+
+        let proof = CertifiedSettledHistoryAdmission::new(
+            &target,
+            &anchor,
+            &citer,
+            BondGeneration::GENESIS,
+            100,
+        )
+        .unwrap();
+        (target, anchor, citer, proof)
+    }
+
+    fn sign_block(mut block: BlockMessage, key_byte: u8) -> BlockMessage {
+        let algorithm = Secp256k1;
+        let private_key = PrivateKey::from_bytes(&[key_byte; 32]);
+        block.sender = algorithm.to_public(&private_key).bytes.into();
+        block.sig_algorithm = algorithm.name();
+        block.block_hash = block.computed_block_hash();
+        block.sig = algorithm.sign(&block.block_hash, &private_key.bytes).into();
+        block
+    }
+
+    fn validated_settled_history_fixture() -> (
+        BlockMessage,
+        BlockMessage,
+        BlockMessage,
+        ValidatedSettledHistoryAdmission,
+    ) {
+        let mut target = authority_block();
+        target.body.state.block_number = 3;
+        let target = sign_block(target, 31);
+
+        let mut citer = authority_block();
+        citer.header.parents_hash_list = vec![target.block_hash.clone()];
+        citer.body.state.block_number = 11;
+        let citer = sign_block(citer, 32);
+
+        let mut anchor = authority_block();
+        anchor.body.state.block_number = 10;
+        anchor.body.state.bonds = vec![Bond {
+            validator: citer.sender.clone(),
+            stake: 100,
+        }];
+        anchor.body.state.bond_generations = vec![ValidatorBondGeneration {
+            validator: citer.sender.clone(),
+            generation: BondGeneration::GENESIS,
+        }];
+        anchor.block_hash = anchor.computed_block_hash();
+
+        let proof = ValidatedSettledHistoryAdmission::new(
+            &target,
+            &anchor,
+            &citer,
+            BondGeneration::GENESIS,
+            100,
+        )
+        .unwrap();
+        (target, anchor, citer, proof)
+    }
+
+    #[test]
+    fn settled_history_proof_roundtrips_and_certifies_metadata() {
+        let (target, _, _, proof) = settled_history_fixture();
+        let decoded = CertifiedSettledHistoryAdmission::from_proto(proof.to_proto()).unwrap();
+        assert_eq!(decoded, proof);
+
+        let metadata = BlockMetadata::from_settled_history_block(&target, &proof).unwrap();
+        assert!(metadata.is_accepted());
+        assert!(!metadata.is_rejected());
+        assert!(metadata.sender_authority.is_none());
+        assert!(metadata.admission_outcome.is_none());
+        assert_eq!(metadata.settled_history_admission, Some(proof));
+        assert_eq!(
+            BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap(),
+            metadata
+        );
+    }
+
+    #[test]
+    fn settled_history_proof_rejects_missing_citation_and_unbonded_citer() {
+        let (target, mut anchor, mut citer, _) = settled_history_fixture();
+        citer.header.parents_hash_list.clear();
+        assert_eq!(
+            CertifiedSettledHistoryAdmission::new(
+                &target,
+                &anchor,
+                &citer,
+                BondGeneration::GENESIS,
+                100,
+            ),
+            Err(CertifiedSettledHistoryAdmissionError::MissingCitation)
+        );
+
+        citer.header.parents_hash_list = vec![target.block_hash.clone()];
+        anchor.body.state.bonds.clear();
+        assert_eq!(
+            CertifiedSettledHistoryAdmission::new(
+                &target,
+                &anchor,
+                &citer,
+                BondGeneration::GENESIS,
+                100,
+            ),
+            Err(CertifiedSettledHistoryAdmissionError::CiterNotBonded)
+        );
+    }
+
+    #[test]
+    fn settled_history_validation_rejects_forged_target_and_citer() {
+        let (target, anchor, citer, proof) = validated_settled_history_fixture();
+        assert_eq!(
+            ValidatedSettledHistoryAdmission::from_record(
+                proof.record(),
+                &target,
+                &anchor,
+                &citer,
+            )
+            .unwrap()
+            .record(),
+            proof.record()
+        );
+
+        let mut forged_target = target.clone();
+        forged_target.body.state.block_number += 1;
+        assert!(matches!(
+            ValidatedSettledHistoryAdmission::from_record(
+                proof.record(),
+                &forged_target,
+                &anchor,
+                &citer,
+            ),
+            Err(CertifiedSettledHistoryAdmissionError::InvalidTargetContentHash)
+        ));
+
+        let mut forged_citer = citer;
+        let mut forged_signature = forged_citer.sig.to_vec();
+        forged_signature[0] ^= 1;
+        forged_citer.sig = forged_signature.into();
+        assert!(matches!(
+            ValidatedSettledHistoryAdmission::from_record(
+                proof.record(),
+                &target,
+                &anchor,
+                &forged_citer,
+            ),
+            Err(CertifiedSettledHistoryAdmissionError::InvalidCiterSignature)
+        ));
+    }
+
+    proptest! {
+        #[test]
+        fn settled_history_digest_binds_each_target_hash_byte(index in 0usize..block_hash::LENGTH, replacement in any::<u8>()) {
+            let (_, _, _, proof) = settled_history_fixture();
+            let mut changed = proof.clone();
+            let mut hash = changed.target_block_hash.to_vec();
+            prop_assume!(hash[index] != replacement);
+            hash[index] = replacement;
+            changed.target_block_hash = Bytes::from(hash);
+            prop_assert_ne!(changed.digest(), proof.digest());
+        }
     }
 
     #[test]
@@ -1895,6 +2783,7 @@ mod round_trip_tests {
             protocol_version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
             objective_equivocation_evidence_delta: Vec::new(),
             sender_authority: None,
+            settled_history_admission: None,
             finalized_floor_commitment: None,
             admission_schema_version: ADMISSION_SCHEMA_VERSION,
             approved_genesis: true,

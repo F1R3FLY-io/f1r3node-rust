@@ -21,7 +21,7 @@ claim identifiers and their proof/test artifacts are indexed in
 | [`lean/`](lean) | Independent cost-monad and validator witnesses |
 | [`isabelle/`](isabelle) | Independent cost-accounting refinement witnesses |
 | [`iris/`](iris) | Separation-logic reconciliation witness |
-| [`loom/`](loom) | Exhaustive Rust concurrency shadow models tied to named production transitions |
+| [`loom/`](loom) | Bounded Rust concurrency checks with explicit production and abstraction boundaries |
 | [`mcrl2/`](mcrl2) | Finite process-algebra cross-witnesses |
 | [`storm/`](storm) | Parametric and finite-state stochastic reliability projections over declared implementation envelopes |
 | [`rewriting/`](rewriting) | Term-rewriting confluence and conservation witnesses |
@@ -49,6 +49,22 @@ rejects every tracked or untracked repository artifact under `formal/` that is
 empty or whitespace-only, malformed TLA+ modules and
 configs, unresolved thin wrappers, and proof escape hatches in Rocq, Lean, and
 Isabelle.
+
+## Host-work budget artifacts
+
+The [host-work TLA+ package](tlaplus/host_work_budget/README.md) models deterministic resource limits for consensus host work.
+It separates host-work units from Rholang costs and economic balances.
+
+The permanent [host-work specification](../docs/casper/theory/host-work-budget.md) defines each production unit, reservation boundary, rollback rule, cache rule, and protocol activation requirement.
+
+The model contains two validators, two shards, two concurrent branches, checkpoints, replay, and eight host-work phases.
+Sixteen independent dimensions prevent weighted capacity transfer between unlike resources.
+Ten unsafe controls expose arrival-order dependence, arithmetic defects, premature mutation, replay defects, shard coupling, economic debit, and premature allocation.
+
+The [host-work Rocq package](rocq/host_work_budget/README.md) proves the unbounded arithmetic and refinement obligations.
+Its theorems cover checked bounds, failure non-mutation, overflow rejection, economic separation, rollback, replay agreement, and independent-shard commutation.
+
+Run [`scripts/check-host-work-budget-formal.sh`](../scripts/check-host-work-budget-formal.sh) to check the complete focused package.
 
 ## Consensus concurrency artifacts
 
@@ -154,6 +170,38 @@ checks concurrent durable and cache visibility. The production regression
 [`rejected_block_final_state_does_not_publish_mergeable_evidence`](../casper/tests/util/rholang/runtime_manager_test.rs)
 checks rollback and nonpublication. Runtime-manager properties vary equal and
 unequal post-state roots through the production validation predicate.
+
+[`tlaplus/cost_accounted_rho/ExecutionResultReuse.tla`](tlaplus/cost_accounted_rho/ExecutionResultReuse.tla)
+models exact execution-result reuse by two independently scheduled validators.
+The model abstracts discovery retries into one successful retained execution.
+Each validator then reuses the retained post-state and mergeable evidence
+for system replay. The Rocq lifecycle model separately includes discovery attempts.
+
+The [TLC configuration](tlaplus/cost_accounted_rho/ExecutionResultReuse.cfg)
+checks the complete state graph. The [Apalache configuration](tlaplus/cost_accounted_rho/ExecutionResultReuseApalache.cfg)
+checks every transition sequence through length eight. Thirteen unsafe controls
+must expose omitted identity fields, premature publication, duplicate replay,
+or incorrect persistent-production charging.
+
+[`rocq/cost_accounted_rho/theories/ReplayAdmissionPublication.v`](rocq/cost_accounted_rho/theories/ReplayAdmissionPublication.v)
+proves abstract certification, mutation rejection, and numeric charging policies.
+Its lifecycle proof permits discovery retries and forbids another user evaluation
+after successful-result retention. The production attempt counter supplies
+separate evidence. Neither artifact alone establishes complete runtime refinement.
+The [production-linked Loom tests](loom/cost_accounting/tests/loom_production_replay_cache.rs)
+execute the shared cache transitions and persistence-before-publication helper.
+They cover replacement, eviction, lookup, clear, and persistence failure.
+The [persistent charging model](loom/cost_accounting/tests/loom_execution_result_reuse.rs)
+retains separate abstract types. Neither set executes production cancellation.
+The [crate guide](loom/cost_accounting/README.md) states the exploration bounds
+and the production correspondence limits.
+
+[`ReplayCacheContext.tla`](tlaplus/cost_accounted_rho/ReplayCacheContext.tla)
+checks shared cache lookup, context identity, publication, cancellation, eviction,
+and mergeable-metadata removal with two concurrent callers.
+Six unsafe controls isolate missing context fields and bypassed safety checks.
+The [verification guide](../docs/casper/theory/cost-accounted-rho-verification.md#c6-shared-replay-cache-context)
+states the model boundary and required production correspondence.
 
 [`tlaplus/finalized_floor/ExactFloorSelection.tla`](tlaplus/finalized_floor/ExactFloorSelection.tla)
 composes exact recurrence with certificate, proposal, replay-base, and durable
@@ -415,6 +463,17 @@ implementation, model, and profile identities. Any relevant change produces a
 different identity. A calibrated release projection additionally requires a
 clean implementation and a current profile conforming to
 [`storm/uptime/profiles/calibrated-profile.schema.json`](storm/uptime/profiles/calibrated-profile.schema.json).
+
+## Merge recovery soak qualification
+
+The [qualification contract](../docs/testing/merge-recovery-soak-qualification.md) separates repeated merge recovery evidence from uninterrupted single-shard uptime.
+The [Rocq model](rocq/soak_qualification/SoakQualification.v) proves exact duration accounting and permanent invalidation over arbitrary finite event lists.
+The [TLA+ model](tlaplus/soak_qualification/SoakQualification.tla) checks publication, work completion, idle time, invalidation, and the independent job conclusion.
+Its elapsed-only control must demonstrate false qualification.
+
+Run `bash scripts/check-soak-qualification-models.sh` within a systemd scope with at most 2 GiB memory and no swap.
+The separate verifier, collector, driver, and workflow tests check concrete traces and artifacts.
+The real-driver fixture uses a simulated clock and cannot establish actual 24-hour endurance.
 
 ## Generated files
 

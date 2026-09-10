@@ -105,7 +105,7 @@ This exposed a **latent pre-existing bug**: replay keyed compound re-verificatio
 
 ### Provisioning
 - **Clients:** seed `Σ⟦Ground(client_pk)⟧` via `client_fuel_allocations`; an omitted client has zero effective supply and is rejected.
-- **Validator heartbeat/dummy deployments:** pass through the same signed-deployment gate and use the validator's initial-phlogiston wallet.
+- **Validator heartbeat/dummy deployments:** pass through the same signed-deployment gate. They use genesis funding and later epoch credits in canonical custody.
 - **Protocol system deploys:** route through `evaluate_system_source` and their separately verified system transition.
 
 ### Tests

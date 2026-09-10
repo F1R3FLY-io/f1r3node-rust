@@ -56,3 +56,6 @@
 )]
 
 pub mod rust;
+
+#[cfg(test)]
+pub(crate) mod allocation_probe;

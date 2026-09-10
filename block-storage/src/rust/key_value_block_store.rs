@@ -894,6 +894,22 @@ mod tests {
     impl KeyValueStore for MockKeyValueStore {
         fn as_any(&self) -> &dyn std::any::Any { self }
 
+        fn with_value(
+            &self,
+            key: &ByteBuffer,
+            reader: &mut shared::rust::store::key_value_store::ValueReader<'_>,
+        ) -> Result<(), KvStoreError> {
+            self.update_input_keys(vec![key.clone()]);
+            reader(self.get_result.as_deref())
+        }
+
+        fn visit_entries(
+            &self,
+            _reader: &mut shared::rust::store::key_value_store::EntryReader<'_>,
+        ) -> Result<(), KvStoreError> {
+            panic!("unexpected scan in the point-read fixture")
+        }
+
         fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             self.update_input_keys(keys.to_vec());
             Ok(vec![self.get_result.clone()])
@@ -969,6 +985,21 @@ mod tests {
 
     impl KeyValueStore for NotImplementedKV {
         fn as_any(&self) -> &dyn std::any::Any { self }
+
+        fn with_value(
+            &self,
+            _key: &ByteBuffer,
+            _reader: &mut shared::rust::store::key_value_store::ValueReader<'_>,
+        ) -> Result<(), KvStoreError> {
+            panic!("unexpected borrowed read in the no-access fixture")
+        }
+
+        fn visit_entries(
+            &self,
+            _reader: &mut shared::rust::store::key_value_store::EntryReader<'_>,
+        ) -> Result<(), KvStoreError> {
+            panic!("unexpected borrowed scan in the no-access fixture")
+        }
 
         fn get(&self, _keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             todo!()

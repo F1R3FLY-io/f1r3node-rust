@@ -18,17 +18,24 @@ use std::collections::HashSet;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, InsertMode,
+    ValidatedSettledHistoryAdmission,
 };
 use block_storage::rust::dag::buffer_dag_transition::{
-    atomic_insert_then_buffer, reconcile_buffer_against_dag, BufferTransition,
+    atomic_insert_settled_then_buffer, atomic_insert_then_buffer, reconcile_buffer_against_dag,
+    BufferTransition,
 };
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::block_hash::{self, BlockHashSerde};
 use models::rust::block_implicits::get_random_block;
 use models::rust::block_metadata::{
     AdmissionRejectionReason, CERTIFIED_ADMISSION_PROTOCOL_VERSION,
 };
 use models::rust::bond_generation::BondGeneration;
-use models::rust::casper::protocol::casper_message::{BlockMessage, FinalizedFloorCommitment};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, Bond, FinalizedFloorCommitment, ValidatorBondGeneration,
+};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -58,6 +65,16 @@ fn make_block() -> BlockMessage {
         certificate_digest: prost::bytes::Bytes::from(vec![5; block_hash::LENGTH]),
         authority_context_digest: prost::bytes::Bytes::from(vec![4; block_hash::LENGTH]),
     });
+    sign_block(block, 1)
+}
+
+fn sign_block(mut block: BlockMessage, key_byte: u8) -> BlockMessage {
+    let algorithm = Secp256k1;
+    let private_key = PrivateKey::from_bytes(&[key_byte; 32]);
+    block.sender = algorithm.to_public(&private_key).bytes;
+    block.sig_algorithm = algorithm.name();
+    block.block_hash = block.computed_block_hash();
+    block.sig = algorithm.sign(&block.block_hash, &private_key.bytes).into();
     block
 }
 
@@ -93,6 +110,29 @@ fn rejected_outcome_for(
     CertifiedAdmissionOutcome::rejected(block, &certificate(block), reason).unwrap()
 }
 
+fn settled_proof(block: &BlockMessage) -> (BlockMessage, ValidatedSettledHistoryAdmission) {
+    let mut citer = make_block();
+    citer.header.parents_hash_list = vec![block.block_hash.clone()];
+    citer.body.state.block_number = 11;
+    let citer = sign_block(citer, 7);
+    let citer_sender = citer.sender.clone();
+    let mut anchor = make_block();
+    anchor.body.state.block_number = 10;
+    anchor.body.state.bonds = vec![Bond {
+        validator: citer_sender.clone(),
+        stake: 100,
+    }];
+    anchor.body.state.bond_generations = vec![ValidatorBondGeneration {
+        validator: citer_sender.clone(),
+        generation: BondGeneration::GENESIS,
+    }];
+    anchor.block_hash = anchor.computed_block_hash();
+    let proof =
+        ValidatedSettledHistoryAdmission::new(block, &anchor, &citer, BondGeneration::GENESIS, 100)
+            .unwrap();
+    (citer, proof)
+}
+
 async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage) {
     let mut dag_kvm = InMemoryStoreManager::new();
     let dag = BlockDagKeyValueStorage::new(&mut dag_kvm).await.unwrap();
@@ -118,7 +158,11 @@ async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage
     let mut buf_kvm = InMemoryStoreManager::new();
     let buf_store = buf_kvm.store("parents-map".to_string()).await.unwrap();
     let typed_store = KeyValueTypedStoreImpl::new(buf_store);
-    let buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store)
+    let pending = buf_kvm
+        .store(CasperBufferKeyValueStorage::PENDING_POLICY_NAMESPACE.into())
+        .await
+        .unwrap();
+    let buffer = CasperBufferKeyValueStorage::new_from_kv_store(typed_store, pending)
         .await
         .unwrap();
 
@@ -163,6 +207,32 @@ async fn atomic_insert_then_buffer_inserts_into_dag_and_removes_from_buffer() {
         Some(AdmissionRejectionReason::InvalidTransaction)
     );
     assert!(!metadata.is_slash_evidence_eligible());
+}
+
+#[tokio::test]
+async fn atomic_settled_insert_commits_proof_and_removes_ticket_edge() {
+    let (dag, buffer) = setup_stores().await;
+    let block = make_block();
+    let (citer, proof) = settled_proof(&block);
+    let target_hash = BlockHashSerde(block.block_hash.clone());
+    let citer_hash = BlockHashSerde(citer.block_hash.clone());
+    buffer
+        .add_relation(target_hash.clone(), citer_hash)
+        .unwrap();
+    let charge = dag.prepare_settled_recovery_charge(&block, &proof).unwrap();
+
+    let (updated, cleanup_error) =
+        atomic_insert_settled_then_buffer(&dag, &block, &proof, &charge, &buffer).unwrap();
+
+    assert!(cleanup_error.is_none());
+    assert!(buffer.get_children(&target_hash).is_none());
+    let metadata = updated.lookup(&block.block_hash).unwrap().unwrap();
+    assert_eq!(
+        metadata.settled_history_admission,
+        Some(proof.record().clone())
+    );
+    assert!(metadata.sender_authority.is_none());
+    assert!(metadata.admission_outcome.is_none());
 }
 
 #[tokio::test]

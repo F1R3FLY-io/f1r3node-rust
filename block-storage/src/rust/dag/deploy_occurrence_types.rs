@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::deploy_lifecycle_types::TerminalState;
 
-pub const DEPLOY_OCCURRENCE_SCHEMA_VERSION: u32 = 1;
+pub const DEPLOY_OCCURRENCE_SCHEMA_VERSION: u32 = 2;
 pub const DEPLOY_OCCURRENCE_PROTOCOL_VERSION: i64 = 6;
 
 pub fn occurrence_rank_cmp(
@@ -39,6 +39,7 @@ pub struct DeployOccurrence {
     pub admission_ruleset_digest: Vec<u8>,
     pub admission_context_digest: Vec<u8>,
     pub sender_authority_digest: Vec<u8>,
+    pub settled_history_admission_digest: Vec<u8>,
     pub is_failed: bool,
 }
 
@@ -75,6 +76,7 @@ impl DeployOccurrence {
                     || !self.admission_ruleset_digest.is_empty()
                     || !self.admission_context_digest.is_empty()
                     || !self.sender_authority_digest.is_empty()
+                    || !self.settled_history_admission_digest.is_empty()
                     || self.is_failed
                 {
                     return Err(
@@ -83,7 +85,7 @@ impl DeployOccurrence {
                     );
                 }
             }
-            OccurrenceAdmissionMode::Normal | OccurrenceAdmissionMode::SettledHistory => {
+            OccurrenceAdmissionMode::Normal => {
                 if self.source_validator.len() != models::rust::validator::LENGTH {
                     return Err(
                         "deploy occurrence source validator has an invalid length".to_string()
@@ -92,9 +94,26 @@ impl DeployOccurrence {
                 if self.admission_ruleset_digest.len() != 32
                     || self.admission_context_digest.len() != 32
                     || self.sender_authority_digest.len() != 32
+                    || !self.settled_history_admission_digest.is_empty()
                 {
                     return Err(
                         "deploy occurrence admission digest has an invalid length".to_string()
+                    );
+                }
+            }
+            OccurrenceAdmissionMode::SettledHistory => {
+                if self.source_validator.len() != models::rust::validator::LENGTH {
+                    return Err(
+                        "deploy occurrence source validator has an invalid length".to_string()
+                    );
+                }
+                if self.admission_ruleset_digest.len() != 32
+                    || self.admission_context_digest.len() != 32
+                    || !self.sender_authority_digest.is_empty()
+                    || self.settled_history_admission_digest.len() != 32
+                {
+                    return Err(
+                        "settled-history occurrence proof digest has an invalid length".to_string(),
                     );
                 }
             }
@@ -154,6 +173,7 @@ mod tests {
             admission_ruleset_digest: Vec::new(),
             admission_context_digest: Vec::new(),
             sender_authority_digest: Vec::new(),
+            settled_history_admission_digest: Vec::new(),
             is_failed: false,
         }
     }

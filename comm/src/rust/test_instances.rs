@@ -67,6 +67,7 @@ pub type Responses = Box<dyn Fn(&PeerNode, &Protocol) -> Result<(), CommError> +
 pub struct TransportLayerStub {
     reqresp: Arc<Mutex<Option<Arc<Responses>>>>,
     requests: Arc<Mutex<Vec<Request>>>,
+    response_delay: Arc<Mutex<Option<Duration>>>,
 }
 
 impl TransportLayerStub {
@@ -74,6 +75,7 @@ impl TransportLayerStub {
         Self {
             reqresp: Arc::new(Mutex::new(None)),
             requests: Arc::new(Mutex::new(Vec::new())),
+            response_delay: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -83,11 +85,17 @@ impl TransportLayerStub {
         *reqresp = Some(Arc::new(Box::new(responses)));
     }
 
+    pub fn set_response_delay(&self, delay: Duration) {
+        *self.response_delay.lock().unwrap() = Some(delay);
+    }
+
     pub fn reset(&self) {
         let mut reqresp = self.reqresp.lock().unwrap();
         let mut requests = self.requests.lock().unwrap();
+        let mut response_delay = self.response_delay.lock().unwrap();
         *reqresp = None;
         requests.clear();
+        *response_delay = None;
     }
 
     pub fn get_request(&self, i: usize) -> Option<(PeerNode, Protocol)> {
@@ -116,6 +124,10 @@ impl TransportLayerStub {
 #[async_trait]
 impl TransportLayer for TransportLayerStub {
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
+        let response_delay = *self.response_delay.lock().unwrap();
+        if let Some(delay) = response_delay {
+            tokio::time::sleep(delay).await;
+        }
         // Add request to the list
         {
             let mut requests = self.requests.lock().unwrap();
@@ -126,8 +138,8 @@ impl TransportLayer for TransportLayerStub {
         }
 
         // Execute response function if available
-        let reqresp = self.reqresp.lock().unwrap();
-        if let Some(ref response_fn) = *reqresp {
+        let response_fn = self.reqresp.lock().unwrap().clone();
+        if let Some(response_fn) = response_fn {
             response_fn(peer, msg)
         } else {
             // Default to success if no response function is set
@@ -136,6 +148,10 @@ impl TransportLayer for TransportLayerStub {
     }
 
     async fn broadcast(&self, peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError> {
+        let response_delay = *self.response_delay.lock().unwrap();
+        if let Some(delay) = response_delay {
+            tokio::time::sleep(delay).await;
+        }
         {
             let mut requests = self.requests.lock().unwrap();
             for peer in peers {

@@ -1,0 +1,2120 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-08",
+  "scope": "Approved campaign milestone partition. This is an inventory, not a completion claim.",
+  "campaign": "cost-accounted-rho-two-paper-native-completion-epic",
+  "milestones": [
+    {
+      "public_id": "ca-campaign-m1-requested",
+      "phase": 1,
+      "scope": "requested_work"
+    },
+    {
+      "public_id": "ca-campaign-m2-required-followup",
+      "phase": 2,
+      "scope": "required_nonblocking_followup"
+    },
+    {
+      "public_id": "ca-campaign-m3-optional",
+      "phase": 3,
+      "scope": "optional_improvements"
+    }
+  ],
+  "audit": {
+    "original_rows": 280,
+    "current_rows": 284,
+    "new_rows": [
+      {
+        "id": 8381,
+        "kind": "milestone",
+        "public_id": "ca-campaign-m1-requested"
+      },
+      {
+        "id": 8380,
+        "kind": "milestone",
+        "public_id": "ca-campaign-m2-required-followup"
+      },
+      {
+        "id": 8382,
+        "kind": "milestone",
+        "public_id": "ca-campaign-m3-optional"
+      },
+      {
+        "id": 8383,
+        "kind": "plan",
+        "public_id": "pr216-requested-work-groups"
+      }
+    ],
+    "preserved_field_mismatches": [],
+    "actionable_leaves": {
+      "requested": 199,
+      "followup": 5,
+      "optional": 0
+    },
+    "followup_tasks": [
+      "pr216-state-import-red",
+      "pr216-state-import-horizon-red",
+      "pr216-state-import-formal",
+      "pr216-state-import-repair",
+      "pr216-state-import-conformance"
+    ]
+  },
+  "pending_transfers": [
+    {
+      "proposal_id": 4,
+      "source": "pr216-requested-work-groups",
+      "target": "ca-campaign-m1-requested"
+    },
+    {
+      "proposal_id": 5,
+      "source": "pr216-additional-audit-followup",
+      "target": "ca-campaign-m2-required-followup"
+    }
+  ],
+  "superseded_plan": {
+    "proposal_id": 3,
+    "note": "The approved three-milestone plan places comparison work in its original epic under M1. Do not execute the earlier proposed cross-epic comparison move."
+  },
+  "tasks": [
+    {
+      "id": 7449,
+      "public_id": "ca-casper-current-dev-classification",
+      "title": "Classify current dev and feature Casper differences",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7367,
+      "milestone_id": 8381,
+      "weight": 3
+    },
+    {
+      "id": 7450,
+      "public_id": "ca-casper-decision-status-ledger",
+      "title": "Maintain the Casper ratification decision ledger",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7367,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7451,
+      "public_id": "ca-pr390-correction-record",
+      "title": "Record corrections and retained findings from PR 390",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7367,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7439,
+      "public_id": "ca-phlo-signed-semantics",
+      "title": "Specify signed phlo intent and solver semantics",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7325,
+      "milestone_id": 7325,
+      "weight": 3
+    },
+    {
+      "id": 7440,
+      "public_id": "ca-phlo-wire-signing",
+      "title": "Bind phlo controls to wire identity and signatures",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7325,
+      "milestone_id": 7325,
+      "weight": 3
+    },
+    {
+      "id": 7443,
+      "public_id": "ca-phlo-reservation-refund",
+      "title": "Integrate phlo maximums with reservation and refund",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7327,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7444,
+      "public_id": "ca-phlo-host-work-cache-conformance",
+      "title": "Prove phlo, host-work, and result-cache conformance",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7326,
+      "milestone_id": 7326,
+      "weight": 3
+    },
+    {
+      "id": 7441,
+      "public_id": "ca-phlo-client-surfaces",
+      "title": "Restore phlo controls across clients and node APIs",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7327,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7442,
+      "public_id": "ca-phlo-production-activation",
+      "title": "Activate restored phlo semantics at a protocol boundary",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7328,
+      "milestone_id": 7328,
+      "weight": 5
+    },
+    {
+      "id": 7430,
+      "public_id": "ca2p-baseline-strict-gates-evidence-reconciliation",
+      "title": "Reconcile strict baseline gate evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5338,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7431,
+      "public_id": "ca2p-native-semantics-refinement-evidence-reconciliation",
+      "title": "Reconcile signed-region semantic evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5339,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7432,
+      "public_id": "ca2p-consensus-wire-compiler-evidence-reconciliation",
+      "title": "Reconcile consensus wire and compiler evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5340,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7433,
+      "public_id": "ca2p-admission-settlement-consensus-evidence-reconciliation",
+      "title": "Reconcile admission and settlement evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5342,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7434,
+      "public_id": "ca2p-rspace-atomic-authority-evidence-reconciliation",
+      "title": "Reconcile RSpace authority evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5343,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7435,
+      "public_id": "ca2p-first-class-stacks-purses-evidence-reconciliation",
+      "title": "Reconcile stack and purse evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5344,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7436,
+      "public_id": "ca2p-gslt-oslf-native-evidence-reconciliation",
+      "title": "Reconcile GSLT and OSLF evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5345,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7437,
+      "public_id": "ca2p-docs-activation-integration-evidence-reconciliation",
+      "title": "Reconcile documentation and activation evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5346,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7438,
+      "public_id": "ca2p-exhaustive-tests-evidence-reconciliation",
+      "title": "Reconcile exhaustive test evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5347,
+      "milestone_id": 8381,
+      "weight": 2
+    },
+    {
+      "id": 7580,
+      "public_id": "ca-final-requirement-coverage-audit",
+      "title": "Audit final requirement coverage",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5341,
+      "milestone_id": 8381,
+      "weight": 1
+    },
+    {
+      "id": 7581,
+      "public_id": "ca-final-verification-evidence-audit",
+      "title": "Audit final verification evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5341,
+      "milestone_id": 8381,
+      "weight": 1
+    },
+    {
+      "id": 7582,
+      "public_id": "ca-final-artifact-cleanup-audit",
+      "title": "Audit final artifacts and cleanup",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 5341,
+      "milestone_id": 8381,
+      "weight": 1
+    },
+    {
+      "id": 6755,
+      "public_id": "pr216-review-adjudication",
+      "title": "Adjudicate every external review finding",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6747,
+      "milestone_id": 6747,
+      "weight": 2
+    },
+    {
+      "id": 6756,
+      "public_id": "pr216-baseline-impact",
+      "title": "Freeze the branch and dev comparison baseline",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6747,
+      "milestone_id": 6747,
+      "weight": 2
+    },
+    {
+      "id": 6757,
+      "public_id": "pr216-wire-decode",
+      "title": "Make consensus enum decoding fail closed",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6748,
+      "milestone_id": 6748,
+      "weight": 2
+    },
+    {
+      "id": 6787,
+      "public_id": "pr216-merge-current-dev",
+      "title": "Merge current dev without semantic regressions",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6747,
+      "milestone_id": 6747,
+      "weight": 8
+    },
+    {
+      "id": 6758,
+      "public_id": "pr216-admission-manifest",
+      "title": "Generate the complete admission ruleset manifest",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6748,
+      "milestone_id": 6748,
+      "weight": 1
+    },
+    {
+      "id": 6759,
+      "public_id": "pr216-custody-alias-model",
+      "title": "Specify canonical physical custody and logical authority",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6748,
+      "milestone_id": 6748,
+      "weight": 3
+    },
+    {
+      "id": 6760,
+      "public_id": "pr216-custody-alias-impl",
+      "title": "Implement canonical custody accounting",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6748,
+      "milestone_id": 6748,
+      "weight": 5
+    },
+    {
+      "id": 6761,
+      "public_id": "pr216-lfs-restore-retry",
+      "title": "Restore retry ownership after failed finalized-state initialization",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6749,
+      "milestone_id": 6749,
+      "weight": 3
+    },
+    {
+      "id": 6762,
+      "public_id": "pr216-quarantine-lifecycle",
+      "title": "Preserve quarantined dependency evidence",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6749,
+      "milestone_id": 6749,
+      "weight": 3
+    },
+    {
+      "id": 6763,
+      "public_id": "pr216-settled-ticket-transaction",
+      "title": "Make settled-history tickets transactional",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6749,
+      "milestone_id": 6749,
+      "weight": 3
+    },
+    {
+      "id": 6764,
+      "public_id": "pr216-recovery-budget",
+      "title": "Bound recovery retries per key and episode",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6749,
+      "milestone_id": 6749,
+      "weight": 5
+    },
+    {
+      "id": 6765,
+      "public_id": "pr216-bond-subsidy",
+      "title": "Remove post-genesis fresh-bond subsidy",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6750,
+      "milestone_id": 6750,
+      "weight": 5
+    },
+    {
+      "id": 6766,
+      "public_id": "pr216-mint-atomicity",
+      "title": "Make epoch minting atomic and fail closed",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6750,
+      "milestone_id": 6750,
+      "weight": 3
+    },
+    {
+      "id": 6767,
+      "public_id": "pr216-minted-epoch-retention",
+      "title": "Bound minted-epoch replay protection state",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6750,
+      "milestone_id": 6750,
+      "weight": 3
+    },
+    {
+      "id": 6768,
+      "public_id": "pr216-checkpoint-recertify",
+      "title": "Recertify every shrunken proposal checkpoint",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6751,
+      "milestone_id": 6751,
+      "weight": 5
+    },
+    {
+      "id": 6786,
+      "public_id": "pr216-validator-economics",
+      "title": "Prove validator fuel and fee economics",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6750,
+      "milestone_id": 6750,
+      "weight": 5
+    },
+    {
+      "id": 6769,
+      "public_id": "pr216-signed-floor-proof",
+      "title": "Prove the signed finalized-floor and replay-anchor contract",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6751,
+      "milestone_id": 6751,
+      "weight": 5
+    },
+    {
+      "id": 6770,
+      "public_id": "pr216-signed-floor-runtime",
+      "title": "Align Casper runtime with the signed-floor proof",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6751,
+      "milestone_id": 6751,
+      "weight": 5
+    },
+    {
+      "id": 6771,
+      "public_id": "pr216-finalization-replay-properties",
+      "title": "Test finalization and replay across adversarial schedules",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6751,
+      "milestone_id": 6751,
+      "weight": 3
+    },
+    {
+      "id": 6772,
+      "public_id": "pr216-host-work-budget",
+      "title": "Bound admission, witness, and host work",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6752,
+      "milestone_id": 6752,
+      "weight": 5
+    },
+    {
+      "id": 6773,
+      "public_id": "pr216-duplicate-execution",
+      "title": "Eliminate proven duplicate execution paths",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6752,
+      "milestone_id": 6752,
+      "weight": 5
+    },
+    {
+      "id": 6775,
+      "public_id": "pr216-ledger-startup",
+      "title": "Remove unbounded finalization-ledger startup scans",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6752,
+      "milestone_id": 6752,
+      "weight": 5
+    },
+    {
+      "id": 7445,
+      "public_id": "pr216-review-findings-closure",
+      "title": "Close every supported external review finding",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 6776,
+      "public_id": "pr216-admission-backpressure",
+      "title": "Bound admission and recovery backlog growth",
+      "phase": 1,
+      "status": "in_progress",
+      "parent_id": 6752,
+      "milestone_id": 6752,
+      "weight": 5
+    },
+    {
+      "id": 6860,
+      "public_id": "pr216-semantic-claim-audit",
+      "title": "Audit all three-paper semantic claims and proof boundaries",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 6777,
+      "public_id": "pr216-soak-observability",
+      "title": "Add soak resource and progress observability",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6752,
+      "milestone_id": 6752,
+      "weight": 3
+    },
+    {
+      "id": 6858,
+      "public_id": "pr216-knotted-topoi-calibration",
+      "title": "Define the three-paper executable semantic domain",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 5
+    },
+    {
+      "id": 6862,
+      "public_id": "pr216-operational-reflection-coherence",
+      "title": "Prove native reflection and persistent-listener coherence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 5
+    },
+    {
+      "id": 6861,
+      "public_id": "pr216-rooted-location-identity",
+      "title": "Prove rooted semantic location identity and runtime refinement",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 5
+    },
+    {
+      "id": 7520,
+      "public_id": "pr216-soak-qualification-hardening",
+      "title": "Harden the 24-hour soak qualification contract",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6754,
+      "milestone_id": 6754,
+      "weight": 2
+    },
+    {
+      "id": 6863,
+      "public_id": "pr216-context-cost-lts",
+      "title": "Define the paired context-cost transition system",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 8
+    },
+    {
+      "id": 7446,
+      "public_id": "ca-final-aggregate-ci",
+      "title": "Pass the final aggregate CI gate",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6754,
+      "milestone_id": 6754,
+      "weight": 5
+    },
+    {
+      "id": 6864,
+      "public_id": "pr216-rho-operational-correspondence",
+      "title": "Prove bidirectional native Rholang operational correspondence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 8
+    },
+    {
+      "id": 6782,
+      "public_id": "pr216-targeted-validation",
+      "title": "Run targeted regression, lint, and proof gates",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6752,
+      "milestone_id": 6752,
+      "weight": 3
+    },
+    {
+      "id": 6865,
+      "public_id": "pr216-specialized-oslf-classifier",
+      "title": "Prove paired-label OSLF adequacy for funded episodes",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 8
+    },
+    {
+      "id": 6783,
+      "public_id": "pr216-integration-validation",
+      "title": "Run multi-node consensus and recovery validation",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6754,
+      "milestone_id": 6754,
+      "weight": 5
+    },
+    {
+      "id": 6866,
+      "public_id": "pr216-rholang-observational-calibration",
+      "title": "Calibrate Rholang contextual and weak-barbed equivalence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 8
+    },
+    {
+      "id": 6784,
+      "public_id": "pr216-soak-24h",
+      "title": "Pass the 24-hour merge-recovery soak",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6754,
+      "milestone_id": 6754,
+      "weight": 8
+    },
+    {
+      "id": 6867,
+      "public_id": "pr216-persistent-lifetime-semantics",
+      "title": "Prove unbounded persistent-service prefix safety",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 8
+    },
+    {
+      "id": 7447,
+      "public_id": "ca-final-evidence-manifest",
+      "title": "Publish the final revision-bound evidence manifest",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6754,
+      "milestone_id": 6754,
+      "weight": 2
+    },
+    {
+      "id": 6781,
+      "public_id": "pr216-gate-integration",
+      "title": "Make three-paper verification gates strict and reproducible",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6753,
+      "milestone_id": 6753,
+      "weight": 5
+    },
+    {
+      "id": 7448,
+      "public_id": "pr216-update-preparation",
+      "title": "Prepare the evidence-backed PR update",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6754,
+      "milestone_id": 6754,
+      "weight": 1
+    },
+    {
+      "id": 8321,
+      "public_id": "pr216-state-import-red",
+      "title": "Reproduce runtime import validity gaps with real storage",
+      "phase": 2,
+      "status": "claimed_done",
+      "parent_id": 8320,
+      "milestone_id": 8350,
+      "weight": 2
+    },
+    {
+      "id": 8322,
+      "public_id": "pr216-state-import-horizon-red",
+      "title": "Reproduce forward-horizon import gap and pin dev provenance",
+      "phase": 2,
+      "status": "claimed_done",
+      "parent_id": 8320,
+      "milestone_id": 8350,
+      "weight": 2
+    },
+    {
+      "id": 8323,
+      "public_id": "pr216-state-import-formal",
+      "title": "Verify authenticated page and complete-root publication semantics",
+      "phase": 2,
+      "status": "in_progress",
+      "parent_id": 8320,
+      "milestone_id": 8350,
+      "weight": 3
+    },
+    {
+      "id": 8324,
+      "public_id": "pr216-state-import-repair",
+      "title": "Apply shared canonical import validation without Casper redesign",
+      "phase": 2,
+      "status": "pending",
+      "parent_id": 8320,
+      "milestone_id": 8350,
+      "weight": 3
+    },
+    {
+      "id": 8325,
+      "public_id": "pr216-state-import-conformance",
+      "title": "Verify native, property, concurrency, and interoperability coverage",
+      "phase": 2,
+      "status": "pending",
+      "parent_id": 8320,
+      "milestone_id": 8350,
+      "weight": 3
+    },
+    {
+      "id": 7452,
+      "public_id": "ca-npayer-rocq-pricing-checked-bounds",
+      "title": "Prove checked pricing and resource bounds",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7339,
+      "milestone_id": 7326,
+      "weight": 3
+    },
+    {
+      "id": 7453,
+      "public_id": "ca-npayer-rocq-pricing-reservation-refund",
+      "title": "Prove reservation and refund conservation",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7339,
+      "milestone_id": 7326,
+      "weight": 3
+    },
+    {
+      "id": 7454,
+      "public_id": "ca-npayer-rocq-pricing-fees",
+      "title": "Prove fee conservation and routing",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7339,
+      "milestone_id": 7326,
+      "weight": 2
+    },
+    {
+      "id": 7455,
+      "public_id": "ca-npayer-rocq-pricing-exchange-withdrawal",
+      "title": "Prove exchange and withdrawal conservation",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7339,
+      "milestone_id": 7326,
+      "weight": 3
+    },
+    {
+      "id": 7456,
+      "public_id": "ca-npayer-tla-reservation-publication",
+      "title": "Model concurrent reservation and publication",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7341,
+      "milestone_id": 7326,
+      "weight": 3
+    },
+    {
+      "id": 7457,
+      "public_id": "ca-npayer-tla-replay-restart",
+      "title": "Model replay and restart settlement",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7341,
+      "milestone_id": 7326,
+      "weight": 3
+    },
+    {
+      "id": 7458,
+      "public_id": "ca-npayer-tla-validator-shard",
+      "title": "Model parallel validators and shards",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7341,
+      "milestone_id": 7326,
+      "weight": 3
+    },
+    {
+      "id": 7459,
+      "public_id": "ca-npayer-wire-schema-roundtrip",
+      "title": "Implement funding-plan schema and round trips",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7345,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7460,
+      "public_id": "ca-npayer-wire-signing-hash",
+      "title": "Implement funding-plan signing and hash domains",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7345,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7461,
+      "public_id": "ca-npayer-wire-legacy-dispatch",
+      "title": "Implement legacy wire dispatch and migration",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7345,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7462,
+      "public_id": "ca-npayer-vault-atomic-debit-refund",
+      "title": "Implement atomic vault debit and refund",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7349,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7463,
+      "public_id": "ca-npayer-vault-topup-joint-custody",
+      "title": "Implement top-up and joint custody",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7349,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7464,
+      "public_id": "ca-npayer-vault-failure-recovery",
+      "title": "Implement vault failure and recovery",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7349,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7465,
+      "public_id": "ca-npayer-meter-compute",
+      "title": "Integrate compute metering",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7350,
+      "milestone_id": 7327,
+      "weight": 2
+    },
+    {
+      "id": 7466,
+      "public_id": "ca-npayer-meter-retained-storage",
+      "title": "Integrate retained-storage metering",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7350,
+      "milestone_id": 7327,
+      "weight": 2
+    },
+    {
+      "id": 7467,
+      "public_id": "ca-npayer-meter-transferred-bytes",
+      "title": "Integrate transferred-byte metering",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7350,
+      "milestone_id": 7327,
+      "weight": 2
+    },
+    {
+      "id": 7468,
+      "public_id": "ca-npayer-meter-trace-bytes",
+      "title": "Integrate trace-byte metering",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7350,
+      "milestone_id": 7327,
+      "weight": 2
+    },
+    {
+      "id": 7469,
+      "public_id": "ca-npayer-meter-composition-replay",
+      "title": "Compose resource meters and replay",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7350,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7470,
+      "public_id": "ca-npayer-operators-multiplicatives-additives",
+      "title": "Integrate multiplicative and additive operators",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7352,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7471,
+      "public_id": "ca-npayer-operators-joins",
+      "title": "Integrate arbitrary-arity joins",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7352,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7472,
+      "public_id": "ca-npayer-operators-persistence",
+      "title": "Integrate persistent and modal operators",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7352,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7473,
+      "public_id": "ca-npayer-operators-capability-transfer",
+      "title": "Integrate lollipop, locations, and capability transfer",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7352,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7474,
+      "public_id": "ca-npayer-replay-validator-recompute",
+      "title": "Recompute funding plans during validation",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7353,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7475,
+      "public_id": "ca-npayer-replay-merge-dedup",
+      "title": "Deduplicate settlement across merge",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7353,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7476,
+      "public_id": "ca-npayer-replay-restart-recovery",
+      "title": "Preserve settlement across restart and recovery",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7353,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7477,
+      "public_id": "ca-npayer-replay-historical",
+      "title": "Preserve historical protocol replay",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7353,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7478,
+      "public_id": "ca-npayer-fee-routing",
+      "title": "Integrate deterministic fee routing",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7354,
+      "milestone_id": 7327,
+      "weight": 2
+    },
+    {
+      "id": 7479,
+      "public_id": "ca-npayer-exhaustion-platform-faults",
+      "title": "Separate exhaustion from platform faults",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7354,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7480,
+      "public_id": "ca-npayer-conversion-authorized",
+      "title": "Implement authorized conversion",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7355,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7481,
+      "public_id": "ca-npayer-withdrawal-joint-threshold",
+      "title": "Implement joint and threshold withdrawal",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7355,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7482,
+      "public_id": "ca-npayer-conversion-original-asset-refund",
+      "title": "Refund converted reservations to original assets",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7355,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7483,
+      "public_id": "ca-npayer-node-api-config",
+      "title": "Integrate node APIs and configuration",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7356,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7484,
+      "public_id": "ca-npayer-client-signing-diagnostics",
+      "title": "Integrate client signing and diagnostics",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7356,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7485,
+      "public_id": "ca-npayer-activation-migration",
+      "title": "Implement activation and migration tooling",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7356,
+      "milestone_id": 7327,
+      "weight": 3
+    },
+    {
+      "id": 7486,
+      "public_id": "ca-npayer-properties-allocator",
+      "title": "Extract allocator properties",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7358,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7487,
+      "public_id": "ca-npayer-properties-authorization",
+      "title": "Extract authorization properties",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7358,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7488,
+      "public_id": "ca-npayer-properties-pricing-lifecycle",
+      "title": "Extract pricing and lifecycle properties",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7358,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7489,
+      "public_id": "ca-npayer-loom-reservation",
+      "title": "Model concurrent reservations with Loom",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7359,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7490,
+      "public_id": "ca-npayer-loom-settlement-topup-refund",
+      "title": "Model settlement, top-up, and refund with Loom",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7359,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7491,
+      "public_id": "ca-npayer-loom-exchange-retry",
+      "title": "Model exchange and retry with Loom",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7359,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7492,
+      "public_id": "ca-npayer-integration-play-replay",
+      "title": "Test n-payer play and replay",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7360,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7493,
+      "public_id": "ca-npayer-integration-restart-recovery",
+      "title": "Test n-payer restart and recovery",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7360,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7494,
+      "public_id": "ca-npayer-integration-validator-shard",
+      "title": "Test parallel validators and shards",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7360,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7495,
+      "public_id": "ca-npayer-security-authority-sponsor",
+      "title": "Validate authority and sponsor security",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7361,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7496,
+      "public_id": "ca-npayer-security-arithmetic-resource",
+      "title": "Validate arithmetic and resource security",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7361,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7497,
+      "public_id": "ca-npayer-docs-theory-architecture",
+      "title": "Document n-payer theory and architecture",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7362,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7498,
+      "public_id": "ca-npayer-docs-syntax-api-client",
+      "title": "Document n-payer syntax, APIs, and clients",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7362,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7499,
+      "public_id": "ca-npayer-docs-security-ops-migration",
+      "title": "Document n-payer security, operations, and migration",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7362,
+      "milestone_id": 7328,
+      "weight": 3
+    },
+    {
+      "id": 7500,
+      "public_id": "ca-npayer-formal-traceability-inventory",
+      "title": "Inventory n-payer formal obligations",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7344,
+      "milestone_id": 7326,
+      "weight": 2
+    },
+    {
+      "id": 7501,
+      "public_id": "ca-npayer-formal-traceability-audit",
+      "title": "Audit n-payer formal evidence",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7344,
+      "milestone_id": 7326,
+      "weight": 2
+    },
+    {
+      "id": 7521,
+      "public_id": "ca-npayer-audit-code-paths",
+      "title": "Audit binary assumptions in production paths",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7330,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7522,
+      "public_id": "ca-npayer-audit-proof-test-paths",
+      "title": "Audit binary assumptions in proofs and tests",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7330,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7523,
+      "public_id": "ca-npayer-audit-findings-matrix",
+      "title": "Publish the binary-assumption findings matrix",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7330,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7524,
+      "public_id": "ca-npayer-adr-authority-allocation",
+      "title": "Ratify authority and allocation policy",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7329,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7525,
+      "public_id": "ca-npayer-adr-economics-failures",
+      "title": "Ratify economic and failure policy",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7329,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7526,
+      "public_id": "ca-npayer-adr-activation-migration",
+      "title": "Ratify activation and migration policy",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7329,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7527,
+      "public_id": "ca-npayer-resource-units-measurement",
+      "title": "Specify resource units and measurement points",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7331,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7528,
+      "public_id": "ca-npayer-resource-bounds-exhaustion",
+      "title": "Specify resource bounds and exhaustion",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7331,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7529,
+      "public_id": "ca-npayer-resource-persistence-liability",
+      "title": "Specify persistence and storage liability",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7331,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7530,
+      "public_id": "ca-npayer-price-schedule-units",
+      "title": "Specify price schedules and denominations",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7332,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7531,
+      "public_id": "ca-npayer-price-signed-consent",
+      "title": "Specify signed price consent",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7332,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7532,
+      "public_id": "ca-npayer-price-transition-replay",
+      "title": "Specify price transitions and replay",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7332,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7533,
+      "public_id": "ca-npayer-auth-identity-custody",
+      "title": "Specify authority and custody identity",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7333,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7534,
+      "public_id": "ca-npayer-auth-threshold-cap",
+      "title": "Specify thresholds and payer caps",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7333,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7535,
+      "public_id": "ca-npayer-auth-delegation-persistence",
+      "title": "Specify delegation and persistent authority",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7333,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7536,
+      "public_id": "ca-npayer-conversion-quote-rate",
+      "title": "Specify conversion quotes and rates",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7334,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7537,
+      "public_id": "ca-npayer-conversion-authority-contract",
+      "title": "Specify conversion and withdrawal authority",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7334,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7538,
+      "public_id": "ca-npayer-conversion-provenance-contract",
+      "title": "Specify conversion provenance and refunds",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7334,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7539,
+      "public_id": "ca-npayer-solver-input-rejection-contract",
+      "title": "Specify solver inputs and rejection contract",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7335,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7540,
+      "public_id": "ca-npayer-solver-allocation-residual-contract",
+      "title": "Specify allocation and residual contract",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7335,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7541,
+      "public_id": "ca-npayer-solver-settlement-contract",
+      "title": "Specify settlement and refund contract",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7335,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7542,
+      "public_id": "ca-npayer-solver-replay-contract",
+      "title": "Specify replay and concurrency contract",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7335,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7543,
+      "public_id": "ca-npayer-wire-contract-schema",
+      "title": "Specify wire schema and reserved tags",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7336,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7544,
+      "public_id": "ca-npayer-wire-contract-identity",
+      "title": "Specify signing and deploy identity",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7336,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7545,
+      "public_id": "ca-npayer-wire-contract-compatibility",
+      "title": "Specify activation and legacy compatibility",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7336,
+      "milestone_id": 7325,
+      "weight": 1
+    },
+    {
+      "id": 7546,
+      "public_id": "ca-npayer-rocq-authority-lists",
+      "title": "Prove arbitrary-list authority structure",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7337,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7547,
+      "public_id": "ca-npayer-rocq-authority-custody",
+      "title": "Prove custody alias conservation",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7337,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7548,
+      "public_id": "ca-npayer-rocq-authority-operators",
+      "title": "Prove operator authority preservation",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7337,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7549,
+      "public_id": "ca-npayer-rocq-allocation-fairness",
+      "title": "Prove max-min fairness and residual bounds",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7338,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7550,
+      "public_id": "ca-npayer-rocq-allocation-conservation",
+      "title": "Prove allocation conservation and no overdraw",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7338,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7551,
+      "public_id": "ca-npayer-rocq-allocation-batch",
+      "title": "Prove canonical batch serializability",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7338,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7552,
+      "public_id": "ca-npayer-rocq-refinement-papers",
+      "title": "Prove the paper-to-contract refinement",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7340,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7553,
+      "public_id": "ca-npayer-rocq-refinement-runtime",
+      "title": "Prove the contract-to-runtime refinement",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7340,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7554,
+      "public_id": "ca-npayer-rocq-refinement-consensus",
+      "title": "Prove consensus and replay refinement",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7340,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7555,
+      "public_id": "ca-npayer-apalache-safe",
+      "title": "Check safe symbolic n-payer models",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7342,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7556,
+      "public_id": "ca-npayer-apalache-controls",
+      "title": "Check symbolic unsafe controls",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7342,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7557,
+      "public_id": "ca-npayer-apalache-bounds-report",
+      "title": "Publish Apalache bounds and coverage",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7342,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7558,
+      "public_id": "ca-npayer-controls-allocation",
+      "title": "Refute allocation defects",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7343,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7559,
+      "public_id": "ca-npayer-controls-authority",
+      "title": "Refute authority defects",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7343,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7560,
+      "public_id": "ca-npayer-controls-replay-settlement",
+      "title": "Refute replay and settlement defects",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7343,
+      "milestone_id": 7326,
+      "weight": 1
+    },
+    {
+      "id": 7561,
+      "public_id": "ca-npayer-solver-kernel-types",
+      "title": "Implement canonical solver types",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7346,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7562,
+      "public_id": "ca-npayer-solver-kernel-allocation",
+      "title": "Implement checked max-min allocation",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7346,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7563,
+      "public_id": "ca-npayer-solver-kernel-settlement",
+      "title": "Implement plan and settlement transitions",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7346,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7564,
+      "public_id": "ca-npayer-solver-kernel-properties",
+      "title": "Verify solver kernel properties",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7346,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7565,
+      "public_id": "ca-npayer-presentation-decode-auth",
+      "title": "Validate funding presentation syntax and authority",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7347,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7566,
+      "public_id": "ca-npayer-presentation-recompute",
+      "title": "Recompute and compare funding plans",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7347,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7567,
+      "public_id": "ca-npayer-presentation-negative-tests",
+      "title": "Test presentation mutation and failure cases",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7347,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7568,
+      "public_id": "ca-npayer-ledger-reserve-commit",
+      "title": "Implement atomic reservation and commit",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7348,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7569,
+      "public_id": "ca-npayer-ledger-refund-failure",
+      "title": "Implement refund and failure recovery",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7348,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7570,
+      "public_id": "ca-npayer-ledger-concurrency-restart",
+      "title": "Verify ledger concurrency and restart",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7348,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7571,
+      "public_id": "ca-npayer-admission-plan",
+      "title": "Integrate canonical funding admission",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7351,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7572,
+      "public_id": "ca-npayer-admission-canonical-batch",
+      "title": "Integrate canonical batch reconciliation",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7351,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7573,
+      "public_id": "ca-npayer-admission-replay-merge",
+      "title": "Verify admission replay and merge",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7351,
+      "milestone_id": 7327,
+      "weight": 1
+    },
+    {
+      "id": 7574,
+      "public_id": "ca-npayer-unit-solver",
+      "title": "Add solver unit and boundary tests",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7357,
+      "milestone_id": 7328,
+      "weight": 1
+    },
+    {
+      "id": 7575,
+      "public_id": "ca-npayer-golden-wire",
+      "title": "Add wire and signature golden vectors",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7357,
+      "milestone_id": 7328,
+      "weight": 1
+    },
+    {
+      "id": 7576,
+      "public_id": "ca-npayer-example-runtime",
+      "title": "Add runtime example tests",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7357,
+      "milestone_id": 7328,
+      "weight": 1
+    },
+    {
+      "id": 7577,
+      "public_id": "ca-npayer-gate-formal",
+      "title": "Integrate n-payer formal gates",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7363,
+      "milestone_id": 7328,
+      "weight": 1
+    },
+    {
+      "id": 7578,
+      "public_id": "ca-npayer-gate-code-tests",
+      "title": "Integrate n-payer code and test gates",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7363,
+      "milestone_id": 7328,
+      "weight": 1
+    },
+    {
+      "id": 7579,
+      "public_id": "ca-npayer-gate-evidence-integrity",
+      "title": "Integrate n-payer evidence integrity",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 7363,
+      "milestone_id": 7328,
+      "weight": 1
+    },
+    {
+      "id": 8285,
+      "public_id": "pr216-pruning-red",
+      "title": "Demonstrate pruning loss through the shared public buffer API",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 1
+    },
+    {
+      "id": 8286,
+      "public_id": "pr216-pruning-provenance",
+      "title": "Compare the reproducer with pinned dev and feature sources",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 1
+    },
+    {
+      "id": 8287,
+      "public_id": "pr216-pruning-design",
+      "title": "Prepare minimal repair alternatives for upstream review",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 8288,
+      "public_id": "pr216-pruning-review",
+      "title": "Record upstream disposition before architecture changes",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 1
+    },
+    {
+      "id": 8289,
+      "public_id": "pr216-pruning-formal",
+      "title": "Qualify the accepted repair model before production edits",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 8290,
+      "public_id": "pr216-pruning-implementation",
+      "title": "Implement only the reviewed buffer pruning correction",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 8291,
+      "public_id": "pr216-pruning-regressions",
+      "title": "Validate preservation against examples and generated histories",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 8292,
+      "public_id": "pr216-pruning-concurrency",
+      "title": "Validate concurrent recovery and bounded resource use",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 8293,
+      "public_id": "pr216-pruning-handoff",
+      "title": "Document evidence and the exact upstream compatibility delta",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 8284,
+      "milestone_id": 6752,
+      "weight": 1
+    },
+    {
+      "id": 8301,
+      "public_id": "pr216-cache-lock-red",
+      "title": "Demonstrate production cache guard retention",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 8300,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 8302,
+      "public_id": "pr216-cache-lock-model",
+      "title": "Verify separate cache locks before repair",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 8300,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 8303,
+      "public_id": "pr216-cache-lock-repair",
+      "title": "Release cache guards before order updates",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 8300,
+      "milestone_id": 6752,
+      "weight": 1
+    },
+    {
+      "id": 8304,
+      "public_id": "pr216-cache-lock-conformance",
+      "title": "Check cache lock conformance and regression coverage",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 8300,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 7506,
+      "public_id": "pr216-runtime-ownership-inventory",
+      "title": "Inventory runtime and RSpace ownership",
+      "phase": 1,
+      "status": "claimed_done",
+      "parent_id": 6774,
+      "milestone_id": 6752,
+      "weight": 2
+    },
+    {
+      "id": 7507,
+      "public_id": "pr216-runtime-cache-release",
+      "title": "Bound runtime and cache release",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6774,
+      "milestone_id": 6752,
+      "weight": 3
+    },
+    {
+      "id": 7508,
+      "public_id": "pr216-root-history-retention",
+      "title": "Bound root and history retention",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6774,
+      "milestone_id": 6752,
+      "weight": 3
+    },
+    {
+      "id": 7509,
+      "public_id": "pr216-long-horizon-resource-measurement",
+      "title": "Measure long-horizon resource behavior",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6774,
+      "milestone_id": 6752,
+      "weight": 3
+    },
+    {
+      "id": 7510,
+      "public_id": "pr216-cross-prover-rocq",
+      "title": "Complete knotted-cost Rocq proofs",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6778,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7511,
+      "public_id": "pr216-cross-prover-tlc-safe",
+      "title": "Check all safe knotted-cost TLA+ models",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6778,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7512,
+      "public_id": "pr216-cross-prover-unsafe-controls",
+      "title": "Refute all knotted-cost unsafe controls",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6778,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7513,
+      "public_id": "pr216-cross-prover-apalache",
+      "title": "Check symbolic knotted-cost models with Apalache",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6778,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7514,
+      "public_id": "pr216-knotted-property-corpus",
+      "title": "Extract the knotted-cost property corpus",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6779,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7515,
+      "public_id": "pr216-knotted-loom",
+      "title": "Model knotted-cost concurrency with Loom",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6779,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7516,
+      "public_id": "pr216-knotted-parity-integration",
+      "title": "Test formal and runtime parity",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6779,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7517,
+      "public_id": "pr216-docs-traceability",
+      "title": "Document three-paper traceability",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6780,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7518,
+      "public_id": "pr216-docs-runtime-api",
+      "title": "Document runtime and API conformance",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6780,
+      "milestone_id": 6753,
+      "weight": 3
+    },
+    {
+      "id": 7519,
+      "public_id": "pr216-docs-claim-citation-ste",
+      "title": "Audit claims, citations, and STE prose",
+      "phase": 1,
+      "status": "pending",
+      "parent_id": 6780,
+      "milestone_id": 6753,
+      "weight": 2
+    }
+  ]
+}

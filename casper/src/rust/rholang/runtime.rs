@@ -27,6 +27,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
+use models::rust::host_work::HostWorkLimits;
 // `normalizer_env_from_deploy` is replaced by `normalizer_env_from_cosigned_deploy`
 // at the only remaining call site (inside `evaluate_cosigned`). The legacy `evaluate`
 // path uplifts `Signed<DeployData>` to `Cosigned<DeployData>` via
@@ -50,6 +51,7 @@ use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 // Slice 30: WAL root computation for per-deploy observability.  In
 // slice 30b this hash goes on-chain via a proto extension of
@@ -619,10 +621,21 @@ impl Drop for WalDeployScope {
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
+    user_execution_origin: &'static str,
 }
 
 impl RuntimeOps {
-    pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
+    pub fn new(runtime: RhoRuntimeImpl) -> Self {
+        Self {
+            runtime,
+            user_execution_origin: "unattributed",
+        }
+    }
+
+    pub(crate) fn with_user_execution_origin(mut self, origin: &'static str) -> Self {
+        self.user_execution_origin = origin;
+        self
+    }
 }
 
 #[allow(type_alias_bounds)]
@@ -984,6 +997,54 @@ impl RuntimeOps {
         ),
         CasperError,
     > {
+        self.state_bound_cost_evidence_for_state_cosigned_internal(
+            start_hash,
+            terms,
+            fee_recipient,
+            None,
+        )
+        .await
+    }
+
+    pub async fn state_bound_cost_evidence_for_state_cosigned_with_host_work(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        fee_recipient: &PublicKey,
+        host_work_limits: HostWorkLimits,
+    ) -> Result<
+        (
+            StateHash,
+            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
+            crate::rust::util::rholang::acceptance::AdmissionOutcome,
+            Vec<WalEntry>,
+        ),
+        CasperError,
+    > {
+        self.state_bound_cost_evidence_for_state_cosigned_internal(
+            start_hash,
+            terms,
+            fee_recipient,
+            Some(host_work_limits),
+        )
+        .await
+    }
+
+    async fn state_bound_cost_evidence_for_state_cosigned_internal(
+        &mut self,
+        start_hash: &StateHash,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+        fee_recipient: &PublicKey,
+        host_work_limits: Option<HostWorkLimits>,
+    ) -> Result<
+        (
+            StateHash,
+            Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
+            crate::rust::util::rholang::acceptance::AdmissionOutcome,
+            Vec<WalEntry>,
+        ),
+        CasperError,
+    > {
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
             .await?;
@@ -992,7 +1053,7 @@ impl RuntimeOps {
         let mut outcome = crate::rust::util::rholang::acceptance::AdmissionOutcome::default();
         let mut closed_groups = std::collections::BTreeSet::new();
         let mut block_fs_wal: Vec<WalEntry> = Vec::new();
-        let fee_address =
+        let fee_vault_address =
             rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(
                 fee_recipient,
             )
@@ -1000,10 +1061,42 @@ impl RuntimeOps {
                 CasperError::InvalidCostSettlement(
                     "block proposer has no canonical SystemVault address".to_string(),
                 )
-            })?
-            .to_base58();
+            })?;
+        let fee_address = fee_vault_address.to_base58();
+        let handler_fuel_query = Compiler::source_to_adt(
+            &crate::rust::util::rholang::costacc::vault_payer::validator_fuel_balance_query_source(
+                &fee_vault_address,
+            ),
+        )
+        .map_err(CasperError::InterpreterError)?;
+        let mut handler_fuel_exhausted = false;
 
         for cosigned in terms {
+            let host_work = host_work_limits.map(HostWorkBudget::new);
+            if handler_fuel_exhausted {
+                outcome
+                    .deferred
+                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
+                        &cosigned,
+                    ));
+                continue;
+            }
+            let handler_fuel =
+                crate::rust::util::rholang::acceptance::decode_validator_fuel_balance(
+                    &self
+                        .play_query_par_current_strict(handler_fuel_query.clone())
+                        .await?,
+                )?;
+            if handler_fuel < crate::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY
+            {
+                handler_fuel_exhausted = true;
+                outcome
+                    .deferred
+                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
+                        &cosigned,
+                    ));
+                continue;
+            }
             let group_key = accounting::funding_sig(&cosigned).lane_hash();
             if closed_groups.contains(&group_key) {
                 outcome
@@ -1045,14 +1138,23 @@ impl RuntimeOps {
                     break None;
                 }
                 previous_capacity = Some(capacity);
-                let (processed, user_mergeable, deploy_fs_wal, exhausted) = self
-                    .process_deploy_cosigned_with_budget_and_authority(
+                let evaluated = self
+                    .process_deploy_cosigned_with_budget_and_authority_mode_and_host_work(
                         cosigned.clone(),
                         Cost::create(capacity, "state-bound authority capacity"),
                         None,
+                        DefaultCostAuthority::Funders,
                         false,
+                        host_work.clone(),
                     )
-                    .await?;
+                    .await;
+                let (processed, user_mergeable, deploy_fs_wal, exhausted) = match evaluated {
+                    Ok(result) => result,
+                    Err(CasperError::InterpreterError(InterpreterError::HostWorkRejected)) => {
+                        break None;
+                    }
+                    Err(error) => return Err(error),
+                };
                 if exhausted {
                     let before = frontier_by_encoding.len();
                     for authority in self.runtime.cost.authority_frontier() {
@@ -1088,11 +1190,21 @@ impl RuntimeOps {
                 if witness_proto.post_state_root.is_empty() {
                     witness_proto.post_state_root = user_post_state.clone();
                 }
-                let mut witness =
-                    crate::rust::util::rholang::acceptance::authority_witness_from_proto(
-                        &witness_proto,
-                        true,
-                    )?;
+                let decoded = crate::rust::util::rholang::acceptance::authority_witness_from_proto_with_host_work(
+                    &witness_proto,
+                    true,
+                    host_work.as_ref(),
+                );
+                let mut witness = match decoded {
+                    Ok(witness) => witness,
+                    Err(CasperError::InvalidCostSettlement(reason))
+                        if host_work.as_ref().is_some_and(HostWorkBudget::is_rejected) =>
+                    {
+                        tracing::debug!(reason, "state-bound host-work budget rejected deploy");
+                        break None;
+                    }
+                    Err(error) => return Err(error),
+                };
                 witness.pre_state_root = pre_state_root;
                 witness.post_state_root = user_post_state.as_ref().try_into().map_err(|_| {
                     CasperError::InvalidCostSettlement(
@@ -1131,11 +1243,12 @@ impl RuntimeOps {
                     runtime_ops: self,
                     pre_state_root,
                 };
-                crate::rust::util::rholang::acceptance::prepare_state_bound_authority_reservation(
+                crate::rust::util::rholang::acceptance::prepare_state_bound_authority_reservation_with_host_work(
                     &cosigned,
                     &witness,
                     &reader,
                     &fee_recipient.bytes,
+                    host_work.as_ref(),
                 )
                 .await
             };
@@ -1186,7 +1299,7 @@ impl RuntimeOps {
                     );
                 }
                 reserve_allocations.push(
-                    crate::rust::util::rholang::costacc::vault_cost_deploy::VaultAllocation::new(
+                    crate::rust::util::rholang::costacc::vault_cost_deploy::VaultAllocation::validator_fuel(
                         fee_address.clone(),
                         crate::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY,
                     )?,
@@ -1228,13 +1341,13 @@ impl RuntimeOps {
                         }
                     }
                 }
-                let physical_settlement =
-                    rholang::rust::interpreter::accounting::authority::allocate_physical_settlement(
-                        &witness.events,
-                        &settlement_signatures,
-                        &reserved_inventory,
-                    )
-                    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
+                let physical_settlement = rholang::rust::interpreter::accounting::authority::allocate_physical_settlement_with_host_work(
+                    &witness.events,
+                    &settlement_signatures,
+                    &reserved_inventory,
+                    host_work.as_ref(),
+                )
+                .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
                 rholang::rust::interpreter::accounting::authority::verify_physical_settlement(
                     &witness.events,
                     &settlement_signatures,
@@ -1251,14 +1364,15 @@ impl RuntimeOps {
                 let after_cost = prepared
                     .inventory
                     .balances
-                    .checked_sub(&physical_settlement.balance_debit)
+                    .checked_sub(&physical_settlement.custody_debit)
                     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                let byte_settlement = rholang::rust::interpreter::accounting::authority::allocate_quantitative_events(
+                let byte_settlement = rholang::rust::interpreter::accounting::authority::allocate_quantitative_events_with_custody(
                     &witness.byte_events,
                     &after_cost,
+                    &prepared.inventory.balance_custody,
                 )
                 .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-                if byte_settlement != prepared.certificate.byte_allocation {
+                if byte_settlement.logical_debit != prepared.certificate.byte_allocation {
                     return Err(CasperError::InvalidCostSettlement(
                         "retained state-bound execution changed its quantitative byte settlement"
                             .to_string(),
@@ -1300,7 +1414,7 @@ impl RuntimeOps {
                     )
                     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
                     let burn = physical_settlement.balance_debit.get(key);
-                    let byte_burn = byte_settlement.get(key);
+                    let byte_burn = byte_settlement.logical_debit.get(key);
                     let fee = prepared.certificate.fee_allocation.get(key);
                     let total_burn = burn.checked_add(byte_burn).ok_or_else(|| {
                         CasperError::InvalidCostSettlement(
@@ -1332,10 +1446,9 @@ impl RuntimeOps {
                     );
                 }
                 settlements.push(
-                    crate::rust::util::rholang::costacc::vault_cost_deploy::VaultSettlement::new(
+                    crate::rust::util::rholang::costacc::vault_cost_deploy::VaultSettlement::validator_fuel(
                         fee_address.clone(),
                         crate::rust::util::rholang::costacc::VALIDATOR_HANDLER_COST_PER_DEPLOY,
-                        0,
                     )?,
                 );
                 let mut apply =
@@ -1363,7 +1476,7 @@ impl RuntimeOps {
                 witness.certificate_id = prepared.certificate.certificate_id();
                 witness.pre_state_root = pre_state_root;
                 witness.settlement = physical_settlement.balance_debit.clone();
-                witness.byte_settlement = byte_settlement;
+                witness.byte_settlement = byte_settlement.logical_debit;
                 witness.physical_draws = physical_settlement.draws;
                 witness
                     .verify_event_authorities()
@@ -1393,6 +1506,13 @@ impl RuntimeOps {
 
             let Some((mut processed, mergeable, mut witness)) = (match lifecycle {
                 Ok(result) => result,
+                Err(error) if host_work.as_ref().is_some_and(HostWorkBudget::is_rejected) => {
+                    tracing::debug!(
+                        reason = %error,
+                        "state-bound host-work budget rejected settlement"
+                    );
+                    None
+                }
                 Err(error) => {
                     self.runtime
                         .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
@@ -1901,6 +2021,34 @@ impl RuntimeOps {
         ),
         CasperError,
     > {
+        self.process_deploy_cosigned_with_budget_and_authority_mode_and_host_work(
+            cosigned,
+            budget,
+            authority_allocation,
+            default_authority,
+            report_exhaustion,
+            None,
+        )
+        .await
+    }
+
+    async fn process_deploy_cosigned_with_budget_and_authority_mode_and_host_work(
+        &mut self,
+        cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+        budget: Cost,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        default_authority: DefaultCostAuthority,
+        report_exhaustion: bool,
+        host_work: Option<HostWorkBudget>,
+    ) -> Result<
+        (
+            ProcessedDeploy,
+            HashMap<Par, MergeType>,
+            Vec<WalEntry>,
+            bool,
+        ),
+        CasperError,
+    > {
         // WalDeployScope — opens BEFORE the soft-checkpoint so the
         // atomic-deploy boundary spans both the RSpace state (owned by
         // the inner soft-checkpoint) and the per-runtime consensus WAL
@@ -1954,6 +2102,7 @@ impl RuntimeOps {
                 budget,
                 authority_allocation,
                 default_authority,
+                host_work,
             )
             .await
         {
@@ -2285,9 +2434,8 @@ impl RuntimeOps {
         state_hash: &StateHash,
         system_deploy: &mut S,
     ) -> Result<SystemDeployResult<S::Result>, CasperError> {
-        self.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
-            .await?;
+        let pre_state_root = Blake2b256Hash::from_bytes_prost(state_hash);
+        self.runtime.reset(&pre_state_root).await?;
 
         // Slice 30c F-30b-8 fix: wrap the standalone system deploy
         // path with a WalDeployScope so any Consensus WAL entries a
@@ -2343,16 +2491,39 @@ impl RuntimeOps {
             self.runtime.fs_handles.clone(),
         );
 
-        let (event_log, result, mergeable_channels) =
-            self.play_system_deploy_internal(system_deploy).await?;
+        let (event_log, result, mergeable_channels) = match self
+            .play_system_deploy_internal(system_deploy)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.runtime.take_event_log().await;
+                self.runtime.reset(&pre_state_root).await.map_err(|rollback_error| {
+                        CasperError::RuntimeError(format!(
+                            "system deploy failed ({error}); restoring its pre-state failed: {rollback_error}"
+                        ))
+                    })?;
+                return Err(error);
+            }
+        };
 
         match result {
             Either::Right(system_deploy_result) => {
+                let mcl = match self.get_number_channels_data(&mergeable_channels).await {
+                    Ok(channels) => channels,
+                    Err(error) => {
+                        self.runtime.reset(&pre_state_root).await.map_err(|rollback_error| {
+                            CasperError::RuntimeError(format!(
+                                "system deploy post-evaluation failed ({error}); restoring its pre-state failed: {rollback_error}"
+                            ))
+                        })?;
+                        return Err(error);
+                    }
+                };
                 let final_state_hash = {
                     let checkpoint = self.runtime.create_checkpoint().await;
                     checkpoint.root.to_bytes_prost()
                 };
-                let mcl = self.get_number_channels_data(&mergeable_channels).await?;
                 if let Some(SlashDeploy {
                     invalid_block_hash,
                     equivocation_block_hash,
@@ -2450,9 +2621,12 @@ impl RuntimeOps {
             }
 
             Either::Left(usr_err) => {
-                self.runtime
-                    .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
-                    .await?;
+                self.runtime.reset(&pre_state_root).await.map_err(|rollback_error| {
+                    CasperError::RuntimeError(format!(
+                        "system deploy was rejected ({}); restoring its pre-state failed: {rollback_error}",
+                        usr_err.error_message
+                    ))
+                })?;
                 Ok(SystemDeployResult::play_failed(event_log, usr_err))
             }
         }
@@ -2778,6 +2952,11 @@ impl RuntimeOps {
     }
 
     pub async fn play_query_par_current_strict(&self, par: Par) -> Result<Vec<Par>, CasperError> {
+        if self.runtime.reducer.space.is_replay().await {
+            return Err(CasperError::InvalidCostSettlement(
+                "current-state queries cannot execute inside an active replay runtime".to_string(),
+            ));
+        }
         let mut runtime = self.runtime.clone();
         let fallback = runtime.create_soft_checkpoint().await;
         let rand = Blake2b512Random::create_from_bytes(&[0u8; 128]);
@@ -3018,6 +3197,7 @@ impl RuntimeOps {
             Cost::unsafe_max(),
             None,
             DefaultCostAuthority::Unit,
+            None,
         )
         .await
     }
@@ -3065,6 +3245,24 @@ impl RuntimeOps {
             budget,
             authority_allocation,
             DefaultCostAuthority::Funders,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn evaluate_cosigned_with_budget_and_authority_and_host_work(
+        &mut self,
+        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
+        budget: Cost,
+        authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
+        host_work: HostWorkBudget,
+    ) -> Result<EvaluateResult, CasperError> {
+        self.evaluate_cosigned_with_budget_and_authority_mode(
+            cosigned,
+            budget,
+            authority_allocation,
+            DefaultCostAuthority::Funders,
+            Some(host_work),
         )
         .await
     }
@@ -3075,6 +3273,7 @@ impl RuntimeOps {
         budget: Cost,
         authority_allocation: Option<ResourceMultiset<[u8; 32]>>,
         default_authority: DefaultCostAuthority,
+        host_work: Option<HostWorkBudget>,
     ) -> Result<EvaluateResult, CasperError> {
         let deploy_data = SystemProcessDeployData::from_cosigned(cosigned);
         self.runtime.set_deploy_data(deploy_data).await;
@@ -3119,16 +3318,37 @@ impl RuntimeOps {
         let normalizer_env =
             models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(cosigned);
         let initial_rand = Tools::user_deploy_rng(cosigned);
-        let result = self
-            .runtime
-            .evaluate_with_authority(
-                &cosigned.data.term,
-                budget,
-                normalizer_env,
-                initial_rand,
-                authority_allocation,
-            )
-            .await;
+        metrics::counter!(
+            crate::rust::metrics_constants::USER_DEPLOY_EVALUATION_ATTEMPTS_METRIC,
+            "source" => CASPER_METRICS_SOURCE,
+            "origin" => self.user_execution_origin
+        )
+        .increment(1);
+        let result = match host_work {
+            Some(host_work) => {
+                self.runtime
+                    .evaluate_with_authority_and_host_work_budget(
+                        &cosigned.data.term,
+                        budget,
+                        normalizer_env,
+                        initial_rand,
+                        authority_allocation,
+                        host_work,
+                    )
+                    .await
+            }
+            None => {
+                self.runtime
+                    .evaluate_with_authority(
+                        &cosigned.data.term,
+                        budget,
+                        normalizer_env,
+                        initial_rand,
+                        authority_allocation,
+                    )
+                    .await
+            }
+        };
 
         match result {
             Ok(eval_result) => Ok(eval_result),

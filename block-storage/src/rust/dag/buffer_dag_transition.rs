@@ -47,8 +47,9 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use crate::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, InsertMode,
-    KeyValueDagRepresentation,
+    KeyValueDagRepresentation, ValidatedSettledHistoryAdmission,
 };
+use crate::rust::finality::SettledRecoveryCharge;
 
 /// Describes what (if anything) the atomic helper does to the casper
 /// buffer after committing the DAG insert. Two variants — extend only
@@ -116,6 +117,22 @@ pub fn atomic_insert_then_buffer(
     }
 
     Ok(updated)
+}
+
+pub fn atomic_insert_settled_then_buffer(
+    dag: &BlockDagKeyValueStorage,
+    block: &BlockMessage,
+    proof: &ValidatedSettledHistoryAdmission,
+    charge: &SettledRecoveryCharge,
+    buffer: &CasperBufferKeyValueStorage,
+) -> Result<(KeyValueDagRepresentation, Option<KvStoreError>), KvStoreError> {
+    let _dag_guard = dag.global_lock.write();
+    let _buf_guard = buffer.write_guard();
+    let updated = dag.insert_internal_settled_history_certified(block, proof, charge)?;
+    match buffer.remove_unlocked(BlockHashSerde(block.block_hash.clone())) {
+        Ok(()) | Err(KvStoreError::InvalidArgument(_)) => Ok((updated, None)),
+        Err(error) => Ok((updated, Some(error))),
+    }
 }
 
 /// On-resume reconciliation: walks every pendant in the buffer; for

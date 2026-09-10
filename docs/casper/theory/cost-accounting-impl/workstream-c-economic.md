@@ -12,6 +12,9 @@
 `/home/dylon/Workspace/f1r3fly.io/publications/cost-accounting/cost-accounted-rho.tex`.
 The security goals remain useful history; the mechanisms below are not normative.
 
+DR-61 replaces the historical per-validator epoch set with one monotonic PoS
+frontier. The old set remains only as a logical proof history.
+
 ## Corrections to earlier assumptions (grounded)
 - `ProofOfStake` genesis params live in `casper/src/rust/genesis/contracts/proof_of_stake.rs:9` — **NOT** `casper_message.rs` (wire stake is `Bond{validator,stake}`). New fields go in `proof_of_stake.rs`; no proto change for genesis params (template macros).
 - New doc rows start at **TM-CA-152** / **UC-CA-150** (live docs already reach TM-CA-151 / UC-CA-149; the plan's "077/078" labels are stale — use next free integers). **DR-13 allocates TM-CA-152..154 / UC-CA-150..152 to the supply seam; Stage-C slashing/redemption rows take the next-free AFTER those (TM-CA-155 / UC-CA-153..154).**
@@ -19,21 +22,42 @@ The security goals remain useful history; the mechanisms below are not normative
 - **Resolved authority binding:** `pos_generator` derives `posPubKey` from the same private key used to sign the blessed PoS deployment and substitutes it into `createUnfVault`. Template compilation now rejects any surviving `$$` token before parsing. The safe TLA+/Rocq models and authorized/unauthorized play/replay regression make this trust boundary executable rather than leaving the historical literal-placeholder behavior latent.
 
 ## Stage A — wallet `@W_v`
-- `proof_of_stake.rs`: add `initial_phlogiston: i64`, `epoch_phlogiston: i64` (+ defaults in `casper_conf.rs`; + all 3 `ProofOfStake{}` literals: `genesis_builder.rs:237`, `approve_block_protocol.rs:177`, `block_approver_protocol.rs:199`). `standard_deploys.rs::pos_generator` (241-270): add `("initialPhlogiston",…)`, `("epochPhlogiston",…)` macros (else genesis compile panics).
+- `proof_of_stake.rs`: add `initial_phlogiston` for blessed genesis funding. Add `epoch_phlogiston` for the PoS epoch template.
 - `PoS.rhox`: allocate `walletTag` (sibling of `posDeployStateTag`, ~line 387). `@W_v := @(*walletTag, validatorPk)` — unforgeable (private tag), deterministic + injective in pubkey (replay-stable, merge-safe; the content-addressing rationale at PoS.rhox:388-402). New `mintPhlogiston(@validatorPk,@amount,@sysAuthToken,return)`: **first** `sysAuthTokenOps!("check",…)` gate (R-E), then construct a `MakeMint` purse of `amount` and `@(*walletTag,validatorPk)!(purse)`. Bootstrap `VB ≜ for(phlo<-@W_v){VH | *phlo}` installed persistently at bond + for the genesis bonded set; empty `@W_v` ⇒ `VB` blocks ⇒ validator offline (the DR-3 halt mechanism). **DR-13:** `@W_v` (the validator's *draw* channel) is DISTINCT from the *supply pool* `Σ⟦v⟧ = from_sig(Ground(pk))` that the WD-D2 gate reads — `mintPhlogiston`/Rholang cannot name `Σ⟦v⟧` (no bytes→GPrivate primitive — the unforgeability mechanism); the `Σ⟦v⟧` balance write is a **Rust `produce_balance((TOKEN_TAG, old_n+amount))`** co-located in the same `sysAuthToken`-bearing deploy. See [supply-realization-c-d-handoff.md](supply-realization-c-d-handoff.md).
 - R-1 seeds (Rust, `system_deploy_util.rs`): `@W_v` itself needs NO Rust seed (pure fn of pubkey, in Rholang); only the system deploys acting on it need seeds — add domain-tagged `generate_epoch_mint_deploy_random_seed(validator,seq)`, `generate_redeem_deploy_random_seed(validator,seq,outcome)`, `funding_slot_seed(=b"funding-slot:v1"++deploy_group_id++idx)`; **never `cosigned.primary().sig`** (can be empty). Injectivity: new Rocq lemmas (`MintingInjection.v` or a small `WalletNaming.v`) — `wallet_name_injective` + domain-tag disjointness; register in the proof-hygiene heredoc. Tests: `mintPhlogiston` accepts valid token / rejects forged-or-absent; two-order replay of `@W_v` derivation.
 
 ## Stage B — minting (bond + epoch)
 
-> **Governed by [stageb-minting-halt-interface.md](stageb-minting-halt-interface.md)** (the authoritative StageB design; supersedes this sketch where they differ — esp. `mintedEpochs: Set[(Pk,Int)]`, the `CloseBlockDeploy::post_eval` `Σ⟦v⟧`-write seam via a new `SystemDeployTrait::post_eval` hook, the genesis-root validator authority plus block-1 draw installation, and the Stage-C halt interface: slash drains `@W_v` + sets `mintingHalted` + zeros `Σ⟦v⟧`).
-**LANDED (Stage B).** The dual-write is realized exactly as the authoritative design specifies; this sketch is reconciled to match.
+> **Governed by** [End-to-End Authority Settlement](end-to-end-authority-settlement.md),
+> DR-59, DR-60, and DR-61. The historical Stage B document records discarded
+> alternatives only.
 
-- **Mint at bond:** `bond` is a USER deploy (no `sysAuthToken`), so it does NOT mint inline — it records stake + installs an empty-`@W_v` `VB` (the DR-3 halt until funded). The next authorized `closeBlock` mints `$$initialPhlogiston$$` into the genesis bonded set's draw wallets on block 1 or `$$epochPhlogiston$$` at an epoch boundary for newly-bonded, eligible validators (epoch-keyed ⇒ idempotent). Genesis already committed the bonded set's matching `Σ` authority, so the block-1 Rust mirror is suppressed. All Rholang minting stays in the `sysAuthToken`-bearing path.
-- **Dual-write (I-DUAL):** the Rholang half (`mintPhlogiston`→`@W_v` MakeMint purse) and the Rust half (`CloseBlockDeploy::post_eval`→`Σ⟦v⟧`) both derive from the SAME `amount` literal in the SAME close-block deploy. The `closeBlock` fold (`mintPhlogistonToValidators`) publishes the `[(pk, amount)]` mint list onto a Rust-known, user-unforgeable env channel (`sys:casper:mintList`); `post_eval` reads it and mirrors each amount to `Σ⟦v⟧ = from_sig(Ground(pk))` via `supply::produce_balance` (read-modify-replace, single datum). `post_eval` runs IDENTICALLY on play (`RuntimeOps::play_system_deploy`) and replay (`replay_block_system_deploy`) — the consensus-critical symmetry.
-- **Epoch mint:** in `closeBlock`'s epoch branch (post-`pickActiveValidators`), the shared `mintPhlogistonToValidators` fold over `allBonds` mints `$$epochPhlogiston$$` to each `active ∧ ¬mintingHalted ∧ ¬mintedEpochs.contains((pk,epochIndex))` validator. The block-1 path runs the SAME fold on the non-epoch branch (lifted to `runMVar`) at `epochIndex=0` with `$$initialPhlogiston$$` to install `@W_v`; the already-committed genesis `Σ` allocation is not added again. Slush grants = the same `mintPhlogiston` from an authorized path.
-- **`mintedEpochs: Set[(Pk,Int)]`** (per-validator-per-epoch — NOT `Set[Int]`, too coarse for bond-catch-up). `epochIndex = blockNumber/$$epochLength$$`; mint only if `(pk, epochIndex) ∉ mintedEpochs` (no-op second time). Content-addressed Produce handles replayed-identical; the epoch-key guard handles amount-correctness. `MintingInjection.v` `epoch_mint_idempotent_on_balance` proves a re-minted epoch key is a balance no-op.
-- **`generate_epoch_mint_deploy_random_seed` (Stage A) is now DORMANT** — minting folds into `closeBlock` rather than a standalone deploy; the seed is harmless and retained for a future slush-grant deploy. The `post_eval` produce's `random_state` is derived from the close-block deploy's replay-stable `initial_rand` advanced per validator (sorted-pk order), byte-identical play/replay.
-- **Threat/UC rows:** UC-CA-153 (epoch mint funds active validators), UC-CA-154 (genesis-root authority plus block-1 draw and bond-then-first-close); TM-CA-155 (unauthorized mint), TM-CA-156 (halted residual funding), TM-CA-154 (mint-replay, DR-13).
+**Landed implementation.** SystemVault is the only validator liquid-custody
+ledger. The node does not maintain a mirrored Rust balance channel.
+
+- **Bonding:** `bond` transfers existing custody into stake. It creates no
+  protocol credit.
+- **Genesis allocation:** authenticated genesis provides the configured initial
+  validator custody exactly once. Block one cannot repeat that allocation.
+- **Epoch issuance:** `closeBlock` selects the active validator set before
+  issuance. Eligibility also requires no mint halt.
+- **Atomicity:** each required `protocolMint` completes before frontier
+  advancement. The first failure restores the complete pre-close root.
+- **Zero issuance:** a zero amount records completion without calling the
+  positive-only mint primitive. Balances remain unchanged.
+- **Idempotence:** `mintedThroughEpoch` stores one collective frontier. A
+  repeated or older close creates no second credit.
+- **Contiguity:** bootstrap accepts epoch zero or epoch one. Later closes must
+  advance exactly one epoch. A gap fails without state change.
+- **Lifecycle:** bonding, withdrawal, slash, redemption, and rebond preserve
+  the frontier. A new validator waits for the next collective close.
+- **Replay:** play and replay execute the same PoS contract transition from the
+  same authenticated pre-state. Any failed transition creates no block.
+- **Verification:** `BondIssuanceLifecycle.v` covers eligibility and lifecycle
+  rules. `EpochMintAtomicity.v` covers whole-close failure atomicity.
+  `MintedEpochRetention.v` covers bounded replay protection.
+- **Traceability:** UC-CA-153 and UC-CA-154 cover issuance and genesis rules.
+  UC-CA-185 covers failed close, retry, and replay. UC-CA-186 covers retention.
 
 ## Funding slots (§4.7) — built with A/B, consumed by D
 `new slot in ({for(y<-x)P}_{s₁⊸slot} | slot!(…))`; `⊸` is the §3.8 sugar (`{…}_{s₁⊸slot}={for{P}_{slot}}_{s₁}`) — consume the `SyntacticSugar.v` lemma from Workstream B, don't re-derive. Slot = content-addressed channel from `funding_slot_seed` (replay-stable, domain-disjoint); **authority on consume** (a token must be present on the slot for `P` to fire — checked by the D acceptance gate), NOT name secrecy; no existential quantification.
@@ -58,8 +82,10 @@ Authoritative design: `staged-fee-exchange.md`. The validator economic feedback 
 Companion to the mandatory WD-D2 funding gate. An underfunded deploy is rejected and an absent pool has supply zero. #13b seeds each configured client supply pool `Σ⟦c⟧` at genesis so those clients can submit funded deployments. An empty allocation list funds no arbitrary clients; validator identities are provisioned independently by `initial_phlogiston`.
 
 - **Config surface (`GenesisBlockData::client_fuel_allocations: Vec<ClientFuelAllocation>`):** a genesis list of `(public-key hex, amount)` — the SIBLING of `initial_phlogiston` (the validator bootstrap grant) but for CLIENTS. Hex-lowered ONCE at `casper_launch` (`lowered_client_fuel_allocations` → `Vec<(PublicKey, i64)>`, fails fast on bad hex / negative amount) into the shard-genesis constant `CasperShardConf::client_fuel_allocations`. A genesis SEED only — **no rate, no policy, no business parameter** (spec-minimalism, DR-14).
-- **Genesis-root credit:** `Genesis::genesis_supply_allocations` combines every bonded validator's `initial_phlogiston` and every configured client grant with checked addition in a `BTreeMap`, removes zero totals, and emits strictly ordered positive entries. `RuntimeOps::seed_genesis_supply` writes that list before the final genesis checkpoint. The same list is committed as `F1r3flyState.genesis_supply`, so it is block-hash input rather than an implicit block-1 side effect. The block-1 PoS close always installs `initialPhlogiston` in `@W_v`, even when `epoch_length = 1`, while `CloseBlockDeploy::dual_write_supply` deliberately skips the block-1 `Σ⟦v⟧` mirror to prevent double credit.
-- **Replay symmetry:** ceremony validators reconstruct the canonical list from their expected validator/client parameters and reject a different commitment. Historical replay reads `genesis_supply` from the authenticated block, validates its exact canonical form before cache lookup, seeds it before its final checkpoint, includes its exact ordered bytes in the replay-cache key, and bypasses the pre-state-only state-hash cache for genesis. Tests: `genesis_supply_is_committed_funded_and_replay_deterministic`, `genesis_supply_allocations_require_canonical_positive_entries`, `replay_payload_hash_binds_exact_genesis_supply_payload`, `block_one_initial_draw_does_not_double_genesis_supply`, `block_approver_protocol_should_reject_mismatched_genesis_supply`, and `funded_client_is_admitted_and_replays`.
+- **Genesis-root credit:** the blessed SystemVault generator combines validator `initial_phlogiston` and configured client grants. It commits one canonical allocation before the genesis root.
+- **No mirror:** block one does not repeat the genesis allocation. A block-one epoch boundary can apply only `epoch_phlogiston` through its guarded receipt path.
+- **Replay symmetry:** ceremony validators reconstruct the same blessed vault allocations. Historical replay runs the same blessed contracts and checks the same root.
+- **Lifecycle evidence:** tests cover genesis, block-one epoch issuance, fresh bond, rebond, duplicate receipts, and exact play/replay roots.
 - **Post-genesis client funding:** the genesis seed funds clients once in the genesis post-state. Additional `Σ⟦c⟧` must arrive through the native first-class stack-transfer path, which debits an authenticated source purse before materializing the destination stack. `Exchange.rhox` cannot perform this operation because its carrier channels are ordinary Rholang data and native `Σ` is intentionally unnameable from user code.
 - **Formal (#13, LOCAL-ONLY):** Rocq `LinearLogicResources.v::strict_reject_when_underfunded` plus `strict_absent_pool_rejects_positive_demand` prove the universally enforced rule: absent means supply 0, so positive certified demand cannot be admitted. `EndToEndAuthority.v` proves deployment-kind independence, genesis allocation permutation invariance, duplicate combination, replay-preserved admission, and genesis verification before admission. TLA+ checks the same zero-supply rule in `EvalStrictAbsent.cfg` and the complete genesis-to-finality refinement in `EndToEndCostConsensus.cfg`; `EndToEndCostConsensusFundingBypassUnsafe.cfg` and `EndToEndCostConsensusGenesisMismatchUnsafe.cfg` are negative controls. Sage `settlement_model.sage::admit` checks absent-pool rejection, the nonzero fee boundary, and funded-client debit.
 

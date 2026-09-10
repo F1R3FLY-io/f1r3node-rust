@@ -51,7 +51,7 @@ CONSTANTS
 
 Universe == Validators \union {ProspectiveValidator}
 NoValidator == 0
-Phases == {"Current", "BondStaged", "Registered", "NextFloor"}
+Phases == {"Current", "BondStaged", "Registered", "BondFloor", "BoundaryStaged", "NextFloor"}
 SynchronyWeightSources == {"Floor", "Head", "PostState"}
 CanonicalGenesis == "ApprovedGenesis"
 InvalidRootIds == {"ParentlessOrdinary", "CounterfeitGenesis"}
@@ -89,10 +89,15 @@ ASSUME /\ Validators = {1, 2, 3}
 \* @typeAlias: transitionState = {
 \*   phase: Str,
 \*   lfbHeight: Int,
+\*   floorPromotions: Int,
+\*   floorBonds: Set(Int),
 \*   floorCommittee: Set(Int),
 \*   postStateBonds: Set(Int),
 \*   positivePostStateBonds: Set(Int),
+\*   postStateActive: Set(Int),
 \*   serializedBondsCache: Set(Int),
+\*   serializedActiveCache: Set(Int),
+\*   postStateIsBoundary: Bool,
 \*   postStateAccepted: Bool,
 \*   registeredValidators: Set(Int),
 \*   positiveSlotOrigins: Set(Int),
@@ -133,7 +138,7 @@ VARIABLE
 vars == <<state>>
 
 AuthorizationCommittee ==
-  IF UseFloorAuthorization THEN state.floorCommittee ELSE state.postStateBonds
+  IF UseFloorAuthorization THEN state.floorCommittee ELSE state.postStateActive
 
 JustificationCommittee ==
   IF UseFloorJustifications THEN state.floorCommittee ELSE state.headCommittee
@@ -141,7 +146,7 @@ JustificationCommittee ==
 SynchronyCommittee ==
   IF SynchronyWeightSource = "Floor" THEN state.floorCommittee
   ELSE IF SynchronyWeightSource = "Head" THEN state.headCommittee
-  ELSE state.postStateBonds
+  ELSE state.postStateActive
 
 RegistrationGenesis ==
   IF UseCanonicalGenesisForSlots \/ ~state.invalidHeightZeroSeen
@@ -175,7 +180,7 @@ ValidOnlyFinalityAdmits ==
 
 CertifiedFinalityCommittee == state.floorCommittee
 
-UncertifiedParentFinalityCommittee == state.postStateBonds
+UncertifiedParentFinalityCommittee == state.postStateActive
 
 FloorFinalityAdmits ==
   AdmitsSupport(FinalitySupport, state.floorCommittee)
@@ -211,10 +216,15 @@ Init ==
   state =
     [phase |-> "Current",
      lfbHeight |-> InitialLfbHeight,
+     floorPromotions |-> 0,
+     floorBonds |-> Validators,
      floorCommittee |-> Validators,
      postStateBonds |-> Validators,
      positivePostStateBonds |-> Validators,
+     postStateActive |-> Validators,
      serializedBondsCache |-> Validators,
+     serializedActiveCache |-> Validators,
+     postStateIsBoundary |-> FALSE,
      postStateAccepted |-> TRUE,
      registeredValidators |-> Validators,
      positiveSlotOrigins |-> Validators,
@@ -342,14 +352,40 @@ TryRegisterNonPositiveBond ==
                    THEN CanonicalGenesis
                    ELSE state.validatorGenesis[validator]]]
 
+StageProspectiveBondAt(boundary) ==
+  /\ state.phase = "Current"
+  /\ boundary \in BOOLEAN
+  /\ state' =
+       [state EXCEPT
+         !.phase = "BondStaged",
+         !.postStateBonds = @ \union {ProspectiveValidator},
+         !.positivePostStateBonds = @ \union {ProspectiveValidator},
+         !.postStateActive =
+           IF boundary
+           THEN state.positivePostStateBonds \union {ProspectiveValidator}
+           ELSE state.floorCommittee,
+         !.serializedBondsCache = @ \union {ProspectiveValidator},
+         !.serializedActiveCache =
+           IF boundary
+           THEN state.positivePostStateBonds \union {ProspectiveValidator}
+           ELSE state.floorCommittee,
+         !.postStateIsBoundary = boundary,
+         !.postStateAccepted = TRUE]
+
 StageProspectiveBond ==
+  \E boundary \in BOOLEAN : StageProspectiveBondAt(boundary)
+
+StageImmediateProspectiveBond ==
   /\ state.phase = "Current"
   /\ state' =
        [state EXCEPT
          !.phase = "BondStaged",
          !.postStateBonds = @ \union {ProspectiveValidator},
          !.positivePostStateBonds = @ \union {ProspectiveValidator},
+         !.postStateActive = @ \union {ProspectiveValidator},
          !.serializedBondsCache = @ \union {ProspectiveValidator},
+         !.serializedActiveCache = @ \union {ProspectiveValidator},
+         !.postStateIsBoundary = FALSE,
          !.postStateAccepted = TRUE]
 
 StageInvalidProspectiveBond ==
@@ -360,6 +396,9 @@ StageInvalidProspectiveBond ==
          !.postStateBonds = @ \union {ProspectiveValidator},
          !.positivePostStateBonds = @ \union {ProspectiveValidator},
          !.serializedBondsCache = @ \union {ProspectiveValidator},
+         !.postStateActive = state.floorCommittee,
+         !.serializedActiveCache = state.floorCommittee,
+         !.postStateIsBoundary = FALSE,
          !.postStateAccepted = FALSE]
 
 StageMismatchedSerializedCache ==
@@ -368,25 +407,46 @@ StageMismatchedSerializedCache ==
        [state EXCEPT
          !.phase = "BondStaged",
          !.serializedBondsCache = @ \union {ProspectiveValidator},
+         !.postStateActive = state.floorCommittee,
+         !.serializedActiveCache = state.floorCommittee,
+         !.postStateIsBoundary = FALSE,
+         !.postStateAccepted = TRUE]
+
+StageMismatchedSerializedActiveCache ==
+  /\ state.phase = "Current"
+  /\ state' =
+       [state EXCEPT
+         !.phase = "BondStaged",
+         !.postStateBonds = @ \union {ProspectiveValidator},
+         !.positivePostStateBonds = @ \union {ProspectiveValidator},
+         !.postStateActive = state.floorCommittee,
+         !.serializedBondsCache = @ \union {ProspectiveValidator},
+         !.serializedActiveCache = @ \union {ProspectiveValidator},
+         !.postStateIsBoundary = FALSE,
          !.postStateAccepted = TRUE]
 
 RejectUnusableBondCache ==
   /\ state.phase = "BondStaged"
   /\ (~state.postStateAccepted
-       \/ state.serializedBondsCache # state.postStateBonds)
+       \/ state.serializedBondsCache # state.postStateBonds
+       \/ state.serializedActiveCache # state.postStateActive)
   /\ state' =
        [state EXCEPT
          !.phase = "Current",
-         !.postStateBonds = state.floorCommittee,
-         !.positivePostStateBonds = state.floorCommittee,
-         !.serializedBondsCache = state.floorCommittee,
+         !.postStateBonds = state.floorBonds,
+         !.positivePostStateBonds = state.floorBonds,
+         !.postStateActive = state.floorCommittee,
+         !.serializedBondsCache = state.floorBonds,
+         !.serializedActiveCache = state.floorCommittee,
+         !.postStateIsBoundary = FALSE,
          !.postStateAccepted = TRUE]
 
 RegisterPostStateBonds ==
   /\ state.phase = "BondStaged"
   /\ (~RequireAcceptedForRegistration \/ state.postStateAccepted)
   /\ (~RequireSerializedCacheMatch
-       \/ state.serializedBondsCache = state.postStateBonds)
+       \/ /\ state.serializedBondsCache = state.postStateBonds
+          /\ state.serializedActiveCache = state.postStateActive)
   /\ state.approvedGenesisAdmitted
   /\ state' =
        [state EXCEPT
@@ -400,15 +460,29 @@ RegisterPostStateBonds ==
              ELSE state.validatorGenesis[validator]],
          !.lmmSlots = @ \union state.positivePostStateBonds]
 
-PromotePostStateToFloor ==
-  /\ state.phase \in {"BondStaged", "Registered"}
-  /\ ~RequireRegistrationBeforePromotion \/ state.phase = "Registered"
+StageActivationBoundary ==
+  /\ state.phase = "BondFloor"
   /\ state' =
        [state EXCEPT
-         !.phase = "NextFloor",
+         !.phase = "BoundaryStaged",
+         !.postStateActive = state.positivePostStateBonds,
+         !.serializedActiveCache = state.positivePostStateBonds,
+         !.postStateIsBoundary = TRUE]
+
+PromotePostStateToFloor ==
+  /\ state.phase \in {"BondStaged", "Registered", "BoundaryStaged"}
+  /\ (~RequireRegistrationBeforePromotion
+       \/ state.phase = "Registered"
+       \/ state.phase = "BoundaryStaged")
+  /\ state' =
+       [state EXCEPT
+         !.phase =
+           IF state.postStateIsBoundary THEN "NextFloor" ELSE "BondFloor",
          !.lfbHeight = @ + 1,
-         !.floorCommittee = state.positivePostStateBonds,
-         !.headCommittee = state.positivePostStateBonds]
+         !.floorPromotions = @ + 1,
+         !.floorBonds = state.postStateBonds,
+         !.floorCommittee = state.postStateActive,
+         !.headCommittee = state.postStateActive]
 
 QueueRecovery(creator) ==
   /\ creator \in state.floorCommittee
@@ -476,6 +550,7 @@ Next ==
   \/ StageMismatchedSerializedCache
   \/ RejectUnusableBondCache
   \/ RegisterPostStateBonds
+  \/ StageActivationBoundary
   \/ PromotePostStateToFloor
   \/ QueueRecoveryAny
   \/ RecordInvalidCreatorLatest
@@ -484,6 +559,10 @@ Next ==
   \/ StartQueuedRecovery
   \/ ValidateStartedRecovery
 
+ImmediateActivationNext == Next \/ StageImmediateProspectiveBond
+
+MismatchedActiveCacheNext == Next \/ StageMismatchedSerializedActiveCache
+
 Spec ==
   /\ Init
   /\ [][Next]_vars
@@ -491,15 +570,29 @@ Spec ==
   /\ SF_vars(StageProspectiveBond)
   /\ WF_vars(RejectUnusableBondCache)
   /\ WF_vars(RegisterPostStateBonds)
+  /\ WF_vars(StageActivationBoundary)
   /\ WF_vars(PromotePostStateToFloor)
+
+ImmediateActivationSpec ==
+  /\ Init
+  /\ [][ImmediateActivationNext]_vars
+
+MismatchedActiveCacheSpec ==
+  /\ Init
+  /\ [][MismatchedActiveCacheNext]_vars
 
 TypeOK ==
   /\ state.phase \in Phases
-  /\ state.lfbHeight \in {InitialLfbHeight, InitialLfbHeight + 1}
+  /\ state.lfbHeight \in InitialLfbHeight..(InitialLfbHeight + 2)
+  /\ state.floorPromotions \in 0..2
+  /\ state.floorBonds \subseteq Universe
   /\ state.floorCommittee \subseteq Universe
   /\ state.postStateBonds \subseteq Universe
   /\ state.positivePostStateBonds \subseteq state.postStateBonds
+  /\ state.postStateActive \subseteq Universe
   /\ state.serializedBondsCache \subseteq Universe
+  /\ state.serializedActiveCache \subseteq Universe
+  /\ state.postStateIsBoundary \in BOOLEAN
   /\ state.postStateAccepted \in BOOLEAN
   /\ state.registeredValidators \subseteq Universe
   /\ state.positiveSlotOrigins \subseteq Universe
@@ -509,7 +602,7 @@ TypeOK ==
   /\ state.headCommittee \subseteq Universe
   /\ state.support \subseteq Universe
   /\ state.queuedCreator \in Universe \union {NoValidator}
-  /\ state.queuedFloorHeight \in {InitialLfbHeight, InitialLfbHeight + 1}
+  /\ state.queuedFloorHeight \in InitialLfbHeight..(InitialLfbHeight + 2)
   /\ state.unfilteredCreatorSeq \in 0..1
   /\ state.validCreatorSeq = 0
   /\ state.packagedJustificationSeq \in 0..1
@@ -568,8 +661,37 @@ Inv_OnlyPositivePostStateBondsCreateSlots ==
   state.registeredValidators \ Validators \subseteq state.positiveSlotOrigins
 
 Inv_SerializedBondsArePostStateCache ==
-  state.phase \in {"Registered", "NextFloor"} =>
+  state.phase \in {"Registered", "BondFloor", "BoundaryStaged", "NextFloor"} =>
     state.serializedBondsCache = state.postStateBonds
+
+Inv_SerializedActiveIsPostStateCache ==
+  state.phase \in {"Registered", "BondFloor", "BoundaryStaged", "NextFloor"} =>
+    state.serializedActiveCache = state.postStateActive
+
+Inv_ActiveValidatorsHavePositiveBonds ==
+  /\ state.postStateActive \subseteq state.positivePostStateBonds
+  /\ state.floorCommittee \subseteq state.floorBonds
+
+Inv_OffBoundaryPreservesActiveCommittee ==
+  ~state.postStateIsBoundary => state.postStateActive = state.floorCommittee
+
+Inv_BoundarySelectionUsesPositiveBonds ==
+  state.postStateIsBoundary => state.postStateActive = state.positivePostStateBonds
+
+Inv_ActivationRequiresBoundary ==
+  (ProspectiveValidator \in state.postStateActive
+    /\ ProspectiveValidator \notin state.floorCommittee)
+    => state.postStateIsBoundary
+
+Inv_OffBoundaryBondRemainsInactive ==
+  (ProspectiveValidator \in state.postStateBonds
+    /\ ~state.postStateIsBoundary)
+    => ProspectiveValidator \notin state.postStateActive
+
+Inv_StableFloorProjectionIsAtomic ==
+  state.phase \in {"BondFloor", "NextFloor"} =>
+    /\ state.floorBonds = state.postStateBonds
+    /\ state.floorCommittee = state.postStateActive
 
 Inv_CurrentBlockAuthorizationIsFloor ==
   UseFloorAuthorization => AuthorizationCommittee = state.floorCommittee
@@ -586,7 +708,7 @@ Inv_FloorValidatorsRegistered ==
   state.floorCommittee \subseteq state.registeredValidators
 
 Inv_PostStateBondsRegisterBeforeNextFloor ==
-  state.phase \in {"Registered", "NextFloor"} =>
+  state.phase \in {"Registered", "BondFloor", "BoundaryStaged", "NextFloor"} =>
     state.positivePostStateBonds \subseteq state.registeredValidators
 
 Inv_InvalidPostStateDoesNotRegister ==
@@ -594,8 +716,7 @@ Inv_InvalidPostStateDoesNotRegister ==
     ProspectiveValidator \notin state.registeredValidators
 
 Inv_LfbHeightChangesOnlyWithFloorPromotion ==
-  (state.phase = "NextFloor")
-    <=> (state.lfbHeight = InitialLfbHeight + 1)
+  state.lfbHeight = InitialLfbHeight + state.floorPromotions
 
 Inv_NewValidatorEligibleAtNextFloor ==
   (state.phase = "NextFloor") =>

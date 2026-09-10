@@ -43,7 +43,7 @@ use crate::rust::slashing_authorization::{
 };
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::util::rholang::runtime_manager::{RuntimeManager, StateBoundAdmission};
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use crate::rust::util::rholang::system_deploy_user_error::SystemDeployPlatformFailure;
 use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
@@ -466,12 +466,9 @@ pub async fn prepare_user_deploys(
     .await
 }
 
-/// One [`FloorContext`] per block operation, from the snapshot's frozen
-/// (parents, justifications) pair. `create` derives it once and threads it;
-/// entry points callable outside `create` derive their own. `None` iff the
-/// snapshot has no parents (parentless fixtures and the pre-genesis shape) —
-/// there is no floor to derive, and every consumer's walk over zero parents
-/// is empty anyway.
+/// One [`FloorContext`] per block operation. Protocol v6 uses the snapshot's
+/// durable certified floor. Earlier protocols derive a floor from the frozen
+/// parent and justification pair.
 pub(crate) async fn derive_floor_context(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -489,6 +486,49 @@ pub(crate) async fn derive_floor_context(
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
+    let protocol_version = casper_snapshot.on_chain_state.shard_conf.casper_version;
+    if protocol_version >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION {
+        let certificate = casper_snapshot
+            .finalized_floor_certificate
+            .as_ref()
+            .ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "protocol-v6 proposal snapshot has no finalized-floor certificate".to_string(),
+                )
+            })?;
+        certificate
+            .validate_shape()
+            .map_err(CasperError::RuntimeError)?;
+        if certificate.protocol_version != protocol_version
+            || certificate.shard_id != casper_snapshot.on_chain_state.shard_conf.shard_name
+            || certificate.target_floor_hash.0 != casper_snapshot.last_finalized_block
+            || casper_snapshot.consensus_context.incoming_finalized_floor()
+                != &casper_snapshot.last_finalized_block
+            || casper_snapshot
+                .consensus_context
+                .incoming_finalized_floor_post_state_hash()
+                != &certificate.target_post_state_hash.0
+        {
+            return Err(CasperError::RuntimeError(
+                "protocol-v6 proposal snapshot does not bind one certified floor".to_string(),
+            ));
+        }
+        let commitment = certificate.commitment(casper_snapshot.consensus_context.digest().clone());
+        let context = FloorContext::from_certified_floor(
+            &casper_snapshot.dag,
+            block_store,
+            &parent_hashes,
+            &commitment,
+            protocol_version,
+        )
+        .map_err(|error| error.into_casper_error())?;
+        if context.floor.block_number != certificate.target_block_number {
+            return Err(CasperError::RuntimeError(
+                "protocol-v6 proposal certificate has a different floor height".to_string(),
+            ));
+        }
+        return Ok(Some(context));
+    }
     FloorContext::derive(
         &casper_snapshot.dag,
         block_store,
@@ -500,7 +540,7 @@ pub(crate) async fn derive_floor_context(
                 .shard_conf
                 .fault_tolerance_threshold_ppm,
         ),
-        casper_snapshot.on_chain_state.shard_conf.casper_version,
+        protocol_version,
     )
     .await
     .map(Some)
@@ -2858,120 +2898,19 @@ fn record_deploy_admission_metrics(
     .set(metric_bool(inclusion_staleness.missing_deploy_metadata));
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CertifiedContextRelation {
-    Ready,
-    MaterializationPending,
-    FloorRegression,
-    FloorConflict,
-    ContextMismatch,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CertifiedContextComparison {
-    relation: CertifiedContextRelation,
-    candidate_descends_from_materialized: bool,
-    materialized_descends_from_candidate: bool,
-    candidate_preserves_materialized_state: Option<bool>,
-}
-
-fn compare_certified_contexts(
-    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    materialized: &crate::rust::causal_equivocation::CertifiedConsensusContext,
-    candidate: &crate::rust::causal_equivocation::CertifiedConsensusContext,
-) -> Result<CertifiedContextComparison, CasperError> {
-    if materialized == candidate {
-        return Ok(CertifiedContextComparison {
-            relation: CertifiedContextRelation::Ready,
-            candidate_descends_from_materialized: true,
-            materialized_descends_from_candidate: true,
-            candidate_preserves_materialized_state: Some(true),
-        });
-    }
-
-    let materialized_floor = materialized.incoming_finalized_floor();
-    let candidate_floor = candidate.incoming_finalized_floor();
-    if materialized_floor == candidate_floor {
-        return Ok(CertifiedContextComparison {
-            relation: CertifiedContextRelation::ContextMismatch,
-            candidate_descends_from_materialized: true,
-            materialized_descends_from_candidate: true,
-            candidate_preserves_materialized_state: Some(
-                materialized.incoming_finalized_floor_post_state_hash()
-                    == candidate.incoming_finalized_floor_post_state_hash(),
-            ),
-        });
-    }
-
-    let candidate_descends_from_materialized =
-        dag.is_dag_ancestor(materialized_floor, candidate_floor)?;
-    let materialized_descends_from_candidate =
-        dag.is_dag_ancestor(candidate_floor, materialized_floor)?;
-    let candidate_preserves_materialized_state = if candidate_descends_from_materialized {
-        Some(crate::rust::finality::floor::state_contains(
-            dag,
-            block_store,
-            &crate::rust::finality::floor::Floor {
-                hash: candidate_floor.clone(),
-                block_number: dag.lookup_unsafe(candidate_floor)?.block_number,
-            },
-            &crate::rust::finality::floor::Floor {
-                hash: materialized_floor.clone(),
-                block_number: dag.lookup_unsafe(materialized_floor)?.block_number,
-            },
-            &mut crate::rust::finality::floor::StateContainmentMemo::new(),
-        )?)
-    } else {
-        None
-    };
-    let relation = if candidate_descends_from_materialized
-        && candidate_preserves_materialized_state == Some(true)
-    {
-        CertifiedContextRelation::MaterializationPending
-    } else if materialized_descends_from_candidate {
-        CertifiedContextRelation::FloorRegression
-    } else {
-        CertifiedContextRelation::FloorConflict
-    };
-    Ok(CertifiedContextComparison {
-        relation,
-        candidate_descends_from_materialized,
-        materialized_descends_from_candidate,
-        candidate_preserves_materialized_state,
-    })
-}
-
-fn proposal_recovery_deferral_reason(
-    context_relation: CertifiedContextRelation,
-    candidate_slots_complete: bool,
-    proposer_active: bool,
+fn certified_context_deferral_reason(
+    certified_slots_complete: bool,
+    certified_proposer_active: bool,
 ) -> Option<RecoveryDeferralReason> {
-    match context_relation {
-        CertifiedContextRelation::Ready if !candidate_slots_complete => {
-            Some(RecoveryDeferralReason::IncompleteCandidateCommitteeSlots)
-        }
-        CertifiedContextRelation::Ready if !proposer_active => {
-            Some(RecoveryDeferralReason::InactiveCandidateValidator)
-        }
-        CertifiedContextRelation::Ready => None,
-        CertifiedContextRelation::MaterializationPending => {
-            Some(RecoveryDeferralReason::FinalizedFloorMaterializationPending)
-        }
-        CertifiedContextRelation::FloorRegression => {
-            Some(RecoveryDeferralReason::CandidateFloorRegression)
-        }
-        CertifiedContextRelation::FloorConflict => {
-            Some(RecoveryDeferralReason::CandidateFloorConflict)
-        }
-        CertifiedContextRelation::ContextMismatch => {
-            Some(RecoveryDeferralReason::CertifiedContextMismatch)
-        }
+    match (certified_slots_complete, certified_proposer_active) {
+        (false, _) => Some(RecoveryDeferralReason::IncompleteCertifiedCommitteeSlots),
+        (true, false) => Some(RecoveryDeferralReason::InactiveCertifiedValidator),
+        (true, true) => None,
     }
 }
 
 trait CheckpointAttemptObserver {
-    fn before_attempt(&mut self, _user_deploy_limit: usize, _deploys: &[Cosigned<DeployData>]) {}
+    fn before_attempt(&mut self, _attempt: &CertifiedCheckpointAttempt) {}
 
     fn complete_attempt(
         &mut self,
@@ -2988,8 +2927,157 @@ impl CheckpointAttemptObserver for LiveCheckpointAttemptObserver {}
 #[cfg(feature = "test-utils")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckpointAttemptTrace {
+    pub generation: usize,
     pub user_deploy_limit: usize,
+    pub candidate_ids: Vec<DeployLookupId>,
     pub deploy_ids: Vec<DeployLookupId>,
+    pub rejected_ids: Vec<DeployLookupId>,
+    pub deferred_ids: Vec<DeployLookupId>,
+}
+
+#[derive(Clone)]
+struct CertifiedCheckpointAttempt {
+    generation: usize,
+    user_candidate_limit: usize,
+    candidate_window: Vec<Cosigned<DeployData>>,
+    admitted: Vec<Cosigned<DeployData>>,
+    rejected: Vec<Cosigned<DeployData>>,
+    deferred: Vec<DeployLookupId>,
+    user_ids: HashSet<DeployLookupId>,
+    admission: StateBoundAdmission,
+}
+
+impl CertifiedCheckpointAttempt {
+    fn admitted_user_count(&self) -> usize {
+        self.admitted
+            .iter()
+            .filter(|deploy| {
+                self.user_ids
+                    .contains(&crate::rust::util::rholang::acceptance::admission_deploy_id(deploy))
+            })
+            .count()
+    }
+
+    fn admitted_dummy_count(&self) -> usize {
+        self.admitted
+            .len()
+            .saturating_sub(self.admitted_user_count())
+    }
+
+    fn rejected_user_count(&self) -> usize {
+        self.rejected
+            .iter()
+            .filter(|deploy| {
+                self.user_ids
+                    .contains(&crate::rust::util::rholang::acceptance::admission_deploy_id(deploy))
+            })
+            .count()
+    }
+
+    fn terminal_user_deploys(&self) -> Result<Vec<PendingDeploy>, CasperError> {
+        self.admitted
+            .iter()
+            .chain(self.rejected.iter())
+            .filter(|deploy| {
+                self.user_ids
+                    .contains(&crate::rust::util::rholang::acceptance::admission_deploy_id(deploy))
+            })
+            .cloned()
+            .map(PendingDeploy::from_envelope_v6)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(CasperError::RuntimeError)
+    }
+}
+
+async fn certify_checkpoint_attempt(
+    runtime_manager: &RuntimeManager,
+    pre_state: &Bytes,
+    canonical_user_candidates: &[Cosigned<DeployData>],
+    dummy_candidates: &[Cosigned<DeployData>],
+    block_data: &BlockData,
+    invalid_blocks: &HashMap<BlockHash, Validator>,
+    generation: usize,
+    user_candidate_limit: usize,
+) -> Result<CertifiedCheckpointAttempt, CasperError> {
+    if user_candidate_limit > canonical_user_candidates.len() {
+        return Err(CasperError::InvalidCostSettlement(format!(
+            "checkpoint admission limit {} exceeds {} canonical user candidates",
+            user_candidate_limit,
+            canonical_user_candidates.len()
+        )));
+    }
+    let selected_users = canonical_user_candidates
+        .iter()
+        .take(user_candidate_limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    let user_ids = selected_users
+        .iter()
+        .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
+        .collect::<HashSet<_>>();
+    if user_ids.len() != selected_users.len() {
+        return Err(CasperError::InvalidCostSettlement(
+            "checkpoint user candidate window contains a duplicate identity".to_string(),
+        ));
+    }
+    let mut candidate_window = selected_users;
+    candidate_window.extend(dummy_candidates.iter().cloned());
+    crate::rust::util::rholang::acceptance::canonical_sort(&mut candidate_window);
+    let admission = runtime_manager
+        .certify_state_bound_admission(
+            pre_state,
+            candidate_window.clone(),
+            block_data,
+            invalid_blocks,
+        )
+        .await?;
+    let candidate_ids = candidate_window
+        .iter()
+        .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
+        .collect::<Vec<_>>();
+    if admission.candidate_ids() != candidate_ids {
+        return Err(CasperError::InvalidCostSettlement(
+            "checkpoint admission certificate does not match its canonical candidate window"
+                .to_string(),
+        ));
+    }
+    let candidates_by_id = candidate_window
+        .iter()
+        .cloned()
+        .map(|deploy| {
+            (
+                crate::rust::util::rholang::acceptance::admission_deploy_id(&deploy),
+                deploy,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if candidates_by_id.len() != candidate_window.len() {
+        return Err(CasperError::InvalidCostSettlement(
+            "checkpoint candidate window contains a duplicate identity".to_string(),
+        ));
+    }
+    let rejected = admission
+        .outcome()
+        .rejected
+        .iter()
+        .map(|id| {
+            candidates_by_id.get(id).cloned().ok_or_else(|| {
+                CasperError::InvalidCostSettlement(
+                    "checkpoint rejection is absent from its candidate window".to_string(),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CertifiedCheckpointAttempt {
+        generation,
+        user_candidate_limit,
+        candidate_window,
+        admitted: admission.outcome().admitted.clone(),
+        rejected,
+        deferred: admission.outcome().deferred.clone(),
+        user_ids,
+        admission,
+    })
 }
 
 #[cfg(feature = "test-utils")]
@@ -3001,13 +3089,26 @@ struct ForcedCheckpointRetryObserver {
 
 #[cfg(feature = "test-utils")]
 impl CheckpointAttemptObserver for ForcedCheckpointRetryObserver {
-    fn before_attempt(&mut self, user_deploy_limit: usize, deploys: &[Cosigned<DeployData>]) {
+    fn before_attempt(&mut self, attempt: &CertifiedCheckpointAttempt) {
         self.attempts.push(CheckpointAttemptTrace {
-            user_deploy_limit,
-            deploy_ids: deploys
+            generation: attempt.generation,
+            user_deploy_limit: attempt.user_candidate_limit,
+            candidate_ids: attempt
+                .candidate_window
                 .iter()
                 .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
                 .collect(),
+            deploy_ids: attempt
+                .admitted
+                .iter()
+                .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
+                .collect(),
+            rejected_ids: attempt
+                .rejected
+                .iter()
+                .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
+                .collect(),
+            deferred_ids: attempt.deferred.clone(),
         });
     }
 
@@ -3023,6 +3124,50 @@ impl CheckpointAttemptObserver for ForcedCheckpointRetryObserver {
             ))
         } else {
             result
+        }
+    }
+}
+
+#[cfg(feature = "test-utils")]
+#[derive(Default)]
+struct ForcedCheckpointFailureObserver {
+    attempts: Vec<CheckpointAttemptTrace>,
+}
+
+#[cfg(feature = "test-utils")]
+impl CheckpointAttemptObserver for ForcedCheckpointFailureObserver {
+    fn before_attempt(&mut self, attempt: &CertifiedCheckpointAttempt) {
+        self.attempts.push(CheckpointAttemptTrace {
+            generation: attempt.generation,
+            user_deploy_limit: attempt.user_candidate_limit,
+            candidate_ids: attempt
+                .candidate_window
+                .iter()
+                .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
+                .collect(),
+            deploy_ids: attempt
+                .admitted
+                .iter()
+                .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
+                .collect(),
+            rejected_ids: attempt
+                .rejected
+                .iter()
+                .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
+                .collect(),
+            deferred_ids: attempt.deferred.clone(),
+        });
+    }
+
+    fn complete_attempt(
+        &mut self,
+        result: Result<interpreter_util::DeploysCheckpoint, CasperError>,
+    ) -> Result<interpreter_util::DeploysCheckpoint, CasperError> {
+        match result {
+            Ok(_) => Err(CasperError::SystemRuntimeError(
+                SystemDeployPlatformFailure::UnexpectedResult(Vec::new()),
+            )),
+            Err(error) => Err(error),
         }
     }
 }
@@ -3078,6 +3223,37 @@ pub async fn create_with_forced_checkpoint_retry(
     )
     .await?;
     Ok((result, observer.attempts))
+}
+
+#[cfg(feature = "test-utils")]
+#[allow(clippy::too_many_arguments)]
+pub async fn create_with_forced_checkpoint_failure(
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    dummy_deploy_opt: Option<(PrivateKey, String)>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    allow_empty_blocks: bool,
+) -> (
+    Result<BlockCreatorResult, CasperError>,
+    Vec<CheckpointAttemptTrace>,
+) {
+    let mut observer = ForcedCheckpointFailureObserver::default();
+    let result = create_with_checkpoint_attempt_observer(
+        casper_snapshot,
+        validator_identity,
+        dummy_deploy_opt,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        allow_empty_blocks,
+        &mut observer,
+    )
+    .await;
+    (result, observer.attempts)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3150,51 +3326,6 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
         })?;
     let parents = &casper_snapshot.parents;
     let justifications = &casper_snapshot.justifications;
-    if !parents.is_empty() {
-        let latest_messages = justifications
-            .iter()
-            .map(|justification| {
-                (
-                    justification.validator.clone(),
-                    justification.latest_block_hash.clone(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let candidate_context =
-            crate::rust::causal_equivocation::CertifiedConsensusContext::for_frozen_floor(
-                &casper_snapshot.dag,
-                casper_snapshot.last_finalized_block.clone(),
-                &latest_messages,
-            )?;
-        let context_comparison = compare_certified_contexts(
-            &casper_snapshot.dag,
-            block_store,
-            &casper_snapshot.consensus_context,
-            &candidate_context,
-        )?;
-        if context_comparison.relation != CertifiedContextRelation::Ready {
-            tracing::warn!(
-                relation = ?context_comparison.relation,
-                materialized_floor = %hex::encode(casper_snapshot.consensus_context.incoming_finalized_floor()),
-                candidate_floor = %hex::encode(candidate_context.incoming_finalized_floor()),
-                materialized_context = %hex::encode(casper_snapshot.consensus_context.digest()),
-                candidate_context = %hex::encode(candidate_context.digest()),
-                candidate_descends_from_materialized = context_comparison.candidate_descends_from_materialized,
-                materialized_descends_from_candidate = context_comparison.materialized_descends_from_candidate,
-                candidate_preserves_materialized_state = ?context_comparison.candidate_preserves_materialized_state,
-                "candidate consensus context is not proposal-ready"
-            );
-        }
-        if let Some(reason) = proposal_recovery_deferral_reason(
-            context_comparison.relation,
-            candidate_context.has_complete_latest_message_slots(),
-            candidate_context
-                .active_validators()
-                .contains(&validator_identity.public_key.bytes),
-        ) {
-            return Ok(BlockCreatorResult::recovery_deferred(reason));
-        }
-    }
     if let Some(max_parent_ts) = parents.iter().map(|p| p.header.timestamp).max() {
         if now_millis < max_parent_ts {
             tracing::debug!(
@@ -3214,10 +3345,20 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
 
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
-    // The one derivation of the floor (and its post-state) for this whole
-    // propose; every walk and probe below reads it. `None` only for
-    // parentless fixture shapes, where the floor requirement surfaces at
-    // bonds packaging exactly as before.
+    if !parents.is_empty() {
+        if let Some(reason) = certified_context_deferral_reason(
+            casper_snapshot
+                .consensus_context
+                .has_complete_latest_message_slots(),
+            casper_snapshot
+                .consensus_context
+                .active_validators()
+                .contains(&validator_identity.public_key.bytes),
+        ) {
+            return Ok(BlockCreatorResult::recovery_deferred(reason));
+        }
+    }
+
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
@@ -3504,70 +3645,34 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
         seq_num: next_seq_num,
     };
 
-    // ── WD-D2 acceptance gate (cost-accounted-rho §7.6/§7.7) ─────────────────
-    let user_deploys_for_gate: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
-        user_deploys
-            .into_iter()
-            .map(PendingDeploy::into_envelope)
-            .collect();
-    let mut deploys_for_gate = user_deploys_for_gate.clone();
-    let dummy_sigs: std::collections::BTreeSet<DeployLookupId> = dummy_deploys
-        .iter()
-        .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
-        .collect();
-    deploys_for_gate.extend(dummy_deploys.iter().cloned());
-
-    // Run the state-bound funding proof on every signed deploy against the merged
-    // pre-state before settlement. The bounded execution re-imposes canonical
-    // order, records the exact root/cost chain, rejects capacity exhaustion,
-    // and iterates after underfunded removals until its evidence describes the
-    // exact retained sequence. The final retained execution is the block's user
-    // transition; checkpoint construction continues from its witnessed root.
-    let gate_admission = {
-        let t = std::time::Instant::now();
-        let admission = runtime_manager
-            .certify_state_bound_admission(
-                &pre_state,
-                deploys_for_gate,
-                &block_data,
-                &invalid_blocks,
-            )
-            .await?;
-        tracing::debug!(
-            target: "f1r3fly.block_creator.timing",
-            "acceptance_gate_ms={}, admitted={}, gate_rejected={}, debit_pools={}",
-            t.elapsed().as_millis(),
-            admission.outcome().admitted.len(),
-            admission.outcome().rejected.len(),
-            admission.outcome().debits.len()
-        );
-        admission
-    };
-    let gate_outcome = gate_admission.outcome().clone();
-    let gate_rejected_sigs: Vec<DeployLookupId> = gate_outcome
-        .rejected
-        .iter()
-        .filter(|sig| !dummy_sigs.contains(*sig))
-        .cloned()
-        .collect();
-    let gate_rejected_sig_set: HashSet<DeployLookupId> =
-        gate_rejected_sigs.iter().cloned().collect();
-    let gate_rejected_user_cosigned: Vec<_> = user_deploys_for_gate
-        .iter()
-        .filter(|deploy| {
-            gate_rejected_sig_set
-                .contains(&crate::rust::util::rholang::acceptance::admission_deploy_id(deploy))
-        })
-        .cloned()
-        .collect();
-    let (admitted_dummy_cosigned, admitted_user_cosigned): (Vec<_>, Vec<_>) =
-        gate_outcome.admitted.into_iter().partition(|deploy| {
-            dummy_sigs
-                .contains(&crate::rust::util::rholang::acceptance::admission_deploy_id(deploy))
-        });
-    // Whether there is any user work surviving the gate (drives the post-gate
-    // empty-block skip below).
-    let has_admitted_user_deploys = !admitted_user_cosigned.is_empty();
+    let mut canonical_user_candidates = user_deploys
+        .into_iter()
+        .map(PendingDeploy::into_envelope)
+        .collect::<Vec<_>>();
+    crate::rust::util::rholang::acceptance::canonical_sort(&mut canonical_user_candidates);
+    let original_user_candidate_count = canonical_user_candidates.len();
+    let initial_gate_started = std::time::Instant::now();
+    let initial_attempt = certify_checkpoint_attempt(
+        runtime_manager,
+        &pre_state,
+        &canonical_user_candidates,
+        &dummy_deploys,
+        &block_data,
+        &invalid_blocks,
+        0,
+        original_user_candidate_count,
+    )
+    .await?;
+    tracing::debug!(
+        target: "f1r3fly.block_creator.timing",
+        "acceptance_gate_ms={}, candidates={}, admitted={}, gate_rejected={}, gate_deferred={}, debit_pools={}",
+        initial_gate_started.elapsed().as_millis(),
+        initial_attempt.candidate_window.len(),
+        initial_attempt.admitted.len(),
+        initial_attempt.rejected.len(),
+        initial_attempt.deferred.len(),
+        initial_attempt.admission.outcome().debits.len()
+    );
 
     // Check if we have any new work to process.
     // If empty blocks are disabled, skip closeBlock-only proposals to avoid no-op checkpoint cost.
@@ -3575,14 +3680,13 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
     // POST-GATE empty-block skip: a terminal funding-rejection record is user
     // work even when no deploy executes, so clients can observe a finalized
     // rejection instead of polling Pending until expiry.
-    let has_user_or_dummy_deploys = has_admitted_user_deploys
-        || !gate_rejected_user_cosigned.is_empty()
-        || !admitted_dummy_cosigned.is_empty();
+    let has_user_or_dummy_deploys =
+        !initial_attempt.admitted.is_empty() || !initial_attempt.rejected.is_empty();
     if !has_user_or_dummy_deploys && !has_slashing_deploys && !allow_empty_blocks {
         tracing::info!(
             "Skipping empty block creation: no funded user deploys (gate-admitted={}, gate-rejected={}), no dummy deploys, no authorized slashing deploys",
-            admitted_user_cosigned.len(),
-            gate_rejected_sigs.len()
+            initial_attempt.admitted_user_count(),
+            initial_attempt.rejected_user_count()
         );
         return Ok(BlockCreatorResult::NoNewDeploys);
     }
@@ -3597,47 +3701,25 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
     // Cosigned<DeployData> by `admit_by_funding`, in canonical order — only
     // funded deploys execute, gate-before-execute per tex 1726-1729).
     let checkpoint_started = std::time::Instant::now();
-    let original_admitted_user_deploys = admitted_user_cosigned.len();
-    let mut user_deploy_limit = original_admitted_user_deploys;
+    let mut user_deploy_limit = original_user_candidate_count;
+    let mut attempt_generation = 0usize;
     let mut retry_count = 0usize;
-    let checkpoint_data = loop {
-        let attempt_admitted: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>> =
-            admitted_user_cosigned
-                .iter()
-                .take(user_deploy_limit)
-                .cloned()
-                .collect();
-        let (attempt_deploys, attempt_admission) = if user_deploy_limit
-            == original_admitted_user_deploys
-        {
-            let mut deploys = attempt_admitted.clone();
-            deploys.extend(admitted_dummy_cosigned.iter().cloned());
-            crate::rust::util::rholang::acceptance::canonical_sort(&mut deploys);
-            (deploys, gate_admission.clone())
+    let mut pending_attempt = Some(initial_attempt);
+    let (checkpoint_data, successful_attempt) = loop {
+        let attempt = if let Some(attempt) = pending_attempt.take() {
+            attempt
         } else {
-            let mut prefix_deploys = attempt_admitted.clone();
-            prefix_deploys.extend(admitted_dummy_cosigned.iter().cloned());
-            let prefix_admission = runtime_manager
-                .certify_state_bound_admission(
-                    &pre_state,
-                    prefix_deploys,
-                    &block_data,
-                    &invalid_blocks,
-                )
-                .await?;
-            let prefix_outcome = prefix_admission.outcome();
-            if prefix_outcome.admitted.len()
-                != attempt_admitted.len() + admitted_dummy_cosigned.len()
-                || !prefix_outcome.rejected.is_empty()
-            {
-                return Err(CasperError::RuntimeError(format!(
-                        "prefix re-admission diverged while shrinking the checkpoint batch: prefix_len={}, re-admitted={}, re-rejected={} (admission must be prefix-closed)",
-                        attempt_admitted.len(),
-                        prefix_outcome.admitted.len(),
-                        prefix_outcome.rejected.len()
-                    )));
-            }
-            (prefix_outcome.admitted.clone(), prefix_admission)
+            certify_checkpoint_attempt(
+                runtime_manager,
+                &pre_state,
+                &canonical_user_candidates,
+                &dummy_deploys,
+                &block_data,
+                &invalid_blocks,
+                attempt_generation,
+                user_deploy_limit,
+            )
+            .await?
         };
         let mut attempt_system_deploys = system_deploys_converted.clone();
         attempt_system_deploys.push(SystemDeployEnum::Close(CloseBlockDeploy::new(
@@ -3646,10 +3728,11 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
                 next_seq_num,
             ),
         )));
-        let cosigned_deploys = attempt_deploys;
-        let attempted_user_deploys = user_deploy_limit;
+        let cosigned_deploys = attempt.admitted.clone();
+        let attempted_user_deploys = attempt.admitted_user_count();
         let attempted_total_deploys = cosigned_deploys.len();
-        checkpoint_attempt_observer.before_attempt(user_deploy_limit, &cosigned_deploys);
+        let attempted_window_deploys = attempt.candidate_window.len();
+        checkpoint_attempt_observer.before_attempt(&attempt);
 
         let checkpoint_attempt =
             interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
@@ -3664,22 +3747,26 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
                 Some(&rejected_deploy_buffer),
                 floor_ctx.as_ref(),
                 Some(&validator_identity.public_key.bytes),
-                attempt_admission,
+                attempt.admission.clone(),
             )
             .await;
         match checkpoint_attempt_observer.complete_attempt(checkpoint_attempt) {
             Ok(data) => {
-                if attempted_user_deploys < original_admitted_user_deploys {
+                if attempt.user_candidate_limit < original_user_candidate_count {
                     tracing::warn!(
-                        "Checkpoint merge recovered by reducing selected user deploys for block #{}: original_user_deploys={}, included_user_deploys={}, dummy_deploys={}, retries={}",
+                        "Checkpoint merge recovered by reducing the canonical user candidate window for block #{}: original_user_candidates={}, included_user_candidates={}, admitted_user_deploys={}, admitted_dummy_deploys={}, rejected_deploys={}, deferred_deploys={}, retries={}, generation={}",
                         next_block_num,
-                        original_admitted_user_deploys,
+                        original_user_candidate_count,
+                        attempt.user_candidate_limit,
                         attempted_user_deploys,
-                        dummy_deploys.len(),
-                        retry_count
+                        attempt.admitted_dummy_count(),
+                        attempt.rejected.len(),
+                        attempt.deferred.len(),
+                        retry_count,
+                        attempt.generation
                     );
                 }
-                break data;
+                break (data, attempt);
             }
             Err(CasperError::SystemRuntimeError(
                 SystemDeployPlatformFailure::GasPaymentFailure(msg)
@@ -3692,14 +3779,22 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
                 {
                     retry_count += 1;
                     tracing::warn!(
-                        "Checkpoint payment accounting failed for selected deploy batch in block #{}; retrying with fewer user deploys: attempted_user_deploys={}, attempted_total_deploys={}, next_user_deploys={}, error={}",
+                        "Checkpoint payment accounting failed for selected deploy batch in block #{}; recertifying a smaller canonical candidate window: attempted_user_candidates={}, attempted_user_deploys={}, attempted_total_deploys={}, attempted_window_deploys={}, next_user_candidates={}, generation={}, error={}",
                         next_block_num,
+                        attempt.user_candidate_limit,
                         attempted_user_deploys,
                         attempted_total_deploys,
+                        attempted_window_deploys,
                         next_limit,
+                        attempt.generation,
                         msg
                     );
                     user_deploy_limit = next_limit;
+                    attempt_generation = attempt_generation.checked_add(1).ok_or_else(|| {
+                        CasperError::InvalidCostSettlement(
+                            "checkpoint admission generation overflow".to_string(),
+                        )
+                    })?;
                     continue;
                 }
                 let (removed_from_deploy_storage, removed_from_rejected_buffer) =
@@ -3723,14 +3818,22 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
                 };
                 retry_count += 1;
                 tracing::warn!(
-                    "Checkpoint merge rejected selected deploy batch for block #{}; retrying with fewer user deploys: attempted_user_deploys={}, attempted_total_deploys={}, next_user_deploys={}, error={}",
+                    "Checkpoint merge rejected selected deploy batch for block #{}; recertifying a smaller canonical candidate window: attempted_user_candidates={}, attempted_user_deploys={}, attempted_total_deploys={}, attempted_window_deploys={}, next_user_candidates={}, generation={}, error={}",
                     next_block_num,
+                    attempt.user_candidate_limit,
                     attempted_user_deploys,
                     attempted_total_deploys,
+                    attempted_window_deploys,
                     next_limit,
+                    attempt.generation,
                     err
                 );
                 user_deploy_limit = next_limit;
+                attempt_generation = attempt_generation.checked_add(1).ok_or_else(|| {
+                    CasperError::InvalidCostSettlement(
+                        "checkpoint admission generation overflow".to_string(),
+                    )
+                })?;
             }
             Err(err) => return Err(err),
         }
@@ -3758,13 +3861,9 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
         applied_from_scope,
         merge_base,
     } = checkpoint_data;
-    let packaged_gate_rejections = if user_deploy_limit == original_admitted_user_deploys {
-        gate_rejected_user_cosigned
-    } else {
-        Vec::new()
-    };
     processed_deploys.extend(
-        packaged_gate_rejections
+        successful_attempt
+            .rejected
             .iter()
             .map(|deploy| ProcessedDeploy::admission_rejected(deploy, pre_state_hash.clone())),
     );
@@ -3869,14 +3968,7 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
     metrics::gauge!(BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
         .set(signed_block_bytes as f64);
 
-    let selected_user_deploys_for_buffer_drain: Vec<PendingDeploy> = admitted_user_cosigned
-        .iter()
-        .take(user_deploy_limit)
-        .chain(packaged_gate_rejections.iter())
-        .cloned()
-        .map(PendingDeploy::from_envelope_v6)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(CasperError::RuntimeError)?;
+    let selected_user_deploys_for_buffer_drain = successful_attempt.terminal_user_deploys()?;
     let removed_recovered_from_storage = drain_selected_recovered_deploys_from_deploy_storage(
         &deploy_storage,
         &rejected_deploy_buffer,
@@ -4089,6 +4181,10 @@ mod tests {
         }
     }
 
+    fn signing_validator_identity(byte: u8) -> ValidatorIdentity {
+        ValidatorIdentity::new(&PrivateKey::from_bytes(&[byte & 0x7f; 32]))
+    }
+
     fn is_recovered_deploy_leader(
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
@@ -4099,66 +4195,20 @@ mod tests {
     }
 
     #[test]
-    fn proposal_recovery_deferral_classification_is_total_and_precedence_ordered() {
+    fn proposal_readiness_uses_only_the_certified_context_authority() {
         use RecoveryDeferralReason::{
-            CandidateFloorConflict, CandidateFloorRegression, CertifiedContextMismatch,
-            FinalizedFloorMaterializationPending, InactiveCandidateValidator,
-            IncompleteCandidateCommitteeSlots,
+            InactiveCertifiedValidator, IncompleteCertifiedCommitteeSlots,
         };
-
         let cases = [
-            (
-                CertifiedContextRelation::MaterializationPending,
-                false,
-                false,
-                Some(FinalizedFloorMaterializationPending),
-            ),
-            (
-                CertifiedContextRelation::FloorRegression,
-                true,
-                true,
-                Some(CandidateFloorRegression),
-            ),
-            (
-                CertifiedContextRelation::FloorConflict,
-                true,
-                true,
-                Some(CandidateFloorConflict),
-            ),
-            (
-                CertifiedContextRelation::ContextMismatch,
-                true,
-                true,
-                Some(CertifiedContextMismatch),
-            ),
-            (
-                CertifiedContextRelation::Ready,
-                false,
-                false,
-                Some(IncompleteCandidateCommitteeSlots),
-            ),
-            (
-                CertifiedContextRelation::Ready,
-                false,
-                true,
-                Some(IncompleteCandidateCommitteeSlots),
-            ),
-            (
-                CertifiedContextRelation::Ready,
-                true,
-                false,
-                Some(InactiveCandidateValidator),
-            ),
-            (CertifiedContextRelation::Ready, true, true, None),
+            (false, false, Some(IncompleteCertifiedCommitteeSlots)),
+            (false, true, Some(IncompleteCertifiedCommitteeSlots)),
+            (true, false, Some(InactiveCertifiedValidator)),
+            (true, true, None),
         ];
 
-        for (context_relation, slots_complete, proposer_active, expected) in cases {
+        for (slots_complete, proposer_active, expected) in cases {
             assert_eq!(
-                proposal_recovery_deferral_reason(
-                    context_relation,
-                    slots_complete,
-                    proposer_active,
-                ),
+                certified_context_deferral_reason(slots_complete, proposer_active),
                 expected
             );
         }
@@ -4210,6 +4260,7 @@ mod tests {
                     protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                     objective_equivocation_evidence_delta: Vec::new(),
                     sender_authority: None,
+                    settled_history_admission: None,
                     finalized_floor_commitment: None,
                     admission_schema_version:
                         models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
@@ -4237,6 +4288,68 @@ mod tests {
             .put_block_message(&block)
             .expect("store last finalized block");
         snapshot.last_finalized_block = block.block_hash;
+    }
+
+    fn insert_floor_context_block(
+        snapshot: &mut CasperSnapshot,
+        block_store: &KeyValueBlockStore,
+        block: &BlockMessage,
+        approved_genesis: bool,
+        floor_state: Option<Bytes>,
+    ) {
+        block_store
+            .put_block_message(block)
+            .expect("store floor-context block");
+        let metadata = models::rust::block_metadata::BlockMetadata::from_block(
+            block,
+            Some(approved_genesis),
+            Some(approved_genesis),
+        );
+        let metadata = if approved_genesis {
+            let mut metadata = metadata;
+            metadata.finalized_floor_commitment = None;
+            metadata.admission_outcome = None;
+            metadata.sender_authority = None;
+            metadata.approved_genesis = true;
+            metadata
+        } else {
+            crate::rust::test_metadata::certify_with_floor_post_state(
+                metadata,
+                BondGeneration::GENESIS,
+                floor_state.expect("non-genesis block floor state"),
+            )
+        };
+        metadata.validate().expect("valid floor-context metadata");
+        snapshot.dag.dag_set.insert(block.block_hash.clone());
+        snapshot.dag.block_number_map = snapshot
+            .dag
+            .block_number_map
+            .update(block.block_hash.clone(), block.body.state.block_number);
+        let height = snapshot
+            .dag
+            .height_map
+            .get(&block.body.state.block_number)
+            .cloned()
+            .unwrap_or_default()
+            .update(block.block_hash.clone());
+        snapshot.dag.height_map = snapshot
+            .dag
+            .height_map
+            .update(block.body.state.block_number, height);
+        if let Some(parent) = block.header.parents_hash_list.first() {
+            snapshot.dag.main_parent_map = snapshot
+                .dag
+                .main_parent_map
+                .update(block.block_hash.clone(), parent.clone());
+        } else {
+            snapshot.dag.canonical_genesis_hash = Some(block.block_hash.clone());
+        }
+        snapshot
+            .dag
+            .block_metadata_index
+            .write()
+            .add(metadata)
+            .expect("insert floor-context metadata");
     }
 
     fn test_block(
@@ -4317,6 +4430,174 @@ mod tests {
             Some(certificate.commitment(Bytes::from(vec![3; models::rust::block_hash::LENGTH])));
         block.finalized_floor_certificate = Some(certificate);
         block
+    }
+
+    fn insert_settled_test_block(
+        dag: &block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
+        block: &BlockMessage,
+    ) {
+        let citer_identity = signing_validator_identity(0xEE);
+        let citer_sender: Bytes = citer_identity.public_key.bytes.clone().into();
+        let anchor_height = block.body.state.block_number.max(1);
+        let mut anchor = test_block(
+            invalid_block_hash(0xEC),
+            validator(0xED),
+            Vec::new(),
+            anchor_height,
+            Vec::new(),
+        );
+        anchor.body.state.bonds = vec![Bond {
+            validator: citer_sender.clone(),
+            stake: 100,
+        }];
+        anchor.body.state.bond_generations = vec![ValidatorBondGeneration {
+            validator: citer_sender.clone(),
+            generation: BondGeneration::GENESIS,
+        }];
+        anchor.block_hash = proto_util::hash_block(&anchor);
+        let citer = citer_identity.sign_block(&test_block(
+            invalid_block_hash(0xEF),
+            citer_sender,
+            vec![block.block_hash.clone()],
+            anchor_height + 1,
+            Vec::new(),
+        ));
+        let proof = models::rust::block_metadata::ValidatedSettledHistoryAdmission::new(
+            block,
+            &anchor,
+            &citer,
+            BondGeneration::GENESIS,
+            100,
+        )
+        .expect("settled-history proof");
+        dag.insert_settled_history_certified(block, &proof)
+            .expect("insert settled-history test block");
+    }
+
+    fn certify_snapshot_floor(snapshot: &mut CasperSnapshot, floor: &BlockMessage) {
+        snapshot.last_finalized_block = floor.block_hash.clone();
+        snapshot.consensus_context =
+            crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+                &snapshot.dag,
+                floor.block_hash.clone(),
+            )
+            .expect("certified floor context");
+        let mut certificate = snapshot
+            .parents
+            .first()
+            .and_then(|parent| parent.finalized_floor_certificate.clone())
+            .expect("parent floor certificate");
+        certificate.protocol_version = snapshot.on_chain_state.shard_conf.casper_version;
+        certificate.shard_id = snapshot.on_chain_state.shard_conf.shard_name.clone();
+        certificate.target_floor_hash =
+            models::rust::block_hash::BlockHashSerde(floor.block_hash.clone());
+        certificate.target_post_state_hash =
+            models::rust::block_hash::BlockHashSerde(floor.body.state.post_state_hash.clone());
+        certificate.target_block_number = floor.body.state.block_number;
+        certificate.authority_context_digest =
+            models::rust::block_hash::BlockHashSerde(snapshot.consensus_context.digest().clone());
+        snapshot.finalized_floor_certificate = Some(certificate);
+    }
+
+    #[tokio::test]
+    async fn protocol_v6_replay_context_uses_the_snapshot_certificate_floor() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage =
+            block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new(
+                &mut kvm,
+            )
+            .await
+            .expect("dag storage");
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot = CasperSnapshot::new(dag);
+        snapshot.on_chain_state.shard_conf.shard_name = "test".to_string();
+        snapshot.on_chain_state.shard_conf.casper_version =
+            crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION;
+
+        let mut floor = test_block(
+            invalid_block_hash(0x61),
+            validator(1),
+            Vec::new(),
+            0,
+            Vec::new(),
+        );
+        floor.header.finalized_floor = None;
+        floor.finalized_floor_certificate = None;
+        insert_floor_context_block(&mut snapshot, &block_store, &floor, true, None);
+
+        let mut parent = test_block(
+            invalid_block_hash(0x62),
+            validator(1),
+            vec![floor.block_hash.clone()],
+            1,
+            Vec::new(),
+        );
+        let mut certificate = parent
+            .finalized_floor_certificate
+            .take()
+            .expect("test finalization certificate");
+        parent.header.finalized_floor = None;
+        insert_floor_context_block(
+            &mut snapshot,
+            &block_store,
+            &parent,
+            false,
+            Some(floor.body.state.post_state_hash.clone()),
+        );
+
+        snapshot.last_finalized_block = floor.block_hash.clone();
+        snapshot.parents = vec![parent.clone()];
+        snapshot.consensus_context =
+            crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+                &snapshot.dag,
+                floor.block_hash.clone(),
+            )
+            .expect("certified floor context");
+        certificate.target_post_state_hash =
+            models::rust::block_hash::BlockHashSerde(floor.body.state.post_state_hash.clone());
+        certificate.authority_context_digest =
+            models::rust::block_hash::BlockHashSerde(snapshot.consensus_context.digest().clone());
+        snapshot.finalized_floor_certificate = Some(certificate);
+        assert!(block_store
+            .get(&floor.block_hash)
+            .expect("load stored floor")
+            .is_some());
+        assert!(snapshot
+            .dag
+            .lookup(&floor.block_hash)
+            .expect("load floor metadata")
+            .is_some());
+        assert!(snapshot
+            .dag
+            .is_dag_ancestor(&floor.block_hash, &parent.block_hash)
+            .expect("floor-parent ancestry"));
+
+        let context = derive_floor_context(&snapshot, &block_store)
+            .await
+            .expect("derive protocol-v6 floor context")
+            .expect("non-genesis floor context");
+
+        assert_eq!(context.floor.hash, floor.block_hash);
+        assert_eq!(context.floor_state, floor.body.state.post_state_hash);
+        assert_eq!(context.settled_floors, vec![context.floor.clone()]);
+
+        let mut mismatched = snapshot;
+        mismatched
+            .finalized_floor_certificate
+            .as_mut()
+            .expect("snapshot certificate")
+            .target_post_state_hash = models::rust::block_hash::BlockHashSerde(Bytes::from(vec![
+            0x63;
+            models::rust::block_hash::LENGTH
+        ]));
+        assert!(derive_floor_context(&mismatched, &block_store)
+            .await
+            .is_err());
     }
 
     fn fallback(allowed: bool, cap: usize) -> FreshAdmissionFallback {
@@ -7361,6 +7642,7 @@ mod tests {
             .expect("dag storage");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.shard_name = "test".to_string();
         snapshot
             .on_chain_state
             .shard_conf
@@ -7398,6 +7680,7 @@ mod tests {
             genesis_block.block_hash.clone(),
             models::rust::casper::protocol::casper_message::RejectedDeployReason::MergeConflict,
         )];
+        genesis_block = signing_validator_identity(0xE1).sign_block(&genesis_block);
         let parent_block = test_block(
             invalid_block_hash(0xA1),
             validator(1),
@@ -7411,14 +7694,13 @@ mod tests {
         block_store
             .put_block_message(&parent_block)
             .expect("store parent");
-        dag_storage
-            .insert(&genesis_block, InsertMode::SettledHistory)
-            .expect("insert genesis");
+        insert_settled_test_block(&dag_storage, &genesis_block);
         dag_storage
             .insert(&parent_block, InsertMode::Normal)
             .expect("insert parent");
         snapshot.dag = dag_storage.get_representation().expect("dag");
         snapshot.parents = vec![parent_block];
+        certify_snapshot_floor(&mut snapshot, &genesis_block);
 
         seed_current_deploys(&deploy_storage, [&retry]);
         rejected_deploy_buffer
@@ -7484,6 +7766,7 @@ mod tests {
             .expect("dag storage");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.shard_name = "test".to_string();
         snapshot
             .on_chain_state
             .shard_conf
@@ -7512,6 +7795,7 @@ mod tests {
             floor.block_hash.clone(),
             models::rust::casper::protocol::casper_message::RejectedDeployReason::MergeConflict,
         )];
+        floor = signing_validator_identity(0xE2).sign_block(&floor);
         let left = test_block(
             invalid_block_hash(0xB1),
             validator(1),
@@ -7529,9 +7813,7 @@ mod tests {
         for block in [&floor, &left, &right] {
             block_store.put_block_message(block).expect("store block");
         }
-        dag_storage
-            .insert(&floor, InsertMode::SettledHistory)
-            .expect("insert floor");
+        insert_settled_test_block(&dag_storage, &floor);
         dag_storage
             .insert(&left, InsertMode::Normal)
             .expect("insert left parent");
@@ -7552,6 +7834,7 @@ mod tests {
         .into_iter()
         .collect();
         snapshot.parents = vec![left.clone(), right.clone()];
+        certify_snapshot_floor(&mut snapshot, &floor);
 
         seed_current_deploys(&deploy_storage, [&retry]);
         rejected_deploy_buffer

@@ -14,15 +14,14 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
-use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
-use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
-use crate::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
+use crate::rust::blocks::block_processing_queue::{
+    BlockProcessingIdentities, BlockProcessingQueueSender,
+};
+use crate::rust::casper::{hash_set_casper, CasperShardConf};
 use crate::rust::casper_conf::CasperConf;
 use crate::rust::engine::approve_block_protocol::ApproveBlockProtocolFactory;
 use crate::rust::engine::block_approver_protocol::BlockApproverProtocol;
@@ -71,7 +70,7 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Explicit parameters from Scala (in same order as Scala signature)
     block_processing_queue_tx: BlockProcessingQueueSender,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    blocks_in_processing: Arc<BlockProcessingIdentities>,
     propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
     conf: CasperConf,
     trim_state: bool,
@@ -159,7 +158,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         estimator: Estimator,
         // Explicit parameters (matching Scala signature order)
         block_processing_queue_tx: BlockProcessingQueueSender,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        blocks_in_processing: Arc<BlockProcessingIdentities>,
         propose_f_opt: Option<Arc<crate::rust::ProposeFunction>>,
         conf: CasperConf,
         trim_state: bool,
@@ -287,118 +286,18 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             Ok(())
         }
 
-        async fn send_buffer_pendants_to_casper<T: TransportLayer + Send + Sync + Clone>(
-            casper: Arc<dyn MultiParentCasper + Send + Sync>,
-            casper_buffer_storage: &CasperBufferKeyValueStorage,
-            block_store: &KeyValueBlockStore,
-            block_retriever: &BlockRetriever<T>,
-            blocks_in_processing: &Arc<DashSet<BlockHash>>,
-            block_processing_queue_tx: &BlockProcessingQueueSender,
-        ) -> Result<(), CasperError> {
-            let _dependency_scan_guard = block_processing_queue_tx.acquire_dependency_scan().await;
-            let pendants = casper_buffer_storage.get_pendants();
-
-            // Filter pendants to only those that exist in BlockStore
-            let mut pendants_stored = Vec::new();
-            for hash_serde in pendants.iter() {
-                // Convert BlockHashSerde wrapper to BlockHash (Bytes)
-                let hash: BlockHash = hash_serde.0.clone();
-
-                // Check if this hash exists in BlockStore
-                let contains = block_store.contains(&hash)?;
-
-                // If block exists, add hash to filtered list
-                if contains {
-                    pendants_stored.push(hash);
-                }
-            }
-
-            tracing::info!(
-                "Checking pendant hashes: {} items in CasperBuffer.",
-                pendants_stored.len()
-            );
-
-            // Process each pendant hash and send block to Casper for processing
-            for hash in pendants_stored {
-                // Retrieve block from BlockStore (returns Option)
-                let block = block_store.get(&hash)?;
-
-                if let Some(block) = block {
-                    tracing::info!(
-                        "Pendant {} is available in BlockStore, sending to Casper.",
-                        PrettyPrinter::build_string_bytes(&hash)
-                    );
-
-                    // Check if block already exists in DAG
-                    let dag_contains = casper.dag_contains(&hash);
-
-                    // Resume-time reconciliation closing the (c) drift
-                    // state from Bug #17 / T-9.20. The same purge logic
-                    // is provided as a documented helper at
-                    // `block_storage::rust::dag::buffer_dag_transition::
-                    //  reconcile_buffer_against_dag` — kept inline here
-                    // because we additionally clean up the BlockRetriever's
-                    // hash-tracking state (a launch-specific concern that
-                    // the generic recon helper doesn't know about).
-                    // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
-                    if dag_contains {
-                        tracing::warn!(
-                            "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",
-                            PrettyPrinter::build_string_bytes(&hash)
-                        );
-                        let hash_serde = BlockHashSerde(hash.clone());
-                        if let Err(err) = casper_buffer_storage.remove(hash_serde) {
-                            tracing::warn!(
-                                "Failed to purge stale pendant {} from CasperBuffer: {}",
-                                PrettyPrinter::build_string_bytes(&hash),
-                                err
-                            );
-                        }
-                        if let Err(err) = block_retriever.forget_hash_tracking(&hash) {
-                            tracing::warn!(
-                                "Failed to forget stale pendant {} in BlockRetriever: {}",
-                                PrettyPrinter::build_string_bytes(&hash),
-                                err
-                            );
-                        }
-                        continue;
-                    }
-
-                    // Send block to processing queue for validation and addition to DAG
-                    let block_hash = block.block_hash.clone();
-                    if !blocks_in_processing.insert(block_hash.clone()) {
-                        tracing::debug!(
-                            "Skipping pendant {} enqueue because it is already queued/in-processing",
-                            PrettyPrinter::build_string_bytes(&block_hash)
-                        );
-                        continue;
-                    }
-                    match block_processing_queue_tx.try_enqueue(casper.clone(), block) {
-                        Ok(()) => block_retriever.ack_receive(hash).await?,
-                        Err(error) if error.failure.is_temporary() => {
-                            blocks_in_processing.remove(&block_hash);
-                            tracing::info!(
-                                error = %error,
-                                "Deferred buffered pendant {}",
-                                PrettyPrinter::build_string_bytes(&block_hash)
-                            );
-                        }
-                        Err(error) => {
-                            blocks_in_processing.remove(&block_hash);
-                            return Err(CasperError::Other(error.to_string()));
-                        }
-                    }
-                }
-            }
-
-            Ok(())
-        }
-
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
         );
 
         let ab = approved_block.candidate.block.clone();
+        let settled_admissions = self
+            .block_dag_storage
+            .reconcile_settled_history_admissions(&self.block_store, &ab)?;
+        tracing::info!(
+            settled_admissions,
+            "reconciled settled-history recovery charges"
+        );
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
 
         crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
@@ -422,47 +321,39 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         let transport_layer_for_init = self.transport_layer.clone();
         let connections_cell_for_init = self.connections_cell.clone();
         let rp_conf_ask_for_init = self.rp_conf_ask.clone();
-        let casper_for_init = casper_arc.clone();
         let casper_buffer_storage_for_init = self.casper_buffer_storage.clone();
-        let block_store_for_init = self.block_store.clone();
-        let block_retriever_for_init = self.block_retriever.clone();
-        let blocks_in_processing_for_init = self.blocks_in_processing.clone();
-        let block_processing_queue_tx_for_init = self.block_processing_queue_tx.clone();
         let propose_f_opt_for_init = self.propose_f_opt.clone();
 
-        let the_init = Arc::new(move || {
-            let transport_layer = transport_layer_for_init.clone();
-            let connections_cell = connections_cell_for_init.clone();
-            let rp_conf_ask = rp_conf_ask_for_init.clone();
-            let casper = casper_for_init.clone();
-            let casper_buffer_storage = casper_buffer_storage_for_init.clone();
-            let block_store = block_store_for_init.clone();
-            let block_retriever = block_retriever_for_init.clone();
-            let blocks_in_processing = blocks_in_processing_for_init.clone();
-            let block_processing_queue_tx = block_processing_queue_tx_for_init.clone();
-            let propose_f_opt = propose_f_opt_for_init.clone();
+        let the_init = Arc::new(
+            move |context: crate::rust::blocks::block_processing_queue::RecoveryStartupContext| {
+                let transport_layer = transport_layer_for_init.clone();
+                let connections_cell = connections_cell_for_init.clone();
+                let rp_conf_ask = rp_conf_ask_for_init.clone();
+                let buffer = casper_buffer_storage_for_init.clone();
+                let proposal = propose_f_opt_for_init.clone();
 
-            Box::pin(async move {
-                ask_peers_for_fork_choice_tips(&*transport_layer, &connections_cell, &rp_conf_ask)
+                Box::pin(async move {
+                    ask_peers_for_fork_choice_tips(
+                        &*transport_layer,
+                        &connections_cell,
+                        &rp_conf_ask,
+                    )
                     .await?;
-
-                send_buffer_pendants_to_casper(
-                    casper.clone(),
-                    &casper_buffer_storage,
-                    &block_store,
-                    &block_retriever,
-                    &blocks_in_processing,
-                    &block_processing_queue_tx,
-                )
-                .await?;
-
-                if let Some(propose_f) = propose_f_opt.as_ref() {
-                    propose_f(ProposeRequestKind::PendingDeploy).await?;
-                }
-
-                Ok(())
-            }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-        });
+                    let mut ticket = context.request_startup(proposal.is_some())?;
+                    ticket.capture_buffer_snapshot(&buffer).await?;
+                    ticket
+                        .finish(proposal.map(|callback| {
+                            move || async move {
+                                callback(ProposeRequestKind::PendingDeploy)
+                                    .await
+                                    .map(|_| ())
+                            }
+                        }))
+                        .await?;
+                    Ok(())
+                }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+            },
+        );
 
         // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
         record_direct_to_running_init_metrics();

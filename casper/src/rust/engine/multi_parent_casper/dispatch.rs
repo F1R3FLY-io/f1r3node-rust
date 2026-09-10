@@ -181,6 +181,28 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImpl<T> {
+    fn retry_candidate_count(&self) -> usize { self.casper_buffer_storage.scan_candidate_count() }
+
+    fn next_retry_candidate(&self) -> Option<BlockHash> {
+        self.casper_buffer_storage
+            .next_scan_candidate()
+            .map(|hash| hash.0)
+    }
+
+    fn prepare_retry_candidate(
+        &self,
+        hash: &BlockHash,
+    ) -> Result<crate::rust::casper::RetryCandidate, CasperError> {
+        super::buffer_resolver::prepare_retry_candidate(self, hash)
+    }
+
+    fn prepare_startup_candidate(
+        &self,
+        hash: &BlockHash,
+    ) -> Result<crate::rust::casper::RetryCandidate, CasperError> {
+        super::buffer_resolver::prepare_startup_candidate(self, hash)
+    }
+
     async fn fetch_dependencies(&self) -> Result<(), CasperError> {
         // Get pendants from CasperBuffer
         let pendants = self.casper_buffer_storage.get_pendants();
@@ -222,14 +244,18 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         let certificate_dependencies = self
             .casper_buffer_storage
             .get_missing_certificate_dependencies();
-        let active_certificate_digests: std::collections::HashSet<BlockHash> =
-            certificate_dependencies
-                .iter()
-                .map(|digest| digest.0.clone())
-                .collect();
+        let mut ordered_certificate_digests = certificate_dependencies
+            .iter()
+            .map(|digest| digest.0.clone())
+            .collect::<Vec<_>>();
+        ordered_certificate_digests.sort();
+        let active_certificate_digests = ordered_certificate_digests
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<BlockHash>>();
         self.block_retriever
             .retain_active_finalization_certificate_requests(&active_certificate_digests)?;
-        for digest in active_certificate_digests {
+        for digest in ordered_certificate_digests {
             if self
                 .block_store
                 .get_finalization_certificate(&digest)?
@@ -240,14 +266,17 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
                 self.block_retriever
                     .complete_finalization_certificate_request(&digest)?;
             } else {
-                if let Err(error) = self
-                    .block_retriever
-                    .request_finalization_certificate(digest)
-                    .await
-                {
+                if let Err(error) = self.block_retriever.track_finalization_certificate(digest) {
                     first_dispatch_error.get_or_insert(error);
                 }
             }
+        }
+        if let Err(error) = self
+            .block_retriever
+            .request_tracked_finalization_certificates()
+            .await
+        {
+            first_dispatch_error.get_or_insert(error);
         }
         first_dispatch_error.map_or(Ok(()), Err)
     }
