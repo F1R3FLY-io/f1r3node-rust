@@ -158,6 +158,25 @@ SH
     cat >bin/docker <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>/case/evidence/docker-commands.txt
+owned_id=0000000000000000000000000000000000000000000000000000000000000001
+if [[ "${1:-}" == ps && "$*" == *'--filter label=io.f1r3fly.soak.owner='* ]]; then
+    printf '%s\n' "$owned_id"
+    exit 0
+fi
+if [[ "${1:-}" == inspect && "${2:-}" == --format && "${4:-}" == "$owned_id" ]]; then
+    printf '%s\n' "${SOAK_WRITER_OWNER:?}"
+    exit 0
+fi
+if [[ "${1:-}" == kill && "${2:-}" == "$owned_id" ]]; then set -- kill disk-fixture; fi
+if [[ "${1:-}" == rm && "${3:-}" == "$owned_id" ]]; then set -- rm -f disk-fixture; fi
+if [[ "$*" == 'compose -f /case/node/docker/shard.yml -p soak-bench config --format json' ]]; then
+    printf '{"services":{"fixture":{}}}\n'
+    exit 0
+fi
+if [[ "${1:-}" == compose && "${6:-}" == -f && "${7:-}" == /case/evidence/output/.docker-owner.*/labels.*.json ]]; then
+    jq -e --arg owner "${SOAK_WRITER_OWNER:?}" '.services.fixture.labels["io.f1r3fly.soak.owner"] == $owner' "$7" >/dev/null || exit 2
+    set -- "${@:1:5}" "${@:8}"
+fi
 if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == cleanup-error-* ]]; then
     action=""
     case "$*" in
