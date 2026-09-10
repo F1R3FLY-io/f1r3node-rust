@@ -810,41 +810,23 @@ fn trait_impl_block<'a>(src: &'a str, anchor: &str) -> Option<&'a str> {
 /// is irrelevant to this pin (both are consensus-observable).
 #[test]
 fn every_fs_handler_charges_its_cost_helper() {
+    use rholang::rust::interpreter::io::handler_trait::FS_HANDLERS;
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
     let mut missing = Vec::new();
 
-    // Iterate every `pub async fn fs_<name>(` declaration.
-    let mut cursor = 0usize;
-    while let Some(rel) = src[cursor..].find("pub async fn fs_") {
-        let abs = cursor + rel;
-        let after = &src[abs + "pub async fn ".len()..];
-        let name_end = after
-            .find(|c: char| !c.is_alphanumeric() && c != '_')
-            .unwrap_or(after.len());
-        let handler_name = &after[..name_end];
-        // Advance the cursor past this occurrence so the loop
-        // progresses even if the body scan fails.
-        cursor = abs + "pub async fn ".len() + name_end;
+    // Wave-3 S3.12b (2026-09-09) rewrite: source of truth for the
+    // 27 migrated handlers is now FS_HANDLERS (the pre-S3.12b
+    // `pub async fn fs_X` wrappers were retired).  Iterate every
+    // FS_HANDLERS entry + `fs_remove_dir` (trait-exempt; still
+    // has a `pub async fn fs_remove_dir` on impl FsProcesses).
+    let mut handlers_to_check: Vec<String> =
+        FS_HANDLERS.iter().map(|e| e.name.to_string()).collect();
+    handlers_to_check.push("fs_remove_dir".to_string());
 
-        // Skip the mod-test names — they mention handler names in
-        // pinning strings, not in real dispatch declarations.
-        // Real handlers are in `impl FsProcesses { ... }` — indent
-        // matches "    pub async fn fs_<name>(".
-        let signature_prefix = format!("    pub async fn {handler_name}(");
-        let Some(body) = method_body(src, &signature_prefix) else {
-            continue;
-        };
+    for handler_name in &handlers_to_check {
         let expected_call = format!("costs::{handler_name}_cost(");
-        if body.contains(&expected_call) {
-            continue;
-        }
-        // Wave-3 migration (S3.1+, 2026-09-08): migrated handlers
-        // have a 4-line `pub async fn fs_x` wrapper that no longer
-        // references the cost helper directly — the helper is
-        // returned from `impl FsHandler for FsXHandler::pre_charge_cost()`.
-        // Check the trait-impl block for the cost helper.  A
-        // migrated handler `fs_x_y` has a struct
-        // `FsXYHandler` (snake_case → CamelCase).
+
+        // 1. Migrated handlers: check the trait impl block.
         let handler_struct = to_camel_case_handler(handler_name);
         let trait_anchor = format!("impl FsHandler for {handler_struct}");
         if let Some(trait_block) = trait_impl_block(src, &trait_anchor) {
@@ -852,7 +834,16 @@ fn every_fs_handler_charges_its_cost_helper() {
                 continue;
             }
         }
-        missing.push(handler_name.to_string());
+        // 2. Trait-exempt fs_remove_dir: still lives inside
+        //    `impl FsProcesses` as a `pub async fn fs_remove_dir`
+        //    wrapper.  Check its body.
+        let signature_prefix = format!("    pub async fn {handler_name}(");
+        if let Some(body) = method_body(src, &signature_prefix) {
+            if body.contains(&expected_call) {
+                continue;
+            }
+        }
+        missing.push(handler_name.clone());
     }
 
     assert!(
@@ -890,11 +881,25 @@ fn every_fs_handler_charges_its_cost_helper() {
 /// gives them the signal.
 #[test]
 fn handlers_top_comment_count_matches_actual_handlers() {
+    use rholang::rust::interpreter::io::handler_trait::FS_HANDLERS;
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
-    let actual = src
+    // Wave-3 S3.12b (2026-09-09) rewrite: post-wrapper retirement,
+    // the source of truth for the migrated count is the FS_HANDLERS
+    // distributed slice.  fs_remove_dir stays trait-exempt with a
+    // `pub async fn fs_remove_dir` wrapper on `impl FsProcesses`.
+    let migrated = FS_HANDLERS.len();
+    let exempt = src
         .lines()
         .filter(|line| line.starts_with("    pub async fn fs_"))
         .count();
+    // fs_remove_dir is the only remaining wrapper.
+    assert_eq!(
+        exempt, 1,
+        "S3.12b: expected exactly 1 remaining `pub async fn fs_*` wrapper \
+         on `impl FsProcesses` (fs_remove_dir, trait-exempt).  Found {exempt}. \
+         If a new trait-exempt handler was added, update this pin."
+    );
+    let actual = migrated + exempt;
     // Extract the count claimed in the top comment (first
     // "The N native filesystem handlers" line).
     let claimed = src
@@ -1116,31 +1121,38 @@ fn setup_reducer_shares_one_metered_machine() {
 #[test]
 fn fs_entries_charges_supplement_on_both_branches() {
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
-    let signature_prefix = "    pub async fn fs_entries(";
-    let body =
-        method_body(src, signature_prefix).expect("fs_entries handler must exist in handlers.rs");
+    // Wave-3 S3.12b (2026-09-09) rewrite: post-wrapper retirement,
+    // fs_entries lives in `impl FsHandler for FsEntriesHandler`.
+    // The setup charge is returned by `pre_charge_cost()`; the
+    // per-entry supplement is returned by `post_reply_supplement()`.
+    // The framework handles the both-branches invariant: it applies
+    // `post_reply_supplement` on the is_replay tautological path AND
+    // on the leader / verify paths (see handler_trait.rs).  So a
+    // single `post_reply_supplement` override on the trait impl is
+    // sufficient — the framework fires it on both branches.
+    let body = trait_impl_block(src, "impl FsHandler for FsEntriesHandler")
+        .expect("FsEntriesHandler trait impl must exist in handlers.rs");
 
     assert!(
         body.contains("costs::fs_entries_cost(0)"),
         "slice 9b-iv regression: fs_entries must retain its setup-only \
-         `costs::fs_entries_cost(0)` charge at handler entry — the per-entry \
-         supplement is layered on top, not a replacement."
+         `costs::fs_entries_cost(0)` charge at handler entry \
+         (`pre_charge_cost` return) — the per-entry supplement is \
+         layered on top, not a replacement."
     );
 
     let supplement_call = "costs::fs_entries_per_entry_supplement_cost(";
     let n_supplement = body.matches(supplement_call).count();
     assert!(
-        n_supplement >= 2,
-        "slice 9b-iv regression: fs_entries must charge \
-         `{supplement_call}` on BOTH the replay and leader branches \
-         (currently {n_supplement} call site(s)).  A single-branch \
-         charge is a leader/replay consensus divergence: the two \
-         validators compute different `authority_cost_witness.realized` \
-         values and reject each other's blocks.  Preserve two \
-         `reserve_primitive(costs::fs_entries_per_entry_supplement_cost(n))?;` \
-         call sites — one after `if is_replay {{` extracts n from \
-         `previous`, one after the leader's `spawn_blocking` completes \
-         extracting n from the fresh reply."
+        n_supplement >= 1,
+        "slice 9b-iv regression: FsEntriesHandler must charge \
+         `{supplement_call}` via `post_reply_supplement` (currently \
+         {n_supplement} call site(s) in the trait impl).  The framework \
+         applies post_reply_supplement on BOTH the replay tautological \
+         path AND the leader / verify paths — see dispatch_via_trait in \
+         handler_trait.rs.  A missing supplement means both leader and \
+         follower undercharge every non-empty directory listing, causing \
+         the authority_cost_witness cost to drift from realized cost."
     );
 }
 
@@ -1726,16 +1738,20 @@ fn file_rho_stream_release_ceremony_delegates_to_release_seq_lock_once() {
 #[test]
 fn lock_range_and_sequential_handlers_reject_arity_shim() {
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    // Wave-3 S3.12b (2026-09-09) rewrite: post-wrapper retirement,
+    // fs_lock_range / fs_lock_sequential live in
+    // `impl FsHandler for FsLockRangeHandler` / `FsLockSequentialHandler`.
+    // Anchor on trait impls.
 
     // fs_lock_range must NOT contain a match arm of the legacy
     // arity-7 shape.  Post-tightening the only arm is the 8-arg
     // pattern; a resurrected shim would add `[fd, off, len, mode,
     // holder, cmode, ack]` (7 identifiers) as a second arm.
-    let range_body = method_body(src, "    pub async fn fs_lock_range(")
-        .expect("fs_lock_range handler must exist");
+    let range_body = trait_impl_block(src, "impl FsHandler for FsLockRangeHandler")
+        .expect("FsLockRangeHandler trait impl must exist");
     assert!(
         !range_body.contains("[fd, off, len, mode, holder, cmode, ack]"),
-        "arity-tightening regression: fs_lock_range handler contains \
+        "arity-tightening regression: fs_lock_range trait impl contains \
          the legacy arity-7 match arm `[fd, off, len, mode, holder, \
          cmode, ack]`.  The shim was retired in commit 5e8f3e2a0; \
          all File.rho callers now pass arity 8 with explicit wait: \
@@ -1745,11 +1761,11 @@ fn lock_range_and_sequential_handlers_reject_arity_shim() {
          arity 8 at the channel binding and the shim is dead code."
     );
 
-    let seq_body = method_body(src, "    pub async fn fs_lock_sequential(")
-        .expect("fs_lock_sequential handler must exist");
+    let seq_body = trait_impl_block(src, "impl FsHandler for FsLockSequentialHandler")
+        .expect("FsLockSequentialHandler trait impl must exist");
     assert!(
         !seq_body.contains("[fd, holder, cmode, ack]"),
-        "arity-tightening regression: fs_lock_sequential handler \
+        "arity-tightening regression: fs_lock_sequential trait impl \
          contains the legacy arity-4 match arm `[fd, holder, cmode, \
          ack]`.  Same rationale as fs_lock_range above.  Companion \
          golden-table pin: fs_native_def_arities_match_golden_table."
