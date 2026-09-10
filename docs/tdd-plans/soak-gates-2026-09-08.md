@@ -372,6 +372,11 @@ behaviors:
         formal_green_exit: 0
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B25
+    statement: Disk hygiene preserves an unowned temporary session while its writer remains active.
+    priority: must
+    deep_module: false
+    done: false
 ---
 
 # Soak Gate Development Cycles

@@ -10,7 +10,7 @@ SOURCE_FILES=(
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-band}"
 case "$SCENARIO" in
-band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark | benchmark-band | benchmark-active-disk | benchmark-equal | benchmark-sufficient | benchmark-missing | benchmark-disabled | benchmark-cancel-death | benchmark-cancel-breach | benchmark-guardian-boundary | benchmark-guardian-interleaved | benchmark-cancel-stall | guardian-stall | guardian-progress-boundary | benchmark-progress-boundary | hygiene-timeout | disk-floor-range | disk-band-range | disk-sum-range | disk-max-floor | disk-max-band) ;;
+band | missing-boundary | missing-after-hygiene | malformed-boundary | missing-active | record-before-stop | guardian-death | stalled-active | diagnostic-deadline | restart-uncounted | restart-counted | stop-timeout | guardian-death-boundary | restart-benchmark | benchmark-band | benchmark-active-disk | benchmark-equal | benchmark-sufficient | benchmark-missing | benchmark-disabled | benchmark-cancel-death | benchmark-cancel-breach | benchmark-guardian-boundary | benchmark-guardian-interleaved | benchmark-cancel-stall | guardian-stall | guardian-progress-boundary | benchmark-progress-boundary | hygiene-timeout | disk-floor-range | disk-band-range | disk-sum-range | disk-max-floor | disk-max-band | cleanup-active-session) ;;
 *)
     printf 'ERROR: Unknown disk fixture scenario.\n' >&2
     exit 2
@@ -469,6 +469,31 @@ SH
         ) &
         observer=$!
     fi
+    ownership_writer=""
+    if [[ "$SCENARIO" == cleanup-active-session ]]; then
+        mkdir /tmp/test-unowned-active
+        printf 'active session data\n' >/tmp/test-unowned-active/data
+        (
+            exec 3>>/tmp/test-unowned-active/data
+            touch /case/evidence/ownership-writer-ready
+            while [[ ! -e /case/evidence/release-ownership-writer ]]; do
+                printf 'writer active\n' >&3
+                sleep 0.05
+            done
+        ) &
+        ownership_writer=$!
+        for _ in $(seq 1 100); do
+            [[ ! -e evidence/ownership-writer-ready ]] || break
+            sleep 0.05
+        done
+        [[ -e evidence/ownership-writer-ready ]] || exit 2
+        kill -0 "$ownership_writer" || exit 2
+        touch -d '2 hours ago' /tmp/test-unowned-active
+        stat -c '%n %i %Y' /tmp/test-unowned-active /tmp/test-unowned-active/data >evidence/ownership-before.txt
+        find /tmp -maxdepth 1 -name test-unowned-active -mmin +60 >evidence/ownership-aged-root.txt
+        grep -Fxq /tmp/test-unowned-active evidence/ownership-aged-root.txt || exit 2
+        printf '%s\n' "$ownership_writer" >evidence/ownership-writer-pid.txt
+    fi
     chmod +x bin/*
     status=0
     PATH="/case/bin:$PATH" \
@@ -523,6 +548,31 @@ SH
         exit 2
     fi
     iterations="$(find evidence/output -maxdepth 1 -type d -name 'iteration-*' | wc -l | tr -d ' ')"
+    if [[ "$SCENARIO" == cleanup-active-session ]]; then
+        kill -0 "$ownership_writer" || exit 2
+        ps -o pid=,stat= -p "$ownership_writer" >evidence/ownership-writer-state.txt
+        readlink "/proc/$ownership_writer/fd/3" >evidence/ownership-open-file.txt
+        touch evidence/release-ownership-writer
+        wait "$ownership_writer"
+        if ! grep -Fxq 'valid=7000' evidence/probe-samples.txt || [[ ! -e evidence/hygiene-completed ]]; then
+            printf 'ERROR: The ownership fixture did not exercise disk hygiene.\n' >&2
+            exit 2
+        fi
+        if [[ ! -d /tmp/test-unowned-active || ! -s /tmp/test-unowned-active/data ]]; then
+            printf 'FAIL: Disk hygiene deleted an unowned session directory while its writer remained active.\n' >&2
+            exit 1
+        fi
+        stat -c '%n %i %Y' /tmp/test-unowned-active /tmp/test-unowned-active/data >evidence/ownership-after.txt
+        cp /tmp/test-unowned-active/data evidence/ownership-preserved-data.txt
+        if [[ "$status" != 1 || "$iterations" != 0 || -e evidence/workload-started.txt ]] ||
+            ! grep -Fxq 'active session data' evidence/ownership-preserved-data.txt ||
+            ! jq -e '.iterations == 0 and .failures == 1 and .bench_segments == 0 and .bench_failures == 0' evidence/output/summary.json >/dev/null; then
+            printf 'FAIL: Preserved session data did not retain disk refusal and its failure result.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: Disk hygiene preserved the unowned active session and refused new work below the admission threshold.\n'
+        exit 0
+    fi
     if [[ "$SCENARIO" == disk-max-floor || "$SCENARIO" == disk-max-band ]]; then
         expected_iterations=0
         expected_failures=1

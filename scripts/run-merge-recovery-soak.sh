@@ -275,17 +275,6 @@ stop_node_writers() (
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
 )
 
-# Reclaim space that accumulates across iterations without touching anything
-# an active session owns. Container removal is scoped to EXITED containers in
-# the soak's own `rnode.` namespace (a failed `compose up` leaks them);
-# dangling images are by definition unreferenced, and the docker build cache
-# is dead weight once the image under test is built and loaded. The network
-# prune and the /tmp sweep are broader by nature, and both lean on two facts:
-# this VM is exclusive to the soak (the RUNNER_LABELS f1r3fly-rust-soak
-# registration below admits no other workload), and a /tmp/test-* file older
-# than 60 minutes is past pytest's own 1200s per-test timeout, so no live
-# iteration can still own it. Never prunes tagged images (the image under
-# test) or running containers.
 reclaim_disk_space_commands() {
 	local before after
 	before="$(disk_free_mb)" || before=""
@@ -296,7 +285,7 @@ reclaim_disk_space_commands() {
 		docker image prune -f >/dev/null 2>&1 || true
 		docker builder prune -af >/dev/null 2>&1 || true
 	fi
-	find "$SOAK_TMP_ROOT" -maxdepth 1 -name 'test-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+	printf 'disk hygiene: temporary sessions retained because ownership is unconfirmed\n'
 	after="$(disk_free_mb)" || after=""
 	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
 }
