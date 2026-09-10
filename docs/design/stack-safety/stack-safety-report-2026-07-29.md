@@ -10720,6 +10720,29 @@ whole-import slope, runtime activation or production ACT/LMDB completion
 claim follows from this proof-only checkpoint.
 
 
+#### 5.33.42 Checked balanced split specification (2026-09-10)
+
+Eighteen additional kernel-checked results establish exact located-byte
+prefix/suffix splitting with balanced caches, original backing identity,
+checked terminal windows and immutable historical roots. For source-tree
+height $`H`$, split performs at most $`5H+1`$ abstract visits and creates at
+most $`6H+2`$ joins/windows. Two-sibling glue preserves the intermediate
+join result so output-height increases telescope through the ascent.
+
+Full compilation passes **307 closed checks**, followed by independent
+kernel success. Compile: 34.038 seconds wall, 33.692 seconds CPU, 1.1G peak.
+Kernel: 21.179 seconds wall, 20.892 seconds CPU, 480.9M peak. Both use
+1536M soft/2G hard memory limits and zero swap.
+
+[J-125](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-125--2026-09-10-checked-balanced-split-and-telescoping-work-bounds)
+records source/log hashes, the terminal-bound countermodel and qualification
+limits. The formal README enumerates every required executable binding.
+This proves the **recursive split specification**, not its iterative Rust
+implementation, native stack usage or allocation cost. Endpoint anchors,
+shared-source release and retained cursor/ACT integration remain open.
+No production or consensus behavior changes, and the J-121 import-time
+slope and production ACT/LMDB comparison remain unresolved.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

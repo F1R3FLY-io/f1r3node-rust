@@ -2631,3 +2631,104 @@ finalization. The subsequent gate configuration raises only MemoryHigh to 1536M;
 the 2G hard ceiling and zero-swap policy remain unchanged. That new threshold was
 not used for these recorded measurements. J-124 records exact hashes and failed
 diagnostic history. No Rust activation or fresh runtime benchmark is claimed.
+
+## Checked balanced source split invariant catalogue (2026-09-10; task 6018)
+
+`CheckedBalancedSourceSplit` specifies recursive splitting of the same immutable
+2–3 trees into optional left and right roots. Zero and full-length cuts retain
+the exact original tree on the nonempty side. Strict interior leaf cuts create
+two checked windows into the original source. Internal cuts descend through
+exactly the child selected by cached prefix lengths, then attach the untouched
+siblings in their original order. This is a recursive proof prerequisite, not
+an implemented iterative split driver or Rust acceptance result.
+
+The one-sibling helpers `gr1` and `gl1` attach a right or left sibling; an absent
+partial root returns that sibling unchanged. With a present partial root they
+finalize the corresponding concatenation. The two-sibling helpers `gr2` and
+`gl2` return a two-child node for an absent partial root. Otherwise they absorb
+the second sibling into the unfinalized concatenation result, then finalize
+once. Finishing the intermediate concatenation is a different algorithm and
+does not satisfy the proved per-glue work potential.
+
+Let $`H`$ be the input subtree height, $`p`$ the partial-root height (zero for
+an absent root), $`h`$ the sibling height, and $`q`$ the glued result height.
+The glue precondition is $`p \le h`$; its result satisfies
+$`h \le q \le h+1`$, with $`q=h+1`$ for two siblings. Glue visits plus $`p`$
+are at most $`q+1`$; rebuilt nodes plus $`2p`$ are at most $`2q+1`$.
+For output heights $`L`$ and $`R`$, both at most $`H`$, the recursive proof
+telescopes to the following bounds, including two new terminal windows for a
+strict interior leaf cut:
+
+```math
+\begin{aligned}
+\mathrm{visits} &\le 3H+1+L+R \le 5H+1, \\
+\mathrm{rebuilt} &\le 2H+2+2(L+R) \le 6H+2.
+\end{aligned}
+```
+
+These are concrete model-operation counts, not allocator measurements or a
+whole-import complexity claim. The existing balance theorem bounds height by
+logical terminal occurrences, not by the number of unique shared allocations.
+
+### Exhaustive exported invariants and required executable controls
+
+Every row below is a required native binding, not a report of implemented tests.
+Located-byte comparisons include byte values, source identities and offsets.
+`legal_window` requires original-source validity, an allowed original owner and
+a representable absolute terminal end. `legal_root` additionally requires
+balance and valid caches. These private-constructor invariants are preconditions;
+the split entry point does not validate arbitrary forged trees.
+
+| Exported invariant | Required executable control |
+|---|---|
+| `one_right_sibling_glue_preserves_order_balance_caches_and_height_potential` | Exercise absent partial-root identity and present partial roots of equal/lower height; compare located order, caches, result height and per-glue counters, and retain the untouched right sibling's actual reference identity. |
+| `one_left_sibling_glue_preserves_order_balance_caches_and_height_potential` | Mirror the one-right controls; reject reversed concatenation or swapped children even when lengths agree. |
+| `two_right_siblings_glue_preserves_order_without_finishing_the_intermediate_join` | Exercise absent partial roots and both One/Two concatenation results through `absorb_left2`; retain both siblings in order, check result height and counters, and require an intermediate-finalization mutant to fail the work potential. |
+| `two_left_siblings_glue_preserves_order_without_finishing_the_intermediate_join` | Mirror the two-right cases through `absorb_right2`, including carry propagation and exact untouched reference identity; do not finalize the intermediate join. |
+| `out_of_range_split_cuts_are_refused_before_descent` | Reject cuts beyond cached size before child descent, window creation or root publication; preserve inputs and stores. Distinguish this range refusal from failure on an invalid terminal descriptor. |
+| `zero_and_full_tree_cuts_retain_the_exact_original_root` | Check actual root pointer identity at both endpoints, one visit and no new leaf/join; test endpoint metadata separately from the optional data root. |
+| `checked_terminal_construction_and_concatenation_preserve_representable_source_windows` | Check that checked leaf construction and concatenation preserve every absolute terminal end within the native limit, including near-limit offsets and checked-add refusal. Total cached width alone must not substitute for this invariant. |
+| `checked_nonempty_subwindow_preserves_legality_and_original_source` | Split strict leaf interiors into positive-width windows with the exact owner, normalized absolute ranges and located bytes; cover repeated slicing and borrowed, frozen and generated-byte sources, including native range checks. |
+| `split_node2_interior_equation` | Cut before, at and after the child boundary; descend only the selected child, subtract exactly the first child's size for right descent, select `gr1`/`gl1` correctly and retain the untouched sibling reference. |
+| `split_node3_interior_equation` | Cover all three child interiors and both exact boundaries; select the correct one/two-sibling glue and subtract both preceding lengths for last-child descent. Check untouched order and reject intermediate finalization. |
+| `concrete_checked_split_is_total_preserves_sources_and_telescopes_both_output_heights` | Exhaust small valid shapes and every cut, then selected cuts of tall shared trees; all in-range cuts must return legal balanced outputs with exact caches and both output-height potentials. Do not weaken the input terminal-bound precondition. |
+| `split_reconstruction_is_the_exact_located_firstn_and_skipn` | Compare both outputs with an independent eager located-byte prefix/suffix oracle at every cut; include repeated, reversed and noncontiguous sources and ACT-derived values differing from their reported physical backing bytes. |
+| `both_output_height_potentials_give_the_linear_split_work_bound` | Count descent/glue visits and new joins/windows separately against the stated bounds, including two windows for an interior leaf cut. Test tall shared trees without enumerating their logical sequence and reject the intermediate-finalization mutant. |
+| `checked_split_outputs_preserve_all_native_lengths_heights_and_terminal_bounds` | Validate every output subtree's cached length/height and every terminal's absolute range under a representable input total. Use valid shared doubling trees for native word-boundary controls, not fabricated caches. |
+| `checked_optional_split_is_total_exact_and_linearly_bounded` | Check absent-root cut zero, nonzero refusal, and present-root endpoint/interior cuts; compare exact sizes, located bytes, heights, legal sources, native metadata and work counts. Keep absent data distinct from endpoint metadata. |
+| `valid_source_windows_and_terminal_bounds_identify_only_the_original_backings` | Require output owners to come from actual input terminal owners, with exact retained source values. Reject composed-source-as-leaf wrappers and descriptor chains; bind borrowed/frozen source retention separately to native ownership. |
+| `valid_cached_metadata_does_not_substitute_for_terminal_end_bounds` | Preserve the negative control: native limit ten, terminal start eleven and width two, backing length thirteen. Source validity and cached length/height fit, yet cut one fails. Add near-native-limit equivalents to reject a missing absolute-end invariant. |
+| `publishing_both_optional_split_outputs_preserves_every_exact_historical_root` | Publish either, both or neither optional output while every prior root/range retains exact identity and located observations; cover freeze, reappend and forks. Check actual immutable references separately from the logical publication model. |
+
+### Interpretation and remaining bindings
+
+The proof's terminal and denotation lists are reference semantics, not a native
+flattening algorithm. Untouched subtree values must bind to immutable reference
+clones, not recursive structural clones. Historical root selection through
+append-only publication does not prove constant-time registry publication,
+pointer-address identity, source lifetime or iterative release.
+
+Global endpoint anchors remain a separate obligation. The left output endpoint
+must be `original.position_at(cut)` and the right endpoint must be
+`original.end`; a preceding leaf's endpoint is not a substitute at source seams
+or explicit completion overrides. Empty data does not imply absent endpoint
+metadata. Checked terminal-subwindow anchor laws do not establish this composed
+root binding by themselves.
+
+Iterative split descent/fold correspondence, actual Rust split and ownership
+bindings, cursor traversal, release/Drop safety and bulk ACT transport remain
+separate prerequisites. This checkpoint neither activates the balanced backend
+nor claims importer scaling or production acceptance.
+
+### Split proof qualification
+
+The module adds 18 exported capstones. Full compilation passes 307 closed-context
+checks (289 existing plus 18 new); independent kernel checking succeeds.
+Compilation took 34.038 seconds wall and 33.692 seconds CPU, with a 1.1G peak
+and zero swap. Kernel checking took 21.179 seconds wall and 20.892 seconds CPU,
+with a 480.9M peak and zero swap. Both used MemoryHigh=1536M, MemoryMax=2G,
+MemorySwapMax=0, CPUQuota=100%, TasksMax=64 and RuntimeMaxSec=900.
+Durable logs are `target/verification/epathmap-balanced-split-proof-final.log`
+and `target/verification/epathmap-balanced-split-kernel-final.log`; failed and
+successful isolated diagnostics remain alongside them. These checks cover the
+recursive model, not a native split implementation.

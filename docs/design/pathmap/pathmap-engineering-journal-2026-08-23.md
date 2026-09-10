@@ -8905,6 +8905,68 @@ cursors and joint ACT transport still require runtime qualification before
 production ACT/LMDB parity can be assessed.
 
 
+### J-125 — 2026-09-10: checked balanced split and telescoping work bounds
+
+**DERIVED / VERIFIED MODEL.** `CheckedBalancedSourceSplit` in
+`RPB3Admission.v` proves the recursive split specification that complements
+J-123's balanced concatenation. Eighteen exported results are independently
+kernel-checked. The formal README binds each result to the required native
+differential, arithmetic, provenance, sharing or resource test; these bindings
+are obligations, not claims that the Rust implementation already exists.
+
+For a balanced source tree of height $`H`$, a valid cut returns the exact
+located-byte prefix and suffix. “Located” includes original source identity
+and offset, not just byte equality. Empty boundary outputs reuse the other
+original root; invalid cuts are refused before descent. Every nonempty result
+preserves balanced children, cached sizes/heights and checked terminal bounds.
+The stronger terminal-bound predicate identified in J-124 is necessary: the
+limit-10/start-11/width-2/backing-13 countermodel is now a checked theorem.
+
+**Mechanism and complexity.** A split descends into only the child containing
+the cut. During ascent, it attaches the one or two untouched siblings to the
+corresponding output accumulator. Two-sibling glue retains the intermediate
+join result until both siblings are attached; it does not prematurely create
+an extra root between them. Charging each glue to the accumulator's height
+increase makes the cost telescope across the ascent. The proved totals are
+at most $`5H+1`$ visits and $`6H+2`$ rebuilt joins/windows, including two
+interior terminal subwindows. These are abstract construction/work counts,
+not measured Rust allocator calls, pointer operations or CPU time.
+
+**Verification method and result.** All 307 checks close under the global
+context; full compiler and independent kernel checker both exit zero. The
+new exports account for 18 of those checks. Both runs use systemd limits
+MemoryHigh 1536M, MemoryMax 2G, MemorySwapMax 0, CPUQuota 100%, TasksMax 64
+and RuntimeMaxSec 900.
+
+| Check | Wall time (s) | CPU time (s) | Peak memory | Swap |
+|---|---:|---:|---:|---:|
+| Full proof compilation | 34.038 | 33.692 | 1.1G | 0 |
+| Independent kernel check | 21.179 | 20.892 | 480.9M | 0 |
+
+The higher soft threshold avoids the previous compiler-finalization stall;
+it does not change the hard memory ceiling. These verifier timings are not
+a benchmark of source splitting.
+
+| Artifact | SHA-256 |
+|---|---|
+| `RPB3Admission.v` | `0259bca329b71c2564b1c33f0dfba0dafa720de5ff869b23dfce3607a0c1bf7d` |
+| `RPB3Admission.vo` | `e44318192bdc7ca317e01ad038f1ec14d0a31d8736cbdc077d4350695c6a4d73` |
+| `target/verification/epathmap-balanced-split-proof-final.log` | `468f4d8bded72befb5273878e3e07e63e04ab161c73046c8a8e23c6620902f92` |
+| `target/verification/epathmap-balanced-split-kernel-final.log` | `ee407271853a339b9da5cc20f15241b900eac2534190a1402c6e21e25d3c4f01` |
+
+**Remaining assurance boundary.** Iterative split correspondence, explicit
+root endpoint anchors, shared-source release, retained cursors and native
+ACT integration remain required. In particular, the left endpoint anchor
+must come from the original source position at the cut; the right inherits
+the original end. Optional tree roots alone do not represent those anchors.
+Publishing split roots is proved to preserve old root selections, but this
+is not yet a proof of native reference-count destruction or concurrency.
+
+This is a proof-only checkpoint under pgmcp 5976/6018 and experiment 342.
+It changes no production code, consensus bytes, hashes, COMM ordering or
+accounting. The measured nested-import slope in J-121 remains open; no
+production ACT-versus-LMDB performance conclusion follows.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

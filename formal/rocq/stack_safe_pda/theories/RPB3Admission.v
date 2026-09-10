@@ -9626,3 +9626,901 @@ Print Assumptions every_reachable_loop_state_uses_at_most_the_original_height_ga
 Print Assumptions balanced_concat_loop_finishes_in_exactly_twice_the_height_gap_plus_one_steps.
 
 End BalancedSourceConcatDriver.
+
+Module CheckedBalancedSourceSplit.
+
+Import CanonicalKeyProtocol IndexedWindowTransport BalancedSourceComposition.
+
+Definition root_height current := match current with None => 0 | Some value => height value end.
+Definition root_terminals current := match current with None => [] | Some value => terminals value end.
+Definition root_balanced current := match current with None => True | Some value => balanced value end.
+
+Record glue_result := Glued {
+  glued_tree : tree;
+  glue_visits : nat;
+  glue_rebuilt : nat
+}.
+
+Definition freeze_join joined :=
+  Glued (finish (joined_pieces joined)) (boundary_visits joined) (total_rebuilt joined).
+
+Definition gr1 partial sibling :=
+  match partial with
+  | None => Glued sibling 0 0
+  | Some value => freeze_join (concatenate value sibling)
+  end.
+
+Definition gl1 sibling partial :=
+  match partial with
+  | None => Glued sibling 0 0
+  | Some value => freeze_join (concatenate sibling value)
+  end.
+
+Definition gr2 partial first last :=
+  match partial with
+  | None => Glued (node2 first last) 0 1
+  | Some value => freeze_join (absorb_left2 (concatenate value first) last)
+  end.
+
+Definition gl2 first last partial :=
+  match partial with
+  | None => Glued (node2 first last) 0 1
+  | Some value => freeze_join (absorb_right2 first (concatenate last value))
+  end.
+
+Definition glue_contract partial sibling_height expected_size expected_terminals result :=
+  balanced (glued_tree result) /\
+  size (glued_tree result) = expected_size /\
+  terminals (glued_tree result) = expected_terminals /\
+  sibling_height <= height (glued_tree result) <= S sibling_height /\
+  root_height partial <= height (glued_tree result) /\
+  glue_visits result + root_height partial <= height (glued_tree result) + 1 /\
+  glue_rebuilt result + 2 * root_height partial <= 2 * height (glued_tree result) + 1.
+
+Lemma concat_piece_contract first last :
+  balanced first -> balanced last ->
+  join_contract first last (Nat.max (height first) (height last)) (concatenate first last) /\
+  boundary_visits (concatenate first last) = S (height_gap first last) /\
+  rebuilt_nodes (concatenate first last) <= 2 * height_gap first last.
+Proof.
+  intros first_valid last_valid. unfold concatenate, height_gap.
+  destruct (height first <=? height last) eqn:direction.
+  - apply Nat.leb_le in direction. rewrite Nat.max_r, Nat.min_l by exact direction.
+    now apply concrete_left_join_preserves_balance_caches_terminals_and_boundary_work.
+  - apply Nat.leb_gt in direction. rewrite Nat.max_l, Nat.min_r by lia.
+    apply concrete_right_join_preserves_balance_caches_terminals_and_boundary_work; assumption || lia.
+Qed.
+
+Lemma freeze_join_has_height_potential partial first last rank joined :
+  join_contract first last rank joined ->
+  root_height partial <= rank ->
+  boundary_visits joined + root_height partial <= rank + 1 ->
+  rebuilt_nodes joined + 2 * root_height partial <= 2 * rank ->
+  glue_contract partial rank (size first + size last) (terminals first ++ terminals last)
+    (freeze_join joined).
+Proof.
+  intros (valid & cached_height & cached_size & ordered) partial_height visits rebuilt.
+  destruct (finish_preserves_piece_contract _ valid) as (finished & count & contents & heights).
+  unfold glue_contract, freeze_join; cbn [glued_tree glue_visits glue_rebuilt].
+  split; [exact finished|]. split; [now rewrite count|].
+  split; [now rewrite contents|]. split; [now rewrite <- cached_height|].
+  split; [lia|]. split; [lia|].
+  unfold total_rebuilt. destruct (joined_pieces joined); lia.
+Qed.
+
+Theorem one_right_sibling_glue_preserves_order_balance_caches_and_height_potential partial sibling :
+  root_balanced partial -> balanced sibling -> root_height partial <= height sibling ->
+  glue_contract partial (height sibling) (root_size partial + size sibling)
+    (root_terminals partial ++ terminals sibling) (gr1 partial sibling).
+Proof.
+  destruct partial as [value|]; cbn [root_balanced root_height root_size root_terminals gr1].
+  - intros partial_valid sibling_valid ordered.
+    destruct (concat_piece_contract partial_valid sibling_valid) as [contract [visits rebuilt]].
+    rewrite Nat.max_r in contract by exact ordered.
+    unfold height_gap in visits, rebuilt.
+    rewrite Nat.max_r, Nat.min_l in visits, rebuilt by exact ordered.
+    apply freeze_join_has_height_potential; assumption || (cbn [root_height]; lia).
+  - intros _ valid _. unfold glue_contract; cbn [glued_tree glue_visits glue_rebuilt root_height].
+    repeat split; assumption || reflexivity || lia.
+Qed.
+
+Theorem one_left_sibling_glue_preserves_order_balance_caches_and_height_potential sibling partial :
+  root_balanced partial -> balanced sibling -> root_height partial <= height sibling ->
+  glue_contract partial (height sibling) (size sibling + root_size partial)
+    (terminals sibling ++ root_terminals partial) (gl1 sibling partial).
+Proof.
+  destruct partial as [value|]; cbn [root_balanced root_height root_size root_terminals gl1].
+  - intros partial_valid sibling_valid ordered.
+    destruct (concat_piece_contract sibling_valid partial_valid) as [contract [visits rebuilt]].
+    rewrite Nat.max_l in contract by exact ordered.
+    unfold height_gap in visits, rebuilt.
+    rewrite Nat.max_l, Nat.min_r in visits, rebuilt by exact ordered.
+    apply freeze_join_has_height_potential; assumption || (cbn [root_height]; lia).
+  - intros _ valid _. unfold glue_contract; cbn [glued_tree glue_visits glue_rebuilt root_height].
+    rewrite Nat.add_0_r, app_nil_r. repeat split; assumption || reflexivity || lia.
+Qed.
+
+Theorem two_right_siblings_glue_preserves_order_without_finishing_the_intermediate_join
+    partial first last :
+  root_balanced partial -> balanced first -> balanced last ->
+  height first = height last -> root_height partial <= height first ->
+  glue_contract partial (height first)
+    (root_size partial + size first + size last)
+    (root_terminals partial ++ terminals first ++ terminals last) (gr2 partial first last) /\
+  height (glued_tree (gr2 partial first last)) = S (height first).
+Proof.
+  destruct partial as [value|]; cbn [root_balanced root_height root_size root_terminals gr2].
+  - intros partial_valid first_valid last_valid same ordered.
+    destruct (concat_piece_contract partial_valid first_valid) as [contract [visits rebuilt]].
+    rewrite Nat.max_r in contract by exact ordered.
+    unfold height_gap in visits, rebuilt.
+    rewrite Nat.max_r, Nat.min_l in visits, rebuilt by exact ordered.
+    destruct contract as (valid & cached_height & cached_size & contents).
+    remember (concatenate value first) as joined.
+    destruct joined as [[next|next tail] inspected built];
+      cbn [joined_pieces piece_height piece_size piece_terminals balanced_pieces boundary_visits rebuilt_nodes] in *;
+      unfold glue_contract, freeze_join, absorb_left2, total_rebuilt;
+      cbn [glued_tree glue_visits glue_rebuilt joined_pieces rebuilt_nodes boundary_visits finish piece_height root_height node2 node3 size height terminals].
+    + split; [|lia]. split; [constructor; assumption || lia|].
+      split; [lia|]. split; [now rewrite contents, app_assoc|].
+      repeat split; lia.
+    + destruct valid as (next_valid & tail_valid & same_tail).
+      split; [|lia]. split; [constructor; assumption || lia|].
+      split; [lia|]. split; [now rewrite !app_assoc, contents|].
+      repeat split; lia.
+  - intros _ first_valid last_valid same _. unfold glue_contract.
+    cbn [glued_tree glue_visits glue_rebuilt root_height node2 size height terminals].
+    split; [|reflexivity]. split; [constructor; assumption|].
+    repeat split; reflexivity || lia.
+Qed.
+
+Theorem two_left_siblings_glue_preserves_order_without_finishing_the_intermediate_join
+    first last partial :
+  root_balanced partial -> balanced first -> balanced last ->
+  height first = height last -> root_height partial <= height last ->
+  glue_contract partial (height last)
+    (size first + size last + root_size partial)
+    (terminals first ++ terminals last ++ root_terminals partial) (gl2 first last partial) /\
+  height (glued_tree (gl2 first last partial)) = S (height last).
+Proof.
+  destruct partial as [value|]; cbn [root_balanced root_height root_size root_terminals gl2].
+  - intros partial_valid first_valid last_valid same ordered.
+    destruct (concat_piece_contract last_valid partial_valid) as [contract [visits rebuilt]].
+    rewrite Nat.max_l in contract by exact ordered.
+    unfold height_gap in visits, rebuilt.
+    rewrite Nat.max_l, Nat.min_r in visits, rebuilt by exact ordered.
+    destruct contract as (valid & cached_height & cached_size & contents).
+    remember (concatenate last value) as joined.
+    destruct joined as [[next|next tail] inspected built];
+      cbn [joined_pieces piece_height piece_size piece_terminals balanced_pieces boundary_visits rebuilt_nodes] in *;
+      unfold glue_contract, freeze_join, absorb_right2, total_rebuilt;
+      cbn [glued_tree glue_visits glue_rebuilt joined_pieces rebuilt_nodes boundary_visits finish piece_height root_height node2 node3 size height terminals].
+    + split; [|lia]. split; [constructor; assumption || lia|].
+      split; [lia|]. split; [now rewrite contents|].
+      repeat split; lia.
+    + destruct valid as (next_valid & tail_valid & same_tail).
+      split; [|lia]. split; [constructor; assumption || lia|].
+      split; [lia|]. split; [now rewrite contents|].
+      repeat split; lia.
+  - intros _ first_valid last_valid same _. unfold glue_contract.
+    cbn [glued_tree glue_visits glue_rebuilt root_height node2 size height terminals].
+    rewrite Nat.add_0_r, app_nil_r.
+    split; [|lia]. split; [constructor; assumption|].
+    repeat split; reflexivity || lia.
+Qed.
+
+Record split_result := Split {
+  split_left : root;
+  split_right : root;
+  split_visits : nat;
+  split_rebuilt : nat
+}.
+
+Definition attach_right divided glued :=
+  Split (split_left divided) (Some (glued_tree glued))
+    (S (split_visits divided + glue_visits glued))
+    (split_rebuilt divided + glue_rebuilt glued).
+
+Definition attach_left glued divided :=
+  Split (Some (glued_tree glued)) (split_right divided)
+    (S (split_visits divided + glue_visits glued))
+    (split_rebuilt divided + glue_rebuilt glued).
+
+Definition attach_both before divided after :=
+  Split (Some (glued_tree before)) (Some (glued_tree after))
+    (S (split_visits divided + glue_visits before + glue_visits after))
+    (split_rebuilt divided + glue_rebuilt before + glue_rebuilt after).
+
+Fixpoint split_tree limit current cut :=
+  if cut <=? size current then
+    if cut =? 0 then Some (Split None (Some current) 1 0)
+    else if cut =? size current then Some (Split (Some current) None 1 0)
+    else match current with
+    | Leaf view =>
+        match checked_subwindow limit view 0 cut,
+              checked_subwindow limit view cut (window_width view) with
+        | Some before, Some after => Some (Split (Some (Leaf before)) (Some (Leaf after)) 1 2)
+        | _, _ => None
+        end
+    | Join2 _ _ first last =>
+        if cut <=? size first
+        then option_map (fun divided => attach_right divided (gr1 (split_right divided) last))
+          (split_tree limit first cut)
+        else option_map (fun divided => attach_left (gl1 first (split_left divided)) divided)
+          (split_tree limit last (cut - size first))
+    | Join3 _ _ first middle last =>
+        if cut <=? size first
+        then option_map (fun divided => attach_right divided (gr2 (split_right divided) middle last))
+          (split_tree limit first cut)
+        else if cut <=? size first + size middle
+        then option_map (fun divided =>
+          attach_both (gl1 first (split_left divided)) divided (gr1 (split_right divided) last))
+          (split_tree limit middle (cut - size first))
+        else option_map (fun divided => attach_left (gl2 first middle (split_left divided)) divided)
+          (split_tree limit last (cut - (size first + size middle)))
+    end
+  else None.
+
+Definition split_root limit current cut :=
+  match current with
+  | None => if cut =? 0 then Some (Split None None 1 0) else None
+  | Some value => split_tree limit value cut
+  end.
+
+Theorem out_of_range_split_cuts_are_refused_before_descent limit current cut :
+  size current < cut -> split_tree limit current cut = None.
+Proof.
+  intro outside. destruct current; cbn [split_tree];
+    assert (cut <=? size _ = false) as rejected by (apply Nat.leb_gt; exact outside);
+    now rewrite rejected.
+Qed.
+
+Theorem zero_and_full_tree_cuts_retain_the_exact_original_root limit current :
+  split_tree limit current 0 = Some (Split None (Some current) 1 0) /\
+  (0 < size current ->
+   split_tree limit current (size current) = Some (Split (Some current) None 1 0)).
+Proof.
+  split.
+  - destruct current; reflexivity.
+  - intro positive.
+    assert (size current =? 0 = false) as nonzero by (apply Nat.eqb_neq; lia).
+    destruct current; cbn [split_tree]; rewrite Nat.leb_refl, nonzero, Nat.eqb_refl; reflexivity.
+Qed.
+
+Definition terminal_bounds limit current :=
+  Forall (fun view => window_start view + window_width view <= limit) (terminals current).
+
+Theorem checked_terminal_construction_and_concatenation_preserve_representable_source_windows
+    roots limit view leaf first last :
+  checked_leaf roots limit view = Some leaf ->
+  terminal_bounds limit leaf /\
+  (balanced first -> balanced last ->
+   terminal_bounds limit first -> terminal_bounds limit last ->
+   terminal_bounds limit (concatenate_root first last)).
+Proof.
+  intro accepted.
+  apply checked_terminal_leaf_retains_the_exact_original_window in accepted.
+  destruct accepted as (nonempty & valid & fits & ->).
+  split; [constructor; [exact fits|constructor]|].
+  intros first_valid last_valid first_fits last_fits.
+  destruct (concrete_concatenation_has_exact_caches_balance_order_and_boundary_cost first_valid last_valid)
+    as [_ [_ [ordered _]]].
+  unfold terminal_bounds. rewrite ordered. apply Forall_app. tauto.
+Qed.
+
+Section Sources.
+Variable roots : nat -> region.
+Variable limit : nat.
+Variable allowed_sources : list nat.
+
+Definition legal_window view :=
+  window_valid (roots (window_owner view)) view /\
+  window_start view + window_width view <= limit /\
+  In (window_owner view) allowed_sources.
+
+Definition legal_root current :=
+  root_balanced current /\ Forall legal_window (root_terminals current).
+
+Definition root_bytes current :=
+  concat (map (terminal_bytes roots) (root_terminals current)).
+
+Lemma none_is_legal : legal_root None.
+Proof. split; [exact I|constructor]. Qed.
+
+Lemma legal_root_length current :
+  legal_root current -> length (root_bytes current) = root_size current.
+Proof.
+  destruct current as [value|]; [|reflexivity].
+  intros [balanced_value valid].
+  apply source_validity_gives_exact_denotation_length; [exact balanced_value|].
+  eapply Forall_impl; [|exact valid]. intros view [within rest]. exact within.
+Qed.
+
+Lemma legal_root_from_terminal_equality partial rank expected_size expected_terms glued :
+  glue_contract partial rank expected_size expected_terms glued ->
+  Forall legal_window expected_terms ->
+  legal_root (Some (glued_tree glued)) /\
+  root_bytes (Some (glued_tree glued)) = concat (map (terminal_bytes roots) expected_terms).
+Proof.
+  intros (balanced_glued & count & contents & rest) valid.
+  split.
+  - split; [exact balanced_glued|]. cbn [root_terminals]. now rewrite contents.
+  - unfold root_bytes. cbn [root_terminals]. now rewrite contents.
+Qed.
+
+Lemma checked_nonempty_subwindow_preserves_legality_and_original_source view first last child :
+  legal_window view -> first < last -> last <= window_width view ->
+  checked_subwindow limit view first last = Some child ->
+  legal_window child /\ balanced (Leaf child) /\
+  window_width child = last - first /\
+  window_owner child = window_owner view /\
+  window_bytes (roots (window_owner child)) child =
+    firstn (last - first) (skipn first (window_bytes (roots (window_owner view)) view)).
+Proof.
+  intros [valid [fits permitted]] nonempty bounded accepted.
+  pose proof (@nested_windows_preserve_owner_bounds_and_exact_slice
+    limit (roots (window_owner view)) view first last child valid accepted)
+    as (child_valid & same_owner & child_fits & contents).
+  pose proof accepted as shape. apply checked_subwindow_exact in shape.
+  destruct shape as (_ & _ & _ & shape).
+  assert (width : window_width child = last - first) by (rewrite shape; reflexivity).
+  split.
+  - unfold legal_window. rewrite same_owner.
+    split; [exact child_valid|]. split; assumption.
+  - split; [constructor; rewrite width; lia|].
+    split; [exact width|]. split; [exact same_owner|]. now rewrite same_owner.
+Qed.
+
+Record split_facts current cut result : Prop := SplitFacts {
+  left_legal : legal_root (split_left result);
+  right_legal : legal_root (split_right result);
+  left_size : root_size (split_left result) = cut;
+  right_size : root_size (split_right result) = size current - cut;
+  cut_in_range : cut <= size current;
+  left_height : root_height (split_left result) <= height current;
+  right_height : root_height (split_right result) <= height current;
+  exact_reconstruction : root_bytes (split_left result) ++ root_bytes (split_right result) = denotation roots current;
+  visits_potential : split_visits result <=
+    3 * height current + 1 + root_height (split_left result) + root_height (split_right result);
+  rebuilt_potential : split_rebuilt result <=
+    2 * height current + 2 + 2 * (root_height (split_left result) + root_height (split_right result))
+}.
+
+Lemma attach_right_preserves_split_facts original child siblings cut divided glued :
+  height original = S (height child) ->
+  size original = size child + size siblings ->
+  denotation roots original = denotation roots child ++ denotation roots siblings ->
+  legal_root (Some siblings) -> split_facts child cut divided ->
+  glue_contract (split_right divided) (height child)
+    (root_size (split_right divided) + size siblings)
+    (root_terminals (split_right divided) ++ terminals siblings) glued ->
+  split_facts original cut (attach_right divided glued).
+Proof.
+  intros parent_height parent_size parent_bytes siblings_legal divided_facts glued_facts.
+  destruct divided_facts as [left_valid right_valid left_count right_count cut_bounded left_rank right_rank reconstructed visited rebuilt].
+  assert (legal_terms : Forall legal_window
+    (root_terminals (split_right divided) ++ terminals siblings)).
+  { apply Forall_app. split; [exact (proj2 right_valid)|exact (proj2 siblings_legal)]. }
+  destruct (legal_root_from_terminal_equality glued_facts legal_terms) as [glued_valid glued_bytes].
+  rewrite map_app, concat_app in glued_bytes.
+  change (root_bytes (Some (glued_tree glued)) =
+    root_bytes (split_right divided) ++ denotation roots siblings) in glued_bytes.
+  destruct glued_facts as [balanced_glued [count [contents [rank [grows [glue_visit glue_build]]]]]].
+  constructor; cbn [attach_right split_left split_right split_visits split_rebuilt root_size root_height].
+  - exact left_valid.
+  - exact glued_valid.
+  - exact left_count.
+  - lia.
+  - lia.
+  - lia.
+  - lia.
+  - rewrite glued_bytes, app_assoc, reconstructed. symmetry. exact parent_bytes.
+  - lia.
+  - lia.
+Qed.
+
+Lemma attach_left_preserves_split_facts original siblings child cut divided glued :
+  height original = S (height child) ->
+  size original = size siblings + size child ->
+  denotation roots original = denotation roots siblings ++ denotation roots child ->
+  legal_root (Some siblings) -> split_facts child cut divided ->
+  glue_contract (split_left divided) (height child)
+    (size siblings + root_size (split_left divided))
+    (terminals siblings ++ root_terminals (split_left divided)) glued ->
+  split_facts original (size siblings + cut) (attach_left glued divided).
+Proof.
+  intros parent_height parent_size parent_bytes siblings_legal divided_facts glued_facts.
+  destruct divided_facts as [left_valid right_valid left_count right_count cut_bounded left_rank right_rank reconstructed visited rebuilt].
+  assert (legal_terms : Forall legal_window
+    (terminals siblings ++ root_terminals (split_left divided))).
+  { apply Forall_app. split; [exact (proj2 siblings_legal)|exact (proj2 left_valid)]. }
+  destruct (legal_root_from_terminal_equality glued_facts legal_terms) as [glued_valid glued_bytes].
+  rewrite map_app, concat_app in glued_bytes.
+  change (root_bytes (Some (glued_tree glued)) =
+    denotation roots siblings ++ root_bytes (split_left divided)) in glued_bytes.
+  destruct glued_facts as [balanced_glued [count [contents [rank [grows [glue_visit glue_build]]]]]].
+  constructor; cbn [attach_left split_left split_right split_visits split_rebuilt root_size root_height].
+  - exact glued_valid.
+  - exact right_valid.
+  - lia.
+  - lia.
+  - lia.
+  - lia.
+  - lia.
+  - rewrite glued_bytes, <- app_assoc, reconstructed. symmetry. exact parent_bytes.
+  - lia.
+  - lia.
+Qed.
+
+Lemma attach_both_preserves_split_facts original first child last cut divided before after :
+  height original = S (height child) ->
+  size original = size first + size child + size last ->
+  denotation roots original = denotation roots first ++ denotation roots child ++ denotation roots last ->
+  legal_root (Some first) -> legal_root (Some last) -> split_facts child cut divided ->
+  glue_contract (split_left divided) (height child)
+    (size first + root_size (split_left divided))
+    (terminals first ++ root_terminals (split_left divided)) before ->
+  glue_contract (split_right divided) (height child)
+    (root_size (split_right divided) + size last)
+    (root_terminals (split_right divided) ++ terminals last) after ->
+  split_facts original (size first + cut) (attach_both before divided after).
+Proof.
+  intros parent_height parent_size parent_bytes first_legal last_legal divided_facts before_facts after_facts.
+  destruct divided_facts as [left_valid right_valid left_count right_count cut_bounded left_rank right_rank reconstructed visited rebuilt].
+  assert (before_terms : Forall legal_window (terminals first ++ root_terminals (split_left divided))).
+  { apply Forall_app. split; [exact (proj2 first_legal)|exact (proj2 left_valid)]. }
+  assert (after_terms : Forall legal_window (root_terminals (split_right divided) ++ terminals last)).
+  { apply Forall_app. split; [exact (proj2 right_valid)|exact (proj2 last_legal)]. }
+  destruct (legal_root_from_terminal_equality before_facts before_terms) as [before_valid before_bytes].
+  destruct (legal_root_from_terminal_equality after_facts after_terms) as [after_valid after_bytes].
+  rewrite map_app, concat_app in before_bytes, after_bytes.
+  change (root_bytes (Some (glued_tree before)) =
+    denotation roots first ++ root_bytes (split_left divided)) in before_bytes.
+  change (root_bytes (Some (glued_tree after)) =
+    root_bytes (split_right divided) ++ denotation roots last) in after_bytes.
+  destruct before_facts as [before_balanced [before_count [before_contents [before_rank [before_grows [before_visits before_build]]]]]].
+  destruct after_facts as [after_balanced [after_count [after_contents [after_rank [after_grows [after_visits after_build]]]]]].
+  constructor; cbn [attach_both split_left split_right split_visits split_rebuilt root_size root_height].
+  - exact before_valid.
+  - exact after_valid.
+  - lia.
+  - lia.
+  - lia.
+  - lia.
+  - lia.
+  - rewrite before_bytes, after_bytes, parent_bytes, <- reconstructed. now rewrite !app_assoc.
+  - lia.
+  - lia.
+Qed.
+
+Lemma zero_cut_has_exact_split_facts current :
+  legal_root (Some current) -> split_facts current 0 (Split None (Some current) 1 0).
+Proof.
+  intro valid. constructor;
+    cbn [split_left split_right split_visits split_rebuilt root_size root_height].
+  - exact none_is_legal.
+  - exact valid.
+  - reflexivity.
+  - lia.
+  - lia.
+  - lia.
+  - lia.
+  - reflexivity.
+  - lia.
+  - lia.
+Qed.
+
+Lemma full_cut_has_exact_split_facts current :
+  legal_root (Some current) -> split_facts current (size current) (Split (Some current) None 1 0).
+Proof.
+  intro valid. constructor;
+    cbn [split_left split_right split_visits split_rebuilt root_size root_height].
+  - exact valid.
+  - exact none_is_legal.
+  - reflexivity.
+  - lia.
+  - lia.
+  - lia.
+  - lia.
+  - change (denotation roots current ++ [] = denotation roots current). apply app_nil_r.
+  - lia.
+  - lia.
+Qed.
+
+Lemma total_split_from_strict_cuts current :
+  balanced current -> Forall legal_window (terminals current) ->
+  (forall cut, 0 < cut < size current ->
+    exists divided, split_tree limit current cut = Some divided /\ split_facts current cut divided) ->
+  forall cut, cut <= size current ->
+    exists divided, split_tree limit current cut = Some divided /\ split_facts current cut divided.
+Proof.
+  intros balanced_current legal_current interior cut bounded.
+  assert (valid : legal_root (Some current)) by (split; assumption).
+  destruct (Nat.eq_dec cut 0) as [->|nonzero].
+  - exists (Split None (Some current) 1 0). split.
+    + apply zero_and_full_tree_cuts_retain_the_exact_original_root.
+    + now apply zero_cut_has_exact_split_facts.
+  - destruct (Nat.eq_dec cut (size current)) as [->|nonfull].
+    + exists (Split (Some current) None 1 0). split.
+      * apply zero_and_full_tree_cuts_retain_the_exact_original_root. lia.
+      * now apply full_cut_has_exact_split_facts.
+    + apply interior. lia.
+Qed.
+
+Lemma legal_window_admits_every_checked_in_range_subwindow view first last :
+  legal_window view -> first <= last -> last <= window_width view ->
+  exists child, checked_subwindow limit view first last = Some child.
+Proof.
+  intros [_ [fits _]] ordered bounded.
+  assert (guard : subwindow_guard limit view first last = true).
+  { apply subwindow_guard_exact. repeat split; lia. }
+  unfold checked_subwindow. rewrite guard. eauto.
+Qed.
+
+Lemma an_interior_terminal_cut_has_exact_legal_split_facts view cut :
+  legal_window view -> 0 < cut < window_width view ->
+  exists divided,
+    split_tree limit (Leaf view) cut = Some divided /\ split_facts (Leaf view) cut divided.
+Proof.
+  intros valid strict.
+  destruct (@legal_window_admits_every_checked_in_range_subwindow view 0 cut valid ltac:(lia) ltac:(lia))
+    as [before before_checked].
+  destruct (@legal_window_admits_every_checked_in_range_subwindow view cut (window_width view)
+    valid ltac:(lia) ltac:(lia)) as [after after_checked].
+  destruct (@checked_nonempty_subwindow_preserves_legality_and_original_source
+    view 0 cut before valid ltac:(lia) ltac:(lia) before_checked)
+    as (before_legal & before_balanced & before_width & before_owner & before_bytes).
+  destruct (@checked_nonempty_subwindow_preserves_legality_and_original_source
+    view cut (window_width view) after valid ltac:(lia) ltac:(lia) after_checked)
+    as (after_legal & after_balanced & after_width & after_owner & after_bytes).
+  exists (Split (Some (Leaf before)) (Some (Leaf after)) 1 2).
+  split.
+  - cbn [split_tree size].
+    assert (inside : cut <=? window_width view = true) by (apply Nat.leb_le; lia).
+    assert (nonzero : cut =? 0 = false) by (apply Nat.eqb_neq; lia).
+    assert (nonfull : cut =? window_width view = false) by (apply Nat.eqb_neq; lia).
+    rewrite inside, nonzero, nonfull, before_checked, after_checked. reflexivity.
+  - constructor;
+      cbn [split_left split_right split_visits split_rebuilt root_size root_height size height].
+    + split; [exact before_balanced|]. constructor; [exact before_legal|constructor].
+    + split; [exact after_balanced|]. constructor; [exact after_legal|constructor].
+    + lia.
+    + exact after_width.
+    + lia.
+    + lia.
+    + lia.
+    + unfold root_bytes, denotation; cbn [root_terminals terminals map concat].
+      rewrite !app_nil_r. unfold terminal_bytes.
+      rewrite before_bytes, after_bytes. cbn [skipn]. rewrite Nat.sub_0_r.
+      assert (after_all : firstn (window_width view - cut)
+        (skipn cut (window_bytes (roots (window_owner view)) view)) =
+        skipn cut (window_bytes (roots (window_owner view)) view)).
+      { apply firstn_all2. rewrite length_skipn, valid_window_length by exact (proj1 valid). lia. }
+      rewrite after_all. apply firstn_skipn.
+    + lia.
+    + lia.
+Qed.
+
+Lemma legal_node2 first last :
+  legal_root (Some first) -> legal_root (Some last) -> height first = height last ->
+  legal_root (Some (node2 first last)).
+Proof.
+  intros [first_balanced first_legal] [last_balanced last_legal] same.
+  split; [constructor; assumption|].
+  cbn [root_terminals node2 terminals]. apply Forall_app. tauto.
+Qed.
+
+Lemma node2_denotation first last :
+  denotation roots (node2 first last) = denotation roots first ++ denotation roots last.
+Proof. unfold denotation; cbn [node2 terminals]. now rewrite map_app, concat_app. Qed.
+
+Lemma node3_denotation first middle last :
+  denotation roots (node3 first middle last) =
+    denotation roots first ++ denotation roots middle ++ denotation roots last.
+Proof. unfold denotation; cbn [node3 terminals]. now rewrite !map_app, !concat_app. Qed.
+
+Lemma split_node2_interior_equation first last cut :
+  0 < cut < size (node2 first last) ->
+  split_tree limit (node2 first last) cut =
+    if cut <=? size first
+    then option_map (fun divided => attach_right divided (gr1 (split_right divided) last))
+      (split_tree limit first cut)
+    else option_map (fun divided => attach_left (gl1 first (split_left divided)) divided)
+      (split_tree limit last (cut - size first)).
+Proof.
+  intro strict. cbn [split_tree node2 size].
+  assert (inside : cut <=? size first + size last = true) by (apply Nat.leb_le; cbn [node2 size] in strict; lia).
+  assert (nonzero : cut =? 0 = false) by (apply Nat.eqb_neq; lia).
+  assert (nonfull : cut =? size first + size last = false) by (apply Nat.eqb_neq; cbn [node2 size] in strict; lia).
+  now rewrite inside, nonzero, nonfull.
+Qed.
+
+Lemma split_node3_interior_equation first middle last cut :
+  0 < cut < size (node3 first middle last) ->
+  split_tree limit (node3 first middle last) cut =
+    if cut <=? size first
+    then option_map (fun divided => attach_right divided (gr2 (split_right divided) middle last))
+      (split_tree limit first cut)
+    else if cut <=? size first + size middle
+    then option_map (fun divided =>
+      attach_both (gl1 first (split_left divided)) divided (gr1 (split_right divided) last))
+      (split_tree limit middle (cut - size first))
+    else option_map (fun divided => attach_left (gl2 first middle (split_left divided)) divided)
+      (split_tree limit last (cut - (size first + size middle))).
+Proof.
+  intro strict. cbn [split_tree node3 size].
+  assert (inside : cut <=? size first + size middle + size last = true)
+    by (apply Nat.leb_le; cbn [node3 size] in strict; lia).
+  assert (nonzero : cut =? 0 = false) by (apply Nat.eqb_neq; lia).
+  assert (nonfull : cut =? size first + size middle + size last = false)
+    by (apply Nat.eqb_neq; cbn [node3 size] in strict; lia).
+  now rewrite inside, nonzero, nonfull.
+Qed.
+
+Theorem concrete_checked_split_is_total_preserves_sources_and_telescopes_both_output_heights current :
+  balanced current -> forall cut,
+  Forall legal_window (terminals current) -> cut <= size current ->
+  exists divided, split_tree limit current cut = Some divided /\ split_facts current cut divided.
+Proof.
+  intro current_balanced.
+  induction current_balanced as [view positive|
+    first last first_balanced first_IH last_balanced last_IH same|
+    first middle last first_balanced first_IH middle_balanced middle_IH last_balanced last_IH same_middle same];
+    intros cut windows bounded.
+  - eapply total_split_from_strict_cuts; [constructor; exact positive|exact windows| |exact bounded].
+    intros inside strict. apply an_interior_terminal_cut_has_exact_legal_split_facts; [|exact strict].
+    inversion windows; assumption.
+  - eapply total_split_from_strict_cuts; [constructor; assumption|exact windows| |exact bounded].
+    intros inside strict.
+    cbn [node2 terminals] in windows. apply Forall_app in windows.
+    destruct windows as [first_windows last_windows].
+    destruct (inside <=? size first) eqn:direction.
+    + pose proof direction as in_first. apply Nat.leb_le in in_first.
+      destruct (first_IH inside first_windows in_first) as [divided [accepted facts]].
+      exists (attach_right divided (gr1 (split_right divided) last)). split.
+      * rewrite split_node2_interior_equation by exact strict. now rewrite direction, accepted.
+      * eapply attach_right_preserves_split_facts.
+        -- reflexivity.
+        -- reflexivity.
+        -- apply node2_denotation.
+        -- split; assumption.
+        -- exact facts.
+        -- rewrite same. apply one_right_sibling_glue_preserves_order_balance_caches_and_height_potential.
+           ++ exact (proj1 (right_legal facts)).
+           ++ exact last_balanced.
+           ++ pose proof (right_height facts). lia.
+    + pose proof direction as after_first. apply Nat.leb_gt in after_first.
+      assert (in_last : inside - size first <= size last) by (cbn [node2 size] in strict; lia).
+      destruct (last_IH (inside - size first) last_windows in_last) as [divided [accepted facts]].
+      exists (attach_left (gl1 first (split_left divided)) divided). split.
+      * rewrite split_node2_interior_equation by exact strict. now rewrite direction, accepted.
+      * replace inside with (size first + (inside - size first)) by lia.
+        eapply attach_left_preserves_split_facts.
+        -- cbn [node2 height]. now rewrite same.
+        -- reflexivity.
+        -- apply node2_denotation.
+        -- split; assumption.
+        -- exact facts.
+        -- rewrite <- same. apply one_left_sibling_glue_preserves_order_balance_caches_and_height_potential.
+           ++ exact (proj1 (left_legal facts)).
+           ++ exact first_balanced.
+           ++ pose proof (left_height facts). lia.
+  - eapply total_split_from_strict_cuts; [constructor; assumption|exact windows| |exact bounded].
+    intros inside strict.
+    cbn [node3 terminals] in windows. apply Forall_app in windows.
+    destruct windows as [first_windows rest_windows]. apply Forall_app in rest_windows.
+    destruct rest_windows as [middle_windows last_windows].
+    destruct (inside <=? size first) eqn:first_direction.
+    + pose proof first_direction as in_first. apply Nat.leb_le in in_first.
+      destruct (first_IH inside first_windows in_first) as [divided [accepted facts]].
+      exists (attach_right divided (gr2 (split_right divided) middle last)). split.
+      * rewrite split_node3_interior_equation by exact strict. now rewrite first_direction, accepted.
+      * pose proof (@two_right_siblings_glue_preserves_order_without_finishing_the_intermediate_join
+          (split_right divided) middle last (proj1 (right_legal facts)) middle_balanced last_balanced ltac:(lia)
+          ltac:(pose proof (right_height facts); lia)) as [glued _].
+        eapply attach_right_preserves_split_facts with (siblings := node2 middle last).
+        -- reflexivity.
+        -- cbn [node3 node2 size]. lia.
+        -- rewrite node3_denotation, node2_denotation. reflexivity.
+        -- apply legal_node2; [split; assumption|split; assumption|lia].
+        -- exact facts.
+        -- cbn [node2 size terminals].
+           replace (root_size (split_right divided) + (size middle + size last)) with
+             (root_size (split_right divided) + size middle + size last) by lia.
+           now rewrite same_middle.
+    + pose proof first_direction as after_first. apply Nat.leb_gt in after_first.
+      destruct (inside <=? size first + size middle) eqn:middle_direction.
+      * pose proof middle_direction as in_middle. apply Nat.leb_le in in_middle.
+        assert (middle_cut : inside - size first <= size middle) by lia.
+        destruct (middle_IH (inside - size first) middle_windows middle_cut) as [divided [accepted facts]].
+        exists (attach_both (gl1 first (split_left divided)) divided (gr1 (split_right divided) last)). split.
+        -- rewrite split_node3_interior_equation by exact strict.
+           now rewrite first_direction, middle_direction, accepted.
+        -- replace inside with (size first + (inside - size first)) by lia.
+           eapply attach_both_preserves_split_facts.
+           ++ cbn [node3 height]. now rewrite same_middle.
+           ++ reflexivity.
+           ++ apply node3_denotation.
+           ++ split; assumption.
+           ++ split; assumption.
+           ++ exact facts.
+           ++ rewrite <- same_middle.
+              apply one_left_sibling_glue_preserves_order_balance_caches_and_height_potential.
+              ** exact (proj1 (left_legal facts)).
+              ** exact first_balanced.
+              ** pose proof (left_height facts). lia.
+           ++ replace (height middle) with (height last) by lia.
+              apply one_right_sibling_glue_preserves_order_balance_caches_and_height_potential.
+              ** exact (proj1 (right_legal facts)).
+              ** exact last_balanced.
+              ** pose proof (right_height facts). lia.
+      * pose proof middle_direction as after_middle. apply Nat.leb_gt in after_middle.
+        assert (in_last : inside - (size first + size middle) <= size last)
+          by (cbn [node3 size] in strict; lia).
+        destruct (last_IH (inside - (size first + size middle)) last_windows in_last)
+          as [divided [accepted facts]].
+        exists (attach_left (gl2 first middle (split_left divided)) divided). split.
+        -- rewrite split_node3_interior_equation by exact strict.
+           now rewrite first_direction, middle_direction, accepted.
+        -- replace inside with ((size first + size middle) + (inside - (size first + size middle))) by lia.
+           change (split_facts (node3 first middle last)
+             (size (node2 first middle) + (inside - (size first + size middle)))
+             (attach_left (gl2 first middle (split_left divided)) divided)).
+           pose proof (@two_left_siblings_glue_preserves_order_without_finishing_the_intermediate_join
+             first middle (split_left divided) (proj1 (left_legal facts)) first_balanced middle_balanced same_middle
+             ltac:(pose proof (left_height facts); lia)) as [glued _].
+           eapply attach_left_preserves_split_facts with (siblings := node2 first middle).
+           ++ cbn [node3 height]. now rewrite same.
+           ++ reflexivity.
+           ++ rewrite node3_denotation, node2_denotation. apply app_assoc.
+           ++ apply legal_node2; [split; assumption|split; assumption|exact same_middle].
+           ++ exact facts.
+           ++ cbn [node2 size terminals].
+              replace (height last) with (height middle) by lia.
+              rewrite <- app_assoc. exact glued.
+Qed.
+
+Theorem split_reconstruction_is_the_exact_located_firstn_and_skipn current cut divided :
+  split_facts current cut divided ->
+  root_bytes (split_left divided) = firstn cut (denotation roots current) /\
+  root_bytes (split_right divided) = skipn cut (denotation roots current).
+Proof.
+  intro facts.
+  pose proof (legal_root_length (left_legal facts)) as count.
+  rewrite (left_size facts) in count.
+  rewrite <- (exact_reconstruction facts), <- count.
+  split.
+  - rewrite firstn_app, firstn_all, Nat.sub_diag. cbn. now rewrite app_nil_r.
+  - rewrite skipn_app, skipn_all, Nat.sub_diag. reflexivity.
+Qed.
+
+Theorem both_output_height_potentials_give_the_linear_split_work_bound current cut divided :
+  split_facts current cut divided ->
+  split_visits divided <= 5 * height current + 1 /\
+  split_rebuilt divided <= 6 * height current + 2.
+Proof. intros [left_valid right_valid left_count right_count cut_bounded left_rank right_rank bytes visits rebuilt]. lia. Qed.
+
+Definition root_metadata limit current :=
+  match current with None => True | Some value => native_metadata limit value end.
+
+Theorem checked_split_outputs_preserve_all_native_lengths_heights_and_terminal_bounds current cut divided :
+  size current <= limit -> split_facts current cut divided ->
+  root_metadata limit (split_left divided) /\ root_metadata limit (split_right divided) /\
+  Forall legal_window (root_terminals (split_left divided) ++ root_terminals (split_right divided)).
+Proof.
+  intros fits facts.
+  destruct facts as [left_valid right_valid left_count right_count cut_bounded left_rank right_rank bytes visits rebuilt].
+  split.
+  - destruct (split_left divided); cbn [root_metadata]; [|exact I].
+    apply balanced_sizes_bound_every_cached_sum_and_height; [exact (proj1 left_valid)|].
+    cbn [root_size] in left_count. lia.
+  - split.
+    + destruct (split_right divided); cbn [root_metadata]; [|exact I].
+      apply balanced_sizes_bound_every_cached_sum_and_height; [exact (proj1 right_valid)|].
+      cbn [root_size] in right_count. lia.
+    + apply Forall_app. split; [exact (proj2 left_valid)|exact (proj2 right_valid)].
+Qed.
+
+Theorem checked_optional_split_is_total_exact_and_linearly_bounded current cut :
+  legal_root current -> root_size current <= limit -> cut <= root_size current ->
+  exists divided, split_root limit current cut = Some divided /\
+    root_balanced (split_left divided) /\ root_balanced (split_right divided) /\
+    root_size (split_left divided) = cut /\ root_size (split_right divided) = root_size current - cut /\
+    root_bytes (split_left divided) = firstn cut (root_bytes current) /\
+    root_bytes (split_right divided) = skipn cut (root_bytes current) /\
+    root_height (split_left divided) <= root_height current /\
+    root_height (split_right divided) <= root_height current /\
+    root_metadata limit (split_left divided) /\ root_metadata limit (split_right divided) /\
+    Forall legal_window (root_terminals (split_left divided) ++ root_terminals (split_right divided)) /\
+    split_visits divided <= 5 * root_height current + 1 /\
+    split_rebuilt divided <= 6 * root_height current + 2.
+Proof.
+  destruct current as [value|].
+  - intros [balanced_value valid] fits bounded.
+    destruct (concrete_checked_split_is_total_preserves_sources_and_telescopes_both_output_heights
+      balanced_value valid bounded) as [divided [accepted facts]].
+    destruct (split_reconstruction_is_the_exact_located_firstn_and_skipn facts) as [before after].
+    destruct (both_output_height_potentials_give_the_linear_split_work_bound facts) as [visits rebuilt].
+    destruct (checked_split_outputs_preserve_all_native_lengths_heights_and_terminal_bounds fits facts)
+      as [left_metadata [right_metadata sources]].
+    exists divided. split; [exact accepted|].
+    split; [exact (proj1 (left_legal facts))|]. split; [exact (proj1 (right_legal facts))|].
+    split; [exact (left_size facts)|]. split; [exact (right_size facts)|].
+    split; [exact before|]. split; [exact after|].
+    split; [exact (left_height facts)|]. split; [exact (right_height facts)|].
+    split; [exact left_metadata|]. split; [exact right_metadata|].
+    split; [exact sources|]. split; assumption.
+  - intros _ _ bounded. cbn [root_size] in bounded. assert (cut = 0) by lia. subst cut.
+    exists (Split None None 1 0).
+    cbn [split_root split_left split_right split_visits split_rebuilt root_balanced root_size root_height root_metadata root_terminals root_bytes].
+    repeat split; try constructor; lia.
+Qed.
+
+End Sources.
+
+Theorem valid_source_windows_and_terminal_bounds_identify_only_the_original_backings
+    roots limit current :
+  balanced current -> valid_sources roots current -> terminal_bounds limit current ->
+  legal_root roots limit (map window_owner (terminals current)) (Some current).
+Proof.
+  intros balanced_current valid fits. split; [exact balanced_current|].
+  unfold valid_sources, terminal_bounds in *.
+  apply Forall_forall. intros view present. unfold legal_window.
+  rewrite Forall_forall in valid, fits.
+  split; [now apply valid|]. split; [now apply fits|].
+  apply in_map. exact present.
+Qed.
+
+Theorem valid_cached_metadata_does_not_substitute_for_terminal_end_bounds :
+  let view := Window 7 11 2 None in
+  let backing := Region 7 (repeat (LocatedByte 203 99 4) 13) 99 17 in
+  balanced (Leaf view) /\ window_valid backing view /\ native_metadata 10 (Leaf view) /\
+  split_tree 10 (Leaf view) 1 = None.
+Proof.
+  cbn. split.
+  - apply BalancedLeaf. cbn. lia.
+  - vm_compute. repeat split; lia || reflexivity.
+Qed.
+
+Definition retain_output (stored : list tree) output :=
+  match output with None => stored | Some value => fst (publish_root stored value) end.
+
+Definition publish_split_outputs stored divided :=
+  retain_output (retain_output stored (split_left divided)) (split_right divided).
+
+Lemma retain_output_preserves_historical_root stored output slot historical :
+  nth_error stored slot = Some historical ->
+  nth_error (retain_output stored output) slot = Some historical.
+Proof.
+  intro found. destruct output; [apply publishing_a_composed_root_preserves_every_exact_historical_root|]; exact found.
+Qed.
+
+Theorem publishing_both_optional_split_outputs_preserves_every_exact_historical_root
+    stored divided slot historical :
+  nth_error stored slot = Some historical ->
+  nth_error (publish_split_outputs stored divided) slot = Some historical.
+Proof.
+  intro found. apply retain_output_preserves_historical_root.
+  now apply retain_output_preserves_historical_root.
+Qed.
+
+Print Assumptions one_right_sibling_glue_preserves_order_balance_caches_and_height_potential.
+Print Assumptions one_left_sibling_glue_preserves_order_balance_caches_and_height_potential.
+Print Assumptions two_right_siblings_glue_preserves_order_without_finishing_the_intermediate_join.
+Print Assumptions two_left_siblings_glue_preserves_order_without_finishing_the_intermediate_join.
+Print Assumptions out_of_range_split_cuts_are_refused_before_descent.
+Print Assumptions zero_and_full_tree_cuts_retain_the_exact_original_root.
+Print Assumptions checked_terminal_construction_and_concatenation_preserve_representable_source_windows.
+Print Assumptions checked_nonempty_subwindow_preserves_legality_and_original_source.
+Print Assumptions split_node2_interior_equation.
+Print Assumptions split_node3_interior_equation.
+Print Assumptions concrete_checked_split_is_total_preserves_sources_and_telescopes_both_output_heights.
+Print Assumptions split_reconstruction_is_the_exact_located_firstn_and_skipn.
+Print Assumptions both_output_height_potentials_give_the_linear_split_work_bound.
+Print Assumptions checked_split_outputs_preserve_all_native_lengths_heights_and_terminal_bounds.
+Print Assumptions checked_optional_split_is_total_exact_and_linearly_bounded.
+Print Assumptions valid_source_windows_and_terminal_bounds_identify_only_the_original_backings.
+Print Assumptions valid_cached_metadata_does_not_substitute_for_terminal_end_bounds.
+Print Assumptions publishing_both_optional_split_outputs_preserves_every_exact_historical_root.
+
+End CheckedBalancedSourceSplit.
