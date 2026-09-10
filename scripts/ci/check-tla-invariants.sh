@@ -123,6 +123,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_DiskSettingsAdmission
     soak_disk/MC_CleanupOwnership
     soak_disk/MC_CleanupOutcome
+    soak_disk/MC_DockerCleanupOwnership
 )
 
 TLC_WORKERS=auto
@@ -151,6 +152,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_DiskSettingsAdmission
         soak_disk/MC_CleanupOwnership
         soak_disk/MC_CleanupOutcome
+        soak_disk/MC_DockerCleanupOwnership
     )
     TLC_WORKERS=2
 fi
@@ -211,6 +213,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_DiskSettingsAdmission_unchecked_pre_fix:AdmissionRequiresValidDiskSettings
     soak_disk/MC_CleanupOwnership_age_only_pre_fix:UnownedSessionPreserved
     soak_disk/MC_CleanupOutcome_ignore_errors_pre_fix:CleanupFailurePreventsAdmission
+    soak_disk/MC_DockerCleanupOwnership_global_prune_pre_fix:UnownedDockerResourcesPreserved
 )
 
 failed=0

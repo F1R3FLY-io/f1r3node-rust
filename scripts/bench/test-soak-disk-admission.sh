@@ -162,10 +162,10 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == cleanup-error-* ]]; then
     action=""
     case "$*" in
         'ps -aq --filter status=exited --filter name=rnode.') action=list; printf 'cleanup-fixture\n' ;;
-        'rm cleanup-fixture') action=remove ;;
-        'network prune -f') action=network ;;
-        'image prune -f') action=image ;;
-        'builder prune -af') action=builder; touch /case/evidence/hygiene-completed ;;
+        'inspect cleanup-fixture') action=remove ;;
+        'network ls -q') action=network ;;
+        'image ls -q') action=image ;;
+        'system df') action=builder; touch /case/evidence/hygiene-completed ;;
     esac
     if [[ "$action" == "${SOAK_DISK_TEST_SCENARIO#cleanup-error-}" ]]; then
         printf '%s\n' "$action" >/case/evidence/cleanup-failed-command.txt
@@ -236,7 +236,7 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-cancel-* &&
     touch /case/evidence/benchmark-returned.txt
     exit 1
 fi
-if [[ "$*" == 'builder prune -af' ]]; then
+if [[ "$*" == 'system df' ]]; then
     if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == hygiene-timeout ]]; then
         trap '' TERM
         printf '%s\n' "$$" >/case/evidence/hygiene-client-pid.txt
@@ -651,7 +651,7 @@ SH
     fi
     if [[ "$SCENARIO" == hygiene-timeout ]]; then
         if [[ ! -s evidence/hygiene-client-pid.txt ]] ||
-            ! grep -Fxq 'builder prune -af' evidence/docker-commands.txt ||
+            ! grep -Fxq 'system df' evidence/docker-commands.txt ||
             ! grep -Fxq 'valid=7000' evidence/probe-samples.txt; then
             printf 'ERROR: The fixture did not stall cleanup inside the hygiene band.\n' >&2
             exit 2
