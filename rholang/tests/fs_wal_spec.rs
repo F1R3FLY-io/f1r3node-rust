@@ -63,6 +63,17 @@ mod tests {
         runtime
     }
 
+    // Wave-3 S3.14 (2026-09-10) — per-family test submodules via
+    // `#[path]`.  Each submodule inherits parent scope via
+    // `use super::*;` for access to `create_runtime`, `rand`, and
+    // the shared imports at the top of this `mod tests` block.
+    // All submodule tests run as part of the single `fs_wal_spec`
+    // integration binary — no proliferation of test binaries.
+    #[path = "fs_wal/lifecycle.rs"]
+    mod lifecycle;
+    #[path = "fs_wal/stream.rs"]
+    mod stream;
+
     /// A Consensus-cap write must append a `Write` WAL entry whose
     /// payload_ref is `Hash(blake2b256(payload))`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -743,36 +754,6 @@ mod tests {
         // "aa".hexToBytes() decodes to a single byte 0xAA.
         assert_eq!(snap[0].op, WalOp::Write);
         assert_eq!(snap[0].length, Some(1));
-    }
-
-    /// A bad cmode arg to fs_open must reject the open AND not
-    /// populate any FileHandle — subsequent writes fail with
-    /// FSERR_CLOSED (unknown fd) and no WAL entry is produced.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn bad_cmode_open_produces_no_handle_no_wal() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("f.bin");
-        std::fs::write(&path, b"").unwrap();
-        let runtime = create_runtime().await;
-        let term = format!(
-            r#"
-            new fsOpen(`rho:io:fs:native:1.0.0/open`), openCh in {{
-              fsOpen!("{root}", "f.bin", "r+", "BOGUS", *openCh) |
-              for (@r <- openCh) {{ Nil }}
-            }}
-            "#,
-            root = dir.path().display(),
-        );
-        runtime
-            .evaluate(
-                &term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            )
-            .await
-            .unwrap();
-        assert!(runtime.fs_handles.wal.is_empty());
     }
 
     /// M-15 fix (2026-08-06): Consensus-mode `fs_entries`
@@ -2380,105 +2361,6 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
-    /// Phase 2 regression pin (fd-release fix, 2026-09-01):
-    /// **follower's Consensus fs_close is_replay branch MUST release
-    /// the shadow's real OS fd** — pre-fix, the branch produced the
-    /// cached reply without calling `handles.remove(fd)`, so the
-    /// shadow's `File` wrapper (installed by fs_open's Phase-2
-    /// real-open) stayed alive until runtime drop.  A validator
-    /// processing many blocks with Consensus fs traffic would
-    /// accumulate OS fds up to `MAX_OPEN_FDS = 1024` and then hit
-    /// `FSERR_QUOTA_EXCEEDED` on the next fs_open replay.
-    ///
-    /// Direct probe: snapshot the leader's next_fd watermark before
-    /// and after the deploy to bound the allocated-fd range, then
-    /// scan the follower's fd table via `raw_fd` for each fd in
-    /// that range and assert `None`.  A regression that removed the
-    /// `handles.remove` call from fs_close's is_replay branch would
-    /// leave the follower's shadow alive at the allocated fd →
-    /// `raw_fd` returns `Some` → assertion fires.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn consensus_fs_close_replay_releases_follower_shadow_fd() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("data.bin"), b"phase-2-close-release-pin").unwrap();
-
-        let (mut leader, mut follower) = create_leader_and_follower().await;
-
-        // Term: open + close on a Consensus cap.  Under Phase 2, the
-        // follower's fs_open replay installs a real File-backed
-        // shadow; the fs_close replay must remove it.
-        let term = format!(
-            r#"
-            new fsOpen(`rho:io:fs:native:1.0.0/open`),
-                fsClose(`rho:io:fs:native:1.0.0/close`),
-                oc, closeCh
-            in {{
-              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
-              for (@[true, fd] <- oc) {{
-                fsClose!(fd, *closeCh) |
-                for (@_ <- closeCh) {{ Nil }}
-              }}
-            }}
-            "#,
-            root = dir.path().display(),
-        );
-        let r = Blake2b512Random::create_from_bytes(&[33; 32]);
-
-        // Snapshot the leader's next_fd watermark to bound the range
-        // the deploy will allocate into.  fs_open advances the
-        // atomic each time it inserts; the delta before → after is
-        // the count of fds Rholang allocated in this run.
-        let leader_fd_lo = leader.fs_handles.snapshot_next_fd();
-        leader
-            .evaluate(
-                &term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                r.clone(),
-            )
-            .await
-            .expect("leader evaluate fd-release setup");
-        let leader_fd_hi = leader.fs_handles.snapshot_next_fd();
-        assert!(
-            leader_fd_hi > leader_fd_lo,
-            "leader must have allocated at least one fd during open+close"
-        );
-
-        let checkpoint = leader.create_checkpoint().await;
-        follower
-            .reset(&checkpoint.root)
-            .await
-            .expect("follower reset");
-        follower.rig(checkpoint.log).await.expect("follower rig");
-        follower
-            .evaluate(
-                &term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                r,
-            )
-            .await
-            .expect("follower evaluate fd-release check");
-
-        // Direct assertion: every fd the leader allocated must have
-        // been released on the follower's side too.  A regression
-        // that dropped the `handles.remove` call from fs_close's
-        // is_replay branch would leave the shadow alive → raw_fd
-        // returns Some → the assertion below fires with the
-        // specific leaked fd.
-        for fd in leader_fd_lo..leader_fd_hi {
-            assert!(
-                follower.fs_handles.raw_fd(fd).await.is_none(),
-                "Phase 2 fd-release regression: follower's shadow at fd {fd} \
-                 was NOT released post-close.  fs_close's is_replay branch \
-                 stopped calling handles.remove(fd) — the shadow's real OS \
-                 fd (installed by fs_open's Phase-2 real-open under Consensus) \
-                 stays alive across runtime lifetime, accumulating to \
-                 MAX_OPEN_FDS on production validators."
-            );
-        }
-    }
-
     /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
     /// **fs_read_at positive path**.  Positional read (`libc::pread`)
     /// against the follower's own real fd, which was installed by
@@ -3626,96 +3508,6 @@ mod tests {
             .check_replay_data()
             .await
             .expect("replay data must match on empty-dir readdir");
-    }
-
-    /// Phase 2 ban pin (Consensus re-execute + verify, 2026-09-01):
-    /// **`entriesStreamOpen` with cmode="consensus" MUST reject
-    /// with `FSERR_UNSUPPORTED`.**  See handlers.rs's
-    /// `fs_entries_stream_open` for the design rationale: readdir
-    /// order is fs-dependent and not stable across D3 per-validator
-    /// subdirs, so a Consensus-cap stream would trip spurious
-    /// CONSENSUS_DIVERGENCE on any two validators with independently-
-    /// created copies of the same logical directory.  Users are
-    /// directed to bulk `fs_entries` (sorted, deterministic) instead.
-    ///
-    /// A regression that dropped the ban would let Consensus stream
-    /// opens through; downstream `entriesStreamNext` would then
-    /// exercise the Phase-0 tautological cached-reply consumption
-    /// path (removed as dead code by the ban commit) and mask real
-    /// divergences.  This pin makes the ban load-bearing.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn entries_stream_open_rejects_consensus_with_fserr_unsupported() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
-        let runtime = create_runtime().await;
-
-        let term = format!(
-            r#"
-            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
-              fsOpen!("{root}", "sub", "consensus", *o) |
-              for (@reply <- o) {{
-                @"result"!(reply)
-              }}
-            }}
-            "#,
-            root = dir.path().display(),
-        );
-        runtime
-            .evaluate(
-                &term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            )
-            .await
-            .expect("evaluate Consensus entriesStreamOpen");
-
-        // Capture the reply from @"result" and assert it's specifically
-        // FSERR_UNSUPPORTED — not some other early-return error code.
-        // A regression that swapped the ban for a BAD_ARG / IO / etc.
-        // would still produce no WAL entry (and the assertion below
-        // would still pass), so we need the code-slot check to lock the
-        // specific FSERR down.
-        use models::rhoapi::expr::ExprInstance;
-        use models::rhoapi::Expr;
-        use rholang::rust::interpreter::io::errors::FSERR_UNSUPPORTED;
-        use rholang::rust::interpreter::io::response::extract_err_code;
-        use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-        let result_channel = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GString("result".to_string())),
-        }]);
-        let datums = runtime.get_data(&result_channel).await;
-        let reply_par = datums
-            .first()
-            .and_then(|d| d.a.pars.first())
-            .cloned()
-            .expect(
-                "no reply on @\"result\" — the ban's early-return produce didn't \
-                 land, or the term shape changed",
-            );
-        let code = extract_err_code(std::slice::from_ref(&reply_par)).expect(
-            "reply must be an [false, code, msg] error shape from the ban's \
-             early-return; got a non-error reply",
-        );
-        assert_eq!(
-            code, FSERR_UNSUPPORTED,
-            "Consensus entriesStreamOpen rejection must use FSERR_UNSUPPORTED \
-             specifically (see handlers.rs::fs_entries_stream_open ban comment). \
-             A regression that returned FSERR_BAD_ARG or FSERR_IO would still \
-             produce no WAL entry so the wal.is_empty() check below wouldn't \
-             catch it — this assertion is the load-bearing pin for the \
-             specific ban code.  Got code: {code}"
-        );
-
-        // No WAL entry should be journaled since the open was rejected
-        // before any fd allocation.
-        assert!(
-            runtime.fs_handles.wal.is_empty(),
-            "Consensus entriesStreamOpen rejection must NOT journal — the \
-             leader errored out before any fd was created, so there's no \
-             stream state to journal.  Got WAL: {:?}",
-            runtime.fs_handles.wal.snapshot()
-        );
     }
 
     /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
@@ -6764,65 +6556,6 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
-    /// Streaming-backing slice Step 3 (2026-08-25): Oracular
-    /// entriesStreamNext MUST NOT journal — same cross-cap isolation
-    /// invariant as fs_stat / fs_entries oracular pins.  A regression
-    /// that ignored the cap's cmode and journaled unconditionally
-    /// would surface Oracular reads in the Consensus WAL and diverge
-    /// across validators with different local fs state.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn entries_stream_next_oracular_does_not_journal() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
-        std::fs::write(dir.path().join("sub/x"), b"x").unwrap();
-        let runtime = create_runtime().await;
-
-        let open_term = format!(
-            r#"
-            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`), o in {{
-              fsOpen!("{root}", "sub", "oracular", *o) |
-              for (@[true, _fd] <- o) {{ Nil }}
-            }}
-            "#,
-            root = dir.path().display(),
-        );
-        runtime
-            .evaluate(
-                &open_term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            )
-            .await
-            .expect("evaluate open");
-
-        // 2 Next calls (1 yield + 1 EOS).
-        for _ in 0..2 {
-            let term = r#"
-                new fsNext(`rho:io:fs:native:1.0.0/entriesStreamNext`), r in {
-                  fsNext!(1, *r) |
-                  for (@_reply <- r) { Nil }
-                }
-                "#
-            .to_string();
-            runtime
-                .evaluate(
-                    &term,
-                    Cost::unsafe_max(),
-                    std::collections::HashMap::new(),
-                    rand(),
-                )
-                .await
-                .expect("evaluate next");
-        }
-
-        assert!(
-            runtime.fs_handles.wal.is_empty(),
-            "Oracular entriesStreamNext MUST NOT journal; got {} entries",
-            runtime.fs_handles.wal.len()
-        );
-    }
-
     /// H1 gap fix: end-to-end WAL cap enforcement — a Rholang program
     /// that fills the WAL past `MAX_WAL_ENTRIES` gets `FSERR_QUOTA_EXCEEDED`
     /// on the overflow write, and the WAL does not exceed the cap.
@@ -9304,58 +9037,6 @@ mod tests {
             .check_replay_data()
             .await
             .expect("follower replay data mismatch");
-    }
-
-    /// **Consensus + O_APPEND rejection (2026-08-26).**  The
-    /// position-follow-up rejects `fsOpen` with mode `a` or `a+`
-    /// when the cap is Consensus, because O_APPEND semantics don't
-    /// fit the shadow-position model (kernel-retargets writes to
-    /// file-end atomically; the follower can't fstat).  Regression
-    /// scenario: a future refactor removes the guard → Consensus
-    /// append writes journal offset from stale shadow position →
-    /// follower replays writes to the wrong place → byte
-    /// divergence.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn consensus_append_open_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("data.bin"), b"").unwrap();
-        let runtime = create_runtime().await;
-
-        // Try mode "a" on a Consensus cap — must return FSERR_BAD_ARG.
-        let term = format!(
-            r#"
-            new fsOpen(`rho:io:fs:native:1.0.0/open`), oc in {{
-              fsOpen!("{root}", "data.bin", "a", "consensus", *oc) |
-              for (@reply <- oc) {{
-                match reply {{
-                  [false, "FSERR_BAD_ARG", _] => Nil
-                  _ => @"UNEXPECTED_REPLY"!(reply)
-                }}
-              }}
-            }}
-            "#,
-            root = dir.path().display(),
-        );
-        let result = runtime
-            .evaluate(
-                &term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            )
-            .await
-            .expect("evaluate");
-        assert!(
-            result.errors.is_empty(),
-            "consensus + append should reply cleanly (not raise); got errors: {:?}",
-            result.errors,
-        );
-        // WAL stays empty — the open was rejected before any
-        // journal-eligible op ran.
-        assert!(
-            runtime.fs_handles.wal.is_empty(),
-            "consensus + append rejection must not journal any WAL entry",
-        );
     }
 
     // NOTE: pre-Phase-0 documentation-only scaffold
