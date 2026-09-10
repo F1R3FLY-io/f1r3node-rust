@@ -3295,6 +3295,33 @@ that control is released. Mixed-source properties and the huge shared-prefix
 64 KiB test bind exact selection, shape and stack behavior. Native verification
 is recorded in J-138 independently of the cache model.
 
+### Retained arena completion binding (2026-09-10; task 6018)
+
+The first native cache stores generated-segment source roots beside existing
+compact descriptor IDs. An iterative postorder composes each exact predecessor
+span with its local single-page suffix. Existing page uniqueness checks seal
+cached generated segments implicitly through retained immutable Arc ownership;
+their nodes cannot subsequently extend in place. No cache eviction is used.
+Full-node cache coverage specializes `CachedSourcePrefixes` to the descriptor
+length; exported handles select checked subranges and trim excluded subtrees.
+
+| Native control | Formal/ownership obligation |
+|---|---|
+| `retained_cache_exports_every_range_without_rebuilding_segment_indexes` | Exact selection and unchanged segment-index counts across every page-crossing range. |
+| `empty_and_invalid_exports_do_not_publish_cache_or_seal_pages` | Refusal/rootless selection before publication and resource mutation. |
+| `retained_publication_preserves_old_forks_and_counts_generated_page_seals` | Immutable cached prefixes, correct sliced predecessors, explicit generated publication cost. |
+| `trimmed_cache_export_retains_only_intersecting_generated_pages` | Excluded composed-prefix page owners expire after arena drop; selected page owners survive. |
+| `retained_source_cache_matches_independent_historical_operation_traces` | Eager located-byte reference for arbitrary append/slice/concat/export histories and retained output survival. |
+| `retained_source_cache_expands_and_drops_deep_descriptors_on_a_small_stack` | 100,000 bytes, approximately 1,563 page descriptors, use heap postorder and stack-safe root release on 64 KiB. |
+| `old_cache_hits_do_not_allocate_slots_after_unrelated_growth` | Existing-root reuse before resize; cache alone seals published pages, preserving descriptor fields. |
+
+Production topology completion transports the retained source window and exact
+existing endpoint anchor to indexed admission. Eager topology differentials
+remain frozen reference controls; the old reducer freezer is test-only.
+J-139 records verification separately. Arbitrary-history linear metadata,
+literal source-span integration and borrowed arena lifetime threading are
+not proved by this owned-generated-page implementation.
+
 ## Balanced split endpoint composition binding (2026-09-10; task 6018)
 
 `BalancedSplitRegionPositions` adds no endpoint algorithm. Its sole exported

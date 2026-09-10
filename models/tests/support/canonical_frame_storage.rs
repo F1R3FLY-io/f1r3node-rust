@@ -2878,7 +2878,7 @@ fn focused_persistent_topology_resolution_rejection_and_restore_match_eager() {
                     LocatedPathByte::in_source(byte, 31 + offset as u32 % 2, 501 + offset * 29);
                 assert_eq!(actual.edge(located), expected.edge(located));
                 assert_eq!(actual.active_obligation(), expected.active_obligation());
-                if let Some(left) = actual.freeze_completed_obligation().unwrap() {
+                if let Some(left) = actual.retained_completed_obligation().unwrap() {
                     let right = expected.freeze_completed_obligation().unwrap().unwrap();
                     assert_eq!(left.obligation, right.obligation);
                     assert_eq!(left.payload_end, right.payload_end);
@@ -2921,7 +2921,7 @@ fn focused_persistent_topology_resolution_rejection_and_restore_match_eager() {
                 );
                 assert_eq!(
                     actual
-                        .freeze_completed_obligation()
+                        .retained_completed_obligation()
                         .unwrap()
                         .map(|p| p.obligation),
                     expected
@@ -3132,7 +3132,7 @@ fn topology_restore_runs_preserve_private_effects_faults_and_fresh_births() {
                     assert!(!births.contains(&obligation.id));
                     births.push(obligation.id);
                 }
-                if let Some(payload) = actual.freeze_completed_obligation().unwrap() {
+                if let Some(payload) = actual.retained_completed_obligation().unwrap() {
                     let reference = expected.freeze_completed_obligation().unwrap().unwrap();
                     assert_eq!(payload.obligation, reference.obligation);
                     assert_eq!(payload.payload_end, reference.payload_end);

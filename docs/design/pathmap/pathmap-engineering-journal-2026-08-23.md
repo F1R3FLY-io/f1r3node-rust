@@ -9934,6 +9934,96 @@ used to invent an exit-status or aggregate resource observation.
 The checked `RPB3Admission.v` source SHA-256 is
 `df62c7715dc51b83cad9b48d064d451ae60fa89c7d8c281b011597c3f1a553d1`.
 
+### J-139 — 2026-09-10: retained generated-segment completion roots
+
+**IMPLEMENTATION CONTRACT.** `CanonicalBytesArena::retained_source_window`
+keeps a cache slot per descriptor, not per byte or traversal checkpoint.
+Checked handle bounds precede cache allocation/publication. Empty handles
+return a rootless window without sealing pages. An explicit postorder visits
+uncached predecessors; each segment combines the exact historical predecessor
+span with a single-page frozen view of its local generated-byte suffix.
+It does not freeze the entire path or rebuild its full leaf/index tables.
+Completed exports use the trimmed ownership boundary from J-138.
+
+Publishing a generated suffix retains its page Arcs; the existing unique-page
+append check then starts a new page as needed rather than modifying exported
+bytes. Historical descriptor roots remain immutable once cached. Repeated
+exports reuse those roots, but trimmed subranges may still perform balanced
+boundary work. Full-root hits preserve identity. This first integration does
+not yet supply literal ACT source spans; its static source lifetime is valid
+for these owned frozen pages only, not a license to erase borrowed lifetimes.
+
+**FORMAL BINDING / NATIVE CONTROLS.** Reuse the checked prefix-preservation,
+cache-coverage and source concat/split laws. The new independent operation
+trace uses an eager located-byte oracle for append, slice, concat, retained
+export, old handles and teardown survival. Exhaustive ranges across page
+boundaries verify no additional segment-index builds; invalid/empty requests
+verify no cache/page publication. Weak page references distinguish selected
+page retention from excluded prefix retention. A 100,000-byte descriptor
+chain exercises export and destruction on the unchanged 64 KiB stack.
+
+Test counters separately report cached descriptor roots, exported generated
+segments and root hits, alongside existing page/segment/payload counts.
+They do not equate segment exports with distinct physical pages or prove a
+universal linear metadata bound: the O(S log S) historical-root limitation
+from J-138 remains visible. Literal-source integration and actual retained
+node/resource qualification remain required.
+
+The initial test compilation failed because three property assertions
+compared owned Vec values against borrowed Vec references. The tests now
+compare against oracle slices; no production algorithm or accepted test
+domain changed. The negative compile service used 4.383 seconds wall,
+4.029 CPU seconds, 1.2G peak and zero swap. After that typing correction,
+all six initial controls pass in debug (0.25 seconds) and release (0.03
+seconds); the service uses 61.295 seconds wall, 142.428 CPU seconds, 2.2G
+peak and zero swap. This result precedes the integration below.
+
+**REVIEW / IMPORTER INTEGRATION.** An old-root cache hit now returns before
+cache-vector resizing: unrelated descriptor growth must not allocate slots
+for a previously cached selection. A seventh control checks unchanged cache
+length/capacity, cache-only page sealing after dropping the external view,
+and exact cached descriptor length/used fields after divergent append.
+The importer now calls `retained_completed_obligation`, carrying its unchanged
+explicit payload-end anchor directly into `IndexedByteRegion::from_source`.
+The old frozen completion is test-only; the source-lifetime-shortening region
+helper is removed. Independent eager topology controls still freeze their
+reference payloads and compare them with the retained production results.
+An initial integration compile exposed a missing test-only region import;
+restoring that import preserves the independent controls without restoring
+the production frozen path. It failed before test execution (10.317 seconds
+wall, 9.895 CPU seconds, 1.6G peak, zero swap). Integrated qualification is
+reported below. The arena gate now requires all 24 tests, including seven new cache
+controls, in both profiles.
+
+**INTEGRATED NATIVE RESULTS.** Seven cache controls pass in debug (0.24
+seconds), unchanged standalone admission passes 32 tests (24.05 seconds),
+and frame-history controls pass 32 tests (1.30 seconds). All 467 release
+model tests pass in 52.67 seconds, with none failed, ignored or filtered.
+The build/test service exits successfully after 127.210 seconds wall and
+258.745 CPU seconds, peaking at 2.8G with zero swap. Independent review found
+no change to exact completion anchors, preparation/publication order, or the
+lifetime boundary.
+
+**FINAL MAINTAINED GATE.** The focused formal/runtime gate subsequently
+passes, including 24 arena tests in each profile, source 25, normalized
+regions 15, anchor transport six, admission 32, and the ACT positive/eight
+compiler-rejection controls. Its outer driver exits successfully after
+278.297 seconds wall, using 3.806 CPU seconds, 55.4M peak and zero swap;
+these CPU/memory figures exclude the separately bounded proof/Rust scopes.
+The typed test-build outer frame measures 1,352 bytes (48 above J-137),
+including the cache field and test-only counters. Indexed region and
+canonical-path frame remain 72/592 bytes in those controls. The unchanged
+64 KiB admission test passes in both profiles; no new activation-size
+measurement or production-frame size is inferred from test-layout numbers.
+
+| Evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-source-cache-native.log` (test typing failure) | `779c4612e02ce92076d9cb35e72e71cb1145c10f99be3740659c72298daee425` |
+| `canonical-source-cache-native-r2.log` (six-control core) | `751e66c558633271a8fee7d1c8ae1208b4026dc57868f13bd881be16e8453a75` |
+| `canonical-source-cache-integrated.log` (test-only import failure) | `76ecdae44cb92df435578ac6fb9a43d0fc51e253135bfb9c6848f9517b749a2b` |
+| `canonical-source-cache-integrated-r2.log` (production integration) | `361c4e667cdf683e97e219607d816b77f794d4012581dee34ba4ed5f6bfb4b97` |
+| `canonical-source-cache-qualified.log` (maintained gate) | `5e3a589ff3e95ef086e8e71a76cc341275b06860057d2b5e56d9099c8cd57fd3` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

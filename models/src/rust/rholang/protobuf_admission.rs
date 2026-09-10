@@ -23,7 +23,7 @@ use super::canonical_path_admission::{
     CanonicalPathObligation, CanonicalPathObligationId, CanonicalPathObligationKind,
     CanonicalPathObligationResolution, CanonicalPathSource, CanonicalPathStreamReducer,
     CanonicalPathSummary, CanonicalPathTopologyAdmission, CanonicalPathTransition,
-    FrozenCanonicalPathObligation, LocatedPathByte, NestedEpmMode,
+    CanonicalPathCompletedObligation, LocatedPathByte, NestedEpmMode,
 };
 use super::canonical_score_bytes::{
     CanonicalScoreArena, CanonicalScoreArenaError, CanonicalScoreHandle,
@@ -35,8 +35,10 @@ use super::canonical_semantics::{
 use super::indexed_protobuf::{
     IndexedBytePosition, IndexedByteRegion, IndexedCanonicalField, IndexedCanonicalFieldCursor,
     IndexedCanonicalFieldValue, IndexedLocatedByteCursor, LocatedCanonicalProtobufError,
-    OwnedIndexedByteRegion,
 };
+use super::canonical_source_tree::SourceTreeWindow;
+#[cfg(test)]
+use super::indexed_protobuf::OwnedIndexedByteRegion;
 use super::match_schema::{
     ResolvedProtobufField, ResolvedProtobufPayload, RhoMatchFieldKind, RhoMatchPayloadKind,
     RhoMatchProgram, resolve_protobuf_field, wire_program_by_type_id,
@@ -409,10 +411,6 @@ fn semantic_kind(program: &'static RhoMatchProgram) -> Option<SemanticKind> {
 }
 
 type AdmissionRegion<'src> = IndexedByteRegion<'src>;
-
-/// Safely shorten an ownership-independent frozen region to the admission
-/// source lifetime before it enters invariant mutable frame storage.
-fn shorten_frozen_region<'src>(region: OwnedIndexedByteRegion) -> AdmissionRegion<'src> { region }
 
 #[derive(Clone)]
 enum SemanticScalar<'src> {
@@ -2189,14 +2187,14 @@ impl PathObligationWait {
 }
 
 fn obligation_frame<'src>(
-    completed: FrozenCanonicalPathObligation,
+    completed: CanonicalPathCompletedObligation<SourceTreeWindow<'src>>,
     owner: &'static RhoMatchProgram,
     field: u32,
     stats: &mut CanonicalProtobufAdmissionStats,
 ) -> Result<(PathObligationWait, FrameRequest<'src>), CanonicalProtobufAdmissionError> {
     let end =
         CanonicalByteProvenance::new(completed.payload_end.source, completed.payload_end.offset);
-    let body = shorten_frozen_region(OwnedIndexedByteRegion::from_frozen(completed.payload, end));
+    let body = IndexedByteRegion::from_source(completed.payload, end);
     obligation_region_frame(completed.obligation, body, owner, field, stats)
 }
 
@@ -3152,7 +3150,7 @@ fn epathmap_step<'src>(
                     .map_err(|source| frame.path_error(source))?;
                 if let Some(completed) = frame
                     .path
-                    .freeze_completed_obligation()
+                    .retained_completed_obligation()
                     .map_err(|source| frame.path_error(source))?
                 {
                     let (waiting, child) =

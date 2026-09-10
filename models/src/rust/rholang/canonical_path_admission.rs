@@ -15,9 +15,11 @@
 use crate::rust::canonical_path::CanonicalTopLevelPathForm;
 use crate::rust::rholang::canonical_bytes_arena::{
     CanonicalByteProvenance, CanonicalBytesArena, CanonicalBytesHandle, CanonicalLocatedByte,
-    FrozenCanonicalBytes,
 };
+#[cfg(test)]
+use crate::rust::rholang::canonical_bytes_arena::FrozenCanonicalBytes;
 use crate::rust::rholang::indexed_protobuf::IndexedByteRegion;
+use crate::rust::rholang::canonical_source_tree::SourceTreeWindow;
 use crate::rust::rholang::protobuf_cursor::CanonicalByteRange;
 
 const TERM: u8 = 0x00;
@@ -162,6 +164,7 @@ pub(crate) struct CanonicalPathCompletedObligation<Span = CanonicalBytesHandle> 
 }
 
 /// Ownership-independent completed payload for a suspended nested validator.
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(crate) struct FrozenCanonicalPathObligation {
     pub(crate) obligation: CanonicalPathObligation,
@@ -597,6 +600,7 @@ impl CanonicalPathReducer {
     #[cfg(test)]
     pub(crate) fn retained_frame_bytes(&self) -> usize { self.machine.frames.retained_bytes() }
 
+    #[cfg(test)]
     pub(crate) fn freeze_completed_obligation(
         &self,
         arena: &CanonicalBytesArena,
@@ -3158,11 +3162,17 @@ impl CanonicalPathTopologyAdmission {
         self.reducer.active_obligation(self.current)
     }
 
-    pub(crate) fn freeze_completed_obligation(
-        &self,
-    ) -> Result<Option<FrozenCanonicalPathObligation>, CanonicalPathAdmissionError> {
-        self.reducer
-            .freeze_completed_obligation(&self.arena, self.current)
+    pub(crate) fn retained_completed_obligation(
+        &mut self,
+    ) -> Result<Option<CanonicalPathCompletedObligation<SourceTreeWindow<'static>>>, CanonicalPathAdmissionError> {
+        Ok(self.reducer.completed_obligation(&self.arena, self.current)?.map(|completed| {
+            CanonicalPathCompletedObligation {
+                obligation: completed.obligation,
+                payload: self.arena.retained_source_window(completed.payload)
+                    .expect("completed payload is a checked historical arena span"),
+                payload_end: completed.payload_end,
+            }
+        }))
     }
 
     pub(crate) fn edge(

@@ -28,6 +28,12 @@ use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 
+use super::canonical_source_tree::SourceTreeWindow;
+
+#[cfg(test)]
+#[path = "../../../tests/support/canonical_source_cache.rs"]
+mod source_cache_tests;
+
 const BLOCK_BYTES: usize = 32;
 /// Initial production page-capacity hypothesis. Focused probes instantiate the
 /// private const-generic backend at 32, 64, 128, and 256 without adding a
@@ -854,6 +860,9 @@ pub(crate) struct CanonicalBytesArenaStats {
     pub(crate) payload_slots: usize,
     pub(crate) divergent_segments: usize,
     pub(crate) page_rollovers: usize,
+    pub(crate) source_cache_nodes: usize,
+    pub(crate) source_segment_exports: usize,
+    pub(crate) source_cache_hits: usize,
 }
 
 /// Immutable, ownership-independent bytes frozen from one persistent handle.
@@ -965,6 +974,7 @@ impl FrozenCanonicalBytes {
 /// Append-only ownership arena for persistent canonical byte strings.
 pub(crate) struct CanonicalBytesArena {
     backend: PageBackedArena<DEFAULT_PAGE_BYTES>,
+    source_cache: Vec<Option<SourceTreeWindow<'static>>>,
     #[cfg(test)]
     stats: CanonicalBytesArenaStats,
 }
@@ -977,6 +987,7 @@ impl CanonicalBytesArena {
     pub(crate) fn new() -> Self {
         Self {
             backend: PageBackedArena::<DEFAULT_PAGE_BYTES>::new(),
+            source_cache: Vec::new(),
             #[cfg(test)]
             stats: CanonicalBytesArenaStats::default(),
         }
@@ -1081,6 +1092,78 @@ impl CanonicalBytesArena {
         FrozenCanonicalBytes {
             inner: self.backend.freeze(value),
         }
+    }
+
+    pub(crate) fn retained_source_window(
+        &mut self,
+        value: CanonicalBytesHandle,
+    ) -> Option<SourceTreeWindow<'static>> {
+        let Some(span) = value.sequence else { return Some(SourceTreeWindow::empty()); };
+        let end = span.start.checked_add(span.len)?;
+        if end > self.backend.nodes.get(span.root.0)?.len { return None; }
+        if let Some(root) = self.source_cache.get(span.root.0).and_then(Option::as_ref) {
+            #[cfg(test)]
+            { self.stats.source_cache_hits += 1; }
+            return root.trimmed_subview(span.start..end);
+        }
+        self.source_cache.resize_with(self.backend.nodes.len(), || None);
+        let mut pending = vec![(span.root, false)];
+        while let Some((id, ready)) = pending.pop() {
+            if self.source_cache[id.0].is_some() { continue; }
+            let node = &self.backend.nodes[id.0];
+            let kind = node.kind;
+            if !ready {
+                pending.push((id, true));
+                match kind {
+                    SequenceNodeKind::Segment { previous, .. } => {
+                        if let Some(previous) = previous {
+                            if self.source_cache[previous.root.0].is_none() {
+                                pending.push((previous.root, false));
+                            }
+                        }
+                    }
+                    #[cfg(test)]
+                    SequenceNodeKind::Concat { left, right } => {
+                        for child in [right, left] {
+                            if self.source_cache[child.root.0].is_none() {
+                                pending.push((child.root, false));
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            let root = match kind {
+                SequenceNodeKind::Segment { previous, used, .. } => {
+                    let prefix = previous.map(|previous| self.cached_source_span(previous))
+                        .unwrap_or_else(SourceTreeWindow::empty);
+                    let local = CanonicalBytesHandle { sequence: Some(SequenceSpan {
+                        root: id, start: node.len - used, len: used,
+                    }) };
+                    let suffix = SourceTreeWindow::from_frozen(self.freeze(local));
+                    #[cfg(test)]
+                    { self.stats.source_segment_exports += 1; }
+                    prefix.concat(&suffix).expect("checked descriptor length fits source concatenation")
+                }
+                #[cfg(test)]
+                SequenceNodeKind::Concat { left, right } => {
+                    self.cached_source_span(left).concat(&self.cached_source_span(right))
+                        .expect("checked descriptor concat length fits source concatenation")
+                }
+            };
+            assert_eq!(root.len(), self.backend.nodes[id.0].len);
+            self.source_cache[id.0] = Some(root);
+            #[cfg(test)]
+            { self.stats.source_cache_nodes += 1; }
+        }
+        self.source_cache[span.root.0].as_ref()?.trimmed_subview(span.start..end)
+    }
+
+    fn cached_source_span(&self, span: SequenceSpan) -> SourceTreeWindow<'static> {
+        self.source_cache[span.root.0].as_ref()
+            .expect("postorder source cache retains its predecessor")
+            .subview(span.start..span.start + span.len)
+            .expect("historical predecessor span stays within its cached descriptor")
     }
 
     pub(crate) fn provenance_at(

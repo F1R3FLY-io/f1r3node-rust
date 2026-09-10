@@ -11034,6 +11034,34 @@ The maintained integrated gate subsequently passes, including all 25 source
 tests in both profiles and ACT compile controls; J-138 distinguishes its
 outer-service accounting from separately bounded child scopes.
 
+#### 5.33.55 Retained generated-segment admission completions (2026-09-10)
+
+Production nested admission now exports retained composed source roots instead
+of rebuilding a full frozen byte index for every completion. Each uncached
+generated segment contributes only its own single-page frozen metadata to a
+checked predecessor composition. Repeated cache hits bypass cache resizing
+even after unrelated descriptor growth. Export trimming releases excluded
+composed prefixes; the exact completion anchor remains independent of data.
+
+The cache does not remove initial generated-byte storage or yet borrow literal
+ACT line spans. Generated-page publication seals remain explicit allocation
+causes, and retaining historical full roots can use O(S log S) tree metadata
+for S segments. These are open resource obligations, not implied linear wins.
+No benchmark or ACT/LMDB result follows from this correctness checkpoint.
+
+The seven cache controls, 32 standalone admission tests and 32 frame-history
+tests pass in debug; all 467 release model tests pass. A 100,000-byte chain
+(approximately 1,563 page descriptors) exports and releases on 64 KiB, and
+Weak page controls verify that only selected generated pages survive arena
+teardown. The build/test service peaks at 2.8G with zero swap under a 6 GiB
+cap. The combined maintained formal/runtime gate also passes, including all
+24 arena controls in both profiles and the ACT compile controls. The typed
+test-build outer frame is 1,352 bytes; the test indexed region/canonical-path
+frame remain 72/592 bytes. This is not a production-frame or activation-size
+measurement, and the unchanged 64 KiB admission controls continue to pass.
+[J-139](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-139--2026-09-10-retained-generated-segment-completion-roots)
+preserves exact results, independent frozen-reference controls and negatives.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
