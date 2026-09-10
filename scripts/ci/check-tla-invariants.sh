@@ -119,6 +119,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_BenchmarkCancellation
     soak_disk/MC_GuardianProgress
     soak_disk/MC_GuardianProgressAdmission
+    soak_disk/MC_DiskHygieneDeadline
 )
 
 TLC_WORKERS=auto
@@ -143,6 +144,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_BenchmarkCancellation
         soak_disk/MC_GuardianProgress
         soak_disk/MC_GuardianProgressAdmission
+        soak_disk/MC_DiskHygieneDeadline
     )
     TLC_WORKERS=2
 fi
@@ -199,6 +201,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_BenchmarkCancellation_unwatched_breach_pre_fix:BenchmarkCancellationObserved
     soak_disk/MC_GuardianProgress_alive_only_pre_fix:StaleGuardianRequiresInterrupt
     soak_disk/MC_GuardianProgressAdmission_unchecked_pre_fix:StaleProgressPreventsAdmission
+    soak_disk/MC_DiskHygieneDeadline_unbounded_pre_fix:HygieneWithinBudget
 )
 
 failed=0
