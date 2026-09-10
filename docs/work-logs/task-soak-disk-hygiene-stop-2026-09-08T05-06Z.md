@@ -407,3 +407,27 @@ External commit `706b11b6e` appeared during evidence preparation. Its parent is 
 The evidence builder stopped on the changed HEAD before publishing its manifest. The original error remains retained as a verification interruption, not behavioral RED.
 
 Hooks for the external commit remain unattested by this session. The assistant creates no replacement commit or amendment.
+
+## D2 disk hygiene deadline B23
+
+B23 starts from `5549561e1`. The fixture holds a cleanup client inside the admission band and observes it before release after five seconds.
+
+Production RED leaves the client active without a summary at observation. The formal control violates `HygieneWithinBudget` with exit 12 before the production correction.
+
+The correction places the unchanged cleanup commands under one deadline and one second of kill grace. Failed cleanup now refuses admission and records one protection failure.
+
+Production GREEN cancels the client and publishes refusal before release. The formal configurations reuse the unchanged `DiskStopDeadline` model with an explicit invariant alias.
+
+The positive configuration has five distinct states. The model covers cancellation, while the production fixture separately checks local failure publication.
+
+The [evidence package](../cbc-evidence/soak-d2-hygiene-2026-09-09/README.md) retains the matched cycle and the complete regression results.
+
+Twenty positive configurations, twenty-one exact controls, 147 classifier cases, six routing scenarios, and twenty-five emergency scenarios pass. All supporting regressions pass.
+
+Executable inputs match the snapshot taken before the combined verification. The actual TLC logs were retained before the classifier and routing tests ran.
+
+The user committed and pushed the correction as `9c99de84e`. Its executable source matches the tested snapshots. This session does not attest its hooks.
+
+The configured hygiene budget defaults to ten seconds. It is not a measured complete response deadline or a reserve justification.
+
+D2 remains pending. Cleanup ownership, daemon operations, detached descendants, durable publication, other faults, hosted checks, and maintainer review remain open.

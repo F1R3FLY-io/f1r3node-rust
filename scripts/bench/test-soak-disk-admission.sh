@@ -33,6 +33,9 @@
 #   guardian-progress-boundary driver and guardian paused across the iteration probe; stale progress -> refuse
 #   benchmark-progress-boundary same, across the opening benchmark probe -> refuse
 #   hygiene-timeout       docker builder prune ignores TERM inside the band; hygiene is bounded -> refuse
+#   disk-floor-range      SOAK_DISK_FREE_FLOOR_MB above the 64-bit maximum   -> configuration rejected, exit 2
+#   disk-band-range       SOAK_DISK_HYGIENE_BAND_MB above the 64-bit maximum -> configuration rejected, exit 2
+#   disk-sum-range        floor plus band above the 64-bit maximum           -> configuration rejected, exit 2
 #
 # Usage: test-soak-disk-admission.sh [--scenario NAME] [source-directory] [evidence-directory]
 #   With no --scenario (and no SOAK_DISK_TEST_SCENARIO) every scenario runs
@@ -53,7 +56,7 @@ SCENARIOS=(band missing-boundary missing-after-hygiene malformed-boundary missin
     benchmark-active-disk benchmark-equal benchmark-sufficient benchmark-missing benchmark-disabled
     benchmark-cancel-death benchmark-cancel-breach benchmark-guardian-boundary benchmark-guardian-interleaved
     benchmark-cancel-stall guardian-stall guardian-progress-boundary benchmark-progress-boundary
-    hygiene-timeout)
+    hygiene-timeout disk-floor-range disk-band-range disk-sum-range)
 
 SCENARIO="${SOAK_DISK_TEST_SCENARIO:-}"
 if [[ "${1:-}" == --scenario ]]; then
@@ -335,7 +338,14 @@ SH
     fi
     duration=30
     disk_floor=4096
+    disk_band=4096
+    case "$SCENARIO" in
+        disk-floor-range) disk_floor=9223372036854775808 ;;
+        disk-band-range) disk_band=9223372036854775808 ;;
+        disk-sum-range) disk_band=9223372036854771712 ;;
+    esac
     [[ "$SCENARIO" != benchmark-disabled ]] || disk_floor=0
+    printf 'floor=%s\nband=%s\n' "$disk_floor" "$disk_band" >evidence/disk-settings.txt
     run_benchmarks=false
     if [[ "$SCENARIO" == restart-benchmark || "$SCENARIO" == benchmark-* ]]; then
         duration=700
@@ -510,7 +520,7 @@ SH
         SOAK_RSS_CEILING_MB=0 \
         SOAK_HOST_FREE_FLOOR_MB=0 \
         SOAK_DISK_FREE_FLOOR_MB="$disk_floor" \
-        SOAK_DISK_HYGIENE_BAND_MB=4096 \
+        SOAK_DISK_HYGIENE_BAND_MB="$disk_band" \
         SOAK_DISK_DIAGNOSTIC_SECONDS=1 \
         SOAK_DISK_STOP_SECONDS=1 \
         SOAK_DISK_HYGIENE_SECONDS=1 \
@@ -529,6 +539,23 @@ SH
         bash repo/scripts/run-merge-recovery-soak.sh >evidence/driver.log 2>&1 || status=$?
     printf '%s\n' "$status" >evidence/driver-exit.txt
     [[ -z "$observer" ]] || wait "$observer"
+    if [[ "$SCENARIO" == disk-*-range ]]; then
+        if [[ "$status" != 2 ]]; then
+            if [[ ! -s evidence/workload-started.txt ]]; then
+                printf 'ERROR: The range fixture neither rejected configuration nor reached workload admission.\n' >&2
+                exit 2
+            fi
+            printf 'FAIL: An out-of-range disk setting permitted workload admission (%s).\n' "$SCENARIO" >&2
+            exit 1
+        fi
+        if [[ -e evidence/workload-started.txt || -e evidence/benchmark-started.txt ]] ||
+            ! grep -Eq '^SOAK_DISK_.*must' evidence/driver.log; then
+            printf 'ERROR: The range fixture did not produce the expected configuration refusal.\n' >&2
+            exit 2
+        fi
+        printf 'PASS: Invalid disk settings were rejected before workload admission (%s).\n' "$SCENARIO"
+        exit 0
+    fi
     if [[ "$status" != 0 && "$status" != 1 ]] ||
         [[ ! -s evidence/output/summary.json ]] ||
         ! jq -e 'has("degraded") | not' evidence/output/summary.json >/dev/null; then

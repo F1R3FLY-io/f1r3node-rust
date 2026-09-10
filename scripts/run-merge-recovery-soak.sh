@@ -163,6 +163,19 @@ else
 	fi
 fi
 
+DISK_INTEGER_MAX=9223372036854775807
+
+disk_setting_decimal() {
+	local LC_ALL=C value="$1"
+	[[ "$value" =~ ^[0-9]+$ ]] || return 1
+	value="${value#"${value%%[!0]*}"}"
+	value="${value:-0}"
+	if [ "${#value}" -gt 19 ] || { [ "${#value}" -eq 19 ] && [[ "decimal:$value" > "decimal:$DISK_INTEGER_MAX" ]]; }; then
+		return 1
+	fi
+	printf '%s\n' "$value"
+}
+
 # Disk twin of the memory floor (issue #378). Weekend runs 33254400407 and
 # 33278321865 filled the soak VM's default ~47GB boot volume 9-12h in: the
 # runner worker died on ENOSPC writing its own _diag log, and the last
@@ -170,16 +183,18 @@ fi
 # a full disk masquerading as a finalization regression. Memory had a
 # guardian, warn band and durable last words; disk had nothing.
 # SOAK_DISK_FREE_FLOOR_MB overrides; 0 disables the floor.
-DISK_FREE_FLOOR_MB="${SOAK_DISK_FREE_FLOOR_MB:-4096}"
-if ! [[ "$DISK_FREE_FLOOR_MB" =~ ^[0-9]+$ ]]; then
-	printf 'SOAK_DISK_FREE_FLOOR_MB must be a non-negative integer\n' >&2
+if ! DISK_FREE_FLOOR_MB="$(disk_setting_decimal "${SOAK_DISK_FREE_FLOOR_MB:-4096}")"; then
+	printf 'SOAK_DISK_FREE_FLOOR_MB must be a non-negative integer no larger than 9223372036854775807\n' >&2
 	exit 2
 fi
 # Hygiene runs when free space sinks into floor+band, BEFORE the floor
 # breaches: pruning between iterations is cheap, while a breach ends the run.
-DISK_HYGIENE_BAND_MB="${SOAK_DISK_HYGIENE_BAND_MB:-4096}"
-if ! [[ "$DISK_HYGIENE_BAND_MB" =~ ^[0-9]+$ ]]; then
-	printf 'SOAK_DISK_HYGIENE_BAND_MB must be a non-negative integer\n' >&2
+if ! DISK_HYGIENE_BAND_MB="$(disk_setting_decimal "${SOAK_DISK_HYGIENE_BAND_MB:-4096}")"; then
+	printf 'SOAK_DISK_HYGIENE_BAND_MB must be a non-negative integer no larger than 9223372036854775807\n' >&2
+	exit 2
+fi
+if [ "$DISK_HYGIENE_BAND_MB" -gt "$((DISK_INTEGER_MAX - DISK_FREE_FLOOR_MB))" ]; then
+	printf 'SOAK_DISK_FREE_FLOOR_MB plus SOAK_DISK_HYGIENE_BAND_MB must not exceed 9223372036854775807\n' >&2
 	exit 2
 fi
 # Where harness sessions leave their compose and genesis files (the

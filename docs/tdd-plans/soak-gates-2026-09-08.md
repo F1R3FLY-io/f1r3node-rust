@@ -342,7 +342,18 @@ behaviors:
     statement: Stalled disk hygiene causes client cancellation and failure publication before fixture release.
     priority: must
     deep_module: false
-    done: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-hygiene-2026-09-09/manifest.jsonc
+        test: scripts/bench/test-soak-disk-hygiene-deadline.sh
+        red_revision: 5549561e1027438945dedabd1b7e08244883f62d
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        reused_model: DiskStopDeadline
+        hosted_confirmation: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -468,6 +479,10 @@ B20–B22 add [guardian progress evidence](../cbc-evidence/soak-d2-guardian-prog
 
 Nineteen positive configurations, twenty exact controls, 140 classifier cases, six routing scenarios, and twenty-four emergency scenarios pass.
 
+B23 adds [disk hygiene deadline evidence](../cbc-evidence/soak-d2-hygiene-2026-09-09/README.md). The driver cancels the stalled cleanup client and publishes refusal before fixture release.
+
+Twenty positive configurations, twenty-one exact controls, 147 classifier cases, six routing scenarios, and twenty-five emergency scenarios pass.
+
 ## Remaining D2 work
 
 - [x] Verify opening admission at equality, sufficient space, unavailable samples, and disabled disk protection.
@@ -477,7 +492,8 @@ Nineteen positive configurations, twenty exact controls, 140 classifier cases, s
 - [x] Refuse opening benchmark and iteration admission after tested stale-progress pauses.
 - [ ] Verify interleaved sample cases, remaining progress-record faults, later scheduling races, and other admission and cancellation faults.
 
-- [ ] Bound disk hygiene and stop paths outside B13, including detached and uninterruptible command cases.
+- [x] Bound the tested hygiene command group and refuse work when the group fails.
+- [ ] Verify other stop paths, detached and uninterruptible commands, and daemon-side cleanup operations.
 - [ ] Verify soft-floor sampling, cleanup outcomes, and guardian events at every admission boundary.
 - [ ] Verify active-session and image preservation through the cleanup ownership contract.
 - [ ] Verify confirmed termination and durable evidence publication.

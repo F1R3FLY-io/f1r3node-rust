@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Ten Boolean     *)
+(* decide, after the opening benchmark on the first segment. Eleven Boolean  *)
 (* constants switch the corrections on and off so that each pre-fix          *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -18,6 +18,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           WatchGuardian,  \* a guardian fault during the benchmark cancels it (B18)
           CheckProgress,  \* stale guardian progress cannot admit (B22)
           EnforceHygieneDeadline, \* hygiene commands run under a deadline (B23)
+          CheckRange,     \* floor, band, and their sum must fit in 64 bits (B24)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -27,7 +28,7 @@ ASSUME /\ FloorMiB \in Nat \ {0}
        /\ MalformedPrefixMiB \in Nat
        /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
            CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
-           CheckProgress, EnforceHygieneDeadline} \subseteq BOOLEAN
+           CheckProgress, EnforceHygieneDeadline, CheckRange} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -62,8 +63,9 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           guardianFresh,  \* the guardian's progress record is within the silence limit
           admissionFresh, \* progress was fresh when the iteration was admitted (B22)
           benchmarkFresh, \* progress was fresh when the benchmark was admitted (B22)
-          hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent
+          hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
             \* a hygiene command group that ignores TERM, under the deadline (B23)
+          settingsValid \* the configured floor, band, and their sum fit in 64 bits
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
@@ -71,10 +73,12 @@ vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           admissionRaw, admissionSample, stopReason, evidence, retained, benchmark,
           benchmarkSample, benchmarkFault, benchmarkObserved, benchmarkCancelled,
           benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
-          hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
+          hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
+          settingsValid>>
 
 Init ==
-    /\ phase = "benchmark"
+    /\ phase = "config"
+    /\ settingsValid \in BOOLEAN
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -107,6 +111,17 @@ Probe(next) ==
     /\ phase' = next
 
 BelowBand == sample.known /\ sample.mib < FloorMiB + BandMiB
+
+\* B24: the configured floor and band are validated as decimals before any
+\* work; an out-of-range value, or a sum past the 64-bit maximum, rejects the
+\* configuration outright (exit 2, no summary). Whether a given text is in
+\* range is abstracted to settingsValid; the harness checks the three
+\* concrete boundary texts.
+ValidateSettings ==
+    /\ phase = "config"
+    /\ phase' = IF CheckRange /\ ~settingsValid THEN "rejected" ELSE "benchmark"
+    /\ UNCHANGED <<free, raw, sample, guardian, guardianAlive, admitted,
+                   admissionRaw, admissionSample, stopReason, evidence>>
 
 \* The opening benchmark of the first segment. B15: the driver skips it when a
 \* breach marker was retained from the previous run; the recovery block that
@@ -157,7 +172,7 @@ Benchmark ==
                                    ELSE IF ~diskOk THEN "probe"
                                    ELSE "guardian"
     /\ UNCHANGED <<free, raw, sample, admitted, admissionRaw, admissionSample,
-                   evidence, retained, guardianFresh, admissionFresh>>
+                   evidence, retained, guardianFresh, admissionFresh, settingsValid>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -302,7 +317,7 @@ PublishRefusal ==
 
 FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
-                          benchmarkGuardianAlive, benchmarkFresh>>
+                          benchmarkGuardianAlive, benchmarkFresh, settingsValid>>
 
 Next == (Benchmark /\ UNCHANGED HygieneVars)
         \/ (/\ Admit
@@ -314,7 +329,8 @@ Next == (Benchmark /\ UNCHANGED HygieneVars)
         \/ (/\ HygieneStall \/ HygieneTick \/ HygieneReturns
             /\ UNCHANGED FrozenAfterBenchmark
             /\ UNCHANGED <<guardianFresh, admissionFresh>>)
-        \/ (/\ CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
+        \/ (/\ ValidateSettings
+               \/ CheckGuardian \/ ProbeBoundary \/ DecideHygiene \/ Hygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
                \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
             /\ UNCHANGED FrozenAfterBenchmark
@@ -323,9 +339,10 @@ Next == (Benchmark /\ UNCHANGED HygieneVars)
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 TypeOK ==
-    /\ phase \in {"benchmark", "guard", "probe", "boundary-decide", "hygiene",
-                  "hygiene-stalled", "post-guard", "post-probe", "post-decide",
-                  "admission-check", "admit", "running", "stopped", "done"}
+    /\ phase \in {"config", "rejected", "benchmark", "guard", "probe",
+                  "boundary-decide", "hygiene", "hygiene-stalled", "post-guard",
+                  "post-probe", "post-decide", "admission-check", "admit",
+                  "running", "stopped", "done"}
     /\ free \in FreeSamples
     /\ raw \in RawSamples
     /\ sample \in ParsedSamples
@@ -350,6 +367,7 @@ TypeOK ==
     /\ hygieneElapsed \in 0..3
     /\ hygieneTermSent \in BOOLEAN
     /\ hygieneKillSent \in BOOLEAN
+    /\ settingsValid \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -368,8 +386,9 @@ StaleProgressPreventsAdmission ==
     /\ admitted => admissionFresh
     /\ benchmark => benchmarkFresh
 HygieneWithinBudget == phase = "hygiene-stalled" => hygieneElapsed < HygieneBudget
+AdmissionRequiresValidDiskSettings == (admitted \/ benchmark) => settingsValid
 HygieneKillFollowsTerm == hygieneKillSent => hygieneTermSent
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
-Completes == <>(admitted \/ (phase = "done" /\ evidence))
+Completes == <>(admitted \/ (phase = "done" /\ evidence) \/ phase = "rejected")
 =============================================================================
