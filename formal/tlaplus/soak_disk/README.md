@@ -69,6 +69,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `StopTick`, `StopReturns` | `pkill` and `docker kill` under `timeout` with TERM, then KILL |
 | `AttributionTick`, `CompleteRoot` | `disk_diagnostics_bounded` walks every root under one deadline |
 | `Finish`, `Recover`, `RestartDecision` | The next segment finds the retained marker |
+| `LateWrite` | Writers whose termination was never confirmed keep consuming space after the stop returned |
 
 | Constant | Correction | Pre-fix configuration | Expected violation |
 | --- | --- | --- | --- |
@@ -82,7 +83,25 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `CheckProgress` | A live guardian without recent progress counts as failed, and the work is interrupted | `MC_SoakDiskGuardian_alive_only_pre_fix` | `StaleGuardianRequiresInterrupt` |
 | `StopOnExit` | The driver's EXIT trap stops the node writers it launched when it exits with an iteration or benchmark in flight | `MC_SoakDiskGuardian_client_only_pre_fix` | `ExitStopsWriters` |
 
-`MC_SoakDiskGuardian` enables all nine corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, and `KillFollowsTerm`. It completes with 6342 distinct states.
+`MC_SoakDiskGuardian` enables all nine corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6342 distinct states.
+
+### Conditional no-overrun theorem
+
+The model tracks free space as `freeMiB`. It starts at `HardFloorMiB`, the worst healthy sample. It falls by `WriteRateMax` for every clock unit the writers run: `SamplePeriod` units before the next probe, the probe units, and the stop units. The invariant `NoOverrun` states that `freeMiB` stays positive.
+
+It holds under two premises:
+
+| Premise | Definition | Control that drops it |
+| --- | --- | --- |
+| `FloorCoversReaction` | `HardFloorMiB > WriteRateMax * (SamplePeriod + ProbeDeadline + StopBudget)` | `MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix` |
+| `BoundTermination` | A completed stop ends consumption. Without it `LateWrite` continues for `LateUnits` | `MC_SoakDiskGuardian_unconfirmed_stop_pre_fix` |
+
+Both controls violate `NoOverrun`, so each premise is necessary. The gating configuration uses `WriteRateMax = 10`, `SamplePeriod = 5`, and `HardFloorMiB = 150`, which leaves 50 MiB after a 10-unit reaction.
+
+In production one unit is one second. The guardian sleeps 5 seconds, the probe deadline is 3 seconds, and the stop budget is 2 seconds. The reaction time is therefore 10 seconds.
+
+The default floor of 4096 MiB puts the hard floor at 2048 MiB. The premise then requires the writers to consume less than about 205 MiB per second across any 10-second window. That rate is a measurement, not a derivation. The disk-usage timeline in the run artifact supplies it. The termination premise is the open D2 item: the driver does not confirm that the killed writers stopped.
+
 
 Clock units: the probe deadline is 3 units (a 2-second timeout plus a 1-second kill grace), a stalled `df` returns at 4 units, the stop budget is 2 units (TERM at 1, KILL at 2), and attribution has 1 unit for all roots. Root counts are 1, 3, and 32. Prior failure counts are 0 and 2.
 

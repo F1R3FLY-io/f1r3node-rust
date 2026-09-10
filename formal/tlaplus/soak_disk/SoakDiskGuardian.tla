@@ -4,7 +4,10 @@
 (* breach, stops the writers, attributes the space, and the next segment     *)
 (* finds the marker. Nine constants switch the nine corrections on and off   *)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
-EXTENDS Naturals, TLC
+(* Four more constants state the conditional no-overrun theorem: free space  *)
+(* stays positive when the hard floor covers the writers' worst consumption   *)
+(* over the reaction time and the stop confirms termination.                  *)
+EXTENDS Integers, TLC
 
 CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           RejectUnavailable, \* a probe without a sample interrupts the iteration
@@ -14,16 +17,30 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           PreserveBreach,    \* a restart keeps the marker and a failure
           EnforceStopDeadline, \* pkill and docker kill run under a deadline
           CheckProgress, \* a live guardian without recent progress counts as failed (B20, B21)
-          StopOnExit \* the driver's exit trap stops the node writers it launched (B28)
+          StopOnExit, \* the driver's exit trap stops the node writers it launched (B28)
+          WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
+          SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
+          HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
+          BoundTermination  \* a completed stop ends consumption (confirmed termination)
 
-ASSUME {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
-        AggregateDeadline, PreserveBreach, EnforceStopDeadline, CheckProgress,
-        StopOnExit} \subseteq BOOLEAN
+ASSUME /\ {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
+           AggregateDeadline, PreserveBreach, EnforceStopDeadline, CheckProgress,
+           StopOnExit, BoundTermination} \subseteq BOOLEAN
+       /\ WriteRateMax \in Nat
+       /\ SamplePeriod \in Nat
+       /\ HardFloorMiB \in Nat \ {0}
 
 ProbeDeadline     == 3  \* two-second timeout plus one-second kill grace
 ProbeReturnsAt    == 4  \* a stalled df prints a valid field after the deadline
 AttributionBudget == 1  \* SOAK_DISK_DIAGNOSTIC_SECONDS, one unit for every root
 StopBudget        == 2  \* SOAK_DISK_STOP_SECONDS: TERM at 1, KILL at 2
+LateUnits         == 3  \* how long unconfirmed writers keep consuming after the stop
+
+\* The reaction time from the last healthy sample to a completed stop, under
+\* the corrected deadlines. The theorem's numeric premise: the hard floor must
+\* exceed what the writers can consume in that time.
+ReactionUnits       == SamplePeriod + ProbeDeadline + StopBudget
+FloorCoversReaction == HardFloorMiB > WriteRateMax * ReactionUnits
 
 VARIABLES phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
@@ -31,13 +48,19 @@ VARIABLES phase, alive, interruptRequested, breachRecorded,
           diagElapsed, rootsLeft,
           marker, priorFailures, failures, admitted,
           stale, \* the guardian is alive but its progress record has expired
-          exitStop \* the driver's exit trap stopped the writers (B28)
+          exitStop, \* the driver's exit trap stopped the writers (B28)
+          freeMiB,      \* free space, consumed at WriteRateMax while the writers run
+          writersAlive, \* the writers still consume space
+          lateUnits     \* clock units of unconfirmed consumption after the stop
 
 vars == <<phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
-          marker, priorFailures, failures, admitted, stale, exitStop>>
+          marker, priorFailures, failures, admitted, stale, exitStop,
+          freeMiB, writersAlive, lateUnits>>
+
+Consumption == <<freeMiB, writersAlive, lateUnits>>
 
 Init ==
     /\ phase = "running"
@@ -59,6 +82,9 @@ Init ==
     /\ admitted = FALSE
     /\ stale = FALSE
     /\ exitStop = FALSE
+    /\ freeMiB = HardFloorMiB
+    /\ writersAlive = TRUE
+    /\ lateUnits = 0
 
 \* B28: the driver exits while an iteration or benchmark runs (a signal, an
 \* early exit). Only the corrected EXIT trap stops the writers it launched;
@@ -128,9 +154,10 @@ StartProbe ==
     /\ phase = "running"
     /\ alive
     /\ phase' = "probing"
+    /\ freeMiB' = freeMiB - SamplePeriod * WriteRateMax
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed, timedOut,
                    known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker,
-                   priorFailures, failures, admitted>>
+                   priorFailures, failures, admitted, writersAlive, lateUnits>>
 
 \* The clock advances while df has not returned.
 Tick ==
@@ -139,9 +166,10 @@ Tick ==
     /\ elapsed' = elapsed + 1
     /\ timedOut' = (EnforceTimeout /\ elapsed' = ProbeDeadline)
     /\ phase' = IF timedOut' THEN "sampled" ELSE "probing"
+    /\ freeMiB' = freeMiB - WriteRateMax
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, known, stopStarted, stopElapsed, termSent, killSent,
                    diagElapsed, rootsLeft, marker, priorFailures, failures,
-                   admitted>>
+                   admitted, writersAlive, lateUnits>>
 
 \* df returns promptly with or without a sample, or late with a valid field.
 ProbeReturns ==
@@ -206,17 +234,33 @@ StopTick ==
     /\ termSent' = (EnforceStopDeadline /\ stopElapsed' >= 1)
     /\ killSent' = (EnforceStopDeadline /\ stopElapsed' = StopBudget)
     /\ phase' = IF killSent' THEN "attribution" ELSE "stopping"
+    /\ freeMiB' = freeMiB - WriteRateMax
+    /\ writersAlive' = (writersAlive /\ ~(killSent' /\ BoundTermination))
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed, timedOut,
                    known, stopStarted, diagElapsed, rootsLeft, marker,
-                   priorFailures, failures, admitted>>
+                   priorFailures, failures, admitted, lateUnits>>
 
 StopReturns ==
     /\ phase = "stopping"
     /\ phase' = "attribution"
+    /\ writersAlive' = (writersAlive /\ ~BoundTermination)
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed, timedOut,
                    known, stopStarted, stopElapsed, termSent, killSent,
                    diagElapsed, rootsLeft, marker, priorFailures, failures,
-                   admitted>>
+                   admitted, freeMiB, lateUnits>>
+
+\* Unconfirmed termination: the stop returned, but the writers keep
+\* consuming for a bounded number of units afterwards.
+LateWrite ==
+    /\ phase \in {"attribution", "finished", "resume", "stopped", "ready", "done"}
+    /\ writersAlive
+    /\ lateUnits < LateUnits
+    /\ lateUnits' = lateUnits + 1
+    /\ freeMiB' = freeMiB - WriteRateMax
+    /\ UNCHANGED <<phase, alive, interruptRequested, breachRecorded, elapsed,
+                   timedOut, known, stopStarted, stopElapsed, termSent, killSent,
+                   diagElapsed, rootsLeft, marker, priorFailures, failures,
+                   admitted, writersAlive>>
 
 \* The pre-fix order writes the record after the stop command.
 PublishLate ==
@@ -273,13 +317,15 @@ RestartDecision ==
                    known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker,
                    priorFailures, failures>>
 
-Next == DriverExit \/ ExitTrap
-        \/ ((Stall \/ WatcherPollStale) /\ UNCHANGED exitStop)
-        \/ (/\ Crash \/ WatcherPoll \/ StartProbe \/ Tick \/ ProbeReturns
-               \/ DecideSample \/ Detect \/ Record \/ BeginStop \/ StopTick
-               \/ StopReturns \/ PublishLate \/ AttributionTick \/ CompleteRoot
-               \/ Finish \/ Recover \/ RestartDecision
+Next == ((DriverExit \/ ExitTrap) /\ UNCHANGED Consumption)
+        \/ ((Stall \/ WatcherPollStale) /\ UNCHANGED <<exitStop, Consumption>>)
+        \/ ((StartProbe \/ Tick \/ StopTick \/ StopReturns \/ LateWrite)
             /\ UNCHANGED <<stale, exitStop>>)
+        \/ (/\ Crash \/ WatcherPoll \/ ProbeReturns
+               \/ DecideSample \/ Detect \/ Record \/ BeginStop
+               \/ PublishLate \/ AttributionTick \/ CompleteRoot
+               \/ Finish \/ Recover \/ RestartDecision
+            /\ UNCHANGED <<stale, exitStop, Consumption>>)
 
 Spec == Init /\ [][Next]_vars
 
@@ -306,6 +352,9 @@ TypeOK ==
     /\ admitted \in BOOLEAN
     /\ stale \in BOOLEAN
     /\ exitStop \in BOOLEAN
+    /\ freeMiB \in Int
+    /\ writersAlive \in BOOLEAN
+    /\ lateUnits \in 0..LateUnits
 
 DeadGuardianRequiresInterrupt ==
     (phase = "watcher-decided" /\ ~alive) => (interruptRequested /\ breachRecorded)
@@ -322,4 +371,9 @@ AttributionWithinBudget == phase = "attribution" => diagElapsed < AttributionBud
 RetainedBreachStopsRestart == phase = "done" => (marker /\ ~admitted /\ failures > 0)
 PriorFailuresPreserved == failures >= priorFailures
 ExitStopsWriters == phase = "exited" => exitStop
+
+\* The conditional theorem. Under FloorCoversReaction and BoundTermination the
+\* configuration keeps free space positive on every path; the two assumption
+\* controls each drop one premise and violate it.
+NoOverrun == freeMiB > 0
 =============================================================================

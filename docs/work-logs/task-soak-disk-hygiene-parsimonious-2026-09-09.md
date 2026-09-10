@@ -119,6 +119,14 @@ The output directory is already uploaded as the run artifact, so the file surviv
 
 Next step: dispatch the soak workflow from this branch, with this branch as the target, and read which root or Docker object climbs. Run the workflow file from this branch, not from master, so the integration suite follows this branch's pin.
 
+## Conditional no-overrun theorem (2026-09-10)
+
+The user asked why the branch cannot prove that a disk overrun never occurs. The answer is that the consumer's write rate is outside the driver, and the stop does not confirm termination. The guardian model now states the theorem with those premises explicit.
+
+`freeMiB` starts at the hard floor and falls at `WriteRateMax` per unit for the sample period, the probe, and the stop. `NoOverrun` holds under `FloorCoversReaction` and `BoundTermination`. The controls `rate_exceeds_floor` and `unconfirmed_stop` each drop one premise and violate it. The state count stays at 6342.
+
+In production the reaction time is 10 seconds and the hard floor is 2048 MiB. The writers must then consume less than about 205 MiB per second over any 10-second window. The timeline rows give five-minute averages. A burst bound needs the guardian's own 5-second samples, which is the next evidence step.
+
 ## Notes for the source agent
 
 - New cycles fit the existing shape: add a constant and an invariant to one of the two modules, one `MC_*_pre_fix.cfg`, one line in `NEGATIVE_CONTROLS`, and one scenario in `SCENARIOS` plus its `--inside` branch. Nothing else needs a copy of the list.

@@ -71,11 +71,16 @@ The per-cycle manifests were produced on the source branch and are retained outs
 | `soak-d2-benchmark-supervision-2026-09-09/manifest.jsonc` (B18, B19) | `33be0710c7d724988fa1e07797a6537f3ba5ae9f962eacce784cabe0a0d348fe` |
 | `soak-d2-benchmark-cases-2026-09-09/manifest.jsonc` (B17 coverage) | `c7671619622336d2ca493ea5b7597414b28f18a43bb5e4b3a659c50c9565661b` |
 
+## Conditional no-overrun theorem
+
+`SoakDiskGuardian` now carries `NoOverrun`: free space stays positive from the last healthy sample through a completed stop. The theorem holds under `FloorCoversReaction` (the hard floor exceeds the writers' consumption over the 10-second reaction time) and `BoundTermination` (a completed stop ends consumption). Two controls, `rate_exceeds_floor` and `unconfirmed_stop`, each drop one premise and violate the invariant. With the default 4096 MiB floor the rate premise bounds consumption at about 205 MiB per second over any 10-second window. The timeline rows measure that rate. The termination premise is the open D2 item.
+
 ## Limits
 
 - The model-to-code maps are reviewed abstractions, not refinement proofs of Bash.
 - Fixtures replace `df`, `docker`, and the workload. They do not cover every malformed field, exit status, or Docker failure.
 - Local records prove neither durability, upload, nor confirmed writer termination. Fairness is not a time bound.
+- The no-overrun theorem is conditional. Its rate premise is unmeasured until a timeline run, and its termination premise is unmet until D2 confirms termination.
 - D2 remains open for confirmed termination and a composed emergency deadline. Hygiene now reclaims nothing from Docker, so D3 must identify the growing consumer and an owned reclamation path.
 
 ```json

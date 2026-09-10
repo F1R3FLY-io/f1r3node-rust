@@ -180,6 +180,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_unbounded_stop_pre_fix:StopWithinBudget
     soak_disk/MC_SoakDiskGuardian_alive_only_pre_fix:StaleGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_client_only_pre_fix:ExitStopsWriters
+    soak_disk/MC_SoakDiskGuardian_rate_exceeds_floor_pre_fix:NoOverrun
+    soak_disk/MC_SoakDiskGuardian_unconfirmed_stop_pre_fix:NoOverrun
 )
 
 # Areas whose expected-violation configurations are all registered. A

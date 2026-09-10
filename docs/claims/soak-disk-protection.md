@@ -35,7 +35,8 @@ With disk protection enabled, the soak driver never starts an iteration from a f
 
 | Check | Command | Status |
 | --- | --- | --- |
-| Bounded models and twenty-five controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
+| Bounded models and twenty-seven controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
+| Conditional no-overrun theorem | `MC_SoakDiskGuardian` invariant `NoOverrun` under `FloorCoversReaction` and `BoundTermination` | Proven in the model. The rate premise awaits the timeline measurement, and the termination premise awaits D2 |
 | Container regressions, 42 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally and in CI |
 | Host driver regression, band scenario | `scripts/bench/test-run-merge-recovery-soak.sh` | Green locally and in CI |
 
