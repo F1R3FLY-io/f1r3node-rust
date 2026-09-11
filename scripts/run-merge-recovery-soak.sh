@@ -413,6 +413,7 @@ sys.exit(status)
 PY
 	) >"$directory/monitor.log" 2>&1 &
 	monitor=$!
+	CRASH_MONITOR_PID="$monitor"
 	for _attempt in {1..100}; do
 		kill -0 "$monitor" 2>/dev/null || return 1
 		[ ! -s "$directory/ready" ] || return 0
@@ -1270,6 +1271,7 @@ SH
 	SOAK_WORKLOAD_PATH="$SOAK_DOCKER_OWNER_DIR:$PATH"
 fi
 CRASH_MONITOR_DIR=""
+CRASH_MONITOR_PID=""
 disk_usage_timeline segment-start
 HOST_GUARDIAN_PID=""
 HOST_GUARDIAN_PROGRESS="$OUTPUT_DIR/.host-guardian-progress"
@@ -1672,6 +1674,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_SNAPSHOT_PID=$!
 	GUARDIAN_INTERRUPTED=0
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
+		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The crash monitor exited during iteration execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
 		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
 			printf 'The host guardian exited during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
 		fi

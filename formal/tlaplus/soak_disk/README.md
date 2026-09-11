@@ -62,6 +62,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | Model action | Driver behavior |
 | --- | --- |
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
+| `MonitorCrash`, `WatcherPollMonitor` | The iteration watcher polls the crash monitor, and its death is a breach (B40) |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
 | `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B31) |
 | `MonitorObservesExit` | The trap's exit handling leaves a marker, and the crash monitor reads it before it acts (B39) |
@@ -92,8 +93,9 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `ConfigureAtCreation` | The container OOM preference is set once at creation through the owner-labeling wrapper. The pre-fix sample marked every container matching a name filter | `MC_SoakDiskGuardian_periodic_name_pre_fix` | `UnownedContainerPreferencesPreserved` |
 | `SurvivesDriverCrash` | A crash monitor in its own session outlives a killed driver and runs the owner-labeled stop. The pre-fix driver had no monitor, and a monitor in the driver's process group would die with it | `MC_SoakDiskGuardian_parent_group_pre_fix` | `CrashStopsOwnedWriters` |
 | `RememberHandledExit` | The driver's exit handling writes a handled-exit marker, and the crash monitor exits without a second stop when it finds the marker. The pre-fix monitor stopped the writers on every driver exit | `MC_SoakDiskGuardian_unconditional_pre_fix` | `HandledExitHasNoExtraStop` |
+| `DetectMonitorDeath` | The iteration watcher treats a dead crash monitor as a breach, records unconfirmed termination, and refuses work. The pre-fix driver checked the monitor only at startup | `MC_SoakDiskGuardian_startup_only_pre_fix` | `DeadMonitorRequiresInterrupt` |
 
-`MC_SoakDiskGuardian` enables all sixteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6462 distinct states.
+`MC_SoakDiskGuardian` enables all seventeen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 12948 distinct states.
 
 ### Conditional no-overrun theorem
 

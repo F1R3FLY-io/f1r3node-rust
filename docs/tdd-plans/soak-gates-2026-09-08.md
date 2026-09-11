@@ -606,6 +606,13 @@ behaviors:
         formal_green_exit: 0
         construction: not-applicable
         claim_discharge: pending
+  - id: B40
+    statement: Monitor death during an iteration stops the owned host writer, preserves an unrelated writer, and retains one failure across restarts.
+    priority: must
+    deep_module: false
+    done: false
+    construction: not-applicable
+    claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles

@@ -7,6 +7,7 @@
     "base_commit": "bef79ba48cf024f13f5cf568894c174ac0a9ad2f",
     "binding": "source-sha256",
     "inputs_sha256": {
+      "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/.gitattributes": "a5ad3b21e7db12977b2c5ffd18728be946d92159f733dc513039fafb1ca058ca",
       ".github/oci-validation.env": "da5d1df8788aac42b85aa75dc54f927aad567265fd3679f8984f5b2538b4cbf6",
       ".github/scripts/check-workflow-invariants.sh": "c25862d66eebe51282ca854da920a75f7553ac27590326a0650dadb1e42d2905",
       ".github/scripts/test-release-gates.sh": "ba92e9f13fd6a055335a6a9968af354d577179990d7a8b1b1b28a58bb5645b35",
