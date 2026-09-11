@@ -560,6 +560,20 @@ behaviors:
         green_exit: 0
         formal_green_exit: 0
         claim_discharge: pending
+  - id: B37
+    statement: Restart refuses work and retains one interrupted benchmark failure after a driver crash before outcome publication.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-benchmark-crash-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-real-benchmark-crash-recovery.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -594,6 +608,17 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B17: The guardian records a hard-floor breach and requests a stop before the opening benchmark returns.
 
 ## Cycle evidence
+
+B37 adds [benchmark crash evidence](../cbc-evidence/soak-d2-benchmark-crash-2026-09-11/README.md).
+The baseline admits new work after a crash before any benchmark outcome or stop record.
+The correction persists the interruption before launch and retains one failure across two refused restarts.
+The four-state model preserves the exact `BenchmarkCrashRequiresRefusal` control.
+
+Ten real-system GREEN cases, 32 positive configurations, 34 controls, 238 classifier cases, six routing scenarios, and 41 emergency cases pass.
+Supporting regressions also pass, including failed benchmark-stop recovery.
+The archive contains 376 verified regular files, and the diagnostic virtual machine was observed terminated.
+The original Docker writer remains active until fixture cleanup, so this cycle does not prove production crash-time termination.
+Storage faults, other crash windows, durable publication, aggregate deadlines, reserve bounds, hosted checks, and maintainer review remain pending.
 
 B35 and B36 add [benchmark recovery and Docker preference evidence](../cbc-evidence/soak-d2-container-preference-2026-09-11/README.md).
 B35 passes unchanged-production characterization and retains one failed benchmark stop across two refused restarts.

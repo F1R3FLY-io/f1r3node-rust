@@ -1,0 +1,1 @@
+PASS: Two restarts refused work and retained one interrupted benchmark failure while its Docker writer remained running.

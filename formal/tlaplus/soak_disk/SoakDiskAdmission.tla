@@ -23,7 +23,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           EnforceCleanupFailures, \* a failed cleanup command fails hygiene (B26)
           PreserveDockerResources, \* hygiene inspects Docker resources, never prunes them (B27)
           RememberInFlight, \* a segment that crashed mid-iteration refuses the next segment (B29)
-          RememberBenchmark, \* a segment that crashed during the opening benchmark refuses the next segment (plan entry pending)
+          RememberBenchmark, \* a segment that crashed during the opening benchmark refuses the next segment (B37)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -78,7 +78,7 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           cleanupFailed, \* a Docker cleanup command failed during hygiene (B26)
           dockerPresent, \* unowned Docker resources still exist after hygiene (B27)
           interrupted,   \* the previous segment died with an iteration in flight (B29)
-          benchmarkInterrupted \* the previous segment died with the opening benchmark in flight
+          benchmarkInterrupted \* the previous segment died with the opening benchmark in flight (B37)
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 

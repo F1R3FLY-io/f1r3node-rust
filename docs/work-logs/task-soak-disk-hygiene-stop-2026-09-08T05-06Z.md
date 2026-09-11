@@ -657,3 +657,33 @@ No Git commit, push, hosted dispatch, real node workload, or soak occurred in th
 Remaining work includes storage faults, crash windows, full launch ownership, durable publication, aggregate deadlines, and D3 growth and reserve bounds.
 Conflicting caller preference options and legacy runner-survival comments remain review limitations.
 D2 and acceptance remain pending.
+
+## B37 benchmark crash recovery
+
+The user requested D2 completion.
+B37 reproduces new work after a driver crash during an active benchmark, before any outcome or stop record exists.
+The production baseline exits 1, and the matching formal control exits 12 for `BenchmarkCrashRequiresRefusal`.
+The correction records benchmark interruption state before launch and retains one failure across two refused restarts.
+A failed exit stop sets the retained state immediately, so B35 does not count the interruption twice.
+
+The [B37 evidence](../cbc-evidence/soak-d2-benchmark-crash-2026-09-11/README.md) records the corrected production pass and four-state model pass.
+Ten real-system GREEN cases revalidate B35, Docker preferences, ownership, rejected stops, shutdown, and iteration recovery.
+The composed gate passes 32 positive configurations and 34 exact controls.
+All 66 actual model logs were saved before substitutes ran.
+All 238 classifier cases, six routing scenarios, 41 emergency cases, and supporting regressions pass.
+Five primary language-server checks report no diagnostics.
+
+The input audit compares 217 verification inputs with the current source without a mismatch.
+Archive validation precedes extraction and verifies 376 unique regular files with matching extracted digests.
+The ninth diagnostic virtual machine was observed terminated after retrieval.
+The fixture stops its recorded benchmark client group after the crash, but the Docker writer remains active through both refused restarts.
+Fixture cleanup is not production shutdown evidence.
+
+External commits `69332f716` and `64b02472c` contain earlier evidence and the B37 correction.
+This session does not attest those commits or their hooks.
+The bootstrap archive retains the earlier source snapshot, while separate hashed payloads identify the executed driver versions.
+No assistant commit, push, hosted dispatch, real node workload, or soak occurred in this cycle.
+
+Storage faults, other crash windows, full creation ownership, writer termination, durable publication, aggregate deadlines, and reserve bounds remain open.
+Hosted verification, enforcement, maintainer review, and claim ratification also remain open.
+D2 and acceptance remain pending.

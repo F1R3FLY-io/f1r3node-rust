@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == kill ]]; then
+    printf '%s\n' "$*" >>"$SOAK_REAL_EVIDENCE/rejected-stop.txt"
+    printf 'The fixture rejected the Docker stop command.\n' >&2
+    exit 42
+fi
+exec /usr/bin/docker "$@"
