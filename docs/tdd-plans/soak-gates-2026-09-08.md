@@ -601,7 +601,6 @@ B34 and B35 record the next identified local gaps.
 Durability, complete response bounds, D3 reserve evidence, real-Docker revalidation, hosted checks, and maintainer review remain pending.
 D2 is not complete.
 
-
 B30 and B31 add [Docker stop evidence](../cbc-evidence/soak-d2-owned-stop-2026-09-10/README.md) from a guarded disposable VM.
 B30 passes with Docker `run` and Compose while preserving the unrelated writer.
 B31 retains one failed interruption after a rejected Docker stop and reports unconfirmed writer termination.

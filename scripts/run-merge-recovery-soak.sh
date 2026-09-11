@@ -1241,7 +1241,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		guardian_oom_mark_warned=0
 		guardian_mark_workload_oom_preferred() {
 			local failed=0
-			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" python3 - "$SOAK_WRITER_OWNER" <<'PY'
+			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" python3 - "$SOAK_WRITER_OWNER" <<'PY'; then
 import os
 import sys
 
@@ -1269,7 +1269,6 @@ for name in os.listdir("/proc"):
             os.close(directory)
 sys.exit(status)
 PY
-			then
 				failed=1
 			fi
 			# One line for the whole guardian lifetime: a per-sample failure
