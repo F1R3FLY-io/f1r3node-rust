@@ -487,6 +487,63 @@ behaviors:
         hosted_confirmation: pending
         model_review: pending
         claim_discharge: pending
+  - id: B32
+    statement: Driver exit stops its detached host writer and preserves unrelated node and client writers.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-host-stop-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-host-stop-ownership.sh
+        scenario: exit
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        claim_discharge: pending
+  - id: B33
+    statement: Memory protection stops the workload host writer and preserves unrelated host writers.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-host-stop-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-host-stop-ownership.sh
+        scenario: memory
+        red_binding: b32-corrected-source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        claim_discharge: pending
+  - id: B34
+    statement: Memory protection changes native-process termination preferences only for workload-owned processes.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-oom-ownership-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-host-stop-ownership.sh
+        scenario: oom
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        claim_discharge: pending
+  - id: B35
+    statement: Restart refuses new work after an unconfirmed benchmark writer stop and retains the failure.
+    priority: must
+    deep_module: false
+    done: false
+    cycle_log: []
+  - id: B36
+    statement: Memory protection changes container termination preferences only for workload-owned containers.
+    priority: must
+    deep_module: false
+    done: false
+    cycle_log: []
 ---
 
 # Soak Gate Development Cycles
@@ -521,6 +578,29 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B17: The guardian records a hard-floor breach and requests a stop before the opening benchmark returns.
 
 ## Cycle evidence
+
+B34 adds [native memory preference evidence](../cbc-evidence/soak-d2-oom-ownership-2026-09-11/README.md).
+The baseline changes an unrelated node preference from zero to 1000.
+The correction preserves that preference and still changes the workload preference.
+The two-state model retains an exact ownership control.
+
+The composed gate passes 30 positive configurations and 32 exact controls.
+All 224 classifier cases, six routing scenarios, 41 emergency cases, and supporting regressions pass.
+B35 benchmark recovery and B36 Docker preference ownership remain unchecked.
+The broader D2 requirements remain pending.
+
+B32 and B33 add [host stop evidence](../cbc-evidence/soak-d2-host-stop-2026-09-11/README.md) for driver exit and memory protection.
+Both cases stop a detached workload writer and preserve unrelated writers in a private process namespace.
+The corrected model has two states and separate exact controls for the two unsafe selections.
+
+The composed gate passes 29 positive configurations and 31 exact controls.
+The classifier covers 217 cases, routing covers six scenarios, and all 40 emergency cases pass.
+The updated benchmark fixture accepts observed client termination instead of requiring a callback after termination.
+
+B34 and B35 record the next identified local gaps.
+Durability, complete response bounds, D3 reserve evidence, real-Docker revalidation, hosted checks, and maintainer review remain pending.
+D2 is not complete.
+
 
 B30 and B31 add [Docker stop evidence](../cbc-evidence/soak-d2-owned-stop-2026-09-10/README.md) from a guarded disposable VM.
 B30 passes with Docker `run` and Compose while preserving the unrelated writer.

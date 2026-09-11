@@ -559,3 +559,66 @@ This session does not attest those commits' hooks or create another commit.
 Host-process ownership, memory-pressure paths, other launch forms, late creation, failed storage, and complete shutdown remain open.
 D2, hosted verification, maintainer review, claim discharge, and acceptance remain pending.
 No node workload or soak ran, and the finalization wait remains 45 seconds.
+
+## D2 host stop cycles B32–B33
+
+The user requested full D2 completion.
+The [host stop evidence](../cbc-evidence/soak-d2-host-stop-2026-09-11/README.md) records two additional local corrections.
+The broader gate remains pending.
+
+B32 reproduces unrelated node and client termination during driver exit.
+The correction gives workload processes an owner value and uses Linux process descriptors for selected termination.
+B33 reproduces the memory path's separate unsafe selector.
+The memory path now uses the shared stop helper and reports unconfirmed termination.
+
+Both production controls return one, and their exact formal controls return 12.
+The common corrected model has two states.
+The final gate passes 29 positive configurations and 31 exact controls.
+All 40 emergency cases, 217 classifier cases, six routing scenarios, and supporting regressions pass.
+
+The first B32 composed command reached its tool limit during classifier tests.
+The actual model logs remained intact, and the separate classifier run passed.
+An older benchmark fixture required a return callback after client termination.
+The corrected fixture accepts observed termination while retaining its breach, stop-request, failure, and refusal checks.
+
+The first memory fixture armed its fault before it observed a healthy sample.
+That setup result returned two and is not behavioral RED.
+The corrected fixture waits for a healthy sample and retains matched RED/GREEN results.
+
+The tests use restricted containers with private process namespaces and no host Docker socket.
+No new VM, real node workload, or soak ran.
+The historical B30–B31 evidence remains unchanged despite staged formatting changes and the later documentation commit.
+
+Full D2 discharge requires D3 all-writer growth and reserve evidence.
+The prior diagnostic scope excludes real node workloads.
+I requested authorization for bounded D3 node diagnostics, without a soak.
+Observability prerequisites, remaining local faults, durable evidence, the complete deadline, and maintainer review remain required.
+
+A separate export check found that `e821517e0` omits 57 B30–B31 TLC streams because of the global `*.log` ignore rule.
+The exported inventory rejects the missing stream.
+Package-local ignore exceptions preserve the existing evidence bytes and permit later authorized staging.
+No commit or push occurred in this session.
+
+## D2 native memory preference B34
+
+The user requested continuation after the bounded D3 scope question.
+Local D2 faults remain first, and node diagnostics still require observability prerequisites and bounded safety controls.
+A soak remains outside this authorization.
+
+External commit `e2321eafe7ccb6efcf9ce29866b690ff84853ab0` contains the prior source and evidence.
+The current input export validates, and all inventory inputs are tracked.
+This session does not attest the external commit hooks.
+
+The [B34 evidence](../cbc-evidence/soak-d2-oom-ownership-2026-09-11/README.md) reproduces an unrelated native-process preference change from zero to 1000.
+The exact formal RED violates `UnownedPreferencesPreserved` with exit 12 before the correction.
+The correction checks inherited ownership through an opened process directory and writes through the same directory descriptor.
+Production GREEN preserves unrelated preferences and still sets the workload preference to 1000.
+
+The positive model has two distinct states.
+Thirty positive configurations, 32 exact controls, 224 classifier cases, six routing scenarios, and 41 emergency cases pass.
+Supporting regressions also pass.
+No real node workload or new VM ran.
+
+The unchanged Docker preference loop remains outside this native-process correction.
+B35 benchmark recovery and B36 Docker preference ownership remain unchecked.
+D2, reserve bounds, durability, complete response deadlines, hosted checks, and maintainer review remain pending.

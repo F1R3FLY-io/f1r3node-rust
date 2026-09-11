@@ -1,0 +1,11 @@
+PASS: d1
+PASS: b5
+PASS: b6
+PASS: b7
+soak driver tests passed (fail-closed + deadline + disk-band paths)
+PASS: .github/scripts/check-workflow-invariants.sh
+PASS: .github/scripts/test-release-workflows.sh
+PASS: .github/scripts/test-release-gates.sh
+PASS: scripts/test-repin-system-integration.sh
+PASS: scripts/bench/test-extend-issue24-metrics.sh
+PASS: scripts/bench/test-write-soak-summary.sh

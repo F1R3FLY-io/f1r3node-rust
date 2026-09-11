@@ -1,0 +1,32 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx512m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 27 and seed -3231002772221720443 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_DockerCleanupOwnership_global_prune_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/DockerCleanupOwnership.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DockerCleanupOwnership
+Semantic processing of module MC_DockerCleanupOwnership_global_prune_pre_fix
+Starting... (2026-09-10 19:04:26)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-10 19:04:27.
+Error: Invariant UnownedDockerResourcesPreserved is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ visited = {}
+/\ present = {"container", "network", "image"}
+
+State 2: <Inspect line 11, col 5 to line 13, col 77 of module DockerCleanupOwnership>
+/\ visited = {"container"}
+/\ present = {"network", "image"}
+
+2 states generated, 2 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 2.
+Finished in 02s at (2026-09-10 19:04:27)

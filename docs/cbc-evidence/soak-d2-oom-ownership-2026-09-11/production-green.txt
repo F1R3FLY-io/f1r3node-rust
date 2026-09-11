@@ -1,0 +1,2 @@
+PASS: Memory protection preferred its workload host process and preserved unrelated termination preferences.
+PASS: Driver exit stopped its detached host writer and preserved both unrelated host writers.

@@ -17,4 +17,10 @@ for test in active-probe record guardian-death probe-timeout diagnostic-deadline
         IMAGE="$(jq -r '.[0].Id' "$OUTPUT/$test/image-inspect.json")"
     fi
 done
+SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-host-stop-ownership.sh" \
+    "${1:-$ROOT}" "$OUTPUT/host-stop-ownership"
+SOAK_HOST_STOP_SCENARIO=memory SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-host-stop-ownership.sh" \
+    "${1:-$ROOT}" "$OUTPUT/memory-stop-ownership"
+SOAK_HOST_STOP_SCENARIO=oom SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-host-stop-ownership.sh" \
+    "${1:-$ROOT}" "$OUTPUT/host-oom-ownership"
 printf 'PASS: The isolated disk emergency regressions completed.\n'

@@ -84,8 +84,10 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `StopOnExit` | The driver's EXIT trap stops the node writers it launched when it exits with an iteration or benchmark in flight | `MC_SoakDiskGuardian_client_only_pre_fix` | `ExitStopsWriters` |
 | `RetainStopFailure` | A rejected stop command in the exit trap counts a failure, writes the early-exit reason, and refuses work, since termination is unconfirmed | `MC_SoakDiskGuardian_ignored_pre_fix` | `FailedStopRetained` |
 | `SelectOwned` | Stop commands select only the containers that carry this run's owner label. The pre-fix stop killed every `rnode` container on the host | `MC_SoakDiskGuardian_name_only_pre_fix` | `UnownedWritersPreserved` |
+| `SelectOwnedHost` | Host stops select only processes whose environment carries this run's owner marker, through pidfd. The pre-fix stop killed every process matching a path pattern | `MC_SoakDiskGuardian_host_pattern_only_pre_fix` | `UnownedHostWritersPreserved` |
+| `MarkOwnedOnly` | Each guardian sample sets the OOM preference only on owner-marked processes. The pre-fix guardian marked every process matching the pattern | `MC_SoakDiskGuardian_oom_pattern_only_pre_fix` | `UnownedPreferencesPreserved` |
 
-`MC_SoakDiskGuardian` enables all eleven corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6366 distinct states.
+`MC_SoakDiskGuardian` enables all thirteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6366 distinct states.
 
 ### Conditional no-overrun theorem
 

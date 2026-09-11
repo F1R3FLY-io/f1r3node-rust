@@ -1,0 +1,1 @@
+FAIL: The candidate input is stale: docs/tdd-plans/soak-gates-2026-09-08.md.

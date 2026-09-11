@@ -263,6 +263,7 @@ if [[ "${SOAK_DISK_TEST_SCENARIO:-band}" == benchmark-active-disk ]]; then
     case "$*" in
         'compose -f /case/node/docker/shard.yml -p soak-bench up -d')
             printf '%s\n' "$*" >/case/evidence/benchmark-started.txt
+            printf '%s\n' "$$" >/case/evidence/benchmark-client-pid.txt
             printf 'available=1024\n' >/case/evidence/benchmark-disk-fault.txt
             observe_benchmark_return() {
                 if [[ -s /case/evidence/stop-during-benchmark.txt ]]; then
@@ -949,13 +950,23 @@ SH
         exit 0
     fi
     if [[ "$SCENARIO" == benchmark-active-disk ]]; then
-        if [[ ! -s evidence/benchmark-started.txt || ! -e evidence/benchmark-returned.txt ]] ||
+        if [[ ! -s evidence/benchmark-started.txt || ! -s evidence/benchmark-client-pid.txt ]] ||
             ! grep -Fxq 'available=1024' evidence/benchmark-disk-fault.txt ||
             ! grep -Fxq 'valid=16384' evidence/probe-samples.txt; then
             printf 'ERROR: The fixture did not exercise the active benchmark disk fault.\n' >&2
             exit 2
         fi
-        if ! grep -Fxq 'recorded' evidence/benchmark-observation.txt; then
+        if [[ ! -e evidence/benchmark-returned.txt ]]; then
+            client_pid="$(<evidence/benchmark-client-pid.txt)"
+            [[ "$client_pid" =~ ^[1-9][0-9]*$ ]] || exit 2
+            client_state="$(ps -o stat= -p "$client_pid" || true)"
+            printf '%s\n' "$client_state" >evidence/benchmark-client-after.txt
+            if [[ -n "$client_state" && "$client_state" != Z* ]]; then
+                printf 'FAIL: The opening benchmark client remained active after protection.\n' >&2
+                exit 1
+            fi
+            printf 'The fixture client terminated before its return callback.\n' >evidence/benchmark-cancelled.txt
+        elif ! grep -Fxq 'recorded' evidence/benchmark-observation.txt; then
             printf 'FAIL: The opening benchmark returned without a guardian record and stop request for its disk fault.\n' >&2
             exit 1
         fi

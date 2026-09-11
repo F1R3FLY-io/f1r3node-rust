@@ -1,0 +1,43 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx512m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 115 and seed 4273499955070755801 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_GuardianAdmission_unchecked_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/GuardianAdmission.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module GuardianAdmission
+Semantic processing of module MC_GuardianAdmission_unchecked_pre_fix
+Starting... (2026-09-10 19:03:50)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-10 19:03:51.
+Error: Invariant AdmissionRequiresGuardian is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ alive = TRUE
+/\ phase = "boundary"
+/\ admitted = FALSE
+/\ breachRecorded = FALSE
+
+State 2: <Crash line 15, col 5 to line 17, col 52 of module GuardianAdmission>
+/\ alive = FALSE
+/\ phase = "boundary"
+/\ admitted = FALSE
+/\ breachRecorded = FALSE
+
+State 3: <Decide line 20, col 5 to line 24, col 22 of module GuardianAdmission>
+/\ alive = FALSE
+/\ phase = "decided"
+/\ admitted = TRUE
+/\ breachRecorded = FALSE
+
+5 states generated, 4 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 2 (minimum is 2, the maximum 2 and the 95th percentile is 2).
+Finished in 02s at (2026-09-10 19:03:51)

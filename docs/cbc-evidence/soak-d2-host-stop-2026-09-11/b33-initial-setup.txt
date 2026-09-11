@@ -1,0 +1,2 @@
+/case/test.sh: line 80:    13 Killed                  setsid bash /tmp/rnode-unrelated /case/evidence/unrelated-node
+ERROR: The host ownership fixture failed before its behavioral verdict.
