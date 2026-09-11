@@ -134,6 +134,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_BenchmarkCrashRecovery
     soak_disk/MC_DriverCrashStop
     soak_disk/MC_CrashMonitorExit
+    soak_disk/MC_CrashMonitorDeath
 )
 
 TLC_WORKERS=auto
@@ -173,6 +174,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_BenchmarkCrashRecovery
         soak_disk/MC_DriverCrashStop
         soak_disk/MC_CrashMonitorExit
+        soak_disk/MC_CrashMonitorDeath
     )
     TLC_WORKERS=2
 fi
@@ -245,6 +247,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_BenchmarkCrashRecovery_unrecorded_pre_fix:BenchmarkCrashRequiresRefusal
     soak_disk/MC_DriverCrashStop_parent_group_pre_fix:DriverCrashStopsOwnedWriter
     soak_disk/MC_CrashMonitorExit_unconditional_pre_fix:HandledExitHasNoExtraStop
+    soak_disk/MC_CrashMonitorDeath_startup_only_pre_fix:MonitorDeathStopsOwnedWriter
 )
 
 failed=0

@@ -78,6 +78,7 @@ case "$config" in
     MC_BenchmarkCrashRecovery_unrecorded_pre_fix.cfg) invariant=BenchmarkCrashRequiresRefusal ;;
     MC_DriverCrashStop_parent_group_pre_fix.cfg) invariant=DriverCrashStopsOwnedWriter ;;
     MC_CrashMonitorExit_unconditional_pre_fix.cfg) invariant=HandledExitHasNoExtraStop ;;
+    MC_CrashMonitorDeath_startup_only_pre_fix.cfg) invariant=MonitorDeathStopsOwnedWriter ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -154,6 +155,8 @@ pr_configs=(
     soak_disk/MC_DriverCrashStop_parent_group_pre_fix
     soak_disk/MC_CrashMonitorExit
     soak_disk/MC_CrashMonitorExit_unconditional_pre_fix
+    soak_disk/MC_CrashMonitorDeath
+    soak_disk/MC_CrashMonitorDeath_startup_only_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

@@ -23,4 +23,6 @@ SOAK_HOST_STOP_SCENARIO=memory SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts
     "${1:-$ROOT}" "$OUTPUT/memory-stop-ownership"
 SOAK_HOST_STOP_SCENARIO=oom SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-host-stop-ownership.sh" \
     "${1:-$ROOT}" "$OUTPUT/host-oom-ownership"
+SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-crash-monitor-death.sh" \
+    "${1:-$ROOT}" "$OUTPUT/crash-monitor-death"
 printf 'PASS: The isolated disk emergency regressions completed.\n'
