@@ -1,0 +1,22 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 47
+preserving failure evidence from integration-tests/data (iteration 1)
+failure evidence preserved in 0s
+preserving failure evidence from integration-tests/log-archive (iteration 1)
+failure evidence preserved in 0s
+preserving failure evidence from integration-tests/.subprocess-data (iteration 1)
+failure evidence preserved in 0s
+host-protection breach in iteration 1; ending soak (fail-closed)
+The disk guardian detected 1024 MiB below floor 4096 MiB (hard floor 2048 MiB, consecutive samples 1). Workload termination is unconfirmed.
+started_at=1789136006
+segments=1
+finished_at=1789136013
+target_ref=disk-admission-fixture
+target_sha=unknown
+requested_seconds=30
+elapsed_seconds=7
+iterations=1
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

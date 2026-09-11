@@ -1,0 +1,36 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx512m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 106 and seed -1314848635128074147 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_DiskDiagnosticDeadline_per_root_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/DiskDiagnosticDeadline.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module DiskDiagnosticDeadline
+Semantic processing of module MC_DiskDiagnosticDeadline_per_root_pre_fix
+Starting... (2026-09-11 06:42:43)
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-09-11 06:42:44.
+Error: Invariant AttributionWithinBudget is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ elapsed = 0
+/\ rootsLeft = 3
+/\ freeMiB = 2
+/\ phase = "attribution"
+
+State 2: <Tick line 15, col 5 to line 20, col 26 of module DiskDiagnosticDeadline>
+/\ elapsed = 1
+/\ rootsLeft = 3
+/\ freeMiB = 0
+/\ phase = "attribution"
+
+5 states generated, 5 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 2.
+Finished in 02s at (2026-09-11 06:42:44)

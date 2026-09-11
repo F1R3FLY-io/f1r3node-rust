@@ -1,0 +1,43 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx512m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 1 and seed 2826841022146058366 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_GuardianSupervision_unwatched_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/GuardianSupervision.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module GuardianSupervision
+Semantic processing of module MC_GuardianSupervision_unwatched_pre_fix
+Starting... (2026-09-11 06:42:36)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-11 06:42:37.
+Error: Invariant DeadGuardianRequiresInterrupt is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ interruptRequested = FALSE
+/\ alive = TRUE
+/\ phase = "running"
+/\ breachRecorded = FALSE
+
+State 2: <Crash line 15, col 5 to line 17, col 62 of module GuardianSupervision>
+/\ interruptRequested = FALSE
+/\ alive = FALSE
+/\ phase = "running"
+/\ breachRecorded = FALSE
+
+State 3: <Poll line 20, col 5 to line 24, col 22 of module GuardianSupervision>
+/\ interruptRequested = FALSE
+/\ alive = FALSE
+/\ phase = "decided"
+/\ breachRecorded = FALSE
+
+5 states generated, 4 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 02s at (2026-09-11 06:42:37)

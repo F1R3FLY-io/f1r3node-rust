@@ -1,0 +1,17 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 58
+free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming
+repo/scripts/run-merge-recovery-soak.sh: line 416:    67 Killed                  ( export OUTPUT_DIR SOAK_TMP_ROOT; export -f disk_free_mb reclaim_disk_space_commands; timeout --signal=TERM --kill-after=1 "$DISK_HYGIENE_SECONDS" bash -c 'trap "" TERM; reclaim_disk_space_commands' )
+Disk hygiene failed or exceeded its command budget. Cleanup termination is unconfirmed.
+started_at=1789136189
+segments=1
+finished_at=1789136192
+target_ref=disk-admission-fixture
+target_sha=unknown
+requested_seconds=30
+elapsed_seconds=3
+iterations=0
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

@@ -687,3 +687,41 @@ No assistant commit, push, hosted dispatch, real node workload, or soak occurred
 Storage faults, other crash windows, full creation ownership, writer termination, durable publication, aggregate deadlines, and reserve bounds remain open.
 Hosted verification, enforcement, maintainer review, and claim ratification also remain open.
 D2 and acceptance remain pending.
+
+## B38 and B39 crash monitor work
+
+The user authorized implementation in the proposed priority order.
+B38 addresses the observed Docker writer that survives a driver process-group crash.
+The production fixture exits 1 before correction, and the exact `DriverCrashStopsOwnedWriter` control exits 12.
+An independent crash monitor waits on the parent process descriptor and invokes the existing ownership-checked stop helper.
+The corrected fixture stops the owned Docker writer and preserves the unrelated writer before fixture cleanup.
+
+The composed emergency suite then finds a separate regression.
+The B13 failure summary already exists, but a new stalled Docker client remains below the crash monitor.
+B39 acknowledges completed exit handling and avoids that duplicate stop.
+The exact `HandledExitHasNoExtraStop` control exits 12 before correction.
+The unchanged production regression and both three-state models pass after correction.
+An acknowledgment does not establish successful writer termination.
+
+The [combined evidence](../cbc-evidence/soak-d2-crash-stop-2026-09-11/README.md) retains both RED/GREEN cycles and the intermediate regression.
+The final source passes 11 real-system cases, 41 emergency cases, 34 positive configurations, 36 exact controls, and 252 classifier cases.
+Six routing scenarios and the supporting regressions also pass.
+All 70 actual model logs were saved before verifier substitutes ran.
+The 228 verification input snapshots match the final source.
+
+The two diagnostic archives contain 524 and 418 verified regular files.
+Each archive passed validation before extraction, and every extracted digest matched.
+Both diagnostic virtual machines were observed terminated after retrieval.
+All eleven diagnostic virtual machines used so far have termination observations.
+The earlier bootstrap archive and separate runtime payloads retain distinct source roles.
+
+The unchanged B37 fixture fails its old surviving-writer assumption after B38.
+Its adapted Docker boundary rejects kill requests explicitly and retains the same restart-admission and failure-count assertions.
+The initial formal batch stopped at a changed-HEAD guard before TLC ran.
+That guard result is not a behavioral RED.
+External commits `5a211fb5c` and `bef79ba48` contain the production changes, and this session does not attest their hooks.
+No assistant commit, push, hosted dispatch, node workload, or acceptance soak occurred in these cycles.
+
+Storage faults, monitor health, late creation, other launch and crash paths, safe reclamation, aggregate deadlines, and reserve bounds remain open.
+Hosted verification, enforcement, maintainer review, and claim ratification remain open.
+D2 and acceptance remain pending.

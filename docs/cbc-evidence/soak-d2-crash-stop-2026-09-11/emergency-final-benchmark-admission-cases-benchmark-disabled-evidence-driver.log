@@ -1,0 +1,17 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=0MB (hygiene band +4096MB)
+bench segment 1 failed (status 1); segment.log tail:
+shard compose up failed
+The boundary workload fixture completed.
+finalize signalled after iteration 1; ending the run
+started_at=1789136091
+segments=1
+finished_at=1789136094
+target_ref=disk-admission-fixture
+target_sha=unknown
+requested_seconds=700
+elapsed_seconds=3
+iterations=1
+failures=0
+bench_segments=1
+bench_failures=1
+early_exit_reason=none

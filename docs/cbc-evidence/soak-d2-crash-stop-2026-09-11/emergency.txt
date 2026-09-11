@@ -1,0 +1,16 @@
+PASS: The driver stopped the active iteration after the disk probe fault (missing-active).
+Evidence: [EVIDENCE_ROOT]/emergency/active-probe
+PASS: The disk breach record exists before Docker starts the stop command. Termination remains unconfirmed.
+Evidence: [EVIDENCE_ROOT]/emergency/record
+PASS: The driver recorded guardian death and stopped the active iteration.
+Evidence: [EVIDENCE_ROOT]/emergency/guardian-death
+PASS: The driver stopped the active iteration after the disk probe fault (stalled-active).
+Evidence: [EVIDENCE_ROOT]/emergency/probe-timeout
+PASS: Stalled attribution stopped within the aggregate fixture deadline across 32 session roots.
+Evidence: [EVIDENCE_ROOT]/emergency/diagnostic-deadline
+PASS: Restart preserved the guardian breach and failure count without new work (restart-uncounted).
+Evidence: [EVIDENCE_ROOT]/emergency/restart/restart-uncounted
+PASS: Restart preserved the guardian breach and failure count without new work (restart-counted).
+Evidence: [EVIDENCE_ROOT]/emergency/restart/restart-counted
+FAIL: Stalled stop commands prevented failure publication within the fixture deadline.
+Evidence: [EVIDENCE_ROOT]/emergency/stop-deadline

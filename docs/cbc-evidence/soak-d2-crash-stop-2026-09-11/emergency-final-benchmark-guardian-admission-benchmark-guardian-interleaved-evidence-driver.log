@@ -1,0 +1,101 @@
+resuming soak: segment 2, 0 iterations so far, started 2026-09-11 14:15:24 UTC
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 52
+The boundary workload fixture completed.
+The host guardian failed its benchmark admission check. Workload termination is unconfirmed.
+repo/scripts/run-merge-recovery-soak.sh: line 1023:    52 Killed                  ( guardian_oom_mark_warned=0; function guardian_mark_workload_oom_preferred () 
+{ 
+    local failed=0;
+    if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" python3 - "$SOAK_WRITER_OWNER" <<'PY'; then
+        failed=1
+import os
+import sys
+
+marker = ("SOAK_PROCESS_OWNER=" + sys.argv[1]).encode()
+status = 0
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    directory = None
+    try:
+        directory = os.open("/proc/" + name, os.O_RDONLY | os.O_DIRECTORY)
+        if os.fstat(directory).st_uid != os.geteuid():
+            continue
+        with os.fdopen(os.open("environ", os.O_RDONLY, dir_fd=directory), "rb") as environment:
+            if marker not in environment.read().split(b"\0"):
+                continue
+        with os.fdopen(os.open("oom_score_adj", os.O_WRONLY, dir_fd=directory), "w") as preference:
+            preference.write("1000\n")
+    except (FileNotFoundError, ProcessLookupError):
+        pass
+    except OSError:
+        status = 1
+    finally:
+        if directory is not None:
+            os.close(directory)
+sys.exit(status)
+PY
+
+    fi
+    if [ "$failed" -eq 1 ] && [ "$guardian_oom_mark_warned" -eq 0 ]; then
+        guardian_oom_mark_warned=1;
+        printf 'host guardian: could not apply oom_score_adj to some workload processes; the runner is not OOM-preferred over them\n' 1>&2;
+    fi
+}; function guardian_stamp_health_tag () 
+{ 
+    local state="$1" avail="$2" detail="${3:-}" iid tags;
+    command -v oci > /dev/null 2>&1 || return 0;
+    iid="$(curl -fsS --max-time 5 -H 'Authorization: Bearer Oracle' http://169.254.169.254/opc/v2/instance/id 2> /dev/null)" || return 0;
+    case "$iid" in 
+        ocid1.instance.*)
+
+        ;;
+        *)
+            return 0
+        ;;
+    esac;
+    tags="$(timeout --foreground 15 oci --auth instance_principal compute instance get --instance-id "$iid" --query 'data."freeform-tags"' --output json 2> /dev/null)" || return 0;
+    tags="$(printf '%s' "$tags" | python3 -c '
+import json, sys
+tags = json.load(sys.stdin) or {}
+tags["soak-health"] = sys.argv[1][:256]
+print(json.dumps(tags))
+' "$state:$(date +%s):avail=${avail}MB${detail:+:$detail}")" || return 0;
+    timeout --foreground 15 oci --auth instance_principal compute instance update --instance-id "$iid" --freeform-tags "$tags" --force > /dev/null 2>&1 || true
+}; over=0; hard_floor_mb=$((HOST_FREE_FLOOR_MB / 2)); [ "$hard_floor_mb" -ge 1 ] || hard_floor_mb=1; warn_floor_mb=$((HOST_FREE_FLOOR_MB + ${SOAK_HOST_WARN_BAND_MB:-4096})); disk_over=0; disk_hard_floor_mb=$((DISK_FREE_FLOOR_MB / 2)); [ "$disk_hard_floor_mb" -ge 1 ] || disk_hard_floor_mb=1; last_stamp=0; sample_n=0; while :; do
+    sleep 5; if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+        disk_mb="$(disk_free_mb)"; if [ -z "$disk_mb" ]; then
+            printf 'The disk probe is unavailable during execution. Workload termination is unconfirmed.\n' > "$HOST_GUARDIAN_BREACH"; stop_node_writers -q kill || true; exit 0;
+        fi; if [ -n "$disk_mb" ]; then
+            if [ "$disk_mb" -ge "$DISK_FREE_FLOOR_MB" ]; then
+                disk_over=0;
+            else
+                disk_over=$((disk_over + 1)); if [ "$disk_mb" -lt "$disk_hard_floor_mb" ] || [ "$disk_over" -ge 3 ]; then
+                    printf 'The disk guardian detected %s MiB below floor %s MiB (hard floor %s MiB, consecutive samples %s). Workload termination is unconfirmed.\n' "$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" > "$HOST_GUARDIAN_BREACH"; stop_node_writers -q kill || true; disk_diagnostics_bounded disk_guardian_diagnostics "$disk_mb" || true; exit 0;
+                fi;
+            fi;
+        fi;
+    fi; guardian_record_progress || exit 1; if [ "$HOST_FREE_FLOOR_MB" -le 0 ]; then
+        continue;
+    fi; free_mb="$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo 2> /dev/null)"; [ -n "$free_mb" ] || continue; sample_n=$((sample_n + 1)); [ $((sample_n % 3)) -eq 1 ] && guardian_mark_workload_oom_preferred; if [ "$free_mb" -ge "$HOST_FREE_FLOOR_MB" ]; then
+        over=0; if [ "$free_mb" -lt "$warn_floor_mb" ]; then
+            now="$(date +%s)"; if [ $((now - last_stamp)) -ge 60 ]; then
+                guardian_stamp_health_tag warning "$free_mb" & last_stamp="$now";
+            fi;
+        fi; continue;
+    fi; over=$((over + 1)); if [ "$free_mb" -ge "$hard_floor_mb" ] && [ "$over" -lt 3 ]; then
+        continue;
+    fi; printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB (hard floor %sMB, consecutive %s); writer termination is unconfirmed\n' "$free_mb" "$HOST_FREE_FLOOR_MB" "$hard_floor_mb" "$over" > "$HOST_GUARDIAN_BREACH"; stop_node_writers -q kill > /dev/null 2>&1 || true; guardian_stamp_health_tag breach "$free_mb"; exit 0;
+done )
+started_at=1789136124
+segments=2
+finished_at=1789136126
+target_ref=disk-admission-fixture
+target_sha=unknown
+requested_seconds=700
+elapsed_seconds=2
+iterations=1
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

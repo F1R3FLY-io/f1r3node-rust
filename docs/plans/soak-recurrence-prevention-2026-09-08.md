@@ -358,6 +358,14 @@ All ten real-system GREEN cases and composed regressions pass.
 The surviving writer requires fixture cleanup, so production crash-time termination remains open.
 Storage faults, durable publication, complete ownership, aggregate deadlines, reserve bounds, hosted verification, and maintainer review remain completion requirements.
 
+The [B38–B39 cycles](../cbc-evidence/soak-d2-crash-stop-2026-09-11/README.md) add production crash response and prevent a duplicate stop after handled exits.
+The final fixture stops its owned Docker writer without fixture intervention and preserves an unrelated writer.
+The acknowledgment records exit handling, not successful writer termination.
+All 11 final real-system cases and the composed regressions pass.
+
+This result does not cover monitor death, late creation, every launch path, storage faults, or all remaining crash windows.
+Durable publication, one aggregate emergency deadline, safe reclamation, D3 reserve bounds, hosted verification, and maintainer review remain completion requirements.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

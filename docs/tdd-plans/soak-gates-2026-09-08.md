@@ -578,14 +578,34 @@ behaviors:
     statement: Production crash response stops the owned Docker writer and preserves the unrelated writer without fixture intervention.
     priority: must
     deep_module: false
-    done: false
-    cycle_log: []
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-real-crash-stop.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        composed_regression_resolved_by: B39
+        construction: not-applicable
+        claim_discharge: pending
   - id: B39
     statement: The crash monitor does not repeat a stop after the driver completes exit handling.
     priority: must
     deep_module: false
-    done: false
-    cycle_log: []
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-disk-stop-deadline.sh
+        red_origin: composed-b38-regression
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        construction: not-applicable
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -620,6 +640,17 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B17: The guardian records a hard-floor breach and requests a stop before the opening benchmark returns.
 
 ## Cycle evidence
+
+B38 and B39 add [crash monitor evidence](../cbc-evidence/soak-d2-crash-stop-2026-09-11/README.md).
+B38 stops the owned Docker writer after a driver process-group crash and preserves an unrelated writer without fixture intervention.
+B39 removes a duplicate monitor stop after completed exit handling.
+The failed intermediate regression retained its failure summary and identified the extra stop client in a process snapshot.
+
+Both cycles retain matching production and formal RED/GREEN results.
+The final source passes 11 real-system cases, 41 emergency cases, 34 positive configurations, 36 exact controls, 252 classifier cases, and supporting checks.
+Both diagnostic virtual machines were observed terminated after archive retrieval and validation.
+Storage faults, other ownership and crash windows, aggregate deadlines, reserve bounds, hosted checks, and maintainer review remain open.
+D2 and claim discharge remain pending.
 
 B37 adds [benchmark crash evidence](../cbc-evidence/soak-d2-benchmark-crash-2026-09-11/README.md).
 The baseline admits new work after a crash before any benchmark outcome or stop record.

@@ -1,0 +1,19 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 49
+free disk 7000MB inside hygiene band (floor 4096MB + band 4096MB); reclaiming
+disk hygiene: network inspection failed
+disk hygiene: Docker resources and temporary sessions retained because ownership is unconfirmed
+disk hygiene: 7000MB free -> 16384MB free
+Disk hygiene failed or exceeded its command budget. Cleanup termination is unconfirmed.
+started_at=1789136221
+segments=1
+finished_at=1789136222
+target_ref=disk-admission-fixture
+target_sha=unknown
+requested_seconds=30
+elapsed_seconds=1
+iterations=0
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

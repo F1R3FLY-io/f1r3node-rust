@@ -80,6 +80,7 @@ The per-cycle manifests were produced on the source branch and are retained outs
 | `soak-d2-host-stop-2026-09-11/manifest.jsonc` (B32, B33, real host) | `4fca82d3605cf6430017b9d5d74847942050dfc1ed0502966bc22e45b36868b5` |
 | `soak-d2-oom-ownership-2026-09-11/manifest.jsonc` (B34, real host) | `0071d1d4f27410cd1a40583e89ac79496abfe4512be5f0ba9b713a5dace835b5` |
 | `soak-d2-container-preference-2026-09-11/manifest.jsonc` (B35 characterization, B36, real daemon) | `56d8f6bd841fa14bc593fb5f779cd2681f50e496827b366c24c43e83735d1b9c` |
+| `soak-d2-crash-stop-2026-09-11/manifest.jsonc` (B38, B39, real daemon) | `4079c17dbe113294e1a3fe202c4eb952fc5b94c012a13a80c1570060c7e21921` |
 | `soak-d2-benchmark-crash-2026-09-11/manifest.jsonc` (B37, real daemon) | `e404d259df47730d6b16abe90a213f8cd1a8a8a645bfb16fa929a4c9ef94b9b0` |
 | `soak-d2-guardian-progress-2026-09-09/manifest.jsonc` (B20 to B22) | `310280a8df04bcba0d34cc6d0bd3d8b6b8899bb87e85f5ff945be7f1ffb8618b` |
 | `soak-d2-benchmark-supervision-2026-09-09/manifest.jsonc` (B18, B19) | `33be0710c7d724988fa1e07797a6537f3ba5ae9f962eacce784cabe0a0d348fe` |

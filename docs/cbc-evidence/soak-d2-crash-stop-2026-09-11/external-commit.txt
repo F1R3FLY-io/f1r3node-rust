@@ -1,0 +1,16 @@
+commit 5a211fb5c6de8b02a4d5593781b91811df0260d0
+Author:     Jeff Turner <1573697+jeffrey-l-turner@users.noreply.github.com>
+AuthorDate: Fri Sep 11 06:36:01 2026 -0700
+Commit:     Jeff Turner <1573697+jeffrey-l-turner@users.noreply.github.com>
+CommitDate: Fri Sep 11 06:36:01 2026 -0700
+
+    fix(soak): stop owned writers after a driver crash
+    
+    - Start a crash monitor in its own session before work begins.
+    - Watch the driver through a process descriptor and run the owner-labeled stop on exit.
+    - Record unconfirmed termination when the post-crash stop fails.
+    - Refuse work when the crash monitor cannot start.
+    - Add the DriverCrashStop model with its parent-group control and register it in the gates.
+    - Add the real-Docker crash stop fixture.
+    - Make the benchmark crash fixture reject the stop so B37 still exercises restart refusal.
+    - Keep the plan entry, evidence, D2, and acceptance pending.

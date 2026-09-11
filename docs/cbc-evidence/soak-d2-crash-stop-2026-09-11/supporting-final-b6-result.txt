@@ -1,0 +1,1 @@
+PASS: A post-start disk sample was malformed (malformed-boundary). No iteration started, and the driver recorded refusal.
