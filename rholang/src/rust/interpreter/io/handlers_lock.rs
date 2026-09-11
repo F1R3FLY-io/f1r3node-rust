@@ -215,13 +215,26 @@ impl FsHandler for FsLockRangeHandler {
                         args.wait_policy,
                     ) {
                         Ok(AcquireOutcome::Immediate(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
-                        Ok(AcquireOutcome::Parked { admit, .. }) => match admit.await {
-                            Ok(Ok(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
-                            Ok(Err(le)) => HandlerReply::Err(lock_err_reply(le)),
-                            Err(_recv_error) => {
-                                HandlerReply::Err(lock_err_reply(LockError::Cancelled))
+                        Ok(AcquireOutcome::Parked { admit, .. }) => {
+                            // S4.8 fix (2026-09-11): park the current
+                            // reduction participant while awaiting the
+                            // oneshot admit signal.  Without this, the
+                            // deterministic_reduction driver's
+                            // `frontier_ready` check would refuse to
+                            // advance any other participant's intent
+                            // (including the release that will wake this
+                            // parked admit), causing the deploy to deadlock
+                            // until eval-test-source timeout.  See
+                            // `deterministic_reduction::park_external_during`
+                            // docstring for the mechanism.
+                            match crate::rust::interpreter::deterministic_reduction::park_external_during(admit).await {
+                                Ok(Ok(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
+                                Ok(Err(le)) => HandlerReply::Err(lock_err_reply(le)),
+                                Err(_recv_error) => {
+                                    HandlerReply::Err(lock_err_reply(LockError::Cancelled))
+                                }
                             }
-                        },
+                        }
                         Err(le) => HandlerReply::Err(lock_err_reply(le)),
                     }
                 }
@@ -324,13 +337,18 @@ impl FsHandler for FsLockSequentialHandler {
                         args.wait_policy,
                     ) {
                         Ok(AcquireOutcome::Immediate(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
-                        Ok(AcquireOutcome::Parked { admit, .. }) => match admit.await {
-                            Ok(Ok(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
-                            Ok(Err(le)) => HandlerReply::Err(lock_err_reply(le)),
-                            Err(_recv_error) => {
-                                HandlerReply::Err(lock_err_reply(LockError::Cancelled))
+                        Ok(AcquireOutcome::Parked { admit, .. }) => {
+                            // S4.8 fix (2026-09-11): mirror of the
+                            // fs_lock_range wrap — park the participant
+                            // while awaiting the sequential-lock admit.
+                            match crate::rust::interpreter::deterministic_reduction::park_external_during(admit).await {
+                                Ok(Ok(id)) => HandlerReply::ok(ok_u64(id.as_u64())),
+                                Ok(Err(le)) => HandlerReply::Err(lock_err_reply(le)),
+                                Err(_recv_error) => {
+                                    HandlerReply::Err(lock_err_reply(LockError::Cancelled))
+                                }
                             }
-                        },
+                        }
                         Err(le) => HandlerReply::Err(lock_err_reply(le)),
                     }
                 }

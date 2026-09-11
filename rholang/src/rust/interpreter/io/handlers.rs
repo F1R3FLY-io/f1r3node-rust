@@ -3998,9 +3998,26 @@ mod cmode_tests {
              LockRegistry method"
         );
         assert!(
-            window.contains("AcquireOutcome::Parked") && window.contains("admit.await"),
+            window.contains("AcquireOutcome::Parked")
+                && (window.contains("admit.await")
+                    || window.contains("park_external_during(admit).await")),
             "sub-2 regression: FsLockRangeHandler must await the Parked \
-             admission oneshot"
+             admission oneshot (directly or via \
+             `park_external_during` — the S4.8 wrapper that parks the \
+             reduction participant while awaiting an external event)"
+        );
+        // S4.8 (2026-09-11): the park_external wrapper is load-bearing
+        // — without it, the deterministic_reduction driver deadlocks
+        // waiting for the parked participant to submit its next
+        // RSpace intent.  Pin the wrapper's presence so a refactor
+        // that reverted to bare `admit.await` would be caught before
+        // shipping.
+        assert!(
+            window.contains("park_external_during"),
+            "S4.8 regression: FsLockRangeHandler must wrap `admit.await` \
+             in `park_external_during` so the deterministic_reduction \
+             driver's frontier_ready check can advance while this \
+             participant is externally parked on the oneshot admit."
         );
         assert!(
             window.contains("LockError::Cancelled"),
@@ -4042,9 +4059,20 @@ mod cmode_tests {
              wait-aware LockRegistry method"
         );
         assert!(
-            window.contains("AcquireOutcome::Parked") && window.contains("admit.await"),
+            window.contains("AcquireOutcome::Parked")
+                && (window.contains("admit.await")
+                    || window.contains("park_external_during(admit).await")),
             "sub-2 regression: FsLockSequentialHandler must await the \
-             Parked admission oneshot"
+             Parked admission oneshot (directly or via \
+             `park_external_during` — the S4.8 wrapper that parks the \
+             reduction participant while awaiting an external event)"
+        );
+        assert!(
+            window.contains("park_external_during"),
+            "S4.8 regression: FsLockSequentialHandler must wrap \
+             `admit.await` in `park_external_during` so the \
+             deterministic_reduction driver's frontier_ready check \
+             can advance while this participant is externally parked."
         );
     }
 

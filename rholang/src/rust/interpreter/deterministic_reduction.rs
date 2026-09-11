@@ -119,6 +119,62 @@ pub fn current() -> Option<ReductionContext> {
     }
 }
 
+/// S4.8 (2026-09-11): run a future while the current reduction
+/// participant is parked externally.  Removes the participant from
+/// the session's participant set before awaiting; re-registers on
+/// completion.  Use this to wrap any `.await` on a non-RSpace
+/// external event (tokio oneshot, external I/O, cross-task signal)
+/// so the reduction driver's `frontier_ready` check doesn't stall
+/// waiting for a participant that isn't going to submit an RSpace
+/// intent until the external event fires.
+///
+/// Load-bearing example: `handlers_lock.rs::fs_lock_range` with
+/// `WaitPolicy::Wait` — the handler blocks on a `tokio::sync::
+/// oneshot::Receiver` inside `admit.await`, which is not an RSpace
+/// op.  Without this wrapper the participant would stay `Running`
+/// (its future is suspended but its state hasn't transitioned to
+/// `Waiting(order)`), and the driver would never advance any other
+/// participant's intent — including the release that would wake
+/// this participant.
+///
+/// Determinism: park/unpark does not affect the causal-path
+/// operation ordering.  Each participant's `next_step` counter
+/// lives in the `ReductionContext`, not in the session's
+/// participant table.  RSpace ops emitted after unpark get the
+/// next counter value (monotonic).  Consensus fingerprint pins
+/// unchanged (verified by S4.8 landing).
+///
+/// Idempotent on missing context: if `current()` returns None
+/// (e.g., a spawned task that has left the reduction scope), this
+/// just awaits the inner future without any session bookkeeping.
+pub async fn park_external_during<F>(future: F) -> F::Output
+where F: std::future::Future {
+    let context = current();
+    if let Some(ctx) = &context {
+        ctx.session.park_external(&ctx.participant);
+    }
+    // A Rust guard ensures unpark fires even on `future` panic —
+    // otherwise a panic would leave the participant table stripped
+    // and the deploy would silently deadlock.  Cannot use `await`
+    // in Drop, so a manual sync unpark is used; this is safe
+    // because the session's lock is a std::sync::Mutex not a tokio
+    // one, and unpark is a single lock-insert-unlock burst.
+    struct UnparkGuard {
+        context: Option<ReductionContext>,
+    }
+    impl Drop for UnparkGuard {
+        fn drop(&mut self) {
+            if let Some(ctx) = self.context.take() {
+                ctx.session.unpark_external(ctx.participant.clone());
+            }
+        }
+    }
+    let _guard = UnparkGuard {
+        context: context.clone(),
+    };
+    future.await
+}
+
 pub fn reserve_host_work(
     dimension: HostWorkDimension,
     units: HostWorkUnits,
@@ -396,6 +452,45 @@ impl ReductionSession {
         self.state
             .lock()
             .expect("reduction session lock")
+            .participants
+            .insert(participant, ParticipantState::Running);
+    }
+
+    /// S4.8 (2026-09-11): remove a participant from the session's
+    /// participant set so the reduction driver's `frontier_ready`
+    /// check (all remaining participants Waiting) can advance
+    /// without this one.  Used by native handlers that block on
+    /// external non-RSpace events (e.g., `fs_lock_range` wait:true
+    /// admits on a tokio oneshot) — such handlers stay `Running`
+    /// from the reduction session's perspective, so leaving them
+    /// in the participant set would starve every other participant
+    /// waiting on the driver.  Paired with `unpark_external` which
+    /// re-inserts the participant as `Running` before the task
+    /// resumes RSpace ops.
+    ///
+    /// Determinism: participants' operation ordering is derived from
+    /// each participant's own `next_step` atomic counter, which is
+    /// preserved across park/unpark (the counter lives in the
+    /// `ReductionContext`, not the session's participant table).
+    /// So no state-hash-bearing byte shifts across the park boundary.
+    ///
+    /// Idempotent on a missing participant: if the participant is
+    /// not currently registered (e.g., already parked or completed),
+    /// this is a no-op.  This is important for early-return paths
+    /// in native handlers that might invoke this defensively.
+    pub fn park_external(&self, participant: &ParticipantId) {
+        let mut state = self.state.lock().expect("reduction session lock");
+        state.participants.remove(participant);
+    }
+
+    /// S4.8 (2026-09-11): companion to `park_external`.  Re-register
+    /// a previously parked participant as `Running`.  Safe to call
+    /// on a participant that is already registered (behaves as a
+    /// state-reset to `Running`), so a defensive double-unpark on
+    /// an early-return path is harmless.
+    pub fn unpark_external(&self, participant: ParticipantId) {
+        let mut state = self.state.lock().expect("reduction session lock");
+        state
             .participants
             .insert(participant, ParticipantState::Running);
     }

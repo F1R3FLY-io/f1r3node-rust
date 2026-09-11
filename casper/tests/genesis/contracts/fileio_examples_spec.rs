@@ -445,6 +445,118 @@ in {{
         .expect("three-way lockRange spec failed");
 }
 
+/// S4.8 (2026-09-11): E2E companion to the unit-test
+/// `three_waiters_admit_fifo_after_release` in
+/// `rholang/src/rust/interpreter/io/lock.rs`.  Two caps on the same
+/// file: cap1 acquires immediately; cap2 attempts `wait:true`; a
+/// parallel branch releases cap1 so cap2's parked admit wakes.
+///
+/// This test exercises the full Rholang → native `fs_lock_range` →
+/// `LockRegistry::try_acquire_range_wait` → `AcquireOutcome::Parked
+/// { admit }` → `admit.await` → `LockRegistry::release` →
+/// `wake_waiters` → `admit.send(Ok(id))` → cap2 admits → Rholang
+/// callback chain.  The wait:false + retry variant
+/// (`fileio_lockrange_three_way_no_starvation` above) does NOT
+/// exercise the parked-admit path; only this test does.
+///
+/// Historical note: this test was blocked from 2026-08-23 to
+/// 2026-09-11 by the harness gap documented in auto-memory
+/// `fileio_wait_true_e2e_harness_gap.md`.  The gap was closed by
+/// the S4.8 fix adding `tokio::task::yield_now()` to the
+/// `fs_release_lock` handler after the `LockRegistry::release`
+/// mutation, giving the woken task a scheduler slot before the
+/// releaser's caller continues past its `.await` — otherwise
+/// `deterministic_reduction`'s per-boundary scheduling starves
+/// cap2's parked task until the eval-test-source timeout fires.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_lockrange_wait_true_admit_after_release() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("wait_true.dat");
+    std::fs::write(&file_path, vec![0u8; 512]).expect("seed file");
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon,
+        BundleEntryKind::File,
+        "rw".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_wait_true,
+  cap1AcquiredCh
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("wait:true admit after cross-cap release", *test_wait_true)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_wait_true(rhoSpec, _, ackCh) = {{
+      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "r+"}});
+          @[true, cap2] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
+        for(@[true, token1] <- @cap1!?("lockRange", 0, 100, "w")) {{
+          cap1AcquiredCh!(token1)
+        }} |
+        for(@token1 <- cap1AcquiredCh) {{
+          for(@rel1 <- @token1!?("release")) {{
+            match rel1 {{
+              [true] => {{ Nil }}
+              _ => rhoSpec!("assert", (rel1, "==", "[true]"),
+                            "cap1 release must succeed", *ackCh)
+            }}
+          }}
+        }} |
+        for(@r2 <- @cap2!?("lockRange", 0, 100, "w", {{"wait": true}})) {{
+          match r2 {{
+            [true, token2] => {{
+              for(@rel2 <- @token2!?("release")) {{
+                match rel2 {{
+                  [true] => {{
+                    rhoSpec!("assert", (true, "==", true),
+                      "wait:true admit + release cycle succeeded", *ackCh)
+                  }}
+                  _ => rhoSpec!("assert", (rel2, "==", "[true]"),
+                                "cap2 release", *ackCh)
+                }}
+              }}
+            }}
+            _ => rhoSpec!("assert", (r2, "==", "[true, token2]"),
+                          "cap2 wait:true must admit after cap1 release", *ackCh)
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioWaitTrueAdmitSpec".to_string(),
+    )
+    .expect("compile wait:true admit test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("wait:true admit-after-release spec failed");
+}
+
 /// Slice 10a-3: canonical example `fileio_static.rho`.
 ///
 /// Static-config file-to-file line copy: read every line from a pre-
