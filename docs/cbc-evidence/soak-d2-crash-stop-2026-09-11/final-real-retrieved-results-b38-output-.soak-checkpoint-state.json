@@ -1,0 +1,13 @@
+{
+  "target_ref": "unknown",
+  "target_sha": "unknown",
+  "trigger_source": "manual",
+  "slot_delay_seconds": 0,
+  "version": "unknown",
+  "started_at": 1789137103,
+  "requested_seconds": 1200,
+  "iterations": 0,
+  "failures": 0,
+  "bench_segments": 1,
+  "bench_failures": 0
+}

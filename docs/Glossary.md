@@ -483,6 +483,14 @@ Linux exposes this handle as a `pidfd`.
 **Preferred usage:** Use this term when the stop helper signals or observes a process through its kernel handle.
 Do not treat a process name or numeric identifier alone as equivalent ownership evidence.
 
+### Crash monitor
+
+A **crash monitor** is an independent process that waits for the soak driver to exit.
+It requests an ownership-checked writer stop when the driver has no valid exit-handling acknowledgment.
+
+**Preferred usage:** Use this term for the process-crash response, not the periodic host guardian.
+An exit-handling acknowledgment does not confirm writer termination.
+
 ## Maintenance
 
 - Update this file before merging code or documentation that introduces a

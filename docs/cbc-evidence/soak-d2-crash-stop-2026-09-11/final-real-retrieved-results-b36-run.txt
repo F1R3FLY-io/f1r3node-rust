@@ -1,0 +1,2 @@
+PASS: Memory protection preferred its workload Docker process and preserved the unrelated termination preference.
+PASS: Driver exit stopped the workload Docker writer and preserved the unrelated Docker writer.

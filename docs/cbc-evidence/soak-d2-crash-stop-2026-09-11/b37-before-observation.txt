@@ -1,0 +1,12 @@
+[RUNNER_ROOT]/b38/b37-before/writer-after-crash.json
+{
+  "Running": true,
+  "Pid": 8203,
+  "ExitCode": 0
+}
+[RUNNER_ROOT]/b38/b37-before/writer-after-restarts.json
+{
+  "Running": false,
+  "Pid": 0,
+  "ExitCode": 137
+}

@@ -1,0 +1,1 @@
+Provisioning uses the verified 980285d4c archive. Separate runtime payloads bind the current baseline and candidate. The bootstrap archive does not identify current execution.

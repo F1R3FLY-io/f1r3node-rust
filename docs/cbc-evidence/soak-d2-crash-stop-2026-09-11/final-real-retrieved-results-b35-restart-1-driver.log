@@ -1,0 +1,16 @@
+resuming soak: segment 2, 0 iterations so far, started 2026-09-11 14:31:45 UTC
+soak already ended (writer_stop_failed: Writer termination is unconfirmed.); this segment does no work
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 6364
+started_at=1789137105
+segments=2
+finished_at=1789137107
+target_ref=unknown
+target_sha=unknown
+requested_seconds=1200
+elapsed_seconds=2
+iterations=0
+failures=1
+bench_segments=1
+bench_failures=1
+early_exit_reason=interrupted_benchmark

@@ -1,0 +1,2 @@
+PASS: The evidence was retrieved and validated before extraction.
+Diagnostic VM final state: TERMINATED
