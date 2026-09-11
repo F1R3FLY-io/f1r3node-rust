@@ -10496,6 +10496,34 @@ carry a real value. Default `graft_root_vals` makes focus-value preservation and
 guarded disposal real requirements. No local mutation helper, PathMap change,
 format/hash change, throughput improvement or ACT-versus-LMDB verdict is claimed.
 
+**ISOLATED DEBUG FOLLOW-UP.** The unchanged original binary's depth-256 test also
+reaches its 900-second limit when selected alone: exit 143, no test result,
+4,186,112 bytes scope peak and 890.982053 aggregate CPU seconds. This reproduces
+the latency qualification gap without the other model tests. External debugger
+attachment is denied by the OS. A separate 60-second headless parent-debugger
+run succeeds in taking a sample, then terminates only its diagnostic child.
+The sample reaches `drain_pathmap_observed` Phase B through
+`descend_last_byte`, `child_mask`, LineList prefix comparison and guarded root
+destruction. It does not distinguish which construction/rendering/teardown
+operation triggered that particular root destruction or establish total phase
+fractions. The diagnostic script's success is not a passing unit test.
+
+**INTERPRETATION / EXISTING TASK.** PathMap 0.2.2 bounds node keys to 48 bytes;
+repeated local prefix comparison alone does not prove depth-quadratic teardown.
+Task 6501's previous linear release measurements remain valid for their recorded
+shapes. Existing task 6441 owns further teardown qualification; no duplicate
+task or general rewrite is required. The first candidate is compressed borrowed
+read navigation to the same rightmost leaf, followed by direct write navigation
+and the unchanged one-logical-edge barrier/prune loop. Simply calling the write
+zipper's default `descend_last_path` retains its byte loop. Formal navigation and
+complete trace equivalence must precede adoption; this candidate does not remove
+the bubble's per-parent operations or justify a whole-teardown speedup claim.
+
+| Additional evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-sexpr-debug-isolated.log` (timed out) | `381fc6f790f088fc4fd1e2722b01688f531e36b2ef861a68c97757c5122ffb9d` |
+| `canonical-sexpr-debug-parent.log` (bounded sample) | `9406297917e5b9576f978593da2d79e3126cab8f79b865310872cf10f3e98ecc` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

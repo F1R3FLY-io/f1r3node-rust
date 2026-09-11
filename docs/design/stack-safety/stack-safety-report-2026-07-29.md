@@ -11225,6 +11225,16 @@ stack limit or production format changes here. Raw log hashes, exact memory
 units and measurement limitations are recorded in
 [J-144](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-144--2026-09-10-distinguish-physical-source-retention-from-descriptor-counts).
 
+The isolated unchanged depth-256 test also times out at 900 seconds, with a
+4,186,112-byte scope peak and no test result. A bounded headless debugger sample
+lands in guarded root destruction's Phase-B bytewise descent. This identifies a
+sampled path, not the dominant phase or quadratic behavior: PathMap's local node
+key comparison is bounded to 48 bytes. Existing release teardown measurements
+remain scoped to their recorded workloads. Task 6441 now examines compressed
+read navigation while preserving the exact one-edge cleanup and disposal trace;
+no runtime change or improved latency is claimed before proof and measurement.
+J-144 records the terminal isolation and debugger hashes.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
