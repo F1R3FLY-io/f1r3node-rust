@@ -529,3 +529,33 @@ Test evidence was retrieved before the diagnostic machine's termination request.
 D2 and acceptance remain pending. Ownership-safe stops, safe reclamation, other shutdown paths, additional crash windows, power-loss durability, deadline and reserve bounds remain open.
 
 Hosted verification, required-check enforcement, and maintainer review remain open. The workload and 45-second finalization wait remain unchanged.
+
+## D2 Docker stop cycles B30–B31
+
+The [evidence package](../cbc-evidence/soak-d2-owned-stop-2026-09-10/README.md) retains two separate production and formal RED/GREEN cycles.
+B30 reproduces termination of an unrelated Docker writer with a matching name prefix.
+The production wrapper attaches an owner label at creation, and the shared stop helper verifies that label before selecting full identifiers.
+Both Docker `run` and Compose launch cases pass.
+
+B31 rejects the Docker stop command with exit 42 while the workload writer remains active.
+The baseline records zero failures and loses the stop outcome.
+The correction retains one interruption failure and explicit unconfirmed termination.
+This result does not prove writer termination.
+
+The composed gate passes 28 positive configurations and 29 exact controls.
+The classifier covers 203 cases, routing covers six scenarios, and all 38 emergency shim scenarios pass.
+B27–B29, both B30 launch cases, B31, and the supporting regressions also pass against the corrected source.
+The combined supporting command reached its tool limit, and the remaining checks passed separately.
+
+The real-system evidence was retrieved before the diagnostic VM reached `TERMINATED`.
+A later regular-file-only archive check rejected one expected crash-fixture FIFO.
+The original archive and special-entry record remain retained.
+The termination observation does not identify the shutdown mechanism.
+
+External commits `f3366cfab` and `463992ed1` contain the tested source and verification registrations.
+Current inputs match the retained runtime snapshot.
+This session does not attest those commits' hooks or create another commit.
+
+Host-process ownership, memory-pressure paths, other launch forms, late creation, failed storage, and complete shutdown remain open.
+D2, hosted verification, maintainer review, claim discharge, and acceptance remain pending.
+No node workload or soak ran, and the finalization wait remains 45 seconds.

@@ -286,8 +286,14 @@ stop_node_writer_commands() {
 			status=1
 			continue
 		fi
-		owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid" 2>/dev/null)" || { status=1; continue; }
-		[ "$owner" = "$SOAK_WRITER_OWNER" ] || { status=1; continue; }
+		owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid" 2>/dev/null)" || {
+			status=1
+			continue
+		}
+		[ "$owner" = "$SOAK_WRITER_OWNER" ] || {
+			status=1
+			continue
+		}
 		docker "$@" "$cid" 2>/dev/null || status=1
 	done <<<"$ids"
 	return "$status"

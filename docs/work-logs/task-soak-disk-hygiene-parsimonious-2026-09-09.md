@@ -111,12 +111,14 @@ After phase two the README paragraph about legacy modules in `formal/tlaplus/soa
   - Conflicts in the gate registry and the gate test resolved toward this branch. `test-soak-pr-formal-gate.sh` stays deleted.
   - Counts updated to 25 soak controls and 42 scenarios.
 
-- 2026-09-10, `f3366cfab` (B30 a rejected exit-trap stop is retained; B31 stop commands select owner-labeled writers): driver change taken as is. The driver now mints an owner id per run and puts a `docker` wrapper on the workload's PATH that labels every container it creates. The driver conflict was the timeline's segment-start row against the wrapper block, and both sides are kept. `DockerStopFailure` folded into `SoakDiskGuardian` as `RetainStopFailure` with `exitRejected` and `exitFailureRetained` drawn in `ExitTrap`, invariant `FailedStopRetained`, control `ignored` as on the source. `DockerStopOwnership` folded as `SelectOwned` with `unownedStopped` set in `ExitTrap` and `BeginStop`, invariant `UnownedWritersPreserved`, control `name_only` as on the source. 6366 states.
+- 2026-09-10, `f3366cfab` (B30 stop commands select owner-labeled writers; B31 a rejected exit-trap stop is retained): driver change taken as is. The driver now mints an owner id per run and puts a `docker` wrapper on the workload's PATH that labels every container it creates. The driver conflict was the timeline's segment-start row against the wrapper block, and both sides are kept. `DockerStopFailure` folded into `SoakDiskGuardian` as `RetainStopFailure` with `exitRejected` and `exitFailureRetained` drawn in `ExitTrap`, invariant `FailedStopRetained`, control `ignored` as on the source. `DockerStopOwnership` folded as `SelectOwned` with `unownedStopped` set in `ExitTrap` and `BeginStop`, invariant `UnownedWritersPreserved`, control `name_only` as on the source. 6366 states.
   - The source's B27 to B29 real-daemon evidence package (`52c91cfe4`) is digest-bound. Its three correspondence documents are on the phase-two list.
   - The README conflict was the source's real-system section against the theorem table, resolved toward this branch. `docs/ToDos.md` keeps this branch's bullets and the source's newer status line.
   - Counts updated to 29 soak controls and 42 scenarios.
 
 - 2026-09-10, `463992ed1` (source registers its B30 and B31 controls and shims owner labels in the harness fixture): no new behavior. The harness fixture's `docker` now answers the owner-label `ps`, `inspect`, `kill`, and `compose` calls, and that change auto-merged. Conflicts in the gate registry and the gate test resolved toward this branch. `test-soak-pr-formal-gate.sh` stays deleted. Counts unchanged.
+
+- 2026-09-10, `e821517e0` (B30 and B31 real-daemon evidence): no new behavior. The driver change is a formatting rewrap of the owner check, auto-merged. The `soak-d2-owned-stop-2026-09-10` manifest is digest-bound. The source numbers ownership as B30 and the rejected stop as B31. The labels in the model comments, the README, and the evidence rows now follow that order. `docs/ToDos.md` keeps this branch's bullets and the source's newer status line.
 
 ## D3 evidence: the disk-usage timeline (2026-09-10)
 

@@ -18,8 +18,8 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           EnforceStopDeadline, \* pkill and docker kill run under a deadline
           CheckProgress, \* a live guardian without recent progress counts as failed (B20, B21)
           StopOnExit, \* the driver's exit trap stops the node writers it launched (B28)
-          RetainStopFailure, \* a rejected stop command is a retained failure and a refusal (B30)
-          SelectOwned, \* stop commands select only this run's owner-labeled writers (B31)
+          RetainStopFailure, \* a rejected stop command is a retained failure and a refusal (B31)
+          SelectOwned, \* stop commands select only this run's owner-labeled writers (B30)
           WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
           SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
           HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
@@ -54,9 +54,9 @@ VARIABLES phase, alive, interruptRequested, breachRecorded,
           freeMiB,      \* free space, consumed at WriteRateMax while the writers run
           writersAlive, \* the writers still consume space
           lateUnits,    \* clock units of unconfirmed consumption after the stop
-          unownedStopped, \* a stop command also killed containers this run does not own (B31)
-          exitRejected,   \* the exit trap's stop command was rejected by Docker (B30)
-          exitFailureRetained \* that rejection became a counted failure and a refusal (B30)
+          unownedStopped, \* a stop command also killed containers this run does not own (B30)
+          exitRejected,   \* the exit trap's stop command was rejected by Docker (B31)
+          exitFailureRetained \* that rejection became a counted failure and a refusal (B31)
 
 vars == <<phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
@@ -107,8 +107,8 @@ DriverExit ==
                    diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
                    stale, exitStop>>
 
-\* B30: Docker can reject the stop; only the corrected trap records that as a
-\* failure and a refusal. B31: the corrected stop selects the containers that
+\* B31: Docker can reject the stop; only the corrected trap records that as a
+\* failure and a refusal. B30: the corrected stop selects the containers that
 \* carry this run's owner label; the pre-fix stop killed every rnode container.
 ExitTrap ==
     /\ phase = "exiting"

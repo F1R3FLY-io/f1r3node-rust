@@ -62,7 +62,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | --- | --- |
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
-| `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B30) |
+| `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B31) |
 | `StartProbe`, `Tick`, `ProbeReturns` | The guardian runs `df` under `timeout` |
 | `DecideSample` | A timed-out or empty probe supplies no sample |
 | `Detect`, `Record`, `BeginStop` | Write `host-guardian-breach.txt`, then start `stop_node_writers` |

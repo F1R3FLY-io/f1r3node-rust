@@ -452,6 +452,41 @@ behaviors:
         initial_formal_green: incomplete-successor
         hosted_confirmation: pending
         claim_discharge: pending
+  - id: B30
+    statement: Driver exit stops the workload Docker writer and preserves an unrelated writer with a matching name prefix.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-owned-stop-2026-09-10/manifest.jsonc
+        test: scripts/bench/test-soak-real-stop-ownership.sh
+        red_revision: 52c91cfe4f677b9b9a8b6e718a03e0c29d083d85
+        red_exit: 1
+        formal_red_exit: 12
+        green_binding: source-sha256
+        green_exit: 0
+        formal_green_exit: 0
+        launch_cases: [run, compose]
+        hosted_confirmation: pending
+        model_review: pending
+        claim_discharge: pending
+  - id: B31
+    statement: Driver exit retains a rejected Docker stop and reports unconfirmed writer termination.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-owned-stop-2026-09-10/manifest.jsonc
+        test: scripts/bench/test-soak-real-stop-failure.sh
+        red_binding: b30-corrected-source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_binding: source-sha256
+        green_exit: 0
+        formal_green_exit: 0
+        hosted_confirmation: pending
+        model_review: pending
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -486,6 +521,17 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B17: The guardian records a hard-floor breach and requests a stop before the opening benchmark returns.
 
 ## Cycle evidence
+
+B30 and B31 add [Docker stop evidence](../cbc-evidence/soak-d2-owned-stop-2026-09-10/README.md) from a guarded disposable VM.
+B30 passes with Docker `run` and Compose while preserving the unrelated writer.
+B31 retains one failed interruption after a rejected Docker stop and reports unconfirmed writer termination.
+
+Their two-state models retain exact negative controls.
+The composed gate passes 28 positive configurations and 29 exact controls.
+The classifier covers 203 cases, routing covers six scenarios, and all 38 emergency shim scenarios pass.
+
+Host-process ownership, memory-pressure paths, other launch forms, late creation, storage faults, and complete shutdown remain open.
+These local cycles do not complete D2 or discharge any claim.
 
 B1 completed one RED/GREEN cycle. The [evidence record](../cbc-evidence/scripts-ci-check-tla-invariants-sh.md) retains the failure, correction, tests, and separate bounded TLC results.
 
