@@ -184,15 +184,39 @@ The deploy cap is derived, not assumed. `deploy_storage/DeployStorageBound` is a
 
 Gate: six positive configurations and 33 controls. `deploy_storage` joined `REGISTERED_CONTROL_AREAS`.
 
-## Decision: split after the source agent finishes (2026-09-10)
+## Decision: split after the source agent finishes (2026-09-10, revised 2026-09-11)
 
 The maintainer decided that PR #406 does not merge as one unit. After the source agent's last cycle lands here, the branch is cut into three pull requests from dev. The legacy modules, wrappers, digest inventory, and generated evidence are not carried:
 
-1. Deploy storage bound, `formal/tlaplus/deploy_storage`, the execution-side area.
-2. Soak driver disk protection: the driver, the host suite, the Docker harness, and the two real-daemon checks. The driver evidence record and the release-process note go with it.
+1. Deploy storage bound, `formal/tlaplus/deploy_storage`, a machine A area.
+2. Soak driver disk protection: the driver, the host suite, the Docker harness, and the real-daemon checks. The driver evidence record and the release-process note go with it.
 3. Soak formal models: the two consolidated models, the storage budget, the gate registry and test, the README, and the claim.
 
-The formal tree then splits by component. Casper areas move with the consensus component. Those are slashing, finalized floor, fork choice, deploy recovery, deploy lifecycle, carrier index, deploy occurrence, recovery leader, and the Casper theory docs. Execution areas need a placement decision: merge algebra, runtime isolation, rspace guards, deploy storage, and replay liveness. Node areas stay: soak disk, block admission, and the gate scripts. Each repository keeps its own gate registry, and cross-citations become pinned references.
+### Verification split by machine and medium (2026-09-11)
+
+The maintainer's architecture note, [F1r3fly: Parallel State Machines and Consensus-Neutral Execution](../artifacts/f1r3fly-consensus-neutral-sm.md), replaces the earlier casper, execution, node split. The node has two execution machines and four ordering media. Machine A is Rholang reduction over RSpace. Machine B is the RGB client-side contract machine. The media are CBC Casper, RGB seals, Casanova, and Cordial Miners.
+
+Non-conflicting deploys commute, so a medium only orders and closes conflicts. Verification follows that cut:
+
+| Check | Formal areas | cbc tags | Shared by |
+| --- | --- | --- | --- |
+| Machine A, execution | merge algebra, rspace guards, deploy storage, replay liveness, the shard half of runtime isolation | rholang `reduce.rs`, rspace `replay_rspace.rs`, and the runtime manager, interpreter util, and replay runtime under `casper/src/rust/util/rholang` and `casper/src/rust/rholang` | every medium that runs Rholang, including RGB where rho names are sealed |
+| DAG substrate | carrier index, block admission, deploy occurrence, the block heap half of runtime isolation | block-storage DAG storage and carrier index | Casper, Casanova, and Cordial Miners, not RGB |
+| Casper medium | fork choice, finalized floor, slashing, deploy recovery, deploy lifecycle, recovery leader, the Casper theory docs | snapshot, block creator, validation dispatcher, finality, the two mergers, deploy chain index, validate, genesis deploys | Casper only |
+| RGB machine B and seal medium | none in this tree. Schema validity, single seal close, and consignment validation start in the RGB repository | none in this tree | RGB only |
+| Infrastructure | soak disk, storage budget | driver evidence | every medium the soak exercises |
+
+The merge algebra is the keystone. Its Rocq theorems prove pointwise commutativity, associativity, and idempotence of effect-map merge, deterministic channel netting, and conflict soundness. That is the commutation claim in machine form. Each medium repository cites it by pinned commit and does not carry a copy.
+
+Each repository keeps its own gate registry, evidence ledger, and claim documents. Cross-citations become pinned references, in the same form as the system-integration pin. The committed Rocq build outputs leave the tree before any move.
+
+### Follow-ups the split depends on
+
+- **Interface crate.** The `MultiParentCasper` trait is defined inside the casper crate, so the node names the boundary through the medium it should be neutral to. A neutral interface crate comes first. Its first node-shell theorem is that the node uses only the trait.
+- **Rocq coverage gap.** `scripts/ci/check-formal-invariants.sh --rocq` rebuilds slashing, fork choice, and rspace guards only. The merge algebra, finalized floor, and runtime isolation proofs ship as committed build outputs and are not rechecked. The keystone proof needs a CI rebuild before it can be cited by pin.
+- **Execution glue in the medium crate.** The three Rholang runtime files under the casper crate are machine A code. They move with the interface work.
+- **Runtime isolation splits.** `ShardRuntimeIsolation` is machine A and `BlockHeapLifecycle` is substrate. The area is cut in two at the move.
+- **Soak scenarios per medium.** Today's merge-recovery soak exercises Casper. The driver and its disk models are shared, but each medium needs its own scenarios.
 
 ## Notes for the source agent
 

@@ -30,6 +30,10 @@ The division of labor between TLC, Rocq, and the Rust binding tests, and the
 rule that promotes a bounded result into an unbounded theorem, are in
 [CbC verification tiers](./cbc-verification-tiers.md).
 
+The split of the formal areas by execution machine and ordering medium, and
+the follow-ups that split depends on, are in
+[Consensus-neutral execution](./artifacts/f1r3fly-consensus-neutral-sm.md).
+
 ## The verification stack
 
 | Layer | Tool | Location | What it proves |
