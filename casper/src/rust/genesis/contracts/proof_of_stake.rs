@@ -14,6 +14,9 @@ pub struct ProofOfStake {
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
     pub fault_tolerance_threshold_ppm: i64,
+    pub max_parent_depth: i32,
+    pub deploy_lifespan: i64,
+    pub min_phlo_price: i64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
 }

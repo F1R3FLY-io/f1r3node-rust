@@ -615,14 +615,7 @@ impl NodeRuntime {
         }
 
         // Block processor instance (Tier 2: Critical)
-        // Clone for heartbeat before moving into block processor
-        let trigger_propose_for_heartbeat = trigger_propose_f.clone();
-        let trigger_propose_opt =
-            if self.node_conf.autopropose && self.node_conf.casper.heartbeat_conf.enabled {
-                trigger_propose_f
-            } else {
-                None
-            };
+        let trigger_propose_for_heartbeat = trigger_propose_f;
 
         let bpi_block_queue_tx = block_processor_queue_tx.clone();
 
@@ -638,7 +631,6 @@ impl NodeRuntime {
                     (block_processor_queue_rx, bpi_block_queue_tx),
                     Arc::new(block_processor),
                     block_processor_state,
-                    trigger_propose_opt,
                 );
 
                 // BlockProcessorInstance::create spawns the processing task and returns a result receiver
@@ -1165,6 +1157,9 @@ async fn wait_for_first_connection(
     }
 }
 
+/// Pause after a failed loop iteration to avoid tight error loops.
+const LOOP_ERROR_RETRY_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(5);
+
 /// Run the Casper loop indefinitely
 ///
 /// Periodically fetches dependencies and maintains requested blocks.
@@ -1177,8 +1172,7 @@ async fn run_casper_loop(casper_loop: CasperLoop) -> eyre::Result<()> {
             }
             Err(e) => {
                 tracing::error!(error = %e, "casper loop iteration failed");
-                // Sleep a bit before retrying to avoid tight error loops
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
             }
         }
     }
@@ -1196,8 +1190,7 @@ async fn run_update_fork_choice_loop(update_fork_choice_loop: CasperLoop) -> eyr
             }
             Err(e) => {
                 tracing::error!(error = %e, "fork choice update loop iteration failed");
-                // Sleep a bit before retrying to avoid tight error loops
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
             }
         }
     }
@@ -1217,8 +1210,7 @@ async fn run_mergeable_channels_gc_loop(gc_loop: CasperLoop) -> eyre::Result<()>
             }
             Err(e) => {
                 tracing::error!(error = %e, "mergeable channels GC loop iteration failed");
-                // Sleep a bit before retrying to avoid tight error loops
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
             }
         }
     }

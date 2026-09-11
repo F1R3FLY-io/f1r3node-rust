@@ -91,6 +91,9 @@ pub struct GrpcTransportClient {
 
 const MIN_PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_CHANNEL_MAP_ENTRIES: usize = 1024;
+/// Assumes a ~200 KB/s transfer floor when sizing per-packet send timeouts.
+const STREAM_TIMEOUT_MICROS_PER_BYTE: u64 = 5;
+const CHANNEL_LIVENESS_CHECK_TIMEOUT: Duration = Duration::from_millis(50);
 
 impl GrpcTransportClient {
     /// Create a new GrpcTransportClient
@@ -421,9 +424,9 @@ impl GrpcTransportClient {
             >,
         >,
     ) -> Result<(), CommError> {
-        // Timeout calculation
         let calculate_timeout = |packet: &models::routing::Packet| -> Duration {
-            let packet_based_timeout = Duration::from_micros(packet.content.len() as u64 * 5);
+            let packet_based_timeout =
+                Duration::from_micros(packet.content.len() as u64 * STREAM_TIMEOUT_MICROS_PER_BYTE);
             std::cmp::max(packet_based_timeout, default_send_timeout)
         };
 
@@ -489,15 +492,12 @@ impl GrpcTransportClient {
         }
 
         // 2. Second check: Test if the channel can create a client
-        let test_result = tokio::time::timeout(
-            Duration::from_millis(50), // Very short timeout for quick check
-            async {
-                // Try to create a transport client - this will fail if channel is terminated
-                let _client = channel.get_transport_client();
-                // If we got here, the channel is still functional
-                false
-            },
-        )
+        let test_result = tokio::time::timeout(CHANNEL_LIVENESS_CHECK_TIMEOUT, async {
+            // Try to create a transport client - this will fail if channel is terminated
+            let _client = channel.get_transport_client();
+            // If we got here, the channel is still functional
+            false
+        })
         .await;
 
         match test_result {
