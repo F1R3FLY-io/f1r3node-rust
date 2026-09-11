@@ -131,6 +131,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_HostStopOwnership
     soak_disk/MC_HostOomOwnership
     soak_disk/MC_DockerOomOwnership
+    soak_disk/MC_BenchmarkCrashRecovery
 )
 
 TLC_WORKERS=auto
@@ -167,6 +168,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_HostStopOwnership
         soak_disk/MC_HostOomOwnership
         soak_disk/MC_DockerOomOwnership
+        soak_disk/MC_BenchmarkCrashRecovery
     )
     TLC_WORKERS=2
 fi
@@ -236,6 +238,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_HostStopOwnership_memory_pattern_pre_fix:UnownedHostWritersPreserved
     soak_disk/MC_HostOomOwnership_pattern_only_pre_fix:UnownedPreferencesPreserved
     soak_disk/MC_DockerOomOwnership_periodic_name_pre_fix:UnownedContainerPreferencesPreserved
+    soak_disk/MC_BenchmarkCrashRecovery_unrecorded_pre_fix:BenchmarkCrashRequiresRefusal
 )
 
 failed=0
