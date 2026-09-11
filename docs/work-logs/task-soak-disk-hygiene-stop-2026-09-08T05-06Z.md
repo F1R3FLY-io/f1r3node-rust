@@ -620,5 +620,40 @@ Supporting regressions also pass.
 No real node workload or new VM ran.
 
 The unchanged Docker preference loop remains outside this native-process correction.
-B35 benchmark recovery and B36 Docker preference ownership remain unchecked.
+B35 benchmark recovery and B36 Docker preference ownership were unchecked at this stage.
 D2, reserve bounds, durability, complete response deadlines, hosted checks, and maintainer review remain pending.
+
+## B35 characterization and B36 Docker preference completion
+
+The user disabled the confirmation extension and requested continuation.
+External commits `b56a408a2` and `980285d4c` contain the Docker correction and formatting changes.
+This session does not attest those commits or their hooks.
+The current source archive includes the committed source and a current inventory overlay without changing claim or gate statuses.
+
+The [B35–B36 evidence](../cbc-evidence/soak-d2-container-preference-2026-09-11/README.md) records 12 matched real-system outcomes.
+B35 passes unchanged-production characterization and current-driver revalidation.
+Two refused restarts preserve one failed benchmark stop while the writer remains running.
+B35 has no production repair or formal RED.
+A crash before any benchmark outcome or stop record remains a separate gap.
+
+The B36 baseline changes unrelated preferences from zero to 1000 with both `run` and Compose.
+The corrected driver preserves unrelated preferences at zero and still prefers the workload at 1000.
+Both GREEN cases stop the workload writer and preserve the unrelated writer and its file growth.
+The batch also revalidates B27–B31 against the current driver.
+
+The composed gate passes 31 positive configurations and 33 exact controls.
+All 64 actual TLC logs were saved before classifier and routing substitutes ran.
+All 231 classifier cases, six routing scenarios, 41 emergency cases, and supporting regressions pass.
+Seven primary language-server checks report no diagnostics.
+The runtime audit compares 211 executed inputs with the current source.
+
+The final archive contains 421 unique regular files with matching digests after extraction.
+Archive format and repeated-preparation failures occurred before VM launch.
+The first new VM lacked Ruby and stopped before behavior tests.
+Both new diagnostic VMs were observed terminated after evidence retrieval.
+The original expired-VM transfer and B35 working-directory failure remain setup evidence, not behavioral RED.
+
+No Git commit, push, hosted dispatch, real node workload, or soak occurred in this continuation.
+Remaining work includes storage faults, crash windows, full launch ownership, durable publication, aggregate deadlines, and D3 growth and reserve bounds.
+Conflicting caller preference options and legacy runner-survival comments remain review limitations.
+D2 and acceptance remain pending.

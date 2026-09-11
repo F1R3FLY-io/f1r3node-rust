@@ -1,0 +1,13 @@
+{
+  "target_ref": "disk-admission-fixture",
+  "target_sha": "unknown",
+  "trigger_source": "manual",
+  "slot_delay_seconds": 0,
+  "version": "unknown",
+  "started_at": 1789106832,
+  "requested_seconds": 30,
+  "iterations": 0,
+  "failures": 1,
+  "bench_segments": 0,
+  "bench_failures": 0
+}

@@ -1,0 +1,8 @@
+baseline/scripts/bench/collect-soak-metrics.sh: OK
+baseline/scripts/bench/write-soak-summary.sh: OK
+baseline/scripts/bench/latency-benchmark.sh: OK
+baseline/scripts/bench/soak-metrics.json: OK
+baseline/scripts/bench/run-bench-segment.sh: OK
+baseline/scripts/run-merge-recovery-soak.sh: OK
+fixture-ready.sh: OK
+Fixture exit: 2

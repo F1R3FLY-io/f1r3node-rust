@@ -536,14 +536,30 @@ behaviors:
     statement: Restart refuses new work after an unconfirmed benchmark writer stop and retains the failure.
     priority: must
     deep_module: false
-    done: false
-    cycle_log: []
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-container-preference-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-real-benchmark-stop-recovery.sh
+        kind: unchanged-production-characterization
+        baseline_exit: 0
+        current_exit: 0
+        production_repair: false
+        claim_discharge: pending
   - id: B36
     statement: Memory protection changes container termination preferences only for workload-owned containers.
     priority: must
     deep_module: false
-    done: false
-    cycle_log: []
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-container-preference-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-real-stop-ownership.sh
+        scenarios: [run, compose]
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        claim_discharge: pending
 ---
 
 # Soak Gate Development Cycles
@@ -579,6 +595,19 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 
 ## Cycle evidence
 
+B35 and B36 add [benchmark recovery and Docker preference evidence](../cbc-evidence/soak-d2-container-preference-2026-09-11/README.md).
+B35 passes unchanged-production characterization and retains one failed benchmark stop across two refused restarts.
+It does not require a production correction or a fabricated formal RED.
+B36 replaces periodic Docker preference writes with creation configuration for the tested cooperative workload paths.
+Matched `run` and Compose cases preserve the unrelated preference while they still prefer and stop the workload writer.
+
+All 12 real-system cases pass their expected checks, including current-driver B27–B31 revalidation.
+The composed gate passes 31 positive configurations, 33 exact controls, 231 classifier cases, and six routing scenarios.
+All 41 emergency cases and supporting regressions also pass.
+The archive contains 421 verified regular files, and both new diagnostic VMs were observed terminated.
+Storage faults, remaining crash windows, aggregate deadlines, D3 reserve bounds, hosted checks, and maintainer review remain pending.
+These selected local results do not complete D2.
+
 B34 adds [native memory preference evidence](../cbc-evidence/soak-d2-oom-ownership-2026-09-11/README.md).
 The baseline changes an unrelated node preference from zero to 1000.
 The correction preserves that preference and still changes the workload preference.
@@ -586,8 +615,8 @@ The two-state model retains an exact ownership control.
 
 The composed gate passes 30 positive configurations and 32 exact controls.
 All 224 classifier cases, six routing scenarios, 41 emergency cases, and supporting regressions pass.
-B35 benchmark recovery and B36 Docker preference ownership remain unchecked.
-The broader D2 requirements remain pending.
+B35 and B36 were unchecked at the B34 evidence stage.
+The later results appear above, and the broader D2 requirements remain pending.
 
 B32 and B33 add [host stop evidence](../cbc-evidence/soak-d2-host-stop-2026-09-11/README.md) for driver exit and memory protection.
 Both cases stop a detached workload writer and preserve unrelated writers in a private process namespace.

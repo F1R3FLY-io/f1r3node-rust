@@ -1,0 +1,29 @@
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps --filter name=rnode. --format {{.Names}}
+ps -q --no-trunc --filter label=io.f1r3fly.soak.owner=f2e61441-20f5-4526-b303-2ec53914f047
+inspect --format {{index .Config.Labels "io.f1r3fly.soak.owner"}} 0000000000000000000000000000000000000000000000000000000000000001
+kill 0000000000000000000000000000000000000000000000000000000000000001
+ps -aq --no-trunc --filter label=io.f1r3fly.soak.owner=f2e61441-20f5-4526-b303-2ec53914f047
+inspect --format {{index .Config.Labels "io.f1r3fly.soak.owner"}} 0000000000000000000000000000000000000000000000000000000000000001
+rm -f 0000000000000000000000000000000000000000000000000000000000000001

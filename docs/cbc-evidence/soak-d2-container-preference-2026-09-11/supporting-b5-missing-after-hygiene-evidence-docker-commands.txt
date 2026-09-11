@@ -1,0 +1,5 @@
+ps -aq --filter status=exited --filter name=rnode.
+network ls -q
+image ls -q
+system df
+system df

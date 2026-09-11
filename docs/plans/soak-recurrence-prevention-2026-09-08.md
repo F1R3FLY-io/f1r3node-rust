@@ -344,7 +344,13 @@ A soak still requires separate authorization.
 
 The [B34 cycle](../cbc-evidence/soak-d2-oom-ownership-2026-09-11/README.md) preserves unrelated native-process memory preferences while it still prefers the workload process.
 The Docker preference loop remains outside that correction.
-B35 benchmark recovery and B36 Docker preference ownership remain unchecked.
+
+The [B35–B36 evidence](../cbc-evidence/soak-d2-container-preference-2026-09-11/README.md) records unchanged benchmark recovery and matched Docker preference RED/GREEN results.
+Two restarts preserve one failed benchmark stop without new work.
+Docker `run` and Compose preserve unrelated preferences while they still prefer and stop the workload writer.
+The final batch also revalidates B27–B31 against the current driver.
+These selected results do not cover every launch path, benchmark crash window, storage fault, or aggregate deadline.
+D2, D3 reserve bounds, hosted checks, and maintainer review remain pending.
 
 ### Gate O1: Verify observability before the diagnostic soak
 

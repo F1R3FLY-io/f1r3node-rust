@@ -1,0 +1,2 @@
+compose -f [RUNNER_ROOT]/container-preference/results/b35-characterization/node/docker/shard.yml -p soak-bench down -v --timeout 60
+kill 1654e69e345e5da7897ac9e00ba4dd81c5cdf5765afb4a8886ed289abbe1042b

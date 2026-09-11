@@ -1,0 +1,8 @@
+{
+  "container": "0db7ce12ecf1eee55cb6df2b5265f4da00093ca2c8ca73cabb11fc59e6ba16e0",
+  "network": "c71967d6d5b02ba3df8f62c08a5e4f265a8e87fbb86cd68507fb9cc61fa13c89",
+  "image": "sha256:1231f9bf6c076ef3ee5deac5d45a257276f7b765ebd43d49226a0a327069834c",
+  "container_preserved": true,
+  "network_preserved": true,
+  "image_preserved": true
+}
