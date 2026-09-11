@@ -2,7 +2,7 @@
 (* The emergency path of one soak iteration in                               *)
 (* scripts/run-merge-recovery-soak.sh: the guardian probes, records a        *)
 (* breach, stops the writers, attributes the space, and the next segment     *)
-(* finds the marker. Thirteen constants switch the corrections on and off    *)
+(* finds the marker. Fourteen constants switch the corrections on and off    *)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
 (* Four more constants state the conditional no-overrun theorem: free space  *)
 (* stays positive when the hard floor covers the writers' worst consumption   *)
@@ -20,8 +20,9 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           StopOnExit, \* the driver's exit trap stops the node writers it launched (B28)
           RetainStopFailure, \* a rejected stop command is a retained failure and a refusal (B31)
           SelectOwned, \* stop commands select only this run's owner-labeled writers (B30)
-          SelectOwnedHost, \* host stops select only processes carrying this run's owner marker (B32)
-          MarkOwnedOnly, \* OOM preference is set only on owner-marked host processes (B33)
+          SelectOwnedHost, \* host stops select only processes carrying this run's owner marker (B32, B33)
+          MarkOwnedOnly, \* OOM preference is set only on owner-marked host processes (B34)
+          ConfigureAtCreation, \* container OOM preference is set at creation, not by a periodic name scan (B35)
           WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
           SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
           HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
@@ -30,7 +31,7 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
 ASSUME /\ {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
            AggregateDeadline, PreserveBreach, EnforceStopDeadline, CheckProgress,
            StopOnExit, BoundTermination, RetainStopFailure, SelectOwned,
-           SelectOwnedHost, MarkOwnedOnly} \subseteq BOOLEAN
+           SelectOwnedHost, MarkOwnedOnly, ConfigureAtCreation} \subseteq BOOLEAN
        /\ WriteRateMax \in Nat
        /\ SamplePeriod \in Nat
        /\ HardFloorMiB \in Nat \ {0}
@@ -60,8 +61,9 @@ VARIABLES phase, alive, interruptRequested, breachRecorded,
           unownedStopped, \* a stop command also killed containers this run does not own (B30)
           exitRejected,   \* the exit trap's stop command was rejected by Docker (B31)
           exitFailureRetained, \* that rejection became a counted failure and a refusal (B31)
-          unownedHostStopped, \* a host stop also killed processes this run does not own (B32)
-          unownedMarked \* OOM preference was set on processes this run does not own (B33)
+          unownedHostStopped, \* a host stop also killed processes this run does not own (B32, B33)
+          unownedMarked, \* OOM preference was set on processes this run does not own (B34)
+          unownedContainersMarked \* OOM preference was set on containers this run does not own (B35)
 
 vars == <<phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
@@ -70,7 +72,7 @@ vars == <<phase, alive, interruptRequested, breachRecorded,
           marker, priorFailures, failures, admitted, stale, exitStop,
           freeMiB, writersAlive, lateUnits,
           unownedStopped, exitRejected, exitFailureRetained,
-          unownedHostStopped, unownedMarked>>
+          unownedHostStopped, unownedMarked, unownedContainersMarked>>
 
 Consumption == <<freeMiB, writersAlive, lateUnits>>
 StopVars == <<unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped>>
@@ -103,6 +105,7 @@ Init ==
     /\ exitFailureRetained = FALSE
     /\ unownedHostStopped = FALSE
     /\ unownedMarked = FALSE
+    /\ unownedContainersMarked = FALSE
 
 \* B28: the driver exits while an iteration or benchmark runs (a signal, an
 \* early exit). Only the corrected EXIT trap stops the writers it launched;
@@ -176,14 +179,17 @@ WatcherPoll ==
                    rootsLeft, marker, priorFailures, failures, admitted>>
 
 \* The live guardian starts a df probe.
-\* B33: every guardian sample re-applies the OOM preference; the corrected
-\* driver marks only processes that carry this run's owner marker.
+\* B34: every guardian sample re-applies the OOM preference; the corrected
+\* driver marks only processes that carry this run's owner marker. B35: the
+\* container preference is set once at creation through the owner-labeling
+\* wrapper; the pre-fix sample marked every container matching a name filter.
 StartProbe ==
     /\ phase = "running"
     /\ alive
     /\ phase' = "probing"
     /\ freeMiB' = freeMiB - SamplePeriod * WriteRateMax
     /\ unownedMarked' = ~MarkOwnedOnly
+    /\ unownedContainersMarked' = ~ConfigureAtCreation
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed, timedOut,
                    known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker,
                    priorFailures, failures, admitted, writersAlive, lateUnits>>
@@ -348,20 +354,20 @@ RestartDecision ==
                    known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker,
                    priorFailures, failures>>
 
-Next == (DriverExit /\ UNCHANGED <<Consumption, StopVars, unownedMarked>>)
-        \/ (ExitTrap /\ UNCHANGED <<Consumption, unownedMarked>>)
+Next == (DriverExit /\ UNCHANGED <<Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
+        \/ (ExitTrap /\ UNCHANGED <<Consumption, unownedMarked, unownedContainersMarked>>)
         \/ ((Stall \/ WatcherPollStale)
-            /\ UNCHANGED <<exitStop, Consumption, StopVars, unownedMarked>>)
+            /\ UNCHANGED <<exitStop, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
         \/ (StartProbe /\ UNCHANGED <<stale, exitStop, StopVars>>)
         \/ ((Tick \/ StopTick \/ StopReturns \/ LateWrite)
-            /\ UNCHANGED <<stale, exitStop, StopVars, unownedMarked>>)
+            /\ UNCHANGED <<stale, exitStop, StopVars, unownedMarked, unownedContainersMarked>>)
         \/ (BeginStop /\ UNCHANGED <<stale, exitStop, Consumption, exitRejected,
-                                      exitFailureRetained, unownedMarked>>)
+                                      exitFailureRetained, unownedMarked, unownedContainersMarked>>)
         \/ (/\ Crash \/ WatcherPoll \/ ProbeReturns
                \/ DecideSample \/ Detect \/ Record
                \/ PublishLate \/ AttributionTick \/ CompleteRoot
                \/ Finish \/ Recover \/ RestartDecision
-            /\ UNCHANGED <<stale, exitStop, Consumption, StopVars, unownedMarked>>)
+            /\ UNCHANGED <<stale, exitStop, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
 
 Spec == Init /\ [][Next]_vars
 
@@ -396,6 +402,7 @@ TypeOK ==
     /\ exitFailureRetained \in BOOLEAN
     /\ unownedHostStopped \in BOOLEAN
     /\ unownedMarked \in BOOLEAN
+    /\ unownedContainersMarked \in BOOLEAN
 
 DeadGuardianRequiresInterrupt ==
     (phase = "watcher-decided" /\ ~alive) => (interruptRequested /\ breachRecorded)
@@ -416,6 +423,7 @@ FailedStopRetained == (phase = "exited" /\ exitRejected) => exitFailureRetained
 UnownedWritersPreserved == ~unownedStopped
 UnownedHostWritersPreserved == ~unownedHostStopped
 UnownedPreferencesPreserved == ~unownedMarked
+UnownedContainerPreferencesPreserved == ~unownedContainersMarked
 
 \* The conditional theorem. Under FloorCoversReaction and BoundTermination the
 \* configuration keeps free space positive on every path; the two assumption

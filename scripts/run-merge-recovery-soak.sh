@@ -1141,6 +1141,9 @@ fi
 read -r SOAK_WRITER_OWNER </proc/sys/kernel/random/uuid || exit 2
 [[ "$SOAK_WRITER_OWNER" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
 SOAK_DOCKER_REAL="$(command -v docker || true)"
+SOAK_DOCKER_OOM_PREFERRED=0
+if [ "$HOST_FREE_FLOOR_MB" -gt 0 ]; then SOAK_DOCKER_OOM_PREFERRED=1; fi
+export SOAK_DOCKER_OOM_PREFERRED
 SOAK_DOCKER_OWNER_DIR=""
 SOAK_WORKLOAD_PATH="$PATH"
 if [ -n "$SOAK_DOCKER_REAL" ]; then
@@ -1150,13 +1153,17 @@ if [ -n "$SOAK_DOCKER_REAL" ]; then
 set -euo pipefail
 real="${SOAK_DOCKER_REAL:?}"
 owner="${SOAK_WRITER_OWNER:?}"
+prefer="${SOAK_DOCKER_OOM_PREFERRED:?}"
+[[ "$prefer" == 0 || "$prefer" == 1 ]] || exit 2
 [[ "$owner" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
 original=("$@")
 case "${1:-}" in
 run | create)
     command="$1"
     shift
-    exec "$real" "$command" --label "io.f1r3fly.soak.owner=$owner" "$@"
+    preference=()
+    [[ "$prefer" == 0 ]] || preference=(--oom-score-adj 1000)
+    exec "$real" "$command" --label "io.f1r3fly.soak.owner=$owner" "${preference[@]}" "$@"
     ;;
 compose)
     prefix=(compose)
@@ -1176,7 +1183,7 @@ compose)
             labels="$(mktemp "${SOAK_DOCKER_OWNER_DIR:?}/labels.XXXXXXXX.json")"
             trap 'rm -f "$labels"' EXIT
             "$real" "${prefix[@]}" config --format json |
-                jq --arg owner "$owner" '{services: (.services | with_entries(.value = {labels: {"io.f1r3fly.soak.owner": $owner}}))}' >"$labels"
+                jq --arg owner "$owner" --argjson prefer "$prefer" '{services: (.services | with_entries(.value = ({labels: {"io.f1r3fly.soak.owner": $owner}} + (if $prefer == 1 then {oom_score_adj: 1000} else {} end))))}' >"$labels"
             "$real" "${prefix[@]}" -f "$labels" "$@"
             exit "$?"
             ;;
@@ -1258,7 +1265,7 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		#    dying, and last words outrank a checkpoint signal there.
 		guardian_oom_mark_warned=0
 		guardian_mark_workload_oom_preferred() {
-			local pid cid failed=0
+			local failed=0
 			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" python3 - "$SOAK_WRITER_OWNER" <<'PY'
 import os
 import sys
@@ -1290,12 +1297,6 @@ PY
 			then
 				failed=1
 			fi
-			for cid in $(docker ps -q --filter 'name=rnode.' 2>/dev/null); do
-				pid="$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)" || continue
-				[ -n "$pid" ] && [ "$pid" != "0" ] || continue
-				sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 ||
-					failed=1
-			done
 			# One line for the whole guardian lifetime: a per-sample failure
 			# would flood the log, silence would hide that the runner is NOT
 			# protected from the kernel OOM killer.

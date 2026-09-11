@@ -86,8 +86,9 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `SelectOwned` | Stop commands select only the containers that carry this run's owner label. The pre-fix stop killed every `rnode` container on the host | `MC_SoakDiskGuardian_name_only_pre_fix` | `UnownedWritersPreserved` |
 | `SelectOwnedHost` | Host stops select only processes whose environment carries this run's owner marker, through pidfd. The pre-fix stop killed every process matching a path pattern | `MC_SoakDiskGuardian_host_pattern_only_pre_fix` | `UnownedHostWritersPreserved` |
 | `MarkOwnedOnly` | Each guardian sample sets the OOM preference only on owner-marked processes. The pre-fix guardian marked every process matching the pattern | `MC_SoakDiskGuardian_oom_pattern_only_pre_fix` | `UnownedPreferencesPreserved` |
+| `ConfigureAtCreation` | The container OOM preference is set once at creation through the owner-labeling wrapper. The pre-fix sample marked every container matching a name filter | `MC_SoakDiskGuardian_periodic_name_pre_fix` | `UnownedContainerPreferencesPreserved` |
 
-`MC_SoakDiskGuardian` enables all thirteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6366 distinct states.
+`MC_SoakDiskGuardian` enables all fourteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6366 distinct states.
 
 ### Conditional no-overrun theorem
 
