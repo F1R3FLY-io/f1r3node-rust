@@ -1234,11 +1234,37 @@ if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE
 		guardian_oom_mark_warned=0
 		guardian_mark_workload_oom_preferred() {
 			local pid cid failed=0
-			for pid in $(pgrep -f '/tmp/rnode' 2>/dev/null); do
-				echo 1000 >"/proc/$pid/oom_score_adj" 2>/dev/null ||
-					sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 ||
-					failed=1
-			done
+			if ! timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" python3 - "$SOAK_WRITER_OWNER" <<'PY'
+import os
+import sys
+
+marker = ("SOAK_PROCESS_OWNER=" + sys.argv[1]).encode()
+status = 0
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    directory = None
+    try:
+        directory = os.open("/proc/" + name, os.O_RDONLY | os.O_DIRECTORY)
+        if os.fstat(directory).st_uid != os.geteuid():
+            continue
+        with os.fdopen(os.open("environ", os.O_RDONLY, dir_fd=directory), "rb") as environment:
+            if marker not in environment.read().split(b"\0"):
+                continue
+        with os.fdopen(os.open("oom_score_adj", os.O_WRONLY, dir_fd=directory), "w") as preference:
+            preference.write("1000\n")
+    except (FileNotFoundError, ProcessLookupError):
+        pass
+    except OSError:
+        status = 1
+    finally:
+        if directory is not None:
+            os.close(directory)
+sys.exit(status)
+PY
+			then
+				failed=1
+			fi
 			for cid in $(docker ps -q --filter 'name=rnode.' 2>/dev/null); do
 				pid="$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)" || continue
 				[ -n "$pid" ] && [ "$pid" != "0" ] || continue

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCENARIO="${SOAK_HOST_STOP_SCENARIO:-exit}"
-[[ "$SCENARIO" == exit || "$SCENARIO" == memory ]] || exit 2
+[[ "$SCENARIO" == exit || "$SCENARIO" == memory || "$SCENARIO" == oom ]] || exit 2
 if [[ "${1:-}" == --inside ]]; then
     [[ -f /.dockerenv && "$(id -u)" == 65534 && ! -S /var/run/docker.sock ]] || exit 2
     cd /case
@@ -13,6 +13,7 @@ if [[ "${1:-}" == --inside ]]; then
 set -euo pipefail
 trap '' TERM
 printf '%s\n' "$$" >"$1.pid"
+printf '%s\n' "$(</proc/$$/oom_score_adj)" >"$1.oom-before"
 for n in $(seq 1 600); do printf '%s\n' "$n" >>"$1.writes"; sleep 0.1; done
 SH
     cp evidence/writer.sh /tmp/rnode-unrelated
@@ -46,7 +47,7 @@ fi
 exec /usr/bin/awk "$@"
 SH
     HOST_FLOOR=0
-    [[ "$SCENARIO" != memory ]] || HOST_FLOOR=4096
+    [[ "$SCENARIO" == exit ]] || HOST_FLOOR=4096
     chmod +x bin/*
     (cd repo && sha256sum scripts/run-merge-recovery-soak.sh scripts/bench/write-soak-summary.sh scripts/bench/collect-soak-metrics.sh scripts/bench/soak-metrics.json) >evidence/source-sha256.txt
     PATH="/case/bin:$PATH" SYSTEM_INTEGRATION_DIR=/case/harness SOAK_OUTPUT_DIR=/case/evidence/output \
@@ -72,14 +73,29 @@ SH
         printf '%s\n' "$state" >"evidence/$role-before.txt"
     done
     date -u +%FT%TZ >evidence/signal-at.txt
-    if [[ "$SCENARIO" == memory ]]; then
+    if [[ "$SCENARIO" != exit ]]; then
         for _ in $(seq 1 100); do
             grep -Fxq 16384 evidence/memory-samples.txt 2>/dev/null && break
             kill -0 "$DRIVER"
             sleep 0.1
         done
         grep -Fxq 16384 evidence/memory-samples.txt
-        touch evidence/activate-memory-fault
+        if [[ "$SCENARIO" == memory ]]; then
+            touch evidence/activate-memory-fault
+        else
+            for _ in $(seq 1 50); do
+                [[ "$(<"/proc/$OWNED_NODE/oom_score_adj")" != 1000 ]] || break
+                kill -0 "$DRIVER"
+                sleep 0.1
+            done
+            for role in owned-node unrelated-node unrelated-client; do
+                pid="$(<"evidence/$role.pid")"
+                [[ "$(<"evidence/$role.oom-before")" =~ ^-?[0-9]+$ ]]
+                [[ "$(<"evidence/$role.oom-before")" -lt 1000 ]]
+                printf '%s\n' "$(<"/proc/$pid/oom_score_adj")" >"evidence/$role.oom-after"
+            done
+            kill -TERM "$DRIVER"
+        fi
     else
         kill -TERM "$DRIVER"
     fi
@@ -116,6 +132,19 @@ SH
     if [[ -n "$state" && "$state" != Z* ]] || ! cmp -s evidence/owned-node-after.writes evidence/owned-node-confirmed.writes; then
         printf 'FAIL: Driver exit did not stop its detached host writer.\n' >&2
         exit 1
+    fi
+    if [[ "$SCENARIO" == oom ]]; then
+        for role in unrelated-node unrelated-client; do
+            if ! cmp -s "evidence/$role.oom-before" "evidence/$role.oom-after"; then
+                printf 'FAIL: Memory protection changed an unrelated host process termination preference.\n' >&2
+                exit 1
+            fi
+        done
+        if [[ "$(<evidence/owned-node.oom-after)" != 1000 ]]; then
+            printf 'FAIL: Memory protection did not prefer its workload host process.\n' >&2
+            exit 1
+        fi
+        printf 'PASS: Memory protection preferred its workload host process and preserved unrelated termination preferences.\n'
     fi
     kill -KILL "$UNRELATED_NODE" "$UNRELATED_CLIENT" 2>/dev/null || true
     printf 'PASS: Driver exit stopped its detached host writer and preserved both unrelated host writers.\n'

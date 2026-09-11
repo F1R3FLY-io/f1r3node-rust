@@ -598,3 +598,27 @@ A separate export check found that `e821517e0` omits 57 B30–B31 TLC streams be
 The exported inventory rejects the missing stream.
 Package-local ignore exceptions preserve the existing evidence bytes and permit later authorized staging.
 No commit or push occurred in this session.
+
+## D2 native memory preference B34
+
+The user requested continuation after the bounded D3 scope question.
+Local D2 faults remain first, and node diagnostics still require observability prerequisites and bounded safety controls.
+A soak remains outside this authorization.
+
+External commit `e2321eafe7ccb6efcf9ce29866b690ff84853ab0` contains the prior source and evidence.
+The current input export validates, and all inventory inputs are tracked.
+This session does not attest the external commit hooks.
+
+The [B34 evidence](../cbc-evidence/soak-d2-oom-ownership-2026-09-11/README.md) reproduces an unrelated native-process preference change from zero to 1000.
+The exact formal RED violates `UnownedPreferencesPreserved` with exit 12 before the correction.
+The correction checks inherited ownership through an opened process directory and writes through the same directory descriptor.
+Production GREEN preserves unrelated preferences and still sets the workload preference to 1000.
+
+The positive model has two distinct states.
+Thirty positive configurations, 32 exact controls, 224 classifier cases, six routing scenarios, and 41 emergency cases pass.
+Supporting regressions also pass.
+No real node workload or new VM ran.
+
+The unchanged Docker preference loop remains outside this native-process correction.
+B35 benchmark recovery and B36 Docker preference ownership remain unchecked.
+D2, reserve bounds, durability, complete response deadlines, hosted checks, and maintainer review remain pending.

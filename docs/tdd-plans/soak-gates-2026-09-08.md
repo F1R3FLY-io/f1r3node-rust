@@ -518,13 +518,28 @@ behaviors:
         formal_green_exit: 0
         claim_discharge: pending
   - id: B34
-    statement: Memory protection changes termination preferences only for workload-owned processes.
+    statement: Memory protection changes native-process termination preferences only for workload-owned processes.
+    priority: must
+    deep_module: false
+    done: true
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-oom-ownership-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-host-stop-ownership.sh
+        scenario: oom
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        claim_discharge: pending
+  - id: B35
+    statement: Restart refuses new work after an unconfirmed benchmark writer stop and retains the failure.
     priority: must
     deep_module: false
     done: false
     cycle_log: []
-  - id: B35
-    statement: Restart refuses new work after an unconfirmed benchmark writer stop and retains the failure.
+  - id: B36
+    statement: Memory protection changes container termination preferences only for workload-owned containers.
     priority: must
     deep_module: false
     done: false
@@ -563,6 +578,16 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B17: The guardian records a hard-floor breach and requests a stop before the opening benchmark returns.
 
 ## Cycle evidence
+
+B34 adds [native memory preference evidence](../cbc-evidence/soak-d2-oom-ownership-2026-09-11/README.md).
+The baseline changes an unrelated node preference from zero to 1000.
+The correction preserves that preference and still changes the workload preference.
+The two-state model retains an exact ownership control.
+
+The composed gate passes 30 positive configurations and 32 exact controls.
+All 224 classifier cases, six routing scenarios, 41 emergency cases, and supporting regressions pass.
+B35 benchmark recovery and B36 Docker preference ownership remain unchecked.
+The broader D2 requirements remain pending.
 
 B32 and B33 add [host stop evidence](../cbc-evidence/soak-d2-host-stop-2026-09-11/README.md) for driver exit and memory protection.
 Both cases stop a detached workload writer and preserve unrelated writers in a private process namespace.

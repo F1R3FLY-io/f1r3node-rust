@@ -338,9 +338,13 @@ The remaining completion requirements include:
 6. Obtain hosted verification, maintainer review, and claim ratification.
 
 Full D2 discharge depends on D3, as the full exit criterion above states.
-The current diagnostic authorization excludes real node workloads.
-Bounded D3 node diagnostics need explicit authorization and the required observability prerequisites.
+The user requested continuation after the bounded D3 diagnostic scope question.
+Bounded node diagnostics still require the observability prerequisites and diagnostic safety controls.
 A soak still requires separate authorization.
+
+The [B34 cycle](../cbc-evidence/soak-d2-oom-ownership-2026-09-11/README.md) preserves unrelated native-process memory preferences while it still prefers the workload process.
+The Docker preference loop remains outside that correction.
+B35 benchmark recovery and B36 Docker preference ownership remain unchecked.
 
 ### Gate O1: Verify observability before the diagnostic soak
 
