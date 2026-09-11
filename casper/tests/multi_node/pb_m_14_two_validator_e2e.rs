@@ -1709,12 +1709,20 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     let deploy = construct_deploy::source_deploy_now(deploy_src, None, None, Some(shard_id))
         .expect("sign fs-removefile deploy");
 
-    // Leader creates + validates.  Reply `[true]`; WAL captures a
-    // RemoveFile entry with Success outcome.
+    // Leader creates only (no self-validate).  Reply `[true]`; WAL
+    // captures a RemoveFile entry with Success outcome.  We deliberately
+    // avoid `add_block_from_deploys` (which self-validates on the same
+    // node) because removeFile is non-idempotent — self-validate would
+    // re-execute removeFile against the leader's own subdir, which the
+    // play just emptied, producing a divergent WAL entry and rejecting
+    // the leader's own block.  The follower validates against its own
+    // (independently-tampered) subdir below, which is where this test's
+    // divergence-on-tamper semantic actually lives.  D2 per S4.1
+    // diagnosis; see wave-4-diagnosis.md.
     let block = nodes[0]
-        .add_block_from_deploys(&[deploy])
+        .create_block_unsafe(&[deploy])
         .await
-        .expect("node 0 (validator A) creates + adds Consensus-removeFile block");
+        .expect("node 0 (validator A) creates Consensus-removeFile block");
 
     // Sanity: leader's victim is gone post-removeFile.
     assert!(
