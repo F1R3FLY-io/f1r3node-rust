@@ -491,6 +491,14 @@ It requests an ownership-checked writer stop when the driver has no valid exit-h
 **Preferred usage:** Use this term for the process-crash response, not the periodic host guardian.
 An exit-handling acknowledgment does not confirm writer termination.
 
+### Controller loss
+
+**Controller loss** means that both the soak driver and crash monitor exit during active work.
+Controller loss does not establish workload termination.
+
+**Preferred usage:** Use this term for the combined failure tested by B44.
+State which independent supervisor must survive when a containment design depends on that supervisor.
+
 ## Maintenance
 
 - Update this file before merging code or documentation that introduces a

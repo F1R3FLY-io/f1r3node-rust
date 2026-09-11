@@ -376,6 +376,29 @@ Inherited output pipes, simultaneous failures, late creation, storage faults, co
 The new evidence package retains reruns as raw archive digests without changing historical packages.
 D2 and acceptance remain pending.
 
+#### Shutdown boundary after B41–B44
+
+The [shutdown record](../cbc-evidence/soak-d2-shutdown-2026-09-11/README.md) retains three matched local repairs and one open counterexample.
+B41 detects monitor death during an active benchmark.
+B42 refuses opening benchmark and iteration admission after confirmed monitor death during the probe.
+B43 stops the owned descriptor holder before the interrupted iteration waits for output completion.
+The tests preserve an unrelated native writer and retain one failure across two refused restarts.
+
+B44 establishes a remaining controller-loss defect.
+The driver and crash monitor both exit, but the owned native writer continues.
+The current model violates `ControllerLossStopsOwnedWriter`.
+No B44 correction or GREEN result exists.
+
+D2 shutdown completion requires a reviewed containment design that survives the specified controller failures.
+The design must cover late creation, detached descendants, Docker writers, inaccessible metadata, and failed stops without acting on unrelated writers.
+The current ownership marker and process enumeration do not establish that containment.
+A surviving external supervisor or kernel-managed containment remains a design candidate, not verified protection.
+
+The new cases use private process namespaces and substituted Docker commands.
+They do not revalidate the real Docker daemon, storage durability, a composed deadline, reserve bounds, or acceptance.
+The workload and 45-second finalization limit remain unchanged.
+D2 and claim discharge remain pending.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

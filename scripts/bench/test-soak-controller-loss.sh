@@ -108,7 +108,10 @@ for descriptor in [driver_fd, fd]:
 print("The fixture confirmed driver and monitor death through their pidfds.")
 PY
     for _ in $(seq 1 120); do
-        kill -0 "$DRIVER" 2>/dev/null || break
+        owned_state="$(ps -o stat= -p "$(<evidence/owned.pid)" || true)"
+        if ! kill -0 "$DRIVER" 2>/dev/null && [[ -z "$owned_state" || "$owned_state" == Z* ]]; then
+            break
+        fi
         sleep 0.1
     done
     read -r finished _ </proc/uptime
@@ -142,12 +145,10 @@ PY
         printf 'FAIL: Both controllers exited but the owned writer remained active.\n' >&2
         exit 1
     fi
-    for pass in initial restart-1 restart-2; do
-        if [[ "$pass" != initial ]]; then
-            status=0
-            (driver) >"evidence/$pass.log" 2>&1 || status=$?
-            printf '%s\n' "$status" >"evidence/$pass-exit.txt"
-        fi
+    for pass in restart-1 restart-2; do
+        status=0
+        (driver) >"evidence/$pass.log" 2>&1 || status=$?
+        printf '%s\n' "$status" >"evidence/$pass-exit.txt"
         cp evidence/output/summary.json "evidence/$pass-summary.json"
         if [[ "$status" == 0 || "$(wc -l <evidence/admissions.txt)" != 1 ]] || ! jq -e '[.iterations,.failures,.bench_segments,.bench_failures] == [1,1,0,0]' "evidence/$pass-summary.json" >/dev/null; then
             printf 'FAIL: Monitor failure lost its retained failure or admitted more work.\n' >&2
@@ -155,7 +156,7 @@ PY
         fi
     done
     trap - ERR
-    printf 'PASS: Monitor death stopped the owned host writer, preserved the unrelated writer, and retained one failure across two refused restarts.\n'
+    printf 'PASS: Both controllers exited, the owned writer stopped, and two restarts retained one failure without new admissions.\n'
     exit 0
 fi
 

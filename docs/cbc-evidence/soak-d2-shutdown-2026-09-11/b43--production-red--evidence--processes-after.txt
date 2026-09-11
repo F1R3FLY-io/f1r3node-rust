@@ -1,0 +1,11 @@
+    PID    PPID     SID STAT COMMAND
+      1       0       1 Ss   bash /case/test.sh --inside
+      9       1       9 Ss   bash evidence/writer.sh /case/evidence/unrelated
+     16       1      16 Ss   bash repo/scripts/run-merge-recovery-soak.sh
+     65      16      16 S    tee /case/evidence/output/iteration-00001-docker/pytest.log
+     67      16      16 S    bash repo/scripts/run-merge-recovery-soak.sh
+     81       1      81 Ss   bash /case/evidence/writer.sh /case/evidence/owned
+    636      67      16 S    sleep 2
+    659       9       9 S    sleep 0.1
+    660      81      81 S    sleep 0.1
+    661       1       1 R    ps -eo pid,ppid,sid,stat,args
