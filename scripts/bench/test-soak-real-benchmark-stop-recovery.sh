@@ -15,6 +15,7 @@ jq -e '.purpose == "D2 isolated diagnostic runner" and .github_registration == f
 mkdir -p "$EVIDENCE/bin" "$EVIDENCE/harness" "$EVIDENCE/tmp" "$EVIDENCE/runner" "$EVIDENCE/node/docker"
 EVIDENCE="$(cd "$EVIDENCE" && pwd)"
 SOURCE="$(cd "$SOURCE" && pwd)"
+cd "$EVIDENCE"
 DRIVER_PID=""
 cleanup() {
     [[ -z "$DRIVER_PID" ]] || kill -KILL -- "-$DRIVER_PID" 2>/dev/null || true
@@ -51,6 +52,11 @@ cat >"$EVIDENCE/bin/curl" <<'SH'
 exit 1
 SH
 cp "$EVIDENCE/bin/curl" "$EVIDENCE/bin/oci"
+cat >"$EVIDENCE/bin/poetry" <<'SH'
+#!/usr/bin/env bash
+printf 'An iteration was invoked in the benchmark fixture.\n' >>"$SOAK_REAL_EVIDENCE/iteration-invoked.txt"
+exit 42
+SH
 chmod +x "$EVIDENCE/bin/"*
 launch_driver() {
     local phase="$1"
