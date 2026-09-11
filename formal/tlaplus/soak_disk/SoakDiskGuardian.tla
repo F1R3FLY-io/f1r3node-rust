@@ -2,7 +2,7 @@
 (* The emergency path of one soak iteration in                               *)
 (* scripts/run-merge-recovery-soak.sh: the guardian probes, records a        *)
 (* breach, stops the writers, attributes the space, and the next segment     *)
-(* finds the marker. Fifteen constants switch the corrections on and off     *)
+(* finds the marker. Sixteen constants switch the corrections on and off     *)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
 (* Four more constants state the conditional no-overrun theorem: free space  *)
 (* stays positive when the hard floor covers the writers' worst consumption   *)
@@ -23,7 +23,8 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           SelectOwnedHost, \* host stops select only processes carrying this run's owner marker (B32, B33)
           MarkOwnedOnly, \* OOM preference is set only on owner-marked host processes (B34)
           ConfigureAtCreation, \* container OOM preference is set at creation, not by a periodic name scan (B36)
-          SurvivesDriverCrash, \* a crash monitor in its own session outlives a killed driver and runs the owner-labeled stop (source plan entry pending)
+          SurvivesDriverCrash, \* a crash monitor in its own session outlives a killed driver and runs the owner-labeled stop (B38)
+          RememberHandledExit, \* the driver's exit handling leaves a marker, and the monitor skips its stop after reading it (B39)
           WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
           SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
           HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
@@ -33,7 +34,7 @@ ASSUME /\ {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
            AggregateDeadline, PreserveBreach, EnforceStopDeadline, CheckProgress,
            StopOnExit, BoundTermination, RetainStopFailure, SelectOwned,
            SelectOwnedHost, MarkOwnedOnly, ConfigureAtCreation,
-           SurvivesDriverCrash} \subseteq BOOLEAN
+           SurvivesDriverCrash, RememberHandledExit} \subseteq BOOLEAN
        /\ WriteRateMax \in Nat
        /\ SamplePeriod \in Nat
        /\ HardFloorMiB \in Nat \ {0}
@@ -57,7 +58,8 @@ VARIABLES phase, alive, interruptRequested, breachRecorded,
           marker, priorFailures, failures, admitted,
           stale, \* the guardian is alive but its progress record has expired
           exitStop, \* the driver's exit trap stopped the writers (B28)
-          crashStop, \* the crash monitor stopped the owned writers after the driver died without its trap
+          crashStop, \* the crash monitor stopped the owned writers after the driver died without its trap (B38)
+          repeatedStop, \* the monitor issued a second stop after the trap had already stopped the writers (B39)
           freeMiB,      \* free space, consumed at WriteRateMax while the writers run
           writersAlive, \* the writers still consume space
           lateUnits,    \* clock units of unconfirmed consumption after the stop
@@ -72,7 +74,7 @@ vars == <<phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
-          marker, priorFailures, failures, admitted, stale, exitStop, crashStop,
+          marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop,
           freeMiB, writersAlive, lateUnits,
           unownedStopped, exitRejected, exitFailureRetained,
           unownedHostStopped, unownedMarked, unownedContainersMarked>>
@@ -101,6 +103,7 @@ Init ==
     /\ stale = FALSE
     /\ exitStop = FALSE
     /\ crashStop = FALSE
+    /\ repeatedStop = FALSE
     /\ freeMiB = HardFloorMiB
     /\ writersAlive = TRUE
     /\ lateUnits = 0
@@ -139,6 +142,18 @@ ExitTrap ==
                    diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
                    stale>>
 
+\* B39: after the trap completes its exit handling it leaves a marker, and
+\* the crash monitor reads it before acting. The pre-fix monitor issued a
+\* second stop on every driver exit.
+MonitorObservesExit ==
+    /\ phase = "exited"
+    /\ repeatedStop' = (exitStop /\ ~RememberHandledExit)
+    /\ phase' = "exit-checked"
+    /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed,
+                   timedOut, known, stopStarted, stopElapsed, termSent, killSent,
+                   diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
+                   stale, exitStop, crashStop>>
+
 \* The driver is killed (SIGKILL, OOM) with an iteration in flight, so its
 \* EXIT trap never runs. Only a crash monitor in its own session outlives it;
 \* the pre-fix monitor shared the driver's process group and died with it.
@@ -148,7 +163,7 @@ DriverCrash ==
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed,
                    timedOut, known, stopStarted, stopElapsed, termSent, killSent,
                    diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
-                   stale, exitStop, crashStop>>
+                   stale, exitStop, crashStop, repeatedStop>>
 
 \* The surviving monitor runs the same owner-selecting stop as the exit trap.
 CrashMonitor ==
@@ -160,7 +175,7 @@ CrashMonitor ==
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed,
                    timedOut, known, stopStarted, stopElapsed, termSent, killSent,
                    diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
-                   stale, exitStop>>
+                   stale, exitStop, repeatedStop>>
 
 \* The guardian process is alive but stops making progress (SIGSTOP, a hung
 \* probe): its progress record ages past SOAK_GUARDIAN_MAX_SILENCE_SECONDS.
@@ -381,23 +396,24 @@ RestartDecision ==
                    known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker,
                    priorFailures, failures>>
 
-Next == (DriverExit /\ UNCHANGED <<Consumption, StopVars, unownedMarked, unownedContainersMarked, crashStop>>)
-        \/ (ExitTrap /\ UNCHANGED <<Consumption, unownedMarked, unownedContainersMarked, crashStop>>)
+Next == (DriverExit /\ UNCHANGED <<Consumption, StopVars, unownedMarked, unownedContainersMarked, crashStop, repeatedStop>>)
+        \/ (ExitTrap /\ UNCHANGED <<Consumption, unownedMarked, unownedContainersMarked, crashStop, repeatedStop>>)
+        \/ (MonitorObservesExit /\ UNCHANGED <<Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
         \/ (DriverCrash /\ UNCHANGED <<Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
         \/ (CrashMonitor /\ UNCHANGED <<Consumption, exitRejected, exitFailureRetained,
                                          unownedMarked, unownedContainersMarked>>)
         \/ ((Stall \/ WatcherPollStale)
-            /\ UNCHANGED <<exitStop, crashStop, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
-        \/ (StartProbe /\ UNCHANGED <<stale, exitStop, crashStop, StopVars>>)
+            /\ UNCHANGED <<exitStop, crashStop, repeatedStop, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
+        \/ (StartProbe /\ UNCHANGED <<stale, exitStop, crashStop, repeatedStop, StopVars>>)
         \/ ((Tick \/ StopTick \/ StopReturns \/ LateWrite)
-            /\ UNCHANGED <<stale, exitStop, crashStop, StopVars, unownedMarked, unownedContainersMarked>>)
-        \/ (BeginStop /\ UNCHANGED <<stale, exitStop, crashStop, Consumption, exitRejected,
+            /\ UNCHANGED <<stale, exitStop, crashStop, repeatedStop, StopVars, unownedMarked, unownedContainersMarked>>)
+        \/ (BeginStop /\ UNCHANGED <<stale, exitStop, crashStop, repeatedStop, Consumption, exitRejected,
                                       exitFailureRetained, unownedMarked, unownedContainersMarked>>)
         \/ (/\ Crash \/ WatcherPoll \/ ProbeReturns
                \/ DecideSample \/ Detect \/ Record
                \/ PublishLate \/ AttributionTick \/ CompleteRoot
                \/ Finish \/ Recover \/ RestartDecision
-            /\ UNCHANGED <<stale, exitStop, crashStop, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
+            /\ UNCHANGED <<stale, exitStop, crashStop, repeatedStop, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
 
 Spec == Init /\ [][Next]_vars
 
@@ -405,7 +421,8 @@ TypeOK ==
     /\ phase \in {"running", "watcher-decided", "progress-decided", "probing",
                   "sampled", "sample-decided", "breach", "record", "stop",
                   "stopping", "attribution", "finished", "resume", "stopped",
-                  "ready", "done", "exiting", "exited", "crashed", "crash-checked"}
+                  "ready", "done", "exiting", "exited", "exit-checked",
+                  "crashed", "crash-checked"}
     /\ alive \in BOOLEAN
     /\ interruptRequested \in BOOLEAN
     /\ breachRecorded \in BOOLEAN
@@ -425,6 +442,7 @@ TypeOK ==
     /\ stale \in BOOLEAN
     /\ exitStop \in BOOLEAN
     /\ crashStop \in BOOLEAN
+    /\ repeatedStop \in BOOLEAN
     /\ freeMiB \in Int
     /\ writersAlive \in BOOLEAN
     /\ lateUnits \in 0..LateUnits
@@ -451,6 +469,7 @@ RetainedBreachStopsRestart == phase = "done" => (marker /\ ~admitted /\ failures
 PriorFailuresPreserved == failures >= priorFailures
 ExitStopsWriters == phase = "exited" => exitStop
 CrashStopsOwnedWriters == phase = "crash-checked" => crashStop
+HandledExitHasNoExtraStop == phase = "exit-checked" => ~repeatedStop
 FailedStopRetained == (phase = "exited" /\ exitRejected) => exitFailureRetained
 UnownedWritersPreserved == ~unownedStopped
 UnownedHostWritersPreserved == ~unownedHostStopped

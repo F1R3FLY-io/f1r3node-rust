@@ -193,6 +193,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_oom_pattern_only_pre_fix:UnownedPreferencesPreserved
     soak_disk/MC_SoakDiskGuardian_periodic_name_pre_fix:UnownedContainerPreferencesPreserved
     soak_disk/MC_SoakDiskGuardian_parent_group_pre_fix:CrashStopsOwnedWriters
+    soak_disk/MC_SoakDiskGuardian_unconditional_pre_fix:HandledExitHasNoExtraStop
     soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget

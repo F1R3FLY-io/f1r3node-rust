@@ -64,7 +64,8 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
 | `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B31) |
-| `DriverCrash`, `CrashMonitor` | The driver is killed without its trap. A crash monitor in its own session watches it through pidfd and runs the owner-labeled stop (source plan entry pending) |
+| `MonitorObservesExit` | The trap's exit handling leaves a marker, and the crash monitor reads it before it acts (B39) |
+| `DriverCrash`, `CrashMonitor` | The driver is killed without its trap. A crash monitor in its own session watches it through pidfd and runs the owner-labeled stop (B38) |
 | `StartProbe`, `Tick`, `ProbeReturns` | The guardian runs `df` under `timeout` |
 | `DecideSample` | A timed-out or empty probe supplies no sample |
 | `Detect`, `Record`, `BeginStop` | Write `host-guardian-breach.txt`, then start `stop_node_writers` |
@@ -90,8 +91,9 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `MarkOwnedOnly` | Each guardian sample sets the OOM preference only on owner-marked processes. The pre-fix guardian marked every process matching the pattern | `MC_SoakDiskGuardian_oom_pattern_only_pre_fix` | `UnownedPreferencesPreserved` |
 | `ConfigureAtCreation` | The container OOM preference is set once at creation through the owner-labeling wrapper. The pre-fix sample marked every container matching a name filter | `MC_SoakDiskGuardian_periodic_name_pre_fix` | `UnownedContainerPreferencesPreserved` |
 | `SurvivesDriverCrash` | A crash monitor in its own session outlives a killed driver and runs the owner-labeled stop. The pre-fix driver had no monitor, and a monitor in the driver's process group would die with it | `MC_SoakDiskGuardian_parent_group_pre_fix` | `CrashStopsOwnedWriters` |
+| `RememberHandledExit` | The driver's exit handling writes a handled-exit marker, and the crash monitor exits without a second stop when it finds the marker. The pre-fix monitor stopped the writers on every driver exit | `MC_SoakDiskGuardian_unconditional_pre_fix` | `HandledExitHasNoExtraStop` |
 
-`MC_SoakDiskGuardian` enables all fifteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6414 distinct states.
+`MC_SoakDiskGuardian` enables all sixteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 6462 distinct states.
 
 ### Conditional no-overrun theorem
 
