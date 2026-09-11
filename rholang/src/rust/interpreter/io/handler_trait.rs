@@ -88,7 +88,12 @@ impl HandlerReply {
     /// Failure reply built via `response::err`.  Matches the
     /// `[false, code, msg]` shape emitted by the pre-refactor
     /// `err(FSERR_X, "...")` calls.
-    pub fn err(code: &'static str, msg: impl Into<String>) -> Self {
+    ///
+    /// S4.9 (2026-09-11): `code` is now typed as `FserrCode` so
+    /// the compiler catches raw-string misuse.  All call sites
+    /// must pass a canonical `FSERR_*` constant (defined in
+    /// `errors.rs`) rather than an ad-hoc `&'static str`.
+    pub fn err(code: super::errors::FserrCode, msg: impl Into<String>) -> Self {
         HandlerReply::Err(response::err(code, msg))
     }
 
@@ -100,7 +105,7 @@ impl HandlerReply {
     /// This helper spares each handler from writing
     /// `Err(Box::new(HandlerReply::err(...)))` at every bad-arg
     /// site.
-    pub fn boxed_err(code: &'static str, msg: impl Into<String>) -> Box<Self> {
+    pub fn boxed_err(code: super::errors::FserrCode, msg: impl Into<String>) -> Box<Self> {
         Box::new(HandlerReply::err(code, msg))
     }
 
@@ -1059,8 +1064,18 @@ mod tests {
     #[test]
     fn handler_reply_err_matches_response_err_bytes() {
         use prost::Message;
-        let via_trait = HandlerReply::err("FSERR_BAD_ARG", "sample").into_par();
-        let via_response = response::err("FSERR_BAD_ARG", "sample");
+        // S4.9 (2026-09-11): both sites take `FserrCode` (canonical
+        // FSERR_BAD_ARG) — the pin is now compiler-enforced against
+        // raw-string misuse and the wire bytes are unchanged.
+        let via_trait = HandlerReply::err(
+            crate::rust::interpreter::io::errors::FSERR_BAD_ARG,
+            "sample",
+        )
+        .into_par();
+        let via_response = response::err(
+            crate::rust::interpreter::io::errors::FSERR_BAD_ARG,
+            "sample",
+        );
         assert_eq!(
             via_trait.encode_to_vec(),
             via_response.encode_to_vec(),

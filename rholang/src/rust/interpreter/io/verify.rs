@@ -319,8 +319,9 @@ mod tests {
     /// Confirms the comparator actually reads the byte content.
     #[test]
     fn verify_returns_hash_mismatch_on_distinct_replies() {
-        let fresh = err("FSERR_NOT_FOUND", "cake was a lie");
-        let cached = err("FSERR_IO", "disk on fire");
+        use super::super::errors::{FSERR_IO, FSERR_NOT_FOUND};
+        let fresh = err(FSERR_NOT_FOUND, "cake was a lie");
+        let cached = err(FSERR_IO, "disk on fire");
         match verify_reply_hash_matches_cached(&fresh, &[cached]) {
             Err(DivergenceReason::HashMismatch {
                 fresh: f,

@@ -867,7 +867,10 @@ mod path_tests {
 
 /// Translate `QuarantineError` to the (code, message) pair for the
 /// `[false, code, msg]` reply shape.
-pub fn quarantine_err_reply(e: &QuarantineError) -> (&'static str, String) {
+///
+/// S4.9 (2026-09-11): returns `FserrCode` (was `&'static str`) so
+/// the compiler enforces canonical-code discipline at every caller.
+pub fn quarantine_err_reply(e: &QuarantineError) -> (super::errors::FserrCode, String) {
     use super::errors::{io_err_code, FSERR_BAD_ARG, FSERR_QUARANTINE};
     match e {
         QuarantineError::Empty => (FSERR_BAD_ARG, "empty relative path".into()),
@@ -1147,7 +1150,10 @@ mod tests {
             FSERR_ALREADY_EXISTS, FSERR_BAD_ARG, FSERR_IO, FSERR_NOT_FOUND, FSERR_PERM,
             FSERR_UNSUPPORTED,
         };
-        let cases: &[(io::ErrorKind, &str, &str)] = &[
+        // S4.9 (2026-09-11): the expected_code slot is now
+        // `FserrCode` (was `&str`) since `quarantine_err_reply`
+        // returns `FserrCode`.
+        let cases: &[(io::ErrorKind, super::super::errors::FserrCode, &str)] = &[
             (io::ErrorKind::AlreadyExists, FSERR_ALREADY_EXISTS, "wx"),
             (io::ErrorKind::NotFound, FSERR_NOT_FOUND, "missing"),
             (io::ErrorKind::PermissionDenied, FSERR_PERM, "read-only fs"),

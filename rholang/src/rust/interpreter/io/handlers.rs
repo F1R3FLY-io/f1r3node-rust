@@ -471,10 +471,10 @@ fn ok_with_count(n_deleted: u64) -> Par {
 /// `nDeletedBeforeError` at position 3.  Used by `fs_remove_dir`
 /// for non-recursive failure (n=0) and Oracular recursive failure
 /// (n = count-before-error).  See design-decisions.md.
-fn err_with_count(code: &str, msg: impl Into<String>, n_deleted: u64) -> Par {
+fn err_with_count(code: super::errors::FserrCode, msg: impl Into<String>, n_deleted: u64) -> Par {
     let items = vec![
         bool_par_false(),
-        RhoString::create_par(code.to_string()),
+        RhoString::create_par(code.as_str().to_string()),
         RhoString::create_par(msg.into()),
         RhoNumber::create_par(n_deleted as i64),
     ];
@@ -517,7 +517,7 @@ fn ok_recursive_manifest(deleted: &[(PathBuf, RemoveKind)]) -> Par {
 fn early_err_for_remove_dir(
     recursive: bool,
     cmode: ConsensusMode,
-    code: &str,
+    code: super::errors::FserrCode,
     msg: impl Into<String>,
 ) -> Par {
     if recursive && cmode == ConsensusMode::Consensus {
@@ -533,7 +533,11 @@ fn early_err_for_remove_dir(
 /// `nDeletedBeforeError` at position 3; manifest at position 4.
 /// Dir.rho unwraps to `[false, code, msg, nDeletedBeforeError]`
 /// at the Rholang boundary.
-fn err_with_manifest(code: &str, msg: impl Into<String>, deleted: &[(PathBuf, RemoveKind)]) -> Par {
+fn err_with_manifest(
+    code: super::errors::FserrCode,
+    msg: impl Into<String>,
+    deleted: &[(PathBuf, RemoveKind)],
+) -> Par {
     let inner: Vec<Par> = deleted
         .iter()
         .map(|(path, kind)| {
@@ -546,7 +550,7 @@ fn err_with_manifest(code: &str, msg: impl Into<String>, deleted: &[(PathBuf, Re
         .collect();
     let items = vec![
         bool_par_false(),
-        RhoString::create_par(code.to_string()),
+        RhoString::create_par(code.as_str().to_string()),
         RhoString::create_par(msg.into()),
         RhoNumber::create_par(deleted.len() as i64),
         list_par_from(inner),
@@ -578,7 +582,7 @@ fn bool_par_false() -> Par { Par::default().with_exprs(vec![RhoBoolean::create_e
 /// Compose `io_err_code(e) → fserr_to_code(...)` for the WAL
 /// `WalOutcome::Failure { code }` slot.  Consumed by handlers that
 /// need the numeric FSERR code without a string round-trip.
-fn io_err_code_u32(e: &std::io::Error) -> u32 { fserr_to_code(io_err_code(e)) }
+fn io_err_code_u32(e: &std::io::Error) -> u32 { fserr_to_code(io_err_code(e).as_str()) }
 
 /// Post DD-RemoveDirReplyShape (2026-09-03): read `nDeleted` from
 /// a removeDir reply Par.  Reads position 1 (success) or position 3
@@ -2649,7 +2653,7 @@ pub(super) async fn journal_read_divergence_via_table(
                     owner: None,
                     group: None,
                     outcome: WalOutcome::Failure {
-                        code: fserr_to_code(FSERR_CONSENSUS_DIVERGENCE),
+                        code: fserr_to_code(FSERR_CONSENSUS_DIVERGENCE.as_str()),
                     },
                 },
                 ack_channel_hash(ack),
@@ -2672,7 +2676,7 @@ pub(super) async fn journal_read_divergence_via_table(
 pub(super) async fn dev_inode_from_fd_via_table(
     handles: &FileHandleTable,
     fd: u64,
-) -> Result<(u64, u64), (&'static str, String)> {
+) -> Result<(u64, u64), (super::errors::FserrCode, String)> {
     let Some(file_arc) = handles.raw_fd(fd).await else {
         return Err((FSERR_CLOSED, "fd unknown or shadow handle".to_string()));
     };
@@ -4370,7 +4374,12 @@ mod rq2_wrapper_pins {
     /// reply" refactor that would silently reshape valid returns.
     #[tokio::test]
     async fn spawn_blocking_par_happy_path_forwards_closure_par() {
-        let payload = err("FSERR_TEST", "sentinel payload");
+        // S4.9 (2026-09-11): test-sentinel code — deliberately NOT
+        // a spec-canonical FSERR_* constant.  Constructed via
+        // `FserrCode(...)` at the call site to satisfy the newtype
+        // gate while retaining an arbitrary sentinel for the wire-
+        // drift check.
+        let payload = err(FserrCode("FSERR_TEST"), "sentinel payload");
         let expected = payload.clone();
         let via_wrapper = spawn_blocking_par(move || payload).await;
         assert_eq!(
@@ -4395,12 +4404,14 @@ mod rq2_wrapper_pins {
     /// via the same class of pin.
     #[tokio::test]
     async fn spawn_blocking_par_with_fallback_panic_calls_on_join_err() {
+        // S4.9 (2026-09-11): test sentinel via explicit FserrCode
+        // construction (see FSERR_TEST usage above).
         let via_wrapper = spawn_blocking_par_with_fallback(
             || -> Par { panic!("simulated task panic") },
-            || err("FSERR_T17_TEST", "fallback sentinel"),
+            || err(FserrCode("FSERR_T17_TEST"), "fallback sentinel"),
         )
         .await;
-        let expected = err("FSERR_T17_TEST", "fallback sentinel");
+        let expected = err(FserrCode("FSERR_T17_TEST"), "fallback sentinel");
         assert_eq!(
             via_wrapper, expected,
             "T-17 wire drift: spawn_blocking_par_with_fallback MUST invoke the \
@@ -4420,11 +4431,18 @@ mod rq2_wrapper_pins {
     /// the wrong Par.
     #[tokio::test]
     async fn spawn_blocking_par_with_fallback_happy_path_forwards_closure_par() {
-        let payload = err("FSERR_T17_HAPPY", "closure sentinel");
+        // S4.9 (2026-09-11): test sentinels via explicit FserrCode
+        // construction (see FSERR_TEST usage above).
+        let payload = err(FserrCode("FSERR_T17_HAPPY"), "closure sentinel");
         let expected = payload.clone();
         let via_wrapper = spawn_blocking_par_with_fallback(
             move || payload,
-            || err("FSERR_T17_FALLBACK", "wrong: fallback fired on happy path"),
+            || {
+                err(
+                    FserrCode("FSERR_T17_FALLBACK"),
+                    "wrong: fallback fired on happy path",
+                )
+            },
         )
         .await;
         assert_eq!(

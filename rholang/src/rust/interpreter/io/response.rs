@@ -111,10 +111,19 @@ pub fn ok_par(p: Par) -> Par { list_par(vec![bool_par(true), p]) }
 
 pub fn ok_list(items: Vec<Par>) -> Par { list_par(vec![bool_par(true), list_par(items)]) }
 
-pub fn err(code: &str, msg: impl Into<String>) -> Par {
+/// Construct a `[false, code, msg]` error reply Par.  S4.9
+/// (2026-09-11): `code` is now typed as `FserrCode` (the newtype
+/// over `&'static str`) so the compiler rejects raw-string
+/// misuse at every call site — any code passed here must be a
+/// spec-canonical `FSERR_*` constant.
+///
+/// Wire bytes unchanged: `FserrCode::as_str()` returns the same
+/// `&'static str` value the pre-S4.9 signature would have received,
+/// and `RhoString::create_par` encodes it identically.
+pub fn err(code: super::errors::FserrCode, msg: impl Into<String>) -> Par {
     list_par(vec![
         bool_par(false),
-        RhoString::create_par(code.to_string()),
+        RhoString::create_par(code.as_str().to_string()),
         RhoString::create_par(msg.into()),
     ])
 }
@@ -372,7 +381,10 @@ mod tests {
 
     #[test]
     fn extract_ok_list_len_returns_none_on_error_reply() {
-        let reply = err("FSERR_QUOTA_EXCEEDED", "entries exceeds MAX_ENTRIES");
+        let reply = err(
+            super::super::errors::FSERR_QUOTA_EXCEEDED,
+            "entries exceeds MAX_ENTRIES",
+        );
         assert_eq!(
             extract_ok_list_len(std::slice::from_ref(&reply)),
             None,
@@ -502,7 +514,7 @@ mod tests {
     /// Error replies still bail cleanly on both helpers.
     #[test]
     fn extract_ok_fd_still_rejects_error_replies() {
-        let reply = err("FSERR_BAD_ARG", "invalid path");
+        let reply = err(super::super::errors::FSERR_BAD_ARG, "invalid path");
         assert_eq!(
             extract_ok_fd(std::slice::from_ref(&reply)),
             None,
@@ -609,7 +621,7 @@ mod tests {
     /// Error replies bail cleanly on the quantity path too.
     #[test]
     fn extract_ok_u64_rejects_error_replies() {
-        let reply = err("FSERR_QUOTA_EXCEEDED", "over cap");
+        let reply = err(super::super::errors::FSERR_QUOTA_EXCEEDED, "over cap");
         assert_eq!(
             extract_ok_u64(std::slice::from_ref(&reply)),
             None,

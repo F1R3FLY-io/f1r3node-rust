@@ -33,6 +33,78 @@ use std::io;
 
 use paste::paste;
 
+/// S4.9 (2026-09-11): typed FSERR code, replaces the pre-S4.9
+/// `&'static str` shape of each `FSERR_*` constant.  Introducing a
+/// newtype lets the compiler catch "someone passed a raw string
+/// where a canonical error code was expected" at every call site
+/// (`HandlerReply::err(...)`, `err(...)`, `lock_err_reply(...)`,
+/// etc.) that used to accept any `&'static str`.
+///
+/// # Invariants
+///
+/// - The inner `&'static str` MUST match the identifier name
+///   spec-canonical (`"FSERR_BAD_ARG"` for `FSERR_BAD_ARG`, etc.).
+///   The `consensus_error_codes!` macro enforces this at
+///   declaration time via `stringify!`.
+///
+/// # Consensus surface
+///
+/// The inner bytes are consensus-observable (they appear in
+/// `[false, code, msg]` Rholang error tuples).  Wrapping in a
+/// newtype does NOT change the wire bytes — `as_str()` returns
+/// the identical `&'static str` value, so the `RhoString`-encoded
+/// Par for an error reply is byte-identical pre/post S4.9.
+///
+/// # Ergonomics
+///
+/// - `Copy` so it can be freely passed by value.
+/// - No `Deref` to `&str` — that would defeat the purpose by
+///   allowing implicit conversion at call sites.  Use `.as_str()`
+///   explicitly when converting to a raw string is required (e.g.,
+///   `fserr_to_code` bridge, or emitting to a Par via
+///   `RhoString::create_par`).
+/// - `Display` prints the inner string, so `format!("{code}")`
+///   works ergonomically.
+/// - `PartialEq<&str>` and `PartialEq<str>` for direct comparison
+///   in tests that compare a code to a literal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct FserrCode(pub &'static str);
+
+impl FserrCode {
+    /// Return the canonical `&'static str` inner value.  Prefer
+    /// this over accessing `.0` directly — the wrapper's field is
+    /// `pub` for macro construction only.
+    pub const fn as_str(&self) -> &'static str { self.0 }
+}
+
+impl std::fmt::Display for FserrCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0) }
+}
+
+impl PartialEq<&str> for FserrCode {
+    fn eq(&self, other: &&str) -> bool { self.0 == *other }
+}
+
+impl PartialEq<str> for FserrCode {
+    fn eq(&self, other: &str) -> bool { self.0 == other }
+}
+
+impl PartialEq<FserrCode> for &str {
+    fn eq(&self, other: &FserrCode) -> bool { *self == other.0 }
+}
+
+impl PartialEq<FserrCode> for str {
+    fn eq(&self, other: &FserrCode) -> bool { self == other.0 }
+}
+
+impl PartialEq<String> for FserrCode {
+    fn eq(&self, other: &String) -> bool { self.0 == other.as_str() }
+}
+
+impl PartialEq<FserrCode> for String {
+    fn eq(&self, other: &FserrCode) -> bool { self.as_str() == other.0 }
+}
+
 /// Reserved as "unknown" so an in-code error slipping through the
 /// mapping still round-trips deterministically rather than silently
 /// mis-classifying.  See `fserr_to_code`.
@@ -57,7 +129,14 @@ macro_rules! consensus_error_codes {
     ( $( ( $name:ident, $code:expr ) ),+ $(,)? ) => {
         paste! {
             $(
-                pub const [<FSERR_ $name>]: &str = stringify!([<FSERR_ $name>]);
+                // S4.9 (2026-09-11): FSERR constants are `FserrCode`
+                // (newtype over `&'static str`).  The inner value is
+                // spec-canonical (`stringify!` enforces identifier-
+                // matches-value at compile time).  Consensus surface
+                // unchanged — `.as_str()` returns the same bytes the
+                // pre-S4.9 `&str` version would have produced.
+                pub const [<FSERR_ $name>]: FserrCode =
+                    FserrCode(stringify!([<FSERR_ $name>]));
                 pub const [<FSERR_CODE_ $name>]: u32 = $code;
             )+
 
@@ -66,10 +145,15 @@ macro_rules! consensus_error_codes {
             /// inputs return `FSERR_CODE_UNKNOWN` (never panics — a
             /// hostile or out-of-band error string still round-trips
             /// deterministically).
+            ///
+            /// Takes `&str` (not `FserrCode`) because WAL decode paths
+            /// receive arbitrary strings — they may not have originated
+            /// from a canonical `FSERR_*` constant, and mapping them to
+            /// UNKNOWN is the safe fallback.
             pub fn fserr_to_code(s: &str) -> u32 {
                 match s {
                     $(
-                        [<FSERR_ $name>] => [<FSERR_CODE_ $name>],
+                        s if s == [<FSERR_ $name>].as_str() => [<FSERR_CODE_ $name>],
                     )+
                     _ => FSERR_CODE_UNKNOWN,
                 }
@@ -142,7 +226,11 @@ consensus_error_codes! {
 /// reply Pars.  Not derived from the macro because the mapping is
 /// FROM a foreign taxonomy (`io::ErrorKind`) TO ours; a macro-
 /// derived version would be less readable.
-pub fn io_err_code(e: &io::Error) -> &'static str {
+///
+/// S4.9 (2026-09-11): returns `FserrCode` (was `&'static str`) so
+/// the compiler enforces canonical-code discipline at every call
+/// site that passes the result into `HandlerReply::err` / `err`.
+pub fn io_err_code(e: &io::Error) -> FserrCode {
     use io::ErrorKind::*;
     match e.kind() {
         NotFound => FSERR_NOT_FOUND,
@@ -166,10 +254,10 @@ mod tests {
     /// if the compile-time contiguity check missed it.
     #[test]
     fn fserr_string_to_code_round_trip_pins_every_declared_code() {
-        // Table is manually enumerated so a regression that dropped
-        // a `consensus_error_codes!` entry surfaces here rather than
-        // being silently absent.
-        let pairs: &[(&str, u32)] = &[
+        // S4.9 (2026-09-11): pairs are now `(FserrCode, u32)`.  The
+        // round-trip goes through `.as_str()` to feed the string-
+        // taking `fserr_to_code`.
+        let pairs: &[(FserrCode, u32)] = &[
             (FSERR_BAD_ARG, FSERR_CODE_BAD_ARG),
             (FSERR_IO, FSERR_CODE_IO),
             (FSERR_NOT_FOUND, FSERR_CODE_NOT_FOUND),
@@ -186,7 +274,8 @@ mod tests {
             (FSERR_DEADLOCK, FSERR_CODE_DEADLOCK),
             (FSERR_REVOKED, FSERR_CODE_REVOKED),
         ];
-        for (s, code) in pairs {
+        for (c, code) in pairs {
+            let s = c.as_str();
             assert_eq!(
                 fserr_to_code(s),
                 *code,
@@ -195,13 +284,12 @@ mod tests {
                  macro's inputs are out of sync with the manual \
                  pair-table below."
             );
-            // The string const's value must equal the identifier it
-            // was declared under (post-macro, `stringify!` in the
-            // macro body enforces this at compile time, but the
-            // sanity check is cheap).
+            // The const's inner string value must equal its
+            // identifier name (spec-canonical); `stringify!` in the
+            // macro enforces this at compile time.
             let expected_str = format!("FSERR_{}", &s[6..]);
             assert_eq!(
-                *s, expected_str,
+                s, expected_str,
                 "M-34: the const's string value must equal its \
                  identifier name (spec-canonical)."
             );
@@ -210,6 +298,23 @@ mod tests {
         // FSERR_CODE_UNKNOWN rather than panic.
         assert_eq!(fserr_to_code("bogus"), FSERR_CODE_UNKNOWN);
         assert_eq!(fserr_to_code(""), FSERR_CODE_UNKNOWN);
+    }
+
+    /// S4.9 (2026-09-11): pin the `FserrCode` newtype behavior.
+    /// Round-trip through `as_str()` must preserve the canonical
+    /// string, equality with `&str` must work both directions, and
+    /// `Display` must emit the bare code string (no wrapper prefix).
+    #[test]
+    fn fserr_code_newtype_shape_pins() {
+        let code = FSERR_BAD_ARG;
+        assert_eq!(code.as_str(), "FSERR_BAD_ARG");
+        assert_eq!(code, "FSERR_BAD_ARG");
+        assert_eq!("FSERR_BAD_ARG", code);
+        assert_eq!(format!("{code}"), "FSERR_BAD_ARG");
+        // Distinct codes are inequal at both the newtype and the
+        // string level.
+        assert_ne!(FSERR_BAD_ARG, FSERR_IO);
+        assert_ne!(FSERR_BAD_ARG.as_str(), FSERR_IO.as_str());
     }
 
     /// M-34 (2026-09-04, S-2 fix): pin the current-slice count of
