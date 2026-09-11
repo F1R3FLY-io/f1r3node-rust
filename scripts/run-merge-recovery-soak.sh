@@ -27,6 +27,7 @@ PROVIDERS=(docker subprocess)
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="$OUTPUT_DIR/.soak-state"
 INFLIGHT_ITERATION=0
+INFLIGHT_BENCHMARK=0
 if [ -f "$STATE_FILE" ]; then
 	# shellcheck source=/dev/null
 	. "$STATE_FILE"
@@ -41,6 +42,10 @@ else
 fi
 if ! [[ "$INFLIGHT_ITERATION" =~ ^[012]$ ]]; then
 	printf 'The saved iteration state must be 0, 1, or 2.\n' >&2
+	exit 2
+fi
+if ! [[ "$INFLIGHT_BENCHMARK" =~ ^[012]$ ]]; then
+	printf 'The saved benchmark state must be 0, 1, or 2.\n' >&2
 	exit 2
 fi
 
@@ -559,6 +564,7 @@ persist_soak_state() {
 		printf 'STARTED_AT=%s\n' "$STARTED_AT"
 		printf 'ITERATIONS=%s\n' "$ITERATIONS"
 		printf 'INFLIGHT_ITERATION=%s\n' "$INFLIGHT_ITERATION"
+		printf 'INFLIGHT_BENCHMARK=%s\n' "$INFLIGHT_BENCHMARK"
 		printf 'FAILURES=%s\n' "$FAILURES"
 		printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
 		printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
@@ -594,6 +600,17 @@ if [ "$INFLIGHT_ITERATION" -eq 2 ]; then
 	DEADLINE=0
 	printf 'interrupted_iteration: iteration %s has no committed outcome. Writer termination is unconfirmed.\n' \
 		"$ITERATIONS" >"$OUTPUT_DIR/early-exit.txt" || exit 2
+fi
+if [ "$INFLIGHT_BENCHMARK" -eq 1 ]; then
+	FAILURES="$((FAILURES + 1))"
+	BENCH_FAILURES="$((BENCH_FAILURES + 1))"
+	INFLIGHT_BENCHMARK=2
+fi
+if [ "$INFLIGHT_BENCHMARK" -eq 2 ]; then
+	EARLY_EXIT_REASON="interrupted_benchmark"
+	DEADLINE=0
+	printf 'interrupted_benchmark: benchmark %s has no committed outcome. Writer termination is unconfirmed.\n' \
+		"$BENCH_SEGMENTS" >"$OUTPUT_DIR/early-exit.txt" || exit 2
 fi
 persist_soak_state || exit 2
 
@@ -1011,6 +1028,8 @@ run_bench_segment() {
 		return 1
 	fi
 	BENCH_SEGMENTS="$((BENCH_SEGMENTS + 1))"
+	INFLIGHT_BENCHMARK=1
+	persist_soak_state || exit 2
 	local segment_dir
 	segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"
 	mkdir -p "$segment_dir"
@@ -1070,6 +1089,8 @@ run_bench_segment() {
 			tail -20 "$segment_dir/bench.log" >&2 || true
 		fi
 	fi
+	INFLIGHT_BENCHMARK=0
+	persist_soak_state || exit 2
 }
 
 mkdir -p "$OUTPUT_DIR"
@@ -1224,6 +1245,10 @@ cleanup_soak_processes() {
 			printf 'writer_stop_failed: Writer termination is unconfirmed.\n' >"$OUTPUT_DIR/early-exit.txt"
 			if [ "$INFLIGHT_ITERATION" -eq 1 ]; then
 				INFLIGHT_ITERATION=2
+				FAILURES="$((FAILURES + 1))"
+			elif [ "$INFLIGHT_BENCHMARK" -eq 1 ]; then
+				INFLIGHT_BENCHMARK=2
+				BENCH_FAILURES="$((BENCH_FAILURES + 1))"
 				FAILURES="$((FAILURES + 1))"
 			elif [ "$FAILURES" -eq 0 ]; then
 				FAILURES=1

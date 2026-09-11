@@ -10,7 +10,7 @@ a Boolean constant and must violate exactly the invariant named below.
 
 | Model action | Driver behavior |
 | --- | --- |
-| `ValidateSettings` | Reject the configuration outright when the floor, the band, or their sum does not fit in 64 bits (B24). Refuse work when the state file records an iteration left in flight by a crashed segment (B29) |
+| `ValidateSettings` | Reject the configuration outright when the floor, the band, or their sum does not fit in 64 bits (B24). Refuse work when the state file records an iteration (B29) or the opening benchmark left in flight by a crashed segment |
 | `Benchmark` | Launch the opening benchmark on the first segment only when no breach marker was retained, a known sample is at or above floor plus band, and the guardian is alive. A guardian started first records a disk fall during the benchmark; a watched fault (breach or guardian death) cancels the benchmark and publishes the failure |
 | `CheckGuardian` | Read the guardian marker before the probe and after hygiene |
 | `ProbeBoundary`, `ProbeAfterHygiene` | `disk_free_mb`: `df` reports the free space, prints a malformed field, or fails |
@@ -41,8 +41,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `EnforceCleanupFailures` | A failed Docker cleanup command fails hygiene and refuses admission, whatever the later sample says | `MC_SoakDiskAdmission_ignore_errors_pre_fix` | `CleanupFailurePreventsAdmission` |
 | `PreserveDockerResources` | Hygiene inspects exited containers, networks, images, and the build cache; it never prunes them, since the driver cannot tell its own resources from the host's | `MC_SoakDiskAdmission_global_prune_pre_fix` | `UnownedDockerResourcesPreserved` |
 | `RememberInFlight` | The state file records an iteration in flight. A segment that finds one counts a failure and refuses work, since writer termination is unconfirmed | `MC_SoakDiskAdmission_unrecorded_pre_fix` | `CrashRequiresRefusal` |
+| `RememberBenchmark` | The state file records the opening benchmark in flight. A segment that finds one counts a failure and a benchmark failure and refuses work | `MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix` | `BenchmarkCrashRequiresRefusal` |
 
-`MC_SoakDiskAdmission` enables all fifteen corrections with both benchmark fault kinds. It checks `TypeOK`, the fifteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 12258 distinct states.
+`MC_SoakDiskAdmission` enables all sixteen corrections with both benchmark fault kinds. It checks `TypeOK`, the sixteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 12498 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 

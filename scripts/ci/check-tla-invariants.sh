@@ -175,6 +175,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_ignore_errors_pre_fix:CleanupFailurePreventsAdmission
     soak_disk/MC_SoakDiskAdmission_global_prune_pre_fix:UnownedDockerResourcesPreserved
     soak_disk/MC_SoakDiskAdmission_unrecorded_pre_fix:CrashRequiresRefusal
+    soak_disk/MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix:BenchmarkCrashRequiresRefusal
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline

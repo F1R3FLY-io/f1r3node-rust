@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Fifteen         *)
+(* decide, after the opening benchmark on the first segment. Sixteen         *)
 (* Boolean constants switch the corrections on and off so that each pre-fix  *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -23,6 +23,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           EnforceCleanupFailures, \* a failed cleanup command fails hygiene (B26)
           PreserveDockerResources, \* hygiene inspects Docker resources, never prunes them (B27)
           RememberInFlight, \* a segment that crashed mid-iteration refuses the next segment (B29)
+          RememberBenchmark, \* a segment that crashed during the opening benchmark refuses the next segment (plan entry pending)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -33,7 +34,8 @@ ASSUME /\ FloorMiB \in Nat \ {0}
        /\ {RequireBand, RejectMissing, RejectMalformed, CheckGuardianAlive,
            CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
            CheckProgress, EnforceHygieneDeadline, CheckRange, PreserveUnowned,
-           EnforceCleanupFailures, PreserveDockerResources, RememberInFlight} \subseteq BOOLEAN
+           EnforceCleanupFailures, PreserveDockerResources, RememberInFlight,
+           RememberBenchmark} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -75,7 +77,8 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           sessionPresent, \* that session still exists after hygiene
           cleanupFailed, \* a Docker cleanup command failed during hygiene (B26)
           dockerPresent, \* unowned Docker resources still exist after hygiene (B27)
-          interrupted    \* the previous segment died with an iteration in flight (B29)
+          interrupted,   \* the previous segment died with an iteration in flight (B29)
+          benchmarkInterrupted \* the previous segment died with the opening benchmark in flight
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
@@ -85,7 +88,7 @@ vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
           hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
           settingsValid, sessionAge, sessionPresent, cleanupFailed, dockerPresent,
-          interrupted>>
+          interrupted, benchmarkInterrupted>>
 
 Init ==
     /\ phase = "config"
@@ -95,6 +98,7 @@ Init ==
     /\ cleanupFailed = FALSE
     /\ dockerPresent = TRUE
     /\ interrupted \in BOOLEAN
+    /\ benchmarkInterrupted \in BOOLEAN
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -135,11 +139,14 @@ BelowBand == sample.known /\ sample.mib < FloorMiB + BandMiB
 \* concrete boundary texts.
 \* B29: the state file records an iteration in flight; a segment that finds
 \* one counts a failure and refuses work, since the writers' termination is
-\* unconfirmed. The pre-fix driver resumed as if the iteration had ended.
+\* unconfirmed. The pre-fix driver resumed as if the iteration had ended. The
+\* same record now covers the opening benchmark: a segment that died with the
+\* benchmark in flight counts a failure and a benchmark failure and refuses.
 ValidateSettings ==
     /\ phase = "config"
     /\ LET rejected == CheckRange /\ ~settingsValid
-           halted == ~rejected /\ RememberInFlight /\ interrupted
+           halted == ~rejected /\ ((RememberInFlight /\ interrupted)
+                                   \/ (RememberBenchmark /\ benchmarkInterrupted))
        IN /\ phase' = IF rejected THEN "rejected"
                       ELSE IF halted THEN "stopped" ELSE "benchmark"
           /\ stopReason' = IF halted THEN "interrupted" ELSE stopReason
@@ -197,7 +204,7 @@ Benchmark ==
     /\ UNCHANGED <<free, raw, sample, admitted, admissionRaw, admissionSample,
                    evidence, retained, guardianFresh, admissionFresh, settingsValid,
                    sessionAge, sessionPresent, cleanupFailed, dockerPresent,
-                   interrupted>>
+                   interrupted, benchmarkInterrupted>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -361,7 +368,7 @@ PublishRefusal ==
 FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
                           benchmarkGuardianAlive, benchmarkFresh, settingsValid,
-                          sessionAge, interrupted>>
+                          sessionAge, interrupted, benchmarkInterrupted>>
 
 HygieneOutcome == <<sessionPresent, cleanupFailed, dockerPresent>>
 
@@ -425,6 +432,7 @@ TypeOK ==
     /\ cleanupFailed \in BOOLEAN
     /\ dockerPresent \in BOOLEAN
     /\ interrupted \in BOOLEAN
+    /\ benchmarkInterrupted \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -448,6 +456,7 @@ UnownedSessionPreserved == sessionPresent
 CleanupFailurePreventsAdmission == admitted => ~cleanupFailed
 UnownedDockerResourcesPreserved == dockerPresent
 CrashRequiresRefusal == interrupted => ~admitted /\ ~benchmark
+BenchmarkCrashRequiresRefusal == benchmarkInterrupted => ~admitted /\ ~benchmark
 HygieneKillFollowsTerm == hygieneKillSent => hygieneTermSent
 StopPreventsAdmission == stopReason # "none" => ~admitted
 RefusalRecorded == phase = "done" => evidence /\ stopReason # "none" /\ ~admitted
