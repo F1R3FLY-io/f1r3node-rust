@@ -135,6 +135,10 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_DriverCrashStop
     soak_disk/MC_CrashMonitorExit
     soak_disk/MC_CrashMonitorDeath
+    soak_disk/MC_BenchmarkMonitorDeath
+    soak_disk/MC_MonitorAdmission_benchmark
+    soak_disk/MC_MonitorAdmission_iteration
+    soak_disk/MC_InterruptedOutputDrain
 )
 
 TLC_WORKERS=auto
@@ -175,6 +179,10 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_DriverCrashStop
         soak_disk/MC_CrashMonitorExit
         soak_disk/MC_CrashMonitorDeath
+        soak_disk/MC_BenchmarkMonitorDeath
+        soak_disk/MC_MonitorAdmission_benchmark
+        soak_disk/MC_MonitorAdmission_iteration
+        soak_disk/MC_InterruptedOutputDrain
     )
     TLC_WORKERS=2
 fi
@@ -248,6 +256,10 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_DriverCrashStop_parent_group_pre_fix:DriverCrashStopsOwnedWriter
     soak_disk/MC_CrashMonitorExit_unconditional_pre_fix:HandledExitHasNoExtraStop
     soak_disk/MC_CrashMonitorDeath_startup_only_pre_fix:MonitorDeathStopsOwnedWriter
+    soak_disk/MC_BenchmarkMonitorDeath_iteration_only_pre_fix:BenchmarkMonitorDeathStopsOwnedWriter
+    soak_disk/MC_MonitorAdmission_benchmark_unchecked_pre_fix:MonitorDeathPreventsAdmission
+    soak_disk/MC_MonitorAdmission_iteration_unchecked_pre_fix:MonitorDeathPreventsAdmission
+    soak_disk/MC_InterruptedOutputDrain_drain_first_pre_fix:DrainRequiresOwnedStop
 )
 
 failed=0

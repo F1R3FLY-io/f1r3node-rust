@@ -25,4 +25,12 @@ SOAK_HOST_STOP_SCENARIO=oom SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/be
     "${1:-$ROOT}" "$OUTPUT/host-oom-ownership"
 SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-crash-monitor-death.sh" \
     "${1:-$ROOT}" "$OUTPUT/crash-monitor-death"
+SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-benchmark-monitor-death.sh" \
+    "${1:-$ROOT}" "$OUTPUT/benchmark-monitor-death"
+for mode in benchmark iteration; do
+    SOAK_MONITOR_ADMISSION_MODE="$mode" SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-monitor-admission.sh" \
+        "${1:-$ROOT}" "$OUTPUT/monitor-admission-$mode"
+done
+SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-monitor-inherited-pipe.sh" \
+    "${1:-$ROOT}" "$OUTPUT/monitor-inherited-pipe"
 printf 'PASS: The isolated disk emergency regressions completed.\n'

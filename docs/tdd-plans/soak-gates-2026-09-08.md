@@ -621,6 +621,22 @@ behaviors:
         formal_red_exit: 12
         green_exit: 0
         formal_green_exit: 0
+  - id: B41
+    statement: Monitor death during a benchmark stops the owned writer, preserves an unrelated writer, and retains one failure across restarts.
+    priority: must
+    deep_module: false
+    done: false
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log: []
+  - id: B42
+    statement: Monitor death during an admission probe prevents benchmark and iteration admission and retains one failure across restarts.
+    priority: must
+    deep_module: false
+    done: false
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log: []
 ---
 
 # Soak Gate Development Cycles
