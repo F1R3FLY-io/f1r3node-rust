@@ -352,6 +352,12 @@ The final batch also revalidates B27–B31 against the current driver.
 These selected results do not cover every launch path, benchmark crash window, storage fault, or aggregate deadline.
 D2, D3 reserve bounds, hosted checks, and maintainer review remain pending.
 
+The [B37 cycle](../cbc-evidence/soak-d2-benchmark-crash-2026-09-11/README.md) corrects restart admission after a benchmark crash before any outcome or stop record.
+Two refused restarts retain one interrupted benchmark failure.
+All ten real-system GREEN cases and composed regressions pass.
+The surviving writer requires fixture cleanup, so production crash-time termination remains open.
+Storage faults, durable publication, complete ownership, aggregate deadlines, reserve bounds, hosted verification, and maintainer review remain completion requirements.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

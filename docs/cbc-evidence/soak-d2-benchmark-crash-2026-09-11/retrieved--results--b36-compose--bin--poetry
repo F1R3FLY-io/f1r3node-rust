@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+trap 'exit 143' TERM INT
+if [[ "${SOAK_STOP_OWNERSHIP_LAUNCH:-run}" == compose ]]; then
+    compose="$SOAK_REAL_EVIDENCE/writer-compose.json"
+    jq -n --arg image "$SOAK_REAL_DOCKER_IMAGE" --arg name "rnode.test.d2-owned-$$" \
+        '{services:{writer:{image:$image,container_name:$name,network_mode:"none",mem_limit:"32m",cpus:0.5,pids_limit:32,cap_drop:["ALL"],security_opt:["no-new-privileges"],user:"65534:65534",labels:{"fixture.owner":"workload"},command:["/bin/sh","-c","i=0; while [ \"$$i\" -lt 600 ]; do printf \"%s\\n\" \"$$i\" >>/tmp/writes; i=$$((i+1)); sleep 0.1; done"]}}}' >"$compose"
+    docker compose -f "$compose" -p "d2-owned-$$" up -d
+    cid=$(docker compose -f "$compose" -p "d2-owned-$$" ps -q)
+else
+    cid=$(docker run -d --name "rnode.test.d2-owned-$$" --label fixture.owner=workload --network none --memory 32m --cpus 0.5 --pids-limit 32 --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 "$SOAK_REAL_DOCKER_IMAGE" /bin/sh -c 'i=0; while [ "$i" -lt 600 ]; do printf "%s\n" "$i" >>/tmp/writes; i=$((i+1)); sleep 0.1; done')
+fi
+printf '%s\n' "$cid" >"$SOAK_REAL_EVIDENCE/writer-id.txt"
+while :; do sleep 0.1; done

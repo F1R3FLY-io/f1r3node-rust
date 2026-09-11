@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf 'unexpected workload\n' >"$SOAK_REAL_EVIDENCE/workload-started.txt"
+exit 1
