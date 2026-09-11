@@ -104,23 +104,96 @@ for check in "${CONTROLS[@]}"; do
     done
 done
 
-# 2. Routing.
-ruby -ryaml - "$ROOT" "$WORK" <<'RUBY'
-root, work = ARGV
-workflow = YAML.load_file("#{root}/.github/workflows/slashing-tests.yml")
-trigger = workflow['on'] || workflow[true]
-abort 'FAIL: The formal workflow does not trigger on pull requests.' unless trigger.key?('pull_request')
-job = workflow.fetch('jobs').fetch('tla-model-check')
-abort 'FAIL: The TLA+ invariant job is not enabled for every pull request.' unless job['if'].nil? || job['if'] == true
+# 2. Routing. A stdlib-only scan of the workflow file: the checks need the
+# trigger keys, the job's scalar keys, and one step's env and run block, and
+# the file is two-space YAML, so an indentation walk is enough.
+python3 - "$ROOT" "$WORK" <<'PY'
+import sys
+root, work = sys.argv[1:3]
+lines = open(f"{root}/.github/workflows/slashing-tests.yml").read().splitlines()
+
+def indent(line):
+    return len(line) - len(line.lstrip(" "))
+
+def content(line):
+    return bool(line.strip()) and not line.strip().startswith("#")
+
+def children(start, base):
+    out = []
+    for line in lines[start + 1:]:
+        if not line.strip():
+            out.append(line)
+            continue
+        if indent(line) <= base:
+            break
+        out.append(line)
+    return out
+
+def mapping(block, level):
+    keys = {}
+    for line in block:
+        if content(line) and indent(line) == level and ":" in line and not line.strip().startswith("- "):
+            key, _, value = line.strip().partition(":")
+            keys[key] = value.strip()
+    return keys
+
+def abort(message):
+    sys.exit(f"FAIL: {message}")
+
+top = {line[:-1]: i for i, line in enumerate(lines) if line and not line.startswith(" ") and line.endswith(":")}
+if "on" not in top or "jobs" not in top:
+    abort("The formal workflow has no trigger or jobs block.")
+if "pull_request" not in mapping(children(top["on"], 0), 2):
+    abort("The formal workflow does not trigger on pull requests.")
+job_start = next((i for i, line in enumerate(lines) if line == "  tla-model-check:"), None)
+if job_start is None or job_start < top["jobs"]:
+    abort("The TLA+ invariant job is missing.")
+job_block = children(job_start, 2)
+job = mapping(job_block, 4)
+if job.get("if") not in (None, "true"):
+    abort("The TLA+ invariant job is not enabled for every pull request.")
 budget = "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 240 || 15 }}"
-abort 'FAIL: The formal job must bound PR runs to 15 minutes and keep the nightly budget.' unless job['timeout-minutes'] == budget
-step = job.fetch('steps').find { |item| item.fetch('run', '').include?('scripts/ci/check-formal-invariants.sh') }
-abort 'FAIL: The formal verification command is missing.' unless step
+if job.get("timeout-minutes") != budget:
+    abort("The formal job must bound PR runs to 15 minutes and keep the nightly budget.")
+if "continue-on-error" in job:
+    abort("Formal errors must fail the job.")
+
+steps = [offset for offset, line in enumerate(job_block)
+         if content(line) and indent(line) == 6 and line.strip().startswith("- ")]
+found = None
+for number, offset in enumerate(steps):
+    stop = steps[number + 1] if number + 1 < len(steps) else len(job_block)
+    body = [job_block[offset].replace("- ", "  ", 1)] + job_block[offset + 1:stop]
+    keys = mapping(body, 8)
+    run_index = next((i for i, line in enumerate(body)
+                      if content(line) and indent(line) == 8 and line.strip().startswith("run:")), None)
+    if run_index is None:
+        continue
+    if keys["run"] == "|":
+        raw = [line for line in body[run_index + 1:] if not (content(line) and indent(line) <= 8)]
+        while raw and not raw[-1].strip():
+            raw.pop()
+        width = min(indent(line) for line in raw if line.strip())
+        run = "\n".join(line[width:] for line in raw) + "\n"
+    else:
+        run = keys["run"] + "\n"
+    if "scripts/ci/check-formal-invariants.sh" not in run:
+        continue
+    found = (keys, body, run)
+    break
+if found is None:
+    abort("The formal verification command is missing.")
+keys, body, run = found
+env_index = next((i for i, line in enumerate(body)
+                  if content(line) and indent(line) == 8 and line.strip() == "env:"), None)
+env = mapping(body[env_index + 1:], 10) if env_index is not None else {}
 exhaustive = "${{ (github.event_name == 'workflow_dispatch' && inputs.run_exhaustive) && '1' || '0' }}"
-abort 'FAIL: Only manual dispatch can select exhaustive verification.' unless step.fetch('env').fetch('RUN_EXHAUSTIVE_TLA') == exhaustive
-abort 'FAIL: Formal errors must fail the job.' if job['continue-on-error'] || step['continue-on-error'] || step['if']
-File.write("#{work}/workflow-run.sh", step.fetch('run'))
-RUBY
+if env.get("RUN_EXHAUSTIVE_TLA") != exhaustive:
+    abort("Only manual dispatch can select exhaustive verification.")
+if "continue-on-error" in keys or "if" in keys:
+    abort("Formal errors must fail the job.")
+open(f"{work}/workflow-run.sh", "w").write(run)
+PY
 
 run_gate gate || fail 'The full gate failed with the fixture.'
 checked >"$WORK/full"

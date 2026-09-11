@@ -162,7 +162,7 @@ After phase two the README paragraph about legacy modules in `formal/tlaplus/soa
 
 - 2026-09-11, `5e1842688` (B40 evidence and the published-set rule): no driver, model, or gate change. The source removed 819 tracked rerun files across 23 packages and added the rerun patterns to the root `.gitignore`. Rerun streams are now digest-only in the manifest's raw archive record. The nine package-local `.gitignore` files stay, and the builder stops emitting them.
   - The `soak-d2-monitor-death-2026-09-11` manifest is digest-bound. Historical manifests are unchanged, so the earlier digest rows stay valid. The package is on the phase-two removal list with the earlier packages, and the `CrashMonitorDeath` correspondence note is on the phase-two `.md` list.
-  - The source added a Ruby package checker, `scripts/ci/check-soak-evidence-package.rb`, and its regression suite. Both are kept as is. Their placement is decided at the split, since the checker serves the packages this branch keeps as well as the inventory it does not.
+  - The source added a Ruby package checker, `scripts/ci/check-soak-evidence-package.rb`, and its regression suite. The maintainer decided that no Ruby code ships in this work, so both files and the source's old `inspect.rb` are removed from this branch. The gate fixture test's routing check, which parsed the workflow with Ruby, now uses a stdlib-only Python scan. Its extracted run script is byte-identical to the Ruby result, and it rejects the same four mutations.
   - `formal/tlaplus/soak_disk/README.md` conflicted on the evidence paragraph. This branch's text stays, and a condensed evidence packaging section records the published-set rule. `docs/ToDos.md` keeps this branch's bullets and the source's newer status line. Counts stay at 36 soak controls and 42 scenarios.
 
 ## D3 evidence: the disk-usage timeline (2026-09-10)
@@ -191,11 +191,12 @@ Gate: six positive configurations and 33 controls. `deploy_storage` joined `REGI
 
 ## Decision: split after the source agent finishes (2026-09-10, revised 2026-09-11)
 
-The maintainer decided that PR #406 does not merge as one unit. After the source agent's last cycle lands here, the branch is cut into three pull requests from dev. The legacy modules, wrappers, digest inventory, and generated evidence are not carried:
+The maintainer decided that PR #406 does not merge as one unit. It is a staging pull request, marked as a draft, and it closes unmerged after the cut. After the source agent's last cycle lands here, the branch is cut into four pull requests from dev. The legacy modules, wrappers, digest inventory, generated evidence packages, and every Ruby file are not carried:
 
 1. Deploy storage bound, `formal/tlaplus/deploy_storage`, a machine A area.
 2. Soak driver disk protection: the driver, the host suite, the Docker harness, and the real-daemon checks. The driver evidence record and the release-process note go with it.
 3. Soak formal models: the two consolidated models, the storage budget, the gate registry and test, the README, and the claim.
+4. Docs: the consensus-neutral execution note, its links from the docs index and the formal-verification guide, and this split section.
 
 ### Verification split by machine and medium (2026-09-11)
 

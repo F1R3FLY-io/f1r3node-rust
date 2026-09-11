@@ -179,12 +179,4 @@ New evidence packages keep rerun streams digest-only. The rerun patterns are `co
 
 The manifest's `raw_archive.entries` records each stream's `raw_path`, `raw_sha256`, and `raw_bytes`. A rerun entry has no `published_streams` entry and no package file. Each new package README states that reruns are digest-only and names the raw archive with an `[EVIDENCE_ROOT]` path. The root `.gitignore` carries the same patterns, and a package must not add a local `.gitignore` with `!*.log`.
 
-The package checker requires every listed published file and verifies its digest and byte count. It accepts rerun records without a published file or a local raw archive. A missing published file or a missing archived stream fails the check.
-
-```bash
-ruby scripts/ci/check-soak-evidence-package.rb <package>
-ruby scripts/ci/check-soak-evidence-package.rb <package> --raw-archive <raw-streams.tar.gz>
-ruby scripts/ci/test-soak-evidence-package.rb
-```
-
-The driver evidence record binds each package by the digest of its manifest, and the published-set rule does not change those digests.
+The source branch validates packages with a Ruby checker. This branch does not carry Ruby, so the checker is not here. The driver evidence record binds each package by the digest of its manifest, and the published-set rule does not change those digests.
