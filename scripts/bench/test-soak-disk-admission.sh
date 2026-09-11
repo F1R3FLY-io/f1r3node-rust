@@ -84,12 +84,12 @@ if [[ "${1:-}" == --inside ]]; then
     trap 'printf "ERROR: The container fixture failed before its behavioral verdict.\n" >&2; exit 2' ERR
     [[ -f /.dockerenv && "$(id -u)" == 65534 && ! -S /var/run/docker.sock ]] || exit 2
     cd /case
-    for tool in bash jq timeout find awk sed tar ps perl; do
+    for tool in bash jq timeout find awk sed tar ps perl python3; do
         command -v "$tool" >/dev/null || exit 2
     done
     mkdir -p evidence bin harness
     (cd repo && sha256sum "${SOURCE_FILES[@]}") >evidence/source-sha256.txt
-    dpkg-query -W bash coreutils findutils mawk jq procps 2>/dev/null >evidence/packages.txt || true
+    dpkg-query -W bash coreutils findutils mawk jq procps python3 2>/dev/null >evidence/packages.txt || true
     cat >bin/df <<'SH'
 #!/usr/bin/env bash
 available=7000

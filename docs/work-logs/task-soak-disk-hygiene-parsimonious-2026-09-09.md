@@ -125,6 +125,7 @@ After phase two the README paragraph about legacy modules in `formal/tlaplus/soa
   - The harness fixture change for the benchmark client auto-merged. The source's host check `test-soak-host-stop-ownership.sh` and the real-daemon `test-soak-real-benchmark-stop-recovery.sh` are kept as is.
   - Both manifests are digest-bound. Conflicts in the gate registry, the gate test, and ToDos resolved toward this branch. `test-soak-pr-formal-gate.sh` stays deleted.
   - Counts updated to 31 soak controls and 42 scenarios.
+  - CI fix (2026-09-11): the Docker harness failed on PR #406 (run 34563006539). The driver now refuses to start without Python 3 and pidfd support, and this branch's slim fixture image had no Python. The source never saw it because its fixture image is the full `ruby` image, which ships Python. `soak-disk-test.Dockerfile` now installs `python3`, and the harness tool check requires it. Docker is not running on this host, so the PR's CI run is the verification.
 
 ## D3 evidence: the disk-usage timeline (2026-09-10)
 
