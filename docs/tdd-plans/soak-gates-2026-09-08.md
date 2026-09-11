@@ -625,18 +625,64 @@ behaviors:
     statement: Monitor death during a benchmark stops the owned writer, preserves an unrelated writer, and retains one failure across restarts.
     priority: must
     deep_module: false
-    done: false
+    done: true
     construction: not-applicable
     claim_discharge: pending
-    cycle_log: []
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-shutdown-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-benchmark-monitor-death.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
   - id: B42
     statement: Monitor death during an admission probe prevents benchmark and iteration admission and retains one failure across restarts.
     priority: must
     deep_module: false
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-shutdown-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-monitor-admission.sh
+        modes: [benchmark, iteration]
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+  - id: B43
+    statement: Interrupted iteration shutdown stops the owned descriptor holder before waiting for output EOF.
+    priority: must
+    deep_module: false
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-shutdown-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-monitor-inherited-pipe.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+  - id: B44
+    statement: Combined driver and crash-monitor loss must stop the owned writer without stopping an unrelated writer.
+    priority: must
+    deep_module: true
     done: false
     construction: not-applicable
     claim_discharge: pending
-    cycle_log: []
+    blocked_on: A reviewed containment design must survive the specified controller failures.
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-shutdown-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-controller-loss.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: null
+        formal_green_exit: null
 ---
 
 # Soak Gate Development Cycles
@@ -671,6 +717,18 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B17: The guardian records a hard-floor breach and requests a stop before the opening benchmark returns.
 
 ## Cycle evidence
+
+B41–B43 add [shutdown evidence](../cbc-evidence/soak-d2-shutdown-2026-09-11/README.md) for three selected defects.
+B41 detects monitor death during an active benchmark.
+B42 refuses opening benchmark and iteration admission after confirmed monitor death during a valid probe.
+B43 stops the owned descriptor holder before the interrupted iteration waits for output end of file (EOF).
+Each unchanged production fixture and matching corrected model passes.
+
+B44 is an open [controller-loss counterexample](../../formal/tlaplus/soak_disk/ControllerLoss.md).
+Both controllers exit, but the owned native writer continues without fixture intervention.
+The current model violates `ControllerLossStopsOwnedWriter` with exit 12.
+No B44 correction or GREEN result exists.
+D2 and claim discharge remain pending.
 
 B40 adds [monitor-death evidence](../cbc-evidence/soak-d2-monitor-death-2026-09-11/README.md).
 The baseline driver continues its owned native writer after confirmed monitor death during an iteration.
@@ -889,6 +947,8 @@ The first B29 positive model had an incomplete successor. Its corrected RED/GREE
 - [x] Confirm selected writer termination after active-iteration `SIGTERM`.
 - [x] Refuse two restarts after the tested process crash with one retained interruption failure.
 - [ ] Verify ownership-safe reclamation, ownership-safe stop selection, and the complete node-image lifecycle.
+- [x] Verify selected benchmark monitor death, opening admission checks, and interrupted output-drain ordering.
+- [ ] Correct combined controller loss with a reviewed containment design and matched RED/GREEN evidence.
 - [ ] Verify other shutdown paths and durable evidence publication.
 - [ ] Establish one composed emergency deadline, including iteration shutdown and evidence handling.
 - [x] Reject the tested oversized disk settings and overflowing admission sum.

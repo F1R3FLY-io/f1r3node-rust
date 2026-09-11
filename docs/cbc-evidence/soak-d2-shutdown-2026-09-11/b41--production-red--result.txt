@@ -1,0 +1,1 @@
+FAIL: The benchmark continued its owned host writer after the crash monitor died.

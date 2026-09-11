@@ -827,3 +827,64 @@ The fresh formal run passes 35 positive configurations and 37 exact controls.
 All 72 actual TLC logs remain outside Git.
 The routing regressions also pass.
 These local checks do not establish hosted execution or D2 completion.
+
+## B41–B44 shutdown coverage
+
+The shutdown work starts from `84a9c8fbde09639c88085afa21e61770bc4a022d`.
+The workload, finalization semantics, and 45-second finalization limit remain unchanged.
+The [shutdown package](../cbc-evidence/soak-d2-shutdown-2026-09-11/README.md) retains the selected results and source identities.
+No virtual machine, hosted workload, or acceptance soak was launched for these cases.
+
+B41 establishes a benchmark monitor-death defect before correction.
+The owned native writer continues after confirmed monitor death while the unrelated writer also progresses.
+The correction adds monitor health to the existing active-benchmark interruption path.
+The unchanged fixture and matching five-state model pass.
+Two refused restarts retain counters `[0,1,1,1]` for iterations, failures, benchmark segments, and benchmark failures.
+
+B42 establishes an admission defect in opening benchmark and iteration probes.
+The external probe confirms monitor death and then returns 16384 MiB.
+The baseline admits work before its active-work check detects the dead monitor.
+The correction checks the monitor before admission and honors an existing breach at the iteration boundary.
+Both unchanged fixtures and five-state configurations pass with no admission and one retained failure.
+
+B43 establishes an output-drain defect after interruption.
+Device and inode observations confirm that the detached owned writer holds the iteration output FIFO.
+The baseline waits for output completion before it stops that writer.
+Moving the existing owned-writer stop before the drain wait corrects the selected case.
+The unchanged fixture and four-state model pass while the unrelated writer continues.
+Failed stops and other descriptor holders remain outside this correction.
+
+B44 remains an open controller-loss defect.
+The fixture suspends both controllers before it kills them through process descriptors.
+Neither controller can complete shutdown between the two deaths.
+The final fixture allows 120 observation intervals before its writer-stability check.
+The owned writer grows from 492 to 512 bytes after that observation, and the unrelated writer grows from 532 to 552 bytes.
+The current model violates `ControllerLossStopsOwnedWriter` with TLC exit 12.
+
+The B44 fixture revisions avoid two incorrect future assumptions.
+Driver death must not require instantaneous termination by an independent supervisor.
+A killed driver cannot write its initial summary, so recovery assertions use two actual restarts.
+The initial sources and RED results remain intact.
+The revised fixture and model retain a separate RED result with no production correction or GREEN result.
+The passing combined suite does not register B44 as an accepted negative control.
+
+The B41-only snapshot passes 36 positive configurations, 38 exact controls, 266 classifier cases, six routing scenarios, and 43 emergency cases.
+Its unused chart build artifacts remain in the external snapshot rather than the regular-file evidence archive.
+The later combined snapshot includes the B41–B43 production and gate changes.
+The three later B44 diagnostic-file changes are recorded separately because the combined suite does not execute B44.
+No executed production or passing-gate input was changed by those diagnostic revisions.
+
+The combined snapshot passes 39 positive configurations, 41 exact controls, 287 classifier cases, and six routing scenarios.
+All 46 emergency cases and the selected supporting regressions pass.
+All 80 actual TLC logs identify the frozen source and expected result.
+Language-server checks report no diagnostics for nine files, but five checks remain inconclusive.
+
+Another actor created commit `cdc0a57f5` during verification.
+The source audit finds only the three declared B44 diagnostic changes relative to the combined snapshot.
+This session did not run or attest the commit hooks.
+
+D2 shutdown completion requires a reviewed containment design that survives the specified controller failures.
+The design must cover native descendants, Docker writers, late creation, inaccessible metadata, and failed stops without acting on unrelated writers.
+Storage durability, aggregate deadlines, D3 reserve evidence, hosted verification, maintainer review, and acceptance remain pending.
+Construction is not applicable to these Bash-driver models.
+No claim is discharged.

@@ -1,0 +1,2 @@
+/case/test.sh: line 161:    18 Killed                  ( driver ) > evidence/driver.log 2>&1
+FAIL: Both controllers exited but the owned writer remained active.

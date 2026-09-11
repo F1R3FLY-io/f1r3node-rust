@@ -1,0 +1,13 @@
+    PID    PPID     SID STAT COMMAND
+      1       0       1 Ss   bash /case/test.sh --inside
+     10       1      10 Ss   bash evidence/writer.sh /case/evidence/unrelated
+     79       1      18 S    tee /case/evidence/output/iteration-00001-docker/pytest.log
+     80       1      18 S    timeout --signal=TERM --kill-after=30 119s poetry run pytest integration-tests/test/tests/custom/test_load.py --provider=docker --monitor --rss-ceiling-mb 0 --host-free-floor-mb 0 -v --tb=short --instafail --maxfail=20 --timeout=1200
+     81       1      18 S    bash repo/scripts/run-merge-recovery-soak.sh
+     83      80      18 S    bash /case/bin/poetry run pytest integration-tests/test/tests/custom/test_load.py --provider=docker --monitor --rss-ceiling-mb 0 --host-free-floor-mb 0 -v --tb=short --instafail --maxfail=20 --timeout=1200
+     86      83      86 Ss   bash /case/evidence/writer.sh /case/evidence/owned
+   1082      81      18 S    sleep 2
+   1113      83      18 S    sleep 0.1
+   1114      10      10 S    sleep 0.1
+   1115      86      86 S    sleep 0.1
+   1116       1       1 R    ps -eo pid,ppid,sid,stat,args

@@ -7,9 +7,18 @@ The fixture does not stop the workload writer before its verdict.
 The owned writer continues after both controllers exit.
 The unrelated writer also continues.
 
+The final fixture permits 120 observation intervals of 0.1 seconds for an independent response.
+It then checks writer progress again after 0.5 seconds.
+Process inspection adds time, so these intervals are not an aggregate deadline proof.
+The initial fixture returned from its observation loop when the driver exited.
+Its revised observation loop avoids requiring an instantaneous external response.
+Both versions retain their original source bindings and RED results.
+
 `ControllersCrash` models the combined loss of both controllers.
+`Observe` models the later observation without assuming an instantaneous stop at driver death.
 The current configuration violates `ControllerLossStopsOwnedWriter` with TLC exit 12.
 No production or formal GREEN result exists for B44.
+Recovery assertions use two actual restarts because a killed driver cannot write its initial summary.
 This configuration is not registered as a passing gate or an accepted pre-fix control.
 
 The current driver relies on a surviving controller to enumerate and stop writers.

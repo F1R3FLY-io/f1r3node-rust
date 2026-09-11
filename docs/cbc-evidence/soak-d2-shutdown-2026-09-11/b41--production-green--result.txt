@@ -1,0 +1,1 @@
+PASS: Benchmark monitor death stopped the owned writer, preserved the unrelated writer, and retained one failure across two refused restarts.
