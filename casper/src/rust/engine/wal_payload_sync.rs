@@ -613,11 +613,18 @@ async fn try_reproduce_via_block_storage_replay(
         Ok(None) => return Ok(None),
         Err(e) => return Err(format!("block_store.get: {e}")),
     };
+    // S4.3 fix (2026-09-10): compare against the ProcessedDeploy's
+    // canonical `deploy_id()` (envelope_commitment on V6, sig on
+    // legacy) — mirrors the recorder side which now stores the
+    // protocol-canonical id.  Pre-fix this compared against
+    // `deploy.sig`, which fails on V6 blocks (recorder stored
+    // envelope commitment, so `deploy_sig` here is the 32-byte
+    // envelope commitment, not the 64+-byte sig).
     let processed = match block
         .body
         .deploys
         .iter()
-        .find(|pd| pd.deploy.sig.as_ref() == deploy_sig.as_slice())
+        .find(|pd| pd.deploy_id().as_ref() == deploy_sig.as_slice())
     {
         Some(pd) => pd.clone(),
         None => return Ok(None),

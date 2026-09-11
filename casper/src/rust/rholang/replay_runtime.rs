@@ -705,14 +705,23 @@ impl ReplayRuntimeOps {
                 .current_deploy_scope
                 .clone(),
             // DD-7b-2 (a) Option 2 (2026-08-29): symmetric with the
-            // leader-side call site in runtime.rs — pass the raw
-            // deploy sig so the follower's journal_write records
-            // the same `payload_hash → deploy_sig` mapping into its
-            // own block-storage-backed source index.  Symmetric
-            // recording means any node whose block processing
-            // succeeded (leader or follower) can serve the Option 2
-            // reproduction tier at boot to a later joiner.
-            processed_deploy.deploy.sig.to_vec(),
+            // leader-side call site in runtime.rs — pass the canonical
+            // deploy_id (envelope_commitment on V6, raw sig on legacy)
+            // so the follower's journal_write records the same
+            // `payload_hash → deploy_id` mapping into its own
+            // block-storage-backed source index.  Symmetric recording
+            // means any node whose block processing succeeded (leader
+            // or follower) can serve the Option 2 reproduction tier at
+            // boot to a later joiner.
+            //
+            // S4.3 fix (2026-09-10): use `processed_deploy.deploy_id()`
+            // — the ProcessedDeploy accessor that already routes by
+            // protocol (envelope_commitment when set, else sig).  Pre-
+            // fix this passed raw `deploy.sig`, which broke V6 chain
+            // lookups because V6 blocks index deploys by envelope
+            // commitment in `deploy_occurrence_store`, not sig in the
+            // legacy `deploy_index`.
+            processed_deploy.deploy_id().to_vec(),
             self.runtime_ops
                 .runtime
                 .fs_handles

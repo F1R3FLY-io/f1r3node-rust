@@ -579,9 +579,16 @@ async fn pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay() {
     //      consensus_write; keeping the flow familiar and easy to
     //      diff.  Single-validator: the recording + reproduction
     //      chain lives entirely on validator A's own state.
+    //
+    // S4.3 (2026-09-10): seed with PAYLOAD (not empty) so the
+    // fs_stat that openFileImpl runs pre-fs_open reports a stable
+    // size on both the block-creation and block-validation
+    // state_bound recomputations.  Mirror of the fix that
+    // `_leader_pending_wal_slice` uses (commit 6f96b2744).  See
+    // wave-4-diagnosis.md § S4.3.
     let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
     let stage_file = stage_dir.path().join("target");
-    std::fs::write(&stage_file, b"").expect("seed empty file at stage source");
+    std::fs::write(&stage_file, PAYLOAD).expect("seed stage source with PAYLOAD");
     let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
 
     let entry = BundleEntry::try_new(
@@ -687,19 +694,24 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
              non-empty-sig guard passes for user deploys.",
         );
 
-    // Expected sig comes from the ProcessedDeploy the block carries.
+    // Expected deploy_id comes from the ProcessedDeploy the block
+    // carries.  S4.3 (2026-09-10): use the canonical `deploy_id()`
+    // accessor — envelope_commitment on V6 (32 bytes), sig on legacy.
+    // The recorder in `journal_write` now stores the same
+    // protocol-canonical id, so recorded_sig and expected_deploy_id
+    // must byte-match.
     let expected_processed = block
         .body
         .deploys
         .iter()
         .find(|pd| !pd.deploy.sig.is_empty())
         .expect("block must have at least one processed user deploy");
-    let expected_sig = expected_processed.deploy.sig.to_vec();
+    let expected_deploy_id = expected_processed.deploy_id().to_vec();
     assert_eq!(
-        recorded_sig, expected_sig,
-        "recorded deploy_sig must match the block's ProcessedDeploy sig — \
-         a mismatch means WalDeployScope plumbed a different sig than the \
-         one in the block"
+        recorded_sig, expected_deploy_id,
+        "recorded deploy_id must match the block's ProcessedDeploy deploy_id() — \
+         a mismatch means WalDeployScope plumbed a different id than the \
+         one in the block (protocol-canonicalization drift)"
     );
 
     // ---- Assertion 3: chain walk -------------------------------------
@@ -719,31 +731,37 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
         .get(&chain_block_hash)
         .expect("block_store.get must not error")
         .expect("block MUST be retrievable from block_store");
+    // S4.3 (2026-09-10): compare against the canonical
+    // `deploy_id()` — envelope_commitment on V6, sig on legacy.
+    // The recorder stores the same protocol-canonical id.
     let chain_processed = chain_block
         .body
         .deploys
         .iter()
-        .find(|pd| pd.deploy.sig.as_ref() == recorded_sig.as_slice())
-        .expect("chain step 4 must find the sig-matching ProcessedDeploy")
+        .find(|pd| pd.deploy_id().as_ref() == recorded_sig.as_slice())
+        .expect("chain step 4 must find the deploy_id-matching ProcessedDeploy")
         .clone();
 
     // ---- Restore the fs to pre-play state before scratch replay ----
     // Phase 1 (2026-09-01): the scratch replay below runs the deploy
     // on the SAME runtime the leader played it on, and under Phase 1
-    // the fs_stat is_replay branch re-executes fstatat.  The leader's
-    // play mutated `<validator_subdir>/target` from empty → PAYLOAD;
-    // without a restore, scratch replay's statCheck would see PAYLOAD
-    // while the RSpace-cached statCheck saw empty → divergence →
-    // openFile fails → ReplayCostMismatch.  Truncate the file back
-    // to its pre-play state (empty bytes) so the scratch replay's
-    // fs_stat re-execute matches the leader's cached reply, exactly
-    // as it would in production where the joiner boots with a fresh
-    // per-validator fs.  See auto-memory
+    // the fs_stat is_replay branch re-executes fstatat.  The scratch
+    // replay's statCheck must see the SAME file state the leader's
+    // play saw at cached-reply time — otherwise fs_stat's
+    // Consensus-verify branch would fire divergence, openFile would
+    // fail, and capture would return empty → ReplayCostMismatch.
+    //
+    // S4.3 (2026-09-10): the pre-play state is PAYLOAD (matches the
+    // seed above).  Write PAYLOAD to restore.  The write during play
+    // is idempotent (writes PAYLOAD over PAYLOAD), so the disk state
+    // post-play is also PAYLOAD, and this restore is functionally a
+    // no-op — but we keep it explicit so future refactors that break
+    // idempotence surface the requirement cleanly.  See auto-memory
     // `fileio_wal_replay_verification_gap.md` for the design.
-    std::fs::write(validator_subdir.join("target"), b"").expect(
-        "restore validator subdir file to pre-play state before scratch replay — \
-         Phase 1's fs_stat re-execute requires the fs to match what the leader's \
-         play saw at cached-reply time",
+    std::fs::write(validator_subdir.join("target"), PAYLOAD).expect(
+        "restore validator subdir file to pre-play state (PAYLOAD) before scratch \
+         replay — Phase 1's fs_stat re-execute requires the fs to match what the \
+         leader's play saw at cached-reply time",
     );
 
     // ---- Assertion 4: scratch replay reproduces bytes ---------------
@@ -806,10 +824,10 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
         .expect("lookup_payload_source must not error post-scratch")
         .expect("original entry must still be present");
     assert_eq!(
-        post_scratch_sig, expected_sig,
+        post_scratch_sig, expected_deploy_id,
         "scratch replay must NOT rewrite the payload_source_index entry — \
          a divergent scratch replay under bugs could otherwise overwrite \
-         the entry with a different sig.  Same value = isolation working."
+         the entry with a different id.  Same value = isolation working."
     );
 
     // Trap-check the isolation primitive's shape didn't drift.

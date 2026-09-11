@@ -2071,20 +2071,41 @@ impl RuntimeOps {
             arr.copy_from_slice(&h);
             arr
         };
+        // S4.3 fix (2026-09-10): compute the canonical deploy_id — V6
+        // envelope commitment for envelope-bound cosigneds, raw
+        // primary sig for legacy single-signer path.  Mirrors
+        // `ProcessedDeploy::deploy_id()` in models — the follower's
+        // replay_runtime path uses the same accessor.  V6 blocks
+        // index deploys by envelope commitment in
+        // `deploy_occurrence_store` (not sig in the legacy
+        // `deploy_index`), so recording sig on V6 broke the joiner-
+        // boot Option 2 reproduction chain (payload_hash →
+        // deploy_id → block_hash).
+        let canonical_deploy_id: Vec<u8> = if cosigned.is_envelope_bound() {
+            cosigned
+                .envelope_commitment()
+                .expect("envelope-bound Cosigned invariant")
+                .to_vec()
+        } else {
+            cosigned.primary().sig.to_vec()
+        };
         let mut wal_scope = WalDeployScope::new_with_lock_sweep(
             self.runtime.fs_handles.wal.clone(),
             self.runtime.fs_handles.lock_registry.clone(),
             deploy_scope,
             self.runtime.fs_handles.current_deploy_scope.clone(),
-            // DD-7b-2 (a) Option 2 (2026-08-29): raw primary-signer
-            // sig plumbed to FileHandleTable.current_deploy_sig so
-            // journal_write can record `payload_hash → deploy_sig`
+            // DD-7b-2 (a) Option 2 (2026-08-29): canonical deploy_id
+            // plumbed to FileHandleTable.current_deploy_sig so
+            // journal_write can record `payload_hash → deploy_id`
             // in the block-storage-backed source index.  Primary is
             // authoritative for user deploys — cosigners' sigs would
             // give the same payload but chain to the same block via
             // deploy_index, so recording the primary keeps the index
-            // canonical and avoids duplicate mappings.
-            cosigned.primary().sig.to_vec(),
+            // canonical and avoids duplicate mappings.  S4.3 fix
+            // (2026-09-10): switched from raw sig to the protocol-
+            // canonical deploy_id (see envelope_commitment vs sig
+            // dispatch above).
+            canonical_deploy_id,
             self.runtime.fs_handles.current_deploy_sig.clone(),
             // Phase 7 deploy-end sweep (2026-09-02): Arc-shared
             // clone of the file handle table so Drop can sweep any

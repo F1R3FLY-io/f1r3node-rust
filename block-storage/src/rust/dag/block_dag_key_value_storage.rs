@@ -2137,10 +2137,29 @@ impl BlockDagKeyValueStorage {
     /// pre-LFB DAG representation (the DAG rep requires
     /// `LastFinalizedBlockUninitialized`-guarded state, which
     /// may not yet be set when the boot subscriber fires).
+    /// S4.3 fix (2026-09-10): dispatch by length.  V6 protocol
+    /// indexes deploys in `deploy_occurrence_store` by the 32-byte
+    /// envelope commitment; legacy protocol indexes by raw sig in
+    /// `deploy_index`.  The recorder in `journal_write` now stores
+    /// the canonical deploy_id (envelope commitment on V6, sig on
+    /// legacy), so this lookup must dispatch on shape to complete
+    /// the joiner-boot Option 2 chain
+    /// (payload_hash → deploy_id → block_hash).  32-byte inputs
+    /// try `deploy_occurrence_store.canonical` first; any input
+    /// length falls back to the legacy `deploy_index`.  Both stores
+    /// checked so a V6-shaped id that happens to fit legacy still
+    /// resolves, and a legacy sig continues to hit `deploy_index`.
     pub fn lookup_by_deploy_id(
         &self,
         deploy_id: &DeployId,
     ) -> Result<Option<BlockHash>, KvStoreError> {
+        if deploy_id.len() == 32 {
+            if let Ok(v6_id) = models::rust::deploy_id::DeployIdV6::try_from(deploy_id.as_slice()) {
+                if let Some(block_hash) = self.deploy_occurrence_store.canonical(v6_id)? {
+                    return Ok(Some(block_hash));
+                }
+            }
+        }
         let deploy_index_guard = self.deploy_index.read();
         deploy_index_guard
             .get_one(deploy_id)
