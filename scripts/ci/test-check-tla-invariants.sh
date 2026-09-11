@@ -53,6 +53,7 @@ case "$config" in
     MC_HostOomOwnership_pattern_only_pre_fix.cfg) invariant=UnownedPreferencesPreserved ;;
     MC_DockerOomOwnership_periodic_name_pre_fix.cfg) invariant=UnownedContainerPreferencesPreserved ;;
     MC_BenchmarkCrashRecovery_unrecorded_pre_fix.cfg) invariant=BenchmarkCrashRequiresRefusal ;;
+    MC_DriverCrashStop_parent_group_pre_fix.cfg) invariant=DriverCrashStopsOwnedWriter ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 if [[ "$config" == "$TEST_TLC_TARGET" ]]; then
@@ -102,7 +103,8 @@ for target in carrier_index/MC_CarrierIndex_dag_first_pre_fix \
     soak_disk/MC_HostStopOwnership_memory_pattern_pre_fix \
     soak_disk/MC_HostOomOwnership_pattern_only_pre_fix \
     soak_disk/MC_DockerOomOwnership_periodic_name_pre_fix \
-    soak_disk/MC_BenchmarkCrashRecovery_unrecorded_pre_fix; do
+    soak_disk/MC_BenchmarkCrashRecovery_unrecorded_pre_fix \
+    soak_disk/MC_DriverCrashStop_parent_group_pre_fix; do
     for result in clean wrong-invariant tool-error wrong-exit timeout missing expected; do
         config="$WORK/repo/formal/tlaplus/$target.cfg"
         if [[ "$result" == missing ]]; then

@@ -76,6 +76,7 @@ case "$config" in
     MC_HostOomOwnership_pattern_only_pre_fix.cfg) invariant=UnownedPreferencesPreserved ;;
     MC_DockerOomOwnership_periodic_name_pre_fix.cfg) invariant=UnownedContainerPreferencesPreserved ;;
     MC_BenchmarkCrashRecovery_unrecorded_pre_fix.cfg) invariant=BenchmarkCrashRequiresRefusal ;;
+    MC_DriverCrashStop_parent_group_pre_fix.cfg) invariant=DriverCrashStopsOwnedWriter ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -148,6 +149,8 @@ pr_configs=(
     soak_disk/MC_DockerOomOwnership_periodic_name_pre_fix
     soak_disk/MC_BenchmarkCrashRecovery
     soak_disk/MC_BenchmarkCrashRecovery_unrecorded_pre_fix
+    soak_disk/MC_DriverCrashStop
+    soak_disk/MC_DriverCrashStop_parent_group_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

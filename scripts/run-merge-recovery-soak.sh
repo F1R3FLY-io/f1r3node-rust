@@ -363,6 +363,48 @@ stop_node_writers() (
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
 )
 
+start_crash_monitor() {
+	local directory monitor _attempt
+	directory="$(mktemp -d "$OUTPUT_DIR/.crash-monitor.XXXXXXXX")" || return 1
+	(
+		export SOAK_WRITER_OWNER DISK_STOP_SECONDS
+		export -f stop_owned_host_writers stop_node_writer_commands stop_node_writers
+		exec python3 - "$$" "$directory" "$OUTPUT_DIR" <<'PY'
+import os
+from pathlib import Path
+import select
+import subprocess
+import sys
+
+os.setsid()
+parent = os.pidfd_open(int(sys.argv[1]), 0)
+poller = select.poll()
+poller.register(parent, select.POLLIN)
+directory = Path(sys.argv[2])
+(directory / "ready").write_text(str(os.getpid()) + "\n")
+poller.poll()
+os.close(parent)
+status = subprocess.run(["bash", "-c", "stop_node_writers -q kill"]).returncode
+if status != 0:
+    try:
+        (Path(sys.argv[3]) / "writer-stop-failure.txt").write_text(
+            "Writer termination is unconfirmed after the driver exited.\n"
+        )
+    except OSError:
+        pass
+(directory / "exit-code.txt").write_text(str(status) + "\n")
+sys.exit(status)
+PY
+	) >"$directory/monitor.log" 2>&1 &
+	monitor=$!
+	for _attempt in {1..100}; do
+		kill -0 "$monitor" 2>/dev/null || return 1
+		[ ! -s "$directory/ready" ] || return 0
+		sleep 0.05
+	done
+	return 1
+}
+
 reclaim_disk_space_commands() {
 	local before after status=0
 	set -o pipefail
@@ -1233,6 +1275,10 @@ cleanup_soak_processes() {
 	fi
 }
 trap cleanup_soak_processes EXIT
+if [ "$DEADLINE" -gt "$(date +%s)" ] && ! start_crash_monitor; then
+	printf 'The crash monitor is unavailable. The driver refused work.\n' >&2
+	exit 2
+fi
 if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 	if ! guardian_record_progress; then
 		printf 'The host guardian progress record is unavailable. The driver refused work.\n' >&2

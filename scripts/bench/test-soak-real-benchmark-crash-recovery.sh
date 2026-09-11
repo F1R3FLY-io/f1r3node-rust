@@ -47,6 +47,10 @@ jq -n --arg image "$IMAGE" '{services:{writer:{image:$image,labels:{"fixture.own
 cat >"$EVIDENCE/bin/docker" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == kill ]]; then
+    printf 'The fixture rejected the Docker stop request.\n' >>"$SOAK_REAL_EVIDENCE/rejected-stop.txt"
+    exit 42
+fi
 if [[ "${1:-}" == compose && " $* " == *' up '* ]]; then
     ps -o pgid= -p "$PPID" | tr -d ' ' >"$SOAK_REAL_EVIDENCE/$SOAK_FIXTURE_PHASE-client-group.txt"
     ps -o sid= -p "$PPID" | tr -d ' ' >"$SOAK_REAL_EVIDENCE/$SOAK_FIXTURE_PHASE-client-session.txt"
@@ -105,7 +109,7 @@ stop_fixture_clients
 printf 'The fixture stopped its recorded benchmark client group after the driver crash. Docker writer termination remains unconfirmed.\n' >"$EVIDENCE/fixture-client-stop.txt"
 /usr/bin/docker inspect "$CID" >"$EVIDENCE/writer-after-crash.json"
 jq -e '.[0].State | .Running == true and .Pid > 0' "$EVIDENCE/writer-after-crash.json" >/dev/null
-[[ ! -e "$EVIDENCE/output/writer-stop-failure.txt" && ! -e "$EVIDENCE/output/bench-segment-00001/metrics.json" ]]
+[[ ! -e "$EVIDENCE/output/bench-segment-00001/metrics.json" ]]
 for phase in restart-1 restart-2; do
     launch_driver "$phase"
     for _ in $(seq 1 100); do
@@ -130,5 +134,10 @@ for phase in restart-1 restart-2; do
 done
 /usr/bin/docker inspect "$CID" >"$EVIDENCE/writer-after-restarts.json"
 jq -e '.[0].State | .Running == true and .Pid > 0' "$EVIDENCE/writer-after-restarts.json" >/dev/null
+for _ in $(seq 1 50); do
+    [[ ! -s "$EVIDENCE/rejected-stop.txt" || ! -s "$EVIDENCE/output/writer-stop-failure.txt" ]] || break
+    sleep 0.1
+done
+[[ -s "$EVIDENCE/rejected-stop.txt" && -s "$EVIDENCE/output/writer-stop-failure.txt" ]]
 trap - ERR
 printf 'PASS: Two restarts refused work and retained one interrupted benchmark failure while its Docker writer remained running.\n'
