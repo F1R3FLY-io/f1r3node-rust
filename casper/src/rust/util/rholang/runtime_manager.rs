@@ -1762,7 +1762,7 @@ impl RuntimeManager {
         let is_genesis = block.header.parents_hash_list.is_empty();
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let block_data = BlockData::from_block(block);
-        let (deploys, replay_start_hash, user_mergeable) = if is_genesis {
+        let (deploys, replay_start_hash, user_mergeable, follower_fs_wal) = if is_genesis {
             if block
                 .body
                 .deploys
@@ -1779,7 +1779,17 @@ impl RuntimeManager {
                     ),
                 ));
             }
-            (block.body.deploys.clone(), start_hash.clone(), Vec::new())
+            // Genesis path: user deploys are replayed below (via
+            // `replay_user_deploys`), which populates `pending_wal_
+            // slices` through the H-1 publish in
+            // `replay_deploys_internal`.  No separate follower-side
+            // publish needed here.
+            (
+                block.body.deploys.clone(),
+                start_hash.clone(),
+                Vec::new(),
+                Vec::<rholang::rust::interpreter::io::wal::WalEntry>::new(),
+            )
         } else {
             let admission = self
                 .verify_state_bound_admission_partition(
@@ -1791,10 +1801,20 @@ impl RuntimeManager {
                     execution_origin,
                 )
                 .await?;
+            // S4.2 fix (2026-09-10): capture the state-bound
+            // recompute's fs_wal so the follower can publish it into
+            // its own `pending_wal_slices` after post-state
+            // validation.  Pre-fix, user deploys weren't re-run on the
+            // follower's replay path (see `replay_user_deploys =
+            // Vec::new()` below — an optimization since state_bound
+            // already ran them), so the H-1 publish in
+            // `replay_deploys_internal` never fired for the follower
+            // and its `pending_wal_slices` starved of entries.
             (
                 admission.evidence.to_vec(),
                 admission.user_post_state,
                 admission.user_mergeable.to_vec(),
+                admission.fs_wal.to_vec(),
             )
         };
 
@@ -1828,6 +1848,39 @@ impl RuntimeManager {
             &block.body.state.post_state_hash,
             &computed_post_state,
         )?;
+        // S4.2 fix (2026-09-10): publish the follower's aggregated
+        // per-block fs_wal into `pending_wal_slices` under the
+        // block's final post-state-hash.  Mirrors the leader-side
+        // publish in `compute_state_with_bonds_cosigned_admitted`
+        // (line 1233 above), which uses the same key shape and
+        // eviction policy.  Only fires on non-genesis blocks where
+        // `verify_state_bound_admission_partition` captured a
+        // non-empty fs_wal from user-deploy execution — genesis is
+        // handled by the H-1 publish inside `replay_deploys_
+        // internal` since user deploys are replayed there.
+        if !follower_fs_wal.is_empty() {
+            const MAX_PENDING_WAL_SLICES: usize = 1024;
+            let mut slices = self.pending_wal_slices.write().await;
+            if slices.len() >= MAX_PENDING_WAL_SLICES {
+                if let Some(oldest_key) = slices
+                    .iter()
+                    .min_by_key(|(_, (bn, _))| *bn)
+                    .map(|(k, _)| k.clone())
+                {
+                    slices.remove(&oldest_key);
+                    tracing::warn!(
+                        target: "f1r3fly.casper.fs_wal",
+                        cap = MAX_PENDING_WAL_SLICES,
+                        "follower pending_wal_slices cache full; evicting oldest entry.  \
+                         Deep-fork scenario or stalled finalizer?"
+                    );
+                }
+            }
+            slices.insert(
+                block.body.state.post_state_hash.to_vec(),
+                (block.body.state.block_number, follower_fs_wal),
+            );
+        }
         let publish = || {
             self.publish_replay_cache(
                 replay_cache_key,

@@ -160,9 +160,19 @@ async fn pb_m_14_two_validator_wal_and_file_byte_identity() {
     // logical canonRoot (validator-independent → genesis-hash stable).
     // Each validator's `RootIdentityRegistry` remaps `/@bundle` to its
     // own subdir at `resolve_or_identity` time.
+    //
+    // S4.2 (2026-09-10): seed with PAYLOAD (not empty) so the fs_stat
+    // that openFileImpl runs pre-fs_open reports a stable size on both
+    // the block-creation and block-validation state_bound recomputations.
+    // Even with N=2, `nodes[0].add_block_from_deploys` self-validates on
+    // the same node — an initial `b""` seed would make create-side stat
+    // see size=0 and validate-side stat see size=PAYLOAD.len() → divergent
+    // Stat WAL → InvalidTransaction reject.  Mirror of the fix that
+    // `_leader_pending_wal_slice` uses (commit 6f96b2744).  See
+    // wave-4-diagnosis.md § S4.2.
     let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
     let stage_file = stage_dir.path().join("target");
-    std::fs::write(&stage_file, b"").expect("seed empty file at stage source");
+    std::fs::write(&stage_file, PAYLOAD).expect("seed stage source with PAYLOAD");
     let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
 
     let entry = BundleEntry::try_new(
@@ -334,10 +344,11 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 
     let stage_source = std::fs::read(&canon_path).expect("operator stage source stays untouched");
     assert_eq!(
-        stage_source, b"",
+        stage_source, PAYLOAD,
         "Shape A invariant: bundle-projection reads canon_path once at \
-         provisioning and never mutates it.  A non-empty stage source here \
-         means the projection helper accidentally mirrored writes back."
+         provisioning and never mutates it.  The stage source must retain its \
+         seed bytes (PAYLOAD, per the S4.2 fix) — any drift here means the \
+         projection helper accidentally mirrored writes back."
     );
 
     // Sanity: at least one WAL entry was actually emitted (the
