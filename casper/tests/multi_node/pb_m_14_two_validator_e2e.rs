@@ -905,9 +905,19 @@ async fn pb_m_14_pseudo_joiner_boots_via_peer_fetch_tier() {
     // `apply_wal_slice_after_fetch`, so the applier resolves each WAL
     // entry's `/@bundle/target` to `<joiner_subdir>/target` via the
     // same registry-lookup path the reducer uses.
+    //
+    // S4.4 (2026-09-10): seed with PAYLOAD (not empty) so the fs_stat
+    // that openFileImpl runs pre-fs_open reports a stable size on both
+    // the block-creation and block-validation state_bound recomputations.
+    // Even with N=2, `nodes[0].add_block_from_deploys` self-validates on
+    // the same node — an initial `b""` seed would make create-side stat
+    // see size=0 and validate-side stat see size=PAYLOAD.len() → divergent
+    // Stat WAL → InvalidTransaction reject.  Mirror of the fix that
+    // `_leader_pending_wal_slice` uses (commit 6f96b2744).  See
+    // wave-4-diagnosis.md § S4.4.
     let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
     let stage_file = stage_dir.path().join("target");
-    std::fs::write(&stage_file, b"").expect("seed empty file at stage source");
+    std::fs::write(&stage_file, PAYLOAD).expect("seed stage source with PAYLOAD");
     let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
 
     let entry = BundleEntry::try_new(

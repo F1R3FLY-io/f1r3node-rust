@@ -539,11 +539,25 @@ where
     Ok(())
 }
 
-/// Common prologue for every op: run the closure, apply
-/// `allowed_roots` defense-in-depth against the derived on-disk
-/// root, then `safe_descend_verified` to obtain the SafeParent
-/// dirfd.  Returns the descended parent + the joined on-disk
-/// path for error messages.
+/// Common prologue for every op: check `allowed_roots` on the raw
+/// WAL entry path (bundle-relative under Shape A), run the closure
+/// to resolve to the on-disk absolute, then `safe_descend_verified`
+/// to obtain the SafeParent dirfd.  Returns the descended parent +
+/// the joined on-disk path for error messages.
+///
+/// Ordering rationale (S4.4, 2026-09-10): WAL entries under Shape A
+/// carry bundle-relative paths (e.g. `/@bundle/target`), and node
+/// setup registers `BUNDLE_ROOT_PREFIX` (`/@bundle`) as a
+/// consensus-static root plus the operator's absolute per-validator
+/// paths.  Checking the RAW `entry_path` against `allowed_roots`
+/// matches on the bundle-relative prefix directly, without depending
+/// on how the registry resolves it to a per-validator on-disk
+/// subdir.  Checking the resolved on-disk root would require the
+/// operator to register per-validator absolute paths whose exact
+/// lexical shape matches the registry's output — brittle across
+/// canonicalization variants.  See node::runtime::setup where
+/// `runtime_manager.register_consensus_static_root(BUNDLE_ROOT_
+/// PREFIX)` documents this contract explicitly.
 fn descend_entry<F>(
     entry_index: usize,
     op: WalOp,
@@ -554,10 +568,10 @@ fn descend_entry<F>(
 where
     F: Fn(&Path) -> ResolvedWalPath,
 {
-    let resolved = path_map(entry_path);
     if !allowed_roots.is_empty() {
-        check_path_allowed(entry_index, &resolved.root, allowed_roots)?;
+        check_path_allowed(entry_index, entry_path, allowed_roots)?;
     }
+    let resolved = path_map(entry_path);
     let rel_str = resolved.rel.to_string_lossy().into_owned();
     let dst = resolved.root.join(&resolved.rel);
     let parent = safe_descend_verified(&resolved.root, &rel_str, resolved.expected_root_id)
