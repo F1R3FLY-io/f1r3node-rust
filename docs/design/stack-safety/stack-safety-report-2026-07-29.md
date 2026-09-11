@@ -11195,6 +11195,36 @@ passes all 488 tests in 56.38 seconds, with no failures, ignored or filtered
 tests. J-143 preserves both the negative evidence and representative-coverage
 limits; this result does not close the independent PMU-006 or resource gates.
 
+#### 5.33.60 Physical source-cache retention and full-debug timeout (2026-09-10)
+
+Test-only multi-root ownership measurements distinguish descriptor entries from
+distinct source-tree nodes and shared payload pages. At 16, 64 and 256 exported
+prefixes, the arena cache retains 146, 834 and 4,354 distinct nodes; the final
+root alone retains 48, 192 and 768. Adding external historical completions does
+not change the cache-only census. Releasing the arena and old completions leaves
+exactly the final-root census. This finite ladder confirms excess historical
+metadata retention; it does not establish a universal asymptotic bound.
+
+Each prefix also seals a generated page pair in this control. Payload cell counts
+therefore do not alone bound allocated page capacity. Three final physical
+controls pass in debug and release, including shared borrowed/frozen roots and
+exact old-byte/provenance checks after arena release. Object/array counts exclude
+Arc headers, allocator overhead and observer allocations; they are not RSS.
+Production cache policy is unchanged. Task 6024 still requires a proved,
+fork-aware resource correction and whole-import qualification; native stack
+safety does not imply constant or linear retained heap memory.
+
+Separately, the original 488-test debug inventory at `fb54fbef9` times out after
+900 seconds with 487 passing identities, no reported failure and one unfinished
+depth-256 S-expression test. The scope reports exit 143 and peak memory
+376,733,696 bytes under a 6 GiB hard cap, 4 GiB high threshold, zero swap and
+four-core quota. This is not an OOM or a full debug pass. The unchanged test is
+being isolated; no construction/rendering/teardown attribution is established
+yet. The prior 488-test release pass remains separate evidence. No fixture depth,
+stack limit or production format changes here. Raw log hashes, exact memory
+units and measurement limitations are recorded in
+[J-144](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-144--2026-09-10-distinguish-physical-source-retention-from-descriptor-counts).
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

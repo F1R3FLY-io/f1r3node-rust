@@ -339,10 +339,10 @@ epathmap_import_runtime() {
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
   rpb3_run_tests 37 --release -j4 --lib standalone_path_admission
   rpb3_run_tests 37 -j4 --lib standalone_path_admission
-  rpb3_run_tests 25 --release -j4 --lib canonical_source_tree
-  rpb3_run_tests 25 -j4 --lib canonical_source_tree
-  rpb3_run_tests 31 --release -j4 --lib canonical_bytes_arena
-  rpb3_run_tests 31 -j4 --lib canonical_bytes_arena
+  rpb3_run_tests 26 --release -j4 --lib canonical_source_tree
+  rpb3_run_tests 26 -j4 --lib canonical_source_tree
+  rpb3_run_tests 33 --release -j4 --lib canonical_bytes_arena
+  rpb3_run_tests 33 -j4 --lib canonical_bytes_arena
   rpb3_run_tests 8 --release -j4 --lib opaque_interior_tests
   rpb3_run_tests 38 --release -j4 --lib frame_storage_tests
   rpb3_run_tests 38 -j4 --lib frame_storage_tests

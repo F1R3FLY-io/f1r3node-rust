@@ -1,5 +1,161 @@
 use super::*;
 use proptest::prelude::*;
+use crate::rust::rholang::canonical_source_tree::tests::SourcePhysicalInventory;
+
+impl FrozenCanonicalBytes {
+    pub(crate) fn observe_physical_storage(&self, inventory: &mut SourcePhysicalInventory) {
+        let data = &self.inner.data;
+        let identity = Arc::as_ptr(data) as usize;
+        if inventory.frozen_indexes.contains_key(&identity) { return; }
+        let storage = std::mem::size_of_val(data.as_ref())
+            + std::mem::size_of_val(data.pages.as_ref())
+            + std::mem::size_of_val(data.leaves.as_ref())
+            + std::mem::size_of_val(data.logical_pages.as_ref());
+        inventory.frozen_indexes.insert(identity, storage);
+        for page in &data.pages {
+            inventory.byte_pages.insert(Arc::as_ptr(&page.bytes) as usize,
+                (page.bytes.bytes.len(), page.bytes.bytes.capacity()));
+            inventory.provenance_pages.insert(Arc::as_ptr(&page.provenance) as usize,
+                (page.provenance.values.len(), page.provenance.values.capacity()));
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ArenaPhysicalInventory {
+    pub(crate) shared: SourcePhysicalInventory,
+    pub(crate) descriptor_slots: usize,
+    pub(crate) descriptor_capacity: usize,
+    pub(crate) cache_slots: usize,
+    pub(crate) cache_capacity: usize,
+    pub(crate) cached_roots: usize,
+    pub(crate) registry_roots: usize,
+    pub(crate) completion_roots: usize,
+    pub(crate) generated_payload_cells: usize,
+    pub(crate) sealed_generated_byte_pages: usize,
+    pub(crate) sealed_generated_provenance_pages: usize,
+}
+
+impl CanonicalBytesArena<'_> {
+    pub(crate) fn physical_inventory(&self, completions: &[SourceTreeWindow<'_>])
+        -> ArenaPhysicalInventory {
+        let mut inventory = ArenaPhysicalInventory {
+            descriptor_slots: self.backend.nodes.len(),
+            descriptor_capacity: self.backend.nodes.capacity(),
+            cache_slots: self.source_cache.len(),
+            cache_capacity: self.source_cache.capacity(),
+            cached_roots: self.source_cache.iter().flatten().count(),
+            registry_roots: self.backend.sources.len(),
+            completion_roots: completions.len(),
+            generated_payload_cells: self.stats.payload_slots,
+            sealed_generated_byte_pages: self.backend.byte_pages.iter()
+                .filter(|page| Arc::strong_count(page) > 1).count(),
+            sealed_generated_provenance_pages: self.backend.provenance_pages.iter()
+                .filter(|page| Arc::strong_count(page) > 1).count(),
+            ..ArenaPhysicalInventory::default()
+        };
+        for source in self.backend.sources.iter().chain(self.source_cache.iter().flatten())
+            .chain(completions) {
+            inventory.shared.observe(source);
+        }
+        for page in &self.backend.byte_pages {
+            inventory.shared.byte_pages.insert(Arc::as_ptr(page) as usize,
+                (page.bytes.len(), page.bytes.capacity()));
+        }
+        for page in &self.backend.provenance_pages {
+            inventory.shared.provenance_pages.insert(Arc::as_ptr(page) as usize,
+                (page.values.len(), page.values.capacity()));
+        }
+        inventory
+    }
+}
+
+#[test]
+fn physical_inventory_deduplicates_registry_cache_and_completion_owners() {
+    let mut original = CanonicalBytesArena::new();
+    let empty = original.empty();
+    let handle = append_range(&mut original, empty, 0..129);
+    let frozen = original.freeze(handle);
+    let source = SourceTreeWindow::from_frozen(frozen.clone());
+    let mut arena = CanonicalBytesArena::new();
+    let left = arena.register_source(source.clone()).unwrap();
+    let right = arena.register_source(source.clone()).unwrap();
+    let first = arena.append_source(arena.empty(), left, 0..129).unwrap();
+    let second = arena.append_source(arena.empty(), right, 0..129).unwrap();
+    let completions = [arena.retained_source_window(first).unwrap(),
+        arena.retained_source_window(second).unwrap(), source];
+    let inventory = arena.physical_inventory(&completions);
+    assert_eq!(inventory.registry_roots, 2);
+    assert_eq!(inventory.cached_roots, 2);
+    assert_eq!(inventory.completion_roots, 3);
+    assert_eq!(inventory.shared.nodes.len(), 1);
+    assert_eq!(inventory.shared.frozen_indexes.len(), 1);
+    assert_eq!(inventory.shared.byte_pages.len(), 3);
+    assert_eq!(inventory.shared.provenance_pages.len(), 3);
+    assert_eq!(inventory.generated_payload_cells, 0);
+    assert_eq!(inventory.sealed_generated_byte_pages, 0);
+    assert_eq!(arena.physical_inventory(&completions), inventory);
+    drop(original);
+    drop(arena);
+    let mut retained = SourcePhysicalInventory::default();
+    for root in &completions { retained.observe(root); }
+    assert_eq!(retained, inventory.shared);
+    assert_eq!(completions[0].located_bytes().collect::<Vec<_>>(),
+        (0..129).map(located).collect::<Vec<_>>());
+}
+
+#[test]
+fn retained_prefix_physical_inventory_records_geometric_metadata_growth() {
+    for width in [16, 64, 256] {
+        let input = [19];
+        let mut arena = CanonicalBytesArena::new();
+        let slot = arena.register_source(SourceTreeWindow::from_borrowed(&input, 1, 900).unwrap()).unwrap();
+        let mut handle = arena.empty();
+        let mut completions = Vec::new();
+        let mut expected = Vec::new();
+        for index in 0..width {
+            handle = arena.append_source(handle, slot, 0..1).unwrap();
+            handle = arena.append(handle, located(index)).unwrap();
+            expected.push(CanonicalLocatedByte::new(19, CanonicalByteProvenance::new(1, 900)));
+            expected.push(located(index));
+            completions.push(arena.retained_source_window(handle).unwrap());
+        }
+        let inventory = arena.physical_inventory(&completions);
+        let cache_only = arena.physical_inventory(&[]);
+        assert_eq!(cache_only.shared, inventory.shared);
+        assert_eq!(cache_only.completion_roots, 0);
+        let mut final_only = SourcePhysicalInventory::default();
+        final_only.observe(completions.last().unwrap());
+        assert_eq!(inventory.descriptor_slots, width * 2);
+        assert_eq!(inventory.cached_roots, width * 2);
+        assert_eq!(inventory.registry_roots, 1);
+        assert_eq!(inventory.generated_payload_cells, width);
+        assert_eq!(inventory.shared.byte_pages.len(), width);
+        assert_eq!(inventory.sealed_generated_byte_pages, width);
+        assert_eq!(inventory.sealed_generated_provenance_pages, width);
+        assert_eq!(inventory.shared.frozen_indexes.len(), width);
+        assert_eq!(inventory.shared.borrowed_slices.len(), 1);
+        assert!(inventory.shared.nodes.len() > final_only.nodes.len());
+        assert_eq!(arena.physical_inventory(&completions), inventory);
+        println!("source_physical_prefixes width={width} descriptors={} cache_roots={} all_nodes={} final_nodes={} node_storage_bytes={} frozen_index_storage_bytes={} byte_capacity={} provenance_capacity_cells={} generated_cells={} sealed_pages={}",
+            inventory.descriptor_slots, inventory.cached_roots, inventory.shared.nodes.len(),
+            final_only.nodes.len(), inventory.shared.node_storage_bytes,
+            inventory.shared.frozen_indexes.values().sum::<usize>(),
+            inventory.shared.byte_pages.values().map(|(_, capacity)| capacity).sum::<usize>(),
+            inventory.shared.provenance_pages.values().map(|(_, capacity)| capacity).sum::<usize>(),
+            inventory.generated_payload_cells, inventory.sealed_generated_byte_pages);
+        drop(arena);
+        for (index, root) in completions.iter().enumerate() {
+            assert_eq!(root.located_bytes().collect::<Vec<_>>(), expected[..2 * (index + 1)]);
+        }
+        let final_root = completions.pop().unwrap();
+        drop(completions);
+        let mut surviving = SourcePhysicalInventory::default();
+        surviving.observe(&final_root);
+        assert_eq!(surviving, final_only);
+        assert!(surviving.nodes.len() < cache_only.shared.nodes.len());
+    }
+}
 
 fn located(index: usize) -> CanonicalLocatedByte {
     CanonicalLocatedByte::new(index as u8, CanonicalByteProvenance::new(

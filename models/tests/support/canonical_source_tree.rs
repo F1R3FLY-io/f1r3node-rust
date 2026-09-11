@@ -5,6 +5,53 @@ use proptest::prelude::*;
 use super::*;
 use crate::rust::rholang::canonical_bytes_arena::{CanonicalBytesArena, CanonicalLocatedByte};
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourcePhysicalInventory {
+    pub(crate) nodes: HashSet<usize>,
+    pub(crate) node_storage_bytes: usize,
+    pub(crate) borrowed_slices: HashSet<(usize, usize)>,
+    pub(crate) frozen_indexes: std::collections::HashMap<usize, usize>,
+    pub(crate) byte_pages: std::collections::HashMap<usize, (usize, usize)>,
+    pub(crate) provenance_pages: std::collections::HashMap<usize, (usize, usize)>,
+}
+
+impl SourcePhysicalInventory {
+    pub(crate) fn observe(&mut self, source: &SourceTreeWindow<'_>) {
+        let mut pending = source.root.iter().collect::<Vec<_>>();
+        while let Some(node) = pending.pop() {
+            if !self.nodes.insert(Arc::as_ptr(node) as usize) { continue; }
+            self.node_storage_bytes += std::mem::size_of_val(node.as_ref());
+            match node.payload.as_ref().unwrap() {
+                SourcePayload::Borrowed { bytes, .. } => {
+                    self.borrowed_slices.insert((bytes.as_ptr() as usize, bytes.len()));
+                }
+                SourcePayload::Frozen(bytes) => bytes.observe_physical_storage(self),
+                SourcePayload::Branch2(children) => pending.extend(children),
+                SourcePayload::Branch3(children) => pending.extend(children),
+            }
+        }
+    }
+}
+
+#[test]
+fn physical_inventory_deduplicates_shared_roots_without_expanding_logical_bytes() {
+    let input = [7];
+    let mut root = borrowed(&input, 3, usize::MAX);
+    for _ in 0..usize::BITS - 2 { root = root.concat(&root).unwrap(); }
+    let mut physical = SourcePhysicalInventory::default();
+    physical.observe(&root);
+    assert_eq!(physical.borrowed_slices.len(), 1);
+    assert!(physical.nodes.len() < 4 * usize::BITS as usize);
+    assert!(physical.byte_pages.is_empty());
+    let nodes = physical.nodes.len();
+    let storage = physical.node_storage_bytes;
+    for view in [root.clone(), root.subview(0..1).unwrap(), root.subview(root.len()-1..root.len()).unwrap()] {
+        physical.observe(&view);
+    }
+    assert_eq!(physical.nodes.len(), nodes);
+    assert_eq!(physical.node_storage_bytes, storage);
+}
+
 fn observations(source: &SourceTreeWindow<'_>) -> Vec<CanonicalLocatedByte> {
     (0..source.len())
         .map(|offset| {

@@ -3261,6 +3261,17 @@ required before closing task 6018.
 
 ### Cached source-prefix invariant bindings (2026-09-10; task 6018)
 
+Physical-retention qualification adds three test-only controls:
+`physical_inventory_deduplicates_shared_roots_without_expanding_logical_bytes`,
+`physical_inventory_deduplicates_registry_cache_and_completion_owners`, and
+`retained_prefix_physical_inventory_records_geometric_metadata_growth`.
+They count unique reachable backing objects across all roots, independently of
+descriptor counters, and retain exact located-byte checks after owner release.
+The last control distinguishes cache-only, cache-plus-completions and surviving
+final-root ownership. Its measured excess historical retention is a negative
+resource result, not a failure of the semantic prefix laws below. These laws do
+not prove linear allocation or retained-memory bounds; see journal J-144.
+
 `CachedSourcePrefixes` supplies the denotation bridge for retained arena
 completions. A descriptor denotes located bytes, and a compact handle selects
 a bounded range. Descriptor IDs are append-only, but their mutable tails can

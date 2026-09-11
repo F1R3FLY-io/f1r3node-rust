@@ -9,7 +9,7 @@ use super::canonical_bytes_arena::{
 
 #[cfg(test)]
 #[path = "../../../tests/support/canonical_source_tree.rs"]
-mod tests;
+pub(crate) mod tests;
 
 const RELEASE_CAPACITY: usize = 1 + 2 * (usize::BITS as usize - 1);
 
