@@ -1,1 +1,0 @@
-PASS: Disk hygiene preserved unrelated Docker resources and the reserved image, then refused new work.

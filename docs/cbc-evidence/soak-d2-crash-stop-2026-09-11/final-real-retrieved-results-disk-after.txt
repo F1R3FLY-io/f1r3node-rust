@@ -1,2 +1,0 @@
-Filesystem     1048576-blocks  Used Available Capacity Mounted on
-/dev/sda1               79206  7283     71908      10% /

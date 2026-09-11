@@ -795,3 +795,35 @@ The 59 current-cycle batch and lifecycle streams use the `b40-real-system--` pre
 The 405 retrieved streams for B27 through B38 now have raw records only.
 The raw archive and its recorded member bytes remain unchanged.
 The revision records new packaging-source hashes without changing the original build-input records.
+
+## Authorized rerun removal and build checks
+
+Commit `5e1842688` removed 878 rerun files and their candidate bindings.
+The user then authorized removal of the remaining files and an update to the build.
+The review found 187 remaining `final-real-*` files in the B38/B39 package.
+A package-local ignore rule allowed 17 of those logs.
+The other 170 files matched the root ignore rules.
+
+The removal preserves all 187 published files in `[EVIDENCE_ROOT]/published-reruns.tar.gz` before deletion.
+The archive passed a complete member, digest, and byte-count check.
+The [retention record](../claims/soak-evidence-retention.jsonc) records the archive identity and each removed file.
+The archive contains previously published bytes, not a new execution.
+The original historical manifests and `docker/.env` remain unchanged.
+
+The repository check rejects rerun files and rerun bindings regardless of package-local ignore rules.
+The repository check requires registration and current publication digests for each new-format package.
+The Lint job runs that check and the packaging regression suite.
+The existing claim-inventory validator and TLA+ gate code remain unchanged.
+
+The inventory removes the 187 obsolete bindings and registers the B40 package as historical evidence.
+The B40 manifest retains the original executed-source hashes.
+Commit `5e1842688` changes whitespace in the native fixture, so the historical run does not attest the current fixture bytes.
+Current publication bindings do not establish a new production test result.
+D2, all claim discharges, hosted verification, and acceptance remain pending.
+
+The 28 packaging regressions, inventory validation, ten JSONC regressions, and workflow checks pass locally.
+The repository check confirms that no rerun files or candidate bindings remain.
+The fresh formal run passes 35 positive configurations and 37 exact controls.
+All 72 actual TLC logs remain outside Git.
+The routing regressions also pass.
+These local checks do not establish hosted execution or D2 completion.

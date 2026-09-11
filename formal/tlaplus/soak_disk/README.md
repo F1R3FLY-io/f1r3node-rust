@@ -93,7 +93,8 @@ New packages keep reruns digest-only.
 The rerun patterns are `composed-*`, `final-*`, `supporting-*`, `emergency-*`, and `tlc-*.log`.
 Only the exact filename `final-real.txt` is an exception to the `final-*` rule.
 Cycle transcripts, baseline records, initial records, per-cycle observations, `manifest.jsonc`, and `README.md` remain published.
-Historical packages retain their bytes, manifests, and published sets.
+Historical manifests retain their original bytes.
+An authorized removal records the removed files in a separate retention record.
 
 Current-cycle real-system results use the cycle prefix, such as `b40-real-system--cycle.txt`.
 The manifest records that prefix in `cycle_prefix`.
@@ -124,5 +125,18 @@ ruby scripts/ci/check-soak-evidence-package.rb <package> \
   --raw-archive <raw-streams.tar.gz>
 ruby scripts/ci/test-soak-evidence-package.rb
 ```
+
+The repository check rejects rerun files and rerun bindings across all evidence packages.
+Package-local ignore rules do not override that check.
+Each new-format package must have an evidence registration and current digests for every published member.
+CI runs the packaging regressions and repository check in the Lint job.
+
+```bash
+ruby scripts/ci/check-soak-evidence-package.rb --repository
+```
+
+The [retention record](../../../docs/claims/soak-evidence-retention.jsonc) identifies 187 archived files removed after commit `5e1842688`.
+Its archive contains previously published bytes, not a new execution.
+The record preserves file paths, SHA-256 digests, and byte counts without adding reruns to candidate inputs.
 
 The claim-inventory validator and TLA+ gates retain their existing commands and behavior.

@@ -95,6 +95,37 @@ module SoakEvidencePackage
     [manifest, entries]
   end
 
+  def self.validate_repository(root)
+    inventory = JSON.parse(File.read(File.join(root, 'docs/claims/soak-claim-inventory.jsonc')))
+    inputs = inventory.fetch('candidate').fetch('inputs_sha256')
+    paths = Dir.glob(File.join(root, 'docs/cbc-evidence/*/*'), File::FNM_DOTMATCH)
+    paths.each do |path|
+      next unless File.file?(path) || File.symlink?(path)
+      raise "A rerun file remains in the repository: #{File.basename(path)}" if rerun?(File.basename(path))
+    end
+    inputs.each_key do |path|
+      next unless path.start_with?('docs/cbc-evidence/')
+      raise "A rerun must not have a candidate binding: #{path}" if rerun?(File.basename(path))
+    end
+    packages = []
+    paths.select { |p| File.basename(p) == 'manifest.jsonc' }.sort.each do |path|
+      data = JSON.parse(File.read(path))
+      next unless data.key?('packaging')
+      package = File.dirname(path)
+      manifest, = validate_export(package)
+      relative = package.delete_prefix(root.chomp('/') + '/')
+      raise 'The package location differs from its manifest.' unless manifest.fetch('package_path') == relative
+      registered = inventory.fetch('evidence').values.any? { |entry| entry.fetch('path') == "#{relative}/manifest.jsonc" }
+      raise "The evidence package is not registered: #{relative}" unless registered
+      Dir.children(package).each do |name|
+        key = "#{relative}/#{name}"
+        raise "A package binding is missing or stale: #{key}" unless inputs[key] == Digest::SHA256.file(File.join(package, name)).hexdigest
+      end
+      packages << relative
+    end
+    packages
+  end
+
   def self.validate_archive(manifest, entries, path)
     archive = manifest.fetch('raw_archive')
     raise 'The raw archive bytes differ.' unless File.size(path) == archive.fetch('raw_bytes') && Digest::SHA256.file(path).hexdigest == archive.fetch('raw_sha256')
@@ -122,15 +153,22 @@ module SoakEvidencePackage
 end
 
 if $PROGRAM_NAME == __FILE__
-  unless ARGV.size == 1 || (ARGV.size == 3 && ARGV[1] == '--raw-archive')
-    warn 'Usage: ruby scripts/ci/check-soak-evidence-package.rb <package> [--raw-archive <archive>]'
+  repository = ARGV[0] == '--repository'
+  valid = repository ? [1, 2].include?(ARGV.size) : ARGV.size == 1 || (ARGV.size == 3 && ARGV[1] == '--raw-archive')
+  unless valid
+    warn 'Usage: ruby scripts/ci/check-soak-evidence-package.rb <package> [--raw-archive <archive>] | --repository [root]'
     exit 2
   end
   begin
-    manifest, entries = SoakEvidencePackage.validate_export(ARGV[0])
-    SoakEvidencePackage.validate_archive(manifest, entries, ARGV[2]) if ARGV.size == 3
-    puts 'PASS: Published evidence matches its manifest. Reruns remain digest-only.'
-    puts 'PASS: Every raw archive member matches its inventory.' if ARGV.size == 3
+    if repository
+      packages = SoakEvidencePackage.validate_repository(File.expand_path(ARGV[1] || Dir.pwd))
+      puts "PASS: Publication bindings are current. Package count: #{packages.size}. No rerun files or bindings remain."
+    else
+      manifest, entries = SoakEvidencePackage.validate_export(ARGV[0])
+      SoakEvidencePackage.validate_archive(manifest, entries, ARGV[2]) if ARGV.size == 3
+      puts 'PASS: Published evidence matches its manifest. Reruns remain digest-only.'
+      puts 'PASS: Every raw archive member matches its inventory.' if ARGV.size == 3
+    end
   rescue StandardError => error
     warn "FAIL: #{error.message}"
     exit 1

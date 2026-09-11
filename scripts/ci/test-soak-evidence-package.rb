@@ -32,7 +32,7 @@ class EvidencePackageTests
       end
       raw = File.join(root,'raw-streams.tar.gz')
       archive(raw,files)
-      manifest = {'package_path' => 'docs/cbc-evidence/example', 'cycle_prefix' => 'b40', 'raw_archive' => {'raw_path' => '[EVIDENCE_ROOT]/raw-streams.tar.gz', 'raw_sha256' => Digest::SHA256.file(raw).hexdigest, 'raw_bytes' => File.size(raw), 'entries' => entries}, 'published_streams' => published}
+      manifest = {'package_path' => 'docs/cbc-evidence/example', 'cycle_prefix' => 'b40', 'packaging' => {'reruns' => 'digest-only'}, 'raw_archive' => {'raw_path' => '[EVIDENCE_ROOT]/raw-streams.tar.gz', 'raw_sha256' => Digest::SHA256.file(raw).hexdigest, 'raw_bytes' => File.size(raw), 'entries' => entries}, 'published_streams' => published}
       save(package,manifest)
       yield package,raw,manifest,files
     end
@@ -41,6 +41,23 @@ class EvidencePackageTests
 
   def save(package, manifest)
     File.write(File.join(package,'manifest.jsonc'), "// Package test metadata.\n" + JSON.pretty_generate(manifest) + "\n")
+  end
+
+  def repository
+    fixture do |package,_,_,_|
+      root = File.join(File.dirname(package), 'repo')
+      destination = File.join(root, 'docs/cbc-evidence/example')
+      FileUtils.mkdir_p(File.dirname(destination))
+      FileUtils.cp_r(package, destination)
+      inputs = Dir.children(destination).to_h do |name|
+        ["docs/cbc-evidence/example/#{name}", Digest::SHA256.file(File.join(destination, name)).hexdigest]
+      end
+      inventory = {'candidate' => {'inputs_sha256' => inputs}, 'evidence' => {'EXAMPLE' => {'path' => 'docs/cbc-evidence/example/manifest.jsonc'}}}
+      path = File.join(root, 'docs/claims/soak-claim-inventory.jsonc')
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "// Repository fixture.\n" + JSON.pretty_generate(inventory))
+      yield root, path, inventory, destination
+    end
   end
 
   def reject(message)
@@ -157,6 +174,48 @@ class EvidencePackageTests
       raise 'The current-cycle results are missing.' unless names.include?('b40-real-system--cycle.txt') && names.include?('b40-real-system--retrieved--results--b40--driver.txt')
       raise 'A prior-cycle retrieval was published.' if names.any? { |n| n.include?('b38') }
       SoakEvidencePackage.validate_export(package)
+    end
+    repository do |root,_,_,_|
+      raise 'The repository package set differs.' unless SoakEvidencePackage.validate_repository(root) == ['docs/cbc-evidence/example']
+    end
+    repository do |root,path,inventory,_|
+      inventory['evidence'] = {}
+      File.write(path, JSON.pretty_generate(inventory))
+      reject('The evidence package is not registered:') { SoakEvidencePackage.validate_repository(root) }
+    end
+    repository do |root,path,inventory,_|
+      inventory['candidate']['inputs_sha256'].delete('docs/cbc-evidence/example/b40-cycle.txt')
+      File.write(path, JSON.pretty_generate(inventory))
+      reject('A package binding is missing or stale:') { SoakEvidencePackage.validate_repository(root) }
+    end
+    repository do |root,path,inventory,_|
+      inventory['candidate']['inputs_sha256']['docs/cbc-evidence/example/b40-cycle.txt'] = '0' * 64
+      File.write(path, JSON.pretty_generate(inventory))
+      reject('A package binding is missing or stale:') { SoakEvidencePackage.validate_repository(root) }
+    end
+    repository do |root,_,_,package|
+      File.unlink(File.join(package, 'b40-cycle.txt'))
+      reject('A published entry is missing:') { SoakEvidencePackage.validate_repository(root) }
+    end
+    repository do |root,_,_,package|
+      File.write(File.join(package, 'final-real-copy.txt'), "rerun\n")
+      reject('A rerun file remains in the repository:') { SoakEvidencePackage.validate_repository(root) }
+    end
+    repository do |root,_,_,_|
+      legacy = File.join(root, 'docs/cbc-evidence/legacy')
+      Dir.mkdir(legacy)
+      File.write(File.join(legacy, '.gitignore'), "!*.log\n")
+      File.write(File.join(legacy, 'final-real-driver.log'), "rerun\n")
+      reject('A rerun file remains in the repository:') { SoakEvidencePackage.validate_repository(root) }
+    end
+    repository do |root,path,inventory,_|
+      inventory['candidate']['inputs_sha256']['docs/cbc-evidence/legacy/supporting-tests.txt'] = '0' * 64
+      File.write(path, JSON.pretty_generate(inventory))
+      reject('A rerun must not have a candidate binding:') { SoakEvidencePackage.validate_repository(root) }
+    end
+    repository do |root,path,_,_|
+      File.write(path, '/* unterminated')
+      reject('unexpected token') { SoakEvidencePackage.validate_repository(root) }
     end
     puts "PASS: All #{@count} evidence packaging regression cases passed."
   end

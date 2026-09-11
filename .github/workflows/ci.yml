@@ -353,6 +353,12 @@ jobs:
           bash scripts/ci/test-soak-claim-inventory.sh
           bash scripts/ci/test-soak-claim-inventory-jsonc.sh
 
+      - name: Verify soak evidence packaging
+        shell: bash -euo pipefail {0}
+        run: |
+          ruby scripts/ci/test-soak-evidence-package.rb
+          ruby scripts/ci/check-soak-evidence-package.rb --repository
+
       - name: Verify coverage summary aggregation
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-coverage-summary.sh

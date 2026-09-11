@@ -1,1 +1,0 @@
-PASS: Two restarts refused work and retained one interrupted-iteration failure after the driver crash.

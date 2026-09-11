@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-printf 'Unexpected iteration admission.\n' >>"$SOAK_REAL_EVIDENCE/iteration-invoked.txt"
-exit 42
