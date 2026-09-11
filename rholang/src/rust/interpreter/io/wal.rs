@@ -46,6 +46,8 @@ use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 
+use super::errors::poison_abort;
+
 /// H-29-2 review-fix: per-runtime cap on WAL entries.  Prevents an
 /// adversarial deploy from growing the WAL without bound.
 /// Enforced in `Wal::append` which returns `Err(())` on overflow,
@@ -491,7 +493,7 @@ impl Wal {
     /// that entry (falls back to insertion order).
     #[allow(clippy::result_unit_err)]
     pub fn append_with_ack(&self, entry: WalEntry, ack_hash: [u8; 32]) -> Result<(), ()> {
-        let mut guard = self.entries.lock().expect("Wal mutex poisoned");
+        let mut guard = poison_abort(self.entries.lock(), "Wal.entries");
         if guard.len() >= MAX_WAL_ENTRIES {
             return Err(());
         }
@@ -499,33 +501,27 @@ impl Wal {
         // Mutex order matters: `entries` lock is held while we
         // grab `ack_hashes` so the two Vecs stay index-aligned
         // under concurrent appends.
-        self.ack_hashes
-            .lock()
-            .expect("Wal ack_hashes mutex poisoned")
-            .push(ack_hash);
+        poison_abort(self.ack_hashes.lock(), "Wal.ack_hashes").push(ack_hash);
         Ok(())
     }
 
     /// Snapshot the current entries.  Cheap — returns a Vec clone.
     /// Intended for tests + slice-30 snapshot/checkpoint machinery.
     pub fn snapshot(&self) -> Vec<WalEntry> {
-        let guard = self.entries.lock().expect("Wal mutex poisoned");
+        let guard = poison_abort(self.entries.lock(), "Wal.entries");
         guard.clone()
     }
 
     /// Number of journaled entries.
-    pub fn len(&self) -> usize { self.entries.lock().expect("Wal mutex poisoned").len() }
+    pub fn len(&self) -> usize { poison_abort(self.entries.lock(), "Wal.entries").len() }
 
     pub fn is_empty(&self) -> bool { self.len() == 0 }
 
     /// Clear all entries.  Called on `RhoRuntimeImpl::reset()`
     /// (H-29-F2 review fix — defense in depth) and by tests.
     pub fn clear(&self) {
-        self.entries.lock().expect("Wal mutex poisoned").clear();
-        self.ack_hashes
-            .lock()
-            .expect("Wal ack_hashes mutex poisoned")
-            .clear();
+        poison_abort(self.entries.lock(), "Wal.entries").clear();
+        poison_abort(self.ack_hashes.lock(), "Wal.ack_hashes").clear();
     }
 
     /// H-29-1 review fix: rollback support for soft-checkpoints.
@@ -533,7 +529,7 @@ impl Wal {
     /// can discard any entries appended past it (i.e., during a
     /// deploy attempt that gets reverted).
     pub fn snapshot_mark(&self) -> WalMark {
-        let guard = self.entries.lock().expect("Wal mutex poisoned");
+        let guard = poison_abort(self.entries.lock(), "Wal.entries");
         WalMark { len: guard.len() }
     }
 
@@ -543,14 +539,11 @@ impl Wal {
     /// past the current length is a no-op (an oversized snapshot
     /// captured pre-clear-and-repopulate).
     pub fn truncate_to(&self, mark: WalMark) {
-        let mut guard = self.entries.lock().expect("Wal mutex poisoned");
+        let mut guard = poison_abort(self.entries.lock(), "Wal.entries");
         if mark.len < guard.len() {
             guard.truncate(mark.len);
             // Slice 30c H-R3 PoC: keep sidecar index-aligned.
-            self.ack_hashes
-                .lock()
-                .expect("Wal ack_hashes mutex poisoned")
-                .truncate(mark.len);
+            poison_abort(self.ack_hashes.lock(), "Wal.ack_hashes").truncate(mark.len);
         }
     }
 
@@ -579,12 +572,9 @@ impl Wal {
     /// instead — that path re-orders by the canonical event log
     /// and is deterministic across validators.
     pub fn take_deploy_entries(&self, mark: WalMark) -> Vec<WalEntry> {
-        let mut guard = self.entries.lock().expect("Wal mutex poisoned");
+        let mut guard = poison_abort(self.entries.lock(), "Wal.entries");
         // Also drain the ack_hash sidecar to keep it aligned.
-        let mut ack_guard = self
-            .ack_hashes
-            .lock()
-            .expect("Wal ack_hashes mutex poisoned");
+        let mut ack_guard = poison_abort(self.ack_hashes.lock(), "Wal.ack_hashes");
         if mark.len >= guard.len() {
             return Vec::new();
         }
@@ -612,11 +602,8 @@ impl Wal {
     /// duplicate ack_hash across entries (shouldn't happen for
     /// fresh unforgeables) updates the most-recent one.
     pub fn update_last_entry_by_ack_hash(&self, ack_hash: [u8; 32], new_entry: WalEntry) -> bool {
-        let mut entries_guard = self.entries.lock().expect("Wal mutex poisoned");
-        let ack_guard = self
-            .ack_hashes
-            .lock()
-            .expect("Wal ack_hashes mutex poisoned");
+        let mut entries_guard = poison_abort(self.entries.lock(), "Wal.entries");
+        let ack_guard = poison_abort(self.ack_hashes.lock(), "Wal.ack_hashes");
         // M-10 fix (2026-08-06): fail-hard in release, not just
         // debug.  Alignment between entries and ack_hashes is a
         // consensus-critical invariant — a mismatch under
@@ -663,11 +650,8 @@ impl Wal {
         ack_hash: [u8; 32],
         actual_bytes: &[u8],
     ) -> bool {
-        let mut entries_guard = self.entries.lock().expect("Wal mutex poisoned");
-        let ack_guard = self
-            .ack_hashes
-            .lock()
-            .expect("Wal ack_hashes mutex poisoned");
+        let mut entries_guard = poison_abort(self.entries.lock(), "Wal.entries");
+        let ack_guard = poison_abort(self.ack_hashes.lock(), "Wal.ack_hashes");
         assert_eq!(
             entries_guard.len(),
             ack_guard.len(),
@@ -696,11 +680,8 @@ impl Wal {
     /// Search starts from the tail — the placeholder was appended
     /// moments ago in the same handler.
     pub fn update_outcome_by_ack_hash(&self, ack_hash: [u8; 32], outcome: WalOutcome) -> bool {
-        let mut entries_guard = self.entries.lock().expect("Wal mutex poisoned");
-        let ack_guard = self
-            .ack_hashes
-            .lock()
-            .expect("Wal ack_hashes mutex poisoned");
+        let mut entries_guard = poison_abort(self.entries.lock(), "Wal.entries");
+        let ack_guard = poison_abort(self.ack_hashes.lock(), "Wal.ack_hashes");
         // M-10 fix (2026-08-06): fail-hard in release, not just
         // debug.  Alignment between entries and ack_hashes is a
         // consensus-critical invariant — a mismatch under
@@ -748,11 +729,8 @@ impl Wal {
         mark: WalMark,
         produce_channel_hashes: &[[u8; 32]],
     ) -> Vec<WalEntry> {
-        let mut entries_guard = self.entries.lock().expect("Wal mutex poisoned");
-        let mut ack_guard = self
-            .ack_hashes
-            .lock()
-            .expect("Wal ack_hashes mutex poisoned");
+        let mut entries_guard = poison_abort(self.entries.lock(), "Wal.entries");
+        let mut ack_guard = poison_abort(self.ack_hashes.lock(), "Wal.ack_hashes");
         if mark.len >= entries_guard.len() {
             return Vec::new();
         }

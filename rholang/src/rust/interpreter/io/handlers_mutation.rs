@@ -164,7 +164,7 @@ impl FsHandler for FsTruncateHandler {
             })
             .await;
             match r {
-                Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                Err(je) => super::errors::join_err_abort(je),
                 Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
                 Ok(Ok(())) => HandlerReply::ok(ok_bare()),
             }

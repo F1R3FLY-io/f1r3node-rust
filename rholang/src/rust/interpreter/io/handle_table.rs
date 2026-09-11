@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use super::errors::poison_abort;
 use super::mode::AccessMode;
 use super::wal::Wal;
 use super::ConsensusMode;
@@ -398,20 +399,14 @@ impl FileHandleTable {
     /// interior mutability — matches the shape used by
     /// `RootIdentityRegistry::register` for the same reason.
     pub fn share_payload_store(&self, shared: Option<Arc<dyn super::wal::PayloadPersistence>>) {
-        *self
-            .payload_store
-            .write()
-            .expect("payload_store lock poisoned") = shared;
+        *poison_abort(self.payload_store.write(), "payload_store") = shared;
     }
 
     /// Phase 7b-2 diagnostic — read the currently-installed
     /// persistence backend, if any.  Used by `journal_write` to
     /// look up the store on every write.
     pub fn payload_store(&self) -> Option<Arc<dyn super::wal::PayloadPersistence>> {
-        self.payload_store
-            .read()
-            .expect("payload_store lock poisoned")
-            .clone()
+        poison_abort(self.payload_store.read(), "payload_store").clone()
     }
 
     /// DD-7b-2 (a) Option 2 (2026-08-29): attach the manager-
@@ -434,10 +429,10 @@ impl FileHandleTable {
         &self,
         shared: Option<Arc<dyn super::wal::PayloadSourceRecorder>>,
     ) {
-        *self
-            .payload_source_recorder
-            .write()
-            .expect("payload_source_recorder lock poisoned") = shared;
+        *poison_abort(
+            self.payload_source_recorder.write(),
+            "payload_source_recorder",
+        ) = shared;
     }
 
     /// DD-7b-2 (a) Option 2 diagnostic — read the currently-
@@ -445,10 +440,11 @@ impl FileHandleTable {
     /// `journal_write` to look up the recorder on every Consensus-
     /// cap write.
     pub fn payload_source_recorder(&self) -> Option<Arc<dyn super::wal::PayloadSourceRecorder>> {
-        self.payload_source_recorder
-            .read()
-            .expect("payload_source_recorder lock poisoned")
-            .clone()
+        poison_abort(
+            self.payload_source_recorder.read(),
+            "payload_source_recorder",
+        )
+        .clone()
     }
 
     /// Allocate a fresh fd and register the handle.

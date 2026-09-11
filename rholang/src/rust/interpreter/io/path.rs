@@ -27,6 +27,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 
+use super::errors::poison_abort;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum QuarantineError {
     Empty,
@@ -378,9 +380,7 @@ impl RootIdentityRegistry {
         id: (u64, u64),
     ) {
         let backing = self.current_backing();
-        let mut guard = backing
-            .write()
-            .expect("root-identity registry inner poisoned");
+        let mut guard = poison_abort(backing.write(), "RootIdentity.inner");
         guard.entries.insert(logical, RegisteredRoot {
             on_disk_root: on_disk,
             identity: id,
@@ -418,22 +418,12 @@ impl RootIdentityRegistry {
     ///      `register_with_remap` on the manager writes to the
     ///      middle Arc's inner — visible everywhere.
     pub fn share_from(&self, other: &RootIdentityRegistry) {
-        let src = other
-            .slot
-            .read()
-            .expect("root-identity registry outer slot poisoned (src)")
-            .clone();
-        *self
-            .slot
-            .write()
-            .expect("root-identity registry outer slot poisoned (dst)") = src;
+        let src = poison_abort(other.slot.read(), "RootIdentity.outer_slot").clone();
+        *poison_abort(self.slot.write(), "RootIdentity.outer_slot") = src;
     }
 
     fn current_backing(&self) -> std::sync::Arc<std::sync::RwLock<RegistryInner>> {
-        self.slot
-            .read()
-            .expect("root-identity registry outer slot poisoned")
-            .clone()
+        poison_abort(self.slot.read(), "RootIdentity.outer_slot").clone()
     }
 
     /// Look up a root's expected identity by ON-DISK path.
@@ -448,9 +438,7 @@ impl RootIdentityRegistry {
     /// logical == on_disk case (every current registration).
     pub fn get(&self, root: &std::path::Path) -> Option<(u64, u64)> {
         let backing = self.current_backing();
-        let guard = backing
-            .read()
-            .expect("root-identity registry inner poisoned");
+        let guard = poison_abort(backing.read(), "RootIdentity.inner");
         guard.entries.get(root).map(|r| r.identity)
     }
 
@@ -463,9 +451,7 @@ impl RootIdentityRegistry {
     /// pre-Shape-A behavior).
     pub fn resolve(&self, logical: &std::path::Path) -> Option<RegisteredRoot> {
         let backing = self.current_backing();
-        let guard = backing
-            .read()
-            .expect("root-identity registry inner poisoned");
+        let guard = poison_abort(backing.read(), "RootIdentity.inner");
         guard.entries.get(logical).cloned()
     }
 
@@ -488,9 +474,7 @@ impl RootIdentityRegistry {
     /// Count of registered roots.  For diagnostics only.
     pub fn len(&self) -> usize {
         let backing = self.current_backing();
-        let guard = backing
-            .read()
-            .expect("root-identity registry inner poisoned");
+        let guard = poison_abort(backing.read(), "RootIdentity.inner");
         guard.entries.len()
     }
 
@@ -525,9 +509,7 @@ impl RootIdentityRegistry {
     /// after_fetch` for the wire-in.
     pub fn resolve_wal_entry_path(&self, entry_path: &std::path::Path) -> std::path::PathBuf {
         let backing = self.current_backing();
-        let guard = backing
-            .read()
-            .expect("root-identity registry inner poisoned");
+        let guard = poison_abort(backing.read(), "RootIdentity.inner");
         let mut best: Option<(&std::path::PathBuf, &RegisteredRoot)> = None;
         for (logical, reg) in guard.entries.iter() {
             if entry_path.starts_with(logical) {
@@ -577,9 +559,7 @@ impl RootIdentityRegistry {
         entry_path: &std::path::Path,
     ) -> (std::path::PathBuf, std::path::PathBuf, Option<(u64, u64)>) {
         let backing = self.current_backing();
-        let guard = backing
-            .read()
-            .expect("root-identity registry inner poisoned");
+        let guard = poison_abort(backing.read(), "RootIdentity.inner");
         let mut best: Option<(&std::path::PathBuf, &RegisteredRoot)> = None;
         for (logical, reg) in guard.entries.iter() {
             if entry_path.starts_with(logical) {

@@ -242,6 +242,99 @@ pub fn io_err_code(e: &io::Error) -> FserrCode {
     }
 }
 
+/// T-13 (2026-09-11, wave-4 Phase 3, DD-FailClosedOnInvariantBreak):
+/// unified poison-abort helper.  Replaces the pre-hardening scattered
+/// pattern `.expect("... poisoned")` with a single well-known
+/// well-messaged panic that the operational log scan can grep by
+/// its canonical prefix (`POISON_ABORT_PREFIX` below).
+///
+/// A poisoned lock means a thread panicked while holding the write
+/// guard — the protected invariant may be half-updated.  Per
+/// DD-FailClosedOnInvariantBreak, we deliberately do NOT accept the
+/// poisoned inner via `.into_inner()` (option (a) accept-and-log)
+/// nor return a soft error (option (b) FSERR_IO); we panic (option
+/// (c) deploy abort).  The panic unwinds to the deploy scope, which
+/// rejects the block containing the deploy.
+///
+/// The `slot` argument is a short human-readable identifier for the
+/// lock ("Wal.entries", "LockRegistry.inner", etc.) — appears in the
+/// panic message for operator triage.  Keep it stable across
+/// releases so log-scan alerting doesn't false-negative on cosmetic
+/// renames.
+///
+/// # Consensus surface
+///
+/// None.  Both the pre- and post-hardening shapes panic on poison
+/// with a `String` message; the panic bytes travel via `PoisonError`
+/// but are consumed at the deploy layer without touching WAL bytes,
+/// reply Pars, or fingerprint inputs.  Free per
+/// `f1r3node_no_running_network`.
+#[track_caller]
+pub fn poison_abort<T>(result: std::sync::LockResult<T>, slot: &str) -> T {
+    result.unwrap_or_else(|_| {
+        panic!(
+            "{POISON_ABORT_PREFIX}: {slot} — a thread panicked while \
+             holding this lock; the protected invariant may be \
+             half-updated.  Aborting per DD-FailClosedOnInvariantBreak."
+        );
+    })
+}
+
+/// Canonical prefix for `poison_abort` panic messages.  Kept as a
+/// public constant so tests can assert the panic shape without
+/// hard-coding the full message text (which may evolve for clarity).
+pub const POISON_ABORT_PREFIX: &str = "io/ lock poisoned";
+
+/// T-20 (2026-09-11, wave-4 Phase 3, DD-FailClosedOnInvariantBreak):
+/// unified `JoinError`-abort helper.  Replaces the pre-hardening
+/// pattern `Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking
+/// task failed")` with a canonical panic that aborts the deploy.
+///
+/// A `spawn_blocking` task that panicked (or was cancelled by the
+/// runtime shutting down) is an invariant break — the syscall body
+/// failed unrecoverably.  Per DD-FailClosedOnInvariantBreak we
+/// abort the deploy rather than mask the failure as an FSERR_IO
+/// reply that burns budget but hides the underlying bug.
+///
+/// The panic propagates the original panic payload (message,
+/// downcastable) as part of the abort message so operators see the
+/// underlying cause alongside the abort banner.  The canonical
+/// prefix `JOIN_ERR_ABORT_PREFIX` lets operational log scanning
+/// grep for this specific hazard class independent of the payload.
+///
+/// # Consensus surface
+///
+/// Zero.  Both pre- and post-hardening shapes fail the deploy on a
+/// task panic (the pre-hardening version produced a soft FSERR_IO
+/// reply that burned budget; the post-hardening version aborts).
+/// No WAL bytes, reply Pars, or fingerprint inputs change; the
+/// difference is at the deploy-outcome layer.  Free per
+/// `f1r3node_no_running_network`.
+#[track_caller]
+pub fn join_err_abort(je: tokio::task::JoinError) -> ! {
+    let cause: String = if je.is_panic() {
+        let payload = je.into_panic();
+        if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else {
+            "<non-string panic payload>".to_string()
+        }
+    } else {
+        "spawn_blocking task cancelled (runtime shutdown?)".to_string()
+    };
+    panic!(
+        "{JOIN_ERR_ABORT_PREFIX}: {cause}.  Aborting per \
+         DD-FailClosedOnInvariantBreak."
+    );
+}
+
+/// Canonical prefix for `join_err_abort` panic messages.  Kept as
+/// a public constant so tests can assert the panic shape without
+/// hard-coding the full message text.
+pub const JOIN_ERR_ABORT_PREFIX: &str = "io/ handler JoinError";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +429,263 @@ mod tests {
              change here means a new code was appended (bump the \
              constant) or an existing code was renumbered \
              (hard-fork surface violation)."
+        );
+    }
+
+    /// T-13 (2026-09-11, DD-FailClosedOnInvariantBreak): `poison_abort`
+    /// happy path — a non-poisoned `Ok` guard passes through
+    /// unchanged, no panic.
+    #[test]
+    fn poison_abort_passes_through_unpoisoned_guard() {
+        let m = std::sync::Mutex::new(42u32);
+        let guard = poison_abort(m.lock(), "test.slot");
+        assert_eq!(*guard, 42);
+    }
+
+    /// T-13 (2026-09-11, DD-FailClosedOnInvariantBreak): `poison_abort`
+    /// on a poisoned lock panics with the canonical prefix.  The
+    /// prefix is used by operational log scanning to alert on this
+    /// specific hazard class — keep it stable.
+    #[test]
+    fn poison_abort_panics_with_canonical_prefix_on_poison() {
+        use std::sync::{Arc, Mutex};
+        let m = Arc::new(Mutex::new(0u32));
+        let m2 = Arc::clone(&m);
+        // Poison the mutex: spawn a thread that panics while
+        // holding the write guard.
+        let handle = std::thread::spawn(move || {
+            let _guard = m2.lock().unwrap();
+            panic!("intentional test poison");
+        });
+        let _ = handle.join(); // Absorb the thread's panic.
+        assert!(m.is_poisoned(), "test setup: mutex must be poisoned");
+
+        // Now the actual test: poison_abort on the poisoned lock
+        // must panic with a message starting with POISON_ABORT_PREFIX
+        // and mentioning the caller-supplied slot.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            poison_abort(m.lock(), "MySlot")
+        }));
+        let payload =
+            result.expect_err("T-13: poison_abort MUST panic on a poisoned lock, not return");
+        let msg = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&'static str>()
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        assert!(
+            msg.starts_with(POISON_ABORT_PREFIX),
+            "T-13: poison_abort panic message must start with \
+             POISON_ABORT_PREFIX = {POISON_ABORT_PREFIX:?} for log-\
+             scan alerting; got {msg:?}"
+        );
+        assert!(
+            msg.contains("MySlot"),
+            "T-13: poison_abort message must include the caller-\
+             supplied slot for triage; got {msg:?}"
+        );
+        assert!(
+            msg.contains("DD-FailClosedOnInvariantBreak"),
+            "T-13: message must cite the DD for operator traceability; \
+             got {msg:?}"
+        );
+    }
+
+    /// T-20 (2026-09-11, DD-FailClosedOnInvariantBreak):
+    /// `join_err_abort` on a task-panic JoinError panics with the
+    /// canonical prefix and preserves the underlying payload.
+    #[tokio::test]
+    async fn join_err_abort_panics_with_canonical_prefix_on_task_panic() {
+        let je = tokio::task::spawn(async { panic!("underlying task panic") })
+            .await
+            .expect_err("spawned task should surface a JoinError");
+        assert!(je.is_panic(), "test setup: JoinError must carry a panic");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| join_err_abort(je)));
+        let payload = result.expect_err(
+            "T-20: join_err_abort MUST panic on a task-panic JoinError, \
+             not return",
+        );
+        let msg = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&'static str>()
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        assert!(
+            msg.starts_with(JOIN_ERR_ABORT_PREFIX),
+            "T-20: join_err_abort panic must start with \
+             JOIN_ERR_ABORT_PREFIX = {JOIN_ERR_ABORT_PREFIX:?} for \
+             log-scan alerting; got {msg:?}"
+        );
+        assert!(
+            msg.contains("underlying task panic"),
+            "T-20: the original panic payload must be preserved in \
+             the abort banner for operator triage; got {msg:?}"
+        );
+        assert!(
+            msg.contains("DD-FailClosedOnInvariantBreak"),
+            "T-20: message must cite the DD for operator \
+             traceability; got {msg:?}"
+        );
+    }
+
+    /// T-20 lint pin (2026-09-11, DD-FailClosedOnInvariantBreak):
+    /// scan all `.rs` files under `rholang/src/rust/interpreter/io/`
+    /// and assert no raw `Err(_je) => HandlerReply::err(FSERR_IO,
+    /// "spawn_blocking task failed")` pattern remains — the T-20
+    /// migration replaced all such sites with `join_err_abort(je)`.
+    /// A regression that reintroduces the soft-reply pattern
+    /// masks the panic (option-(b) FSERR_IO) which DD-
+    /// FailClosedOnInvariantBreak explicitly rejects.
+    #[test]
+    fn no_raw_spawn_blocking_join_err_soft_reply_outside_helper() {
+        let io_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/rust/interpreter/io");
+        let mut offending: Vec<String> = Vec::new();
+
+        for entry in std::fs::read_dir(io_dir).expect("io/ dir readable") {
+            let entry = entry.expect("readable entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
+            // errors.rs is the helper's home — the string appears in
+            // doc comments.  Skip it entirely.
+            if file_name == "errors.rs" {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("io/ .rs file readable");
+            for (idx, line) in content.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//")
+                    || trimmed.starts_with("///")
+                    || trimmed.starts_with("*")
+                {
+                    continue;
+                }
+                if line.contains("spawn_blocking task failed") && line.contains("Err(") {
+                    offending.push(format!(
+                        "{file_name}:{}: raw `Err(...) => ... \
+                         \"spawn_blocking task failed\"` soft reply \
+                         — replace with `Err(je) => \
+                         super::errors::join_err_abort(je)` (see \
+                         DD-FailClosedOnInvariantBreak): `{}`",
+                        idx + 1,
+                        line.trim(),
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            offending.is_empty(),
+            "T-20: raw `spawn_blocking task failed` soft reply \
+             pattern found outside the `join_err_abort` helper.  Per \
+             DD-FailClosedOnInvariantBreak, JoinError arms MUST \
+             route through `join_err_abort(je)` for deploy abort:\n  \
+             - {}",
+            offending.join("\n  - "),
+        );
+    }
+
+    /// T-13 lint pin (2026-09-11, DD-FailClosedOnInvariantBreak):
+    /// scan all `.rs` files under `rholang/src/rust/interpreter/io/`
+    /// and assert no raw `.expect("... poisoned")` pattern remains
+    /// (all such sites should route through `poison_abort`).  Also
+    /// scans for `.unwrap_or_else(|e| e.into_inner())` — the classic
+    /// option-(a) accept-and-log shortcut that DD-
+    /// FailClosedOnInvariantBreak explicitly rejects.
+    ///
+    /// If you're adding a new lock-guard acquisition site, use
+    /// `poison_abort(lock.read(), "MyType.field")` or
+    /// `poison_abort(lock.write(), ...)` from `super::errors`.
+    #[test]
+    fn no_raw_poison_expect_or_into_inner_outside_poison_abort_helper() {
+        let io_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/rust/interpreter/io");
+        let mut offending: Vec<String> = Vec::new();
+
+        let entries = std::fs::read_dir(io_dir).expect("io/ dir readable");
+        for entry in entries {
+            let entry = entry.expect("readable entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("io/ .rs file readable");
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
+
+            for (idx, line) in content.lines().enumerate() {
+                let trimmed = line.trim_start();
+                // Skip comment / doc lines.
+                if trimmed.starts_with("//")
+                    || trimmed.starts_with("///")
+                    || trimmed.starts_with("*")
+                {
+                    continue;
+                }
+                // errors.rs is the helper's home — the string
+                // "poisoned" appears in doc-comment examples and
+                // panic-message literals inside `poison_abort` and
+                // its test.  Skip errors.rs entirely (this test lives
+                // there; the file is the source of truth).
+                if file_name == "errors.rs" {
+                    continue;
+                }
+                // Check for raw `.expect(...poisoned...)` — case-
+                // insensitive on "poisoned" to catch both variants.
+                let lower = line.to_lowercase();
+                if lower.contains(".expect(") && lower.contains("poisoned") {
+                    offending.push(format!(
+                        "{file_name}:{}: raw `.expect(...poisoned...)` \
+                         — replace with `poison_abort(...)` (see \
+                         DD-FailClosedOnInvariantBreak): `{}`",
+                        idx + 1,
+                        line.trim(),
+                    ));
+                }
+                // Check for `.into_inner()` on a `PoisonError` — the
+                // option-(a) accept-poison shortcut.
+                if lower.contains(".into_inner()")
+                    && (lower.contains("poisonerror") || lower.contains("unwrap_or_else"))
+                {
+                    offending.push(format!(
+                        "{file_name}:{}: `.into_inner()` on a \
+                         PoisonError-shaped result — DD-\
+                         FailClosedOnInvariantBreak forbids accept-\
+                         and-log on poison; use `poison_abort(...)`: \
+                         `{}`",
+                        idx + 1,
+                        line.trim(),
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            offending.is_empty(),
+            "T-13: raw poison-expect / poison-accept patterns found \
+             outside the `poison_abort` helper.  Per \
+             DD-FailClosedOnInvariantBreak (design-decisions.md § \
+             DD-FailClosedOnInvariantBreak), all lock acquisitions \
+             in the io/ tree must route through `poison_abort()`:\n  \
+             - {}",
+            offending.join("\n  - "),
         );
     }
 }

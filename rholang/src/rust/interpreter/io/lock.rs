@@ -95,6 +95,8 @@ use std::sync::{Arc, RwLock};
 
 use tokio::sync::oneshot;
 
+use super::errors::poison_abort;
+
 /// Filesystem identity — `(st_dev, st_ino)` from `fstat(2)`.  Keying
 /// on this collapses hard-linked aliases, bind-mount duplicates, and
 /// symlink chains to a single lock entry.
@@ -517,7 +519,7 @@ impl LockRegistry {
             // silently accepting invites subtle race bugs.  Reject.
             return Err(LockError::BadArg);
         }
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let state = guard.entry(dev_inode).or_default();
         // MAX_RANGES_PER_FILE bounds LIVE ranges only, not parked
         // waiters — parked waiters have no allocated range slot yet.
@@ -616,7 +618,7 @@ impl LockRegistry {
         deploy: DeployScope,
         wait_mode: WaitPolicy,
     ) -> Result<AcquireOutcome, LockError> {
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let state = guard.entry(dev_inode).or_default();
         if sequential_conflicts(state) {
             match wait_mode {
@@ -682,7 +684,7 @@ impl LockRegistry {
     /// surface, preventing an observer from probing which lockIds
     /// are held vs unheld.
     pub fn release(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut touched_key: Option<DevInode> = None;
         let mut released = false;
         for (dev_inode, state) in guard.iter_mut() {
@@ -732,7 +734,7 @@ impl LockRegistry {
     /// variant, not this one.
     #[cfg(test)]
     pub fn release_test_bypass(&self, lock_id: LockId) -> Result<(), LockError> {
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut touched_key: Option<DevInode> = None;
         let mut released = false;
         for (dev_inode, state) in guard.iter_mut() {
@@ -769,7 +771,7 @@ impl LockRegistry {
     /// via other caps are unaffected.  Returns the number of locks
     /// released (for diagnostics; caller may ignore).
     pub fn release_all_for_holder(&self, holder: &HolderId) -> usize {
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut released = 0usize;
         let mut evict: Vec<DevInode> = Vec::new();
         for (dev_inode, state) in guard.iter_mut() {
@@ -810,7 +812,7 @@ impl LockRegistry {
     /// A holder can span multiple `(dev, inode)` entries; the sweep
     /// visits all.
     pub fn cancel_all_waiters_for_holder(&self, holder: &HolderId) -> usize {
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut cancelled = 0usize;
         let mut evict: Vec<DevInode> = Vec::new();
         for (dev_inode, state) in guard.iter_mut() {
@@ -859,7 +861,7 @@ impl LockRegistry {
              a WalDeployScope guard, which would sweep every stray sentinel-\
              scoped entry."
         );
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut released = 0usize;
         let mut evict: Vec<DevInode> = Vec::new();
         for (dev_inode, state) in guard.iter_mut() {
@@ -895,7 +897,7 @@ impl LockRegistry {
     /// For a whole-file query (delete or truncate-to-zero), pass
     /// `range = (0, u64::MAX)`.
     pub fn is_locked(&self, dev_inode: DevInode, range: (u64, u64)) -> bool {
-        let guard = self.inner.read().expect("lock registry poisoned");
+        let guard = poison_abort(self.inner.read(), "LockRegistry.inner");
         let Some(state) = guard.get(&dev_inode) else {
             return false;
         };
@@ -921,7 +923,7 @@ impl LockRegistry {
     /// arithmetic combination.  Suitable for hot-path use in the
     /// unlink handlers.
     pub fn count_locks(&self, dev_inode: DevInode) -> usize {
-        let guard = self.inner.read().expect("lock registry poisoned");
+        let guard = poison_abort(self.inner.read(), "LockRegistry.inner");
         let Some(state) = guard.get(&dev_inode) else {
             return 0;
         };
@@ -930,7 +932,7 @@ impl LockRegistry {
 
     /// Diagnostic count of currently-tracked `(dev, inode)` entries.
     pub fn tracked_files(&self) -> usize {
-        let guard = self.inner.read().expect("lock registry poisoned");
+        let guard = poison_abort(self.inner.read(), "LockRegistry.inner");
         guard.len()
     }
 
@@ -938,7 +940,7 @@ impl LockRegistry {
     /// Does NOT include parked waiters — a waiter has no allocated
     /// range slot until it admits.
     pub fn held_locks(&self) -> usize {
-        let guard = self.inner.read().expect("lock registry poisoned");
+        let guard = poison_abort(self.inner.read(), "LockRegistry.inner");
         guard
             .values()
             .map(|s| s.ranges.len() + s.sequential_holder.iter().count())
@@ -948,7 +950,7 @@ impl LockRegistry {
     /// Diagnostic count of currently-parked waiters across all
     /// `(dev, inode)` entries.  Useful for tests + telemetry.
     pub fn parked_waiters(&self) -> usize {
-        let guard = self.inner.read().expect("lock registry poisoned");
+        let guard = poison_abort(self.inner.read(), "LockRegistry.inner");
         guard.values().map(|s| s.waiters.len()).sum()
     }
 
@@ -964,7 +966,7 @@ impl LockRegistry {
     /// A cancellation does NOT wake other waiters — removing a parked
     /// (non-holding) entry doesn't free any resource for others.
     pub fn cancel_wait(&self, lock_id: LockId) -> bool {
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut touched_key: Option<DevInode> = None;
         let mut cancelled = false;
         for (dev_inode, state) in guard.iter_mut() {
@@ -1013,7 +1015,7 @@ impl LockRegistry {
              WalDeployScope guard, which would sweep every stray sentinel-scoped \
              waiter."
         );
-        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut guard = poison_abort(self.inner.write(), "LockRegistry.inner");
         let mut cancelled = 0usize;
         let mut evict: Vec<DevInode> = Vec::new();
         for (dev_inode, state) in guard.iter_mut() {

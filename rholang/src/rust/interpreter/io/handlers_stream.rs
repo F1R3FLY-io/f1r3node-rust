@@ -258,7 +258,7 @@ impl FsHandler for FsEntriesStreamOpenHandler {
                     .map_err(|e| Box::new(err(io_err_code(&e), io_msg_scrub(&e))))
             })
             .await
-            .unwrap_or_else(|_je| Err(Box::new(err(FSERR_IO, "spawn_blocking task failed"))));
+            .unwrap_or_else(|je| crate::rust::interpreter::io::errors::join_err_abort(je));
             match opened {
                 Ok(iter) => {
                     let deploy = ctx.current_deploy_scope();

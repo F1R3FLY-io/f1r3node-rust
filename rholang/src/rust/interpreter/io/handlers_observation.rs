@@ -116,7 +116,7 @@ impl FsHandler for FsFlushHandler {
             })
             .await;
             match r {
-                Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                Err(je) => super::errors::join_err_abort(je),
                 Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
                 Ok(Ok(())) => HandlerReply::ok(ok_bare()),
             }
@@ -206,7 +206,7 @@ impl FsHandler for FsTellHandler {
             })
             .await;
             match r {
-                Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                Err(je) => super::errors::join_err_abort(je),
                 Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
                 Ok(Ok(pos)) => HandlerReply::ok(ok_u64(pos)),
             }
@@ -288,7 +288,7 @@ impl FsHandler for FsSizeHandler {
                     })
                     .await;
                     match r {
-                        Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                        Err(je) => super::errors::join_err_abort(je),
                         Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
                         Ok(Ok(n)) => HandlerReply::ok(ok_u64(n)),
                     }
@@ -1035,7 +1035,7 @@ impl FsHandler for FsSeekHandler {
             })
             .await;
             match r {
-                Err(_je) => HandlerReply::err(FSERR_IO, "spawn_blocking task failed"),
+                Err(je) => super::errors::join_err_abort(je),
                 Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
                 Ok(Ok(pos)) => HandlerReply::ok(ok_u64(pos)),
             }

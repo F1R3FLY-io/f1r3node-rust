@@ -56,6 +56,7 @@ use super::super::dispatch::RhoDispatch;
 use super::super::errors::{illegal_argument_error, InterpreterError};
 use super::super::metering::MeteredMachine;
 use super::super::rho_runtime::RhoISpace;
+use super::errors::poison_abort;
 use super::handle_table::FileHandleTable;
 use super::handlers::FsProcesses;
 use super::{response, ConsensusMode};
@@ -179,11 +180,10 @@ impl<'a> SyscallCtx<'a> {
     /// deploy-end sweep.  Sentinel `[0; 32]` = no deploy in flight
     /// (test / genesis path).
     pub fn current_deploy_scope(&self) -> [u8; 32] {
-        *self
-            .handles
-            .current_deploy_scope
-            .read()
-            .expect("current_deploy_scope RwLock poisoned")
+        *poison_abort(
+            self.handles.current_deploy_scope.read(),
+            "current_deploy_scope RwLock",
+        )
     }
 }
 
