@@ -1067,6 +1067,9 @@ run_bench_segment() {
 			return 1
 		fi
 	fi
+	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+		printf 'The crash monitor failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+	fi
 	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
 		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
 			printf 'The host guardian failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
@@ -1101,6 +1104,9 @@ run_bench_segment() {
 	BENCHMARK_PID=$!
 	local interrupted=0
 	while kill -0 "$BENCHMARK_PID" 2>/dev/null; do
+		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+			printf 'The crash monitor exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		fi
 		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
 			printf 'The host guardian exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
 		fi
@@ -1596,7 +1602,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			break
 		fi
 	fi
-	if [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; then
+	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
+		printf 'The crash monitor failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+	fi
+	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
 		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
 			printf 'The host guardian failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
 		fi
@@ -1697,6 +1706,10 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	done
 	wait "$ITERATION_PID" 2>/dev/null
 	STATUS=$?
+	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
+		STATUS=1
+		stop_node_writers -aq rm -f >/dev/null 2>&1 || true
+	fi
 	wait "$ITERATION_TEE_PID" 2>/dev/null || true
 	kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	wait "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
@@ -1705,10 +1718,6 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	ITERATION_TEE_PID=""
 	ITERATION_SNAPSHOT_PID=""
 	ITERATION_FIFO=""
-	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
-		STATUS=1
-		stop_node_writers -aq rm -f >/dev/null 2>&1 || true
-	fi
 	# No `set -e` restore: this script never enables errexit (line 2 is
 	# `set -uo pipefail`), and turning it on here made the first failed
 	# iteration fatal — the metric pipelines return nonzero when a failed

@@ -176,6 +176,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskAdmission_global_prune_pre_fix:UnownedDockerResourcesPreserved
     soak_disk/MC_SoakDiskAdmission_unrecorded_pre_fix:CrashRequiresRefusal
     soak_disk/MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix:BenchmarkCrashRequiresRefusal
+    soak_disk/MC_SoakDiskAdmission_iteration_only_pre_fix:BenchmarkMonitorDeathObserved
+    soak_disk/MC_SoakDiskAdmission_unchecked_monitor_pre_fix:MonitorDeathPreventsAdmission
     soak_disk/MC_SoakDiskGuardian_unwatched_pre_fix:DeadGuardianRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unavailable_sample_pre_fix:InvalidSampleRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_unbounded_probe_pre_fix:ProbeWithinDeadline
@@ -195,6 +197,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_parent_group_pre_fix:CrashStopsOwnedWriters
     soak_disk/MC_SoakDiskGuardian_unconditional_pre_fix:HandledExitHasNoExtraStop
     soak_disk/MC_SoakDiskGuardian_startup_only_pre_fix:DeadMonitorRequiresInterrupt
+    soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix:DrainRequiresOwnedStop
     soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget

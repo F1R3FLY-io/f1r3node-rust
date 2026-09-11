@@ -20,6 +20,7 @@ a Boolean constant and must violate exactly the invariant named below.
 | `DecideAfterHygiene` | Refuse a known sample below the threshold |
 | `CheckAdmission` | Refuse a missing sample, a dead guardian process, or expired guardian progress before starting work |
 | `GuardianStall` | The guardian stays alive but its progress record expires before admission |
+| `MonitorCrash` | The crash monitor dies before the benchmark admission or the iteration admission (B42) |
 | `GuardianCrash` | The guardian process dies before the workload starts |
 | `Admit` | Start the iteration |
 | `PublishRefusal` | Write `protection-breach.txt`, `early-exit.txt`, and the failure summary |
@@ -42,8 +43,10 @@ a Boolean constant and must violate exactly the invariant named below.
 | `PreserveDockerResources` | Hygiene inspects exited containers, networks, images, and the build cache; it never prunes them, since the driver cannot tell its own resources from the host's | `MC_SoakDiskAdmission_global_prune_pre_fix` | `UnownedDockerResourcesPreserved` |
 | `RememberInFlight` | The state file records an iteration in flight. A segment that finds one counts a failure and refuses work, since writer termination is unconfirmed | `MC_SoakDiskAdmission_unrecorded_pre_fix` | `CrashRequiresRefusal` |
 | `RememberBenchmark` | The state file records the opening benchmark in flight. A segment that finds one counts a failure and a benchmark failure and refuses work | `MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix` | `BenchmarkCrashRequiresRefusal` |
+| `WatchMonitor` | A crash monitor exit during the opening benchmark cancels it and publishes the failure. The pre-fix benchmark loop watched only the host guardian | `MC_SoakDiskAdmission_iteration_only_pre_fix` | `BenchmarkMonitorDeathObserved` |
+| `CheckMonitorAlive` | A dead crash monitor cannot admit the benchmark or an iteration, and the refusal retains a failure. The pre-fix driver checked the monitor only at startup and mid-work | `MC_SoakDiskAdmission_unchecked_monitor_pre_fix` | `MonitorDeathPreventsAdmission` |
 
-`MC_SoakDiskAdmission` enables all sixteen corrections with both benchmark fault kinds. It checks `TypeOK`, the sixteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 12498 distinct states.
+`MC_SoakDiskAdmission` enables all eighteen corrections with all three benchmark fault kinds. It checks `TypeOK`, the eighteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 25146 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 
@@ -63,6 +66,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | --- | --- |
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
 | `MonitorCrash`, `WatcherPollMonitor` | The iteration watcher polls the crash monitor, and its death is a breach (B40) |
+| `Drain` | The interrupted iteration's client has exited, and the driver waits for output EOF. The corrected driver stops the owned writers first (B43) |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
 | `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B31) |
 | `MonitorObservesExit` | The trap's exit handling leaves a marker, and the crash monitor reads it before it acts (B39) |
@@ -94,8 +98,9 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `SurvivesDriverCrash` | A crash monitor in its own session outlives a killed driver and runs the owner-labeled stop. The pre-fix driver had no monitor, and a monitor in the driver's process group would die with it | `MC_SoakDiskGuardian_parent_group_pre_fix` | `CrashStopsOwnedWriters` |
 | `RememberHandledExit` | The driver's exit handling writes a handled-exit marker, and the crash monitor exits without a second stop when it finds the marker. The pre-fix monitor stopped the writers on every driver exit | `MC_SoakDiskGuardian_unconditional_pre_fix` | `HandledExitHasNoExtraStop` |
 | `DetectMonitorDeath` | The iteration watcher treats a dead crash monitor as a breach, records unconfirmed termination, and refuses work. The pre-fix driver checked the monitor only at startup | `MC_SoakDiskGuardian_startup_only_pre_fix` | `DeadMonitorRequiresInterrupt` |
+| `StopBeforeDrain` | The interrupted iteration path stops the owned writers before it waits for output EOF. The pre-fix driver drained first and hung on the pipe the writers held | `MC_SoakDiskGuardian_drain_first_pre_fix` | `DrainRequiresOwnedStop` |
 
-`MC_SoakDiskGuardian` enables all seventeen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 12948 distinct states.
+`MC_SoakDiskGuardian` enables all eighteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 22452 distinct states.
 
 ### Conditional no-overrun theorem
 

@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Sixteen         *)
+(* decide, after the opening benchmark on the first segment. Eighteen        *)
 (* Boolean constants switch the corrections on and off so that each pre-fix  *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -24,6 +24,8 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           PreserveDockerResources, \* hygiene inspects Docker resources, never prunes them (B27)
           RememberInFlight, \* a segment that crashed mid-iteration refuses the next segment (B29)
           RememberBenchmark, \* a segment that crashed during the opening benchmark refuses the next segment (B37)
+          WatchMonitor, \* a crash monitor exit during the benchmark cancels it (B41)
+          CheckMonitorAlive, \* a dead crash monitor cannot admit the benchmark or an iteration (B42)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -35,8 +37,8 @@ ASSUME /\ FloorMiB \in Nat \ {0}
            CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
            CheckProgress, EnforceHygieneDeadline, CheckRange, PreserveUnowned,
            EnforceCleanupFailures, PreserveDockerResources, RememberInFlight,
-           RememberBenchmark} \subseteq BOOLEAN
-       /\ BenchmarkFaults \subseteq {"breach", "death"}
+           RememberBenchmark, WatchMonitor, CheckMonitorAlive} \subseteq BOOLEAN
+       /\ BenchmarkFaults \subseteq {"breach", "death", "monitor-death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
 
@@ -78,7 +80,9 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           cleanupFailed, \* a Docker cleanup command failed during hygiene (B26)
           dockerPresent, \* unowned Docker resources still exist after hygiene (B27)
           interrupted,   \* the previous segment died with an iteration in flight (B29)
-          benchmarkInterrupted \* the previous segment died with the opening benchmark in flight (B37)
+          benchmarkInterrupted, \* the previous segment died with the opening benchmark in flight (B37)
+          monitorAlive, \* the crash monitor process is alive (B41, B42)
+          benchmarkMonitorAlive \* the monitor was alive when the benchmark was admitted (B42)
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
@@ -88,7 +92,7 @@ vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
           hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
           settingsValid, sessionAge, sessionPresent, cleanupFailed, dockerPresent,
-          interrupted, benchmarkInterrupted>>
+          interrupted, benchmarkInterrupted, monitorAlive, benchmarkMonitorAlive>>
 
 Init ==
     /\ phase = "config"
@@ -99,6 +103,8 @@ Init ==
     /\ dockerPresent = TRUE
     /\ interrupted \in BOOLEAN
     /\ benchmarkInterrupted \in BOOLEAN
+    /\ monitorAlive = TRUE
+    /\ benchmarkMonitorAlive = TRUE
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -175,27 +181,32 @@ Benchmark ==
                /\ benchmarkObserved' = FALSE
                /\ benchmarkCancelled' = FALSE
                /\ benchmarkGuardianAlive' = guardianAlive
+               /\ benchmarkMonitorAlive' = monitorAlive
                /\ benchmarkFresh' = guardianFresh
                /\ phase' = "guard"
-               /\ UNCHANGED <<stopReason, guardian, guardianAlive>>
+               /\ UNCHANGED <<stopReason, guardian, guardianAlive, monitorAlive>>
           ELSE \E r \in RawSamples, fault \in {"none"} \cup BenchmarkFaults :
                LET s == Parse(r)
                    diskOk == ~CheckDiskBand \/ (s.known /\ s.mib >= FloorMiB + BandMiB)
                    guardianOk == /\ ~CheckGuardianAlive \/ guardianAlive
                                  /\ ~CheckProgress \/ guardianFresh
+                                 /\ ~CheckMonitorAlive \/ monitorAlive
                    admit == diskOk /\ guardianOk
                    f == IF admit THEN fault ELSE "none"
                    observed == f = "breach" /\ MonitorOpening
-                   cancelled == f # "none" /\ WatchGuardian
+                   cancelled == \/ f \in {"breach", "death"} /\ WatchGuardian
+                                \/ f = "monitor-death" /\ WatchMonitor
                IN /\ benchmarkSample' = s
                   /\ benchmark' = admit
                   /\ benchmarkGuardianAlive' = guardianAlive
+                  /\ benchmarkMonitorAlive' = monitorAlive
                   /\ benchmarkFresh' = guardianFresh
                   /\ benchmarkFault' = f
                   /\ benchmarkObserved' = observed
                   /\ benchmarkCancelled' = cancelled
                   /\ guardian' = (guardian \/ observed \/ cancelled)
                   /\ guardianAlive' = (guardianAlive /\ f # "death")
+                  /\ monitorAlive' = (monitorAlive /\ f # "monitor-death")
                   /\ phase' = IF admit THEN "guard" ELSE "stopped"
                   /\ stopReason' = IF admit THEN stopReason
                                    ELSE IF ~diskOk /\ s.known THEN "disk"
@@ -314,6 +325,9 @@ CheckAdmission ==
           ELSE IF CheckGuardianAlive /\ ~guardianAlive
           THEN /\ phase' = "stopped"
                /\ stopReason' = "guardian"
+          ELSE IF CheckMonitorAlive /\ ~monitorAlive
+          THEN /\ phase' = "stopped"
+               /\ stopReason' = "guardian"
           ELSE IF CheckProgress /\ ~guardianFresh
           THEN /\ phase' = "stopped"
                /\ stopReason' = "guardian"
@@ -349,6 +363,16 @@ GuardianCrash ==
     /\ UNCHANGED <<phase, free, raw, sample, guardian, admitted,
                    admissionRaw, admissionSample, stopReason, evidence>>
 
+\* B42: the crash monitor can die at any point up to either admission; the
+\* corrected driver checks it before the benchmark and before each iteration.
+\* The pre-fix driver checked it only at startup and mid-work.
+MonitorCrash ==
+    /\ phase \notin {"admit", "running", "stopped", "done"}
+    /\ monitorAlive
+    /\ monitorAlive' = FALSE
+    /\ UNCHANGED <<phase, free, raw, sample, guardian, guardianAlive, admitted,
+                   admissionRaw, admissionSample, stopReason, evidence>>
+
 \* The guardian stays alive but stops recording progress (SIGSTOP, a paused
 \* host) at any point up to the admission check, as GuardianCrash does.
 GuardianStall ==
@@ -367,31 +391,34 @@ PublishRefusal ==
 
 FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
-                          benchmarkGuardianAlive, benchmarkFresh, settingsValid,
-                          sessionAge, interrupted, benchmarkInterrupted>>
+                          benchmarkGuardianAlive, benchmarkMonitorAlive, benchmarkFresh,
+                          settingsValid, sessionAge, interrupted, benchmarkInterrupted>>
 
 HygieneOutcome == <<sessionPresent, cleanupFailed, dockerPresent>>
 
 Next == (Benchmark /\ UNCHANGED HygieneVars)
         \/ (/\ Admit
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<guardianFresh, HygieneVars, HygieneOutcome>>)
+            /\ UNCHANGED <<guardianFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ GuardianStall
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<admissionFresh, HygieneVars, HygieneOutcome>>)
+            /\ UNCHANGED <<admissionFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
         \/ (/\ HygieneStall \/ HygieneTick
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneOutcome>>)
+            /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneOutcome>>)
         \/ (/\ HygieneReturns
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<guardianFresh, admissionFresh>>)
+            /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive>>)
         \/ (/\ Hygiene
             /\ UNCHANGED FrozenAfterBenchmark
-            /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneVars>>)
+            /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneVars>>)
         \/ (/\ ValidateSettings
                \/ CheckGuardian \/ ProbeBoundary \/ DecideHygiene
                \/ ProbeAfterHygiene \/ DecideAfterHygiene \/ CheckAdmission
                \/ GuardianTrip \/ GuardianCrash \/ PublishRefusal
+            /\ UNCHANGED FrozenAfterBenchmark
+            /\ UNCHANGED <<guardianFresh, admissionFresh, monitorAlive, HygieneVars, HygieneOutcome>>)
+        \/ (/\ MonitorCrash
             /\ UNCHANGED FrozenAfterBenchmark
             /\ UNCHANGED <<guardianFresh, admissionFresh, HygieneVars, HygieneOutcome>>)
 
@@ -415,7 +442,7 @@ TypeOK ==
     /\ retained \in BOOLEAN
     /\ benchmark \in BOOLEAN
     /\ benchmarkSample \in ParsedSamples
-    /\ benchmarkFault \in {"none", "breach", "death"}
+    /\ benchmarkFault \in {"none", "breach", "death", "monitor-death"}
     /\ benchmarkObserved \in BOOLEAN
     /\ benchmarkCancelled \in BOOLEAN
     /\ benchmarkGuardianAlive \in BOOLEAN
@@ -433,6 +460,8 @@ TypeOK ==
     /\ dockerPresent \in BOOLEAN
     /\ interrupted \in BOOLEAN
     /\ benchmarkInterrupted \in BOOLEAN
+    /\ monitorAlive \in BOOLEAN
+    /\ benchmarkMonitorAlive \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -446,7 +475,12 @@ BenchmarkRequiresBand ==
     benchmark => benchmarkSample.known /\ benchmarkSample.mib >= FloorMiB + BandMiB
 BenchmarkBreachObserved == benchmarkFault = "breach" => benchmarkObserved /\ guardian
 BenchmarkCancellationObserved ==
-    benchmarkFault # "none" => benchmarkCancelled /\ guardian
+    benchmarkFault \in {"breach", "death"} => benchmarkCancelled /\ guardian
+BenchmarkMonitorDeathObserved ==
+    benchmarkFault = "monitor-death" => benchmarkCancelled /\ guardian
+MonitorDeathPreventsAdmission ==
+    /\ admitted => monitorAlive
+    /\ benchmark => benchmarkMonitorAlive
 StaleProgressPreventsAdmission ==
     /\ admitted => admissionFresh
     /\ benchmark => benchmarkFresh
