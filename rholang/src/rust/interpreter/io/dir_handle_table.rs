@@ -89,9 +89,17 @@ impl DirIter {
     /// `dir_fd` — do NOT close it separately.  On `fdopendir` failure
     /// the fd is closed before the error is returned.
     pub fn from_dir_fd(dir_fd: libc::c_int) -> std::io::Result<Self> {
+        // SAFETY: `fdopendir` requires a valid open fd for a directory.
+        // Caller guarantees `dir_fd` was obtained from a successful
+        // `openat(..., O_DIRECTORY, ...)` and hasn't been closed.
+        // Ownership transfers to `dirp`; on success `closedir` releases
+        // both `dirp` and `dir_fd`, on failure we `close(dir_fd)` below.
         let dirp = unsafe { libc::fdopendir(dir_fd) };
         if dirp.is_null() {
             let e = std::io::Error::last_os_error();
+            // SAFETY: `fdopendir` returned NULL, so it did NOT take
+            // ownership of `dir_fd`; we must close it here to satisfy
+            // the ownership contract advertised on `from_dir_fd`.
             unsafe { libc::close(dir_fd) };
             return Err(e);
         }
@@ -114,8 +122,11 @@ impl std::fmt::Debug for DirIter {
 
 impl Drop for DirIter {
     fn drop(&mut self) {
-        // closedir closes the underlying dirp fd as a side-effect,
-        // matching fdopendir's ownership contract.
+        // SAFETY: `self.dirp` came from a successful `fdopendir` in
+        // `from_dir_fd`; the type invariant on `DirIter` guarantees
+        // it's non-null and hasn't been closed yet.  `closedir`
+        // closes the underlying dirp fd as a side-effect, matching
+        // fdopendir's ownership contract.
         unsafe { libc::closedir(self.dirp) };
     }
 }
@@ -389,6 +400,10 @@ mod tests {
     fn mk_real(path: &std::path::Path) -> DirHandle {
         use std::os::unix::ffi::OsStrExt;
         let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `cpath` is a locally-owned CString outliving this
+        // block; its `.as_ptr()` returns a NUL-terminated
+        // `*const c_char` valid for the block.  `libc::open` does
+        // not retain the pointer.
         let dir_fd = unsafe {
             libc::open(
                 cpath.as_ptr(),
@@ -779,7 +794,15 @@ mod tests {
         loop {
             // POSIX readdir returns NULL on both EOF and error;
             // distinguishing them requires clearing errno beforehand.
+            // SAFETY: `errno_reset()` is FFI-marked unsafe but writes
+            // only to the per-thread errno slot; no aliasing.
             unsafe { errno_reset() };
+            // SAFETY: `dirp` came from `iter.as_ptr()` — the caller
+            // holds `iter: &DirIter`, whose type invariant is a live
+            // non-null DIR*.  Caller comment above guarantees serial
+            // access via the enclosing Mutex.  `readdir` returns
+            // a pointer into an internal buffer valid until the next
+            // readdir/closedir on the same DIR*.
             let ent = unsafe { libc::readdir(dirp) };
             if ent.is_null() {
                 let raw = std::io::Error::last_os_error().raw_os_error();
@@ -789,7 +812,16 @@ mod tests {
                 );
                 break;
             }
+            // SAFETY: `ent` is non-null (checked above) and points
+            // into the DIR*'s internal buffer, valid until the next
+            // readdir/closedir call.  We copy `d_name` bytes below
+            // before the next iteration, so the pointer's short
+            // lifetime is respected.
             let name_ptr = unsafe { (*ent).d_name.as_ptr() };
+            // SAFETY: `name_ptr` points to a NUL-terminated string
+            // in `ent`'s buffer (POSIX guarantees `d_name` is NUL-
+            // terminated), valid for the same short window as
+            // `name_ptr`.  `CStr::from_ptr` only walks to the NUL.
             let name_c = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
             let name_bytes = name_c.to_bytes();
             if name_bytes == b"." || name_bytes == b".." {

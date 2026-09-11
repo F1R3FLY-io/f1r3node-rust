@@ -219,6 +219,12 @@ impl FsHandler for FsEntriesStreamOpenHandler {
                         return Err(Box::new(err(code, msg)));
                     }
                 };
+                // SAFETY: `parent` is a `DirfdRoot` from
+                // `safe_descend_verified`; the dirfd is open for
+                // `parent`'s lifetime and `parent.leaf_ptr()` returns
+                // a NUL-terminated `*const c_char` valid for the same
+                // lifetime.  `openat` does not retain either past the
+                // call.
                 let dir_fd = unsafe {
                     libc::openat(
                         parent.as_raw_fd(),
@@ -233,7 +239,16 @@ impl FsHandler for FsEntriesStreamOpenHandler {
                 // L-3 pattern (fs_entries): F_DUPFD_CLOEXEC on the fd
                 // handed to fdopendir so the DIR*'s underlying fd
                 // carries CLOEXEC atomically.  Close the original.
+                //
+                // SAFETY: `dir_fd` is a freshly-opened open fd from
+                // the `openat` above; the `< 0` check preceded us.
+                // `fcntl(F_DUPFD_CLOEXEC, ...)` reads the fd flags
+                // and returns a new fd (or -1 on failure).
                 let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
+                // SAFETY: same `dir_fd` from `openat` above; still
+                // open (we haven't closed or dup'd-with-transfer it).
+                // We ignore the return value — even if close fails,
+                // the fd is gone.
                 unsafe { libc::close(dir_fd) };
                 if read_fd < 0 {
                     let e = std::io::Error::last_os_error();

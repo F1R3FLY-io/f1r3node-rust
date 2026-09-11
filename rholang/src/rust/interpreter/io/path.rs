@@ -249,6 +249,11 @@ pub fn capture_root_identity(root: &Path) -> std::io::Result<(u64, u64)> {
 pub fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
     #[cfg(unix)]
     {
+        // SAFETY: `libc::stat` is a POD C struct that `zeroed()`
+        // can validly initialize (all fields are integer types).
+        // Caller passes a real integer `fd`; `fstat` accepts any
+        // integer and returns -1 with errno on invalid fd rather
+        // than UB.  `&mut st` outlives the FFI call.
         unsafe {
             let mut st: libc::stat = std::mem::zeroed();
             if libc::fstat(fd, &mut st) < 0 {
@@ -659,6 +664,12 @@ pub fn safe_open_verified(
     expected_root_id: Option<(u64, u64)>,
 ) -> Result<File, QuarantineError> {
     let parent = safe_descend_verified(root, rel, expected_root_id)?;
+    // SAFETY: `parent` is a `DirfdRoot` RAII wrapper with an open
+    // dirfd for its lifetime; `parent.leaf_ptr()` returns a NUL-
+    // terminated `*const c_char` valid for the same lifetime.
+    // `openat` reads them without retention.  On success `fd` is a
+    // fresh open fd — `File::from_raw_fd` takes ownership (its
+    // `Drop` closes the fd).
     unsafe {
         let full_flags = flags | libc::O_NOFOLLOW | libc::O_CLOEXEC;
         let fd = libc::openat(
@@ -678,6 +689,11 @@ pub fn safe_open_verified(
 fn open_dir(path: &Path, nofollow: bool) -> Result<OwnedFd, QuarantineError> {
     let cpath = CString::new(path.as_os_str().as_bytes())
         .map_err(|e| QuarantineError::IoError(io::ErrorKind::InvalidInput, e.to_string()))?;
+    // SAFETY: `cpath` is a locally-owned CString outliving this
+    // block; its `.as_ptr()` returns a NUL-terminated `*const c_char`
+    // valid for the block.  `libc::open` does not retain the pointer.
+    // On success `fd` is a fresh open fd → wrapped in `OwnedFd` for
+    // RAII close on drop.
     unsafe {
         let mut flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
         if nofollow {
@@ -730,6 +746,11 @@ fn openat_dir(
     name: *const libc::c_char,
     nofollow: bool,
 ) -> Result<OwnedFd, QuarantineError> {
+    // SAFETY: `parent` is a borrowed `OwnedFd` with an open dirfd
+    // for the borrow's lifetime.  Caller passes `name` as a valid
+    // NUL-terminated `*const c_char`; its lifetime must cover the
+    // call — this is documented on the fn signature.  `openat`
+    // returns a fresh fd (or -1) without retaining `name`.
     unsafe {
         let mut flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
         if nofollow {
@@ -957,6 +978,12 @@ mod tests {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, b"hi").unwrap();
         let parent = safe_descend(&root, "sub/nested.txt").unwrap();
+        // SAFETY: `parent` is a `DirfdRoot` from `safe_descend` with
+        // an open dirfd for its lifetime; `parent.leaf_ptr()` returns
+        // a NUL-terminated `*const c_char` valid for the same
+        // lifetime.  `libc::stat` is a POD C struct that `zeroed()`
+        // can validly initialize (integer fields).  `fstatat` writes
+        // `&mut sb` without retaining it past the call.
         unsafe {
             let mut sb: libc::stat = std::mem::zeroed();
             let rc = libc::fstatat(

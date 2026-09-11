@@ -2321,6 +2321,11 @@ pub(super) async fn write_impl_via_table(
     let result = spawn_blocking(move || {
         use std::os::fd::AsRawFd;
         let raw_fd = file_arc.as_raw_fd();
+        // SAFETY: `file_arc` (an `Arc<File>`) is moved into this
+        // closure and keeps `raw_fd` open for the duration.
+        // `bytes` is a live `Vec<u8>` owned by this scope.
+        // pwrite/write read up to `bytes.len()` bytes from the
+        // pointer and return the count written (or -1 on error).
         let n = unsafe {
             if let Some(off) = offset {
                 libc::pwrite(raw_fd, bytes.as_ptr() as *const _, bytes.len(), off as i64)
@@ -2561,6 +2566,12 @@ pub(super) async fn read_impl_via_table(
         use std::os::fd::AsRawFd;
         let raw_fd = file_arc.as_raw_fd();
         let mut buf = vec![0u8; n as usize];
+        // SAFETY: `file_arc` (an `Arc<File>`) is moved into this
+        // closure and keeps `raw_fd` open for the duration.  `buf`
+        // is a live heap allocation of `n` bytes owned by this
+        // scope.  pread/read write into `buf` up to `n` bytes and
+        // return the count written (or -1 on error); we truncate
+        // `buf` to the returned length.
         let got = unsafe {
             if let Some(off) = offset {
                 libc::pread(raw_fd, buf.as_mut_ptr() as *mut _, n as usize, off as i64)
@@ -2684,6 +2695,11 @@ pub(super) async fn dev_inode_from_fd_via_table(
     {
         use std::os::fd::AsRawFd;
         let raw = file_arc.as_raw_fd();
+        // SAFETY: `file_arc` (an `Arc<File>`) keeps the underlying
+        // fd open for the lifetime of this scope, so `raw` is a
+        // valid open fd.  `libc::stat` is POD — zeroed init is a
+        // valid bit pattern.  fstat writes into `st` and doesn't
+        // retain either pointer.
         unsafe {
             let mut st: libc::stat = std::mem::zeroed();
             if libc::fstat(raw, &mut st) < 0 {
@@ -2740,6 +2756,11 @@ pub(super) fn leaf_of(rel: &str) -> String {
 /// surface that.
 pub(super) fn fstatat_meta(parent: &SafeParent) -> std::io::Result<std::fs::Metadata> {
     use std::os::fd::FromRawFd;
+    // SAFETY: `parent` (a `SafeParent`) owns an open dirfd for its
+    // lifetime, and `parent.leaf_ptr()` is a NUL-terminated CString
+    // ptr owned by the same `SafeParent`.  On openat success,
+    // `File::from_raw_fd` takes ownership of the fresh fd so Drop
+    // closes it on every exit path.
     unsafe {
         let fd = libc::openat(
             parent.as_raw_fd(),
@@ -2770,6 +2791,12 @@ pub(super) fn fstatat_meta(parent: &SafeParent) -> std::io::Result<std::fs::Meta
 /// (which opens the file to build a `Metadata`), this uses `libc::
 /// fstatat` directly for the two u64s we need.
 pub(super) fn target_dev_inode_at(parent: &SafeParent) -> Option<(u64, u64)> {
+    // SAFETY: `parent` (a `SafeParent`) owns an open dirfd that
+    // stays valid for `parent`'s lifetime; `parent.leaf_ptr()`
+    // returns a NUL-terminated CString ptr owned by the same
+    // `SafeParent`.  `libc::stat` is POD — zeroed is a valid
+    // initializer.  fstatat writes into `sb` and doesn't retain
+    // either pointer.
     unsafe {
         let mut sb: libc::stat = std::mem::zeroed();
         if libc::fstatat(
@@ -2803,6 +2830,10 @@ pub(super) fn entry_stat_row(
         Ok(c) => c,
         Err(_) => return error_record(&display, "invalid filename"),
     };
+    // SAFETY: `dir_fd` is a caller-supplied open dirfd; `cname`
+    // is a locally-owned NUL-terminated CString that outlives the
+    // openat call.  On success, `File::from_raw_fd` takes ownership
+    // of the fresh fd so Drop closes it on every exit path.
     unsafe {
         let fd = libc::openat(
             dir_fd,
@@ -2828,6 +2859,11 @@ pub(super) fn read_dir_capped(
 ) -> std::io::Result<(Vec<std::ffi::OsString>, bool)> {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
+    // SAFETY: `dir_fd` is a caller-supplied open dirfd; fdopendir
+    // takes ownership on success (dir_fd is closed by closedir).
+    // On failure we manually close it.  readdir/CStr::from_ptr on
+    // the DIR* are single-threaded here (caller-owned) and each
+    // dirent buffer is copied before the next readdir call.
     unsafe {
         let dir = libc::fdopendir(dir_fd);
         if dir.is_null() {
@@ -2930,6 +2966,10 @@ fn collect_recursive_manifest(
 ) -> std::io::Result<Vec<(PathBuf, RemoveKind)>> {
     // Open the target dir with O_NOFOLLOW so a symlinked `leaf`
     // fails ELOOP rather than escaping.
+    // SAFETY: `parent_fd` is a caller-owned open dirfd; `leaf` is
+    // a caller-owned NUL-terminated CString ptr that outlives this
+    // call.  Returns a fresh fd we manually close below on both
+    // exit paths.
     let target_fd = unsafe {
         libc::openat(
             parent_fd,
@@ -2942,6 +2982,9 @@ fn collect_recursive_manifest(
     }
     let mut out = Vec::new();
     let walk_result = walk_dirfd_recursive(target_fd, std::path::Path::new(""), &mut out);
+    // SAFETY: `target_fd` was returned by openat above and is no
+    // longer used after this line (walk_dirfd_recursive dupped it
+    // internally).  Closing it exactly once.
     unsafe {
         libc::close(target_fd);
     }
@@ -3098,13 +3141,21 @@ fn walk_dirfd_recursive(
     // Dup the fd so fdopendir consumes the copy and dir_fd stays
     // usable for openat on subdirs.  F_DUPFD_CLOEXEC per the same
     // rationale as fs_entries (L-3 fix, 2026-08-06).
+    // SAFETY: `dir_fd` is a caller-owned open dirfd (caller holds
+    // it valid for this function's lifetime).  F_DUPFD_CLOEXEC
+    // returns a fresh fd we own and manually close below.
     let dup_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
     if dup_fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: `dup_fd` was just returned by fcntl above; on success
+    // fdopendir takes ownership (dup_fd is closed by closedir).  On
+    // failure (returned null) we manually close it below.
     let dir_ptr = unsafe { libc::fdopendir(dup_fd) };
     if dir_ptr.is_null() {
         let e = std::io::Error::last_os_error();
+        // SAFETY: `dup_fd` is still owned by us (fdopendir failed
+        // and did NOT take ownership); close it exactly once here.
         unsafe {
             libc::close(dup_fd);
         }
@@ -3113,21 +3164,38 @@ fn walk_dirfd_recursive(
     // Collect all entries; kind determined via fstatat below.
     let mut names: Vec<std::ffi::OsString> = Vec::new();
     loop {
+        // SAFETY: `errno_reset` writes zero to the platform's
+        // per-thread errno TLS slot.  Always safe.
         unsafe {
             errno_reset();
         }
+        // SAFETY: `dir_ptr` came from fdopendir above and is live
+        // for this loop; this function has exclusive access to it
+        // (no other thread touches this DIR*).
         let ent = unsafe { libc::readdir(dir_ptr) };
         if ent.is_null() {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() == Some(0) {
                 break;
             }
+            // SAFETY: `dir_ptr` came from fdopendir above and is
+            // still live at this point.  Closing it exactly once
+            // on this error return path.
             unsafe {
                 libc::closedir(dir_ptr);
             }
             return Err(e);
         }
+        // SAFETY: `ent` is non-null (checked above); readdir(3)
+        // guarantees `d_name` is a NUL-terminated in-struct array
+        // owned by the DIR* buffer.  We copy the bytes below via
+        // OsString::from_vec before the next readdir invalidates
+        // the buffer.
         let name_ptr = unsafe { (*ent).d_name.as_ptr() };
+        // SAFETY: `name_ptr` points to a NUL-terminated in-buffer
+        // string in the DIR*'s dirent; `name_c` is used only for
+        // `to_bytes()` on the same line and dropped before the next
+        // readdir call.
         let name_c = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
         let name_bytes = name_c.to_bytes();
         if name_bytes == b"." || name_bytes == b".." {
@@ -3135,6 +3203,9 @@ fn walk_dirfd_recursive(
         }
         names.push(std::ffi::OsStr::from_bytes(name_bytes).to_os_string());
     }
+    // SAFETY: `dir_ptr` came from fdopendir above and is no longer
+    // referenced after this close (readdir loop has finished).
+    // Closes both `dir_ptr` and its owned dup fd.
     unsafe {
         libc::closedir(dir_ptr);
     }
@@ -3147,7 +3218,15 @@ fn walk_dirfd_recursive(
         // following.
         let name_c = std::ffi::CString::new(name.as_bytes())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        // SAFETY: `libc::stat` is a POD C struct with no niche
+        // types; all-zero is a valid bit pattern to hand off to
+        // fstatat, which will overwrite it before we read.
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `dir_fd` is the caller-owned open dirfd;
+        // `name_c.as_ptr()` is a NUL-terminated CString owned
+        // locally.  `&mut stat` points at a live stack slot big
+        // enough for `libc::stat`.  fstatat writes into `stat` and
+        // doesn't retain either pointer.
         let stat_rc = unsafe {
             libc::fstatat(
                 dir_fd,
@@ -3164,6 +3243,11 @@ fn walk_dirfd_recursive(
             // Descend via openat(O_NOFOLLOW) — belt+suspenders
             // after the fstatat kind check (an attacker racing
             // between the two can't get us to follow a symlink).
+            // SAFETY: `dir_fd` is the caller-owned open dirfd for
+            // this function; `name_c.as_ptr()` points at a locally-
+            // owned NUL-terminated CString that outlives this call.
+            // openat returns a fresh fd we manually close on both
+            // exit paths below.
             let sub_fd = unsafe {
                 libc::openat(
                     dir_fd,
@@ -3175,6 +3259,9 @@ fn walk_dirfd_recursive(
                 return Err(std::io::Error::last_os_error());
             }
             let walk_result = walk_dirfd_recursive(sub_fd, &rel, out);
+            // SAFETY: `sub_fd` was returned by the openat above and
+            // is no longer referenced after this close (walk_
+            // dirfd_recursive returned).  Closing it exactly once.
             unsafe {
                 libc::close(sub_fd);
             }
@@ -3216,6 +3303,15 @@ fn remove_dir_recursive(
     leaf: *const libc::c_char,
 ) -> Result<u64, (u64, std::io::Error)> {
     let mut n_deleted: u64 = 0;
+    // SAFETY: `parent_fd` is a caller-owned open dirfd (see
+    // callers: pinned via safe_descend or from the outer recursive
+    // call).  `leaf` is a NUL-terminated CString ptr owned by the
+    // caller and outlives this call.  All fds opened below are
+    // manually closed on every return path within this block via
+    // libc::close / libc::closedir.  readdir/unlinkat/dirfd/close/
+    // closedir/fcntl/fdopendir/CStr::from_ptr sites all follow the
+    // idiomatic pattern (see similar comment block in
+    // walk_dirfd_recursive above).
     unsafe {
         let dir_fd = libc::openat(
             parent_fd,
@@ -3333,6 +3429,11 @@ pub(super) async fn chown_impl(
                 return err(c, m);
             }
         };
+        // SAFETY: `parent` is a `SafeParent` from
+        // `safe_descend_verified` above; its dirfd stays open for
+        // `parent`'s lifetime and `leaf_ptr()` returns a NUL-
+        // terminated CString owned by the same `SafeParent`.
+        // `fchownat` reads both and does not retain either.
         let rc = unsafe {
             libc::fchownat(
                 parent.as_raw_fd(),
@@ -3377,7 +3478,14 @@ fn _use_access_mode(_a: AccessMode) {}
 pub(super) fn readdir_one_entry(dirp: *mut libc::DIR, cmode: ConsensusMode) -> Par {
     use std::os::unix::ffi::OsStringExt;
     loop {
+        // SAFETY: `errno_reset` writes zero to the platform's
+        // per-thread errno location; safe on any thread.  Used to
+        // disambiguate EOF (readdir returns NULL + errno==0) from
+        // error (returns NULL + errno!=0).
         unsafe { errno_reset() };
+        // SAFETY: `dirp` is a live `libc::DIR*` per this function's
+        // top-level SAFETY contract; the enclosing DirHandle::iter
+        // Mutex serializes readdir calls on this DIR*.
         let ent = unsafe { libc::readdir(dirp) };
         if ent.is_null() {
             let raw = std::io::Error::last_os_error().raw_os_error();
@@ -3388,7 +3496,16 @@ pub(super) fn readdir_one_entry(dirp: *mut libc::DIR, cmode: ConsensusMode) -> P
             let e = std::io::Error::last_os_error();
             return err(io_err_code(&e), io_msg_scrub(&e));
         }
+        // SAFETY: `ent` is non-null (checked above); readdir(3)
+        // guarantees `d_name` is a NUL-terminated in-struct array
+        // owned by the DIR* buffer.  Pointer is only used through
+        // the immediately-following `CStr::from_ptr` and dropped
+        // before the next readdir call, so no aliasing issue.
         let name_ptr = unsafe { (*ent).d_name.as_ptr() };
+        // SAFETY: `name_ptr` came from a live dirent's `d_name`,
+        // NUL-terminated by readdir(3); `name_c` is used only for
+        // the subsequent `to_bytes()` before dropping — no lifetime
+        // escapes past the next readdir.
         let name_c = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
         let name_bytes = name_c.to_bytes();
         if name_bytes == b"." || name_bytes == b".." {
@@ -3396,6 +3513,10 @@ pub(super) fn readdir_one_entry(dirp: *mut libc::DIR, cmode: ConsensusMode) -> P
         }
         // dirfd(3) returns the underlying fd for `openat`-based
         // per-entry stat — matches bulk fs_entries' pattern.
+        // SAFETY: `dirp` is a live `libc::DIR*` per this function's
+        // top-level SAFETY contract (caller holds the `DirHandle::
+        // iter` Mutex).  `dirfd` returns the underlying fd, which
+        // remains owned by the DIR* (do not close).
         let dir_fd = unsafe { libc::dirfd(dirp) };
         let name_os = std::ffi::OsString::from_vec(name_bytes.to_vec());
         return ok_par(entry_stat_row(dir_fd, &name_os, cmode));

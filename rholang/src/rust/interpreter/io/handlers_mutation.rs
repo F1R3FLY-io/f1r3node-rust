@@ -149,6 +149,11 @@ impl FsHandler for FsTruncateHandler {
             let r = spawn_blocking(move || {
                 use std::os::fd::AsRawFd;
                 let raw_fd = file_arc.as_raw_fd();
+                // SAFETY: `raw_fd` is derived from `file_arc: Arc<File>`
+                // whose lifetime spans the `spawn_blocking` closure;
+                // the fd remains open for the duration of the syscall.
+                // `ftruncate` takes an open fd and a signed length;
+                // negative return means errno is set.
                 unsafe {
                     if libc::ftruncate(raw_fd, n as i64) < 0 {
                         Err(std::io::Error::last_os_error())
@@ -338,6 +343,13 @@ impl FsHandler for FsChmodHandler {
                         return err(c, m);
                     }
                 };
+                // SAFETY: `parent` is a `DirfdRoot` from
+                // `safe_descend_verified`; the enclosed dirfd is open
+                // for the lifetime of `parent` (RAII), and
+                // `parent.leaf_ptr()` returns a NUL-terminated
+                // `*const c_char` valid for the same lifetime.
+                // `fchmodat` reads both without retaining either past
+                // the call.
                 let rc = unsafe {
                     libc::fchmodat(
                         parent.as_raw_fd(),
@@ -1063,6 +1075,12 @@ impl FsHandler for FsRenameHandler {
                         return err(c, m);
                     }
                 };
+                // SAFETY: both `from_parent` and `to_parent` are
+                // `DirfdRoot` RAII wrappers from `safe_descend_
+                // verified`; each holds an open dirfd for its own
+                // lifetime, and `leaf_ptr()` returns a NUL-terminated
+                // `*const c_char` valid for the same lifetime.
+                // `renameat` reads all four without retention.
                 let rc = unsafe {
                     libc::renameat(
                         from_parent.as_raw_fd(),

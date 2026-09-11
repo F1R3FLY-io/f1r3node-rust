@@ -340,6 +340,10 @@ where
                     0o644,
                 )?;
                 let write_res = pwrite_all(fd, bytes, off);
+                // SAFETY: `fd` was returned by `openat_leaf` above and
+                // has not been closed elsewhere; we hold sole ownership
+                // and close it exactly once here.  `close` does not
+                // retain the fd.
                 unsafe { libc::close(fd) };
                 write_res.map_err(|e| ApplierError::IoFailure {
                     entry_index: i,
@@ -363,12 +367,19 @@ where
                     libc::O_WRONLY | libc::O_CLOEXEC,
                     0,
                 )?;
+                // SAFETY: `fd` is a fresh writable fd just returned by
+                // `openat_leaf`; `ftruncate` operates purely on the
+                // kernel-side file object and does not touch userspace
+                // memory.
                 let rc = unsafe { libc::ftruncate(fd, n as libc::off_t) };
                 let ftrunc_err = if rc < 0 {
                     Some(std::io::Error::last_os_error())
                 } else {
                     None
                 };
+                // SAFETY: `fd` was returned by `openat_leaf` above and
+                // has not been closed elsewhere; we hold sole ownership
+                // and close it exactly once here.
                 unsafe { libc::close(fd) };
                 if let Some(e) = ftrunc_err {
                     return Err(ApplierError::IoFailure {
@@ -393,6 +404,11 @@ where
                     .ok_or(ApplierError::MissingModeBits { entry_index: i })?;
                 let (parent, dst) =
                     descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                // SAFETY: `parent` owns an open dirfd and a NUL-
+                // terminated `CString` leaf for its lifetime, so
+                // `as_raw_fd()` and `leaf_ptr()` are valid for the
+                // duration of this call.  `fchmodat` only reads the
+                // leaf name pointer and does not retain it.
                 let rc = unsafe {
                     libc::fchmodat(
                         parent.as_raw_fd(),
@@ -428,6 +444,12 @@ where
                 };
                 let (parent, dst) =
                     descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                // SAFETY: `parent` owns an open dirfd and a NUL-
+                // terminated `CString` leaf for its lifetime, so
+                // `as_raw_fd()` and `leaf_ptr()` are valid here.
+                // `fchownat` only reads the leaf name pointer and does
+                // not retain it; `AT_SYMLINK_NOFOLLOW` matches leader
+                // discipline (never traverse a symlink leaf).
                 let rc = unsafe {
                     libc::fchownat(
                         parent.as_raw_fd(),
@@ -458,6 +480,10 @@ where
             WalOp::RemoveFile => {
                 let (parent, dst) =
                     descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                // SAFETY: `parent` owns an open dirfd and a NUL-
+                // terminated `CString` leaf for its lifetime, so
+                // `as_raw_fd()` and `leaf_ptr()` are valid here.
+                // `unlinkat` only reads the leaf name pointer.
                 let rc = unsafe { libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), 0) };
                 if rc != 0 {
                     let e = std::io::Error::last_os_error();
@@ -472,6 +498,11 @@ where
             WalOp::RemoveDir => {
                 let (parent, dst) =
                     descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
+                // SAFETY: `parent` owns an open dirfd and a NUL-
+                // terminated `CString` leaf for its lifetime, so
+                // `as_raw_fd()` and `leaf_ptr()` are valid here.
+                // `unlinkat(AT_REMOVEDIR)` only reads the leaf name
+                // pointer.
                 let rc = unsafe {
                     libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), libc::AT_REMOVEDIR)
                 };
@@ -497,6 +528,11 @@ where
                     descend_entry(i, entry.op, &entry.path, &path_map, allowed_roots)?;
                 let (to_parent, to_dst) =
                     descend_entry(i, entry.op, extra, &path_map, allowed_roots)?;
+                // SAFETY: both `from_parent` and `to_parent` own open
+                // dirfds and NUL-terminated `CString` leaves for their
+                // lifetimes, so all four accessors are valid here.
+                // `renameat` only reads the leaf name pointers and
+                // does not retain them.
                 let rc = unsafe {
                     libc::renameat(
                         from_parent.as_raw_fd(),
@@ -606,6 +642,12 @@ fn openat_leaf(
     flags: libc::c_int,
     mode: libc::mode_t,
 ) -> Result<libc::c_int, ApplierError> {
+    // SAFETY: `parent` owns an open dirfd and a NUL-terminated
+    // `CString` leaf for its lifetime, so `as_raw_fd()` and
+    // `leaf_ptr()` are valid across the call.  `openat` only reads
+    // the leaf name pointer; `O_NOFOLLOW` preserves the S-1 TOCTOU
+    // discipline (a leaf-level symlink is rejected here rather than
+    // followed).
     let fd = unsafe {
         libc::openat(
             parent.as_raw_fd(),
@@ -629,6 +671,12 @@ fn openat_leaf(
 fn pwrite_all(fd: libc::c_int, bytes: &[u8], off: u64) -> std::io::Result<()> {
     let mut written: usize = 0;
     while written < bytes.len() {
+        // SAFETY: `fd` is a caller-owned open fd valid for the entire
+        // call.  `bytes.as_ptr().add(written)` is in-bounds for the
+        // slice because the loop guard ensures `written < bytes.len()`,
+        // and the length passed is `bytes.len() - written`, so the
+        // whole read range lies within the slice.  `pwrite` only
+        // reads the buffer; it does not retain the pointer.
         let n = unsafe {
             libc::pwrite(
                 fd,
@@ -662,6 +710,11 @@ fn pwrite_all(fd: libc::c_int, bytes: &[u8], off: u64) -> std::io::Result<()> {
 /// closely enough for WAL replay (leader's Chmod entries adjust
 /// perms after the fact).
 fn copy_at(from_parent: &SafeParent, to_parent: &SafeParent) -> std::io::Result<()> {
+    // SAFETY: `from_parent` owns an open dirfd and a NUL-terminated
+    // `CString` leaf for its lifetime, so `as_raw_fd()` and
+    // `leaf_ptr()` are valid across the call.  `openat` only reads
+    // the leaf name pointer; `O_NOFOLLOW` refuses a symlink leaf,
+    // preserving S-1 TOCTOU discipline.
     let from_fd = unsafe {
         libc::openat(
             from_parent.as_raw_fd(),
@@ -675,9 +728,20 @@ fn copy_at(from_parent: &SafeParent, to_parent: &SafeParent) -> std::io::Result<
     }
     struct FdGuard(libc::c_int);
     impl Drop for FdGuard {
-        fn drop(&mut self) { unsafe { libc::close(self.0) }; }
+        fn drop(&mut self) {
+            // SAFETY: type invariant — `self.0` is a valid open fd
+            // owned by this guard (constructed only from a fresh
+            // `openat` result that returned >= 0), closed exactly
+            // once here in `drop`.
+            unsafe { libc::close(self.0) };
+        }
     }
     let _from_guard = FdGuard(from_fd);
+    // SAFETY: `to_parent` owns an open dirfd and a NUL-terminated
+    // `CString` leaf for its lifetime, so `as_raw_fd()` and
+    // `leaf_ptr()` are valid across the call.  `openat` only reads
+    // the leaf name pointer; `O_NOFOLLOW` refuses a symlink leaf,
+    // preserving S-1 TOCTOU discipline.
     let to_fd = unsafe {
         libc::openat(
             to_parent.as_raw_fd(),
@@ -693,6 +757,11 @@ fn copy_at(from_parent: &SafeParent, to_parent: &SafeParent) -> std::io::Result<
 
     let mut buf = [0u8; 64 * 1024];
     loop {
+        // SAFETY: `from_fd` is kept open by `_from_guard` for the
+        // full scope of this loop.  `buf` is a live stack array;
+        // `buf.as_mut_ptr()` is valid for writes of `buf.len()`
+        // bytes.  `read` writes at most `buf.len()` bytes and does
+        // not retain the pointer.
         let n = unsafe { libc::read(from_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
@@ -706,6 +775,15 @@ fn copy_at(from_parent: &SafeParent, to_parent: &SafeParent) -> std::io::Result<
         }
         let mut written = 0usize;
         while written < n as usize {
+            // SAFETY: `to_fd` is kept open by `_to_guard` for the
+            // full scope of this loop.  `n` is >= 0 (the `n < 0`
+            // and `n == 0` cases returned above) and n <= buf.len()
+            // because `read` reports how many bytes it wrote into
+            // buf.  The loop guard ensures `written < n`, so
+            // `buf.as_ptr().add(written)` is in bounds and the
+            // read range `n - written` also lies within the slice.
+            // `write` only reads the buffer; it does not retain the
+            // pointer.
             let w = unsafe {
                 libc::write(
                     to_fd,
@@ -759,8 +837,19 @@ fn resolve_uid(name: &str) -> Result<u32, ApplierError> {
     let ceiling: usize = 16 * 1024 * 1024;
     loop {
         let mut buf: Vec<libc::c_char> = vec![0; buf_len];
+        // SAFETY: `libc::passwd` is a POD C struct — every field is
+        // an integer or raw pointer — so an all-zero bit pattern is
+        // a valid representation.  We only read fields after
+        // `getpwnam_r` returns success and `result_ptr` is non-null.
         let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
         let mut result_ptr: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: `cname` is a NUL-terminated `CString` alive for the
+        // whole call (the local binding above outlives this scope).
+        // `&mut pwd` is a valid unique pointer to a live `passwd`.
+        // `buf.as_mut_ptr()` is valid for writes of `buf.len()` bytes.
+        // `&mut result_ptr` points to a live `*mut passwd` local.
+        // `getpwnam_r` populates `pwd` and `result_ptr`; it does not
+        // retain any of these pointers past the call.
         let rc = unsafe {
             libc::getpwnam_r(
                 cname.as_ptr(),
@@ -804,8 +893,18 @@ fn resolve_gid(name: &str) -> Result<u32, ApplierError> {
     let ceiling: usize = 16 * 1024 * 1024;
     loop {
         let mut buf: Vec<libc::c_char> = vec![0; buf_len];
+        // SAFETY: `libc::group` is a POD C struct — every field is
+        // an integer or raw pointer — so an all-zero bit pattern is
+        // a valid representation.  We only read fields after
+        // `getgrnam_r` returns success and `result_ptr` is non-null.
         let mut grp: libc::group = unsafe { std::mem::zeroed() };
         let mut result_ptr: *mut libc::group = std::ptr::null_mut();
+        // SAFETY: `cname` is a NUL-terminated `CString` alive for the
+        // whole call.  `&mut grp` is a valid unique pointer to a live
+        // `group`.  `buf.as_mut_ptr()` is valid for writes of
+        // `buf.len()` bytes.  `&mut result_ptr` points to a live
+        // `*mut group` local.  `getgrnam_r` populates `grp` and
+        // `result_ptr`; it does not retain any of these pointers.
         let rc = unsafe {
             libc::getgrnam_r(
                 cname.as_ptr(),

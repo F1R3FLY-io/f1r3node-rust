@@ -401,6 +401,10 @@ mod stat_record_tests {
         // entry.  `Metadata::len()` returns 0 for FIFOs; we don't
         // want that 0 leaking through the wire either.
         let fifo_c = std::ffi::CString::new(fifo_path.to_str().unwrap()).unwrap();
+        // SAFETY: `fifo_c` is a locally-owned CString outliving this
+        // block; its `.as_ptr()` returns a NUL-terminated
+        // `*const c_char` valid for the call.  `libc::mkfifo` does
+        // not retain the pointer.
         let rc = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o644) };
         assert_eq!(
             rc,

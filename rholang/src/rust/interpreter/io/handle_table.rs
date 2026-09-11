@@ -1565,6 +1565,12 @@ mod tests {
         // either return ENBADF (fd closed) or, worse, read from
         // an unrelated file that reused the integer.
         let mut buf = [0u8; 10];
+        // SAFETY: this test asserts the A4-M-1 keep-alive property.
+        // The `Arc<File>` holding `arc_raw_fd` was captured by the
+        // spawned task and outlives the `remove(fd)` above; if the
+        // property holds, the fd is still open.  `buf.as_mut_ptr()`
+        // points to stack-allocated storage valid for the call.
+        // `libc::read` writes at most `buf.len()` bytes.
         let got = unsafe { libc::read(arc_raw_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
         assert!(
             got > 0,

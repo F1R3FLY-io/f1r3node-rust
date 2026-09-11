@@ -14,6 +14,15 @@
 // `urn_map` — they are only reachable through the genesis-installed
 // `Fs` agent.
 
+// T-12 / T-24 (2026-09-11, wave-4 Phase 2): every `unsafe` block in
+// the io/ tree must carry a `// SAFETY: ...` comment documenting the
+// caller's precondition and the FFI's postcondition.  The `#![warn]`
+// attaches to this module and propagates to all descendant modules
+// (`pub mod` declarations below).  Scoped to io/ rather than the
+// whole rholang crate — legacy sites outside io/ are not part of
+// this slice.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 pub mod consensus_constants;
 pub mod consensus_fingerprint;
 pub mod costs;

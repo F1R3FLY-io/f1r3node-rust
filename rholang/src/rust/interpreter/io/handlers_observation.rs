@@ -101,6 +101,11 @@ impl FsHandler for FsFlushHandler {
             let r = spawn_blocking(move || {
                 use std::os::fd::AsRawFd;
                 let raw_fd = file_arc.as_raw_fd();
+                // SAFETY: `raw_fd` is derived from `file_arc:
+                // Arc<File>` whose lifetime spans this closure; the
+                // fd is open for the syscall.  `fsync` accepts any
+                // integer and returns -1 with errno on invalid fd
+                // rather than UB.
                 unsafe {
                     if libc::fsync(raw_fd) < 0 {
                         Err(std::io::Error::last_os_error())
@@ -186,6 +191,10 @@ impl FsHandler for FsTellHandler {
             let r = spawn_blocking(move || {
                 use std::os::fd::AsRawFd;
                 let raw_fd = file_arc.as_raw_fd();
+                // SAFETY: `raw_fd` derives from `file_arc: Arc<File>`
+                // whose lifetime spans this closure; fd is open for
+                // the call.  `lseek(SEEK_CUR, 0)` is idempotent and
+                // returns the current offset (or -1 with errno).
                 unsafe {
                     let pos = libc::lseek(raw_fd, 0, libc::SEEK_CUR);
                     if pos < 0 {
@@ -262,6 +271,12 @@ impl FsHandler for FsSizeHandler {
                     let r = spawn_blocking(move || {
                         use std::os::fd::AsRawFd;
                         let raw_fd = file_arc.as_raw_fd();
+                        // SAFETY: `libc::stat` is a POD C struct that
+                        // `zeroed()` can validly initialize (integer
+                        // fields).  `raw_fd` derives from `file_arc:
+                        // Arc<File>` whose lifetime spans this
+                        // closure.  `fstat` reads `&mut sb` without
+                        // retaining it past the call.
                         unsafe {
                             let mut sb: libc::stat = std::mem::zeroed();
                             if libc::fstat(raw_fd, &mut sb) < 0 {
@@ -1005,6 +1020,10 @@ impl FsHandler for FsSeekHandler {
             let r = spawn_blocking(move || {
                 use std::os::fd::AsRawFd;
                 let raw_fd = file_arc.as_raw_fd();
+                // SAFETY: `raw_fd` derives from `file_arc: Arc<File>`
+                // whose lifetime spans this closure; fd is open for
+                // the call.  `lseek` accepts any integer fd and
+                // returns -1 with errno on invalid fd or offset.
                 unsafe {
                     let pos = libc::lseek(raw_fd, args.off, args.whence);
                     if pos < 0 {
@@ -1160,6 +1179,12 @@ impl FsHandler for FsEntriesHandler {
                         return err(code, msg);
                     }
                 };
+                // SAFETY: `parent` is a `DirfdRoot` RAII wrapper
+                // from `safe_descend_verified`; its dirfd is open
+                // for `parent`'s lifetime and `parent.leaf_ptr()`
+                // returns a NUL-terminated `*const c_char` valid
+                // for the same lifetime.  `openat` reads both
+                // without retention.
                 let dir_fd = unsafe {
                     libc::openat(
                         parent.as_raw_fd(),
@@ -1172,20 +1197,32 @@ impl FsHandler for FsEntriesHandler {
                     return err(io_err_code(&e), io_msg_scrub(&e));
                 }
                 // L-3: F_DUPFD_CLOEXEC keeps CLOEXEC set atomically.
+                //
+                // SAFETY: `dir_fd` is a freshly-opened open fd
+                // from the `openat` above (post-`< 0` check).
+                // `fcntl(F_DUPFD_CLOEXEC, 0)` returns a new fd (or
+                // -1 with errno) without invalidating `dir_fd`.
                 let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
                 if read_fd < 0 {
                     let e = std::io::Error::last_os_error();
+                    // SAFETY: `dir_fd` is still open (fcntl above
+                    // failed; no dup created).  We must close it.
                     unsafe { libc::close(dir_fd) };
                     return err(io_err_code(&e), io_msg_scrub(&e));
                 }
                 let entries = read_dir_capped(read_fd, MAX_ENTRIES);
                 match entries {
                     Err(e) => {
+                        // SAFETY: `dir_fd` open for the duration
+                        // of `read_dir_capped` (unaffected by
+                        // read errors).
                         unsafe { libc::close(dir_fd) };
                         err(io_err_code(&e), io_msg_scrub(&e))
                     }
                     Ok((mut names, hit_cap)) => {
                         if hit_cap {
+                            // SAFETY: `dir_fd` open; return path
+                            // must release before propagating.
                             unsafe { libc::close(dir_fd) };
                             return err(
                                 FSERR_QUOTA_EXCEEDED,
@@ -1201,6 +1238,9 @@ impl FsHandler for FsEntriesHandler {
                             .into_iter()
                             .map(|name| entry_stat_row(dir_fd, &name, cmode))
                             .collect();
+                        // SAFETY: `dir_fd` was still open through
+                        // the `entry_stat_row` iteration; last use
+                        // — close it now to release the fd.
                         unsafe { libc::close(dir_fd) };
                         ok_list(rows)
                     }
