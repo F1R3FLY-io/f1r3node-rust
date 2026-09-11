@@ -659,11 +659,79 @@ impl LockRegistry {
         Ok(AcquireOutcome::Immediate(id))
     }
 
-    /// Release a specific lock by id.  Returns `Ok(())` if the id was
-    /// held (either as a range or the sequential holder), `Err(Closed)`
-    /// if not.  Evicts the `(dev, inode)` entry from the map if both
-    /// substructures become empty — closes the inode-reuse safety gap.
-    pub fn release(&self, lock_id: LockId) -> Result<(), LockError> {
+    /// Release a specific lock by id, verifying `holder` matches
+    /// the original acquirer's `HolderId`.  Returns `Ok(())` on
+    /// match, `Err(Closed)` if the id isn't held OR the id is held
+    /// but the caller isn't the holder.  Evicts the `(dev, inode)`
+    /// entry from the map if both substructures become empty.
+    ///
+    /// S4.7 follow-up (2026-09-11 hardening): pre-fix `release(
+    /// lock_id)` had zero auth check — any caller with a lockId
+    /// could release it.  On a public blockchain every LockToken's
+    /// on-chain state (including its wrapped `lockId`) is visible
+    /// to any observer; the URN filter (slice-31) was the only
+    /// gate.  Adding holder verification at the registry layer
+    /// makes the URN filter one of two independent gates rather
+    /// than the sole one, so a future refactor that broadens
+    /// `rho:io:fs:native:*` visibility cannot silently open a
+    /// cross-cap release path.
+    ///
+    /// Error variant deliberately identical for "not held" and
+    /// "wrong holder": cross-cap release attempts are
+    /// indistinguishable from "the lock isn't yours" from the API
+    /// surface, preventing an observer from probing which lockIds
+    /// are held vs unheld.
+    pub fn release(&self, lock_id: LockId, holder: &HolderId) -> Result<(), LockError> {
+        let mut guard = self.inner.write().expect("lock registry poisoned");
+        let mut touched_key: Option<DevInode> = None;
+        let mut released = false;
+        for (dev_inode, state) in guard.iter_mut() {
+            if let Some(pos) = state
+                .ranges
+                .iter()
+                .position(|e| e.id == lock_id && &e.holder == holder)
+            {
+                state.ranges.remove(pos);
+                released = true;
+            } else if state
+                .sequential_holder
+                .as_ref()
+                .is_some_and(|s| s.id == lock_id && &s.holder == holder)
+            {
+                state.sequential_holder = None;
+                released = true;
+            }
+            if released {
+                touched_key = Some(*dev_inode);
+                break;
+            }
+        }
+        if let Some(k) = touched_key {
+            if let Some(state) = guard.get_mut(&k) {
+                wake_waiters(state);
+                if state_is_empty(state) {
+                    guard.remove(&k);
+                }
+            }
+        }
+        if released {
+            Ok(())
+        } else {
+            Err(LockError::Closed)
+        }
+    }
+
+    /// S4.7 follow-up (2026-09-11): test-only shim that releases a
+    /// lock by id WITHOUT holder verification.  Preserves the pre-
+    /// hardening API for the 20+ existing unit tests that exercise
+    /// LockRegistry state transitions (frontier drain, wake_waiters,
+    /// MAX_RANGES_PER_FILE, etc.) — those tests target the state-
+    /// machine invariants, not the release-side auth check.
+    /// Production code must use `release(lock_id, holder)`; a
+    /// source-scan pin asserts `fs_release_lock` uses the guarded
+    /// variant, not this one.
+    #[cfg(test)]
+    pub fn release_test_bypass(&self, lock_id: LockId) -> Result<(), LockError> {
         let mut guard = self.inner.write().expect("lock registry poisoned");
         let mut touched_key: Option<DevInode> = None;
         let mut released = false;
@@ -1407,14 +1475,14 @@ mod tests {
             .unwrap();
         // Releasing the inner acquisition must NOT drop the outer explicit
         // lock — cross-holder writes still conflict on the outer range.
-        reg.release(inner).unwrap();
+        reg.release_test_bypass(inner).unwrap();
         assert_eq!(reg.held_locks(), 1, "outer lock survives inner release");
         let err = reg
             .try_acquire_range((1, 42), 100, 50, LockMode::Write, holder(2), deploy(1))
             .unwrap_err();
         assert_eq!(err, LockError::Busy);
         // Releasing the outer now frees the range for other holders.
-        reg.release(outer).unwrap();
+        reg.release_test_bypass(outer).unwrap();
         reg.try_acquire_range((1, 42), 100, 50, LockMode::Write, holder(2), deploy(1))
             .expect("after outer release, other holder must succeed");
     }
@@ -1516,7 +1584,7 @@ mod tests {
         let id = reg
             .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy(1))
             .unwrap();
-        reg.release(id).unwrap();
+        reg.release_test_bypass(id).unwrap();
         // Overlapping write now succeeds.
         reg.try_acquire_range((1, 42), 50, 100, LockMode::Write, holder(2), deploy(1))
             .expect("released — next acquire must succeed");
@@ -1528,7 +1596,7 @@ mod tests {
         let id = reg
             .try_acquire_sequential((1, 42), holder(1), deploy(1))
             .unwrap();
-        reg.release(id).unwrap();
+        reg.release_test_bypass(id).unwrap();
         reg.try_acquire_sequential((1, 42), holder(2), deploy(1))
             .expect("released — next sequential must succeed");
     }
@@ -1539,14 +1607,86 @@ mod tests {
         let id = reg
             .try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), deploy(1))
             .unwrap();
-        reg.release(id).unwrap();
-        assert_eq!(reg.release(id).unwrap_err(), LockError::Closed);
+        reg.release_test_bypass(id).unwrap();
+        assert_eq!(reg.release_test_bypass(id).unwrap_err(), LockError::Closed);
     }
 
     #[test]
     fn release_unknown_id_returns_closed() {
         let reg = LockRegistry::new();
-        assert_eq!(reg.release(LockId(9999)).unwrap_err(), LockError::Closed);
+        assert_eq!(
+            reg.release_test_bypass(LockId(9999)).unwrap_err(),
+            LockError::Closed
+        );
+    }
+
+    /// S4.7 follow-up regression pin (2026-09-11): `release(id,
+    /// holder)` must verify holder identity, not just lockId
+    /// presence.  A caller with the correct lockId but wrong holder
+    /// gets `Closed` (deliberately indistinguishable from "not
+    /// held") and the lock STAYS in the registry — the rightful
+    /// holder can still release afterward.  Guards against a
+    /// public-blockchain observer with URN access releasing arbitrary
+    /// locks by their (on-chain visible) lockIds.
+    #[test]
+    fn release_rejects_wrong_holder_and_leaves_lock_intact() {
+        let reg = LockRegistry::new();
+        let acquirer = holder(1);
+        let attacker = holder(99);
+        let id = reg
+            .try_acquire_range(
+                (1, 42),
+                0,
+                100,
+                LockMode::Write,
+                acquirer.clone(),
+                deploy(1),
+            )
+            .unwrap();
+        // Attacker (different holder) attempts release with the
+        // correct lockId.  Must fail as Closed.
+        assert_eq!(
+            reg.release(id, &attacker).unwrap_err(),
+            LockError::Closed,
+            "S4.7 hardening: release with wrong holder must return \
+             Closed (indistinguishable from `not held`)"
+        );
+        // Lock still held — attacker's spoofed release didn't
+        // remove it.
+        assert_eq!(
+            reg.held_locks(),
+            1,
+            "S4.7 hardening: rejected release must NOT remove the \
+             lock; the rightful holder should still be able to \
+             release afterward"
+        );
+        // Rightful holder release succeeds.
+        reg.release(id, &acquirer)
+            .expect("acquirer's release must succeed");
+        assert_eq!(reg.held_locks(), 0);
+    }
+
+    /// S4.7 follow-up companion (2026-09-11): the same guard on the
+    /// sequential-lock path.  Pre-hardening, `release(id)` would
+    /// happily remove a sequential holder on lockId match alone.
+    #[test]
+    fn release_rejects_wrong_holder_on_sequential_lock() {
+        let reg = LockRegistry::new();
+        let acquirer = holder(2);
+        let attacker = holder(3);
+        let id = reg
+            .try_acquire_sequential((1, 42), acquirer.clone(), deploy(1))
+            .unwrap();
+        assert_eq!(
+            reg.release(id, &attacker).unwrap_err(),
+            LockError::Closed,
+            "S4.7 hardening: sequential-lock release must also \
+             verify holder identity"
+        );
+        assert_eq!(reg.held_locks(), 1);
+        reg.release(id, &acquirer)
+            .expect("acquirer's sequential release must succeed");
+        assert_eq!(reg.held_locks(), 0);
     }
 
     #[test]
@@ -1556,7 +1696,7 @@ mod tests {
             .try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), deploy(1))
             .unwrap();
         assert_eq!(reg.tracked_files(), 1);
-        reg.release(id).unwrap();
+        reg.release_test_bypass(id).unwrap();
         assert_eq!(
             reg.tracked_files(),
             0,
@@ -1572,7 +1712,7 @@ mod tests {
             .unwrap();
         reg.try_acquire_range((1, 42), 200, 100, LockMode::Read, holder(2), deploy(1))
             .unwrap();
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         assert_eq!(reg.tracked_files(), 1);
     }
 
@@ -1734,9 +1874,9 @@ mod tests {
             .try_acquire_range((1, 42), 200, 100, LockMode::Read, holder(2), deploy(1))
             .unwrap();
         assert_eq!(reg.count_locks((1, 42)), 2);
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         assert_eq!(reg.count_locks((1, 42)), 1);
-        reg.release(b).unwrap();
+        reg.release_test_bypass(b).unwrap();
         // Entry evicted when last lock released → count is 0.
         assert_eq!(reg.count_locks((1, 42)), 0);
     }
@@ -1769,7 +1909,7 @@ mod tests {
                 .try_acquire_range((1, 42), 0, 1, LockMode::Read, holder(1), deploy(1))
                 .unwrap();
             assert_ne!(id.0, 0);
-            reg.release(id).unwrap();
+            reg.release_test_bypass(id).unwrap();
         }
     }
 
@@ -1788,7 +1928,7 @@ mod tests {
             b.is_locked((1, 42), (0, 100)),
             "cloned handle sees parent's lock"
         );
-        b.release(id).unwrap();
+        b.release_test_bypass(id).unwrap();
         assert!(
             !a.is_locked((1, 42), (0, 100)),
             "release via clone visible to parent"
@@ -1853,7 +1993,7 @@ mod tests {
             .unwrap();
         // A whole-file query still overlaps with a saturated range.
         assert!(reg.is_locked((1, 42), (0, u64::MAX)));
-        reg.release(id).unwrap();
+        reg.release_test_bypass(id).unwrap();
     }
 
     // -- per-file range cap ---------------------------------------------
@@ -1903,7 +2043,7 @@ mod tests {
             );
         }
         // At cap now — release one and re-acquire.
-        reg.release(ids[0]).unwrap();
+        reg.release_test_bypass(ids[0]).unwrap();
         reg.try_acquire_range(
             (1, 42),
             (MAX_RANGES_PER_FILE as u64) * 10,
@@ -2414,7 +2554,7 @@ mod tests {
         );
         // deploy(1) releases A.  Now deploy(2) can wait on A without
         // forming a cycle (no holder to walk from).
-        reg.release(a1).expect("release A");
+        reg.release_test_bypass(a1).expect("release A");
         // With A held by nobody the wait would grant immediately, not
         // park — so we don't get an expect_parked here.  Just confirm
         // the acquire succeeds.
@@ -2687,7 +2827,7 @@ mod tests {
         );
         assert_eq!(reg.parked_waiters(), 1);
         assert_eq!(reg.held_locks(), 1); // only A is held
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         // B's admit should now fire with Ok(b_id).
         let admitted = b_rx.await.expect("admit sender must not drop");
         assert_eq!(admitted, Ok(b_id));
@@ -2751,15 +2891,15 @@ mod tests {
         assert_eq!(reg.parked_waiters(), 3);
         assert_eq!(reg.held_locks(), 1);
         // Release A → B admits.
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         assert_eq!(b_rx.await.unwrap(), Ok(b_id));
         assert_eq!(reg.parked_waiters(), 2);
         // Release B → C admits.
-        reg.release(b_id).unwrap();
+        reg.release_test_bypass(b_id).unwrap();
         assert_eq!(c_rx.await.unwrap(), Ok(c_id));
         assert_eq!(reg.parked_waiters(), 1);
         // Release C → D admits.
-        reg.release(c_id).unwrap();
+        reg.release_test_bypass(c_id).unwrap();
         assert_eq!(d_rx.await.unwrap(), Ok(d_id));
         assert_eq!(reg.parked_waiters(), 0);
         assert_eq!(reg.held_locks(), 1);
@@ -2835,7 +2975,7 @@ mod tests {
         );
         // Release A → cascade wake: all three heads are disjoint from
         // each other, so all admit in FIFO order in one wake pass.
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         assert_eq!(b_rx.await.unwrap(), Ok(b_id));
         assert_eq!(c_rx.await.unwrap(), Ok(c_id));
         assert_eq!(d_rx.await.unwrap(), Ok(d_id));
@@ -2908,7 +3048,7 @@ mod tests {
         //
         // So this test just pins that the wave stops at C.  D would
         // Immediate-acquire so we skip it.
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         assert_eq!(b_rx.await.unwrap(), Ok(b_id));
         // C stayed parked because C's (50, 100) conflicts with B's
         // just-admitted (0, 100).
@@ -3209,7 +3349,7 @@ mod tests {
         assert_eq!(reg.tracked_files(), 1);
         // Release A: state has B parked → B gets admitted → state
         // now holds B alone.  tracked_files still 1.
-        reg.release(_a).unwrap();
+        reg.release_test_bypass(_a).unwrap();
         assert_eq!(reg.tracked_files(), 1);
         assert_eq!(reg.held_locks(), 1);
     }
@@ -3246,7 +3386,7 @@ mod tests {
         assert_eq!(reg.tracked_files(), 1); // A still held
                                             // Now release A.  ranges empty, sequential none, waiters
                                             // empty → evict.
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         assert_eq!(reg.tracked_files(), 0);
     }
 
@@ -3298,7 +3438,7 @@ mod tests {
         drop(b_rx);
         // Release A.  wake_waiters admits B → send fails → rollback
         // → then admits C.
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         assert_eq!(c_rx.await.unwrap(), Ok(c_id));
         assert_eq!(reg.held_locks(), 1);
         assert_eq!(reg.parked_waiters(), 0);
@@ -3346,7 +3486,7 @@ mod tests {
             reg.try_acquire_sequential_wait((1, 42), holder(2), deploy(2), WaitPolicy::Wait)
                 .unwrap(),
         );
-        reg.release(a).unwrap();
+        reg.release_test_bypass(a).unwrap();
         assert_eq!(b_rx.await.unwrap(), Ok(b_id));
     }
 
@@ -3757,7 +3897,7 @@ mod tests {
                             _ => {
                                 // 25% release (if we hold anything).
                                 if let Some(id) = held.pop() {
-                                    let _ = reg.release(id);
+                                    let _ = reg.release_test_bypass(id);
                                 }
                             }
                         }
@@ -3767,7 +3907,7 @@ mod tests {
                     // Drain any leftover held locks so the worker
                     // exits clean.
                     for id in held.drain(..) {
-                        let _ = reg.release(id);
+                        let _ = reg.release_test_bypass(id);
                     }
                 }));
             }

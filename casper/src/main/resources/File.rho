@@ -128,7 +128,7 @@ in {
                                     fsWrite!(fd, b, *retCh) |
                                     for (@reply <- retCh) {
                                       new relCh in {
-                                        fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                        fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                         for (@_relReply <- relCh) {
                                           @[*private, *stateP]!("open") |
                                           return!(reply)
@@ -322,7 +322,7 @@ in {
                                     fsRead!(fd, i, *retCh) |
                                     for (@reply <- retCh) {
                                       new relCh in {
-                                        fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                        fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                         for (@_relReply <- relCh) {
                                           @[*private, *stateP]!("open") |
                                           return!(reply)
@@ -895,7 +895,7 @@ in {
                                                     [true, lid] => {
                                                       // Mint a LockToken agent wrapping the LockId;
                                                       // return the bundle+ handle to the caller.
-                                                      for (@token <- LockToken!?(lid)) {
+                                                      for (@token <- LockToken!?(lid, *this)) {
                                                         return!([true, token])
                                                       }
                                                     }
@@ -1057,7 +1057,7 @@ in {
                                                     for (@reply <- lockCh) {
                                                       match reply {
                                                         [true, lid] => {
-                                                          for (@token <- LockToken!?(lid)) {
+                                                          for (@token <- LockToken!?(lid, *this)) {
                                                             return!([true, token])
                                                           }
                                                         }
@@ -1105,7 +1105,7 @@ in {
                                                     for (@reply <- lockCh) {
                                                       match reply {
                                                         [true, lid] => {
-                                                          for (@token <- LockToken!?(lid)) {
+                                                          for (@token <- LockToken!?(lid, *this)) {
                                                             return!([true, token])
                                                           }
                                                         }
@@ -1231,7 +1231,7 @@ in {
                         [true, lid] => {
                           new byteProducer, byteBuilder, pendingCell, lockCell in {
                             pendingCell!(("".hexToBytes(), 0)) |
-                            lockCell!((lid, false)) |
+                            lockCell!((lid, false, *this)) |
 
                             contract byteProducer(retCh) = {
                               for (@(pending, idx) <- pendingCell) {
@@ -1359,7 +1359,7 @@ in {
                                   for (@lid <- lockOut) {
                                     new byteProducer, byteBuilder, pendingCell, lockCell in {
                                       pendingCell!(("".hexToBytes(), 0)) |
-                                      lockCell!((lid, false)) |
+                                      lockCell!((lid, false, *this)) |
 
                                       contract byteProducer(retCh) = {
                                         for (@(pending, idx) <- pendingCell) {
@@ -1575,7 +1575,7 @@ in {
                                                     // - released=true → subsequent termination
                                                     //   paths skip the syscall (bounded).
                                                     posCell!((off, validLen, "".hexToBytes(), 0)) |
-                                                    lockCell!((lid, false)) |
+                                                    lockCell!((lid, false, *this)) |
 
                                                     contract patProducer(retCh) = {
                                                       for (@(nextOff, rem, pending, idx) <- posCell) {
@@ -1814,7 +1814,7 @@ in {
                                                           for (@lid <- lockOut) {
                                                             new patProducer, patBuilder, posCell, lockCell in {
                                                               posCell!((off, validLen, "".hexToBytes(), 0)) |
-                                                              lockCell!((lid, false)) |
+                                                              lockCell!((lid, false, *this)) |
 
                                                               contract patProducer(retCh) = {
                                                                 for (@(nextOff, rem, pending, idx) <- posCell) {
@@ -2003,7 +2003,7 @@ in {
                                 writeBytesLoop!(byteStream, fd, 0, *loopRet) |
                                 for (@finalReply <- loopRet) {
                                   new relCh in {
-                                    fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                    fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                     for (@_relReply <- relCh) {
                                       @[*private, *stateP]!("open") |
                                       return!(finalReply)
@@ -2180,7 +2180,7 @@ in {
                                                         // outcome.  Errors from
                                                         // the loop forward
                                                         // through finalReply.
-                                                        fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                        fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                         for (@_relReply <- relCh) {
                                                           @[*private, *stateP]!("open") |
                                                           return!(finalReply)
@@ -2373,7 +2373,7 @@ in {
                         [true, lid] => {
                           new charProducer, charBuilder, pendingCell, lockCell in {
                             pendingCell!(("".hexToBytes(), 0, false)) |
-                            lockCell!((lid, false)) |
+                            lockCell!((lid, false, *this)) |
 
                             contract charProducer(retCh) = {
                               for (@(pending, idx, eofSeen) <- pendingCell) {
@@ -2602,7 +2602,7 @@ in {
                                   for (@lid <- lockOut) {
                                     new charProducer, charBuilder, pendingCell, lockCell in {
                                       pendingCell!(("".hexToBytes(), 0, false)) |
-                                      lockCell!((lid, false)) |
+                                      lockCell!((lid, false, *this)) |
 
                                       contract charProducer(retCh) = {
                                         for (@(pending, idx, eofSeen) <- pendingCell) {
@@ -2853,7 +2853,7 @@ in {
                           new lineProducer, lineBuilder, lineCell, lockCell in {
                             // State: (pending, idx, eofSeen, doneAtLF).
                             lineCell!(("".hexToBytes(), 0, false, false)) |
-                            lockCell!((lid, false)) |
+                            lockCell!((lid, false, *this)) |
 
                             contract lineProducer(retCh) = {
                               for (@(pending, idx, eofSeen, doneAtLF) <- lineCell) {
@@ -3149,7 +3149,7 @@ in {
                                   for (@lid <- lockOut) {
                                     new lineProducer, lineBuilder, lineCell, lockCell in {
                                       lineCell!(("".hexToBytes(), 0, false, false)) |
-                                      lockCell!((lid, false)) |
+                                      lockCell!((lid, false, *this)) |
 
                                       contract lineProducer(retCh) = {
                                         for (@(pending, idx, eofSeen, doneAtLF) <- lineCell) {
@@ -3481,7 +3481,7 @@ in {
                     // Nil means no inner currently active.
                     activeInnerCell!(Nil) |
                     // Release-once guard for outer termination.
-                    lockCell!((lid, false)) |
+                    lockCell!((lid, false, *this)) |
 
                     // scanForLFRefilling(pending, idx, eofSeen, ret)
                     // — starting at idx in pending, find the next LF
@@ -3968,7 +3968,7 @@ in {
                                         outerProducer, outerBuilder, lockCell in {
                                       sourceCell!(("".hexToBytes(), 0, false)) |
                                       activeInnerCell!(Nil) |
-                                      lockCell!((lid, false)) |
+                                      lockCell!((lid, false, *this)) |
 
                                       contract scanForLFRefilling(@pending, @idx, @eofSeen, ret) = {
                                         new scanRet in {
@@ -4595,7 +4595,7 @@ in {
                                 writeCharsLoop!(charStream, fd, 0, *loopRet) |
                                 for (@finalReply <- loopRet) {
                                   new relCh in {
-                                    fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                    fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                     for (@_relReply <- relCh) {
                                       @[*private, *stateP]!("open") |
                                       return!(finalReply)
@@ -4744,7 +4744,7 @@ in {
                                         fsWrite!(fd, "0a".hexToBytes(), *lfCh) |
                                         for (@lfReply <- lfCh) {
                                           new relCh in {
-                                            fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                            fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                             for (@_relReply <- relCh) {
                                               match lfReply {
                                                 [true, _] => {
@@ -4775,7 +4775,7 @@ in {
                                     _ => {
                                       // Char-drain failed — release lock and forward.
                                       new relCh in {
-                                        fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                        fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                         for (@_relReply <- relCh) {
                                           @[*private, *stateP]!("open") |
                                           return!(charsReply)
@@ -5206,7 +5206,7 @@ in {
                                                               // writeBytes + seek-back operate on the
                                                               // fd's cursor / user-space buffer, not
                                                               // on the disk range.
-                                                              fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                              fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                               for (@_relReply <- relCh) {
                                                                 match readReply {
                                                                   [true, chunk /\ ByteArray] => {
@@ -5590,7 +5590,7 @@ in {
                                                   fsWrite!(fd, bytes, *writeCh) |
                                                   for (@writeReply <- writeCh) {
                                                     new relCh in {
-                                                      fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                      fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                       for (@_relReply <- relCh) {
                                                         match writeReply {
                                                           [true, n] => {
@@ -5816,7 +5816,7 @@ in {
                                                               // fsReadAt returns — the read result is
                                                               // already in memory; buffer copy + endFill
                                                               // don't need disk-range exclusion.
-                                                              fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                              fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                               for (@_relReply <- relCh) {
                                                                 match readReply {
                                                                   [true, chunk /\ ByteArray] => {
@@ -6131,7 +6131,7 @@ in {
                                                   fsWriteAt!(fd, off, bytes, *writeCh) |
                                                   for (@writeReply <- writeCh) {
                                                     new relCh in {
-                                                      fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                                      fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
                                                       for (@_relReply <- relCh) {
                                                         match writeReply {
                                                           [true, n] => {
@@ -6660,7 +6660,7 @@ in {
                                       @(*this)!(*innerRet, "readLineInto", buf) |
                                       for (@reply <- innerRet) {
                                         new relCh in {
-                                          fsReleaseLock!(lid, *relCh) |  // reply discarded — see LockToken §Release-reply discards
+                                          fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see LockToken §Release-reply discards
                                           for (@_r <- relCh) {
                                             return!(reply)
                                           }
@@ -6840,7 +6840,7 @@ in {
                                       @(*this)!(*innerRet, "readLinesInto", rows) |
                                       for (@reply <- innerRet) {
                                         new relCh in {
-                                          fsReleaseLock!(lid, *relCh) |  // reply discarded — see LockToken §Release-reply discards
+                                          fsReleaseLock!(lid, *this, *relCh) |  // reply discarded — see LockToken §Release-reply discards
                                           for (@_r <- relCh) {
                                             return!(reply)
                                           }
@@ -6892,14 +6892,16 @@ in {
   //
   // ## Lifecycle
   //
-  // - **Mint**: `File.lockRange` calls `LockToken!?(lockId)`; the
-  //   agent's constructor stashes the LockId in a per-instance
-  //   state cell and returns `bundle+{*this}` — the LockToken
-  //   handle the caller holds.
+  // - **Mint**: `File.lockRange` calls `LockToken!?(lockId, *this)`
+  //   passing the acquiring cap's `*this` as the holder identity
+  //   captured at acquire time; the agent's constructor stashes
+  //   `(lockId, holder)` in a per-instance state cell and returns
+  //   `bundle+{*this}` — the LockToken handle the caller holds.
   // - **Release (explicit)**: caller sends `!?("release")`; the
   //   release method linearly consumes the state cell, calls
-  //   `fs_release_lock(lockId)` if active, marks "released", and
-  //   forwards the native's reply.
+  //   `fs_release_lock(lockId, holder)` if active — passing the
+  //   holder captured at mint, NOT LockToken's own `*this` — marks
+  //   "released", and forwards the native's reply.
   // - **Release (implicit, via File.close)**: `File.close` invokes
   //   `fs_release_all_for_holder(*this)` (step 4f) which sweeps
   //   every lock owned by this cap's holder.  Subsequent
@@ -6938,8 +6940,18 @@ in {
   // Discarding is safe by construction; call sites carry a short inline
   // reference to this docstring for future readers.
   agent LockToken {
-    constructor(@lid) {
-      @[*private, *lockStateP]!(lid)
+    // S4.7 follow-up (2026-09-11 hardening): constructor takes BOTH
+    // the lockId AND the acquiring cap's holder identity.  State
+    // cell payload bumped from `lid` to `(lid, holder)` so `release`
+    // passes the SAME holder to `fs_release_lock` (arity 3) that
+    // the acquire side passed to `fs_lock_range` /
+    // `fs_lock_sequential`.  Without this, LockToken's own `*this`
+    // (a distinct unforgeable name) would be passed as the release
+    // holder → mismatch at LockRegistry → FSERR_CLOSED.  Every mint
+    // site (`LockToken!?(lid, *this)`) carries the correct holder
+    // end-to-end.
+    constructor(@lid, @holder) {
+      @[*private, *lockStateP]!((lid, holder))
     } |
     method release() {
       // Linear consume serializes concurrent release attempts on the
@@ -6947,7 +6959,7 @@ in {
       // sends from Par branches sharing the token).
       for (@state <- @[*private, *lockStateP]) {
         match state {
-          lockId /\ Int => {
+          (lockId /\ Int, holder) => {
             // Active: mark released BEFORE the native dispatch so a
             // concurrent second release sees "released" immediately
             // and returns FSERR_CLOSED without racing the fs_release
@@ -6957,7 +6969,9 @@ in {
               // Reply is FORWARDED, not discarded — this is the sole
               // explicit-release surface, so the caller sees success/error
               // directly (unlike auto-acquire wraps that discard).
-              fsReleaseLock!(lockId, *relCh) |
+              // Post-hardening: pass the stashed `holder` (captured
+              // at constructor time), NOT LockToken's own `*this`.
+              fsReleaseLock!(lockId, holder, *relCh) |
               for (@reply <- relCh) {
                 return!(reply)
               }
@@ -7757,7 +7771,11 @@ in {
               innerCh!(*callback) |
               for (@innerReply <- callback) {
                 new relCh in {
-                  fsReleaseLock!(lid, *relCh) |
+                  // S4.7 follow-up: pass `*holder` (contract param)
+                  // — the caller's cap dispatch channel that was
+                  // also passed to fsLockSequential above.  `*this`
+                  // is invalid outside an agent scope.
+                  fsReleaseLock!(lid, *holder, *relCh) |
                   for (@_ <- relCh) { retCh!(innerReply) }
                 }
               }
@@ -7780,7 +7798,9 @@ in {
               innerCh!(*callback) |
               for (@innerReply <- callback) {
                 new relCh in {
-                  fsReleaseLock!(lid, *relCh) |
+                  // S4.7 follow-up: mirror of withSequentialLock —
+                  // pass `*holder` from the contract param.
+                  fsReleaseLock!(lid, *holder, *relCh) |
                   for (@_ <- relCh) { retCh!(innerReply) }
                 }
               }
@@ -7885,13 +7905,22 @@ in {
   // The `already` arm matches ANY payload the cell can carry
   // (idempotent-release invariant: (lid, true) or any other
   // tuple shape); it never fires fsReleaseLock a second time.
+  //
+  // S4.7 follow-up (2026-09-11): the lockCell tuple format bumped
+  // from `(lockId, released_bool)` to `(lockId, released_bool,
+  // holder)` so this helper can pass the acquiring cap's holder
+  // identity to `fs_release_lock` (arity 3 post-hardening).
+  // Every seed site in File.rho stores `(lid, false, *this)` where
+  // `this` is the acquiring File cap.  On termination, this helper
+  // extracts and forwards the holder to `fsReleaseLock!`.  See
+  // auto-memory `fileio_wave4_security_followups.md` § Item 2.
   contract releaseSeqLockOnce(lockCell, doneCh) = {
     for (@lockState <- lockCell) {
       match lockState {
-        (lockId, false) => {
-          lockCell!((lockId, true)) |
+        (lockId, false, holder) => {
+          lockCell!((lockId, true, holder)) |
           new relCh in {
-            fsReleaseLock!(lockId, *relCh) |
+            fsReleaseLock!(lockId, holder, *relCh) |
             for (@_r <- relCh) { doneCh!(Nil) }
           }
         }

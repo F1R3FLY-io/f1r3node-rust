@@ -1649,7 +1649,11 @@ mod tests {
             // explicit wait: Bool at the penultimate slot.
             ("lockRange", 8), // (fd, offset, length, mode, holder, cmode, wait, ack)
             ("lockSequential", 5), // (fd, holder, cmode, wait, ack)
-            ("releaseLock", 2), // (lockId, ack)
+            // S4.7 follow-up (2026-09-11 hardening): arity 2 → 3
+            // adding `holder` at slot 1.  Public-blockchain threat
+            // model: lockIds are on-chain observable; the registry
+            // must not release solely on lockId match.
+            ("releaseLock", 3), // (lockId, holder, ack)
             // Phase 8 slice 8a step-4 — File.close sweep native (X-1 §901).
             ("releaseAllForHolder", 2), // (holder, ack)
         ];
@@ -2347,7 +2351,15 @@ mod tests {
         //   snapshot.rs / wal.rs don't affect the composed source;
         //   Rholang-side edits roll the composed hash.  Hard-fork-
         //   free per the f1r3node_no_running_network invariant.
-        const EXPECTED: &str = "854a5ef79f872f892a8cc2f739a05557d64697783f8436ebb28d8972c26e2bf5";
+        // S4.7 follow-up (2026-09-11 hardening): rolled forward for
+        // the fsReleaseLock arity 2 → 3 hard-fork surface bump.
+        // LockToken constructor takes `(lid, holder)`; every
+        // fsReleaseLock! call site in File.rho passes holder;
+        // releaseSeqLockOnce's lockCell tuple format bumped to
+        // `(lockId, releasedFlag, holder)`; the URN arity
+        // registration bumps to 3.  See auto-memory
+        // `fileio_wave4_security_followups.md` § Item 2.
+        const EXPECTED: &str = "76116af6569c9019a6eef31e08fc0688c5de4f7ef3de7472cdbe4932f5337b1f";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
@@ -2431,7 +2443,9 @@ mod tests {
         // Pinned 2026-09-08 (M-40 landing).
         // Rolled 2026-09-08 by M-13 composed-scope fix (see the
         //   `compose_fs_genesis_source_golden_hex` docstring).
-        const EXPECTED: &str = "8fd88246c29be2e772b41363ca56759de64a3436b26591a12463a60b78c02080";
+        // S4.7 follow-up (2026-09-11 hardening): rolled for arity
+        // 2 → 3 + lockCell format bump.
+        const EXPECTED: &str = "cc8a6275e09d24550d19977fc73e7047f89d423e85aae2f3c204e1d53551c820";
         assert_eq!(
             hex, EXPECTED,
             "M-40: compose_fs_genesis_source() hash for non-empty bundle \
@@ -2516,7 +2530,9 @@ mod tests {
         // Pinned 2026-09-08 (M-40 S4 review-fix landing).
         // Rolled 2026-09-08 by M-13 composed-scope fix (see the
         //   `compose_fs_genesis_source_golden_hex` docstring).
-        const EXPECTED: &str = "f016d1dc40c039bc39411e748e594f420f85d7db00ba22ee5c0325518ba1f7f5";
+        // S4.7 follow-up (2026-09-11 hardening): rolled for arity
+        // 2 → 3 + lockCell format bump.
+        const EXPECTED: &str = "1629eab79752fe8d6829e616cac169cb4a8bf7214687a27ea6a297e8342ba759";
         assert_eq!(
             hex, EXPECTED,
             "M-40 review-fix (S4): compose_fs_genesis_source() hash for \

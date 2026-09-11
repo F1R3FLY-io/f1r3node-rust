@@ -45,27 +45,42 @@ pub struct FsReleaseLockHandler;
 
 pub struct FsReleaseLockArgs {
     lock_id: u64,
+    holder: Par,
 }
 
 impl FsHandler for FsReleaseLockHandler {
     const NAME: &'static str = "fs_release_lock";
-    const ARITY: usize = 2; // (lock_id, ack)
+    // S4.7 follow-up (2026-09-11 hardening): arity 2 → 3 adding
+    // `holder: Par` at slot 1.  Hard-fork surface bump — the URN
+    // arity registration in fs_genesis.rs, the LockToken agent's
+    // constructor + release method, every fsReleaseLock! call site
+    // in File.rho, and the stream-lifetime lockCell tuple format
+    // all move in lockstep.  See auto-memory
+    // `fileio_wave4_security_followups.md` § Item 2.
+    const ARITY: usize = 3; // (lock_id, holder, ack)
 
     type Args = FsReleaseLockArgs;
 
     fn parse_content(args: &[Par]) -> Result<FsReleaseLockArgs, Box<HandlerReply>> {
-        let [id_par] = args else {
-            return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected (u64)"));
+        let [id_par, holder_par] = args else {
+            return Err(HandlerReply::boxed_err(
+                FSERR_BAD_ARG,
+                "expected (u64, holder)",
+            ));
         };
-        // Original handler required n >= 0 for the u64 slot (unlike
-        // fd slots which bit-preserve via `as u64`).  Reject negatives
-        // as bad-arg; lock IDs are always non-negative in the
-        // registry's u64 space.
         let lock_id = match RhoNumber::unapply(id_par) {
             Some(n) if n >= 0 => n as u64,
-            _ => return Err(HandlerReply::boxed_err(FSERR_BAD_ARG, "expected (u64)")),
+            _ => {
+                return Err(HandlerReply::boxed_err(
+                    FSERR_BAD_ARG,
+                    "expected (u64, holder)",
+                ))
+            }
         };
-        Ok(FsReleaseLockArgs { lock_id })
+        Ok(FsReleaseLockArgs {
+            lock_id,
+            holder: holder_par.clone(),
+        })
     }
 
     fn pre_charge_cost() -> crate::rust::interpreter::accounting::costs::Cost {
@@ -77,10 +92,11 @@ impl FsHandler for FsReleaseLockHandler {
         args: FsReleaseLockArgs,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
+            let holder = holder_id_of(&args.holder);
             match ctx
                 .handles
                 .lock_registry
-                .release(LockId::from(args.lock_id))
+                .release(LockId::from(args.lock_id), &holder)
             {
                 Ok(()) => HandlerReply::ok(ok_bare()),
                 Err(le) => HandlerReply::Err(lock_err_reply(le)),
