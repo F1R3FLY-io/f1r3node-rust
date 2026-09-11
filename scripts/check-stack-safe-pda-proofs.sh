@@ -575,8 +575,8 @@ rocq_check_modules "PathMap physical ownership" \
   StackSafePDA.PathMapPhysicalOwnership \
   StackSafePDA.PathMapPhysicalOwnershipMutants
 rocq_compile_with_closed_count \
-  theories/PathMapReversePruneTeardown.v 23 \
-  "the exact 25-primary/10-quarantine PathMap teardown authority and scoped production policies"
+  theories/PathMapReversePruneTeardown.v 32 \
+  "the exact 25-primary/10-quarantine PathMap teardown authority, scoped policies and eight navigation invariants"
 rocq_compile_with_closed_count \
   theories/PathMapReversePruneTeardownMutants.v 13 \
   "the exact 27-teardown/13-quarantine PathMap teardown controls"

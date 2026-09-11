@@ -1968,6 +1968,42 @@ prove those values were initially correct. The runner checks twelve ownership/li
 closed-context reports, three control reports, kernel acceptance, and exactly three executed
 Rust gateway tests. The manifest test checks inventory linkage only.
 
+### Compressed teardown navigation refinement (2026-09-11)
+
+`PathMapReversePruneTeardown.NavigationRefinement` independently computes scalar
+and unary-compressed rightmost descent over the existing ordered trie model.
+Expanding compressed route chunks gives the scalar route and the same selected
+leaf and deferred continuation. Reconstructing that continuation gives the exact
+original drain trace; composing it with Phase A preserves real-value disposal
+order and one-logical-edge pruning. Ghost continuations describe traces and are
+not proposed runtime allocations. Route entries are ordered child ordinals, not
+native byte labels or physical node offsets.
+
+The complete eight-entry `navigation_catalog` is proved duplicate-free and binds
+every constructor. Its required native bindings are extracted below **before
+runtime implementation**; the new Rust bindings are not yet executed or claimed
+complete. Existing semantic controls remain required rather than being replaced.
+
+| Catalog invariant | Required native/property binding |
+|---|---|
+| `ExpandedRouteInvariant` | Compare bytewise greatest-child descent against borrowed-read compressed navigation on every generated topology and starting focus; expanded suffixes agree exactly. |
+| `TerminalLeafInvariant` | The selected suffix ends at the same existing leaf; after the read borrow closes, direct write descent reaches that leaf without extending topology. Include dangling leaves. |
+| `GreatestChildInvariant` | Dense byte sets and asymmetric sibling chains select the lexicographically greatest child, including 0 and 255. |
+| `ExactContinuationInvariant` | Resuming the unchanged bubble and sibling traversal matches the scalar reference's complete barrier/prune trace. |
+| `TerminalTraceInvariant` | Whole two-phase generated drains agree in real-value removal, topology completion and all observer events. |
+| `DisposalAndPruneInvariant` | Preserve exact preorder disposal, no synthetic-value disposal, edge conservation and maximum prune width one; retain CoW sibling and small-stack controls. |
+| `CompressedLineWitnessInvariant` | Long unary/value-free lines use a nonzero compressed jump and reach the scalar leaf; instrument navigation separately from bubble work. |
+| `GreatestBranchWitnessInvariant` | Unequal sibling chains select the greatest branch and then resume every remaining branch in the reference order. |
+
+All nine newly printed laws are closed; the complete base theory reports 32
+closed contexts and independent kernel checking passes. The first three compiler
+attempts preserve local proof-script failures before the successful fourth run.
+These conclusions do not prove native zipper borrowing, private sentinel/layout
+behavior, allocation bounds or performance. The proposed runtime uses a borrowed
+read cursor plus one reusable relative-suffix buffer, not an owned interior trie.
+The existing one-edge barrier/prune algorithm remains unchanged until its own
+contract is separately revised. See journal J-145 for evidence and limitations.
+
 ### Recorded qualification
 
 Six current modules were compiled from source and kernel-checked together: physical ownership

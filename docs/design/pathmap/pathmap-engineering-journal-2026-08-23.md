@@ -10524,6 +10524,59 @@ the bubble's per-parent operations or justify a whole-teardown speedup claim.
 | `canonical-sexpr-debug-isolated.log` (timed out) | `381fc6f790f088fc4fd1e2722b01688f531e36b2ef861a68c97757c5122ffb9d` |
 | `canonical-sexpr-debug-parent.log` (bounded sample) | `9406297917e5b9576f978593da2d79e3126cab8f79b865310872cf10f3e98ecc` |
 
+### J-145 — 2026-09-11: prove navigation refinement before changing teardown
+
+**FORMAL RESULT.** The existing `PathMapReversePruneTeardown.v` now contains
+independent scalar and unary-compressed navigation definitions. Their expanded
+routes, terminal leaves and deferred continuations agree. A separate theorem
+reconstructs the existing drain trace from the selected leaf and continuation;
+composition preserves the complete two-phase trace, real-value disposal order
+and exactly one logical edge per prune. Concrete line and asymmetric-branch
+witnesses show actual route grouping, and an exhaustive eight-invariant catalog
+records the proof-to-test obligations. The complete native-binding matrix is in
+the proof README under **Compressed teardown navigation refinement**.
+
+**VERIFICATION / NEGATIVES.** The fourth compiler run passes with 32 closed
+contexts, including nine new printed conclusions. Independent kernel checking
+passes in 12.15 seconds wall / 11.94 seconds CPU, maximum RSS 280,092 KiB and
+zero swaps. Proof commands use systemd with a 2 GiB hard limit, 1.5 GiB high
+threshold, zero swap, one-core quota and a 900-second time bound. The first three
+compiler runs retain local unfolding, list-identity and catalog-tactic failures;
+they were repaired without introducing assumptions. Source and whitespace checks
+pass. Existing dependent control modules still require their normal rebuild
+against this changed base; the complete campaign proof/runtime gate is not claimed.
+
+| Evidence | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardown.v` | `b1af59f57668a4323c91e4aeaf1f6855a1ea1dabf9d4b9f4d220df522715d433` |
+| `target/verification/pathmap-teardown-navigation-coqc-r4.log` | `0bfb182c70b745fdbce2d5654a12d22b7e7fd7b5e9d72c76ff5ddd15c623bcfe` |
+| `target/verification/pathmap-teardown-navigation-kernel-r4.log` | `26c761f18e86fda479613fd0ef65fd1aaa710a9908fe869981226f253218b8ba` |
+
+**REALIZATION BOUNDARY.** Model routes contain ordered child ordinals, not native
+byte labels or private compressed-node offsets. Ghost continuations are semantic
+trace descriptions, not a runtime trace buffer. Native borrow/focus behavior,
+exact-leaf descent through dangling/dense representations, CoW preservation,
+allocation bounds and latency still require source and executable evidence.
+No production Rust change, relaxed pruning invariant or speedup is claimed.
+The selected first candidate forks a borrowed read cursor, computes a compressed
+rightmost suffix, closes that borrow, and moves the existing write cursor to the
+same leaf using reusable scratch. The parent-by-parent bubble remains intact.
+The full/isolated debug timeouts in J-144 remain negative acceptance evidence
+until the unchanged tests pass; task 6441 reuses task 6501's earlier controls.
+
+**DEPENDENT-COHORT FOLLOW-UP.** The six existing source modules are rebuilt and
+kernel-checked together: physical ownership/control counts 12/3, reverse
+teardown/control counts 32/13, and channel-prefix replacement/control counts
+5/2, totaling 67 closed contexts. Combined kernel checking passes in 12.35
+seconds, maximum RSS 275,688 KiB and zero swaps. The largest measured compiler
+RSS is 436,544 KiB. The initial driver attempt fails because of systemd argument
+expansion; the corrected driver disables that expansion and retains the failed
+launch log separately. No unrelated proof source changes in this qualification.
+`target/verification/navigation-cohort-kernel.log` has SHA-256
+`dbdc42a6e74c5d93734ccdb2c88ee0878376c0a28fdb0a62daca32d61ae40797`.
+This discharges the focused dependent rebuild noted above, not the full campaign
+proof/runtime gate or the eight new native navigation bindings.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

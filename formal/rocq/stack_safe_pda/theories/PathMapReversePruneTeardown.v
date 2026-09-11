@@ -1973,6 +1973,361 @@ Proof.
   all: intros; reflexivity.
 Qed.
 
+Module NavigationRefinement.
+
+Record navigation_plan (Route : Type) := NavigationPlan {
+  plan_route : Route;
+  plan_leaf : option payload;
+  plan_resume : list teardown_event;
+  plan_unary : bool
+}.
+
+Arguments NavigationPlan {Route}.
+
+Definition has_payload (cell : option payload) : bool :=
+  match cell with Some _ => true | None => false end.
+
+Definition unary_root (cell : option payload) (children : forest) : bool :=
+  match cell, children with
+  | None, FCons _ FNil => true
+  | _, _ => false
+  end.
+
+Definition append_resume {Route} (plan : navigation_plan Route)
+    (events : list teardown_event) : navigation_plan Route :=
+  NavigationPlan (plan_route plan) (plan_leaf plan)
+    (plan_resume plan ++ events) (plan_unary plan).
+
+Definition finish_plan {Route} (plan : navigation_plan Route)
+    : list teardown_event :=
+  dispose_cell (plan_leaf plan) ++ plan_resume plan.
+
+Definition finish_forest {Route}
+    (selected : option (nat * navigation_plan Route)) : list teardown_event :=
+  match selected with None => [] | Some (_, plan) => finish_plan plan end.
+
+Fixpoint scalar_tree (subject : trie) : navigation_plan (list nat) :=
+  match subject with
+  | Node cell children =>
+      match scalar_forest children (has_payload cell) with
+      | None => NavigationPlan [] cell [] false
+      | Some (index, plan) =>
+          NavigationPlan (index :: plan_route plan) (plan_leaf plan)
+            (plan_resume plan ++ dispose_cell cell) (unary_root cell children)
+      end
+  end
+with scalar_forest (subjects : forest) (parent_value : bool)
+    : option (nat * navigation_plan (list nat)) :=
+  match subjects with
+  | FNil => None
+  | FCons subject rest =>
+      match scalar_forest rest parent_value with
+      | None => Some (0, append_resume (scalar_tree subject) (prune_segment parent_value))
+      | Some (index, plan) =>
+          Some (S index, append_resume plan
+            (drain_tree subject ++ prune_segment parent_value))
+      end
+  end.
+
+Definition add_compressed_edge (unary : bool) (index : nat)
+    (chunks : list (list nat)) : list (list nat) :=
+  if unary then
+    match chunks with
+    | [] => [[index]]
+    | chunk :: rest => (index :: chunk) :: rest
+    end
+  else [index] :: chunks.
+
+Fixpoint compressed_tree (subject : trie) : navigation_plan (list (list nat)) :=
+  match subject with
+  | Node cell children =>
+      match compressed_forest children (has_payload cell) with
+      | None => NavigationPlan [] cell [] false
+      | Some (index, plan) =>
+          NavigationPlan
+            (add_compressed_edge (plan_unary plan) index (plan_route plan))
+            (plan_leaf plan) (plan_resume plan ++ dispose_cell cell)
+            (unary_root cell children)
+      end
+  end
+with compressed_forest (subjects : forest) (parent_value : bool)
+    : option (nat * navigation_plan (list (list nat))) :=
+  match subjects with
+  | FNil => None
+  | FCons subject rest =>
+      match compressed_forest rest parent_value with
+      | None => Some (0, append_resume (compressed_tree subject) (prune_segment parent_value))
+      | Some (index, plan) =>
+          Some (S index, append_resume plan
+            (drain_tree subject ++ prune_segment parent_value))
+      end
+  end.
+
+Definition expand_plan (plan : navigation_plan (list (list nat)))
+    : navigation_plan (list nat) :=
+  NavigationPlan (concat (plan_route plan)) (plan_leaf plan)
+    (plan_resume plan) (plan_unary plan).
+
+Definition expand_forest
+    (selected : option (nat * navigation_plan (list (list nat))))
+    : option (nat * navigation_plan (list nat)) :=
+  match selected with
+  | None => None
+  | Some (index, plan) => Some (index, expand_plan plan)
+  end.
+
+Lemma compressed_edge_expands_exactly : forall unary index chunks,
+  concat (add_compressed_edge unary index chunks) = index :: concat chunks.
+Proof. intros [] index [|chunk rest]; reflexivity. Qed.
+
+Lemma expansion_preserves_resume : forall plan events,
+  expand_plan (append_resume plan events) = append_resume (expand_plan plan) events.
+Proof. reflexivity. Qed.
+
+Theorem compressed_and_scalar_descent_agree :
+  (forall subject, expand_plan (compressed_tree subject) = scalar_tree subject) /\
+  (forall subjects parent_value,
+    expand_forest (compressed_forest subjects parent_value) =
+      scalar_forest subjects parent_value).
+Proof.
+  apply trie_forest_induction.
+  - intros cell children IH. simpl.
+    specialize (IH (has_payload cell)).
+    destruct (compressed_forest children (has_payload cell)) as [[index plan]|] eqn:E;
+      simpl in IH; rewrite <- IH; simpl; try reflexivity.
+    unfold expand_plan. simpl. rewrite compressed_edge_expands_exactly. reflexivity.
+  - reflexivity.
+  - intros subject IHsubject rest IHrest parent_value. simpl.
+    specialize (IHrest parent_value).
+    destruct (compressed_forest rest parent_value) as [[index plan]|] eqn:E;
+      simpl in IHrest; rewrite <- IHrest; simpl.
+    + now rewrite expansion_preserves_resume.
+    + now rewrite expansion_preserves_resume, IHsubject.
+Qed.
+
+Lemma finish_append_resume : forall Route (plan : navigation_plan Route) events,
+  finish_plan (append_resume plan events) = finish_plan plan ++ events.
+Proof. intros. unfold finish_plan, append_resume. simpl. now rewrite app_assoc. Qed.
+
+Theorem scalar_descent_reconstructs_exact_drain :
+  (forall subject, finish_plan (scalar_tree subject) = drain_tree subject) /\
+  (forall subjects parent_value,
+    finish_forest (scalar_forest subjects parent_value) = drain_forest subjects parent_value).
+Proof.
+  apply trie_forest_induction.
+  - intros cell children IH. simpl.
+    specialize (IH (has_payload cell)).
+    destruct (scalar_forest children (has_payload cell)) as [[index plan]|] eqn:E;
+      simpl in IH.
+    + unfold has_payload in IH. unfold finish_plan. simpl.
+      rewrite app_assoc. rewrite <- IH. reflexivity.
+    + unfold has_payload in IH. unfold finish_plan. simpl.
+      rewrite <- IH. simpl. apply app_nil_r.
+  - reflexivity.
+  - intros subject IHsubject rest IHrest parent_value. simpl.
+    specialize (IHrest parent_value).
+    destruct (scalar_forest rest parent_value) as [[index plan]|] eqn:E;
+      simpl in IHrest; cbn [finish_forest].
+    + rewrite finish_append_resume, IHrest. reflexivity.
+    + rewrite finish_append_resume, IHsubject, <- IHrest. reflexivity.
+Qed.
+
+Fixpoint select_child (index : nat) (subjects : forest) : option trie :=
+  match index, subjects with
+  | _, FNil => None
+  | 0, FCons subject _ => Some subject
+  | S index, FCons _ rest => select_child index rest
+  end.
+
+Fixpoint follow_route (route : list nat) (subject : trie) : option trie :=
+  match route with
+  | [] => Some subject
+  | index :: rest =>
+      match subject with Node _ children =>
+        match select_child index children with
+        | None => None
+        | Some child => follow_route rest child
+        end
+      end
+  end.
+
+Lemma scalar_forest_none_is_empty : forall subjects parent_value,
+  scalar_forest subjects parent_value = None -> subjects = FNil.
+Proof.
+  intros [|subject rest] parent_value E; auto.
+  simpl in E. destruct (scalar_forest rest parent_value) as [[index plan]|]; discriminate.
+Qed.
+
+Theorem scalar_descent_reaches_a_leaf :
+  (forall subject,
+    follow_route (plan_route (scalar_tree subject)) subject =
+      Some (Node (plan_leaf (scalar_tree subject)) FNil)) /\
+  (forall subjects parent_value index plan,
+    scalar_forest subjects parent_value = Some (index, plan) ->
+    match select_child index subjects with
+    | None => False
+    | Some child => follow_route (plan_route plan) child = Some (Node (plan_leaf plan) FNil)
+    end).
+Proof.
+  apply trie_forest_induction.
+  - intros cell children IH. simpl.
+    destruct (scalar_forest children (has_payload cell)) as [[index plan]|] eqn:E.
+    + specialize (IH _ _ _ E). simpl.
+      destruct (select_child index children); simpl in *; auto; contradiction.
+    + apply scalar_forest_none_is_empty in E. subst. reflexivity.
+  - intros parent_value index plan E. discriminate.
+  - intros subject IHsubject rest IHrest parent_value index plan E. simpl in E.
+    destruct (scalar_forest rest parent_value) as [[selected tail]|] eqn:F;
+      inversion E; subst; clear E; simpl.
+    + exact (IHrest _ _ _ F).
+    + exact IHsubject.
+Qed.
+
+Fixpoint forest_width (subjects : forest) : nat :=
+  match subjects with FNil => 0 | FCons _ rest => S (forest_width rest) end.
+
+Theorem scalar_forest_selects_greatest_child : forall subjects parent_value index plan,
+  scalar_forest subjects parent_value = Some (index, plan) ->
+  S index = forest_width subjects.
+Proof.
+  induction subjects as [|subject rest IH]; intros parent_value index plan E; simpl in E.
+  - discriminate.
+  - destruct (scalar_forest rest parent_value) as [[selected tail]|] eqn:F;
+      inversion E; subst; clear E; simpl.
+    + f_equal. exact (IH _ _ _ F).
+    + apply scalar_forest_none_is_empty in F. subst. reflexivity.
+Qed.
+
+Theorem compressed_descent_reaches_the_same_leaf : forall subject,
+  follow_route (concat (plan_route (compressed_tree subject))) subject =
+    Some (Node (plan_leaf (compressed_tree subject)) FNil).
+Proof.
+  intro subject. pose proof (proj1 scalar_descent_reaches_a_leaf subject) as H.
+  rewrite <- (proj1 compressed_and_scalar_descent_agree subject) in H.
+  exact H.
+Qed.
+
+Theorem compressed_descent_reconstructs_exact_drain : forall subject,
+  finish_plan (compressed_tree subject) = drain_tree subject.
+Proof.
+  intro subject. pose proof (proj1 scalar_descent_reconstructs_exact_drain subject) as H.
+  rewrite <- (proj1 compressed_and_scalar_descent_agree subject) in H.
+  exact H.
+Qed.
+
+Definition compressed_terminal_trace (subject : trie) : list teardown_event :=
+  phase_a_value_trace subject ++ BeginTopologyPhase ::
+    finish_plan (compressed_tree (erase_values_tree subject)).
+
+Theorem compressed_navigation_preserves_terminal_trace : forall subject,
+  compressed_terminal_trace subject = terminal_two_phase_trace subject.
+Proof.
+  intro subject. unfold compressed_terminal_trace.
+  rewrite compressed_descent_reconstructs_exact_drain. reflexivity.
+Qed.
+
+Theorem compressed_navigation_preserves_disposal_and_one_edge_pruning : forall subject,
+  removed_without_prune (compressed_terminal_trace subject) = preorder_payloads_tree subject /\
+  disposed_values (compressed_terminal_trace subject) = preorder_payloads_tree subject /\
+  prune_widths (compressed_terminal_trace subject) = repeat 1 (tree_edges subject).
+Proof.
+  intro subject. rewrite compressed_navigation_preserves_terminal_trace.
+  pose proof (terminal_two_phase_trace_is_exact_and_topology_complete subject)
+    as [removed [disposed [_ [_ pruned]]]]. auto.
+Qed.
+
+Example compressed_line_nonvacuity :
+  plan_route (compressed_tree (topology_line 8)) = [repeat 0 8] /\
+  plan_route (scalar_tree (topology_line 8)) = repeat 0 8.
+Proof. vm_compute. auto. Qed.
+
+Example compressed_branch_nonvacuity :
+  plan_route (compressed_tree
+    (Node None (FCons (topology_line 2) (FCons (topology_line 3) FNil)))) =
+    [[1; 0; 0; 0]].
+Proof. reflexivity. Qed.
+
+Inductive navigation_invariant :=
+| ExpandedRouteInvariant
+| TerminalLeafInvariant
+| GreatestChildInvariant
+| ExactContinuationInvariant
+| TerminalTraceInvariant
+| DisposalAndPruneInvariant
+| CompressedLineWitnessInvariant
+| GreatestBranchWitnessInvariant.
+
+Definition navigation_catalog : list navigation_invariant :=
+  [ExpandedRouteInvariant; TerminalLeafInvariant; GreatestChildInvariant;
+   ExactContinuationInvariant; TerminalTraceInvariant; DisposalAndPruneInvariant;
+   CompressedLineWitnessInvariant; GreatestBranchWitnessInvariant].
+
+Definition navigation_binding (invariant : navigation_invariant) : Prop :=
+  match invariant with
+  | ExpandedRouteInvariant => forall subject,
+      expand_plan (compressed_tree subject) = scalar_tree subject
+  | TerminalLeafInvariant => forall subject,
+      follow_route (concat (plan_route (compressed_tree subject))) subject =
+        Some (Node (plan_leaf (compressed_tree subject)) FNil)
+  | GreatestChildInvariant => forall subjects parent_value index plan,
+      scalar_forest subjects parent_value = Some (index, plan) ->
+      S index = forest_width subjects
+  | ExactContinuationInvariant => forall subject,
+      finish_plan (compressed_tree subject) = drain_tree subject
+  | TerminalTraceInvariant => forall subject,
+      compressed_terminal_trace subject = terminal_two_phase_trace subject
+  | DisposalAndPruneInvariant => forall subject,
+      removed_without_prune (compressed_terminal_trace subject) = preorder_payloads_tree subject /\
+      disposed_values (compressed_terminal_trace subject) = preorder_payloads_tree subject /\
+      prune_widths (compressed_terminal_trace subject) = repeat 1 (tree_edges subject)
+  | CompressedLineWitnessInvariant =>
+      plan_route (compressed_tree (topology_line 8)) = [repeat 0 8] /\
+      plan_route (scalar_tree (topology_line 8)) = repeat 0 8
+  | GreatestBranchWitnessInvariant =>
+      plan_route (compressed_tree
+        (Node None (FCons (topology_line 2) (FCons (topology_line 3) FNil)))) =
+        [[1; 0; 0; 0]]
+  end.
+
+Theorem every_navigation_invariant_is_bound : forall invariant,
+  navigation_binding invariant.
+Proof.
+  intros []; cbn [navigation_binding].
+  - exact (proj1 compressed_and_scalar_descent_agree).
+  - exact compressed_descent_reaches_the_same_leaf.
+  - exact scalar_forest_selects_greatest_child.
+  - exact compressed_descent_reconstructs_exact_drain.
+  - exact compressed_navigation_preserves_terminal_trace.
+  - exact compressed_navigation_preserves_disposal_and_one_edge_pruning.
+  - exact compressed_line_nonvacuity.
+  - exact compressed_branch_nonvacuity.
+Qed.
+
+Theorem navigation_catalog_is_unique_complete_and_exact :
+  NoDup navigation_catalog /\
+  Forall navigation_binding navigation_catalog /\
+  length navigation_catalog = 8 /\
+  (forall invariant, In invariant navigation_catalog).
+Proof.
+  split.
+  - repeat constructor; simpl; intuition discriminate.
+  - split.
+    + apply Forall_forall. intros invariant _. apply every_navigation_invariant_is_bound.
+    + split; [reflexivity|]. intros []; simpl; tauto.
+Qed.
+
+Print Assumptions compressed_and_scalar_descent_agree.
+Print Assumptions scalar_descent_reconstructs_exact_drain.
+Print Assumptions scalar_descent_reaches_a_leaf.
+Print Assumptions scalar_forest_selects_greatest_child.
+Print Assumptions compressed_descent_reaches_the_same_leaf.
+Print Assumptions compressed_descent_reconstructs_exact_drain.
+Print Assumptions compressed_navigation_preserves_terminal_trace.
+Print Assumptions compressed_navigation_preserves_disposal_and_one_edge_pruning.
+Print Assumptions navigation_catalog_is_unique_complete_and_exact.
+
+End NavigationRefinement.
+
 Print Assumptions drain_detaches_originals_exactly_once_in_reverse_postorder.
 Print Assumptions drain_prunes_every_logical_edge_once.
 Print Assumptions drain_transfers_every_par_to_one_explicit_pda_job.
