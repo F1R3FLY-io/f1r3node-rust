@@ -413,4 +413,261 @@ mod tests {
         let augmented = augment_network_id("my-corporate-shard");
         assert!(augmented.starts_with("my-corporate-shard#cf"));
     }
+
+    /// T-23 (2026-09-11, wave-4 Phase 1): source-scan pin ensuring no
+    /// `register_consensus_constant!` invocation — nor its target
+    /// `const` declaration — sits inside a platform-`#[cfg(...)]`
+    /// gate.  A platform-gated entry (e.g.,
+    /// `#[cfg(target_os = "linux")]
+    /// register_consensus_constant!(...)`) would vanish from
+    /// `CONSENSUS_FOLD` on the excluded platform, producing a
+    /// different fingerprint per OS → shard splits by validator
+    /// platform.
+    ///
+    /// The runtime `CONSENSUS_FOLD.len() == EXPECTED_ENTRY_COUNT`
+    /// guard (`consensus_fold_slice_has_expected_entry_count`)
+    /// catches truncation at boot on the excluded platform.  This
+    /// test catches the same class of drift at *test* time on the
+    /// platform CI runs on, so a regression doesn't need to wait
+    /// for a cross-platform smoke to surface.
+    ///
+    /// The scan flags any `#[cfg(...)]`, `#[cfg_attr(...)]`, or
+    /// `cfg!(...)` predicate containing `target_os`, `target_arch`,
+    /// `target_family`, `target_pointer_width`, `unix`, or `windows`
+    /// within K=15 lines preceding a `register_consensus_constant!`
+    /// invocation or its `name = FOO` const declaration.
+    /// `#[cfg(test)]`/`cfg!(test)` are allowed (they don't affect
+    /// release builds).
+    #[test]
+    fn no_consensus_constant_sits_inside_platform_cfg_gate() {
+        const WINDOW: usize = 15;
+
+        fn is_platform_cfg_line(line: &str) -> bool {
+            let l = line.trim();
+            if l.starts_with("//") || l.starts_with("///") || l.starts_with("*") {
+                return false;
+            }
+            if l.contains("cfg(test)")
+                || l.contains("cfg!(test)")
+                || l.contains("cfg(all(test")
+                || l.contains("cfg_attr(test")
+            {
+                return false;
+            }
+            let has_attr = l.contains("#[cfg(") || l.contains("#[cfg_attr(") || l.contains("cfg!(");
+            let has_platform_pred = l.contains("target_os")
+                || l.contains("target_arch")
+                || l.contains("target_family")
+                || l.contains("target_pointer_width")
+                || l.contains("cfg(unix)")
+                || l.contains("cfg(windows)")
+                || l.contains("cfg!(unix)")
+                || l.contains("cfg!(windows)");
+            has_attr && has_platform_pred
+        }
+
+        fn extract_const_name(macro_line: &str) -> Option<String> {
+            let name_idx = macro_line.find("name = ")?;
+            let after = &macro_line[name_idx + "name = ".len()..];
+            let end = after
+                .find(',')
+                .or_else(|| after.find(')'))
+                .unwrap_or(after.len());
+            let name = after[..end].trim();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        }
+
+        let io_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/rust/interpreter/io");
+        let mut offending: Vec<String> = Vec::new();
+        let mut sites_scanned = 0usize;
+
+        let entries = std::fs::read_dir(io_dir).expect("io/ dir readable");
+        for entry in entries {
+            let entry = entry.expect("readable entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("io/ .rs file readable");
+            let lines: Vec<&str> = content.lines().collect();
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
+
+            for (idx, line) in lines.iter().enumerate() {
+                if !line.contains("register_consensus_constant!") {
+                    continue;
+                }
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//")
+                    || trimmed.starts_with("///")
+                    || trimmed.starts_with("*")
+                    || trimmed.starts_with("macro_rules!")
+                {
+                    continue;
+                }
+                sites_scanned += 1;
+                let const_name = extract_const_name(line);
+
+                let start = idx.saturating_sub(WINDOW);
+                for (li, l) in lines[start..idx].iter().enumerate() {
+                    if is_platform_cfg_line(l) {
+                        offending.push(format!(
+                            "{}:{}: register_consensus_constant! (name = {:?}) \
+                             preceded by platform-cfg at line {}: `{}`",
+                            file_name,
+                            idx + 1,
+                            const_name.as_deref().unwrap_or("?"),
+                            start + li + 1,
+                            l.trim(),
+                        ));
+                    }
+                }
+
+                if let Some(name) = &const_name {
+                    let const_pat_pub = format!("pub const {}:", name);
+                    let const_pat_bare = format!("const {}:", name);
+                    for (cidx, cline) in lines.iter().enumerate() {
+                        if cline.contains(&const_pat_pub) || cline.contains(&const_pat_bare) {
+                            let cstart = cidx.saturating_sub(WINDOW);
+                            for (li, l) in lines[cstart..cidx].iter().enumerate() {
+                                if is_platform_cfg_line(l) {
+                                    offending.push(format!(
+                                        "{}:{}: const `{}` declaration preceded \
+                                         by platform-cfg at line {}: `{}`",
+                                        file_name,
+                                        cidx + 1,
+                                        name,
+                                        cstart + li + 1,
+                                        l.trim(),
+                                    ));
+                                }
+                            }
+                            let cend = (cidx + 6).min(lines.len());
+                            for (li, l) in lines[cidx..cend].iter().enumerate() {
+                                if l.contains("cfg!(") && is_platform_cfg_line(l) {
+                                    offending.push(format!(
+                                        "{}:{}: const `{}` value uses platform \
+                                         `cfg!(...)` at line {}: `{}`",
+                                        file_name,
+                                        cidx + 1,
+                                        name,
+                                        cidx + li + 1,
+                                        l.trim(),
+                                    ));
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            sites_scanned >= EXPECTED_ENTRY_COUNT,
+            "T-23 self-check: expected to scan at least {} \
+             `register_consensus_constant!` invocations (matching \
+             `EXPECTED_ENTRY_COUNT`) but found {}.  The source-scan \
+             pin's file iteration is broken.",
+            EXPECTED_ENTRY_COUNT,
+            sites_scanned,
+        );
+        assert!(
+            offending.is_empty(),
+            "T-23: consensus-observable constants MUST NOT be \
+             platform-gated (would produce different fingerprints on \
+             different validator OSes → shard split by platform).  \
+             Offending sites:\n  - {}",
+            offending.join("\n  - "),
+        );
+    }
+
+    /// T-23 companion self-test (2026-09-11): verify the platform-cfg
+    /// detector actually FIRES on synthetic violations.  A silent
+    /// false-negative in `is_platform_cfg_line` would defeat the whole
+    /// point of the T-23 source-scan pin — the parent test would pass
+    /// on a compromised source with no signal that the detector is
+    /// broken.  This test exercises every predicate variant the parent
+    /// test relies on.
+    #[test]
+    fn t23_detector_fires_on_synthetic_platform_cfg_variants() {
+        // Repeats the parent's helper — kept local because it's a
+        // private inner fn.  Any drift here MUST match the parent.
+        fn is_platform_cfg_line(line: &str) -> bool {
+            let l = line.trim();
+            if l.starts_with("//") || l.starts_with("///") || l.starts_with("*") {
+                return false;
+            }
+            if l.contains("cfg(test)")
+                || l.contains("cfg!(test)")
+                || l.contains("cfg(all(test")
+                || l.contains("cfg_attr(test")
+            {
+                return false;
+            }
+            let has_attr = l.contains("#[cfg(") || l.contains("#[cfg_attr(") || l.contains("cfg!(");
+            let has_platform_pred = l.contains("target_os")
+                || l.contains("target_arch")
+                || l.contains("target_family")
+                || l.contains("target_pointer_width")
+                || l.contains("cfg(unix)")
+                || l.contains("cfg(windows)")
+                || l.contains("cfg!(unix)")
+                || l.contains("cfg!(windows)");
+            has_attr && has_platform_pred
+        }
+
+        // MUST FIRE — every shape a T-23 violation could take.
+        let violations = [
+            r#"#[cfg(target_os = "linux")]"#,
+            r#"#[cfg(target_os = "macos")]"#,
+            r#"#[cfg(target_arch = "x86_64")]"#,
+            r#"#[cfg(target_family = "unix")]"#,
+            r#"#[cfg(target_pointer_width = "64")]"#,
+            r#"#[cfg(unix)]"#,
+            r#"#[cfg(windows)]"#,
+            r#"#[cfg_attr(target_os = "linux", allow(dead_code))]"#,
+            r#"    #[cfg(any(target_os = "linux", target_os = "macos"))]"#,
+            r#"let x = if cfg!(target_os = "linux") { 100 } else { 200 };"#,
+            r#"cfg!(unix)"#,
+            r#"cfg!(windows)"#,
+        ];
+        for v in &violations {
+            assert!(
+                is_platform_cfg_line(v),
+                "T-23 detector MUST fire on `{v}` — a real platform-cfg \
+                 variant that would silently break fingerprint parity"
+            );
+        }
+
+        // MUST NOT FIRE — false-positive shapes that would break the
+        // parent test on legitimate code.
+        let allowed = [
+            "// #[cfg(target_os = \"linux\")]",           // comment
+            "/// #[cfg(target_os = \"linux\")]",          // doc comment
+            "* #[cfg(target_os = \"linux\")]",            // block-comment line
+            "#[cfg(test)]",                               // test-only allowed
+            "#[cfg(all(test, target_os = \"linux\"))]",   // test-scoped
+            "#[cfg_attr(test, allow(dead_code))]",        // test-only attr
+            "cfg!(test)",                                 // runtime test check
+            "let x = 100;",                               // unrelated code
+            "#[cfg(feature = \"foo\")]",                  // feature-gated, not platform
+            "pub const MAX_WAL_ENTRIES: usize = 65_536;", // plain const
+        ];
+        for a in &allowed {
+            assert!(
+                !is_platform_cfg_line(a),
+                "T-23 detector MUST NOT fire on `{a}` — legitimate \
+                 code that would produce false positives on the parent \
+                 test"
+            );
+        }
+    }
 }
