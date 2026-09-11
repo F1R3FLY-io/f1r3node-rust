@@ -26,6 +26,7 @@
       "casper/tests/batch2/validate_test.rs": "d2b2a5436a31da1021d634bbbbcf478cc53f812a2f9d3808f36f1d47bb765cb9",
       "docs/Glossary.md": "80071f667cd99d49858efb68227b1aac43689094ad40202c7e06524c38d7393e",
       "docs/ToDos.md": "8aec6f9a2b1f9dbeaf4a47b5e47a4926d1ef343f0c0ec25f4ea9acdd451a160b",
+      "docs/cbc-evidence/.gitattributes": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da",
       "docs/cbc-evidence/casper-src-rust-finality-deploy-lifecycle-rs.md": "6f05187d21932fb3178582857cb12742a02e1d0aac12034a86d9f04ab5008df4",
       "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md": "d1beaad52820cd00d45751153d48d346c83e0ad5a3144753bd6c3796427760f2",
       "docs/cbc-evidence/soak-d2-benchmark-2026-09-09/README.md": "4c6d36e151bf174d2aa69ea375b7cc960abee5d25766cd1110b39e006b603748",
