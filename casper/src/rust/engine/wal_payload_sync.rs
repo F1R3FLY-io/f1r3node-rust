@@ -1944,6 +1944,114 @@ mod tests {
         assert_eq!(std::fs::read(&outside_target).unwrap(), vec![0u8; 8]);
     }
 
+    /// S4.7 follow-up (2026-09-11): companion to
+    /// `apply_wal_slice_after_fetch_rejects_out_of_root_paths` that
+    /// exercises the bundle-relative branch of the S4.4 reorder.  A
+    /// WAL entry whose raw `path` is a bundle-relative prefix NOT in
+    /// `allowed_roots` (e.g. `/@evilbundle/...`) must be rejected by
+    /// the raw-path `check_path_allowed` BEFORE `path_map` runs — the
+    /// registry's identity fall-through on an unregistered prefix
+    /// would otherwise return the raw path as its own root, which
+    /// the S-1 `safe_descend_verified` step would still catch on
+    /// its identity check, but the raw-path gate rejects earlier and
+    /// with a more actionable error variant.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_rejects_bundle_relative_out_of_root() {
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        let payload = b"blocked-bundle-relative".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+        // Entry path is a bundle-relative prefix that is NOT among
+        // the applier's allowed_roots.  Under the S4.4 reorder the
+        // raw-path check fires before `path_map`, so this rejects
+        // early even though the registry has no mapping.
+        let wal = vec![write_entry("/@evilbundle/target", 0, &payload)];
+        let err = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            RootIdentityRegistry::new(),
+            vec![std::path::PathBuf::from(
+                casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX,
+            )],
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+            None,
+            None,
+        )
+        .await
+        .expect_err("bundle-relative out-of-root path must Err");
+        assert!(
+            matches!(err, BootApplyError::ApplierFailed { .. }),
+            "got {err:?}"
+        );
+    }
+
+    /// S4.7 follow-up (2026-09-11): positive companion to the reject
+    /// test above — a bundle-relative entry whose raw prefix DOES
+    /// match `allowed_roots` (`/@bundle`) passes the raw check, gets
+    /// remapped via the registry to the on-disk absolute, and the
+    /// applier writes to the remapped target.  Together with the
+    /// reject test this pins both branches of the S4.4 raw-path
+    /// dispatch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_accepts_bundle_relative_registered() {
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst_target = dst_dir.path().join("target");
+        std::fs::write(&dst_target, vec![0u8; 8]).unwrap();
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        let payload = b"accept".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+        // WAL entry uses the bundle-relative path shape produced by
+        // leader-side journal_write under Shape A.
+        let wal = vec![write_entry(
+            &format!(
+                "{}/target",
+                casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX,
+            ),
+            0,
+            &payload,
+        )];
+        // Registry maps `/@bundle` → `<dst_dir>` so path_map resolves
+        // the WAL entry's `/@bundle/target` to `<dst_dir>/target`.
+        let dst_identity =
+            rholang::rust::interpreter::io::path::capture_root_identity(dst_dir.path())
+                .expect("capture dst identity");
+        let registry = RootIdentityRegistry::new();
+        registry.register_with_remap(
+            std::path::PathBuf::from(
+                casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX,
+            ),
+            dst_dir.path().to_path_buf(),
+            dst_identity,
+        );
+        apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            registry,
+            vec![std::path::PathBuf::from(
+                casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX,
+            )],
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+            None,
+            None,
+        )
+        .await
+        .expect("bundle-relative registered path must apply");
+        let got = std::fs::read(&dst_target).unwrap();
+        assert_eq!(&got[..payload.len()], payload.as_slice());
+    }
+
     /// A synthetic ApplierError (via a missing sidecar entry —
     /// reached by NOT calling mark_resolved but manually
     /// pre-populating an already-resolved marker via

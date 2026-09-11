@@ -1823,29 +1823,64 @@ mod tests {
         );
     }
 
-    /// DD-7b-2 (a) Option 2 (2026-08-29): the follower-side
-    /// replay path must plumb the raw sig from
-    /// `processed_deploy.deploy.sig` into
+    /// DD-7b-2 (a) Option 2 (2026-08-29) + S4.3 (2026-09-11): the
+    /// follower-side replay path must plumb the protocol-canonical
+    /// deploy_id from `processed_deploy.deploy_id()` into
     /// `WalDeployScope::new_with_lock_sweep`'s 5th arg AND the
     /// shared `current_deploy_sig` cell as its 6th arg.  Symmetric
     /// with the leader-side pin
     /// `user_deploy_path_plumbs_deploy_sig_via_wal_deploy_scope`
     /// in `runtime.rs` — symmetric recording means any node whose
     /// block processing succeeded (leader OR follower) can serve
-    /// the Option 2 tier at boot to a later joiner.  A refactor
-    /// that dropped either half would silently disable the
-    /// follower-side index population; joiners relying on a
-    /// follower to serve would fall through to peer fetch.
+    /// the Option 2 tier at boot to a later joiner.
+    ///
+    /// A refactor that (a) reverted to `processed_deploy.deploy.sig`
+    /// (V6-incompatible key), (b) dropped the recorder input, or
+    /// (c) dropped the `current_deploy_sig` cell would silently
+    /// disable the follower-side index population; joiners relying
+    /// on a follower to serve would fall through to peer fetch,
+    /// and on V6 the chain-step-2 lookup would miss.
     #[test]
     fn replay_deploy_e_plumbs_deploy_sig_via_wal_deploy_scope() {
         let src = include_str!("replay_runtime.rs");
+        // S4.3: the follower plumbs `.deploy_id()` — the
+        // ProcessedDeploy accessor that routes to envelope_commitment
+        // on V6 and sig on legacy — NOT raw `.deploy.sig`.
         assert!(
-            src.contains("processed_deploy.deploy.sig.to_vec()"),
-            "Option 2 regression: replay_runtime.rs must plumb \
-             `processed_deploy.deploy.sig.to_vec()` into WalDeployScope::\
-             new_with_lock_sweep so the follower's journal_write records the \
-             same payload_hash → deploy_sig mapping the leader records.  \
-             Dropping the sig would silently disable follower-side recording."
+            src.contains("processed_deploy.deploy_id().to_vec()"),
+            "S4.3 regression: replay_runtime.rs must plumb \
+             `processed_deploy.deploy_id().to_vec()` (the protocol-canonical \
+             accessor) into WalDeployScope::new_with_lock_sweep so the \
+             follower's journal_write records under the same key shape the \
+             leader records under (envelope commitment on V6, sig on legacy).  \
+             Reverting to `.deploy.sig.to_vec()` would silently disable V6 \
+             recording — deploy_occurrence_store keys by envelope commitment \
+             and the follower's raw-sig entries would never resolve."
+        );
+        // A refactor that reverted to `.deploy.sig` would need to
+        // remove `.deploy_id()` and re-add `.deploy.sig` in the
+        // WalDeployScope construction region — an inverse check
+        // guards against this asymmetric refactor.
+        let scope_start = src
+            .find("WalDeployScope::new_with_lock_sweep(")
+            .expect("WalDeployScope::new_with_lock_sweep call must exist");
+        // Find the closing paren of the constructor call.  Look for
+        // the matching argument list end; a simple approach is to
+        // scan the region from scope_start forward through the next
+        // ");"  — sufficient given the constructor is not
+        // interleaved with other multi-line paren groups here.
+        let region_end = src[scope_start..]
+            .find(");")
+            .expect("WalDeployScope constructor must terminate with `);`");
+        let scope_region = &src[scope_start..scope_start + region_end];
+        assert!(
+            !scope_region.contains("processed_deploy.deploy.sig.to_vec()"),
+            "S4.3 regression: the WalDeployScope::new_with_lock_sweep \
+             argument list must NOT contain `processed_deploy.deploy.sig.\
+             to_vec()` — the protocol-canonical `deploy_id()` accessor \
+             must be used instead so V6 blocks record the envelope \
+             commitment.  A refactor that reintroduced raw-sig plumbing \
+             here would break the follower half of the joiner-boot chain."
         );
         assert!(
             src.contains("fs_handles\n                .current_deploy_sig")
@@ -1853,7 +1888,7 @@ mod tests {
                 || src.contains(".current_deploy_sig"),
             "Option 2 regression: replay_runtime.rs must plumb the shared \
              `current_deploy_sig` cell into WalDeployScope so concurrent \
-             journal_write reads see the follower's current sig."
+             journal_write reads see the follower's current id."
         );
     }
 }

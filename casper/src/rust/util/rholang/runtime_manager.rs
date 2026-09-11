@@ -4271,6 +4271,85 @@ mod tests {
         );
     }
 
+    /// S4.2 regression pin (2026-09-11): the follower's non-genesis
+    /// replay path in `replay_block_from_consensus_data_for_origin`
+    /// must publish `admission.fs_wal` into `pending_wal_slices`
+    /// after post-state validation succeeds.  Without this publish,
+    /// the follower's `pending_wal_slices` starves of entries
+    /// (state_bound already ran the user deploys, so the H-1 publish
+    /// inside `replay_deploys_internal` skips because
+    /// `replay_user_deploys = Vec::new()`), and the follower cannot
+    /// serve joiner-boot Option 2 lookups for blocks it validated
+    /// but did not create.
+    ///
+    /// Companion pin to
+    /// `compute_state_with_bonds_cosigned_admitted_publishes_pending_wal_slice`
+    /// above — that pin guards the leader-side publish; this one
+    /// guards the follower-side symmetric publish.
+    #[test]
+    fn replay_block_from_consensus_data_publishes_follower_pending_wal_slice() {
+        let src = include_str!("runtime_manager.rs");
+        let start_idx = src
+            .find("async fn replay_block_from_consensus_data_for_origin")
+            .expect("replay_block_from_consensus_data_for_origin must exist in this file");
+        let end_marker = "fn validate_replayed_post_state";
+        let body_end = src[start_idx..].find(end_marker).expect(
+            "terminal `fn validate_replayed_post_state` sentinel must exist after \
+             replay_block_from_consensus_data_for_origin",
+        );
+        let body = &src[start_idx..start_idx + body_end];
+        assert!(
+            body.contains("admission.fs_wal.to_vec()"),
+            "replay_block_from_consensus_data_for_origin must capture \
+             `admission.fs_wal` from `verify_state_bound_admission_partition` \
+             so it can be published to the follower's `pending_wal_slices` \
+             (S4.2 fix — without this capture, the follower's slice cache \
+             starves for every non-genesis block)"
+        );
+        assert!(
+            body.contains("if !follower_fs_wal.is_empty()"),
+            "replay_block_from_consensus_data_for_origin must gate the \
+             follower publish on `!follower_fs_wal.is_empty()` so blocks \
+             with no Consensus writes don't accumulate empty cache \
+             entries (matches leader-side `if !fs_wal.is_empty()` guard)"
+        );
+        assert!(
+            body.contains("self.pending_wal_slices.write().await"),
+            "replay_block_from_consensus_data_for_origin must acquire a \
+             write lock on `pending_wal_slices` to publish the follower's \
+             per-block WAL slice — symmetric with the leader-side publish \
+             in compute_state_with_bonds_cosigned_admitted"
+        );
+        assert!(
+            body.contains("block.body.state.post_state_hash.to_vec()"),
+            "replay_block_from_consensus_data_for_origin must key the \
+             follower's publish by the block's FINAL post-state-hash \
+             (matches the leader-side key so the finalization runner's \
+             cross-validator lookup finds either side's slice)"
+        );
+        assert!(
+            body.contains("MAX_PENDING_WAL_SLICES"),
+            "replay_block_from_consensus_data_for_origin must apply the \
+             same eviction cap the leader-side publish uses"
+        );
+        // Order pin: the publish MUST come AFTER `validate_replayed_
+        // post_state` succeeds so a rejected block never populates the
+        // cache.  Locate the two anchors and assert publish-follows-
+        // validate.
+        let validate_pos = body
+            .find("Self::validate_replayed_post_state(")
+            .expect("validate_replayed_post_state call site must be present");
+        let publish_pos = body
+            .find("if !follower_fs_wal.is_empty()")
+            .expect("follower publish guard must be present");
+        assert!(
+            publish_pos > validate_pos,
+            "follower `pending_wal_slices` publish must run AFTER \
+             `validate_replayed_post_state` succeeds — a rejected block's \
+             fs_wal must not enter the slice cache (position invariant)"
+        );
+    }
+
     fn close() -> super::super::system_deploy_enum::SystemDeployEnum {
         super::super::system_deploy_enum::SystemDeployEnum::Close(
             crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy::new(

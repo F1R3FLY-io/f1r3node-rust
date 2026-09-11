@@ -4924,42 +4924,137 @@ mod tests {
         );
     }
 
-    /// DD-7b-2 (a) Option 2 (2026-08-29): the user-deploy path must
-    /// plumb the raw primary-signer sig into `WalDeployScope::
-    /// new_with_lock_sweep`'s 5th arg AND the shared
-    /// `current_deploy_sig` cell as its 6th arg.  Both are needed
-    /// for `journal_write` to record `payload_hash → deploy_sig`
-    /// into the block-storage-backed source index (which the
-    /// joiner's boot-time reducer walks to reproduce write bytes
-    /// from block-stored deploys).  A refactor that dropped either
-    /// half (e.g., passed `Vec::new()` for the sig, or dropped the
-    /// cell) would silently disable the recorder for user deploys
-    /// — the leader-side index would stop populating; joiners
-    /// would fall through to peer fetch on every hash.
+    /// DD-7b-2 (a) Option 2 (2026-08-29) + S4.3 (2026-09-11): the
+    /// user-deploy path must plumb the PROTOCOL-CANONICAL deploy_id
+    /// (envelope commitment on V6, raw primary sig on legacy) into
+    /// `WalDeployScope::new_with_lock_sweep`'s 5th arg AND the
+    /// shared `current_deploy_sig` cell as its 6th arg.  Both are
+    /// needed for `journal_write` to record `payload_hash →
+    /// deploy_id` into the block-storage-backed source index (which
+    /// the joiner's boot-time reducer walks to reproduce write bytes
+    /// from block-stored deploys).
+    ///
+    /// A refactor that (a) dropped the recorder input, (b) reverted
+    /// to always-sig without the envelope_commitment dispatch, or
+    /// (c) dropped the `current_deploy_sig` cell would silently
+    /// disable the recorder for user deploys — the leader-side
+    /// index would stop populating or would populate under a
+    /// V6-incompatible key; joiners would fall through to peer
+    /// fetch on every hash.
     #[test]
     fn user_deploy_path_plumbs_deploy_sig_via_wal_deploy_scope() {
         let src = include_str!("runtime.rs");
+        // Use the fully-qualified inner method name to disambiguate
+        // from the shorter `_mode` wrapper that just re-dispatches
+        // and whose body doesn't reach the WalDeployScope
+        // construction site.
         let start = src
-            .find("async fn process_deploy_cosigned_with_budget_and_authority_mode")
+            .find("async fn process_deploy_cosigned_with_budget_and_authority_mode_and_host_work")
             .expect("target method must exist");
         let body_end = src[start..]
             .find("Ok((deploy_result, eval_result.mergeable, fs_wal, exhausted))")
             .expect("terminal return must exist");
         let body = &src[start..start + body_end];
+        // S4.3 dispatch: envelope_commitment on V6, sig on legacy.
+        // Both strings MUST be present — is_envelope_bound() gates
+        // the choice at construction time.
+        assert!(
+            body.contains("cosigned.is_envelope_bound()"),
+            "S4.3 regression: user-deploy path must dispatch on \
+             `cosigned.is_envelope_bound()` at the WalDeployScope \
+             construction site so V6 blocks record the envelope \
+             commitment (matching deploy_occurrence_store's key shape) \
+             and legacy blocks record the raw sig (matching deploy_index's \
+             key shape).  Dropping the dispatch would break the joiner-boot \
+             Option 2 chain on one or the other protocol."
+        );
+        // rustfmt may split the call across lines (`cosigned\n    .envelope_commitment()`),
+        // so check each half independently rather than the exact
+        // one-line spelling.
+        assert!(
+            body.contains(".envelope_commitment()"),
+            "S4.3 regression: user-deploy path must call \
+             `.envelope_commitment()` on the envelope-bound branch \
+             so V6 blocks record the same id `deploy_occurrence_store` \
+             indexes by.  Missing this call would leave V6 recorders \
+             storing raw sig bytes that no lookup can resolve."
+        );
         assert!(
             body.contains("cosigned.primary().sig.to_vec()"),
-            "Option 2 regression: user-deploy path must plumb the primary \
-             signer's raw sig bytes (`cosigned.primary().sig.to_vec()`) into \
-             WalDeployScope::new_with_lock_sweep so journal_write can record \
-             payload_hash → deploy_sig in the block-storage-backed source \
-             index.  Dropping the sig would silently disable the recorder \
-             for user deploys."
+            "Option 2 regression: user-deploy path must retain the \
+             legacy fallback (`cosigned.primary().sig.to_vec()`) on the \
+             non-envelope-bound branch — legacy single-signer deploys \
+             still key `deploy_index` by raw sig."
+        );
+        assert!(
+            body.contains("canonical_deploy_id"),
+            "S4.3 regression: the dispatch's result must be bound to \
+             a named `canonical_deploy_id` and passed to \
+             WalDeployScope::new_with_lock_sweep as the recorder input.  \
+             A refactor that reverted to inline `cosigned.primary().sig.to_vec()` \
+             at the call site would silently regress V6 recording."
         );
         assert!(
             body.contains("fs_handles.current_deploy_sig.clone()"),
             "Option 2 regression: user-deploy path must plumb \
-             fs_handles.current_deploy_sig into WalDeployScope so the sig is \
+             fs_handles.current_deploy_sig into WalDeployScope so the id is \
              visible to journal_write concurrently with the deploy's writes."
+        );
+        // Order pin: is_envelope_bound branch MUST come BEFORE the
+        // WalDeployScope constructor call so the canonical id is
+        // available at construction time.
+        let dispatch_pos = body
+            .find("cosigned.is_envelope_bound()")
+            .expect("dispatch present per assertion above");
+        let ctor_pos = body
+            .find("WalDeployScope::new_with_lock_sweep(")
+            .expect("WalDeployScope constructor call must be present");
+        assert!(
+            dispatch_pos < ctor_pos,
+            "S4.3 regression: the envelope_commitment/sig dispatch must \
+             execute BEFORE `WalDeployScope::new_with_lock_sweep` so the \
+             canonical id is computed at construction time — a refactor \
+             that moved the dispatch after the constructor would pass a \
+             stale/incorrect id."
+        );
+    }
+
+    /// S4.3 companion pin (2026-09-11): the follower's replay path
+    /// must plumb the SAME protocol-canonical deploy_id via
+    /// `processed_deploy.deploy_id()` (the ProcessedDeploy accessor
+    /// that routes on envelope_commitment vs sig internally).
+    /// Symmetry is load-bearing: leader-side and follower-side
+    /// recorders MUST agree on the key shape, or a joiner boot that
+    /// walks the chain via one validator's index and the other's
+    /// block ingestion would break.
+    ///
+    /// This pin's twin lives in `replay_runtime.rs`
+    /// (`replay_deploy_plumbs_deploy_id_via_wal_deploy_scope`)
+    /// asserting the follower half.  Both must be present to detect
+    /// asymmetric refactors.
+    #[test]
+    fn user_deploy_path_wal_deploy_scope_matches_processed_deploy_id_semantic() {
+        let src = include_str!("runtime.rs");
+        // Sentinel: the canonical_deploy_id let-binding must sit in
+        // the user-deploy method and its computation must match
+        // ProcessedDeploy::deploy_id()'s branching.  Any drift here
+        // means the leader records under one key while
+        // ProcessedDeploy exposes another — the chain walk in
+        // wal_payload_sync.rs::deploy_lookup_via_option2_chain would
+        // fail to match its `pd.deploy_id()` compare against the
+        // recorded key.
+        // rustfmt may wrap the let-binding; verify the essential
+        // pieces are present rather than the exact whitespace shape.
+        assert!(
+            src.contains("let canonical_deploy_id")
+                && src.contains("if cosigned.is_envelope_bound()"),
+            "S4.3 regression: leader-side canonical_deploy_id computation \
+             must use `if cosigned.is_envelope_bound()` dispatch that \
+             mirrors ProcessedDeploy::deploy_id()'s branch on \
+             `envelope_commitment.is_empty()`.  A refactor that changed \
+             the branch condition (e.g., to protocol_version >= 6) could \
+             disagree with ProcessedDeploy's accessor on edge cases and \
+             break the chain."
         );
     }
 

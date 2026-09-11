@@ -4919,3 +4919,117 @@ mod finalization_snapshot_tests {
             .is_empty());
     }
 }
+
+/// S4.3 regression pins (2026-09-11) for
+/// `BlockDagKeyValueStorage::lookup_by_deploy_id`'s dual-store
+/// dispatch.  Under V6 protocol the recorder in `journal_write`
+/// stores the envelope commitment (32 bytes) in
+/// `payload_source_index`, and the joiner-boot chain step 2
+/// dispatches the lookup to `deploy_occurrence_store` for 32-byte
+/// inputs.  The tests below pin both branches: the V6 dispatch
+/// path and the legacy `deploy_index` fallback.
+#[cfg(test)]
+mod lookup_by_deploy_id_dispatch_tests {
+    use models::rust::block_hash::BlockHash;
+    use models::rust::deploy_id::DeployIdV6;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::BlockDagKeyValueStorage;
+    use crate::rust::dag::deploy_occurrence_types::{
+        DeployOccurrence, OccurrenceAdmissionMode, DEPLOY_OCCURRENCE_PROTOCOL_VERSION,
+        DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+    };
+
+    fn approved_genesis_occurrence(id_byte: u8, source_block_byte: u8) -> DeployOccurrence {
+        DeployOccurrence {
+            schema_version: DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+            deploy_id: DeployIdV6::try_from(&[id_byte; 32][..]).unwrap(),
+            protocol_version: DEPLOY_OCCURRENCE_PROTOCOL_VERSION,
+            source_block_hash: [source_block_byte; 32],
+            source_block_height: 0,
+            source_validator: Vec::new(),
+            deploy_ordinal: 0,
+            admission_mode: OccurrenceAdmissionMode::ApprovedGenesis,
+            admission_ruleset_digest: Vec::new(),
+            admission_context_digest: Vec::new(),
+            sender_authority_digest: Vec::new(),
+            settled_history_admission_digest: Vec::new(),
+            is_failed: false,
+        }
+    }
+
+    /// A 32-byte input matching a `deploy_occurrence_store` entry
+    /// returns the corresponding block_hash via the V6 dispatch
+    /// branch.  Pins the S4.3 fix that extended
+    /// `lookup_by_deploy_id` beyond the legacy `deploy_index`.
+    #[tokio::test]
+    async fn lookup_by_deploy_id_dispatches_v6_to_occurrence_store() {
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let occurrence = approved_genesis_occurrence(7, 42);
+        let expected_id = occurrence.deploy_id;
+        let expected_block_hash: BlockHash = Bytes::from(occurrence.source_block_hash.to_vec());
+        storage
+            .deploy_occurrence_store_for_tests()
+            .insert(occurrence)
+            .expect("insert V6 deploy occurrence");
+        let got = storage
+            .lookup_by_deploy_id(&expected_id.as_array().to_vec())
+            .expect("lookup_by_deploy_id must not error");
+        assert_eq!(
+            got,
+            Some(expected_block_hash),
+            "32-byte input matching a deploy_occurrence_store entry must \
+             resolve via the V6 branch"
+        );
+    }
+
+    /// A 32-byte input that is NOT a valid V6 deploy id (fails
+    /// `DeployIdV6::try_from`) OR misses in
+    /// `deploy_occurrence_store` falls through to the legacy
+    /// `deploy_index`, which is empty here, so returns None.
+    /// Graceful degradation — no panic, no error.
+    #[tokio::test]
+    async fn lookup_by_deploy_id_falls_through_on_v6_miss() {
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        // Insert one occurrence keyed on id_byte=7 so the store is
+        // non-empty, then look up a DIFFERENT 32-byte id
+        // (id_byte=99).  V6 branch misses; legacy deploy_index is
+        // empty; overall result must be None.
+        let occurrence = approved_genesis_occurrence(7, 42);
+        storage
+            .deploy_occurrence_store_for_tests()
+            .insert(occurrence)
+            .expect("insert V6 deploy occurrence");
+        let missing_id = [99u8; 32].to_vec();
+        let got = storage
+            .lookup_by_deploy_id(&missing_id)
+            .expect("lookup_by_deploy_id must not error");
+        assert_eq!(
+            got, None,
+            "unknown 32-byte id must fall through to legacy index \
+             and return None (not error, not a stale match)"
+        );
+    }
+
+    /// A non-32-byte input skips the V6 branch entirely and hits
+    /// the legacy `deploy_index` directly.  Pins that the legacy
+    /// path is preserved by the S4.3 dispatch extension.
+    #[tokio::test]
+    async fn lookup_by_deploy_id_routes_non_v6_inputs_to_legacy_index() {
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        // Legacy sig shape: not 32 bytes.  Empty legacy index → None.
+        let legacy_sig = vec![0x42u8; 64];
+        let got = storage
+            .lookup_by_deploy_id(&legacy_sig)
+            .expect("lookup_by_deploy_id must not error on non-V6 input");
+        assert_eq!(
+            got, None,
+            "non-32-byte input skips the V6 branch and queries \
+             legacy deploy_index (empty here → None)"
+        );
+    }
+}
