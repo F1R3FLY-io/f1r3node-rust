@@ -83,7 +83,10 @@ CID="$(<"$EVIDENCE/initial-created-ids.txt")"
 /usr/bin/docker inspect "$CID" >"$EVIDENCE/writer-before.json"
 jq -e '.[0] | .State.Running == true and .State.Pid > 0 and (.Mounts | length) == 0 and .HostConfig.NetworkMode == "none" and .HostConfig.Privileged == false and .HostConfig.PidMode == "" and .Config.User == "65534:65534" and .HostConfig.CapDrop == ["ALL"] and .HostConfig.Memory == 33554432 and .HostConfig.PidsLimit == 32 and (.HostConfig.SecurityOpt | index("no-new-privileges") != null)' "$EVIDENCE/writer-before.json" >/dev/null
 kill -TERM "$DRIVER_PID"
-for _ in $(seq 1 150); do kill -0 "$DRIVER_PID" 2>/dev/null || break; sleep 0.1; done
+for _ in $(seq 1 150); do
+    kill -0 "$DRIVER_PID" 2>/dev/null || break
+    sleep 0.1
+done
 if kill -0 "$DRIVER_PID" 2>/dev/null; then
     printf 'ERROR: The initial driver exceeded the benchmark stop observation deadline.\n' >&2
     exit 2

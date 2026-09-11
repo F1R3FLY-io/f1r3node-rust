@@ -99,7 +99,10 @@ SH
     else
         kill -TERM "$DRIVER"
     fi
-    for _ in $(seq 1 120); do kill -0 "$DRIVER" 2>/dev/null || break; sleep 0.1; done
+    for _ in $(seq 1 120); do
+        kill -0 "$DRIVER" 2>/dev/null || break
+        sleep 0.1
+    done
     if kill -0 "$DRIVER" 2>/dev/null; then
         printf 'ERROR: The driver exceeded the host ownership observation deadline.\n' >&2
         exit 2

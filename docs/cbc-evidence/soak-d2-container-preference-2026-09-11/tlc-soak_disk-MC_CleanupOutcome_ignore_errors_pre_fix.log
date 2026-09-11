@@ -1,0 +1,76 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx512m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 110 and seed 6658497929890355998 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_CleanupOutcome_ignore_errors_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/CleanupOutcome.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module CleanupOutcome
+Semantic processing of module MC_CleanupOutcome_ignore_errors_pre_fix
+Starting... (2026-09-10 23:05:34)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Finished computing initial states: 6 distinct states generated at 2026-09-10 23:05:35.
+Error: Invariant CleanupFailurePreventsAdmission is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ faultAt = 2
+/\ command = 1
+/\ phase = "commands"
+/\ admitted = FALSE
+/\ failed = FALSE
+
+State 2: <ObserveCommand line 13, col 5 to line 17, col 38 of module CleanupOutcome>
+/\ faultAt = 2
+/\ command = 2
+/\ phase = "commands"
+/\ admitted = FALSE
+/\ failed = FALSE
+
+State 3: <ObserveCommand line 13, col 5 to line 17, col 38 of module CleanupOutcome>
+/\ faultAt = 2
+/\ command = 3
+/\ phase = "commands"
+/\ admitted = FALSE
+/\ failed = TRUE
+
+State 4: <ObserveCommand line 13, col 5 to line 17, col 38 of module CleanupOutcome>
+/\ faultAt = 2
+/\ command = 4
+/\ phase = "commands"
+/\ admitted = FALSE
+/\ failed = TRUE
+
+State 5: <ObserveCommand line 13, col 5 to line 17, col 38 of module CleanupOutcome>
+/\ faultAt = 2
+/\ command = 5
+/\ phase = "commands"
+/\ admitted = FALSE
+/\ failed = TRUE
+
+State 6: <ObserveCommand line 13, col 5 to line 17, col 38 of module CleanupOutcome>
+/\ faultAt = 2
+/\ command = 6
+/\ phase = "admission"
+/\ admitted = FALSE
+/\ failed = TRUE
+
+State 7: <Decide line 19, col 5 to line 22, col 45 of module CleanupOutcome>
+/\ faultAt = 2
+/\ command = 6
+/\ phase = "checked"
+/\ admitted = TRUE
+/\ failed = TRUE
+
+38 states generated, 38 distinct states found, 4 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 02s at (2026-09-10 23:05:35)

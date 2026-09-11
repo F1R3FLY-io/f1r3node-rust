@@ -22,7 +22,7 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           SelectOwned, \* stop commands select only this run's owner-labeled writers (B30)
           SelectOwnedHost, \* host stops select only processes carrying this run's owner marker (B32, B33)
           MarkOwnedOnly, \* OOM preference is set only on owner-marked host processes (B34)
-          ConfigureAtCreation, \* container OOM preference is set at creation, not by a periodic name scan (B35)
+          ConfigureAtCreation, \* container OOM preference is set at creation, not by a periodic name scan (B36)
           WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
           SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
           HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
@@ -63,7 +63,7 @@ VARIABLES phase, alive, interruptRequested, breachRecorded,
           exitFailureRetained, \* that rejection became a counted failure and a refusal (B31)
           unownedHostStopped, \* a host stop also killed processes this run does not own (B32, B33)
           unownedMarked, \* OOM preference was set on processes this run does not own (B34)
-          unownedContainersMarked \* OOM preference was set on containers this run does not own (B35)
+          unownedContainersMarked \* OOM preference was set on containers this run does not own (B36)
 
 vars == <<phase, alive, interruptRequested, breachRecorded,
           elapsed, timedOut, known,
@@ -180,7 +180,7 @@ WatcherPoll ==
 
 \* The live guardian starts a df probe.
 \* B34: every guardian sample re-applies the OOM preference; the corrected
-\* driver marks only processes that carry this run's owner marker. B35: the
+\* driver marks only processes that carry this run's owner marker. B36: the
 \* container preference is set once at creation through the owner-labeling
 \* wrapper; the pre-fix sample marked every container matching a name filter.
 StartProbe ==

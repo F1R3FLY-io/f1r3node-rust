@@ -1,0 +1,199 @@
+[
+    {
+        "Id": "b14c83709b4be884db6126b5a764b897fccc53a689ee8566e48451279c2f985b",
+        "Created": "2026-09-11T06:07:31.78399949Z",
+        "Path": "bash",
+        "Args": [
+            "scripts/bench/test-run-merge-recovery-soak.sh"
+        ],
+        "State": {
+            "Status": "exited",
+            "Running": false,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 0,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-09-11T06:07:32.200918132Z",
+            "FinishedAt": "2026-09-11T06:07:47.98079762Z"
+        },
+        "Image": "sha256:2ba4825186d56dc974b21c65f273f3cb3ae04356ad070075691a43520f0b5b8e",
+        "ResolvConfPath": "/var/lib/docker/containers/b14c83709b4be884db6126b5a764b897fccc53a689ee8566e48451279c2f985b/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/b14c83709b4be884db6126b5a764b897fccc53a689ee8566e48451279c2f985b/hostname",
+        "HostsPath": "/var/lib/docker/containers/b14c83709b4be884db6126b5a764b897fccc53a689ee8566e48451279c2f985b/hosts",
+        "LogPath": "/var/lib/docker/containers/b14c83709b4be884db6126b5a764b897fccc53a689ee8566e48451279c2f985b/b14c83709b4be884db6126b5a764b897fccc53a689ee8566e48451279c2f985b-json.log",
+        "Name": "/stoic_herschel",
+        "RestartCount": 0,
+        "Driver": "overlay2",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "docker-default",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": null,
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "none",
+            "PortBindings": {},
+            "RestartPolicy": {
+                "Name": "no",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": [
+                "ALL"
+            ],
+            "CgroupnsMode": "host",
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": [
+                "no-new-privileges"
+            ],
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 536870912,
+            "NanoCpus": 2000000000,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteIOps": [],
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": [],
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 1073741824,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": 256,
+            "Ulimits": [],
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "MaskedPaths": [
+                "/proc/acpi",
+                "/proc/asound",
+                "/proc/interrupts",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/sys/devices/virtual/powercap",
+                "/sys/firmware"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "GraphDriver": {
+            "Data": {
+                "ID": "b14c83709b4be884db6126b5a764b897fccc53a689ee8566e48451279c2f985b",
+                "LowerDir": "/var/lib/docker/overlay2/b9c89b57a677b91c4c0a9470e44033b04ab90aa3db25959ef5d20ca5b0c72e2e-init/diff:/var/lib/docker/overlay2/zlghl7mxy1pexmug2ept4rzwl/diff:/var/lib/docker/overlay2/0yj4oual9ox4121hatotb5ebu/diff:/var/lib/docker/overlay2/zrgy8zilu8geyi21mvdqq08ok/diff:/var/lib/docker/overlay2/b305f0a9af34bfb0ea8706c1fce44dbecff8981e86744957a187df9c2a29e083/diff:/var/lib/docker/overlay2/bf08fe3d8e6d6da494951eecc655a602567ed17d9899ffe92ceb03306b30ce37/diff:/var/lib/docker/overlay2/cabb0e1e5106225c5e58a7b68f9e15df1177db50bb1ab278d25d58cb3346b416/diff:/var/lib/docker/overlay2/8187295e1ba61dd3f9079572dbd8d8357ff119c7ddc0d4fe2844cd6e5d7943d7/diff:/var/lib/docker/overlay2/068e09d3128b93dc6750875d4d8267f4f45c267b956cea38ec098260a0561d55/diff:/var/lib/docker/overlay2/f889549651ca2afad1d9ba7b98a55240c059e6719bc4ad07e37cd815cacdd0da/diff:/var/lib/docker/overlay2/2c20f7e761e6b4a2f7c192a2a2760c0e1378296c5593554738eba19ad0dbca5d/diff",
+                "MergedDir": "/var/lib/docker/overlay2/b9c89b57a677b91c4c0a9470e44033b04ab90aa3db25959ef5d20ca5b0c72e2e/merged",
+                "UpperDir": "/var/lib/docker/overlay2/b9c89b57a677b91c4c0a9470e44033b04ab90aa3db25959ef5d20ca5b0c72e2e/diff",
+                "WorkDir": "/var/lib/docker/overlay2/b9c89b57a677b91c4c0a9470e44033b04ab90aa3db25959ef5d20ca5b0c72e2e/work"
+            },
+            "Name": "overlay2"
+        },
+        "Mounts": [],
+        "Config": {
+            "Hostname": "b14c83709b4b",
+            "Domainname": "",
+            "User": "65534:65534",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "PATH=/usr/local/bundle/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG=C.UTF-8",
+                "RUBY_VERSION=3.3.12",
+                "RUBY_DOWNLOAD_URL=https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.12.tar.xz",
+                "RUBY_DOWNLOAD_SHA256=873e3297990b8cff7a5436f6e510a3a7a18c74e5f2c794e4162e605fe0a743b3",
+                "GEM_HOME=/usr/local/bundle",
+                "BUNDLE_SILENCE_ROOT_WARNING=1",
+                "BUNDLE_APP_CONFIG=/usr/local/bundle"
+            ],
+            "Cmd": [
+                "scripts/bench/test-run-merge-recovery-soak.sh"
+            ],
+            "Image": "sha256:2ba4825186d56dc974b21c65f273f3cb3ae04356ad070075691a43520f0b5b8e",
+            "Volumes": null,
+            "WorkingDir": "/case/repo",
+            "Entrypoint": [
+                "bash"
+            ],
+            "Labels": {}
+        },
+        "NetworkSettings": {
+            "SandboxID": "",
+            "SandboxKey": "",
+            "Ports": {},
+            "Networks": {
+                "none": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "b8651bdb48e050c36ac69553d0d70aec03c8bc68a7f92ed96fe45e1ac9edbb2f",
+                    "EndpointID": "",
+                    "Gateway": "",
+                    "IPAddress": "",
+                    "MacAddress": "",
+                    "IPPrefixLen": 0,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": null
+                }
+            }
+        }
+    }
+]

@@ -1,0 +1,39 @@
+{
+  "target_ref": "disk-admission-fixture",
+  "target_sha": "unknown",
+  "trigger_source": "manual",
+  "slot_delay_seconds": 0,
+  "version": "unknown",
+  "started_at": 1789106838,
+  "finished_at": 1789106839,
+  "requested_seconds": 30,
+  "elapsed_seconds": 1,
+  "shard_up_seconds": 0,
+  "iterations": 0,
+  "failures": 1,
+  "failure_rate": 0,
+  "iterations_per_hour": 0,
+  "rss_peak_mb": null,
+  "cpu_peak_pct": null,
+  "cpu_peak_core_grid_pct": null,
+  "finalization_p50_ms": null,
+  "finalization_p95_ms": null,
+  "finalization_p99_ms": null,
+  "too_far_ahead_errors": 0,
+  "providers": {
+    "docker": {
+      "iterations": 0,
+      "failures": 0,
+      "avg_duration_s": null
+    },
+    "subprocess": {
+      "iterations": 0,
+      "failures": 0,
+      "avg_duration_s": null
+    }
+  },
+  "bench_segments": 0,
+  "bench_failures": 0,
+  "tracked_metrics": {},
+  "iteration_metrics": []
+}

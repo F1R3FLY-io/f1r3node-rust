@@ -1,0 +1,6 @@
+Filesystem 1M-blocks Used Available Capacity Mounted on
+/dev/fixture 47000 40000 7000 85% /
+1	/case/evidence/output
+1	/case/harness/integration-tests/data
+1	/case/harness/integration-tests/log-archive
+1	/case/harness/integration-tests/.subprocess-data

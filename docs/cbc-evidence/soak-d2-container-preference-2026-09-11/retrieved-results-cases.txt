@@ -1,0 +1,12 @@
+b36-red-run actual=1 expected=1
+b36-red-compose actual=1 expected=1
+b36-green-run actual=0 expected=0
+b36-green-compose actual=0 expected=0
+b35-characterization actual=0 expected=0
+b35-current actual=0 expected=0
+b30-run actual=0 expected=0
+b30-compose actual=0 expected=0
+b31 actual=0 expected=0
+b27 actual=0 expected=0
+b28 actual=0 expected=0
+b29 actual=0 expected=0

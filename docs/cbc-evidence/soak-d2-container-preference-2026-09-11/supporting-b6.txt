@@ -1,0 +1,2 @@
+PASS: A post-start disk sample was malformed (malformed-boundary). No iteration started, and the driver recorded refusal.
+Evidence: [EVIDENCE_ROOT]/d2-container-preference-3mgXAh90/supporting/b6
