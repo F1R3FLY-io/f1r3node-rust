@@ -1,2 +1,0 @@
-PASS: Disk hygiene left 7000 MiB below 8192 MiB. No iteration started, and the driver recorded refusal.
-Evidence: [EVIDENCE_ROOT]/d2-completion-iAeXtbE6/final-supporting/d1

@@ -366,6 +366,16 @@ All 11 final real-system cases and the composed regressions pass.
 This result does not cover monitor death, late creation, every launch path, storage faults, or all remaining crash windows.
 Durable publication, one aggregate emergency deadline, safe reclamation, D3 reserve bounds, hosted verification, and maintainer review remain completion requirements.
 
+The [B40 cycle](../cbc-evidence/soak-d2-monitor-death-2026-09-11/README.md) detects monitor death during an active iteration.
+The driver stops the tested native writer, preserves an unrelated writer, and retains one failure across two refused restarts.
+Matched production and formal checks, 42 emergency cases, 11 real-system cases, and supporting regressions pass.
+The disposable runner was observed terminated after evidence retrieval.
+
+Monitor death during benchmarks and admission boundaries remains open.
+Inherited output pipes, simultaneous failures, late creation, storage faults, complete writer discovery, aggregate deadlines, and reserve bounds remain open.
+The new evidence package retains reruns as raw archive digests without changing historical packages.
+D2 and acceptance remain pending.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

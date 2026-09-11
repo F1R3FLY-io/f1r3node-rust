@@ -610,9 +610,17 @@ behaviors:
     statement: Monitor death during an iteration stops the owned host writer, preserves an unrelated writer, and retains one failure across restarts.
     priority: must
     deep_module: false
-    done: false
+    done: true
     construction: not-applicable
     claim_discharge: pending
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-monitor-death-2026-09-11/manifest.jsonc
+        test: scripts/bench/test-soak-crash-monitor-death.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
 ---
 
 # Soak Gate Development Cycles
@@ -647,6 +655,17 @@ The fixture is not proof authority. Separate runs use the pinned TLA+ model chec
 - [x] B17: The guardian records a hard-floor breach and requests a stop before the opening benchmark returns.
 
 ## Cycle evidence
+
+B40 adds [monitor-death evidence](../cbc-evidence/soak-d2-monitor-death-2026-09-11/README.md).
+The baseline driver continues its owned native writer after confirmed monitor death during an iteration.
+The correction stops that writer, preserves an unrelated writer, and retains one failure across two refused restarts.
+The unchanged fixture and matching five-state model pass.
+
+The combined checks pass 42 emergency cases, 11 real-system cases, 35 positive configurations, 37 exact controls, 259 classifier cases, and six routing scenarios.
+Supporting regressions pass, and the disposable runner was observed terminated after evidence retrieval.
+Monitor death during benchmarks, admission boundaries, inherited output pipes, simultaneous failures, storage faults, deadlines, and reserve bounds remain open.
+Reruns remain digest-only under the new packaging rule.
+D2 and claim discharge remain pending.
 
 B38 and B39 add [crash monitor evidence](../cbc-evidence/soak-d2-crash-stop-2026-09-11/README.md).
 B38 stops the owned Docker writer after a driver process-group crash and preserves an unrelated writer without fixture intervention.

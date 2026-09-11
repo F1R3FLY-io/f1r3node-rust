@@ -1,1 +1,0 @@
-run pytest integration-tests/test/tests/custom/test_load.py --provider=docker --monitor --rss-ceiling-mb 0 --host-free-floor-mb 0 -v --tb=short --instafail --maxfail=20 --timeout=1200

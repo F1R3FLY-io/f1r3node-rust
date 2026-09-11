@@ -1,1 +1,0 @@
-host_protection_breach: iteration 1: The disk guardian detected 1024 MiB below floor 4096 MiB (hard floor 2048 MiB, consecutive samples 1). Workload termination is unconfirmed.

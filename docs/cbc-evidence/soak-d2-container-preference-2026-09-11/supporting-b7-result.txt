@@ -1,1 +1,0 @@
-PASS: The driver stopped the active iteration after the disk probe fault (missing-active).

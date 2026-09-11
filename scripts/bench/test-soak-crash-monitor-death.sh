@@ -120,7 +120,7 @@ PY
     status=0
     wait "$DRIVER" || status=$?
     printf '%s\n' "$status" >evidence/driver-exit.txt
-    if [[ "$status" == 0 || ( -n "$state" && "$state" != Z* ) ]] || ! cmp -s evidence/owned-after.writes evidence/owned-confirmed.writes; then
+    if [[ "$status" == 0 || (-n "$state" && "$state" != Z*) ]] || ! cmp -s evidence/owned-after.writes evidence/owned-confirmed.writes; then
         printf 'FAIL: Monitor failure did not stop the owned host writer with a failed driver result.\n' >&2
         exit 1
     fi

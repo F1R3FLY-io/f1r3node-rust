@@ -725,3 +725,73 @@ No assistant commit, push, hosted dispatch, node workload, or acceptance soak oc
 Storage faults, monitor health, late creation, other launch and crash paths, safe reclamation, aggregate deadlines, and reserve bounds remain open.
 Hosted verification, enforcement, maintainer review, and claim ratification remain open.
 D2 and acceptance remain pending.
+
+## B40 monitor death during an iteration
+
+The user requested continued D2 work and shutdown evidence.
+The native fixture confirms monitor death through a process file descriptor.
+The baseline driver stays active, and its owned writer continues writing.
+The production fixture exits 1, and the exact `MonitorDeathStopsOwnedWriter` control exits 12.
+This failure is not a timeout-only result.
+
+The correction retains the monitor child PID and checks the driver's running child jobs during an active iteration.
+The existing interruption path stops the owned writer and records one failure.
+The unchanged fixture preserves an unrelated writer and refuses two restarts with retained counters `[1, 1, 0, 0]`.
+The five-state model passes, and construction proofs remain not applicable.
+The [B40 package](../cbc-evidence/soak-d2-monitor-death-2026-09-11/README.md) retains the cycle evidence.
+
+The combined verification passes 35 positive configurations, 37 exact controls, 259 classifier cases, and six routing scenarios.
+All 72 actual TLC logs were saved before verifier substitutes ran.
+All 42 emergency cases, 11 real-system cases, and supporting regressions pass.
+The real-system archive contains 418 unique regular files and 2,107,137 bytes.
+The archive passed validation before extraction, and every extracted digest matches.
+
+The diagnostic virtual machine was observed terminated after retrieval.
+All twelve recorded diagnostic virtual machines now have termination observations.
+External commit `ab9519a5d` contains the correction, and this session does not attest its hooks.
+This session did not commit, push, dispatch hosted checks, run a node workload, or start an acceptance soak.
+The workload and 45-second finalization wait remain unchanged.
+
+Monitor failure during benchmarks and admission boundaries remains open.
+Inherited output pipes, simultaneous failures, late creation, storage faults, failed stops, and complete writer discovery remain open.
+Aggregate deadlines, reserve bounds, hosted enforcement, human review, and acceptance remain open.
+D2 and all claim discharges remain pending.
+
+## B40 evidence packaging change
+
+The user required digest-only reruns before the B40 manifest was built.
+The builder no longer creates a package-local `.gitignore`.
+The new package retains whitespace attributes without overriding the root ignore rules.
+The packaging work does not modify historical packages, manifests, published sets, or commits.
+
+Rerun patterns are `composed-*`, `final-*`, `supporting-*`, `emergency-*`, and `tlc-*.log`.
+Only the exact filename `final-real.txt` is an exception to the `final-*` rule.
+Current-cycle real-system results use the cycle prefix.
+Prior-cycle retrievals remain digest-only, even when the current batch repeats their tests.
+
+Published cycle logs use `.txt` filenames without changing their content.
+The builder does not copy reruns into the package or add published entries for reruns.
+The claim inventory binds only the new published files and source inputs.
+
+The raw archive is `[EVIDENCE_ROOT]/raw-streams.tar.gz`.
+Its manifest inventory retains every rerun stream with `raw_path`, `raw_sha256`, and `raw_bytes`.
+The export check accepts those raw records without package files.
+A missing listed published file still fails the export check.
+The archive-inventory validator checks all raw members, including digest-only reruns.
+
+The shared validator is `scripts/ci/check-soak-evidence-package.rb`.
+All 19 packaging regression cases pass, including missing-file, digest, byte-count, JSONC, and publication-rule checks.
+The tests reject the broad `final-real*` exception and prior-cycle retrievals that use the current-cycle prefix.
+The existing claim-inventory validator and TLA+ gate code remain unchanged by the packaging work.
+
+The historical-byte audit found 878 concurrent staged deletions under `docs/cbc-evidence/` before the new package was built.
+This session did not create or reverse those deletions.
+The workspace inventory requires the missing historical files.
+The new package checks remain separate from this unresolved workspace condition.
+
+The user clarified the exact exception after the first B40 draft was built.
+This revision preserves that draft outside Git before changing the current package.
+The 59 current-cycle batch and lifecycle streams use the `b40-real-system--` prefix.
+The 405 retrieved streams for B27 through B38 now have raw records only.
+The raw archive and its recorded member bytes remain unchanged.
+The revision records new packaging-source hashes without changing the original build-input records.
