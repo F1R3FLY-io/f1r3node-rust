@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-printf 'An iteration was invoked in the benchmark fixture.\n' >>"$SOAK_REAL_EVIDENCE/iteration-invoked.txt"
-exit 42

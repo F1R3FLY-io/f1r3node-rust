@@ -175,7 +175,9 @@ The per-cycle modules that preceded these two (`SoakDisk`, `DiskProbeAdmission`,
 
 ## Evidence packaging
 
-New evidence packages keep rerun streams digest-only. The rerun patterns are `composed-*`, `final-*`, `supporting-*`, `emergency-*`, and `tlc-*.log`. The exact filename `final-real.txt` is the one exception to the `final-*` rule. Cycle transcripts, baseline records, initial records, per-cycle observations, `manifest.jsonc`, and `README.md` remain published. Historical packages keep their bytes and their published sets.
+New evidence packages keep rerun streams digest-only. The rerun patterns are `composed-*`, `final-*`, `supporting-*`, `emergency-*`, and `tlc-*.log`. The exact filename `final-real.txt` is the one exception to the `final-*` rule. Cycle transcripts, baseline records, initial records, per-cycle observations, `manifest.jsonc`, and `README.md` remain published.
+
+Historical manifests keep their bytes. An authorized removal of published files records their paths, digests, and byte counts in a retention record. That record, `docs/claims/soak-evidence-retention.jsonc`, is bound to an archive of the removed bytes.
 
 The manifest's `raw_archive.entries` records each stream's `raw_path`, `raw_sha256`, and `raw_bytes`. A rerun entry has no `published_streams` entry and no package file. Each new package README states that reruns are digest-only and names the raw archive with an `[EVIDENCE_ROOT]` path. The root `.gitignore` carries the same patterns, and a package must not add a local `.gitignore` with `!*.log`.
 

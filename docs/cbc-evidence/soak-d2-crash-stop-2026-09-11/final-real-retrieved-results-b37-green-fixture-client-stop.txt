@@ -1,1 +1,0 @@
-The fixture stopped its recorded benchmark client group after the driver crash. Docker writer termination remains unconfirmed.
