@@ -1625,10 +1625,12 @@ jobs:
             echo "::error::$env_file is missing from the target tree; cannot pin the integration suite"
             exit 1
           fi
-          # `|| true` inside the subshell keeps a missing key from killing the
-          # pipeline under pipefail before the ::error:: below can name it.
+          # Count declaration lines, not values: an empty duplicate line
+          # (SYSTEM_INTEGRATION_REF=) is a second declaration. `|| true`
+          # keeps a missing key from killing the step under pipefail before
+          # the ::error:: below can name it.
+          declaration_count="$(grep -cE '^SYSTEM_INTEGRATION_REF=' "$env_file" || true)"
           declarations="$( (grep -E '^SYSTEM_INTEGRATION_REF=' "$env_file" || true) | cut -d= -f2- | sed -E 's/[[:space:]]*$//')"
-          declaration_count="$(printf '%s' "$declarations" | grep -c . || true)"
           if [ "$declaration_count" -ne 1 ]; then
             echo "::error::$env_file must declare SYSTEM_INTEGRATION_REF exactly once; found $declaration_count declarations"
             exit 1
