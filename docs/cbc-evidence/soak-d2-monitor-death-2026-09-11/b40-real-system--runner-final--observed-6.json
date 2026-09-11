@@ -1,0 +1,93 @@
+{
+  "data": {
+    "agent-config": {
+      "are-all-plugins-disabled": false,
+      "is-management-disabled": false,
+      "is-monitoring-disabled": false,
+      "plugins-config": null
+    },
+    "availability-config": {
+      "is-live-migration-preferred": null,
+      "recovery-action": "RESTORE_INSTANCE"
+    },
+    "availability-domain": "fnZP:US-SANJOSE-1-AD-1",
+    "capacity-reservation-id": null,
+    "cluster-placement-group-id": null,
+    "compartment-id": "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia",
+    "dedicated-vm-host-id": null,
+    "defined-tags": {
+      "Oracle-Tags": {
+        "CreatedBy": "default/jeff.turner@f1r3fly.com",
+        "CreatedOn": "2026-09-11T16:05:58.729Z"
+      }
+    },
+    "display-name": "ci-eph-f1r3node-rust-amd64-d2-20260911-160555-1717d4",
+    "extended-metadata": {},
+    "fault-domain": "FAULT-DOMAIN-1",
+    "freeform-tags": {
+      "d2-expires-at": "2026-09-11T18:05:55Z",
+      "d2-session": "ci-eph-f1r3node-rust-amd64-d2-20260911-160555-1717d4",
+      "purpose": "d2-fault-tests",
+      "source-sha": "980285d4c5620929566ff783a77fabf90292b8b3"
+    },
+    "id": "ocid1.instance.oc1.us-sanjose-1.anzwuljrfozi5pycjpfuyd5a3cwnigmopnpf7letaora7cwcdbs4gtchnxja",
+    "image-id": "ocid1.image.oc1.us-sanjose-1.aaaaaaaavvpezsyfucvi2wlf24qirmlvh4bt34oebklmf2sqhhrct32bsnpq",
+    "instance-configuration-id": null,
+    "instance-options": {
+      "are-legacy-imds-endpoints-disabled": true
+    },
+    "ipxe-script": null,
+    "is-ai-enterprise-enabled": null,
+    "is-cross-numa-node": false,
+    "launch-mode": "PARAVIRTUALIZED",
+    "launch-options": {
+      "boot-volume-type": "PARAVIRTUALIZED",
+      "firmware": "UEFI_64",
+      "is-consistent-volume-naming-enabled": true,
+      "is-pv-encryption-in-transit-enabled": false,
+      "network-type": "PARAVIRTUALIZED",
+      "remote-data-volume-type": "PARAVIRTUALIZED"
+    },
+    "licensing-configs": null,
+    "lifecycle-state": "TERMINATING",
+    "metadata": {
+      "ssh_authorized_keys": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOM1wc7s8wMKKKzpEwznEo3QuZu67pFThAwYvrUUrf7V ci-eph-f1r3node-rust-amd64-d2-20260911-160555-1717d4\n",
+      "user_data": "I2Nsb3VkLWNvbmZpZwotLS0Kd3JpdGVfZmlsZXM6Ci0gcGF0aDogIi9vcHQvZDItcHJvdmlzaW9uaW5nLmpzb24iCiAgcGVybWlzc2lvbnM6ICcwNjQ0JwogIG93bmVyOiByb290OnJvb3QKICBjb250ZW50OiB8CiAgICB7CiAgICAgICJwdXJwb3NlIjogIkQyIGlzb2xhdGVkIGRpYWdub3N0aWMgcnVubmVyIiwKICAgICAgInJ1bm5lcl9uYW1lIjogImNpLWVwaC1mMXIzbm9kZS1ydXN0LWFtZDY0LWQyLTIwMjYwOTExLTE2MDU1NS0xNzE3ZDQiLAogICAgICAibm9kZV9yZXZpc2lvbiI6ICI5ODAyODVkNGM1NjIwOTI5NTY2ZmY3ODNhNzdmYWJmOTAyOTJiOGIzIiwKICAgICAgImhhcm5lc3NfcmV2aXNpb24iOiAiOTYyZWZmZDE3NzA4MTkyNjI3YmQyNDkzNjI3NjFjMGNjYjFmZDVmYSIsCiAgICAgICJyZWdpb24iOiAidXMtc2Fuam9zZS0xIiwKICAgICAgIm9jcHVzIjogMTYsCiAgICAgICJtZW1vcnlfZ2liIjogNjQsCiAgICAgICJib290X3ZvbHVtZV9naWIiOiA4MCwKICAgICAgImV4cGlyZXNfYXQiOiAiMjAyNi0wOS0xMVQxODowNTo1NVoiLAogICAgICAiYWNjZXNzIjogIlNTSCBvbmx5IiwKICAgICAgImdpdGh1Yl9yZWdpc3RyYXRpb24iOiBmYWxzZSwKICAgICAgInNvYWtfZGlzcGF0Y2giOiBmYWxzZSwKICAgICAgImZhdWx0X3Rlc3RzX3N0YXJ0ZWQiOiBmYWxzZQogICAgfQotIHBhdGg6ICIvdXNyL2xvY2FsL3NiaW4vZDItZXhwaXJlIgogIHBlcm1pc3Npb25zOiAnMDcwMCcKICBvd25lcjogcm9vdDpyb290CiAgY29udGVudDogfAogICAgIyEvdXNyL2Jpbi9lbnYgYmFzaAogICAgc2V0IC1ldW8gcGlwZWZhaWwKICAgIHRlcm1pbmF0ZV9zZWxmKCkgewogICAgICAgIGxvY2FsIGlpZCBvYnNlcnZlZF9uYW1lCiAgICAgICAgaWlkPSQoY3VybCAtZnNTIC0tY29ubmVjdC10aW1lb3V0IDMgLS1tYXgtdGltZSAxMCAtSCAnQXV0aG9yaXphdGlvbjogQmVhcmVyIE9yYWNsZScgaHR0cDovLzE2OS4yNTQuMTY5LjI1NC9vcGMvdjIvaW5zdGFuY2UvaWQpIHx8IHJldHVybiAxCiAgICAgICAgW1sgIiRpaWQiID09IG9jaWQxLmluc3RhbmNlLm9jMS51cy1zYW5qb3NlLTEuKiBdXSB8fCByZXR1cm4gMQogICAgICAgIG9ic2VydmVkX25hbWU9JCh0aW1lb3V0IC0ta2lsbC1hZnRlcj01IDYwIC91c3IvbG9jYWwvYmluL29jaSAtLWF1dGggaW5zdGFuY2VfcHJpbmNpcGFsIC0tcmVnaW9uIHVzLXNhbmpvc2UtMSAtLWNvbm5lY3Rpb24tdGltZW91dCAxMCAtLXJlYWQtdGltZW91dCAzMCBjb21wdXRlIGluc3RhbmNlIGdldCAtLWluc3RhbmNlLWlkICIkaWlkIiAtLXF1ZXJ5ICdkYXRhLiJkaXNwbGF5LW5hbWUiJyAtLXJhdy1vdXRwdXQpIHx8IHJldHVybiAxCiAgICAgICAgW1sgIiRvYnNlcnZlZF9uYW1lIiA9PSAnY2ktZXBoLWYxcjNub2RlLXJ1c3QtYW1kNjQtZDItMjAyNjA5MTEtMTYwNTU1LTE3MTdkNCcgXV0gfHwgcmV0dXJuIDEKICAgICAgICB0aW1lb3V0IC0ta2lsbC1hZnRlcj01IDYwIC91c3IvbG9jYWwvYmluL29jaSAtLWF1dGggaW5zdGFuY2VfcHJpbmNpcGFsIC0tcmVnaW9uIHVzLXNhbmpvc2UtMSAtLWNvbm5lY3Rpb24tdGltZW91dCAxMCAtLXJlYWQtdGltZW91dCAzMCBjb21wdXRlIGluc3RhbmNlIHRlcm1pbmF0ZSAtLWluc3RhbmNlLWlkICIkaWlkIiAtLXByZXNlcnZlLWJvb3Qtdm9sdW1lIGZhbHNlIC0tZm9yY2UKICAgIH0KICAgIGlmICEgdGVybWluYXRlX3NlbGY7IHRoZW4KICAgICAgICBwcmludGYgJ0QyIGV4cGlyYXRpb24gZmFpbGVkLiBQb3dlciBvZmYgdGhpcyBkaWFnbm9zdGljIFZNLgogICAgJyA+JjIKICAgICAgICBzeXN0ZW1jdGwgcG93ZXJvZmYKICAgIGZpCi0gcGF0aDogIi9vcHQvZDItYm9vdHN0cmFwLnNoIgogIHBlcm1pc3Npb25zOiAnMDcwMCcKICBvd25lcjogcm9vdDpyb290CiAgY29udGVudDogfAogICAgIyEvdXNyL2Jpbi9lbnYgYmFzaAogICAgc2V0IC1ldW8gcGlwZWZhaWwKICAgIHN5c3RlbWN0bCBkYWVtb24tcmVsb2FkCiAgICBzeXN0ZW1jdGwgZW5hYmxlIC0tbm93IGQyLWV4cGlyZS50aW1lcgogICAgW1sgIiQodW5hbWUgLW0pIiA9PSB4ODZfNjQgXV0KICAgIHRlc3QgLXggL3Vzci9sb2NhbC9iaW4vb2NpCiAgICBzeXN0ZW1jdGwgaXMtYWN0aXZlIC0tcXVpZXQgZG9ja2VyCiAgICB0ZXN0ICEgLWUgL29wdC9hY3Rpb25zLXJ1bm5lci8ucnVubmVyCiAgICBpZiBwZ3JlcCAtZiAnUnVubmVyXC4oTGlzdGVuZXJ8V29ya2VyKScgPi9kZXYvbnVsbCB8fCBwZ3JlcCAteCBybm9kZSA+L2Rldi9udWxsOyB0aGVuCiAgICAgICAgcHJpbnRmICdVbmV4cGVjdGVkIHdvcmtsb2FkIHByb2Nlc3Mgb24gdGhlIG5ldyBkaWFnbm9zdGljIFZNLgogICAgJyA+JjIKICAgICAgICBleGl0IDEKICAgIGZpCiAgICBjb250YWluZXJzPSQodGltZW91dCAtLWtpbGwtYWZ0ZXI9NSAzMCBkb2NrZXIgcHMgLWFxKQogICAgW1sgLXogIiRjb250YWluZXJzIiBdXQogICAgaW5zdGFsbCAtZCAtbSAwNzUwIC1vIHJ1bm5lciAtZyBydW5uZXIgL2hvbWUvcnVubmVyL2QyCiAgICBpbnN0YWxsIC1kIC1tIDA3MDAgLW8gcnVubmVyIC1nIHJ1bm5lciAvaG9tZS9ydW5uZXIvZDIvZXZpZGVuY2UKICAgIGZpbmdlcnByaW50PSQoc3NoLWtleWdlbiAtbGYgL2V0Yy9zc2gvc3NoX2hvc3RfZWQyNTUxOV9rZXkucHViIHwgYXdrICd7cHJpbnQgJDJ9JykKICAgIHByaW50ZiAnRDJfSE9TVEtFWV9FRDI1NTE5PSVzCiAgICAnICIkZmluZ2VycHJpbnQiID4gL2Rldi9jb25zb2xlCiAgICBwcmludGYgJ0QyX0RJQUdOT1NUSUNfUkVBRFk9Y2ktZXBoLWYxcjNub2RlLXJ1c3QtYW1kNjQtZDItMjAyNjA5MTEtMTYwNTU1LTE3MTdkNAogICAgJyA+IC9kZXYvY29uc29sZQogICAgZGF0ZSAtdSArJUZUJVRaID4gL29wdC9kMi1yZWFkeQotIHBhdGg6ICIvZXRjL3N5c3RlbWQvc3lzdGVtL2QyLWV4cGlyZS5zZXJ2aWNlIgogIHBlcm1pc3Npb25zOiAnMDY0NCcKICBvd25lcjogcm9vdDpyb290CiAgY29udGVudDogfAogICAgW1VuaXRdCiAgICBEZXNjcmlwdGlvbj1UZXJtaW5hdGUgdGhpcyBEMiBkaWFnbm9zdGljIFZNCiAgICBBZnRlcj1uZXR3b3JrLW9ubGluZS50YXJnZXQKICAgIFdhbnRzPW5ldHdvcmstb25saW5lLnRhcmdldAoKICAgIFtTZXJ2aWNlXQogICAgVHlwZT1vbmVzaG90CiAgICBFeGVjU3RhcnQ9L3Vzci9sb2NhbC9zYmluL2QyLWV4cGlyZQogICAgVGltZW91dFN0YXJ0U2VjPTE4MAotIHBhdGg6ICIvZXRjL3N5c3RlbWQvc3lzdGVtL2QyLWV4cGlyZS50aW1lciIKICBwZXJtaXNzaW9uczogJzA2NDQnCiAgb3duZXI6IHJvb3Q6cm9vdAogIGNvbnRlbnQ6IHwKICAgIFtVbml0XQogICAgRGVzY3JpcHRpb249RXhwaXJlIHRoaXMgRDIgZGlhZ25vc3RpYyBWTQoKICAgIFtUaW1lcl0KICAgIE9uQ2FsZW5kYXI9MjAyNi0wOS0xMSAxODowNTo1NSBVVEMKICAgIFBlcnNpc3RlbnQ9dHJ1ZQogICAgQWNjdXJhY3lTZWM9MXMKICAgIFVuaXQ9ZDItZXhwaXJlLnNlcnZpY2UKCiAgICBbSW5zdGFsbF0KICAgIFdhbnRlZEJ5PXRpbWVycy50YXJnZXQKcnVuY21kOgotIC0gYmFzaAogIC0gIi9vcHQvZDItYm9vdHN0cmFwLnNoIgo="
+    },
+    "placement-constraint-details": null,
+    "platform-config": null,
+    "preemptible-instance-config": null,
+    "region": "us-sanjose-1",
+    "security-attributes": {},
+    "security-attributes-state": "STABLE",
+    "shape": "VM.Standard.E6.Flex",
+    "shape-config": {
+      "baseline-ocpu-utilization": null,
+      "gpu-description": null,
+      "gpus": 0,
+      "local-disk-description": null,
+      "local-disks": 0,
+      "local-disks-total-size-in-gbs": null,
+      "local-volume-size-in-gbs": null,
+      "max-vnic-attachments": 16,
+      "memory-in-gbs": 64.0,
+      "networking-bandwidth-in-gbps": 16.0,
+      "ocpus": 16.0,
+      "processor-description": "2.7 GHz AMD EPYC™ 9J45 (Turin)",
+      "resource-management": null,
+      "vcpus": 32
+    },
+    "source-details": {
+      "boot-volume-size-in-gbs": null,
+      "boot-volume-vpus-per-gb": null,
+      "image-id": "ocid1.image.oc1.us-sanjose-1.aaaaaaaavvpezsyfucvi2wlf24qirmlvh4bt34oebklmf2sqhhrct32bsnpq",
+      "instance-source-image-filter-details": null,
+      "kms-key-id": null,
+      "source-type": "image"
+    },
+    "system-tags": {},
+    "time-created": "2026-09-11T16:05:59.147000+00:00",
+    "time-maintenance-reboot-due": null
+  },
+  "etag": "45bc09056ca6431069cf5588de3846ec30e55b2aea5e24987218f552790d7086"
+}

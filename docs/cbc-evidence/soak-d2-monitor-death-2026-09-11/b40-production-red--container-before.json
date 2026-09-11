@@ -1,0 +1,201 @@
+[
+    {
+        "Id": "701df668643ee5e9ac32259316c98956e8017c3c1ba0ea9594e97b7a4645f3b6",
+        "Created": "2026-09-11T15:55:27.820626371Z",
+        "Path": "bash",
+        "Args": [
+            "/case/test.sh",
+            "--inside"
+        ],
+        "State": {
+            "Status": "created",
+            "Running": false,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 0,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "0001-01-01T00:00:00Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:2ba4825186d56dc974b21c65f273f3cb3ae04356ad070075691a43520f0b5b8e",
+        "ResolvConfPath": "",
+        "HostnamePath": "",
+        "HostsPath": "",
+        "LogPath": "",
+        "Name": "/distracted_ardinghelli",
+        "RestartCount": 0,
+        "Driver": "overlay2",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": null,
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "none",
+            "PortBindings": {},
+            "RestartPolicy": {
+                "Name": "no",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": [
+                "ALL"
+            ],
+            "CgroupnsMode": "host",
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": [
+                "no-new-privileges"
+            ],
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 268435456,
+            "NanoCpus": 1000000000,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteIOps": [],
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": [],
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 536870912,
+            "MemorySwappiness": null,
+            "OomKillDisable": false,
+            "PidsLimit": 128,
+            "Ulimits": [],
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "MaskedPaths": [
+                "/proc/acpi",
+                "/proc/asound",
+                "/proc/interrupts",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/sys/devices/virtual/powercap",
+                "/sys/firmware"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "GraphDriver": {
+            "Data": {
+                "ID": "701df668643ee5e9ac32259316c98956e8017c3c1ba0ea9594e97b7a4645f3b6",
+                "LowerDir": "/var/lib/docker/overlay2/6d65f81f8eb46be4dddab9a1661ce01d21e98d4fc90ed4e2b4b486f511de9888-init/diff:/var/lib/docker/overlay2/zlghl7mxy1pexmug2ept4rzwl/diff:/var/lib/docker/overlay2/0yj4oual9ox4121hatotb5ebu/diff:/var/lib/docker/overlay2/zrgy8zilu8geyi21mvdqq08ok/diff:/var/lib/docker/overlay2/b305f0a9af34bfb0ea8706c1fce44dbecff8981e86744957a187df9c2a29e083/diff:/var/lib/docker/overlay2/bf08fe3d8e6d6da494951eecc655a602567ed17d9899ffe92ceb03306b30ce37/diff:/var/lib/docker/overlay2/cabb0e1e5106225c5e58a7b68f9e15df1177db50bb1ab278d25d58cb3346b416/diff:/var/lib/docker/overlay2/8187295e1ba61dd3f9079572dbd8d8357ff119c7ddc0d4fe2844cd6e5d7943d7/diff:/var/lib/docker/overlay2/068e09d3128b93dc6750875d4d8267f4f45c267b956cea38ec098260a0561d55/diff:/var/lib/docker/overlay2/f889549651ca2afad1d9ba7b98a55240c059e6719bc4ad07e37cd815cacdd0da/diff:/var/lib/docker/overlay2/2c20f7e761e6b4a2f7c192a2a2760c0e1378296c5593554738eba19ad0dbca5d/diff",
+                "MergedDir": "/var/lib/docker/overlay2/6d65f81f8eb46be4dddab9a1661ce01d21e98d4fc90ed4e2b4b486f511de9888/merged",
+                "UpperDir": "/var/lib/docker/overlay2/6d65f81f8eb46be4dddab9a1661ce01d21e98d4fc90ed4e2b4b486f511de9888/diff",
+                "WorkDir": "/var/lib/docker/overlay2/6d65f81f8eb46be4dddab9a1661ce01d21e98d4fc90ed4e2b4b486f511de9888/work"
+            },
+            "Name": "overlay2"
+        },
+        "Mounts": [],
+        "Config": {
+            "Hostname": "701df668643e",
+            "Domainname": "",
+            "User": "65534:65534",
+            "AttachStdin": false,
+            "AttachStdout": true,
+            "AttachStderr": true,
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "PATH=/usr/local/bundle/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG=C.UTF-8",
+                "RUBY_VERSION=3.3.12",
+                "RUBY_DOWNLOAD_URL=https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.12.tar.xz",
+                "RUBY_DOWNLOAD_SHA256=873e3297990b8cff7a5436f6e510a3a7a18c74e5f2c794e4162e605fe0a743b3",
+                "GEM_HOME=/usr/local/bundle",
+                "BUNDLE_SILENCE_ROOT_WARNING=1",
+                "BUNDLE_APP_CONFIG=/usr/local/bundle"
+            ],
+            "Cmd": [
+                "/case/test.sh",
+                "--inside"
+            ],
+            "Image": "sha256:2ba4825186d56dc974b21c65f273f3cb3ae04356ad070075691a43520f0b5b8e",
+            "Volumes": null,
+            "WorkingDir": "/case",
+            "Entrypoint": [
+                "bash"
+            ],
+            "Labels": {}
+        },
+        "NetworkSettings": {
+            "SandboxID": "",
+            "SandboxKey": "",
+            "Ports": {},
+            "Networks": {
+                "none": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "",
+                    "EndpointID": "",
+                    "Gateway": "",
+                    "IPAddress": "",
+                    "MacAddress": "",
+                    "IPPrefixLen": 0,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": null
+                }
+            }
+        }
+    }
+]

@@ -1,4 +1,0 @@
-8dedabd193d6f759ea9099148478330400275d3418287ede1b8013d19f178c1c  scripts/run-merge-recovery-soak.sh
-ed6c53492ab35dd9b2cc82123766e76efec9ea6a7e18b759a034b4a038d8a489  scripts/bench/write-soak-summary.sh
-6a04b8aa2b3335012eba6b66793b784c28fbedfd5160844c27e0d8abf01e7554  scripts/bench/collect-soak-metrics.sh
-d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7  scripts/bench/soak-metrics.json

@@ -1,4 +1,0 @@
-PASS: A post-start disk sample was missing (missing-boundary). No iteration started, and the driver recorded refusal.
-Evidence: [EVIDENCE_ROOT]/d2-container-preference-3mgXAh90/supporting/b5/missing-boundary
-PASS: A post-start disk sample was missing (missing-after-hygiene). No iteration started, and the driver recorded refusal.
-Evidence: [EVIDENCE_ROOT]/d2-container-preference-3mgXAh90/supporting/b5/missing-after-hygiene
