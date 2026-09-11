@@ -574,6 +574,18 @@ behaviors:
         green_exit: 0
         formal_green_exit: 0
         claim_discharge: pending
+  - id: B38
+    statement: Production crash response stops the owned Docker writer and preserves the unrelated writer without fixture intervention.
+    priority: must
+    deep_module: false
+    done: false
+    cycle_log: []
+  - id: B39
+    statement: The crash monitor does not repeat a stop after the driver completes exit handling.
+    priority: must
+    deep_module: false
+    done: false
+    cycle_log: []
 ---
 
 # Soak Gate Development Cycles

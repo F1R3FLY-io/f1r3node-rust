@@ -366,6 +366,7 @@ stop_node_writers() (
 start_crash_monitor() {
 	local directory monitor _attempt
 	directory="$(mktemp -d "$OUTPUT_DIR/.crash-monitor.XXXXXXXX")" || return 1
+	CRASH_MONITOR_DIR="$directory"
 	(
 		export SOAK_WRITER_OWNER DISK_STOP_SECONDS
 		export -f stop_owned_host_writers stop_node_writer_commands stop_node_writers
@@ -384,6 +385,13 @@ directory = Path(sys.argv[2])
 (directory / "ready").write_text(str(os.getpid()) + "\n")
 poller.poll()
 os.close(parent)
+try:
+    with (directory / "handled-exit").open("rb") as source:
+        handled = source.read(9) == b"handled\n"
+except OSError:
+    handled = False
+if handled:
+    sys.exit(0)
 status = subprocess.run(["bash", "-c", "stop_node_writers -q kill"]).returncode
 if status != 0:
     try:
@@ -1237,6 +1245,7 @@ SH
 	chmod 700 "$SOAK_DOCKER_OWNER_DIR/docker" || exit 2
 	SOAK_WORKLOAD_PATH="$SOAK_DOCKER_OWNER_DIR:$PATH"
 fi
+CRASH_MONITOR_DIR=""
 HOST_GUARDIAN_PID=""
 HOST_GUARDIAN_PROGRESS="$OUTPUT_DIR/.host-guardian-progress"
 BENCHMARK_PID=""
@@ -1272,6 +1281,9 @@ cleanup_soak_processes() {
 			fi
 			persist_soak_state || return 1
 		fi
+	fi
+	if [ -n "$CRASH_MONITOR_DIR" ]; then
+		printf 'handled\n' >"$CRASH_MONITOR_DIR/handled-exit"
 	fi
 }
 trap cleanup_soak_processes EXIT

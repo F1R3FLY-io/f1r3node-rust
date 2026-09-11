@@ -133,6 +133,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_DockerOomOwnership
     soak_disk/MC_BenchmarkCrashRecovery
     soak_disk/MC_DriverCrashStop
+    soak_disk/MC_CrashMonitorExit
 )
 
 TLC_WORKERS=auto
@@ -171,6 +172,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_DockerOomOwnership
         soak_disk/MC_BenchmarkCrashRecovery
         soak_disk/MC_DriverCrashStop
+        soak_disk/MC_CrashMonitorExit
     )
     TLC_WORKERS=2
 fi
@@ -242,6 +244,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_DockerOomOwnership_periodic_name_pre_fix:UnownedContainerPreferencesPreserved
     soak_disk/MC_BenchmarkCrashRecovery_unrecorded_pre_fix:BenchmarkCrashRequiresRefusal
     soak_disk/MC_DriverCrashStop_parent_group_pre_fix:DriverCrashStopsOwnedWriter
+    soak_disk/MC_CrashMonitorExit_unconditional_pre_fix:HandledExitHasNoExtraStop
 )
 
 failed=0
