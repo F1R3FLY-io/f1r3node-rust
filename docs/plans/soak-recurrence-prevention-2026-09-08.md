@@ -323,6 +323,25 @@ Host-process ownership, memory-pressure paths, other launch forms, late creation
 
 Complete deadline and reserve arguments, hosted checks, and maintainer review remain open. D2 is not complete.
 
+#### D2 completion boundary after B32–B33
+
+The [host stop cycles](../cbc-evidence/soak-d2-host-stop-2026-09-11/README.md) preserve unrelated writers during exit cleanup and the tested memory-pressure response.
+These local results do not complete D2.
+
+The remaining completion requirements include:
+
+1. Complete the ownership review for memory-protection metadata and all workload launch paths.
+2. Verify failed benchmark-stop recovery, storage faults, and the remaining crash windows.
+3. Verify minimal durable evidence and one aggregate emergency deadline.
+4. Establish D3 growth and reserve bounds for every remaining writer.
+5. Revalidate the changed stop helper with the real Docker daemon.
+6. Obtain hosted verification, maintainer review, and claim ratification.
+
+Full D2 discharge depends on D3, as the full exit criterion above states.
+The current diagnostic authorization excludes real node workloads.
+Bounded D3 node diagnostics need explicit authorization and the required observability prerequisites.
+A soak still requires separate authorization.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

@@ -475,6 +475,14 @@ The label key is `io.f1r3fly.soak.owner`.
 Do not use a name prefix or fixture label as a substitute.
 The label is not authorization against an actor who can control Docker or forge metadata.
 
+## Process descriptor
+
+A **process descriptor** is a Linux kernel handle that identifies one process independently of numeric process identifier reuse.
+Linux exposes this handle as a `pidfd`.
+
+**Preferred usage:** Use this term when the stop helper signals or observes a process through its kernel handle.
+Do not treat a process name or numeric identifier alone as equivalent ownership evidence.
+
 ## Maintenance
 
 - Update this file before merging code or documentation that introduces a

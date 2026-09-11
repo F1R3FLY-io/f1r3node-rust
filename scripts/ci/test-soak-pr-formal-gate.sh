@@ -72,6 +72,7 @@ case "$config" in
     MC_IterationCrashRecovery_unrecorded_pre_fix.cfg) invariant=CrashRequiresRefusal ;;
     MC_DockerStopOwnership_name_only_pre_fix.cfg) invariant=UnownedWritersPreserved ;;
     MC_DockerStopFailure_ignored_pre_fix.cfg) invariant=FailedStopRetained ;;
+    MC_HostStopOwnership_pattern_only_pre_fix.cfg | MC_HostStopOwnership_memory_pattern_pre_fix.cfg) invariant=UnownedHostWritersPreserved ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -135,6 +136,9 @@ pr_configs=(
     soak_disk/MC_DockerStopOwnership_name_only_pre_fix
     soak_disk/MC_DockerStopFailure
     soak_disk/MC_DockerStopFailure_ignored_pre_fix
+    soak_disk/MC_HostStopOwnership
+    soak_disk/MC_HostStopOwnership_pattern_only_pre_fix
+    soak_disk/MC_HostStopOwnership_memory_pattern_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

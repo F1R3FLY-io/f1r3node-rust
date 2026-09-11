@@ -266,11 +266,71 @@ guardian_progress_fresh() {
 	[ "$last" -le "$now" ] && [ "$((now - last))" -le "$GUARDIAN_MAX_SILENCE_SECONDS" ]
 }
 
+stop_owned_host_writers() {
+	python3 - "$SOAK_WRITER_OWNER" <<'PY'
+import os
+import select
+import signal
+import sys
+import time
+
+marker = ("SOAK_PROCESS_OWNER=" + sys.argv[1]).encode()
+owned = []
+status = 0
+for name in os.listdir("/proc"):
+    if not name.isdecimal():
+        continue
+    fd = None
+    try:
+        if os.stat("/proc/" + name).st_uid != os.geteuid():
+            continue
+        fd = os.pidfd_open(int(name), 0)
+        with open("/proc/" + name + "/environ", "rb") as source:
+            matches = marker in source.read().split(b"\0")
+        if matches:
+            owned.append(fd)
+            fd = None
+    except (FileNotFoundError, ProcessLookupError):
+        pass
+    except OSError:
+        status = 1
+    finally:
+        if fd is not None:
+            os.close(fd)
+pending = set()
+poller = select.poll()
+for fd in owned:
+    try:
+        signal.pidfd_send_signal(fd, signal.SIGKILL)
+        poller.register(fd, select.POLLIN)
+        pending.add(fd)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        status = 1
+deadline = time.monotonic() + 0.75
+while pending:
+    remaining = max(0, int((deadline - time.monotonic()) * 1000))
+    events = poller.poll(remaining)
+    if not events:
+        status = 1
+        break
+    for fd, event in events:
+        if not event & select.POLLIN:
+            status = 1
+        poller.unregister(fd)
+        pending.discard(fd)
+for fd in owned:
+    os.close(fd)
+sys.exit(status)
+PY
+}
+
 stop_node_writer_commands() {
 	local selection="$1"
 	shift
-	pkill -9 -f '/tmp/rnode' 2>/dev/null || true
 	local cid owner ids status=0
+	stop_owned_host_writers || status=1
 	ids="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER" 2>/dev/null)" || return 1
 	while IFS= read -r cid; do
 		[ -n "$cid" ] || continue
@@ -293,7 +353,7 @@ stop_node_writer_commands() {
 
 stop_node_writers() (
 	export SOAK_WRITER_OWNER
-	export -f stop_node_writer_commands
+	export -f stop_owned_host_writers stop_node_writer_commands
 	timeout --signal=TERM --kill-after=1 "$DISK_STOP_SECONDS" \
 		bash -c 'trap "" TERM; stop_node_writer_commands "$@"' bash "$@"
 )
@@ -931,6 +991,7 @@ run_bench_segment() {
 	segment_dir="$OUTPUT_DIR/bench-segment-$(printf '%05d' "$BENCH_SEGMENTS")"
 	mkdir -p "$segment_dir"
 	PATH="$SOAK_WORKLOAD_PATH" \
+		SOAK_PROCESS_OWNER="$SOAK_WRITER_OWNER" \
 		SOAK_WRITER_OWNER="$SOAK_WRITER_OWNER" \
 		SOAK_DOCKER_REAL="$SOAK_DOCKER_REAL" \
 		SOAK_DOCKER_OWNER_DIR="$SOAK_DOCKER_OWNER_DIR" \
@@ -1049,6 +1110,10 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	persist_soak_state
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
+if ! python3 -c 'import os, signal; assert callable(signal.pidfd_send_signal); os.close(os.pidfd_open(os.getpid(), 0))'; then
+	printf 'Host writer ownership requires Linux pidfd support. The driver refused work.\n' >&2
+	exit 2
+fi
 read -r SOAK_WRITER_OWNER </proc/sys/kernel/random/uuid || exit 2
 [[ "$SOAK_WRITER_OWNER" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
 SOAK_DOCKER_REAL="$(command -v docker || true)"
@@ -1117,14 +1182,13 @@ cleanup_soak_processes() {
 	fi
 	if [ -n "$ITERATION_PID" ]; then
 		kill "$ITERATION_PID" 2>/dev/null || true
-		pkill -KILL -f 'integration-tests/test/tests/custom/test_load.py' 2>/dev/null || true
 	fi
 	[ -z "$ITERATION_TEE_PID" ] || kill "$ITERATION_TEE_PID" 2>/dev/null || true
 	[ -z "$ITERATION_SNAPSHOT_PID" ] || kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
 	[ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
 	if [ -n "$BENCHMARK_PID" ] || [ -n "$ITERATION_PID" ]; then
 		if ! stop_node_writers -q kill >/dev/null 2>&1; then
-			printf 'Writer termination is unconfirmed because the Docker stop failed or exceeded its budget.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+			printf 'Writer termination is unconfirmed because a writer stop failed or exceeded its budget.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
 			printf 'writer_stop_failed: Writer termination is unconfirmed.\n' >"$OUTPUT_DIR/early-exit.txt"
 			if [ "$INFLIGHT_ITERATION" -eq 1 ]; then
 				INFLIGHT_ITERATION=2
@@ -1281,14 +1345,9 @@ print(json.dumps(tags))
 			if [ "$free_mb" -ge "$hard_floor_mb" ] && [ "$over" -lt 3 ]; then
 				continue
 			fi
-			# Kill first, marker second: the marker asserts the host was defended,
-			# so it must not exist before the kills have run. `|| true` on each —
-			# pkill exits 1 with no matching process (normal when only containers
-			# are up), and neither miss may stop the other mitigation.
-			pkill -9 -f '/tmp/rnode' 2>/dev/null || true
-			docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
-			printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB (hard floor %sMB, consecutive %s); killed all node processes and containers to protect the host\n' \
+			printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB (hard floor %sMB, consecutive %s); writer termination is unconfirmed\n' \
 				"$free_mb" "$HOST_FREE_FLOOR_MB" "$hard_floor_mb" "$over" >"$HOST_GUARDIAN_BREACH"
+			stop_node_writers -q kill >/dev/null 2>&1 || true
 			guardian_stamp_health_tag breach "$free_mb"
 			exit 0
 		done
@@ -1449,6 +1508,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	(
 		cd "$SYSTEM_INTEGRATION_DIR"
 		export SOAK_WRITER_OWNER SOAK_DOCKER_REAL SOAK_DOCKER_OWNER_DIR
+		export SOAK_PROCESS_OWNER="$SOAK_WRITER_OWNER"
 		export PATH="$SOAK_WORKLOAD_PATH"
 		exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" \
 			poetry run pytest \

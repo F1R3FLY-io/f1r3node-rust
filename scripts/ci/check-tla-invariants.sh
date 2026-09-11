@@ -128,6 +128,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_IterationCrashRecovery
     soak_disk/MC_DockerStopOwnership
     soak_disk/MC_DockerStopFailure
+    soak_disk/MC_HostStopOwnership
 )
 
 TLC_WORKERS=auto
@@ -161,6 +162,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_IterationCrashRecovery
         soak_disk/MC_DockerStopOwnership
         soak_disk/MC_DockerStopFailure
+        soak_disk/MC_HostStopOwnership
     )
     TLC_WORKERS=2
 fi
@@ -226,6 +228,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_IterationCrashRecovery_unrecorded_pre_fix:CrashRequiresRefusal
     soak_disk/MC_DockerStopOwnership_name_only_pre_fix:UnownedWritersPreserved
     soak_disk/MC_DockerStopFailure_ignored_pre_fix:FailedStopRetained
+    soak_disk/MC_HostStopOwnership_pattern_only_pre_fix:UnownedHostWritersPreserved
+    soak_disk/MC_HostStopOwnership_memory_pattern_pre_fix:UnownedHostWritersPreserved
 )
 
 failed=0

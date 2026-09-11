@@ -1,0 +1,105 @@
+Picked up JAVA_TOOL_OPTIONS: -Xmx512m
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 8 and seed -3698561919965259244 with 2 workers on 20 cores with 491MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/SoakDisk.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module SoakDisk
+Semantic processing of module MC_SoakDisk_floor_only_pre_fix
+Starting... (2026-09-10 17:27:33)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-10 17:27:34.
+Error: Invariant AdmissionRequiresBand is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ sample = 7000
+/\ guardian = FALSE
+/\ admissionSample = 0
+/\ phase = "guard"
+/\ free = 7000
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ stopReason = "none"
+
+State 2: <CheckGuardian line 29, col 5 to line 35, col 80 of module SoakDisk>
+/\ sample = 7000
+/\ guardian = FALSE
+/\ admissionSample = 0
+/\ phase = "probe"
+/\ free = 7000
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ stopReason = "none"
+
+State 3: <ProbeBoundary line 38, col 5 to line 41, col 84 of module SoakDisk>
+/\ sample = 7000
+/\ guardian = FALSE
+/\ admissionSample = 0
+/\ phase = "hygiene"
+/\ free = 7000
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ stopReason = "none"
+
+State 4: <Hygiene line 44, col 5 to line 47, col 86 of module SoakDisk>
+/\ sample = 7000
+/\ guardian = FALSE
+/\ admissionSample = 0
+/\ phase = "post-guard"
+/\ free = 7000
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ stopReason = "none"
+
+State 5: <CheckGuardian line 29, col 5 to line 35, col 80 of module SoakDisk>
+/\ sample = 7000
+/\ guardian = FALSE
+/\ admissionSample = 0
+/\ phase = "post-probe"
+/\ free = 7000
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ stopReason = "none"
+
+State 6: <ProbeAfterHygiene line 50, col 5 to line 53, col 84 of module SoakDisk>
+/\ sample = 7000
+/\ guardian = FALSE
+/\ admissionSample = 0
+/\ phase = "decide"
+/\ free = 7000
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ stopReason = "none"
+
+State 7: <Decide line 56, col 5 to line 62, col 80 of module SoakDisk>
+/\ sample = 7000
+/\ guardian = FALSE
+/\ admissionSample = 0
+/\ phase = "admit"
+/\ free = 7000
+/\ evidence = FALSE
+/\ admitted = FALSE
+/\ stopReason = "none"
+
+State 8: <Admit line 65, col 5 to line 69, col 65 of module SoakDisk>
+/\ sample = 7000
+/\ guardian = FALSE
+/\ admissionSample = 7000
+/\ phase = "running"
+/\ free = 7000
+/\ evidence = FALSE
+/\ admitted = TRUE
+/\ stopReason = "none"
+
+55 states generated, 45 distinct states found, 9 states left on queue.
+The depth of the complete state graph search is 8.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 5 and the 95th percentile is 2).
+Finished in 02s at (2026-09-10 17:27:34)

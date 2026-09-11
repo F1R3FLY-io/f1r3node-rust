@@ -1,0 +1,2 @@
+/case/test.sh: line 86:    13 Killed                  setsid bash /tmp/rnode-unrelated /case/evidence/unrelated-node
+FAIL: Driver exit stopped an unrelated host writer selected by its command line.
