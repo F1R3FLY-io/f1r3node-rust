@@ -227,10 +227,18 @@ fn child_run(directory: &Path, stage: &str) -> ! {
         panic!("compaction bypassed its cursor-write boundary");
     }
     assert_eq!(stage, "compaction-page");
+    // Fileio Phase 7 (2026-08-26): `FinalizationEffectKind::ALL`
+    // grew with `WalSnapshotWrite`, so a single revision's rows
+    // (Effect × ALL.len() + 1 EffectsComplete marker) now exceeds
+    // the pre-migration page size of 5.  Compute the page size
+    // dynamically so ONE page exactly fits ONE revision — matches
+    // the pre-migration semantic (page=5, ALL.len()=4 → 4+1=5) and
+    // makes the reopen expectation (compaction_cursor=1) hold.
+    let page_size = FinalizationEffectKind::ALL.len() + 1;
     assert!(!ledger
         .begin_effect_compaction()
         .unwrap()
-        .delete_next_page(NonZeroUsize::new(5).unwrap())
+        .delete_next_page(NonZeroUsize::new(page_size).unwrap())
         .unwrap());
     await_termination(stage);
 }

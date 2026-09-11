@@ -255,7 +255,11 @@ pub enum FinalizationEffectKind {
 }
 
 impl FinalizationEffectKind {
-    const ALL: [Self; 5] = [
+    // `pub(crate)` so cross-file tests (e.g. `finalization_ledger/
+    // tests/durability.rs`) can iterate the full set of kinds and
+    // derive test-fixture sizes from `ALL.len()` — resists drift
+    // when new variants are added.
+    pub(crate) const ALL: [Self; 5] = [
         Self::DeployRemoval,
         Self::CosignerRemoval,
         Self::RuntimeCacheEviction,
@@ -4211,7 +4215,18 @@ mod tests {
         {}
         assert_eq!(observed.effects_compaction_cursor().unwrap(), 2);
         let batches = deletions.lock();
-        assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), 10);
+        // Fileio Phase 7 (2026-08-26): `FinalizationEffectKind::ALL`
+        // grew with `WalSnapshotWrite`, so each revision now
+        // contributes `ALL.len()` Effect rows + 1 EffectsComplete
+        // marker.  Compaction runs through_revision=2 → 2 revisions
+        // compacted total.  Derive the expected batch-sum from
+        // `ALL.len()` so future variant additions don't drift this
+        // pin again.
+        let expected_deletions = 2 * (FinalizationEffectKind::ALL.len() + 1);
+        assert_eq!(
+            batches.iter().map(Vec::len).sum::<usize>(),
+            expected_deletions
+        );
         assert!(batches
             .iter()
             .all(|batch| !batch.is_empty() && batch.len() <= 2));
