@@ -20,6 +20,16 @@ as a constant and cites this README.
 | `ComputeStep` | every non-storage cost in the same table |
 | `PhloLimit` | the deploy's `phlo_limit` |
 
+## Promotion decision
+
+The interpreter is a mandatory subsystem under
+[CbC verification tiers](../../../docs/cbc-verification-tiers.md), and the
+claim here is unbounded: it holds for every deploy and every phlo limit. The
+refutation tier above does not close it. Promotion is pending. The Rocq
+theorem belongs on the execution side after the consensus component moves to
+its own repository. Its name goes in the table above when it lands.
+Until then the cycle record for this area carries `construction: pending`.
+
 The model does not bound how many deploys a block admits. It also does not
 bound how the tuple space stores a byte on disk, or the history trie's growth
 per checkpoint. Those are consumer-side quantities.
