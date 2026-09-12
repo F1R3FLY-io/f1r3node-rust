@@ -63,7 +63,7 @@ Fixture corrections during the cycles: one B9 driver-suite run failed on a readi
 
 ## Historical manifests
 
-The per-cycle manifests were produced on the source branch and are retained outside Git by the agent that ran the cycles. Their digests bind that raw store to this record. A regenerated manifest with a different digest is a new record, not renewed verification.
+The per-cycle manifests were produced on the source branch and are retained outside Git by the agent that ran the cycles. Their digests bind that raw store to this record. A regenerated manifest with a different digest is a new record, not renewed verification. The packages themselves live in the history of the source branch, `fix/soak-disk-hygiene-stop`, and of the staging branch. They are not carried into dev.
 
 | Manifest | SHA-256 |
 | --- | --- |

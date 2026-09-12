@@ -231,6 +231,8 @@ The merge algebra is the keystone. Its Rocq theorems prove pointwise commutativi
 
 Each repository keeps its own gate registry, evidence ledger, and claim documents. Cross-citations become pinned references, in the same form as the system-integration pin. The committed Rocq build outputs leave the tree before any move.
 
+The cut itself, its order, its split files, and the decisions it needs are in [the stacked pull request plan](../plans/soak-disk-hygiene-stacked-prs-2026-09-11.md).
+
 ### Follow-ups the split depends on
 
 - **Interface crate.** The `MultiParentCasper` trait is defined inside the casper crate, so the node names the boundary through the medium it should be neutral to. A neutral interface crate comes first. Its first node-shell theorem is that the node uses only the trait.
