@@ -47,7 +47,7 @@ terminal leaf. It parks that boundary's value, grafts a value-free suffix,
 and restores the exact parked value. Insertion subsequently replaces the
 target's value. No endpoint sorting or decoded entry projection is modeled.
 
-The 26 named proof reports cover observational equivalence, existing-path
+The original 26 named proof reports cover observational equivalence, existing-path
 and repeated-create identities, read selection, preservation of values and
 finite-domain counts, parked ownership, and topology-neutral virtual cursor
 navigation. Virtual paths comprise an immutable authority prefix and a
@@ -85,6 +85,36 @@ remain unqualified at this formal-first checkpoint.**
 | `VirtualNavigationTopologyNeutral` | Missing-path moves, cursor-only closure exit and interruption do not create topology. |
 | `VirtualAuthorityPrefix` | Relative reads, moves, child/sibling traversal, ascent and pruning never address outside the logical root. |
 | `BranchInsertionPreservesChildren` | A missing edge beneath a nonterminal uses a separately qualified insertion route and preserves existing children. |
+
+### Descendant-supported value removal
+
+The `DescendantRemoval` refinement adds 13 closed reports, for 39 total.
+It models a finite physical-parent abstraction containing value slots and
+child slots with relative endpoints. Its independent reference removes only
+the focused value. A retained descendant can be a child subtree or a deeper
+value inside the same compressed node; either witnesses that removing the
+focused value leaves the physical parent nonempty.
+
+The native policy uses `remove_val(true)` only at a non-root value with
+descendants. The retained payload makes PathMap's pruning entry return at its
+first emptiness guard: at most one guard, zero ancestor-loop iterations,
+zero pops and zero detachments. A terminal value uses `remove_val(false)` to
+retain its dangling path. Root removal and absent-value requests bypass
+pruning. Thus the required contract is **zero logical pruning**, not a fixed
+boolean argument to the upstream method.
+
+The model proves exact topology, other-value and endpoint-count preservation
+under explicit residual-value uniqueness. Negative controls show that always
+using `false` can duplicate child keys in the recorded slot layout, while
+unconditionally using `true` can lose a terminal path.
+
+| Additional native binding | Required evidence |
+|---|---|
+| Descendant support | Bind `child_count() > 0` to a retained parent payload, including deeper compressed values and dangling descendants. |
+| Slot removal | Establish that released value-slot removal preserves the supporting payload and physical-parent nonemptiness. |
+| Bounded pruning | Inspect the upstream early-return guard and test unchanged focus, topology and snapshots; the model alone does not instrument private native loop counts. |
+| Removal ownership | Exact returned payload, one count decrement, named disposal and repeated remove/restore controls. |
+| Terminal layout | Check value-plus-same-key-empty-child layouts separately; logical topology equivalence alone does not prove private slot uniqueness. |
 
 The model uses pointwise observations rather than functional extensionality.
 The segmentation law concerns logical path concatenation, not PathMap's private

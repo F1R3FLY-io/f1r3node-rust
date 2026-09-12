@@ -14,18 +14,27 @@ use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::utils::ByteMask;
 use pathmap::zipper::{
-    ReadZipperIter, ReadZipperUntracked, TrieRefBorrowed, WriteZipperUntracked, Zipper, ZipperForking,
-    ZipperIteration, ZipperMoving, ZipperReadOnlyIteration, ZipperReadOnlySubtries, ZipperValues,
-    ZipperWriting,
+    ReadZipperIter, ReadZipperUntracked, TrieRefBorrowed, WriteZipperUntracked, Zipper,
+    ZipperForking, ZipperIteration, ZipperMoving, ZipperReadOnlyIteration, ZipperReadOnlySubtries,
+    ZipperValues, ZipperWriting,
 };
+
+use super::pathmap_mutation::NativePathCursor;
 
 /// Stack-safe disposal policy for values detached from a guarded map.
 ///
 /// Production implementations are named, auditable policies.  In particular,
 /// there is no blanket closure implementation: final teardown must not invoke
 /// caller-supplied code that can unwind while a raw trie remains populated.
-pub(crate) trait DisposeValue<V>: Clone + Send + Sync + 'static {
+pub trait DisposeValue<V>: Clone + Send + Sync + 'static {
     fn dispose(&self, value: V);
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ValueFreeDisposer;
+
+impl<V> DisposeValue<V> for ValueFreeDisposer {
+    fn dispose(&self, _value: V) { std::process::abort(); }
 }
 
 /// Supplies a temporary value that stops `prune_ascend` at the immediate
@@ -35,7 +44,7 @@ pub(crate) trait DisposeValue<V>: Clone + Send + Sync + 'static {
 /// are used.  `make_barrier` must return a value whose destruction by
 /// `discard_barrier` is bounded and non-panicking.  A barrier is never passed
 /// to the original-value disposal sink.
-pub(crate) trait TeardownBarrier<V> {
+pub trait TeardownBarrier<V> {
     fn make_barrier() -> V;
 
     fn discard_barrier(barrier: V) { drop(barrier); }
@@ -224,6 +233,26 @@ where
     }
 }
 
+impl<V, B> GuardedPathMap<V, ValueFreeDisposer, B>
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: TeardownBarrier<V> + 'static,
+{
+    pub(crate) fn value_free_suffix(path: &[u8]) -> Self {
+        let mut donor = Self::new_with_barrier(ValueFreeDisposer);
+        donor.fresh_map_mut().map_mut().create_path(path);
+        donor
+    }
+
+    pub(crate) fn graft_value_free_suffix(
+        &self,
+        destination: &mut WriteZipperUntracked<'_, '_, V>,
+    ) {
+        debug_assert_eq!(self.anchor.value_count, 0);
+        destination.graft(&self.map().read_zipper());
+    }
+}
+
 impl<V, D, B> GuardedPathMap<V, D, B>
 where
     V: Clone + Send + Sync + Unpin + 'static,
@@ -270,10 +299,12 @@ where
     fn visit_topology(&self, mut visit: impl FnMut(&[u8], Option<&V>, bool)) {
         let mut source = self.map().read_zipper();
         loop {
-            let is_leaf = source.child_mask().iter().next().is_none();
+            let first_child = source.child_mask().iter().next();
+            let is_leaf = first_child.is_none();
             visit(source.path(), source.val(), is_leaf);
 
-            if source.descend_first_byte() {
+            if let Some(byte) = first_child {
+                source.descend_to_byte(byte);
                 continue;
             }
             loop {
@@ -432,10 +463,8 @@ where
         let value_count = &mut anchor.value_count;
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             operation(GuardedWriteCursor {
-                inner: map.write_zipper(),
+                inner: NativePathCursor::new_counted(map, &[], &anchor.dispose, value_count),
                 dispose: &anchor.dispose,
-                value_count,
-                barrier: PhantomData,
             })
         }));
         anchor.normalize_live_empty();
@@ -464,10 +493,8 @@ where
         let value_count = &mut anchor.value_count;
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             operation(GuardedWriteCursor {
-                inner: map.write_zipper_at_path(path),
+                inner: NativePathCursor::new_counted(map, path, &anchor.dispose, value_count),
                 dispose: &anchor.dispose,
-                value_count,
-                barrier: PhantomData,
             })
         }));
         anchor.normalize_live_empty();
@@ -487,23 +514,22 @@ where
     /// Sets a value and sends any replaced value through the configured
     /// stack-safe disposal path.  Returns whether a value was replaced.
     pub fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, value: V) -> bool {
-        let anchor = self.fresh_map_mut();
-        let replaced = anchor
-            .map
-            .as_mut()
-            .expect("a live PathMap anchor always contains its map")
-            .set_val_at(path, value);
-        match replaced {
-            Some(replaced) => {
-                anchor.dispose.dispose(replaced);
-                true
-            }
-            None => {
-                anchor.value_count = anchor
-                    .value_count
-                    .checked_add(1)
-                    .expect("guarded PathMap endpoint count fits usize");
-                false
+        let mut incoming = Some(value);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            self.with_write_cursor(|mut cursor| {
+                cursor.move_to_path(path.as_ref());
+                let replaced = cursor.is_val();
+                cursor.set_val(incoming.take().unwrap());
+                replaced
+            })
+        }));
+        match outcome {
+            Ok(replaced) => replaced,
+            Err(payload) => {
+                if let Some(value) = incoming.take() {
+                    self.anchor.dispose.dispose(value);
+                }
+                resume_unwind(payload)
             }
         }
     }
@@ -511,7 +537,10 @@ where
     /// Creates a value-free path.  Such topology is intentionally preserved
     /// and participates in final iterative teardown.
     pub fn create_path<K: AsRef<[u8]>>(&mut self, path: K) -> bool {
-        self.fresh_map_mut().map_mut().create_path(path)
+        self.with_write_cursor(|mut cursor| {
+            cursor.move_to_path(path.as_ref());
+            cursor.inner.create_path()
+        })
     }
 
     /// Remove one value and then remove its newly dangling path one logical
@@ -646,10 +675,8 @@ where
     D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
-    inner: WriteZipperUntracked<'map, 'path, V>,
+    inner: NativePathCursor<'map, 'path, V, D, B>,
     dispose: &'map D,
-    value_count: &'map mut usize,
-    barrier: PhantomData<fn() -> B>,
 }
 
 impl<V, D, B> GuardedWriteCursor<'_, '_, V, D, B>
@@ -677,11 +704,6 @@ where
     pub(crate) fn set_val(&mut self, value: V) {
         if let Some(replaced) = self.inner.set_val(value) {
             self.dispose.dispose(replaced);
-        } else {
-            *self.value_count = self
-                .value_count
-                .checked_add(1)
-                .expect("guarded PathMap endpoint count fits usize");
         }
     }
 
@@ -701,43 +723,7 @@ where
     pub(crate) fn ascend_byte(&mut self) -> bool { self.inner.ascend_byte() }
 
     /// Remove the focused value and prune only newly dangling logical edges.
-    pub(crate) fn remove_val_and_prune(&mut self) -> bool {
-        if !self.inner.is_val() {
-            return false;
-        }
-        if self.inner.child_count() != 0 {
-            let removed = self
-                .inner
-                .remove_val(false)
-                .expect("a focused valued PathMap key contains its value");
-            *self.value_count = self
-                .value_count
-                .checked_sub(1)
-                .expect("a focused guarded value contributes one endpoint");
-            self.dispose.dispose(removed);
-            return true;
-        }
-        *self.value_count = self
-            .value_count
-            .checked_sub(1)
-            .expect("a focused guarded value contributes one endpoint");
-        let _ = remove_valued_leaf_and_bubble::<V, B, D>(
-            &mut self.inner,
-            ValuedLeafOrigin::Real,
-            None,
-            self.dispose,
-        );
-        true
-    }
-}
-
-impl<V, D, B> Drop for GuardedWriteCursor<'_, '_, V, D, B>
-where
-    V: Clone + Send + Sync + Unpin + 'static,
-    D: DisposeValue<V>,
-    B: TeardownBarrier<V> + 'static,
-{
-    fn drop(&mut self) { self.inner.reset(); }
+    pub(crate) fn remove_val_and_prune(&mut self) -> bool { self.inner.remove_val_and_prune() }
 }
 
 impl<'a, V> Iterator for GuardedPathMapIter<'a, V>
@@ -766,6 +752,17 @@ trait DrainObserver {
 struct NoopDrainObserver;
 
 impl DrainObserver for NoopDrainObserver {}
+
+pub(crate) fn remove_value_preserving_path<V>(
+    zipper: &mut WriteZipperUntracked<'_, '_, V>,
+) -> Option<V>
+where V: Clone + Send + Sync + Unpin + 'static {
+    if !zipper.is_val() {
+        return None;
+    }
+    let prune = !zipper.at_root() && zipper.child_count() != 0;
+    zipper.remove_val(prune)
+}
 
 fn advance_to_next_value<V>(zipper: &mut WriteZipperUntracked<'_, '_, V>) -> bool
 where V: Clone + Send + Sync + Unpin + 'static {
@@ -858,8 +855,7 @@ where
         let mut zipper = map.write_zipper();
         loop {
             if zipper.is_val() {
-                let removed = zipper
-                    .remove_val(false)
+                let removed = remove_value_preserving_path(&mut zipper)
                     .expect("a focused real PathMap endpoint contains its value");
                 removed_values = removed_values
                     .checked_add(1)
@@ -931,9 +927,65 @@ where
 
 fn remove_valued_leaf_and_bubble<V, B, D>(
     zipper: &mut WriteZipperUntracked<'_, '_, V>,
+    origin: ValuedLeafOrigin,
+    floor_depth: Option<usize>,
+    dispose: &D,
+) -> BarrierPruneStats
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: TeardownBarrier<V>,
+    D: DisposeValue<V>,
+{
+    remove_valued_leaf_and_bubble_counted::<V, B, D>(zipper, origin, floor_depth, dispose, None)
+}
+
+pub(crate) fn remove_leaf_with_floor<V, D, B>(
+    zipper: &mut WriteZipperUntracked<'_, '_, V>,
+    floor_depth: usize,
+    dispose: &D,
+    count: Option<&mut usize>,
+) where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: TeardownBarrier<V>,
+    D: DisposeValue<V>,
+{
+    remove_valued_leaf_and_bubble_counted::<V, B, D>(
+        zipper,
+        ValuedLeafOrigin::Real,
+        Some(floor_depth),
+        dispose,
+        count,
+    );
+}
+
+fn take_counted_value<V>(
+    zipper: &mut WriteZipperUntracked<'_, '_, V>,
+    prune: bool,
+    count: &mut Option<&mut usize>,
+) -> V
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+{
+    let next = count.as_ref().map(|count| {
+        count
+            .checked_sub(1)
+            .expect("a removed real value contributes one endpoint")
+    });
+    let removed = zipper.remove_val(prune);
+    if removed.is_some() {
+        if let (Some(count), Some(next)) = (count, next) {
+            **count = next;
+        }
+    }
+    removed.expect("bounded real pruning starts from a valued leaf")
+}
+
+fn remove_valued_leaf_and_bubble_counted<V, B, D>(
+    zipper: &mut WriteZipperUntracked<'_, '_, V>,
     mut origin: ValuedLeafOrigin,
     floor_depth: Option<usize>,
     dispose: &D,
+    mut count: Option<&mut usize>,
 ) -> BarrierPruneStats
 where
     V: Clone + Send + Sync + Unpin + 'static,
@@ -947,9 +999,12 @@ where
 
     loop {
         if zipper.at_root() {
-            let removed = zipper
-                .remove_val(false)
-                .expect("the carried valued leaf remains present at the root");
+            let removed = match origin {
+                ValuedLeafOrigin::Real => take_counted_value(zipper, false, &mut count),
+                ValuedLeafOrigin::Synthetic => zipper
+                    .remove_val(false)
+                    .expect("the carried synthetic leaf remains present at the root"),
+            };
             match origin {
                 ValuedLeafOrigin::Real => {
                     dispose.dispose(removed);
@@ -994,9 +1049,7 @@ where
         debug_assert_eq!(zipper.child_count(), 0);
         match origin {
             ValuedLeafOrigin::Real => {
-                let removed = zipper
-                    .remove_val(true)
-                    .expect("bounded real pruning starts from a valued leaf");
+                let removed = take_counted_value(zipper, true, &mut count);
                 dispose.dispose(removed);
                 stats.real_values += 1;
                 if zipper.path_exists() {
@@ -1027,8 +1080,7 @@ where
 
         if reached_floor || parent_had_real_value || parent_had_surviving_fork {
             if matches!(parent_origin, ValuedLeafOrigin::Synthetic) {
-                let barrier = zipper
-                    .remove_val(false)
+                let barrier = remove_value_preserving_path(zipper)
                     .expect("the temporary synthetic parent remains at the stopping frame");
                 SyntheticBarrier::<V, B>::retire(barrier);
                 stats.retired_barriers += 1;
@@ -2040,12 +2092,11 @@ mod tests {
             assert!(!left.contains([1]));
             assert!(!right.contains([1]));
 
-            drop(left);
-            assert_eq!(disposed.load(Ordering::Relaxed), 0);
-            drop(right);
             assert_eq!(disposed.load(Ordering::Relaxed), 1);
-            // The rejected value never entered either map and is dropped once
-            // while unwinding the failed mutation.
+            drop(left);
+            assert_eq!(disposed.load(Ordering::Relaxed), 1);
+            drop(right);
+            assert_eq!(disposed.load(Ordering::Relaxed), 2);
             assert_eq!(tracking.drops.load(Ordering::Relaxed), 2);
         });
     }

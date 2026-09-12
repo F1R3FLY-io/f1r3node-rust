@@ -11328,6 +11328,40 @@ verification results, not runtime stack/RSS improvements. Production mutation
 is not yet repaired by this checkpoint, and the integrated native gate remains
 unqualified. No consensus bytes or persistence formats change here.
 
+#### 5.33.64 Native cursor and removal refinement (2026-09-12)
+
+The leaf-extension contract now has 39 closed proof reports. Thirteen added
+removal reports establish topology-neutral value removal and a pruning-entry
+bound of at most one emptiness guard, zero ancestor-loop iterations, zero
+pops and zero detachments under an explicit retained-descendant witness.
+The maintained gate passes after fresh prerequisites and kernel checking.
+The native 20-test cursor cohort passes, including original mutation order,
+CoW snapshots, ownership interruptions, compressed/dense topology and a deep
+donor on a 256 KiB stack.
+
+Earlier failing runs remain evidence: an unchecked read descent made the
+test observer report sibling paths as descendants, while non-pruning value
+removal at a same-key child/value layout caused a real read/write topology
+disagreement and guarded-teardown abort. The visitor now follows child masks;
+shared value removal uses the descendant-supported native flag so the
+physical parent remains well formed. Compressed rightmost traversal is
+retained. J-150 records reproductions, failed controls, exact log hashes and
+the additional upstream requests PMU-007/008.
+
+Proof execution stays under 2 GiB and Rust tests under 6 GiB, both with zero
+swap. These are correctness/verification observations, not new time/space
+performance claims. Existing guarded-map regression, complete EPathMap
+integration and the combined admission gate still require qualification;
+this is not a full campaign or persistence-comparison completion claim.
+
+The subsequent ownership checkpoint passes 21 native tests and 34 existing
+guarded tests; one preexisting measurement-only test remains ignored. It
+removes gratuitous disposal-policy cloning during unique mutation, protects
+incoming values across cursor-construction failure, and retains the existing
+CoW boundary. J-150 records the final logs and exact clone/disposal controls.
+This supersedes the pending guarded regression above, not the outstanding
+EPathMap/ACT integration or performance requirements.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

@@ -11001,6 +11001,110 @@ counts and kernel acceptance. Its log is
 `1dd348e108480ea9c7b4035e2db1f2cc3a89032d31f0033f7ae82e24867cd55c`.
 The integrated native gate remains unqualified.
 
+### J-150 — 2026-09-12 Native mutation observations and descendant-supported removal
+
+**QUESTION.** Do the native cursor and its observers preserve the formal
+prefix/value model through arbitrary mutation histories, compressed paths,
+CoW snapshots and interrupted ownership transfer?
+
+**NEGATIVE EVIDENCE.** The first native run reports eight passes and three
+failures. Its minimized history sets `[0]` to zero, then creates `[1, 0]`.
+The observer reports a fictitious `[0, 0]`. Direct point queries and a
+child-mask-controlled traversal subsequently establish that the stored paths
+are correct. PathMap 0.2.2's optimized read `descend_first_byte` can select a
+later physical sibling without checking that it extends the current logical
+prefix. The test observers now choose both descent and sibling edges from
+explicit parent masks. The production guarded topology visitor uses the same
+child-membership requirement. The original operation generator, independent
+prefix/value model, and saved regression are retained unchanged.
+
+The expanded second run aborts during final guarded teardown. An isolated
+run identifies disagreement between read-side rightmost-leaf selection and
+write-side child count after extending valued `[1]` with dangling `[1, 2]`.
+Parking, grafting and restoration can leave a real child and value at the
+same compressed key. Removing the value with `remove_val(false)` can replace
+its slot with an empty child even though the real child survives. Indexed
+read traversal selects the empty child, while point lookup and the write
+cursor see the real child. Replacing rightmost traversal would mask this
+malformed representation rather than repair its cause.
+
+**FORMAL-FIRST CORRECTION.** The existing leaf-extension module now contains
+39 closed reports: the original 26 plus 13 removal-refinement reports. A
+finite parent-slot model proves that descendant support survives removal of
+the focused value, including support from a deeper value within the same
+compressed node. The shared removal policy calls `remove_val(true)` only
+for a non-root value with surviving descendants. The retained payload makes
+the native pruning function return at its first emptiness guard, before any
+ancestor-loop iteration, pop or detachment. Terminal values retain
+`remove_val(false)` and their dangling path; absent and root values bypass
+pruning. Exact topology, other values and endpoint counts agree with an
+independent reference under the stated residual-value uniqueness condition.
+Private node correspondence and arbitrary callee-unwind safety are not
+inferred merely from this logical model.
+
+**MEASURED / VERIFIED SCOPE.** The corrected native run passes all 20 tests
+in 1.74 seconds, with no ignored tests. Coverage includes both original
+four-operation histories, original-order generated mutation and snapshot
+histories, compressed/dense siblings, virtual authority confinement, exact
+parked/restored counts and payload identity, injected interruptions, a deep
+donor on a 256 KiB thread stack, repeated terminal value/dangling cycles,
+and raw upstream negative/positive controls. An intermediate raw control
+with a valued descendant did not reproduce the teardown defect; its failure
+is preserved in run 3. The final control uses the observed dangling
+descendant and proves that raw rightmost selection ends at `[1]` while the
+write cursor reports one remaining child. With supported removal, both end
+at `[1, 2]` and report zero children.
+
+The maintained proof gate rebuilds prerequisites, requires all 39 closed
+reports and passes independent kernel checking. The removal extension's
+individual compile takes 1.50 seconds and 433,072 KiB maximum RSS; its
+kernel check takes 12.32 seconds and 276,496 KiB. Proofs run under a 2 GiB
+hard memory cap with zero swap. Rust compilation/tests run under
+MemoryHigh=4G, MemoryMax=6G, MemorySwapMax=0 and CPUQuota=400%.
+These are verification costs, not application performance benchmarks.
+
+| Evidence | SHA-256 |
+|---|---|
+| `target/verification/pathmap-leaf-cursor-native-r1.log` | `0347d85a87af141f13bf25c8059a070ae98cf1a636999ae1dba70de4cd55c89a` |
+| `target/verification/pathmap-leaf-cursor-native-r2.log` | `5f1b8a8ac32916ca1406b860fca611d46a2f8072453d8e4a1ec3c430fab6fbc4` |
+| `target/verification/pathmap-leaf-cursor-native-r3.log` | `97127379db1e7d692aae761990e57a463300b802194400224a0ba841df744eda` |
+| `target/verification/pathmap-leaf-cursor-native-r4.log` | `b53bd3dfaa0927823e566f54238e5e2230abef1583fa92aaf52e55fce251ad48` |
+| `target/verification/pathmap-leaf-extension-maintained-gate-r2.log` | `eedb718eadaf5eebc5ced543606cc4b5e730f3154eee3092d2a7e67bc96a2912` |
+| `formal/rocq/stack_safe_pda/theories/PathMapLeafExtension.v` | `eb733b3b57d963f0d24cc595df64f33b01f7c88142a3a3dd5e3269a4e8829d44` |
+
+**LIMITS / NEXT GATE.** Models integration compiles, but the existing guarded
+regression suite, complete EPathMap entry-point qualification and unchanged
+integrated ACT admission gate remain separate requirements. This checkpoint
+does not establish whole-workspace CI, native private-node equivalence,
+production persistence readiness or the mandatory LMDB comparison. No
+upstream PathMap source, dependency, canonical encoding or consensus format
+is changed. Tasks 6023/6038 retain the required follow-through.
+
+**SUBSEQUENT OWNERSHIP CHECKPOINT.** The existing guarded suite initially
+reports 33 passes, one failure and one preexisting measurement-only ignore.
+It exposes a gratuitous real-value disposal-policy clone during unique
+insertion. Incoming values now stay in an outer carrier until cursor
+construction/path conversion succeeds; a caught failure disposes only the
+still-owned value through the live anchor. Value-free donors use a dedicated
+zero-payload policy, not a clone of the destination's real-value policy.
+The existing donor certificate requires zero real values; an impossible
+violation fails before ordinary payload destruction. Actual CoW policy
+cloning remains unchanged. A regression rejects any policy clone during
+unique root insertion, non-root leaf extension, replacement and teardown.
+
+The final native run passes 21 tests in 1.74 seconds; the existing guarded
+suite passes 34 tests in 1.23 seconds with its one measurement-only case
+still ignored. The prior clone-failure test retains its zero-header/payload
+clone checks and now additionally requires explicit disposal of the rejected
+incoming value. It no longer relies on ordinary `Drop` for that value.
+These tests supersede the guarded-suite pending status above, but do not
+close the complete EPathMap/ACT integration gate.
+
+| Final focused evidence | SHA-256 |
+|---|---|
+| `target/verification/pathmap-leaf-cursor-native-r5.log` | `c878901e93e40a0756539e39d613931cb75b9aaa3bd32620b5e4ae05c7958093` |
+| `target/verification/pathmap-leaf-guarded-regression-r2.log` | `b7e0d633ccd218709fe15fe8fc77624dff6075575d57f6edc22489eb475a9a65` |
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -11019,6 +11123,13 @@ still requires measurement.
 | PMU-005 | Stack-safety + ownership + allocation API; **demonstrated need against PathMap 0.2.2, measured local guard active** | Campaign-owned maps require an outer `Arc<AnchorRoot<PathMap<V>>>`, a reverse-prune zipper PDA, temporary immediate-parent barriers, guarded builders/iterators, and closure of every detached subtree before an owned raw map can fall out of scope. The barriers prevent recursive detached-subtrie destruction but split compressed line-list nodes. | Make destruction of arbitrary branching and non-branching `PathMap` topology iterative in the crate itself. Prefer intrinsic iterative `Drop`; otherwise add a fallible, nonallocating consuming physical-node drain whose owned temporaries remain stack-safe on success, sink error, panic, and early exit. It must visit each stored value exactly once, preserve CoW siblings and shared snapshots, avoid whole-version cloning and per-logical-byte barriers, and compose safely with replacement, join, meet, subtract, restrict, graft, and destructive subtree operations. If public finalization is explicit, unique-root authority must be race-free and failure must never let a nonempty raw subtrie reach recursive `Drop`. | PathMap 0.2.2 source inspection demonstrates the recursive-drop boundary. Local Rocq proves 18 invariants and rejects 19 causal mutants; Verus proves edge/payload conservation; TLA+ and Loom cover outer-anchor schedules. Deep line/dense/comb/root/topology-only tests pass on a 256 KiB stack with exact payload-drop counts and failure/alias coverage. Four teardown geometries measure time exponents 0.95785–0.98911, but headless Heaptrack attributes 181,708 temporary line-list splits to barriers for the realistic size-256 case; see J-052 and its measurement report. | A released PathMap version passes the same fixed-stack, ownership, topology, failure, CoW, exactly-once disposal, geometric time, and allocation gates without per-logical-byte barrier churn. The integration can then remove its generic reverse-prune compatibility layer without allowing raw recursive-drop authority to escape. |
 
 | PMU-006 | Mutation correctness; **reproduced against PathMap 0.2.2, unresolved** | EPathMap Set/Map and guarded topology mutation use public `create_path`; a valid dangling-branch extension panics before ACT serialization. No replacement helper has been adopted. | Support arbitrary dangling-path creation and extension, including related value insertion, without mutable descent through an immutable empty sentinel. Preserve existing values, siblings, zipper semantics and CoW snapshots independently of insertion order. | J-057 gives the four-operation reproducer and saved property seed. Full RSpace library release: 600 passed, one failed, one ignored. Require the complete generated topology/value domain, compressed/dense promotion, root/repeated operations, CoW and stack-safe ownership controls. A public leaf-boundary graft needs separate qualification, including `graft_root_vals` value preservation. | An approved released PathMap fix passes the same deterministic/generated topology, value, CoW and stack-safety gates; any corresponding local compatibility helper can then be removed. Neither a fork nor weakening the property generator is authorized. |
+
+### Additional reproduced cursor/removal contracts (J-150)
+
+| ID | Released behavior and required contract | Local treatment and removal criterion |
+|---|---|---|
+| PMU-007 | PathMap 0.2.2 read `descend_first_byte` must stay within the current logical prefix. A value at `[0]` and dangling sibling `[1,0]` must not produce a descent to `[0,0]`. | Select children through the current child mask in the guarded visitor and independent test observer. Adopt a released upstream correction only after direct point queries, mask traversal and optimized traversal agree over compressed value/sibling layouts. |
+| PMU-008 | PathMap 0.2.2 `remove_val(false)` must not manufacture duplicate child entries when a same-key child already preserves the path. Indexed, sequential and point readers must agree after removal. | Shared descendant-supported removal preserves topology without entering the ancestor-pruning loop. A released fix must pass the dangling-descendant negative control, value/count and CoW properties, and final guarded teardown; only then can the conditional native-flag compatibility policy be removed. |
 
 The reachable pgmcp tracking item is `pathmap-upstream-integration-request-register` under
 `rpb3-single-parse-act-traversal-plan`, itself a descendant of epic 4131. New entries must include

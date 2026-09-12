@@ -535,6 +535,302 @@ Proof.
   - split; reflexivity.
 Qed.
 
+Module DescendantRemoval.
+
+Inductive slot :=
+| ValueSlot (key : path) (value : payload)
+| ChildSlot (key : path) (relative_endpoints : list path).
+
+Definition endpoints (entry : slot) : list path :=
+  match entry with
+  | ValueSlot key _ => [key]
+  | ChildSlot key descendants => key :: map (app key) descendants
+  end.
+
+Definition slot_topology (q : path) (entry : slot) : bool :=
+  existsb (prefixb q) (endpoints entry).
+
+Definition parent_topology (entries : list slot) (q : path) : bool :=
+  if path_eq_dec q [] then true else existsb (slot_topology q) entries.
+
+Definition strict_descendant (focus endpoint : path) : bool :=
+  prefixb focus endpoint && if path_eq_dec endpoint focus then false else true.
+
+Definition has_descendants (focus : path) (entries : list slot) : bool :=
+  existsb (fun entry => existsb (strict_descendant focus) (endpoints entry)) entries.
+
+Definition value_at (q : path) (entry : slot) : option payload :=
+  match entry with
+  | ValueSlot key value => if path_eq_dec q key then Some value else None
+  | ChildSlot _ _ => None
+  end.
+
+Fixpoint lookup_value (q : path) (entries : list slot) : option payload :=
+  match entries with
+  | [] => None
+  | entry :: rest =>
+      match value_at q entry with Some value => Some value | None => lookup_value q rest end
+  end.
+
+Definition original_entries (focus : path) (cell : option payload) (rest : list slot) :=
+  match cell with None => rest | Some value => ValueSlot focus value :: rest end.
+
+Definition image (entries : list slot) : state :=
+  State (parent_topology entries) (fun q => lookup_value q entries).
+
+Definition reference_removal (focus : path) (cell : option payload) (rest : list slot) :=
+  replace_value (image (original_entries focus cell rest)) focus None.
+
+Definition native_prune_flag (focus : path) (rest : list slot) : bool :=
+  if path_eq_dec focus [] then false else has_descendants focus rest.
+
+Definition removal_entries (focus : path) (cell : option payload) (rest : list slot) :=
+  match cell with
+  | None => rest
+  | Some _ =>
+      if path_eq_dec focus [] then rest
+      else if native_prune_flag focus rest then rest
+      else ChildSlot focus [] :: rest
+  end.
+
+Definition conditional_removal (focus : path) (cell : option payload) (rest : list slot) :=
+  image (removal_entries focus cell rest).
+
+Definition residual_value_unique (focus : path) (rest : list slot) :=
+  Forall (fun entry => value_at focus entry = None) rest.
+
+Lemma residual_lookup_absent : forall focus rest,
+  residual_value_unique focus rest -> lookup_value focus rest = None.
+Proof.
+  intros focus rest H. induction H; simpl; auto. now rewrite H, IHForall.
+Qed.
+
+Lemma descendant_witness : forall focus rest,
+  has_descendants focus rest = true ->
+  exists entry endpoint,
+    In entry rest /\ In endpoint (endpoints entry) /\
+    prefixb focus endpoint = true /\ endpoint <> focus.
+Proof.
+  intros focus rest H. apply existsb_exists in H.
+  destruct H as [entry [Hin H]]. apply existsb_exists in H.
+  destruct H as [endpoint [Hendpoint H]]. unfold strict_descendant in H.
+  apply andb_true_iff in H. destruct H as [Hprefix Hneq].
+  exists entry, endpoint. repeat split; auto.
+  destruct (path_eq_dec endpoint focus); congruence.
+Qed.
+
+Theorem descendant_payload_is_distinct_and_retained : forall focus rest value,
+  has_descendants focus rest = true ->
+  exists entry endpoint,
+    In entry rest /\ In endpoint (endpoints entry) /\
+    entry <> ValueSlot focus value /\ rest <> [].
+Proof.
+  intros focus rest value H.
+  destruct (descendant_witness focus rest H) as [entry [endpoint [Hin [He [Hp Hneq]]]]].
+  exists entry, endpoint. repeat split; auto.
+  - intros ->. simpl in He. destruct He as [He|[]]. congruence.
+  - intros ->. contradiction.
+Qed.
+
+Lemma descendant_supports_all_focus_prefixes : forall focus rest q,
+  has_descendants focus rest = true -> prefixb q focus = true ->
+  parent_topology rest q = true.
+Proof.
+  intros focus rest q Hdesc Hprefix.
+  unfold parent_topology. destruct (path_eq_dec q []); auto.
+  destruct (descendant_witness focus rest Hdesc) as [entry [endpoint [Hin [He [Hp _]]]]].
+  apply existsb_exists. exists entry. split; auto.
+  apply existsb_exists. exists endpoint. split; auto.
+  eapply prefixb_trans; eauto.
+Qed.
+
+Lemma removal_lookup_exact : forall focus cell rest q,
+  lookup_value q (removal_entries focus cell rest) = lookup_value q rest.
+Proof.
+  intros focus [value|] rest q; [|reflexivity].
+  unfold removal_entries. destruct (path_eq_dec focus []); auto.
+  destruct (native_prune_flag focus rest); reflexivity.
+Qed.
+
+Theorem conditional_removal_preserves_exact_topology : forall focus cell rest q,
+  parent_topology (removal_entries focus cell rest) q =
+    parent_topology (original_entries focus cell rest) q.
+Proof.
+  intros focus [value|] rest q; [|reflexivity].
+  unfold removal_entries, original_entries.
+  destruct (path_eq_dec focus []) as [->|Hnonroot].
+  - unfold parent_topology. destruct (path_eq_dec q []) as [->|Hq]; auto.
+    destruct q; [contradiction|reflexivity].
+  - unfold native_prune_flag. destruct (path_eq_dec focus []); [contradiction|].
+    destruct (has_descendants focus rest) eqn:Hdesc.
+    + destruct (prefixb q focus) eqn:Hprefix.
+      * pose proof (descendant_supports_all_focus_prefixes focus rest q Hdesc Hprefix) as Hcovered.
+        unfold parent_topology in *. destruct (path_eq_dec q []); auto.
+        unfold slot_topology in *. simpl. rewrite Hprefix, Hcovered. reflexivity.
+      * unfold parent_topology. destruct (path_eq_dec q []); auto.
+        unfold slot_topology. simpl. now rewrite Hprefix.
+    + reflexivity.
+Qed.
+
+Theorem conditional_removal_matches_independent_reference : forall focus cell rest,
+  residual_value_unique focus rest ->
+  same_observation (conditional_removal focus cell rest)
+    (reference_removal focus cell rest).
+Proof.
+  intros focus cell rest Hunique q. split.
+  - apply conditional_removal_preserves_exact_topology.
+  - unfold conditional_removal, reference_removal, image, replace_value; simpl.
+    rewrite removal_lookup_exact.
+    destruct (path_eq_dec q focus) as [->|Hneq].
+    + now apply residual_lookup_absent.
+    + destruct cell; simpl; auto.
+      unfold value_at. destruct (path_eq_dec q focus); congruence.
+Qed.
+
+Theorem removal_changes_only_selected_value : forall focus cell rest,
+  residual_value_unique focus rest ->
+  values (conditional_removal focus cell rest) focus = None /\
+  (forall q, q <> focus ->
+    values (conditional_removal focus cell rest) q =
+      values (image (original_entries focus cell rest)) q).
+Proof.
+  intros focus cell rest Hunique.
+  pose proof (@conditional_removal_matches_independent_reference focus cell rest Hunique) as Hsame.
+  split.
+  - rewrite (proj2 (Hsame focus)). unfold reference_removal, replace_value; simpl.
+    destruct (path_eq_dec focus focus); congruence.
+  - intros q Hneq. rewrite (proj2 (Hsame q)). unfold reference_removal, replace_value; simpl.
+    destruct (path_eq_dec q focus); congruence.
+Qed.
+
+Theorem removal_count_is_exact : forall domain focus cell rest,
+  NoDup domain -> In focus domain -> residual_value_unique focus rest ->
+  value_count domain (image (original_entries focus cell rest)) =
+    value_count domain (conditional_removal focus cell rest) + carrier_count cell.
+Proof.
+  intros domain focus cell rest Hnodup Hin Hunique.
+  pose proof (@parking_count_is_exact domain (image (original_entries focus cell rest)) focus Hnodup Hin) as Hcount.
+  assert (Hcell : values (image (original_entries focus cell rest)) focus = cell).
+  { destruct cell; simpl.
+    - unfold value_at. destruct (path_eq_dec focus focus); congruence.
+    - now apply residual_lookup_absent. }
+  change (value_count domain (image (original_entries focus cell rest)) =
+    value_count domain (reference_removal focus cell rest) +
+    carrier_count (values (image (original_entries focus cell rest)) focus)) in Hcount.
+  rewrite Hcell in Hcount.
+  assert (Hcounts : value_count domain (conditional_removal focus cell rest) =
+    value_count domain (reference_removal focus cell rest)).
+  { apply same_values_same_count. intro q.
+    exact (proj2 (@conditional_removal_matches_independent_reference focus cell rest Hunique q)). }
+  now rewrite Hcounts.
+Qed.
+
+Inductive prune_entry_result := EarlyReturn | NeedsAncestorLoop.
+
+Definition prune_entry (rest : list slot) :=
+  match rest with [] => NeedsAncestorLoop | _ :: _ => EarlyReturn end.
+
+Definition invokes_prune (focus : path) (cell : option payload) (rest : list slot) :=
+  match cell with None => false | Some _ => native_prune_flag focus rest end.
+
+Definition attempted_prune_entry (focus : path) (cell : option payload) (rest : list slot) :=
+  if invokes_prune focus cell rest then Some (prune_entry rest) else None.
+
+Theorem descendant_removal_stops_at_first_prune_guard : forall focus value rest,
+  focus <> [] -> has_descendants focus rest = true ->
+  invokes_prune focus (Some value) rest = true /\
+  attempted_prune_entry focus (Some value) rest = Some EarlyReturn.
+Proof.
+  intros focus value rest Hroot Hdesc.
+  destruct (descendant_payload_is_distinct_and_retained focus rest value Hdesc)
+    as [entry [endpoint [_ [_ [_ Hnonempty]]]]].
+  unfold attempted_prune_entry, invokes_prune, native_prune_flag.
+  destruct (path_eq_dec focus []); [contradiction|]. rewrite Hdesc.
+  split; auto. destruct rest; [contradiction|reflexivity].
+Qed.
+
+Theorem conditional_removal_never_enters_ancestor_pruning : forall focus cell rest,
+  attempted_prune_entry focus cell rest <> Some NeedsAncestorLoop.
+Proof.
+  intros focus [value|] rest; [|discriminate].
+  unfold attempted_prune_entry, invokes_prune, native_prune_flag.
+  destruct (path_eq_dec focus []); [discriminate|].
+  destruct (has_descendants focus rest) eqn:Hdesc; [|discriminate].
+  destruct rest as [|entry rest]; [discriminate Hdesc|discriminate].
+Qed.
+
+Definition prune_work (focus : path) (cell : option payload) (rest : list slot) :=
+  match attempted_prune_entry focus cell rest with
+  | None => Some (0, 0, 0, 0)
+  | Some EarlyReturn => Some (1, 0, 0, 0)
+  | Some NeedsAncestorLoop => None
+  end.
+
+Theorem conditional_removal_has_bounded_prune_work : forall focus cell rest,
+  exists guards, guards <= 1 /\ prune_work focus cell rest = Some (guards, 0, 0, 0).
+Proof.
+  intros focus cell rest.
+  pose proof (conditional_removal_never_enters_ancestor_pruning focus cell rest) as Hsafe.
+  unfold prune_work. destruct (attempted_prune_entry focus cell rest) as [[|]|];
+    [exists 1|contradiction|exists 0]; split; auto.
+Qed.
+
+Theorem absent_and_root_removal_bypass_pruning : forall focus cell rest,
+  removal_entries focus None rest = rest /\
+  attempted_prune_entry focus None rest = None /\
+  removal_entries [] cell rest = rest /\
+  attempted_prune_entry [] cell rest = None.
+Proof. intros focus [value|] rest; repeat split; reflexivity. Qed.
+
+Theorem terminal_removal_retains_dangling_path : forall focus value rest,
+  focus <> [] -> has_descendants focus rest = false ->
+  removal_entries focus (Some value) rest = ChildSlot focus [] :: rest /\
+  attempted_prune_entry focus (Some value) rest = None /\
+  parent_topology (removal_entries focus (Some value) rest) focus = true.
+Proof.
+  intros focus value rest Hroot Hterminal.
+  assert (Hflag : native_prune_flag focus rest = false).
+  { unfold native_prune_flag. destruct (path_eq_dec focus []); congruence. }
+  unfold removal_entries, attempted_prune_entry, invokes_prune.
+  destruct (path_eq_dec focus []); [contradiction|]. rewrite Hflag.
+  repeat split; auto. unfold parent_topology.
+  destruct (path_eq_dec focus []); auto.
+  unfold slot_topology; simpl. rewrite prefixb_refl. reflexivity.
+Qed.
+
+Definition child_key (entry : slot) :=
+  match entry with ChildSlot key _ => [key] | ValueSlot _ _ => [] end.
+
+Definition slot_one_false_mutant (focus : path) (rest : list slot) :=
+  rest ++ [ChildSlot focus []].
+
+Theorem unconditional_false_duplicates_same_key_child :
+  flat_map child_key (slot_one_false_mutant [1] [ChildSlot [1] [[0]]]) = [[1]; [1]] /\
+  ~ NoDup (flat_map child_key (slot_one_false_mutant [1] [ChildSlot [1] [[0]]])) /\
+  removal_entries [1] (Some (PathMapReversePruneTeardown.SetMember 9))
+    [ChildSlot [1] [[0]]] = [ChildSlot [1] [[0]]].
+Proof.
+  split; [reflexivity|]. split; [|reflexivity].
+  intro H. inversion H; subst. simpl in *. tauto.
+Qed.
+
+Theorem unguarded_true_can_discard_terminal_path :
+  parent_topology [] [1] = false /\
+  parent_topology (removal_entries [1] (Some (PathMapReversePruneTeardown.SetMember 9)) []) [1] = true /\
+  prune_entry [] = NeedsAncestorLoop.
+Proof. repeat split; reflexivity. Qed.
+
+Theorem compressed_deeper_value_is_sufficient_support :
+  has_descendants [1] [ValueSlot [1; 0] (PathMapReversePruneTeardown.SetMember 10)] = true /\
+  attempted_prune_entry [1] (Some (PathMapReversePruneTeardown.SetMember 9))
+    [ValueSlot [1; 0] (PathMapReversePruneTeardown.SetMember 10)] = Some EarlyReturn /\
+  lookup_value [1; 0] (removal_entries [1] (Some (PathMapReversePruneTeardown.SetMember 9))
+    [ValueSlot [1; 0] (PathMapReversePruneTeardown.SetMember 10)]) =
+      Some (PathMapReversePruneTeardown.SetMember 10).
+Proof. repeat split; reflexivity. Qed.
+
+End DescendantRemoval.
+
 Inductive native_obligation :=
 | ReadSelectionExact | TerminalChildMask | MutableFocusBeforeMissingEdge
 | CompressedEndpointParentFocus | FreshDonorRootAbsent | DonorSuffixExact
@@ -587,5 +883,18 @@ Print Assumptions root_read_selection_is_existing_prefix.
 Print Assumptions missing_requested_focus_has_no_value.
 Print Assumptions branching_missing_edge_is_not_leaf_extension.
 Print Assumptions native_catalog_is_exhaustive_and_unique.
+Print Assumptions DescendantRemoval.descendant_payload_is_distinct_and_retained.
+Print Assumptions DescendantRemoval.conditional_removal_preserves_exact_topology.
+Print Assumptions DescendantRemoval.conditional_removal_matches_independent_reference.
+Print Assumptions DescendantRemoval.removal_changes_only_selected_value.
+Print Assumptions DescendantRemoval.removal_count_is_exact.
+Print Assumptions DescendantRemoval.descendant_removal_stops_at_first_prune_guard.
+Print Assumptions DescendantRemoval.conditional_removal_never_enters_ancestor_pruning.
+Print Assumptions DescendantRemoval.conditional_removal_has_bounded_prune_work.
+Print Assumptions DescendantRemoval.absent_and_root_removal_bypass_pruning.
+Print Assumptions DescendantRemoval.terminal_removal_retains_dangling_path.
+Print Assumptions DescendantRemoval.unconditional_false_duplicates_same_key_child.
+Print Assumptions DescendantRemoval.unguarded_true_can_discard_terminal_path.
+Print Assumptions DescendantRemoval.compressed_deeper_value_is_sufficient_support.
 
 End PathMapLeafExtension.

@@ -37,6 +37,7 @@ use prost::bytes::{Buf, BufMut};
 use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
 use prost::DecodeError;
+use rspace_plus_plus::rspace::pathmap_mutation::{DisposeValue, NativePathCursor, TeardownBarrier};
 
 use super::canonical_path::{
     declared_canonical_path_flags, declared_canonical_path_metadata, decode_trie_path,
@@ -56,6 +57,41 @@ use super::pathmap_native_query::{
 };
 use super::pathmap_zipper::decode_cursor;
 use crate::rhoapi::{Par, Var};
+
+#[derive(Clone, Copy)]
+struct ModelPathMapPolicy;
+
+impl DisposeValue<()> for ModelPathMapPolicy {
+    fn dispose(&self, _value: ()) {}
+}
+
+impl TeardownBarrier<()> for ModelPathMapPolicy {
+    fn make_barrier() {}
+}
+
+impl DisposeValue<Par> for ModelPathMapPolicy {
+    fn dispose(&self, value: Par) { crate::rust::rholang::par_children::dismantle(value); }
+}
+
+impl TeardownBarrier<Par> for ModelPathMapPolicy {
+    fn make_barrier() -> Par { Par::default() }
+}
+
+fn native_create_path<V>(map: &mut pathmap::PathMap<V>, path: &[u8]) -> bool
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    ModelPathMapPolicy: DisposeValue<V> + TeardownBarrier<V>,
+{
+    NativePathCursor::<V, _, ModelPathMapPolicy>::new(map, path, &ModelPathMapPolicy).create_path()
+}
+
+fn native_insert<V>(map: &mut pathmap::PathMap<V>, path: &[u8], value: V) -> Option<V>
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    ModelPathMapPolicy: DisposeValue<V> + TeardownBarrier<V>,
+{
+    NativePathCursor::<V, _, ModelPathMapPolicy>::new(map, path, &ModelPathMapPolicy).set_val(value)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ★ THE ENTRY TRIE — the stored form of an `EPathMap`'s entries
@@ -335,7 +371,7 @@ fn graft_composed_set_subtrie(
             let mut absolute_split = Vec::with_capacity(prefix.len() + relative_split.len());
             absolute_split.extend_from_slice(prefix);
             absolute_split.extend_from_slice(&relative_split);
-            destination.insert(absolute_split, ());
+            native_insert(destination, &absolute_split, ());
         }
     }
 }
@@ -380,7 +416,7 @@ fn graft_composed_map_subtrie(
             let mut absolute_split = Vec::with_capacity(prefix.len() + relative_split.len());
             absolute_split.extend_from_slice(prefix);
             absolute_split.extend_from_slice(&relative_split);
-            if let Some(replaced) = destination.insert(absolute_split, removed) {
+            if let Some(replaced) = native_insert(destination, &absolute_split, removed) {
                 crate::rust::rholang::par_children::dismantle(replaced);
             }
         }
@@ -571,11 +607,12 @@ fn copy_dropped_topology<V>(
     source: &pathmap::PathMap<V>,
     count: usize,
 ) where
-    V: Clone + Send + Sync + Unpin,
+    V: Clone + Send + Sync + Unpin + 'static,
+    ModelPathMapPolicy: DisposeValue<V> + TeardownBarrier<V>,
 {
     for source_leaf in source.read_zipper().into_path_iter() {
         if let Some(destination_leaf) = key_after_dropping_segments(&source_leaf, count) {
-            destination.create_path(destination_leaf);
+            native_create_path(destination, &destination_leaf);
         }
     }
 }
@@ -1042,7 +1079,7 @@ impl EntryTrie {
         let EPathMapRepr::Set(map) = &mut self.repr else {
             unreachable!("map mode was rejected and empty mode was specialized")
         };
-        let replaced = map.insert(key, ());
+        let replaced = native_insert(map, &key, ());
         if replaced.is_none() {
             self.len += 1;
         }
@@ -1100,7 +1137,7 @@ impl EntryTrie {
         let EPathMapRepr::Map(map) = &mut self.repr else {
             unreachable!("set mode was rejected and empty mode was specialized")
         };
-        let replaced = map.insert(encoded_key, value);
+        let replaced = native_insert(map, &encoded_key, value);
         if replaced.is_none() {
             self.len += 1;
         } else {
@@ -1274,7 +1311,7 @@ impl EntryTrie {
                 copy_dropped_topology(&mut destination, source, count);
                 for (key, ()) in source.iter() {
                     if let Some(key) = key_after_dropping_segments(&key, count) {
-                        destination.insert(key, ());
+                        native_insert(&mut destination, &key, ());
                     }
                 }
                 EPathMapRepr::Set(destination)
@@ -1284,7 +1321,7 @@ impl EntryTrie {
                 copy_dropped_topology(&mut destination, source, count);
                 for (key, value) in source.iter() {
                     if let Some(key) = key_after_dropping_segments(&key, count) {
-                        destination.insert(key, value.clone());
+                        native_insert(&mut destination, &key, value.clone());
                     }
                 }
                 EPathMapRepr::Map(destination)
@@ -1381,8 +1418,8 @@ impl EntryTrie {
     pub fn create_path(&mut self, path: &[u8]) -> Result<bool, EPathMapEmptyModeError> {
         let changed = match &mut self.repr {
             EPathMapRepr::Empty => return Err(EPathMapEmptyModeError),
-            EPathMapRepr::Set(map) => map.create_path(path),
-            EPathMapRepr::Map(map) => map.create_path(path),
+            EPathMapRepr::Set(map) => native_create_path(map, path),
+            EPathMapRepr::Map(map) => native_create_path(map, path),
         };
         if changed {
             self.invalidate_derived();
@@ -1420,7 +1457,7 @@ impl EntryTrie {
                 remove_subtrie_native(&mut destination, &prefix);
                 if !cursor_segments.is_empty() {
                     let key = encode_cursor_entry_key(cursor_segments, cursor_kind, &destination);
-                    destination.insert(key, ());
+                    native_insert(&mut destination, &key, ());
                 }
                 EPathMapRepr::Set(destination)
             }
@@ -1429,7 +1466,7 @@ impl EntryTrie {
                 remove_subtrie_native(&mut destination, &prefix);
                 if !cursor_segments.is_empty() {
                     let key = encode_cursor_entry_key(cursor_segments, cursor_kind, &destination);
-                    destination.create_path(key);
+                    native_create_path(&mut destination, &key);
                 }
                 EPathMapRepr::Map(destination)
             }
@@ -1613,20 +1650,16 @@ impl EntryTrie {
             EPathMapRepr::Empty => Self::default(),
             EPathMapRepr::Set(left) => Self::algebra_result(EPathMapRepr::Set(left.subtract(keys))),
             EPathMapRepr::Map(left) => {
-                use pathmap::zipper::{ZipperMoving, ZipperWriting};
-
                 let mut difference = left.clone();
                 {
-                    let mut cursor = difference.write_zipper();
+                    let mut cursor = NativePathCursor::<Par, _, ModelPathMapPolicy>::new(
+                        &mut difference,
+                        &[],
+                        &ModelPathMapPolicy,
+                    );
                     for (key, ()) in keys.iter() {
                         cursor.move_to_path(&key);
-                        let removed = cursor.remove_val(false);
-                        if removed.is_some() {
-                            cursor.prune_ascend();
-                        }
-                        if let Some(removed) = removed {
-                            crate::rust::rholang::par_children::dismantle(removed);
-                        }
+                        cursor.remove_val_and_prune();
                     }
                 }
                 Self::algebra_result(EPathMapRepr::Map(difference))

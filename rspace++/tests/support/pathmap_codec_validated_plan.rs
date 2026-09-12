@@ -164,8 +164,23 @@ fn assert_forward_preorder_plan_is_exact(bytes: &[u8]) {
     assert_eq!(physical_ids.len(), plan.records.len());
 }
 
+#[derive(Clone, Copy)]
+struct WriterImagePolicy;
+
+impl crate::rspace::guarded_pathmap::DisposeValue<u64> for WriterImagePolicy {
+    fn dispose(&self, _value: u64) {}
+}
+
+impl crate::rspace::guarded_pathmap::TeardownBarrier<u64> for WriterImagePolicy {
+    fn make_barrier() -> u64 { 0 }
+}
+
 fn writer_image_from_operations(operations: &[(Vec<u8>, Option<u64>)]) -> Vec<u8> {
-    let mut map = PathMap::new();
+    let mut map = crate::rspace::guarded_pathmap::GuardedPathMap::<
+        u64,
+        WriterImagePolicy,
+        WriterImagePolicy,
+    >::new_with_barrier(WriterImagePolicy);
     for (path, value) in operations {
         match value {
             Some(value) => {
@@ -176,9 +191,7 @@ fn writer_image_from_operations(operations: &[(Vec<u8>, Option<u64>)]) -> Vec<u8
             }
         }
     }
-    ArenaCompactTree::from_zipper(map.read_zipper(), |value| *value)
-        .get_data()
-        .to_vec()
+    map.compact_u64_bytes(|value| *value)
 }
 
 proptest! {
@@ -520,8 +533,7 @@ fn wide_dense_topology_is_stack_safe_on_a_small_native_stack() {
 mod checked_line_transport {
     use super::super::{
         CanonicalCompactTrieLineDirection as Direction, CanonicalCompactTrieLineSpan,
-        DirectTopologyStage, ValidatedActPlan,
-        ValidatedCompactTrieTopologyState,
+        DirectTopologyStage, ValidatedActPlan, ValidatedCompactTrieTopologyState,
     };
     use super::*;
 
@@ -622,7 +634,11 @@ mod checked_line_transport {
                     let prepared = prepared_fast.line_span().unwrap().prepare(width).unwrap();
                     assert_eq!(prepared.source() as *const FragmentedSource, prepared_source);
                     drop(prepared);
-                    assert_eq!(state(&prepared_fast), before, "dropping preparation is nonmutating");
+                    assert_eq!(
+                        state(&prepared_fast),
+                        before,
+                        "dropping preparation is nonmutating"
+                    );
                     assert_eq!(prepared_fast.work_counters(), counters);
                     let prepared = prepared_fast.line_span().unwrap().prepare(width).unwrap();
                     let prepared_range = prepared.source_range();
@@ -835,41 +851,57 @@ mod checked_line_transport {
         cursor.next_event().unwrap();
         let before = state(&cursor);
         let counters = cursor.work_counters();
-        assert!(CanonicalCompactTrieLineSpan {
-            cursor: &mut cursor,
-            source_range: 0..usize::MAX,
-            direction: Direction::Forward,
-        }.prepare(usize::MAX / 2 + 1).is_none());
+        assert!(
+            CanonicalCompactTrieLineSpan {
+                cursor: &mut cursor,
+                source_range: 0..usize::MAX,
+                direction: Direction::Forward,
+            }
+            .prepare(usize::MAX / 2 + 1)
+            .is_none()
+        );
         assert_eq!(state(&cursor), before);
         assert_eq!(cursor.work_counters(), counters);
 
         cursor.state.stack.last_mut().unwrap().line_index = usize::MAX;
         let before = state(&cursor);
-        assert!(CanonicalCompactTrieLineSpan {
-            cursor: &mut cursor,
-            source_range: 0..1,
-            direction: Direction::Forward,
-        }.prepare(1).is_none());
+        assert!(
+            CanonicalCompactTrieLineSpan {
+                cursor: &mut cursor,
+                source_range: 0..1,
+                direction: Direction::Forward,
+            }
+            .prepare(1)
+            .is_none()
+        );
         assert_eq!(state(&cursor), before);
         assert_eq!(cursor.work_counters(), counters);
 
         cursor.state.stack.last_mut().unwrap().leave_index = usize::MAX;
         let before = state(&cursor);
-        assert!(CanonicalCompactTrieLineSpan {
-            cursor: &mut cursor,
-            source_range: 0..1,
-            direction: Direction::Unwind,
-        }.prepare(1).is_none());
+        assert!(
+            CanonicalCompactTrieLineSpan {
+                cursor: &mut cursor,
+                source_range: 0..1,
+                direction: Direction::Unwind,
+            }
+            .prepare(1)
+            .is_none()
+        );
         assert_eq!(state(&cursor), before);
         assert_eq!(cursor.work_counters(), counters);
 
         cursor.state.stack.clear();
         let before = state(&cursor);
-        assert!(CanonicalCompactTrieLineSpan {
-            cursor: &mut cursor,
-            source_range: 0..1,
-            direction: Direction::Forward,
-        }.prepare(1).is_none());
+        assert!(
+            CanonicalCompactTrieLineSpan {
+                cursor: &mut cursor,
+                source_range: 0..1,
+                direction: Direction::Forward,
+            }
+            .prepare(1)
+            .is_none()
+        );
         assert_eq!(state(&cursor), before);
         assert_eq!(cursor.work_counters(), counters);
     }

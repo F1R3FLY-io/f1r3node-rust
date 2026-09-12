@@ -11,7 +11,7 @@ Set Implicit Arguments.
   private node representation of the PathMap crate.  A production refinement
   refines to two explicit passes over one whole private root.  Phase A uses one
   public owned write zipper in logical-byte preorder, removes every real value
-  with [remove_val(false)], and immediately transfers it to its named disposer.
+  without logical pruning, and immediately transfers it to its named disposer.
   Only after closing the cursor and validating a zero-value root may Phase B
   install synthetic barriers and prune topology in reverse postorder, one
   logical edge at a time.  A barrier is removed before the next transition.
