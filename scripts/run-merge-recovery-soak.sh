@@ -273,6 +273,21 @@ session_bounded() {
 	wait "$watchdog" 2>/dev/null || true
 	return "$status"
 }
+publish_record() {
+	local echo_record=0 target tmp
+	if [ "$1" = -t ]; then
+		echo_record=1
+		shift
+	fi
+	target="$1"
+	tmp="$target.tmp.$BASHPID"
+	if ! cat >"$tmp"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	[ "$echo_record" -eq 0 ] || cat "$tmp"
+	sync "$tmp" && mv -f "$tmp" "$target" && sync "$(dirname "$target")"
+}
 run_domain_verified() {
 	[ "$CONTAINMENT" = required ] || return 0
 	python3 - "$RUN_DOMAIN_RECORD" <<'PY'
@@ -693,9 +708,7 @@ if [ -n "$NODE_REPO_DIR" ] && [ -f "$NODE_REPO_DIR/node/Cargo.toml" ]; then
 fi
 
 persist_soak_state() {
-	local state_tmp="${STATE_FILE}.tmp"
 	local checkpoint_state="$OUTPUT_DIR/.soak-checkpoint-state.json"
-	local checkpoint_tmp="${checkpoint_state}.tmp"
 	mkdir -p "$OUTPUT_DIR"
 	{
 		printf 'STARTED_AT=%s\n' "$STARTED_AT"
@@ -706,7 +719,7 @@ persist_soak_state() {
 		printf 'BENCH_SEGMENTS=%s\n' "$BENCH_SEGMENTS"
 		printf 'BENCH_FAILURES=%s\n' "$BENCH_FAILURES"
 		printf 'SEGMENT=%s\n' "$SEGMENT"
-	} >"$state_tmp" && mv "$state_tmp" "$STATE_FILE" || return 1
+	} | publish_record "$STATE_FILE" || return 1
 	jq -n \
 		--arg target_ref "$TARGET_REF" \
 		--arg target_sha "$TARGET_SHA" \
@@ -724,8 +737,7 @@ persist_soak_state() {
       version: $version, started_at: $started_at,
       requested_seconds: $requested_seconds, iterations: $iterations,
       failures: $failures, bench_segments: $bench_segments,
-      bench_failures: $bench_failures}' >"$checkpoint_tmp" &&
-		mv "$checkpoint_tmp" "$checkpoint_state"
+      bench_failures: $bench_failures}' | publish_record "$checkpoint_state"
 }
 
 if [ "$INFLIGHT_ITERATION" -eq 1 ]; then
@@ -736,7 +748,7 @@ if [ "$INFLIGHT_ITERATION" -eq 2 ]; then
 	EARLY_EXIT_REASON="interrupted_iteration"
 	DEADLINE=0
 	printf 'interrupted_iteration: iteration %s has no committed outcome. Writer termination is unconfirmed.\n' \
-		"$ITERATIONS" >"$OUTPUT_DIR/early-exit.txt" || exit 2
+		"$ITERATIONS" | publish_record "$OUTPUT_DIR/early-exit.txt" || exit 2
 fi
 if [ "$INFLIGHT_BENCHMARK" -eq 1 ]; then
 	FAILURES="$((FAILURES + 1))"
@@ -747,7 +759,7 @@ if [ "$INFLIGHT_BENCHMARK" -eq 2 ]; then
 	EARLY_EXIT_REASON="interrupted_benchmark"
 	DEADLINE=0
 	printf 'interrupted_benchmark: benchmark %s has no committed outcome. Writer termination is unconfirmed.\n' \
-		"$BENCH_SEGMENTS" >"$OUTPUT_DIR/early-exit.txt" || exit 2
+		"$BENCH_SEGMENTS" | publish_record "$OUTPUT_DIR/early-exit.txt" || exit 2
 fi
 persist_soak_state || exit 2
 
@@ -1147,27 +1159,27 @@ run_bench_segment() {
 			DEADLINE=0
 			FAILURES="$((FAILURES + 1))"
 			printf 'The disk sample does not permit benchmark admission. The driver refused work.\n' |
-				tee "$OUTPUT_DIR/protection-breach.txt"
+				publish_record -t "$OUTPUT_DIR/protection-breach.txt"
 			printf 'host_protection_breach: benchmark disk sample %s MiB, required %s MiB\n' \
-				"${disk_mb:-unavailable}" "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" >"$OUTPUT_DIR/early-exit.txt"
+				"${disk_mb:-unavailable}" "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" | publish_record "$OUTPUT_DIR/early-exit.txt"
 			return 1
 		fi
 	fi
 	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
-		printf 'The run domain is unverified before benchmark admission. The driver refused work.\n' >"$HOST_GUARDIAN_BREACH"
+		printf 'The run domain is unverified before benchmark admission. The driver refused work.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 	fi
 	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-		printf 'The crash monitor failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		printf 'The crash monitor failed its benchmark admission check. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 	fi
 	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
 		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The host guardian failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The host guardian failed its benchmark admission check. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 		fi
 		EARLY_EXIT_REASON="host_protection_breach"
 		DEADLINE=0
 		FAILURES="$((FAILURES + 1))"
-		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
-		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		head -1 "$HOST_GUARDIAN_BREACH" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" | publish_record "$OUTPUT_DIR/early-exit.txt"
 		return 1
 	fi
 	BENCH_SEGMENTS="$((BENCH_SEGMENTS + 1))"
@@ -1194,13 +1206,13 @@ run_bench_segment() {
 	local interrupted=0
 	while kill -0 "$BENCHMARK_PID" 2>/dev/null; do
 		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The crash monitor exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The crash monitor exited during benchmark execution. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 		fi
 		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The host guardian exited during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The host guardian exited during benchmark execution. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 		fi
 		if [ -n "$HOST_GUARDIAN_PID" ] && ! guardian_progress_fresh && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The host guardian has no recent progress during benchmark execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The host guardian has no recent progress during benchmark execution. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 		fi
 		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 			interrupted=1
@@ -1217,8 +1229,8 @@ run_bench_segment() {
 		EARLY_EXIT_REASON="host_protection_breach"
 		DEADLINE=0
 		FAILURES="$((FAILURES + 1))"
-		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
-		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		head -1 "$HOST_GUARDIAN_BREACH" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" | publish_record "$OUTPUT_DIR/early-exit.txt"
 		status=1
 	fi
 	if [ "$status" -ne 0 ]; then
@@ -1295,9 +1307,9 @@ if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	EARLY_EXIT_REASON="host_protection_breach"
 	DEADLINE=0
 	if [ "$FAILURES" -eq 0 ]; then FAILURES=1; fi
-	head -1 "$HOST_GUARDIAN_BREACH" >"$OUTPUT_DIR/protection-breach.txt"
+	head -1 "$HOST_GUARDIAN_BREACH" | publish_record "$OUTPUT_DIR/protection-breach.txt"
 	printf 'host_protection_breach: recovered guardian record: %s\n' \
-		"$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		"$(head -1 "$HOST_GUARDIAN_BREACH")" | publish_record "$OUTPUT_DIR/early-exit.txt"
 	persist_soak_state
 	printf 'The previous guardian breach prevents this segment from starting work.\n'
 fi
@@ -1389,7 +1401,7 @@ cleanup_soak_processes() {
 	if [ -n "$BENCHMARK_PID" ] || [ -n "$ITERATION_PID" ]; then
 		if ! stop_node_writers -q kill >/dev/null 2>&1; then
 			printf 'Writer termination is unconfirmed because a writer stop failed or exceeded its budget.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
-			printf 'writer_stop_failed: Writer termination is unconfirmed.\n' >"$OUTPUT_DIR/early-exit.txt"
+			printf 'writer_stop_failed: Writer termination is unconfirmed.\n' | publish_record "$OUTPUT_DIR/early-exit.txt"
 			if [ "$INFLIGHT_ITERATION" -eq 1 ]; then
 				INFLIGHT_ITERATION=2
 				FAILURES="$((FAILURES + 1))"
@@ -1521,7 +1533,7 @@ print(json.dumps(tags))
 			if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 				disk_mb="$(disk_free_mb)"
 				if [ -z "$disk_mb" ]; then
-					printf 'The disk probe is unavailable during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+					printf 'The disk probe is unavailable during execution. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 					stop_node_writers -q kill || true
 					exit 0
 				fi
@@ -1532,7 +1544,7 @@ print(json.dumps(tags))
 						disk_over=$((disk_over + 1))
 						if [ "$disk_mb" -lt "$disk_hard_floor_mb" ] || [ "$disk_over" -ge 3 ]; then
 							printf 'The disk guardian detected %s MiB below floor %s MiB (hard floor %s MiB, consecutive samples %s). Workload termination is unconfirmed.\n' \
-								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" >"$HOST_GUARDIAN_BREACH"
+								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" | publish_record "$HOST_GUARDIAN_BREACH"
 							stop_node_writers -q kill || true
 							# Who filled it rides in the tag: on weekend runs
 							# 33939315110, 33978505238 and 34056342543 the VM
@@ -1576,7 +1588,7 @@ print(json.dumps(tags))
 				continue
 			fi
 			printf 'orchestrator host guardian: host available RAM %sMB < floor %sMB (hard floor %sMB, consecutive %s); writer termination is unconfirmed\n' \
-				"$free_mb" "$HOST_FREE_FLOOR_MB" "$hard_floor_mb" "$over" >"$HOST_GUARDIAN_BREACH"
+				"$free_mb" "$HOST_FREE_FLOOR_MB" "$hard_floor_mb" "$over" | publish_record "$HOST_GUARDIAN_BREACH"
 			stop_node_writers -q kill >/dev/null 2>&1 || true
 			guardian_stamp_health_tag breach "$free_mb"
 			exit 0
@@ -1604,9 +1616,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 		EARLY_EXIT_REASON="host_protection_breach"
 		printf 'orchestrator host guardian fired; ending soak (fail-closed)\n'
-		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
-		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" \
-			>"$OUTPUT_DIR/early-exit.txt"
+		head -1 "$HOST_GUARDIAN_BREACH" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" |
+			publish_record "$OUTPUT_DIR/early-exit.txt"
 		FAILURES="$((FAILURES + 1))"
 		break
 	fi
@@ -1634,11 +1646,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 				"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
 			if ! reclaim_disk_space; then
 				if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-					printf 'Disk hygiene failed or exceeded its command budget. Cleanup termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+					printf 'Disk hygiene failed or exceeded its command budget. Cleanup termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 				fi
 				EARLY_EXIT_REASON="host_protection_breach"
-				head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
-				printf 'host_protection_breach: disk hygiene incomplete\n' >"$OUTPUT_DIR/early-exit.txt"
+				head -1 "$HOST_GUARDIAN_BREACH" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: disk hygiene incomplete\n' | publish_record "$OUTPUT_DIR/early-exit.txt"
 				FAILURES="$((FAILURES + 1))"
 				break
 			fi
@@ -1650,9 +1662,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 				EARLY_EXIT_REASON="host_protection_breach"
 				printf 'orchestrator host guardian fired during disk hygiene; ending soak (fail-closed)\n'
-				head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
-				printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" \
-					>"$OUTPUT_DIR/early-exit.txt"
+				head -1 "$HOST_GUARDIAN_BREACH" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" |
+					publish_record "$OUTPUT_DIR/early-exit.txt"
 				FAILURES="$((FAILURES + 1))"
 				break
 			fi
@@ -1660,9 +1672,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
 				EARLY_EXIT_REASON="host_protection_breach"
 				printf 'orchestrator disk floor: free disk %sMB still inside hygiene band (floor %sMB + band %sMB) after hygiene; ending soak (fail-closed)\n' \
-					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" | tee "$OUTPUT_DIR/protection-breach.txt"
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
 				printf 'host_protection_breach: disk floor: free %sMB still inside hygiene band (floor %sMB + band %sMB) after hygiene\n' \
-					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" >"$OUTPUT_DIR/early-exit.txt"
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB" | publish_record "$OUTPUT_DIR/early-exit.txt"
 				FAILURES="$((FAILURES + 1))"
 				persist_soak_state || true
 				disk_usage_snapshot >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
@@ -1673,25 +1685,25 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if [ -z "$DISK_MB" ]; then
 			EARLY_EXIT_REASON="host_protection_breach"
 			printf 'The disk probe is unavailable before admission. The driver refused work.\n' |
-				tee "$OUTPUT_DIR/protection-breach.txt"
-			printf 'host_protection_breach: disk probe unavailable before admission\n' >"$OUTPUT_DIR/early-exit.txt"
+				publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: disk probe unavailable before admission\n' | publish_record "$OUTPUT_DIR/early-exit.txt"
 			FAILURES="$((FAILURES + 1))"
 			break
 		fi
 	fi
 	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
-		printf 'The run domain is unverified before iteration admission. The driver refused work.\n' >"$HOST_GUARDIAN_BREACH"
+		printf 'The run domain is unverified before iteration admission. The driver refused work.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 	fi
 	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-		printf 'The crash monitor failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+		printf 'The crash monitor failed its iteration admission check. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 	fi
 	if [ -s "$HOST_GUARDIAN_BREACH" ] || { [ -n "$HOST_GUARDIAN_PID" ] && { ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null || ! guardian_progress_fresh; }; }; then
 		if [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The host guardian failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The host guardian failed its iteration admission check. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 		fi
 		EARLY_EXIT_REASON="host_protection_breach"
-		head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
-		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" >"$OUTPUT_DIR/early-exit.txt"
+		head -1 "$HOST_GUARDIAN_BREACH" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+		printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" | publish_record "$OUTPUT_DIR/early-exit.txt"
 		FAILURES="$((FAILURES + 1))"
 		break
 	fi
@@ -1763,21 +1775,21 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	GUARDIAN_INTERRUPTED=0
 	while kill -0 "$ITERATION_PID" 2>/dev/null; do
 		if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The crash monitor exited during iteration execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The crash monitor exited during iteration execution. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 		fi
 		if [ -n "$HOST_GUARDIAN_PID" ] && ! kill -0 "$HOST_GUARDIAN_PID" 2>/dev/null && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The host guardian exited during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The host guardian exited during execution. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 		fi
 		if [ -n "$HOST_GUARDIAN_PID" ] && ! guardian_progress_fresh && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
-			printf 'The host guardian has no recent progress during execution. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
+			printf 'The host guardian has no recent progress during execution. Workload termination is unconfirmed.\n' | publish_record "$HOST_GUARDIAN_BREACH"
 		fi
 		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 			GUARDIAN_INTERRUPTED=1
 			emergency_start
 			EARLY_EXIT_REASON="host_protection_breach"
-			head -1 "$HOST_GUARDIAN_BREACH" >"$OUTPUT_DIR/protection-breach.txt"
-			printf 'host_protection_breach: iteration %s: %s\n' "$ITERATIONS" "$(head -1 "$HOST_GUARDIAN_BREACH")" \
-				>"$OUTPUT_DIR/early-exit.txt"
+			head -1 "$HOST_GUARDIAN_BREACH" | publish_record "$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: iteration %s: %s\n' "$ITERATIONS" "$(head -1 "$HOST_GUARDIAN_BREACH")" |
+				publish_record "$OUTPUT_DIR/early-exit.txt"
 			kill -TERM "$ITERATION_PID" 2>/dev/null || true
 			term_wait="$(emergency_remaining)"
 			[ "$term_wait" -le 15 ] || term_wait=15
@@ -1896,9 +1908,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		if [ -n "$BREACH_LINE" ]; then
 			EARLY_EXIT_REASON="host_protection_breach"
 			printf 'host-protection breach in iteration %s; ending soak (fail-closed)\n' "$ITERATIONS"
-			printf '%s\n' "$BREACH_LINE" | tee "$OUTPUT_DIR/protection-breach.txt"
-			printf 'host_protection_breach: iteration %s: %s\n' "$ITERATIONS" "$BREACH_LINE" \
-				>"$OUTPUT_DIR/early-exit.txt"
+			printf '%s\n' "$BREACH_LINE" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: iteration %s: %s\n' "$ITERATIONS" "$BREACH_LINE" |
+				publish_record "$OUTPUT_DIR/early-exit.txt"
 			break
 		fi
 		sleep 30
@@ -1909,7 +1921,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		EARLY_EXIT_REASON="target_advanced"
 		printf '%s advanced past %s; ending soak after iteration %s\n' \
 			"$TARGET_REF" "$TARGET_SHA" "$ITERATIONS" |
-			tee "$OUTPUT_DIR/early-exit.txt"
+			publish_record -t "$OUTPUT_DIR/early-exit.txt"
 		break
 	fi
 
@@ -1926,9 +1938,9 @@ done
 if [ -z "$EARLY_EXIT_REASON" ] && [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	EARLY_EXIT_REASON="host_protection_breach"
 	printf 'orchestrator host guardian fired during the final iteration; recording fail-closed exit\n'
-	head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
-	printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" \
-		>"$OUTPUT_DIR/early-exit.txt"
+	head -1 "$HOST_GUARDIAN_BREACH" | publish_record -t "$OUTPUT_DIR/protection-breach.txt"
+	printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" |
+		publish_record "$OUTPUT_DIR/early-exit.txt"
 	FAILURES="$((FAILURES + 1))"
 fi
 
@@ -1954,7 +1966,7 @@ persist_soak_state
 	printf 'bench_segments=%s\n' "$BENCH_SEGMENTS"
 	printf 'bench_failures=%s\n' "$BENCH_FAILURES"
 	printf 'early_exit_reason=%s\n' "${EARLY_EXIT_REASON:-none}"
-} | tee "$OUTPUT_DIR/summary.txt"
+} | publish_record -t "$OUTPUT_DIR/summary.txt"
 
 summary_budget() {
 	local remaining
@@ -2007,8 +2019,8 @@ if command -v jq >/dev/null; then
           iterations: $iterations, failures: $failures,
           failure_rate: (if $iterations > 0 then ($failures / $iterations) else 0 end),
           bench_segments: $bench_segments, bench_failures: $bench_failures,
-          degraded: "full summary emission failed; sampled metrics missing"}' \
-				>"$OUTPUT_DIR/summary.json" ||
+          degraded: "full summary emission failed; sampled metrics missing"}' |
+				publish_record "$OUTPUT_DIR/summary.json" ||
 				printf 'fallback summary emission failed too (non-fatal)\n' >&2
 		}
 fi

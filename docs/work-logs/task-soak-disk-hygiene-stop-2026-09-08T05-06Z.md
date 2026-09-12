@@ -1217,3 +1217,26 @@ The driver suite, the supporting probe, sample, and admission checks, and the su
 The isolated emergency suite passes 32 case directories alone, including the emergency deadline case.
 The classifier and routing regressions pass after the emergency suite.
 
+### B51 durable record publication, 2026-09-12
+
+The cycle starts from committed source `78921d076e0a7831e2f5d059b4b07699ef278d24`.
+The user confirmed the durability cycle as the next parallel track while the second session audits telemetry.
+The fixture runs the production driver in Docker isolation as uid 65534 with one telemetry root.
+The disk probe drops below the hard floor after the workload starts, so the guardian fires during the first iteration.
+A substituted `sync` command logs each call with the target, the size, and the content digest.
+A poller logs every size change of the six minimal records at ten-millisecond intervals.
+
+The baseline driver wrote every record in place, and the baseline summary writer did the same.
+The matched RED exits 1 because no record had a synced temporary file, a rename, and a directory sync.
+The RED poller also observed one empty summary JSON under its final name.
+
+The corrected driver publishes every record through one helper that syncs a temporary file, renames it into place, and syncs the directory.
+The summary writer follows the same sequence.
+The matched GREEN exits 0 with the same fixture bytes and thirty logged sync calls.
+Each record shows its final digest under its temporary name before a directory sync, and the poller observed no empty record.
+The first GREEN run is retained as an attempt, because the summary writer's indentation was changed from outside this session before the run.
+The original indentation was restored with only the tail edit, and the matched GREEN was rerun on the final bytes.
+
+The in-place configuration violates `VisibleImpliesDurable` with TLC exit 12, and the atomic configuration passes with 10 distinct states.
+The isolated formal gate passes 50 positive configurations and 50 exact controls with 100 actual TLC logs.
+The driver suite, the supporting probe, sample, and admission checks, and the summary and metrics regressions pass.

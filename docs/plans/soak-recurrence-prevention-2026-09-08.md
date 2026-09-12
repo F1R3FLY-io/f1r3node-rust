@@ -468,6 +468,16 @@ Concurrent directory replacement, mount changes, inherited descriptors, private 
 The second session's [private Docker containment specification](soak-private-docker-containment-2026-09-12.md) defines the next native boundary, with twelve regression cases still unexecuted.
 D2 and claim discharge remain pending.
 
+#### Durable record publication after B51
+
+The [durable record package](../cbc-evidence/soak-d2-durable-record-2026-09-12/README.md) verifies how the driver publishes its minimal records.
+Every breach record, the early-exit record, the persisted state, and both summaries now pass through one helper.
+The helper syncs a temporary file, renames it into place, and syncs the directory, so a record under its final name is complete or absent.
+The [model](../../formal/tlaplus/soak_disk/DurableRecord.md) refutes the in-place baseline.
+The fixture proves ordering and atomic visibility with a substituted `sync` command and does not prove kernel durability.
+Storage faults during publication, upload acknowledgment, and the guardian and crash-monitor bounds remain unverified.
+D2 and claim discharge remain pending.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

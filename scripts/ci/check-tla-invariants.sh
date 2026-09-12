@@ -149,6 +149,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_EmergencyDeadline
     soak_disk/MC_NativeControlPath
     soak_disk/MC_NativeControlPath_trusted
+    soak_disk/MC_DurableRecord
 )
 
 TLC_WORKERS=auto
@@ -203,6 +204,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_EmergencyDeadline
         soak_disk/MC_NativeControlPath
         soak_disk/MC_NativeControlPath_trusted
+        soak_disk/MC_DurableRecord
     )
     TLC_WORKERS=2
 fi
@@ -288,6 +290,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_BreachRecordOrder_attribute_first_pre_fix:AttributionRequiresRecord
     soak_disk/MC_EmergencyDeadline_unbounded_pre_fix:ResponseWithinDeadline
     soak_disk/MC_NativeControlPath_parent_only_pre_fix:UntrustedControlPreventsWorkload
+    soak_disk/MC_DurableRecord_in_place_pre_fix:VisibleImpliesDurable
 )
 
 failed=0
