@@ -35,7 +35,7 @@ With disk protection enabled, the soak driver never starts an iteration from a f
 
 | Check | Command | Status |
 | --- | --- | --- |
-| Bounded models and forty-six controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
+| Bounded models and forty-seven controls | `scripts/ci/check-tla-invariants.sh --soak-pr` | Green locally and on the PR tier |
 | Consumer storage budget | `MC_SoakStorageBudget` invariant `WithinBudget`, with `deploy_storage/MC_DeployStorageBound` for the deploy cap | Proven in the model. Block, log, and history caps are assumptions until the node enforces them |
 | Conditional no-overrun theorem | `MC_SoakDiskGuardian` invariant `NoOverrun` under `FloorCoversReaction` and `BoundTermination` | Proven in the model. The rate premise awaits the timeline measurement, and the termination premise awaits D2 |
 | Container regressions, 42 scenarios | `scripts/bench/test-soak-disk-admission.sh` | Green locally and in CI |

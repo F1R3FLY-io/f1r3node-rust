@@ -1,0 +1,15 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 75
+The run domain is unverified before benchmark admission. The driver refused work.
+started_at=1789174897
+segments=1
+finished_at=1789174898
+target_ref=unknown
+target_sha=unknown
+requested_seconds=1200
+elapsed_seconds=1
+iterations=0
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

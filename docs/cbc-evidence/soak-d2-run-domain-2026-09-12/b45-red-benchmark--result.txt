@@ -1,0 +1,1 @@
+FAIL: The driver admitted benchmark work without a verified run domain (absent, initial).

@@ -18,7 +18,7 @@ a Boolean constant and must violate exactly the invariant named below.
 | `Hygiene` | `reclaim_disk_space`, which can reclaim nothing, keeps every temporary session (B25), fails when any cleanup command fails (B26), and inspects Docker resources instead of pruning them (B27) |
 | `HygieneStall`, `HygieneTick`, `HygieneReturns` | A hygiene client ignores TERM; under `SOAK_DISK_HYGIENE_SECONDS` it receives TERM, then KILL, and the driver refuses work (B23) |
 | `DecideAfterHygiene` | Refuse a known sample below the threshold |
-| `CheckAdmission` | Refuse a missing sample, a dead guardian process, or expired guardian progress before starting work |
+| `CheckAdmission` | Refuse a missing sample, a dead guardian process, a dead crash monitor, an unverified run domain, or expired guardian progress before starting work |
 | `GuardianStall` | The guardian stays alive but its progress record expires before admission |
 | `MonitorCrash` | The crash monitor dies before the benchmark admission or the iteration admission (B42) |
 | `GuardianCrash` | The guardian process dies before the workload starts |
@@ -45,8 +45,9 @@ a Boolean constant and must violate exactly the invariant named below.
 | `RememberBenchmark` | The state file records the opening benchmark in flight. A segment that finds one counts a failure and a benchmark failure and refuses work | `MC_SoakDiskAdmission_unrecorded_benchmark_pre_fix` | `BenchmarkCrashRequiresRefusal` |
 | `WatchMonitor` | A crash monitor exit during the opening benchmark cancels it and publishes the failure. The pre-fix benchmark loop watched only the host guardian | `MC_SoakDiskAdmission_iteration_only_pre_fix` | `BenchmarkMonitorDeathObserved` |
 | `CheckMonitorAlive` | A dead crash monitor cannot admit the benchmark or an iteration, and the refusal retains a failure. The pre-fix driver checked the monitor only at startup and mid-work | `MC_SoakDiskAdmission_unchecked_monitor_pre_fix` | `MonitorDeathPreventsAdmission` |
+| `VerifyPlacement` | Under required containment, the benchmark and an iteration are admitted only when the trusted run-domain record matches the driver's own control group and uid, and a failed comparison retains a failure. The pre-fix driver ignored the containment setting and took the unmanaged path (B45) | `MC_SoakDiskAdmission_unchecked_placement_pre_fix` | `UnverifiedPlacementPreventsAdmission` |
 
-`MC_SoakDiskAdmission` enables all eighteen corrections with all three benchmark fault kinds. It checks `TypeOK`, the eighteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 25146 distinct states.
+`MC_SoakDiskAdmission` enables all nineteen corrections with all three benchmark fault kinds. It checks `TypeOK`, the nineteen invariants above, `HygieneKillFollowsTerm`, `StopPreventsAdmission`, `RefusalRecorded`, and the liveness property `Completes`. It completes with 26604 distinct states.
 
 Constants: floor 4096 MiB, band 4096 MiB, free-space samples `{7000, 8191, 8192, 8193, 16384}`, initial free space 7000 MiB, malformed prefix 16384.
 

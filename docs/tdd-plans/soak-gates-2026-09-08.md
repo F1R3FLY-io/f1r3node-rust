@@ -693,6 +693,23 @@ behaviors:
         formal_green_exit: 0
         production_integration: false
         completes_behavior: false
+  - id: B45
+    statement: When containment is required, admission refuses work unless a trusted run-domain record matches the driver's own placement.
+    priority: must
+    deep_module: false
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-run-domain-2026-09-12/manifest.jsonc
+        test: scripts/bench/test-soak-run-domain-admission.sh
+        modes: [benchmark, iteration]
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        production_integration: false
 ---
 
 # Soak Gate Development Cycles
@@ -733,6 +750,11 @@ B41 detects monitor death during an active benchmark.
 B42 refuses opening benchmark and iteration admission after confirmed monitor death during a valid probe.
 B43 stops the owned descriptor holder before the interrupted iteration waits for output end of file (EOF).
 Each unchanged production fixture and matching corrected model passes.
+
+B45 adds [run-domain admission evidence](../cbc-evidence/soak-d2-run-domain-2026-09-12/README.md).
+When containment is required, the driver refuses benchmark and iteration admission unless a trusted [run-domain record](../../formal/tlaplus/soak_disk/RunDomainAdmission.md) matches its own cgroup and uid.
+An absent or mismatched record retains one failure across two refused restarts, and a matching record admits work.
+The native launcher does not write the record yet, and the normal workflow does not require containment.
 
 B44 is an open [controller-loss counterexample](../../formal/tlaplus/soak_disk/ControllerLoss.md).
 Both controllers exit, but the owned native writer continues without fixture intervention.

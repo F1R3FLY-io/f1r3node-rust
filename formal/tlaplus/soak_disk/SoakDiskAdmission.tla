@@ -1,7 +1,7 @@
 -------------------------- MODULE SoakDiskAdmission --------------------------
 (* One iteration-boundary disk admission decision in                         *)
 (* scripts/run-merge-recovery-soak.sh: probe, optional hygiene, re-probe,    *)
-(* decide, after the opening benchmark on the first segment. Eighteen        *)
+(* decide, after the opening benchmark on the first segment. Nineteen        *)
 (* Boolean constants switch the corrections on and off so that each pre-fix  *)
 (* configuration reproduces one historical defect; BenchmarkFaults selects   *)
 (* the fault kinds an admitted benchmark can suffer.                         *)
@@ -26,6 +26,7 @@ CONSTANTS FloorMiB, BandMiB, FreeSamples, InitialFreeMiB, MalformedPrefixMiB,
           RememberBenchmark, \* a segment that crashed during the opening benchmark refuses the next segment (B37)
           WatchMonitor, \* a crash monitor exit during the benchmark cancels it (B41)
           CheckMonitorAlive, \* a dead crash monitor cannot admit the benchmark or an iteration (B42)
+          VerifyPlacement, \* required containment admits work only when the trusted run-domain record matches the driver's own placement (B45)
           BenchmarkFaults \* fault kinds an admitted benchmark can suffer: "breach", "death"
 
 ASSUME /\ FloorMiB \in Nat \ {0}
@@ -37,7 +38,7 @@ ASSUME /\ FloorMiB \in Nat \ {0}
            CheckRetainedBreach, CheckDiskBand, MonitorOpening, WatchGuardian,
            CheckProgress, EnforceHygieneDeadline, CheckRange, PreserveUnowned,
            EnforceCleanupFailures, PreserveDockerResources, RememberInFlight,
-           RememberBenchmark, WatchMonitor, CheckMonitorAlive} \subseteq BOOLEAN
+           RememberBenchmark, WatchMonitor, CheckMonitorAlive, VerifyPlacement} \subseteq BOOLEAN
        /\ BenchmarkFaults \subseteq {"breach", "death", "monitor-death"}
 
 Threshold == IF RequireBand THEN FloorMiB + BandMiB ELSE FloorMiB
@@ -82,7 +83,8 @@ VARIABLES phase, free, raw, sample, guardian, guardianAlive, admitted,
           interrupted,   \* the previous segment died with an iteration in flight (B29)
           benchmarkInterrupted, \* the previous segment died with the opening benchmark in flight (B37)
           monitorAlive, \* the crash monitor process is alive (B41, B42)
-          benchmarkMonitorAlive \* the monitor was alive when the benchmark was admitted (B42)
+          benchmarkMonitorAlive, \* the monitor was alive when the benchmark was admitted (B42)
+          recordMatches \* the launcher's run-domain record matches the driver's cgroup and uid (B45)
 
 HygieneVars == <<hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent>>
 
@@ -92,7 +94,7 @@ vars == <<phase, free, raw, sample, guardian, guardianAlive, admitted,
           benchmarkGuardianAlive, guardianFresh, admissionFresh, benchmarkFresh,
           hygieneStalled, hygieneElapsed, hygieneTermSent, hygieneKillSent,
           settingsValid, sessionAge, sessionPresent, cleanupFailed, dockerPresent,
-          interrupted, benchmarkInterrupted, monitorAlive, benchmarkMonitorAlive>>
+          interrupted, benchmarkInterrupted, monitorAlive, benchmarkMonitorAlive, recordMatches>>
 
 Init ==
     /\ phase = "config"
@@ -105,6 +107,7 @@ Init ==
     /\ benchmarkInterrupted \in BOOLEAN
     /\ monitorAlive = TRUE
     /\ benchmarkMonitorAlive = TRUE
+    /\ recordMatches \in BOOLEAN
     /\ free = InitialFreeMiB
     /\ raw = MissingRaw
     /\ sample = Unknown
@@ -191,6 +194,7 @@ Benchmark ==
                    guardianOk == /\ ~CheckGuardianAlive \/ guardianAlive
                                  /\ ~CheckProgress \/ guardianFresh
                                  /\ ~CheckMonitorAlive \/ monitorAlive
+                                 /\ ~VerifyPlacement \/ recordMatches
                    admit == diskOk /\ guardianOk
                    f == IF admit THEN fault ELSE "none"
                    observed == f = "breach" /\ MonitorOpening
@@ -215,7 +219,7 @@ Benchmark ==
     /\ UNCHANGED <<free, raw, sample, admitted, admissionRaw, admissionSample,
                    evidence, retained, guardianFresh, admissionFresh, settingsValid,
                    sessionAge, sessionPresent, cleanupFailed, dockerPresent,
-                   interrupted, benchmarkInterrupted>>
+                   interrupted, benchmarkInterrupted, recordMatches>>
 
 CheckGuardian ==
     /\ phase \in {"guard", "post-guard"}
@@ -315,7 +319,9 @@ DecideAfterHygiene ==
                    admissionRaw, admissionSample, evidence>>
 
 \* The common check before work starts: a missing sample, then (B14) a
-\* guardian process that died since the boundary probe, then (B22) a guardian
+\* guardian process that died since the boundary probe, then (B42) a dead
+\* crash monitor, then (B45) a run-domain record that does not match the
+\* driver's placement under required containment, then (B22) a guardian
 \* whose progress record has expired.
 CheckAdmission ==
     /\ phase = "admission-check"
@@ -326,6 +332,9 @@ CheckAdmission ==
           THEN /\ phase' = "stopped"
                /\ stopReason' = "guardian"
           ELSE IF CheckMonitorAlive /\ ~monitorAlive
+          THEN /\ phase' = "stopped"
+               /\ stopReason' = "guardian"
+          ELSE IF VerifyPlacement /\ ~recordMatches
           THEN /\ phase' = "stopped"
                /\ stopReason' = "guardian"
           ELSE IF CheckProgress /\ ~guardianFresh
@@ -392,7 +401,8 @@ PublishRefusal ==
 FrozenAfterBenchmark == <<retained, benchmark, benchmarkSample, benchmarkFault,
                           benchmarkObserved, benchmarkCancelled,
                           benchmarkGuardianAlive, benchmarkMonitorAlive, benchmarkFresh,
-                          settingsValid, sessionAge, interrupted, benchmarkInterrupted>>
+                          settingsValid, sessionAge, interrupted, benchmarkInterrupted,
+                          recordMatches>>
 
 HygieneOutcome == <<sessionPresent, cleanupFailed, dockerPresent>>
 
@@ -462,6 +472,7 @@ TypeOK ==
     /\ benchmarkInterrupted \in BOOLEAN
     /\ monitorAlive \in BOOLEAN
     /\ benchmarkMonitorAlive \in BOOLEAN
+    /\ recordMatches \in BOOLEAN
 
 AdmissionRequiresBand ==
     admitted /\ admissionSample.known => admissionSample.mib >= FloorMiB + BandMiB
@@ -481,6 +492,7 @@ BenchmarkMonitorDeathObserved ==
 MonitorDeathPreventsAdmission ==
     /\ admitted => monitorAlive
     /\ benchmark => benchmarkMonitorAlive
+UnverifiedPlacementPreventsAdmission == ~recordMatches => ~admitted /\ ~benchmark
 StaleProgressPreventsAdmission ==
     /\ admitted => admissionFresh
     /\ benchmark => benchmarkFresh

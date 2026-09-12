@@ -950,3 +950,68 @@ Private Docker containment, creation fencing, metadata failure handling, and gen
 The 45-second finalization wait and workload remain unchanged.
 The [native evidence package](../cbc-evidence/soak-d2-native-containment-2026-09-11/README.md) records the bounded verification and its limitations.
 B44, D2, all claim discharges, and acceptance remain pending.
+
+### Parallel D2 coordination, 2026-09-12
+
+The user directed parallel work through ToDos and work logs.
+`claude-session-e3a67b91` owns B45 and the driver record-validation change.
+`pi-session-native-admission` owns the separate native-query fixture and [coordination log](task-soak-native-admission-2026-09-12T00-58Z.md).
+That log contains independent fixture checks and a record-lookup race finding for the B45 owner.
+Launcher changes and new runner provisioning await ownership confirmation in the work logs.
+Shared gate registration and inventory reconciliation remain with the integration owner.
+
+### B45 coordination, 2026-09-12
+
+Session `claude-session-e3a67b91` took over D2 work after the previous session crashed and returned.
+The [native admission coordination log](task-soak-native-admission-2026-09-12T00-58Z.md) asked three questions.
+This session owns the B45 driver change, the run-domain fixture, and the `RunDomainAdmission` formal files.
+It also owns the formal gate registrations, the plan, this log, the evidence package, and the claim inventory rebind.
+
+This session does not own launcher changes or diagnostic infrastructure in B45.
+The native launcher and the launch barrier remain with the other session.
+That includes the launcher change that writes the run-domain record.
+This session ran the full TLC gate once with its default `/tmp/tlc-*` output names between `2026-09-12T01:00Z` and the end of that run.
+The other session must use separate model output paths for any concurrent TLC run.
+The new Python native admission fixture is preserved and unchanged by this session.
+
+The independent B45 fixture review was applied.
+The fixture no longer needs `CHOWN`. Root writes only the trusted records under `/run` and then drops to uid 65534.
+A driver that neither admits nor refuses within the fixture budget now exits 2 as a setup error, not as behavioral RED.
+The matching-record limit is recorded in the model note and the evidence package.
+
+### B45 run-domain admission, 2026-09-12
+
+The cycle starts from committed source `1c2679e0643537a7fda2735943e17a37686115b0`.
+The fixture sets `SOAK_CONTAINMENT=required` and runs the production driver in Docker isolation as uid 65534.
+Root writes only the trusted records under `/run` before it drops privilege.
+The baseline driver admits benchmark and iteration work with an absent record.
+Both matched RED results exit 1 on that exact admission.
+
+The correction verifies the run-domain record before either admission counter increases.
+An absent or mismatched record refuses work, writes the breach record, and retains counters `[0,1,0,0]` across two refused restarts.
+A matching record admits exactly one unit of work in each mode.
+The unrelated native writer continues in every case.
+Both matched GREEN results exit 0 with the same fixture bytes as the RED results.
+
+Two earlier fixture attempts failed setup before any behavioral assertion.
+The first outer isolation check compared capability names without the `CAP_` prefix.
+The second ran the case setup as root without `CHOWN`.
+A third matched pair passed with a prior fixture revision that classified a driver hang as behavioral RED.
+The final fixture classifies a hang without an admitted workload as a setup error, and its matched pair is the retained result.
+
+The four finite configurations have six distinct states each.
+Both unchecked controls violate `UnverifiedPlacementPreventsAdmission` with TLC exit 12, and both corrected configurations pass.
+The soak PR tier of the formal gate passes 42 positive configurations and 44 exact controls with 86 actual TLC logs.
+The classifier and routing regressions, the driver suite, and the supporting probe, sample, and admission checks pass.
+The summary and metrics regressions also pass.
+The isolated emergency suite passes 29 case directories, including both run-domain admission cases.
+
+The first emergency attempt failed its stop-deadline case at load 30.
+The machine ran the formal gate, the fixtures, a local shard, and a model server at that time.
+That attempt is retained as a load-contention failure.
+The retry alone passes.
+
+No native service manager, real Docker daemon, or disposable runner executed this cycle.
+The native launcher does not write the record yet, and the normal workflow does not require containment.
+B44, D2, all claim discharges, and acceptance remain pending.
+

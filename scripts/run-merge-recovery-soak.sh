@@ -241,6 +241,53 @@ if ! [[ "$DISK_USAGE_INTERVAL_SECONDS" =~ ^(0|[1-9][0-9]{0,3})$ ]]; then
 	exit 2
 fi
 DISK_USAGE_TIMELINE="$OUTPUT_DIR/disk-usage-timeline.tsv"
+CONTAINMENT="${SOAK_CONTAINMENT:-unmanaged}"
+if [ "$CONTAINMENT" != unmanaged ] && [ "$CONTAINMENT" != required ]; then
+	printf 'SOAK_CONTAINMENT must be unmanaged or required\n' >&2
+	exit 2
+fi
+RUN_DOMAIN_RECORD="${SOAK_RUN_DOMAIN_RECORD:-}"
+
+# Required containment admits work only inside a trusted run domain. The
+# launcher records the unit, cgroup, and uid it placed the driver in before the
+# driver starts. The record and its directory must belong to root and must not
+# be writable by other users. The driver's own kernel cgroup view and uid must
+# match that record before either admission counter increases. A missing,
+# unreadable, forged, or mismatched record refuses work; it never selects the
+# unmanaged path.
+run_domain_verified() {
+	[ "$CONTAINMENT" = required ] || return 0
+	python3 - "$RUN_DOMAIN_RECORD" <<'PY'
+import json
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+if not path or not os.path.isabs(path):
+    sys.exit(1)
+try:
+    parent = os.lstat(os.path.dirname(path))
+    record = os.lstat(path)
+    if not stat.S_ISREG(record.st_mode) or record.st_uid != 0 or record.st_mode & 0o022:
+        sys.exit(1)
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_mode & 0o022:
+        sys.exit(1)
+    with open(path, "rb") as source:
+        data = json.loads(source.read(65536))
+    with open("/proc/self/cgroup", encoding="utf-8") as source:
+        cgroup = source.read().splitlines()
+except (OSError, ValueError):
+    sys.exit(1)
+if not isinstance(data, dict) or data.get("uid") != os.getuid():
+    sys.exit(1)
+expected = data.get("cgroup")
+if not isinstance(expected, str) or not expected.startswith("/"):
+    sys.exit(1)
+if cgroup != ["0::" + expected]:
+    sys.exit(1)
+PY
+}
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
 # session dirs and the runner's _diag all live on the one boot volume, so one
@@ -1067,6 +1114,9 @@ run_bench_segment() {
 			return 1
 		fi
 	fi
+	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
+		printf 'The run domain is unverified before benchmark admission. The driver refused work.\n' >"$HOST_GUARDIAN_BREACH"
+	fi
 	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
 		printf 'The crash monitor failed its benchmark admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
 	fi
@@ -1601,6 +1651,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			FAILURES="$((FAILURES + 1))"
 			break
 		fi
+	fi
+	if [ ! -s "$HOST_GUARDIAN_BREACH" ] && ! run_domain_verified; then
+		printf 'The run domain is unverified before iteration admission. The driver refused work.\n' >"$HOST_GUARDIAN_BREACH"
 	fi
 	if ! jobs -pr | grep -Fxq "$CRASH_MONITOR_PID" && [ ! -s "$HOST_GUARDIAN_BREACH" ]; then
 		printf 'The crash monitor failed its iteration admission check. Workload termination is unconfirmed.\n' >"$HOST_GUARDIAN_BREACH"
