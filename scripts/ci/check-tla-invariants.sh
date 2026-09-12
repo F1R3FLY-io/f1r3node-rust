@@ -198,6 +198,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_unconditional_pre_fix:HandledExitHasNoExtraStop
     soak_disk/MC_SoakDiskGuardian_startup_only_pre_fix:DeadMonitorRequiresInterrupt
     soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix:DrainRequiresOwnedStop
+    soak_disk/MC_SoakDiskGuardian_unmanaged_pre_fix:ControllerLossStopsOwnedWriters
     soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget

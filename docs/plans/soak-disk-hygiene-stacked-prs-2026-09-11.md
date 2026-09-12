@@ -20,7 +20,7 @@ Four pull requests, each based on the one before it, merged bottom-up:
 | --- | --- | --- | --- | --- |
 | PR 1 | `formal/deploy-storage-bound` | `dev` | The deploy storage bound, a machine A area | 6 files, about 130 lines |
 | PR 2 | `fix/soak-driver-disk-protection` | PR 1 | The soak driver fix, its host suite, the Docker harness, the real-daemon checks, and the driver evidence record | 48 files, about 4,900 changed lines |
-| PR 3 | `formal/soak-disk-models` | PR 2 | One control registry with a bounded PR tier, the gate fixture test, the two consolidated soak models, and the storage budget | 103 files, about 3,300 lines |
+| PR 3 | `formal/soak-disk-models` | PR 2 | One control registry with a bounded PR tier, the gate fixture test, the two consolidated soak models, and the storage budget | 105 files, about 3,400 lines |
 | PR 4 | `docs/consensus-neutral-execution` | PR 3 | The architecture note and the verification split by machine and medium | 3 files, about 650 lines |
 
 The staging branch holds 105 commits and 2,163 changed files against dev. The four PRs together hold about 160 files. Everything else is legacy and is not carried. Section 5 lists it.
@@ -70,6 +70,7 @@ Whole files:
 - `scripts/bench/test-soak-disk-emergency.sh` and the 27 `scripts/bench/test-soak-*.sh` host fixtures it runs
 - `scripts/bench/test-soak-real-*.sh`, the eight real-daemon checks
 - `scripts/bench/collect-soak-metrics.sh` and `scripts/bench/write-soak-summary.sh`
+- `scripts/bench/run-soak-contained.sh`, `scripts/bench/soak-containment.py`, and `scripts/bench/test-soak-native-containment.py`, the B44 launcher prototype and its fixture, flagged as a prototype the normal workflow does not use
 - `docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md`, the driver evidence record with the B1 to B43 rows and the digest table
 - `docs/cbc-evidence/github-workflows-slashing-tests-yml.md`
 - `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md`
@@ -88,7 +89,7 @@ Verification: the host suite on Linux, since the driver needs pidfd and Python 3
 Whole files:
 
 - `formal/tlaplus/soak_disk/SoakDiskAdmission.tla`, `SoakDiskGuardian.tla`, `SoakStorageBudget.tla`
-- The 47 `MC_SoakDisk*` and `MC_SoakStorageBudget*` configuration and stub pairs
+- The 48 `MC_SoakDisk*` and `MC_SoakStorageBudget*` configuration and stub pairs
 - `formal/tlaplus/soak_disk/README.md`
 - `scripts/ci/test-check-tla-invariants.sh`, the gate fixture test
 - `docs/claims/soak-disk-protection.md`
@@ -102,7 +103,7 @@ Split files:
 - `formal/tlaplus/carrier_index/README.md`: the registered-controls text.
 - `docs/formal-verification.md`: the "Soak disk protection" row and the gate text.
 
-Verification: TLC on the three positives, with 25146, 22452, and 5616 states. Then the bounded gate with 6 positives and 45 controls, and the fixture test with 45 controls times seven outcomes plus the routing scenarios.
+Verification: TLC on the three positives, with 25146, 22500, and 5616 states. Then the bounded gate with 6 positives and 46 controls, and the fixture test with 46 controls times seven outcomes plus the routing scenarios.
 
 ### PR 4: consensus-neutral execution note
 
@@ -185,6 +186,7 @@ The maintainer took these decisions on 2026-09-11:
 | The deploy storage negative control stays manual between PR 1 and PR 3 | Accepted. The area README says so, and PR 3 registers it. |
 | Source cycles that land after the cut starts | Merge them into the staging branch as before, then port the delta to the affected PR branch by path. |
 | This plan file | PR 1 carries it, and PR 4 deletes it. |
+| The B44 launcher prototype: the containment launcher, its Python module, and its fixture | Carried in PR 2, flagged as a prototype the normal workflow does not use. The guardian model's `ManagedContainment` control then describes code that is in the tree. B44 stays open. |
 
 ## 7. Risks
 

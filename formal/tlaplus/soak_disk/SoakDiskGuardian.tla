@@ -2,7 +2,7 @@
 (* The emergency path of one soak iteration in                               *)
 (* scripts/run-merge-recovery-soak.sh: the guardian probes, records a        *)
 (* breach, stops the writers, attributes the space, and the next segment     *)
-(* finds the marker. Eighteen constants switch the corrections on and off    *)
+(* finds the marker. Nineteen constants switch the corrections on and off    *)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
 (* Four more constants state the conditional no-overrun theorem: free space  *)
 (* stays positive when the hard floor covers the writers' worst consumption   *)
@@ -27,6 +27,7 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           RememberHandledExit, \* the driver's exit handling leaves a marker, and the monitor skips its stop after reading it (B39)
           DetectMonitorDeath, \* the iteration watcher treats a dead crash monitor as a breach, not only a startup failure (B40)
           StopBeforeDrain, \* the interrupted iteration stops the owned writers before it waits for output EOF (B43)
+          ManagedContainment, \* a service manager kills the owned writers' control group when both controllers die (B44, launcher prototype)
           WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
           SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
           HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
@@ -37,7 +38,7 @@ ASSUME /\ {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
            StopOnExit, BoundTermination, RetainStopFailure, SelectOwned,
            SelectOwnedHost, MarkOwnedOnly, ConfigureAtCreation,
            SurvivesDriverCrash, RememberHandledExit, DetectMonitorDeath,
-           StopBeforeDrain} \subseteq BOOLEAN
+           StopBeforeDrain, ManagedContainment} \subseteq BOOLEAN
        /\ WriteRateMax \in Nat
        /\ SamplePeriod \in Nat
        /\ HardFloorMiB \in Nat \ {0}
@@ -65,6 +66,7 @@ VARIABLES phase, alive, monitorAlive, interruptRequested, breachRecorded,
           repeatedStop, \* the monitor issued a second stop after the trap had already stopped the writers (B39)
           pipeHeld, \* owned writers still hold the iteration output pipe after the client exited (B43)
           drained, \* the driver waited for output EOF on the interrupted iteration (B43)
+          containedStop, \* the service manager stopped the owned writers after both controllers died (B44)
           freeMiB,      \* free space, consumed at WriteRateMax while the writers run
           writersAlive, \* the writers still consume space
           lateUnits,    \* clock units of unconfirmed consumption after the stop
@@ -80,14 +82,14 @@ vars == <<phase, alive, monitorAlive, interruptRequested, breachRecorded,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
           marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop,
-          pipeHeld, drained,
+          pipeHeld, drained, containedStop,
           freeMiB, writersAlive, lateUnits,
           unownedStopped, exitRejected, exitFailureRetained,
           unownedHostStopped, unownedMarked, unownedContainersMarked>>
 
 Consumption == <<freeMiB, writersAlive, lateUnits>>
 StopVars == <<unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped>>
-DrainVars == <<pipeHeld, drained>>
+DrainVars == <<pipeHeld, drained, containedStop>>
 
 Init ==
     /\ phase = "running"
@@ -114,6 +116,7 @@ Init ==
     /\ repeatedStop = FALSE
     /\ pipeHeld = TRUE
     /\ drained = FALSE
+    /\ containedStop = FALSE
     /\ freeMiB = HardFloorMiB
     /\ writersAlive = TRUE
     /\ lateUnits = 0
@@ -174,6 +177,29 @@ DriverCrash ==
                    timedOut, known, stopStarted, stopElapsed, termSent, killSent,
                    diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
                    stale, exitStop, crashStop, repeatedStop>>
+
+\* B44: the driver and the crash monitor die together, so no in-tree
+\* supervisor survives. Only a service manager that owns the writers' control
+\* group can stop them; the launcher prototype provides one, and the direct
+\* launch does not. The driver is unchanged, and B44 stays open on the source.
+ControllerLoss ==
+    /\ phase = "running"
+    /\ monitorAlive
+    /\ monitorAlive' = FALSE
+    /\ phase' = "controllers-lost"
+    /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed,
+                   timedOut, known, stopStarted, stopElapsed, termSent, killSent,
+                   diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
+                   stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop>>
+
+ContainmentResponse ==
+    /\ phase = "controllers-lost"
+    /\ containedStop' = ManagedContainment
+    /\ phase' = "containment-checked"
+    /\ UNCHANGED <<alive, monitorAlive, interruptRequested, breachRecorded, elapsed,
+                   timedOut, known, stopStarted, stopElapsed, termSent, killSent,
+                   diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
+                   stale, exitStop, crashStop, repeatedStop, pipeHeld, drained>>
 
 \* The surviving monitor runs the same owner-selecting stop as the exit trap.
 CrashMonitor ==
@@ -411,7 +437,7 @@ Drain ==
     /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded,
                    elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent,
                    diagElapsed, rootsLeft, marker, priorFailures, failures, admitted,
-                   stale, exitStop, crashStop, repeatedStop, Consumption, StopVars,
+                   stale, exitStop, crashStop, repeatedStop, containedStop, Consumption, StopVars,
                    unownedMarked, unownedContainersMarked>>
 
 \* The segment ends with the marker on disk; the next segment starts.
@@ -444,6 +470,8 @@ Next == (DriverExit /\ UNCHANGED <<monitorAlive, DrainVars, Consumption, StopVar
         \/ (ExitTrap /\ UNCHANGED <<monitorAlive, DrainVars, Consumption, unownedMarked, unownedContainersMarked, crashStop, repeatedStop>>)
         \/ (MonitorObservesExit /\ UNCHANGED <<monitorAlive, DrainVars, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
         \/ (DriverCrash /\ UNCHANGED <<monitorAlive, DrainVars, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
+        \/ ((ControllerLoss \/ ContainmentResponse)
+            /\ UNCHANGED <<Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
         \/ (CrashMonitor /\ UNCHANGED <<monitorAlive, DrainVars, Consumption, exitRejected, exitFailureRetained,
                                          unownedMarked, unownedContainersMarked>>)
         \/ ((Stall \/ WatcherPollStale)
@@ -469,7 +497,7 @@ TypeOK ==
                   "sampled", "sample-decided", "breach", "record", "stop",
                   "stopping", "attribution", "finished", "resume", "stopped",
                   "ready", "done", "exiting", "exited", "exit-checked",
-                  "crashed", "crash-checked"}
+                  "crashed", "crash-checked", "controllers-lost", "containment-checked"}
     /\ alive \in BOOLEAN
     /\ monitorAlive \in BOOLEAN
     /\ interruptRequested \in BOOLEAN
@@ -493,6 +521,7 @@ TypeOK ==
     /\ repeatedStop \in BOOLEAN
     /\ pipeHeld \in BOOLEAN
     /\ drained \in BOOLEAN
+    /\ containedStop \in BOOLEAN
     /\ freeMiB \in Int
     /\ writersAlive \in BOOLEAN
     /\ lateUnits \in 0..LateUnits
@@ -523,6 +552,7 @@ ExitStopsWriters == phase = "exited" => exitStop
 CrashStopsOwnedWriters == phase = "crash-checked" => crashStop
 HandledExitHasNoExtraStop == phase = "exit-checked" => ~repeatedStop
 DrainRequiresOwnedStop == drained => ~pipeHeld
+ControllerLossStopsOwnedWriters == phase = "containment-checked" => containedStop
 FailedStopRetained == (phase = "exited" /\ exitRejected) => exitFailureRetained
 UnownedWritersPreserved == ~unownedStopped
 UnownedHostWritersPreserved == ~unownedHostStopped

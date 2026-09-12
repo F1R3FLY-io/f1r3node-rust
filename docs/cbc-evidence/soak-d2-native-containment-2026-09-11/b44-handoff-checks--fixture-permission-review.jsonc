@@ -1,0 +1,10 @@
+{
+  "path": "scripts/bench/test-soak-native-containment.py",
+  "before_sha256": "b504413e1b529297bc9aa3ddf499d6fce47c4314a18ac1d79690b0cf832752d5",
+  "after_sha256": "1351e95343470579b37025fbdd5d360836abec81d5be1e5d1ae0c404ca82e36c",
+  "scope": "Only copied shell execute permissions changed. The fault and all assertions remain unchanged.",
+  "reviewed_red_exit": 1,
+  "reviewed_green_exit": 0,
+  "normal_summary_writer": true,
+  "original_diagnostic_dispositions": "The earlier diagnostic review precedes this permission-only revision. The exception and boolean checks did not change."
+}

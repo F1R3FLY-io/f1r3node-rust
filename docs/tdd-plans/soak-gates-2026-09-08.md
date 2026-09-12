@@ -674,7 +674,7 @@ behaviors:
     done: false
     construction: not-applicable
     claim_discharge: pending
-    blocked_on: A reviewed containment design must survive the specified controller failures.
+    blocked_on: Private Docker containment, creation fencing, and verified production admission remain incomplete.
     cycle_log:
       - evidence: docs/cbc-evidence/soak-d2-shutdown-2026-09-11/manifest.jsonc
         test: scripts/bench/test-soak-controller-loss.sh
@@ -683,6 +683,16 @@ behaviors:
         formal_red_exit: 12
         green_exit: null
         formal_green_exit: null
+      - evidence: docs/cbc-evidence/soak-d2-native-containment-2026-09-11/manifest.jsonc
+        scope: native-controller-loss-only
+        test: scripts/bench/test-soak-native-containment.py
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        production_integration: false
+        completes_behavior: false
 ---
 
 # Soak Gate Development Cycles
@@ -727,8 +737,11 @@ Each unchanged production fixture and matching corrected model passes.
 B44 is an open [controller-loss counterexample](../../formal/tlaplus/soak_disk/ControllerLoss.md).
 Both controllers exit, but the owned native writer continues without fixture intervention.
 The current model violates `ControllerLossStopsOwnedWriter` with exit 12.
-No B44 correction or GREEN result exists.
-D2 and claim discharge remain pending.
+The original direct-launch counterexample remains RED.
+A separate [native-only subcycle](../../formal/tlaplus/soak_disk/NativeControllerLoss.md) passes with an unchanged fixture and matching three-state model.
+The normal workflow does not use that prototype.
+Private Docker containment, creation fencing, and verified pre-admission placement remain open.
+B44, D2, and claim discharge remain pending.
 
 B40 adds [monitor-death evidence](../cbc-evidence/soak-d2-monitor-death-2026-09-11/README.md).
 The baseline driver continues its owned native writer after confirmed monitor death during an iteration.

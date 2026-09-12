@@ -67,6 +67,7 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `Crash`, `WatcherPoll` | The iteration watcher polls the guardian process |
 | `MonitorCrash`, `WatcherPollMonitor` | The iteration watcher polls the crash monitor, and its death is a breach (B40) |
 | `Drain` | The interrupted iteration's client has exited, and the driver waits for output EOF. The corrected driver stops the owned writers first (B43) |
+| `ControllerLoss`, `ContainmentResponse` | The driver and the crash monitor die together. Only a service manager that owns the writers' control group stops them (B44, launcher prototype) |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
 | `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B31) |
 | `MonitorObservesExit` | The trap's exit handling leaves a marker, and the crash monitor reads it before it acts (B39) |
@@ -99,8 +100,9 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `RememberHandledExit` | The driver's exit handling writes a handled-exit marker, and the crash monitor exits without a second stop when it finds the marker. The pre-fix monitor stopped the writers on every driver exit | `MC_SoakDiskGuardian_unconditional_pre_fix` | `HandledExitHasNoExtraStop` |
 | `DetectMonitorDeath` | The iteration watcher treats a dead crash monitor as a breach, records unconfirmed termination, and refuses work. The pre-fix driver checked the monitor only at startup | `MC_SoakDiskGuardian_startup_only_pre_fix` | `DeadMonitorRequiresInterrupt` |
 | `StopBeforeDrain` | The interrupted iteration path stops the owned writers before it waits for output EOF. The pre-fix driver drained first and hung on the pipe the writers held | `MC_SoakDiskGuardian_drain_first_pre_fix` | `DrainRequiresOwnedStop` |
+| `ManagedContainment` | A service manager kills the owned writers' control group when both controllers die. The launcher prototype provides it, the direct launch does not, and B44 stays open on the source | `MC_SoakDiskGuardian_unmanaged_pre_fix` | `ControllerLossStopsOwnedWriters` |
 
-`MC_SoakDiskGuardian` enables all eighteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 22452 distinct states.
+`MC_SoakDiskGuardian` enables all nineteen corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 22500 distinct states.
 
 ### Conditional no-overrun theorem
 

@@ -24,7 +24,7 @@
       "casper/src/rust/util/rholang/interpreter_util.rs": "1b9130811d808da352a37b860f0f159e0ef0c08fd01bbc431be02cc41339c79e",
       "casper/src/rust/validate.rs": "87d72346aa9a1050e58cf0d08adcd6ceb55de212c2899685f8153c7c89bd0aa9",
       "casper/tests/batch2/validate_test.rs": "d2b2a5436a31da1021d634bbbbcf478cc53f812a2f9d3808f36f1d47bb765cb9",
-      "docs/Glossary.md": "8c5795aeba5d58dd0ba9afd9e83929b010f4c3573fffa323ca45ac82a2ee7405",
+      "docs/Glossary.md": "36447d74af9bd28cf261d6465ac06612763afa2d31afc0ad61da9a607a39b232",
       "docs/ToDos.md": "f1f25eb0b46cde0cb125ca969f449bca4f9b5c7c3841cf0849600b1237953923",
       "docs/cbc-evidence/.gitattributes": "730a35ae3d558080083c3103d9ac8100c3f6561678092abe341701dfa331eb1d",
       "docs/cbc-evidence/casper-src-rust-finality-deploy-lifecycle-rs.md": "6f05187d21932fb3178582857cb12742a02e1d0aac12034a86d9f04ab5008df4",
@@ -1362,6 +1362,88 @@
       "docs/cbc-evidence/soak-d2-monitor-death-2026-09-11/b40-real-system--runner-final--terminate.txt": "723868d17535a14679c031cbe393e9b251ad0d084d968119c32e44f323f060bd",
       "docs/cbc-evidence/soak-d2-monitor-death-2026-09-11/b40-tlc-tool.sha256": "1584d8d4174a05fa2d78d64e589db71d86f4580faa8eab8f4124844773da764a",
       "docs/cbc-evidence/soak-d2-monitor-death-2026-09-11/manifest.jsonc": "63b8f9208df32d362a7542f144f786e748185437c8c687e1346775704f4e94f3",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/.gitattributes": "730a35ae3d558080083c3103d9ac8100c3f6561678092abe341701dfa331eb1d",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/README.md": "30378905daba163c2d6923dae7b622a21ef2402739df538134461f51d835e423",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-formal-green-exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-formal-green.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-formal-green.txt": "e0c72195c4733c8feb052cbd8384822cdd6ae4851a696476432797c037a72732",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-formal-input.sha256": "c950e3a43b101af7b766230905968db0e2623fe091657fbc7cb487200b47687c",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-formal-red-exit.txt": "a1fb50e6c86fae1679ef3351296fd6713411a08cf8dd1790a4fd05fae8688164",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-formal-red.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-formal-red.txt": "503c7262211ce071ae8ef6bc30d4b3591f08d04a0c19f4d94c56cacb60167a4f",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-green-driver-diagnostic.txt": "49c0c8dded4435909cf93e755059ae07faf8682995d04b89235a8900f7f7aab4",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-handoff-checks--diagnostic-review.jsonc": "e600cbc050c989d9e677df534184c4a99817edf067ad52f00d114d66eba218cd",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-handoff-checks--final-diagnostic-review.jsonc": "8bcf9414ac2cebafca3d58e0985236b9ea46f2c04c1ce856eccf4dd8128bcf7a",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-handoff-checks--fixture-permission-review.jsonc": "139bba7275f0ced1b3182d4a141de021f145fe1a46da901770a770e5fbdd524c",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-matched-green-exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-matched-green.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-matched-green.txt": "8592dd8b0219e47460bae4486586592576e4e478f24b9c1ce62138e5556329b0",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-matched-red-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-matched-red.stderr": "fa7fe904670d95bef0f579cf1642bc3855e99b1a6bbc52be42f3bcf12ba92856",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-matched-red.txt": "2d2902954ca150509731d8f06c83121de7717479bf258940cc37942fe438d262",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-native-compatible-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-native-compatible-source.sha256": "57e9aae36b766515f598a98f33d05a6e6573b59e6f7c5ecb40cd6fd20b89e830",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-native-compatible.txt": "9a6275ba7008fce58671c0a49f51964f8aad4cee48d354238541eeb56d81f7f1",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-native-green.stderr": "71aaa4fee9c17aa5778743ccf54503c9182e9f43994838b199c25c816b258d9b",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-native-red-source.sha256": "0543ad2b5443e48da0fbe0c1c75789029015c85277453fd7317636cc7d8ea719",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-native-results-excluded.txt": "8593505215ad33f0c599e7a56b9e4679835b6af973d3e2ccc5cae7e0665b8da3",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-green-exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-green-source.sha256": "e9460ffad8650733f4971cf5970fd9676a59b582f176e12fd5dd1517b81b4f26",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-green.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-green.txt": "8592dd8b0219e47460bae4486586592576e4e478f24b9c1ce62138e5556329b0",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-red-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-red-source.sha256": "a47459c4b790980476f540652f1707fb251e6c3e7ca0b01db06b15bf6fd1e2fa",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-red.stderr": "fa7fe904670d95bef0f579cf1642bc3855e99b1a6bbc52be42f3bcf12ba92856",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-red.txt": "2d2902954ca150509731d8f06c83121de7717479bf258940cc37942fe438d262",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--control-0--result.json": "d00bc580e76488e74c892882d84658d4c38f911cda6ab9c34ecd3600299ebe1c",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--driver-cgroup.txt": "71c783a9161786da90f696e627cf71b37b752123b95d01e54743936fcff81f3e",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--fault.txt": "4a7d0d5e43d8083457dffba8332161a739d53c22264817e84ff4efe0f53eadf6",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--observation.json": "46e4d9181d99d9db71576be6db4fe4af9000a17cd0857ad2ef62e9b6e1c182b8",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--owned-cgroup.txt": "71c783a9161786da90f696e627cf71b37b752123b95d01e54743936fcff81f3e",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--restart-1-summary.json": "f69a6c5dba18cc9503f655844f716d9d1422f5b96efac7bde597635f7cd75412",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--restart-1.txt": "e1539f767d35a390edaa8bc25af520389a42d5061870ef0c7cfadb53d0a18e4e",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--restart-2-summary.json": "f69a6c5dba18cc9503f655844f716d9d1422f5b96efac7bde597635f7cd75412",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--restart-2.txt": "7ff0661d430287e4f62d5f1a50287457333c2a692cd35ef6f92ccbe6e8eb8590",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--state-before.txt": "de413c2373f06175ebf1af98f845337b4770bfb5273af45be92cb13881118667",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--green--evidence--unrelated-cgroup.txt": "a518894f141a20d63d28655a45e9cc915501c11b30751673a85e9961df9322cf",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--red--evidence--driver-cgroup.txt": "52ef8a9e5ba8458bf3048053ce5211fe52d838f502fcd339c695416c20415ad2",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--red--evidence--fault.txt": "4a7d0d5e43d8083457dffba8332161a739d53c22264817e84ff4efe0f53eadf6",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--red--evidence--observation.json": "d9cd6abfaabeb41255abb4de58965c75f3c79c14a4899f47d2064cbad92d387b",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--red--evidence--owned-cgroup.txt": "52ef8a9e5ba8458bf3048053ce5211fe52d838f502fcd339c695416c20415ad2",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--red--evidence--state-before.txt": "aa98f753d88eae2b891c750ff452c25438f1e3ffc6f6cfb148b9d2eee05d7c20",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results--red--evidence--unrelated-cgroup.txt": "52ef8a9e5ba8458bf3048053ce5211fe52d838f502fcd339c695416c20415ad2",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results-excluded.txt": "53a004b5039641ee6c35c8cc50b56f3e7d7627aec4d03dca3bf9c5dd282ece6f",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-results-members.sha256": "e93bf7e36f1e2568e2155241ef0033f7b10969309b4cef064cc37d8b02b4a708",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-runner--runner-final--state.txt": "95823108f25102c15d88f11839509742d2684a5813846901b96ee527ed3f4e63",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-review-termination.txt": "769f087562609e00ff2ca8406896ea5e11b343f06ad5225bbf4a2a462d911521",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner--runner-final--state.txt": "95823108f25102c15d88f11839509742d2684a5813846901b96ee527ed3f4e63",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--cgroup-mount.txt": "64e50043dca94eaf2a359c8b3d4e93026333fcaff3af471d6d62c6a8543a8d53",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--kernel-version.txt": "c012d0800dd49bd5a26c3f61da6de1786e4efcce0b206d3e50c891cf2d894964",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--control-0--launcher.json": "445fcd440ee29ad96a4210adfb3911c2da00fe0b0e0a5d63f925381d2997c890",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--control-0--result.json": "30ab5e6cf7f7dfece6e475e874b76e37240e4a541f7ef61230908f792cdde9b3",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--driver-cgroup.txt": "ebc0aee0cc6a538059d544550c16408f569e2f19a62a14ed4ac85c068f60ce4b",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--driver.txt": "11d4fe4fa68b2d41fe758ae251fde0f411f8512b5480b29e3a17e46b445b537a",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--fault.txt": "4a7d0d5e43d8083457dffba8332161a739d53c22264817e84ff4efe0f53eadf6",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--observation.json": "594a30fa9b485b80eabe7c46d506443c93bb17c9dbfc801f4fef0919f576dec2",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--owned-cgroup.txt": "ebc0aee0cc6a538059d544550c16408f569e2f19a62a14ed4ac85c068f60ce4b",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--restart-1-summary.json": "8230b64d31ae202073cc05cabfdd94f8afaaba63740895288eddcbd53bd8ee25",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--restart-2-summary.json": "8230b64d31ae202073cc05cabfdd94f8afaaba63740895288eddcbd53bd8ee25",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--state-before.txt": "43fab0708124d5e625c1cc3e044688d644be3ebbd3fd8adf5df8a31921ce56f5",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-green--evidence--unrelated-cgroup.txt": "f84bf7d9e644c91090b5768fe81ec4746d5eba8b24a78b92bb1fb1160404ff63",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-red--evidence--driver-cgroup.txt": "5e8f9f60b27cef5501319c6b28a9d7f8648dbd0d585d819bc62afd828751f15b",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-red--evidence--driver.txt": "11d4fe4fa68b2d41fe758ae251fde0f411f8512b5480b29e3a17e46b445b537a",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-red--evidence--fault.txt": "4a7d0d5e43d8083457dffba8332161a739d53c22264817e84ff4efe0f53eadf6",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-red--evidence--observation.json": "a5a1c903afeb99a1c7110f96deb378a7e0feda875f42a18dc62fcbac62ec1db9",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-red--evidence--owned-cgroup.txt": "5e8f9f60b27cef5501319c6b28a9d7f8648dbd0d585d819bc62afd828751f15b",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-red--evidence--state-before.txt": "9f590156338ab1356874ca90b96e07fde4282a7cabb05ea850d53c9ddf8b2059",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--matched-red--evidence--unrelated-cgroup.txt": "5e8f9f60b27cef5501319c6b28a9d7f8648dbd0d585d819bc62afd828751f15b",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--native-final-state.txt": "fd16192eee2d4b5525aa98bf879efbda3d26d542ccf7ae3c83a22301e4ffe5a7",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--python-version.txt": "f6b75e07f1488db28a89724a522725e3e01af3dc78f6fd365f17eb4059e41056",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--shared-docker.txt": "529fa5235574006bd435a4588a8ed9caffe173bca4780612faf09d5ecdfd0aad",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results--systemd-version.txt": "e28961c128d723cccf4624428b63a89f5e84d493160b16c994fca49f5a7990f9",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-runner-results-members.sha256": "e362fca80a0629e444282f1626965ab322972a666c1a60942360eb8747e1e574",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/b44-termination.txt": "769f087562609e00ff2ca8406896ea5e11b343f06ad5225bbf4a2a462d911521",
+      "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/manifest.jsonc": "0adc428a2a6f043c4dd850974691e25825fe865704b32107a9270cad867748d9",
       "docs/cbc-evidence/soak-d2-oom-ownership-2026-09-11/.gitignore": "e027cf8ebf80d6dcdacced8a4dbd1c440e2436fb1868ec851db4061cb67bb787",
       "docs/cbc-evidence/soak-d2-oom-ownership-2026-09-11/README.md": "a2e2782778855c7e141e9e7f921fad8afef442a149606b75e28593eb2a5fdb97",
       "docs/cbc-evidence/soak-d2-oom-ownership-2026-09-11/classifier.txt": "bd544aabc03579e4807c2a7db3ed99477e769c379f5d3539b15584c32d8875cf",
@@ -1849,8 +1931,8 @@
       "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
-      "docs/tdd-plans/soak-gates-2026-09-08.md": "e3a0e1a1ca936cd3efdf6a540aa21cff45eb9f84a49d5979913235981af8b06f",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "f7e9fafbe3cd800c610004abfc233047b2e8dc7e7e56349fb0b188e56f938d9a",
+      "docs/tdd-plans/soak-gates-2026-09-08.md": "313baf1849d957e5ce20c431a93df30e3e5188d948130607d745f487827d1b8b",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "2f2b7a68c73f82ddadd1e3c6493d275fbe690d4d35949a2cdbd82d0b7d631813",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -1913,7 +1995,7 @@
       "formal/tlaplus/soak_disk/CleanupOutcome.tla": "e1685ea68088b29464f9b68e0755c8daffd47466385adaeaf3c23af2b601f09d",
       "formal/tlaplus/soak_disk/CleanupOwnership.md": "244649b0c25cb2e75de12cb86541cf35abb371e4c5befa97cc5dfb822e70845c",
       "formal/tlaplus/soak_disk/CleanupOwnership.tla": "aed223b4fb6a33ab11497b7ea556cd2b6a2204167ca770a273008e06ab5ed65b",
-      "formal/tlaplus/soak_disk/ControllerLoss.md": "28d66724aceb0a42fe2bb3da30b5c05cd26112fa390be988c09e0a24ac11dd46",
+      "formal/tlaplus/soak_disk/ControllerLoss.md": "2379d5fad547b23d5169cd3fd2399748bfd4cf10048d90402fb92b26266c01a9",
       "formal/tlaplus/soak_disk/ControllerLoss.tla": "5e654335dfccf4a0326b65d81bcb2f5b36fec80be2917e87908190053fc81b97",
       "formal/tlaplus/soak_disk/CrashMonitorDeath.md": "8f8a988d04ecfea6403c3547bf464f0702e495652c5d06273705ec6b1b89614e",
       "formal/tlaplus/soak_disk/CrashMonitorDeath.tla": "17397e1797c9ea5b0adb22828d6b620a9545ea96e3d19eee255f8f7cf06a8f5e",
@@ -2109,12 +2191,18 @@
       "formal/tlaplus/soak_disk/MC_MonitorAdmission_iteration.tla": "abe3cfa9070dfb782ce8e00967a2f51ec6edd99cb68176a3e40fccd5d74a04a3",
       "formal/tlaplus/soak_disk/MC_MonitorAdmission_iteration_unchecked_pre_fix.cfg": "1fff61048cd54a5d01a2c4886f5f4d030f59d2f04b1dce16e364eb8edf8cfdd0",
       "formal/tlaplus/soak_disk/MC_MonitorAdmission_iteration_unchecked_pre_fix.tla": "7f0b46cd12382eae2fd15191454ddbb6c3f1983e80fb45281546ecd3bcde0c3c",
+      "formal/tlaplus/soak_disk/MC_NativeControllerLoss.cfg": "fcee2cf7b0c90f3c090a479c92a184866dc50e89361b47868de558159421c9e4",
+      "formal/tlaplus/soak_disk/MC_NativeControllerLoss.tla": "8851ad96b30d8f742983968e1504de5489505d6dbffecc6c6109307115144655",
+      "formal/tlaplus/soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix.cfg": "5475dda3a45a4fe60a4c4d809635929ff869baa56353ca2da71062950a501176",
+      "formal/tlaplus/soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix.tla": "4f063baa4ce17c1491899a9ae4323e34db38924122323c1cfe7f351489c8a0cf",
       "formal/tlaplus/soak_disk/MC_SoakDisk.cfg": "baa1c4153fc8c485d6d15ce267adb601f1585a4e24f0686ff07f3bec8b9894f4",
       "formal/tlaplus/soak_disk/MC_SoakDisk.tla": "3f1c1f5589f430a424efe8c8916f7b725b1bc33bd39e49959ffd3c63d11ab039",
       "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg": "0ee62f80739ff4f03d47555b4cb4550738d909f6a247a66fd62b73ac30051132",
       "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.tla": "e15a4a65454687dffb48356319845bb0a16db5e53e6f05542784e655ca307890",
       "formal/tlaplus/soak_disk/MonitorAdmission.md": "4075b751d05b79887c5219420c82f31b1f69e692ae3bbf930f94f1429d277552",
       "formal/tlaplus/soak_disk/MonitorAdmission.tla": "e77215a2a4c0aa0c598f4cc115ae526b0867a45a56b58f53a96b7fc679a5ac5e",
+      "formal/tlaplus/soak_disk/NativeControllerLoss.md": "8b4787173a08c3a5a02cc13799eac5e3ce9841a3f94d480d4a6c6663dac313d6",
+      "formal/tlaplus/soak_disk/NativeControllerLoss.tla": "1fe14d825b48ebf74b9069e7f712f601b2612e5c9de12f2af31bb164e24625ce",
       "formal/tlaplus/soak_disk/README.md": "01b7a506fbf1e34bedfb3e3657823c8a75081752e72810f93f28f506f3a10f18",
       "formal/tlaplus/soak_disk/SoakDisk.tla": "17219df7246a0e349fcb9072590a2576fa568f38755364c7f637f0227bede942",
       "rspace++/src/rspace/replay_rspace.rs": "14c254ef0ac3db29a44313f8da8c7df02576ff113c135dc78650247fa12f1cb5",
@@ -2125,6 +2213,8 @@
       "scripts/bench/profile-casper-latency.sh": "a8b57f262660d1f75e733e33af904f4fa5da52b911777e046d57f656a0041a25",
       "scripts/bench/restore-soak-dashboard-run.sh": "e62dfae78d12ffc32f0cae73df6453d924cc7ace86a544774b5099880d1fd99e",
       "scripts/bench/run-bench-segment.sh": "735c0eed6e7db8edb2ca910f40c2058a146b386aec28e817d2ad795c70888813",
+      "scripts/bench/run-soak-contained.sh": "c8074bc3adff678fe508c93e118c4633333f15494214e24875b96464b04566d2",
+      "scripts/bench/soak-containment.py": "dfcc0c3bd009071c46df82b28e076106069de40152511ff0f88f9c8eb0de4859",
       "scripts/bench/soak-disk-test.Dockerfile": "85340de51da31c1ea8ded3c4a20a8e0cf8f85a26b0cfc13ab4b29768d5048aa9",
       "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7",
       "scripts/bench/test-aggregate-perf-report.sh": "858169b3477baa66bbdb0c809df7a4d4eecc645e0ea4312a719ad174521ee0f5",
@@ -2162,6 +2252,7 @@
       "scripts/bench/test-soak-host-stop-ownership.sh": "0619c85ab321aeed1d83190d62d8b8669d18d3bc311a719963d9fa149eac7f8c",
       "scripts/bench/test-soak-monitor-admission.sh": "757a2127b9c21fbd0d9d73698651d1cff746c9a166a9b4fb8f53b9a16481efa8",
       "scripts/bench/test-soak-monitor-inherited-pipe.sh": "027bdadc3f076b771fcacc265b63cf86d204ab1985063fb5ce8b3af6a122a279",
+      "scripts/bench/test-soak-native-containment.py": "1351e95343470579b37025fbdd5d360836abec81d5be1e5d1ae0c404ca82e36c",
       "scripts/bench/test-soak-real-benchmark-crash-recovery.sh": "7da806ec4cda429a2d88205e141650414228a1259105a6160c1112636eafcc6a",
       "scripts/bench/test-soak-real-benchmark-stop-recovery.sh": "fe7d6326dd9798f55e0356e996d3a6a746b15a7e05508d7edc8262eb5813ec0f",
       "scripts/bench/test-soak-real-crash-recovery.sh": "fcbe8664976f224c61657e1772ceb2fbe95a120f5630934dd7bffdb31edfe116",
@@ -2175,12 +2266,12 @@
       "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
       "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
       "scripts/ci/check-soak-evidence-package.rb": "1eb605fbc93936adb50fc3105b5e92ff33fd2013af95f476f38ef4ab57c6e39f",
-      "scripts/ci/check-tla-invariants.sh": "b08a40690d397805a5529cf834ac3d646f6748927589f7c1348a150792224c5b",
-      "scripts/ci/test-check-tla-invariants.sh": "376dc977edf18ccdd4320d6d0a7fe2015c8d9ccf34ecf86e11cc874adac6da5b",
+      "scripts/ci/check-tla-invariants.sh": "3eae60b5aff2aea2509c232928c7ea29e20a333a2294854dad9dc73fa92cefac",
+      "scripts/ci/test-check-tla-invariants.sh": "124c77b8bcb12cb85164cb9da65c88643732075a6ccf4381fa4669532e44efc1",
       "scripts/ci/test-soak-claim-inventory-jsonc.sh": "b6ba3dcd5a81ef37698bd10cb6ca4058afccfdf9d0bf0273530a865202c691db",
       "scripts/ci/test-soak-claim-inventory.sh": "8bcbdb5ec7ab008ec9057ba07f03c425bd6e9237c915340ba7957681b5d7f3d4",
       "scripts/ci/test-soak-evidence-package.rb": "b1ad6c959b1f559ea184847cec714e5f5cf999d9aec94f4f4d9a84e4efba373c",
-      "scripts/ci/test-soak-pr-formal-gate.sh": "b81f7f1f0304e1ca7db3a2df63809cc91e8d22388c8777295244a7f06310e5c9",
+      "scripts/ci/test-soak-pr-formal-gate.sh": "4aad0488be45c44a8fb04112a23247769fb7307bf528e1010af99297e90e3195",
       "scripts/repin-system-integration.sh": "762e421890952bc4c84ac7f1c4a844356edefe4786cf86e65e12f21590018a06",
       "scripts/run-merge-recovery-soak.sh": "4c6cf4c2c07ed0c49dc290759889d9611a297abb6e85123e1949abfd4cba0ae9",
       "scripts/test-repin-system-integration.sh": "cf238a85019b74c232106fbcd2c357f09095d01f65f40bd8941e30e99f57c104"
@@ -2321,6 +2412,13 @@
             "soak",
             "retry_within_window"
           ]
+        },
+        {
+          "path": "scripts/bench/soak-containment.py",
+          "symbols": [
+            "launch_native",
+            "main"
+          ]
         }
       ],
       "checks": [
@@ -2328,7 +2426,8 @@
         "DISK-PROBE",
         "DISK-SAMPLE",
         "BOUNDED-TLA",
-        "DISK-EMERGENCY"
+        "DISK-EMERGENCY",
+        "NATIVE-CONTROLLER-LOSS"
       ],
       "pending_obligations": [
         "The maintainer must ratify the resource claim and any new mandatory CbC attributes.",
@@ -2469,7 +2568,12 @@
         "formal/tlaplus/soak_disk/MC_MonitorAdmission_iteration.cfg",
         "formal/tlaplus/soak_disk/MC_MonitorAdmission_iteration_unchecked_pre_fix.cfg",
         "formal/tlaplus/soak_disk/MC_InterruptedOutputDrain.cfg",
-        "formal/tlaplus/soak_disk/MC_InterruptedOutputDrain_drain_first_pre_fix.cfg"
+        "formal/tlaplus/soak_disk/MC_InterruptedOutputDrain_drain_first_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/NativeControllerLoss.tla",
+        "formal/tlaplus/soak_disk/MC_NativeControllerLoss.tla",
+        "formal/tlaplus/soak_disk/MC_NativeControllerLoss.cfg",
+        "formal/tlaplus/soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix.tla",
+        "formal/tlaplus/soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix.cfg"
       ],
       "verifier": {
         "name": "TLC",
@@ -2531,7 +2635,8 @@
         "B34 has a two-state native preference model. The exact control also changes the unrelated node preference.",
         "B36 has three distinct states. Its exact control changes the unrelated container preference during a guardian sample.",
         "B37 has four distinct states for one benchmark crash and two recovery attempts.",
-        "B41 and both B42 configurations have five distinct states. B43 has four distinct states. B44 remains a separate three-state counterexample."
+        "B41 and both B42 configurations have five distinct states. B43 has four distinct states. B44 remains a separate three-state counterexample.",
+        "The native-only controller-loss model has three states. Its manager response assumes successful native termination and does not complete B44."
       ],
       "expected_results": [
         {
@@ -2894,6 +2999,15 @@
           "configuration": "MC_InterruptedOutputDrain_drain_first_pre_fix",
           "exit_code": 12,
           "invariant": "DrainRequiresOwnedStop"
+        },
+        {
+          "configuration": "MC_NativeControllerLoss",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_NativeControllerLoss_unmanaged_pre_fix",
+          "exit_code": 12,
+          "invariant": "NativeControllerLossStopsOwnedWriter"
         }
       ],
       "production_tests": [
@@ -2940,7 +3054,8 @@
         "D2-BENCHMARK-CRASH-LOCAL",
         "D2-CRASH-STOP-LOCAL",
         "D2-MONITOR-DEATH-LOCAL",
-        "D2-SHUTDOWN-LOCAL"
+        "D2-SHUTDOWN-LOCAL",
+        "D2-NATIVE-CONTAINMENT-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -2985,7 +3100,8 @@
         "B36 covers 231 classifier cases across 33 targets. Routing covers six scenarios.",
         "B37 covered 238 classifier cases across 34 targets. Routing covered six scenarios.",
         "B40 records 259 classifier cases across 37 targets and six routing scenarios. This packaging update does not change the formal gate code.",
-        "The B41 through B43 combined gate has 41 exact controls and 287 classifier cases. B44 is not registered as an accepted control."
+        "The B41 through B43 combined gate has 41 exact controls and 287 classifier cases. B44 is not registered as an accepted control.",
+        "The native subcycle records 42 exact controls, 294 classifier cases, and six routing scenarios. The original direct-launch B44 remains outside accepted controls."
       ],
       "production_tests": [
         {
@@ -3031,7 +3147,8 @@
         "D2-BENCHMARK-CRASH-LOCAL",
         "D2-CRASH-STOP-LOCAL",
         "D2-MONITOR-DEATH-LOCAL",
-        "D2-SHUTDOWN-LOCAL"
+        "D2-SHUTDOWN-LOCAL",
+        "D2-NATIVE-CONTAINMENT-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -3625,7 +3742,8 @@
         "D2-BENCHMARK-CRASH-LOCAL",
         "D2-CRASH-STOP-LOCAL",
         "D2-MONITOR-DEATH-LOCAL",
-        "D2-SHUTDOWN-LOCAL"
+        "D2-SHUTDOWN-LOCAL",
+        "D2-NATIVE-CONTAINMENT-LOCAL"
       ],
       "result": "historical-baseline",
       "pending_obligations": [
@@ -3740,6 +3858,67 @@
       "pending_obligations": [
         "Establish a reviewed ownership and containment design that survives the specified controller failures.",
         "Retain a matched production and formal correction without weakening unrelated-writer preservation or treating fixture cleanup as termination evidence."
+      ]
+    },
+    {
+      "id": "NATIVE-CONTROLLER-LOSS",
+      "command": "SOAK_DIAGNOSTIC_SESSION=<guarded-runner-name> python3 scripts/bench/test-soak-native-containment.py <source> <new-case-directory>",
+      "configurations": [
+        "formal/tlaplus/soak_disk/NativeControllerLoss.tla",
+        "formal/tlaplus/soak_disk/MC_NativeControllerLoss.tla",
+        "formal/tlaplus/soak_disk/MC_NativeControllerLoss.cfg",
+        "formal/tlaplus/soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix.tla",
+        "formal/tlaplus/soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/NativeControllerLoss.md",
+        "scripts/bench/run-soak-contained.sh",
+        "scripts/bench/soak-containment.py",
+        "scripts/bench/test-soak-native-containment.py"
+      ],
+      "verifier": {
+        "name": "Guarded native fixture and finite TLC refutation",
+        "version": "The manifest binds runtime sources, the TLC jar, and both recorded runner identities and versions."
+      },
+      "assumptions": [
+        "The trusted system manager, kernel, and external observer survive the selected controller deaths.",
+        "The fixture substitutes Docker and OCI commands. Its outer service performs cleanup only after the verdict."
+      ],
+      "bounds": [
+        "The reviewed pair preserves the controller fault and all writer and recovery assertions. Both reviewed restarts use the normal summary writer.",
+        "The three-state model assumes successful manager response. It does not model time, storage, creation fencing, or restart accounting."
+      ],
+      "production_tests": [
+        {
+          "path": "scripts/bench/test-soak-native-containment.py",
+          "command": "SOAK_DIAGNOSTIC_SESSION=<guarded-runner-name> python3 scripts/bench/test-soak-native-containment.py <source> <new-case-directory>",
+          "result": "reviewed-source-bound-native-only-red-green",
+          "required_exit_code": 0,
+          "observed_exit_code": 0
+        }
+      ],
+      "expected_results": [
+        {
+          "configuration": "MC_NativeControllerLoss",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_NativeControllerLoss_unmanaged_pre_fix",
+          "exit_code": 12,
+          "invariant": "NativeControllerLossStopsOwnedWriter"
+        }
+      ],
+      "ci": {
+        "workflow": ".github/workflows/ci.yml",
+        "job": "not-configured",
+        "enforcement": "The privileged native fixture requires guarded disposable infrastructure. Its finite configurations are registered in the formal gate. Hosted execution remains unverified."
+      },
+      "evidence_refs": [
+        "D2-NATIVE-CONTAINMENT-LOCAL"
+      ],
+      "result": "historical-baseline",
+      "pending_obligations": [
+        "Implement verified pre-admission placement, private Docker engine and runtime containment, and creation fencing before workflow integration.",
+        "Verify metadata loss, missing cgroup files, observer loss, unsuccessful stops, successful exits, and alternate control sockets.",
+        "Complete storage durability, one composed deadline, reserve bounds, hosted enforcement, maintainer ratification, and separately authorized acceptance."
       ]
     }
   ],
@@ -4131,6 +4310,18 @@
         "Snapshots identify bytes, not execution coverage. Local publication does not establish durable storage or upload.",
         "D2, all claim discharges, hosted enforcement, maintainer review, and acceptance remain pending."
       ]
+    },
+    "D2-NATIVE-CONTAINMENT-LOCAL": {
+      "path": "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/manifest.jsonc",
+      "role": "historical-baseline",
+      "identity": "A reviewed native-only B44 RED/GREEN pair, normal restart summaries, two terminated diagnostic runners, and source-bound combined checks.",
+      "limitations": [
+        "The original direct-launch B44 remains RED. The normal workflow does not use this prototype.",
+        "The first five invocations retain their original identities, including setup and cleanup failures and fallback summary use.",
+        "The reviewed fixture restores execute permissions and passes a new matched pair. Both reviewed restarts use normal summary publication.",
+        "The combined snapshot does not execute the privileged native fixture. The fixture permission change has separate source-bound execution.",
+        "All four claim discharges, all nine gates, hosted enforcement, and acceptance remain pending."
+      ]
     }
   },
   "gates": [
@@ -4167,7 +4358,8 @@
         "DISK-SAMPLE",
         "BOUNDED-TLA",
         "DISK-EMERGENCY",
-        "CONTROLLER-LOSS"
+        "CONTROLLER-LOSS",
+        "NATIVE-CONTROLLER-LOSS"
       ],
       "pending_obligations": [
         "B5 through B43 pass their selected local checks. B35 is unchanged-production characterization. B44 remains RED. D2 is not complete.",
@@ -4182,7 +4374,8 @@
         "After B30 and B31, host-process ownership, memory-pressure paths, other Docker launch forms, late creation, failed storage, and complete shutdown remain open.",
         "Complete the remaining benchmark crash windows and full creation ownership contract. B34 and B36 preference checks and B35 failed-stop characterization pass locally.",
         "Complete the authorized bounded D3 node diagnostics with the required observability prerequisites. Full D2 discharge requires all-writer growth and reserve evidence.",
-        "Correct combined driver and crash-monitor loss with reviewed containment. The current ownership marker does not make workload lifetime depend on either controller."
+        "Correct combined driver and crash-monitor loss with reviewed containment. The current ownership marker does not make workload lifetime depend on either controller.",
+        "The native-only subcycle passes. The original direct-launch B44, private Docker containment, creation fencing, and workflow integration remain incomplete."
       ]
     },
     {

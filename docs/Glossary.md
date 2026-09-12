@@ -499,6 +499,21 @@ Controller loss does not establish workload termination.
 **Preferred usage:** Use this term for the combined failure tested by B44.
 State which independent supervisor must survive when a containment design depends on that supervisor.
 
+### Run domain
+
+A **run domain** is the proposed, exclusively owned containment boundary for one soak run and its workload launch services.
+The run domain includes native writers, Docker writers, and the services that can create those writers.
+
+**Preferred usage:** Use this term for the complete containment boundary, not a process group or an ownership label.
+A configured run domain does not establish confirmed termination.
+
+### Creation fence
+
+A **creation fence** prevents further workload execution after closure, including execution from requests accepted before closure.
+
+**Preferred usage:** Identify the mechanism that enforces the creation fence.
+A rejected client request, an empty process list, or a single kill operation does not establish a creation fence.
+
 ## Maintenance
 
 - Update this file before merging code or documentation that introduces a
