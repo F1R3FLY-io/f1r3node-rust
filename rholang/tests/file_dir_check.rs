@@ -534,7 +534,13 @@ fn with_libs(test_snippet: &str) -> String {
             ret!([true, 2])
           }} |
 
-          contract fsReleaseLock(@_lockId, ret) = {{
+          // S4.7 (2026-09-11, commit a9c64fe0e): fsReleaseLock now
+          // arity 3 (lockId, holder, ack) so the LockRegistry can
+          // enforce the "two independent gates" identity check.
+          // Mock ignores the holder value; a bespoke test that wants
+          // to exercise the holder-identity rejection path stages
+          // its own fsReleaseLock override with match on the holder.
+          contract fsReleaseLock(@_lockId, @_holder, ret) = {{
             ret!([true])
           }} |
 
@@ -745,13 +751,17 @@ const STATEFUL_LOCK_MOCKS: &str = r#"
             }
           } |
 
-          contract fsReleaseLock(@_id, ret) = {
+          contract fsReleaseLock(@_id, @_holder, ret) = {
             for (@_ch <- activeHolder; @_ck <- activeKind; @cid <- activeLockId) {
               // Simplification: clear active state unconditionally.  Real
               // LockRegistry tracks per-LockId; tests using this mock
               // don't exercise multi-lock accounting so single-clear is
               // sufficient.  LockId counter is NOT decremented — matches
               // real semantics (LockIds are monotone).
+              //
+              // S4.7: holder arg accepted + ignored — real registry
+              // gate is exercised by native-level lock tests, not by
+              // File-level mocks.
               activeHolder!(Nil) | activeKind!(Nil) | activeLockId!(cid) |
               ret!([true])
             }
@@ -2143,7 +2153,7 @@ async fn file_close_propagates_fs_close_error() {
           // outcome the test asserts on.
           contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, @_wait, ret) = {{ ret!([true, 1]) }} |
           contract fsLockSequential(@_fd, @_h, @_cm, @_wait, ret) = {{ ret!([true, 2]) }} |
-          contract fsReleaseLock(@_id, ret) = {{ ret!([true]) }} |
+          contract fsReleaseLock(@_id, @_holder, ret) = {{ ret!([true]) }} |
           contract fsReleaseAllForHolder(@_h, ret) = {{ ret!([true, 0]) }} |
           // parseRwxToBits + parseRwxLoop retired 2026-09-04 (chmod migrated
           // to Int mode-bits input; no rwx-string parser needed).
@@ -6639,7 +6649,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
           // lock semantics.
           contract fsLockRange(@_fd, @_o, @_l, @_m, @_h, @_cm, @_wait, ret) = {{ ret!([true, 1]) }} |
           contract fsLockSequential(@_fd, @_h, @_cm, @_wait, ret) = {{ ret!([true, 2]) }} |
-          contract fsReleaseLock(@_id, ret) = {{ ret!([true]) }} |
+          contract fsReleaseLock(@_id, @_holder, ret) = {{ ret!([true]) }} |
           contract fsReleaseAllForHolder(@_h, ret) = {{ ret!([true, 0]) }} |
 
 {}
@@ -14355,6 +14365,82 @@ async fn fs_revoke_does_not_affect_previously_minted_file_caps() {
     assert_eq!(pos, Some(0), "cursor unchanged by Fs.revoke()");
 }
 
+/// X-5b (2026-09-12): SEC-1(A) write-side companion to
+/// `fs_revoke_does_not_affect_previously_minted_file_caps`.
+///
+/// The prior test pinned that `File.tell()` on a pre-revoke cap
+/// still succeeds after `Fs.revoke()` — but tell is a read-side
+/// no-side-effect op.  A regression that plumbed `fsRevokedP` into
+/// File.rho's write-mutation methods (say, an over-eager SEC-1(B)
+/// half-migration) would silently break `File.writeBytes()` on
+/// pre-revoke caps while leaving the read-side pin green.  This
+/// test exercises the mutation path via `writeBytes` with wait:true
+/// so both the immediate-write path AND the withSequentialLock
+/// path are exercised; a well-formed reply MUST arrive with
+/// `ok=true` even after revoke.
+///
+/// Rationale for DD-Revoke SEC-1(A) scope: revocation is a
+/// permissions-off-switch at the Fs level (blocks NEW cap mints),
+/// not a per-cap poison pill.  Downstream File/Dir/Stream caps
+/// operate as independent capabilities once minted — they do NOT
+/// re-check `fsRevokedP` per method call.  This test is the pin
+/// that ensures that scope holds on the write side as well as the
+/// read side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_does_not_affect_previously_minted_file_cap_writes() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        new emptyProducer, byteBuilder in {
+          contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
+          contract byteBuilder(@vs, retCh) = { retCh!([true, vs.concatBytes()]) } |
+          for (@stream <- Stream!?(*emptyProducer, *byteBuilder)) {
+            // Mint via Fs.openFile — the strong form of SEC-1(A): the
+            // File cap comes out of the ambient Fs mint pipeline (the
+            // very object being revoked).  The read-side pin
+            // `fs_revoke_does_not_affect_previously_minted_file_caps`
+            // uses this same shape with .tell; this test extends it
+            // to the write side.
+            for (@fs <- Fs!?(0, 1, 2, {
+              "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
+            })) {
+              for (@openReply <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
+                match openReply {
+                  [true, file] => {
+                    for (@_ <- @fs!?("revoke")) {
+                      // Write-side pin: pre-revoke File cap must
+                      // continue to accept writeBytes with wait:true
+                      // post-revoke.  A regression that added
+                      // fsRevokedP gating to File.writeBytes would
+                      // surface here as `[false, "FSERR_REVOKED",
+                      // ...]` reply.  wait:true routes through
+                      // withSequentialLock so both the immediate-
+                      // write path and the lock-parking path get
+                      // exercise.
+                      for (@r <- @file!?("writeBytes", stream, {"wait": true})) {
+                        @"out"!(r)
+                      }
+                    }
+                  }
+                  _ => @"out"!(openReply)
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "SEC-1(A): pre-revoke File cap writeBytes must succeed \
+         post-revoke; got reply code={code:?}"
+    );
+}
+
 /// Cross-instance visibility: two Fs instances mint from the same
 /// composed source share the module-level fsRevokedP cell, so
 /// revoke()ing one revokes the other.
@@ -17413,7 +17499,7 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
           contract fsLockSequential(@_fd, @_h, @_cm, @_wait, ret) = {{
             ret!([true, 42])
           }} |
-          contract fsReleaseLock(@_id, ret) = {{
+          contract fsReleaseLock(@_id, @_holder, ret) = {{
             for (@r <- releasedFlag) {{
               releasedFlag!(r) |
               match r {{

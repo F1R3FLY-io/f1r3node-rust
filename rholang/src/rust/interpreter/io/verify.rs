@@ -370,6 +370,9 @@ mod tests {
     #[test]
     fn cons3_stable_hash_pinned_for_known_pars() {
         use super::super::errors::{FSERR_BAD_ARG, FSERR_IO};
+        use super::super::response::{
+            err_eos, ok_bare, ok_bool, ok_bytes, ok_int, ok_list, ok_string,
+        };
         // Case 1: ok_par(Par::default()) — the empty-payload
         // success reply.  Every non-verifying handler that returns
         // `[true]` uses this shape; every verifying handler that
@@ -416,6 +419,135 @@ mod tests {
              MUST hash distinctly — the FserrCode bytes are part \
              of the stable_hash input"
         );
+
+        // X-5b (2026-09-12): expanded coverage.  Each additional
+        // reply shape pins the stable_hash encoding for a distinct
+        // ExprInstance kind — a serialization drift in any one
+        // element type (EList, GBool, GInt, GByteArray, GString,
+        // nested EList) surfaces here as a specific pin mismatch
+        // rather than as a broad "empty-ok drifted" false narrow.
+        //
+        // Case 4: `[true]` bare success (ok_bare).  Distinct from
+        // Case 1 (which is `[true, ]` with a trailing Par::default()
+        // — subtly different wire bytes).
+        let bare_ok_hash = par_stable_hash(&ok_bare());
+        const EXPECTED_OK_BARE: [u8; 32] = [
+            82, 147, 151, 219, 74, 164, 235, 233, 239, 18, 199, 89, 244, 91, 142, 82, 96, 141, 214,
+            219, 56, 78, 181, 71, 121, 197, 126, 184, 153, 217, 232, 6,
+        ];
+        assert_eq!(
+            bare_ok_hash, EXPECTED_OK_BARE,
+            "CONS-3: stable_hash of ok_bare() drifted"
+        );
+
+        // Case 5: `[true, 42]` — the numeric ok shape used by
+        // fs_write's reply (bytes-written count), fs_size, fs_seek
+        // (position), etc.  Pins the GInt encoding.
+        let ok_int_hash = par_stable_hash(&ok_int(42));
+        const EXPECTED_OK_INT_42: [u8; 32] = [
+            51, 96, 87, 171, 31, 222, 60, 15, 222, 21, 30, 120, 92, 184, 132, 206, 41, 146, 180,
+            180, 104, 64, 40, 150, 147, 209, 204, 34, 95, 93, 134, 255,
+        ];
+        assert_eq!(
+            ok_int_hash, EXPECTED_OK_INT_42,
+            "CONS-3: stable_hash of ok_int(42) drifted"
+        );
+
+        // Case 6: `[true, true]` — the ok_bool shape used by
+        // fs_exists.  A subtle regression that made GBool encode
+        // identically to GInt(0/1) would surface here vs. Case 5.
+        let ok_bool_hash = par_stable_hash(&ok_bool(true));
+        const EXPECTED_OK_BOOL_TRUE: [u8; 32] = [
+            47, 136, 47, 67, 46, 225, 56, 12, 207, 13, 251, 168, 53, 69, 16, 147, 54, 70, 249, 24,
+            232, 200, 240, 73, 236, 26, 198, 53, 94, 146, 237, 108,
+        ];
+        assert_eq!(
+            ok_bool_hash, EXPECTED_OK_BOOL_TRUE,
+            "CONS-3: stable_hash of ok_bool(true) drifted"
+        );
+
+        // Case 7: `[true, <bytes>]` — the ok_bytes shape used by
+        // fs_read's reply.  Pins the GByteArray encoding.
+        let ok_bytes_hash = par_stable_hash(&ok_bytes(vec![0xaa, 0xbb, 0xcc]));
+        const EXPECTED_OK_BYTES_AABBCC: [u8; 32] = [
+            247, 91, 85, 18, 230, 71, 121, 102, 35, 39, 202, 202, 109, 173, 38, 132, 150, 31, 18,
+            130, 118, 50, 245, 107, 157, 75, 250, 81, 219, 28, 249, 29,
+        ];
+        assert_eq!(
+            ok_bytes_hash, EXPECTED_OK_BYTES_AABBCC,
+            "CONS-3: stable_hash of ok_bytes([0xaa, 0xbb, 0xcc]) drifted"
+        );
+
+        // Case 8: `[true, "hello"]` — the ok_string shape used by
+        // fs_quarantine's reply.  Pins the GString encoding.
+        let ok_string_hash = par_stable_hash(&ok_string("hello".to_string()));
+        const EXPECTED_OK_STRING_HELLO: [u8; 32] = [
+            175, 78, 235, 95, 251, 71, 13, 48, 55, 45, 152, 93, 156, 127, 199, 206, 96, 216, 5, 75,
+            56, 51, 81, 238, 189, 154, 43, 32, 100, 66, 142, 232,
+        ];
+        assert_eq!(
+            ok_string_hash, EXPECTED_OK_STRING_HELLO,
+            "CONS-3: stable_hash of ok_string(\"hello\") drifted"
+        );
+
+        // Case 9: `[true, [a, b]]` — the ok_list nested-list shape
+        // used by fs_entries' reply (list of [path, kind] pairs).
+        // Pins nested EList encoding.
+        let entry_a = ok_string("file.bin".to_string());
+        let entry_b = ok_string("dir".to_string());
+        let ok_nested_hash = par_stable_hash(&ok_list(vec![entry_a, entry_b]));
+        const EXPECTED_OK_NESTED_LIST: [u8; 32] = [
+            100, 4, 18, 166, 58, 200, 157, 131, 71, 140, 90, 225, 181, 138, 116, 166, 190, 138,
+            238, 116, 22, 92, 3, 3, 77, 137, 187, 221, 93, 71, 228, 213,
+        ];
+        assert_eq!(
+            ok_nested_hash, EXPECTED_OK_NESTED_LIST,
+            "CONS-3: stable_hash of ok_list([<nested>]) drifted"
+        );
+
+        // Case 10: `[false, "EOS"]` — the stream-EOS terminator.
+        // Distinct from the 3-element error shape (`[false, code,
+        // msg]`); a regression that collapsed EOS into a full
+        // FSERR shape would hash differently.
+        let eos_hash = par_stable_hash(&err_eos());
+        const EXPECTED_ERR_EOS: [u8; 32] = [
+            148, 21, 6, 250, 199, 107, 135, 241, 69, 250, 125, 251, 136, 233, 51, 174, 251, 53, 83,
+            99, 135, 163, 15, 247, 41, 210, 170, 50, 227, 53, 29, 212,
+        ];
+        assert_eq!(
+            eos_hash, EXPECTED_ERR_EOS,
+            "CONS-3: stable_hash of err_eos() drifted"
+        );
+
+        // Cross-shape distinctness: every pinned digest above must
+        // be pairwise-distinct.  A bug that made two shapes collide
+        // through stable_hash (e.g., ignoring the outer list
+        // discriminator) would slip past the per-case pin assertions
+        // (they'd all agree on the same wrong value); this
+        // pairwise-distinct check catches that class.
+        let all_hashes = [
+            ("empty_ok", empty_ok_hash),
+            ("bad_arg", bad_arg_hash),
+            ("io_err", io_hash),
+            ("bare_ok", bare_ok_hash),
+            ("ok_int_42", ok_int_hash),
+            ("ok_bool_true", ok_bool_hash),
+            ("ok_bytes_aabbcc", ok_bytes_hash),
+            ("ok_string_hello", ok_string_hash),
+            ("ok_nested_list", ok_nested_hash),
+            ("err_eos", eos_hash),
+        ];
+        for i in 0..all_hashes.len() {
+            for j in (i + 1)..all_hashes.len() {
+                assert_ne!(
+                    all_hashes[i].1, all_hashes[j].1,
+                    "CONS-3: distinct reply shapes {} and {} MUST hash \
+                     distinctly — a collision here indicates the \
+                     stable_hash input is missing a discriminator",
+                    all_hashes[i].0, all_hashes[j].0,
+                );
+            }
+        }
     }
 
     /// End-to-end stat_record shape: two files with identical

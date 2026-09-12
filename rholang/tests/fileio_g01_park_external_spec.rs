@@ -180,32 +180,19 @@ mod tests {
         assert_out_true(&runtime, "out").await;
     }
 
-    /// X-2 / G-01 companion: same shape but exercises the fs_stat
-    /// path (also through spawn_blocking, via `fs_size` → fstat).
-    /// A per-syscall pin ensures every wrapped site gets exercise
-    /// independently — a regression that misses one site would
-    /// leave that specific handler's test failing while the fs_open
-    /// pin passes.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn parallel_fs_size_and_rspace_consume_both_complete_bounded() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("bounded_size.bin");
-        std::fs::write(&path, vec![0u8; 128]).expect("seed file");
-
-        let runtime = create_runtime().await;
-
-        // Open first (synchronous within the test), then run the
-        // parallel fs_size + consume pattern.
+    /// Helper: open a file (synchronous within the test), returning
+    /// the fd for use in subsequent parallel-branch tests.
+    async fn open_fd(runtime: &RhoRuntimeImpl, root: &std::path::Path, rel: &str) -> i64 {
         let open_term = format!(
             r#"
             new fsOpen(`rho:io:fs:native:1.0.0/open`), openCh in {{
-              fsOpen!("{root}", "bounded_size.bin", "r+", "oracular", *openCh) |
+              fsOpen!("{root}", "{rel}", "r+", "oracular", *openCh) |
               for (@[true, fd] <- openCh) {{
-                @"fd"!(fd)
+                @"__fd"!(fd)
               }}
             }}
             "#,
-            root = dir.path().display(),
+            root = root.display(),
         );
         runtime
             .evaluate(
@@ -216,20 +203,69 @@ mod tests {
             )
             .await
             .expect("open must succeed");
-
-        // Fetch the fd from @"fd".
         let map = runtime.get_hot_changes().await;
         let fd_key = Par::default().with_exprs(vec![Expr {
-            expr_instance: Some(ExprInstance::GString("fd".to_string())),
+            expr_instance: Some(ExprInstance::GString("__fd".to_string())),
         }]);
-        let fd_row = map.get(&vec![fd_key]).expect("fd published on @\"fd\"");
+        let fd_row = map.get(&vec![fd_key]).expect("fd published on @\"__fd\"");
         let fd_par = fd_row.data[0].a.pars[0].clone();
-        let fd_val = match fd_par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+        match fd_par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
             Some(ExprInstance::GInt(n)) => *n,
             other => panic!("expected GInt fd; got {other:?}"),
-        };
+        }
+    }
 
-        // Parallel fs_size + consume.
+    /// Helper: run a Rholang term under a wall-clock timeout.  A
+    /// timeout expiry indicates a `park_external_during` regression
+    /// on one of the participating sites — the reduction driver's
+    /// `frontier_ready` check saw the fileio participant as
+    /// `Running` and refused to service the sibling consume.
+    async fn evaluate_bounded(runtime: &RhoRuntimeImpl, term: &str, family: &str) {
+        let start = Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            runtime.evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "X-2 / G-01 regression on the {family} family: \
+                 parallel fs syscall + RSpace consume MUST complete \
+                 within 5s.  A stall here suggests the {family} \
+                 handler's `spawn_blocking` site lost its \
+                 `park_external_during` wrapper — the reduction \
+                 driver's `frontier_ready` sees the fileio \
+                 participant as `Running` and refuses to service \
+                 the sibling consume until the blocking task \
+                 completes."
+            )
+        });
+        result.unwrap_or_else(|e| panic!("evaluate must not error on {family}: {e}"));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "parallel fs {family} + consume ran for {elapsed:?} — \
+             timeout boundary hit"
+        );
+    }
+
+    /// X-2 / G-01 companion: same shape but exercises the fs_size
+    /// (fstat) path.  A per-syscall pin ensures every wrapped site
+    /// gets exercise independently — a regression that misses one
+    /// site would leave that specific handler's test failing while
+    /// the fs_open pin passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_size_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("bounded_size.bin"), vec![0u8; 128]).expect("seed file");
+        let runtime = create_runtime().await;
+        let fd = open_fd(&runtime, dir.path(), "bounded_size.bin").await;
+
         let term = format!(
             r#"
             new fsSize(`rho:io:fs:native:1.0.0/size`),
@@ -238,30 +274,215 @@ mod tests {
               fsSize!({fd}, *sizeReply) |
               syncCh!("done") |
               for (@[true, _n] <- sizeReply; @_ <- syncCh) {{
-                @"out2"!([true, "both branches completed"])
+                @"out_size"!([true, "both branches completed"])
               }}
             }}
             "#,
-            fd = fd_val,
         );
+        evaluate_bounded(&runtime, &term, "observation/fs_size").await;
+        assert_out_true(&runtime, "out_size").await;
+    }
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            runtime.evaluate(
-                &term,
-                Cost::unsafe_max(),
-                std::collections::HashMap::new(),
-                rand(),
-            ),
-        )
-        .await
-        .expect(
-            "X-2 / G-01 regression: parallel fs_size + RSpace consume \
-             MUST complete within 5s.  See sister test's diagnostic \
-             for the likely cause (missing `park_external_during` \
-             wrapper on the fs_size spawn_blocking site).",
+    /// X-2 / G-01 — mutation family (fs_write).  Exercises the
+    /// `spawn_blocking` site inside the write path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_write_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("write.bin"), vec![0u8; 64]).expect("seed file");
+        let runtime = create_runtime().await;
+        let fd = open_fd(&runtime, dir.path(), "write.bin").await;
+
+        let term = format!(
+            r#"
+            new fsWrite(`rho:io:fs:native:1.0.0/write`),
+                writeReply, syncCh
+            in {{
+              fsWrite!({fd}, "aabb".hexToBytes(), *writeReply) |
+              syncCh!("done") |
+              for (@[true, _n] <- writeReply; @_ <- syncCh) {{
+                @"out_write"!([true, "both branches completed"])
+              }}
+            }}
+            "#,
         );
-        result.expect("evaluate must not error");
-        assert_out_true(&runtime, "out2").await;
+        evaluate_bounded(&runtime, &term, "mutation/fs_write").await;
+        assert_out_true(&runtime, "out_write").await;
+    }
+
+    /// X-2 / G-01 — mutation family (fs_truncate).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_truncate_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("trunc.bin"), vec![0u8; 128]).expect("seed file");
+        let runtime = create_runtime().await;
+        let fd = open_fd(&runtime, dir.path(), "trunc.bin").await;
+
+        let term = format!(
+            r#"
+            new fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                truncReply, syncCh
+            in {{
+              fsTruncate!({fd}, 32, *truncReply) |
+              syncCh!("done") |
+              for (@_ <- truncReply; @_ <- syncCh) {{
+                @"out_trunc"!([true, "both branches completed"])
+              }}
+            }}
+            "#,
+        );
+        evaluate_bounded(&runtime, &term, "mutation/fs_truncate").await;
+        assert_out_true(&runtime, "out_trunc").await;
+    }
+
+    /// X-2 / G-01 — mutation family (fs_flush).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_flush_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("flush.bin"), vec![0u8; 32]).expect("seed file");
+        let runtime = create_runtime().await;
+        let fd = open_fd(&runtime, dir.path(), "flush.bin").await;
+
+        let term = format!(
+            r#"
+            new fsFlush(`rho:io:fs:native:1.0.0/flush`),
+                flushReply, syncCh
+            in {{
+              fsFlush!({fd}, *flushReply) |
+              syncCh!("done") |
+              for (@_ <- flushReply; @_ <- syncCh) {{
+                @"out_flush"!([true, "both branches completed"])
+              }}
+            }}
+            "#,
+        );
+        evaluate_bounded(&runtime, &term, "mutation/fs_flush").await;
+        assert_out_true(&runtime, "out_flush").await;
+    }
+
+    /// X-2 / G-01 — observation family (fs_read).  The read path
+    /// runs through spawn_blocking to service the syscall.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_read_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("read.bin"), vec![7u8; 32]).expect("seed file");
+        let runtime = create_runtime().await;
+        let fd = open_fd(&runtime, dir.path(), "read.bin").await;
+
+        let term = format!(
+            r#"
+            new fsRead(`rho:io:fs:native:1.0.0/read`),
+                readReply, syncCh
+            in {{
+              fsRead!({fd}, 8, *readReply) |
+              syncCh!("done") |
+              for (@[true, _bytes] <- readReply; @_ <- syncCh) {{
+                @"out_read"!([true, "both branches completed"])
+              }}
+            }}
+            "#,
+        );
+        evaluate_bounded(&runtime, &term, "observation/fs_read").await;
+        assert_out_true(&runtime, "out_read").await;
+    }
+
+    /// X-2 / G-01 — observation family (fs_stat, path-based).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_stat_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("stat.bin"), b"hello").expect("seed file");
+        let runtime = create_runtime().await;
+
+        let term = format!(
+            r#"
+            new fsStat(`rho:io:fs:native:1.0.0/stat`),
+                statReply, syncCh
+            in {{
+              fsStat!("{root}", "stat.bin", "oracular", *statReply) |
+              syncCh!("done") |
+              for (@[true, _rec] <- statReply; @_ <- syncCh) {{
+                @"out_stat"!([true, "both branches completed"])
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        evaluate_bounded(&runtime, &term, "observation/fs_stat").await;
+        assert_out_true(&runtime, "out_stat").await;
+    }
+
+    /// X-2 / G-01 — mutation family (fs_chmod, path-based).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_chmod_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("chmod.bin"), b"").expect("seed file");
+        let runtime = create_runtime().await;
+
+        let term = format!(
+            r#"
+            new fsChmod(`rho:io:fs:native:1.0.0/chmod`),
+                chmodReply, syncCh
+            in {{
+              fsChmod!("{root}", "chmod.bin", 420, "oracular", *chmodReply) |
+              syncCh!("done") |
+              for (@_ <- chmodReply; @_ <- syncCh) {{
+                @"out_chmod"!([true, "both branches completed"])
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        evaluate_bounded(&runtime, &term, "mutation/fs_chmod").await;
+        assert_out_true(&runtime, "out_chmod").await;
+    }
+
+    /// X-2 / G-01 — stream family (fs_entries_stream_open).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_entries_stream_open_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
+        let runtime = create_runtime().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/entriesStreamOpen`),
+                openReply, syncCh
+            in {{
+              fsOpen!("{root}", "sub", "oracular", *openReply) |
+              syncCh!("done") |
+              for (@[true, _fd] <- openReply; @_ <- syncCh) {{
+                @"out_stream_open"!([true, "both branches completed"])
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        evaluate_bounded(&runtime, &term, "stream/entriesStreamOpen").await;
+        assert_out_true(&runtime, "out_stream_open").await;
+    }
+
+    /// X-2 / G-01 — lifecycle family (fs_close).  Close routes
+    /// through spawn_blocking for the underlying `close(2)`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_fs_close_and_rspace_consume_both_complete_bounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("close.bin"), vec![0u8; 16]).expect("seed file");
+        let runtime = create_runtime().await;
+        let fd = open_fd(&runtime, dir.path(), "close.bin").await;
+
+        let term = format!(
+            r#"
+            new fsClose(`rho:io:fs:native:1.0.0/close`),
+                closeReply, syncCh
+            in {{
+              fsClose!({fd}, *closeReply) |
+              syncCh!("done") |
+              for (@_ <- closeReply; @_ <- syncCh) {{
+                @"out_close"!([true, "both branches completed"])
+              }}
+            }}
+            "#,
+        );
+        evaluate_bounded(&runtime, &term, "lifecycle/fs_close").await;
+        assert_out_true(&runtime, "out_close").await;
     }
 }
