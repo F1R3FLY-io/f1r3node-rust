@@ -14,8 +14,9 @@ use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::utils::ByteMask;
 use pathmap::zipper::{
-    ReadZipperIter, ReadZipperUntracked, WriteZipperUntracked, Zipper, ZipperIteration,
-    ZipperMoving, ZipperReadOnlyIteration, ZipperValues, ZipperWriting,
+    ReadZipperIter, ReadZipperUntracked, TrieRefBorrowed, WriteZipperUntracked, Zipper, ZipperForking,
+    ZipperIteration, ZipperMoving, ZipperReadOnlyIteration, ZipperReadOnlySubtries, ZipperValues,
+    ZipperWriting,
 };
 
 /// Stack-safe disposal policy for values detached from a guarded map.
@@ -806,6 +807,37 @@ where
     drain_pathmap_observed::<V, B, D, _>(map, dispose, &mut observer)
 }
 
+fn descend_to_rightmost_leaf<V>(
+    zipper: &mut WriteZipperUntracked<'_, '_, V>,
+    suffix: &mut Vec<u8>,
+) -> bool
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+{
+    suffix.clear();
+    {
+        let origin = zipper.fork_read_zipper();
+        if origin.child_count() == 0 {
+            return false;
+        }
+        let focus: TrieRefBorrowed<'_, V> = origin.trie_ref_at_path([]);
+        let mut read = focus.fork_read_zipper();
+        #[cfg(test)]
+        assert!(
+            pathmap::zipper::ZipperAbsolutePath::origin_path(&read).len() <= 48,
+            "PathMap 0.2.2 borrowed navigation must not copy the global origin"
+        );
+        if !read.descend_last_path() {
+            return false;
+        }
+        suffix.extend_from_slice(read.path());
+    }
+    zipper.descend_to(suffix.as_slice());
+    debug_assert!(zipper.path_exists());
+    debug_assert_eq!(zipper.child_count(), 0);
+    true
+}
+
 fn drain_pathmap_observed<V, B, D, O>(map: &mut PathMap<V>, dispose: &D, observer: &mut O) -> usize
 where
     V: Clone + Send + Sync + Unpin + 'static,
@@ -857,8 +889,9 @@ where
     let stats = {
         let mut zipper = map.write_zipper();
         let mut stats = BarrierPruneStats::default();
+        let mut suffix = Vec::new();
         loop {
-            while zipper.descend_last_byte() {}
+            descend_to_rightmost_leaf(&mut zipper, &mut suffix);
             if zipper.at_root() && !zipper.is_val() && zipper.child_count() == 0 {
                 break;
             }

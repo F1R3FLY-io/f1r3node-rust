@@ -6,9 +6,313 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use pathmap::PathMap;
+use pathmap::zipper::{
+    TrieRefBorrowed, Zipper, ZipperAbsolutePath, ZipperForking, ZipperIteration, ZipperMoving,
+    ZipperReadOnlySubtries, ZipperValues, ZipperWriting,
+};
 use proptest::prelude::*;
 
 use super::{DisposeValue, DrainObserver, GuardedPathMap, TeardownBarrier, drain_pathmap_observed};
+
+fn navigation_topology(map: &PathMap<usize>) -> Vec<(usize, Option<u8>, Option<usize>)> {
+    let mut cursor = map.read_zipper();
+    let mut nodes = Vec::new();
+    loop {
+        nodes.push((cursor.path().len(), cursor.path().last().copied(), cursor.val().copied()));
+        if cursor.descend_first_byte() {
+            continue;
+        }
+        loop {
+            if cursor.at_root() {
+                return nodes;
+            }
+            if cursor.to_next_sibling_byte() {
+                break;
+            }
+            assert!(cursor.ascend_byte());
+        }
+    }
+}
+
+fn scalar_greatest_route(map: &PathMap<usize>, focus: &[u8]) -> (Vec<u8>, Option<usize>) {
+    let mut cursor = map.read_zipper();
+    cursor.move_to_path(focus);
+    assert!(focus.is_empty() || cursor.path_exists());
+    while cursor.descend_last_byte() {}
+    (cursor.path()[focus.len()..].to_vec(), cursor.val().copied())
+}
+
+fn assert_navigation_at(map: &mut PathMap<usize>, focus: &[u8]) {
+    let topology = navigation_topology(map);
+    let snapshot = map.clone();
+    let (expected, value) = scalar_greatest_route(&snapshot, focus);
+    for rooted_at_focus in [false, true] {
+        {
+            let mut cursor = if rooted_at_focus {
+                map.write_zipper_at_path(focus)
+            } else {
+                let mut cursor = map.write_zipper();
+                cursor.move_to_path(focus);
+                cursor
+            };
+            {
+                let borrowed = cursor.fork_read_zipper();
+                assert!(borrowed.path().is_empty());
+                assert_eq!(borrowed.origin_path(), focus);
+                if borrowed.child_count() != 0 {
+                    let subtree: TrieRefBorrowed<'_, usize> = borrowed.trie_ref_at_path([]);
+                    let mut rebased = subtree.fork_read_zipper();
+                    const PATHMAP_0_2_2_MAX_NODE_KEY_BYTES: usize = 48;
+                    assert!(rebased.path().is_empty());
+                    assert_eq!(rebased.path_exists(), borrowed.path_exists());
+                    assert_eq!(rebased.origin_path(), rebased.root_prefix_path());
+                    assert!(focus.ends_with(rebased.root_prefix_path()));
+                    assert!(rebased.origin_path().len() <= PATHMAP_0_2_2_MAX_NODE_KEY_BYTES);
+                    assert_eq!(rebased.child_mask(), borrowed.child_mask());
+                    assert_eq!(rebased.child_count(), borrowed.child_count());
+                    assert_eq!(
+                        rebased.val().map(std::ptr::from_ref),
+                        borrowed.val().map(std::ptr::from_ref)
+                    );
+                    if focus.len() > PATHMAP_0_2_2_MAX_NODE_KEY_BYTES {
+                        assert!(rebased.origin_path().len() < borrowed.origin_path().len());
+                    }
+                    let root_prefix = rebased.root_prefix_path().to_vec();
+                    assert!(rebased.descend_last_path());
+                    assert_eq!(rebased.root_prefix_path(), root_prefix);
+                    assert_eq!(rebased.path(), expected);
+                    assert_eq!(rebased.val().copied(), value);
+                    assert_eq!(rebased.child_count(), 0);
+                }
+            }
+            let before = cursor.path().to_vec();
+            let mut suffix = vec![81, 82, 83];
+            assert_eq!(
+                super::descend_to_rightmost_leaf(&mut cursor, &mut suffix),
+                !expected.is_empty()
+            );
+            assert_eq!(suffix, expected);
+            assert_eq!(cursor.path(), [before.as_slice(), expected.as_slice()].concat());
+            assert_eq!(cursor.child_count(), 0);
+            assert_eq!(cursor.val().copied(), value);
+            let leaf = cursor.path().to_vec();
+            suffix.extend_from_slice(&[91, 92]);
+            assert!(!super::descend_to_rightmost_leaf(&mut cursor, &mut suffix));
+            assert!(suffix.is_empty());
+            assert_eq!(cursor.path(), leaf);
+            cursor.reset();
+        }
+        assert_eq!(navigation_topology(map), topology);
+        assert_eq!(navigation_topology(&snapshot), topology);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NavigationDrainEvent {
+    Removed,
+    Installed,
+    Pruned(usize),
+    Retired,
+}
+
+#[derive(Default)]
+struct NavigationObserver(Vec<NavigationDrainEvent>);
+
+impl DrainObserver for NavigationObserver {
+    fn removed_value(&mut self) { self.0.push(NavigationDrainEvent::Removed); }
+    fn installed_barrier(&mut self) { self.0.push(NavigationDrainEvent::Installed); }
+    fn pruned(&mut self, width: usize) { self.0.push(NavigationDrainEvent::Pruned(width)); }
+    fn removed_barrier(&mut self) { self.0.push(NavigationDrainEvent::Retired); }
+}
+
+fn navigation_reference_drain(
+    map: &mut PathMap<usize>,
+    compressed: bool,
+) -> (Vec<usize>, Vec<(Vec<u8>, Vec<u8>, usize, usize, usize)>, NavigationObserver) {
+    let mut removed = Vec::new();
+    let mut observer = NavigationObserver::default();
+    {
+        let mut cursor = map.write_zipper();
+        loop {
+            if cursor.is_val() {
+                removed.push(cursor.remove_val(false).unwrap());
+                observer.removed_value();
+            }
+            if !super::advance_to_next_value(&mut cursor) {
+                break;
+            }
+        }
+        cursor.reset();
+    }
+    let state = Arc::new(RetentionState::default());
+    let disposer = OrderedDisposer {
+        state: Arc::clone(&state),
+        order: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mut trace = Vec::new();
+    let mut installed = 0;
+    let mut pruned = 0;
+    let mut retired = 0;
+    if !map.is_empty() {
+        let mut cursor = map.write_zipper();
+        let mut suffix = Vec::new();
+        loop {
+            if compressed {
+                super::descend_to_rightmost_leaf(&mut cursor, &mut suffix);
+            } else {
+                while cursor.descend_last_byte() {}
+            }
+            if cursor.at_root() && !cursor.is_val() && cursor.child_count() == 0 {
+                break;
+            }
+            let leaf = cursor.path().to_vec();
+            assert!(cursor.set_val(usize::MAX).is_none());
+            let step = super::remove_valued_leaf_and_bubble::<_, UsizeBarrier, _>(
+                &mut cursor,
+                super::ValuedLeafOrigin::Synthetic,
+                None,
+                &disposer,
+            );
+            assert_eq!(step.real_values, 0);
+            installed += step.installed_barriers + 1;
+            pruned += step.pruned_edges;
+            retired += step.retired_barriers;
+            trace.push((
+                leaf,
+                cursor.path().to_vec(),
+                step.installed_barriers + 1,
+                step.pruned_edges,
+                step.retired_barriers,
+            ));
+        }
+        cursor.reset();
+    }
+    assert_eq!(state.disposed.load(Ordering::SeqCst), 0);
+    for _ in 0..installed {
+        observer.installed_barrier();
+    }
+    for _ in 0..pruned {
+        observer.pruned(1);
+    }
+    for _ in 0..retired {
+        observer.removed_barrier();
+    }
+    assert!(map.is_empty());
+    (removed, trace, observer)
+}
+
+fn assert_navigation_drain(map: &PathMap<usize>) {
+    let topology = navigation_topology(map);
+    let mut scalar = map.clone();
+    let mut compressed = map.clone();
+    let mut production = map.clone();
+    let reference = navigation_reference_drain(&mut scalar, false);
+    let actual = navigation_reference_drain(&mut compressed, true);
+    assert_eq!(reference.0, actual.0);
+    assert_eq!(reference.1, actual.1);
+    assert_eq!(reference.2.0, actual.2.0);
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let disposer = OrderedDisposer {
+        state: Arc::new(RetentionState::default()),
+        order: Arc::clone(&order),
+    };
+    let mut observer = NavigationObserver::default();
+    assert_eq!(
+        drain_pathmap_observed::<_, UsizeBarrier, _, _>(&mut production, &disposer, &mut observer),
+        reference.0.len()
+    );
+    assert_eq!(*order.lock().unwrap(), reference.0);
+    assert_eq!(observer.0, reference.2.0);
+    assert!(production.is_empty());
+    assert_eq!(navigation_topology(map), topology);
+}
+
+#[test]
+fn compressed_navigation_preserves_empty_root_and_long_dangling_line() {
+    let mut empty = PathMap::new();
+    assert_navigation_at(&mut empty, &[]);
+    assert_navigation_drain(&empty);
+    empty.set_val_at([], 17);
+    assert_navigation_at(&mut empty, &[]);
+    assert_navigation_drain(&empty);
+    let path = vec![255; 8192];
+    let mut line = PathMap::new();
+    {
+        let mut cursor = line.write_zipper();
+        cursor.move_to_path(&path);
+        cursor.create_path();
+        cursor.reset();
+    }
+    {
+        let cursor = line.write_zipper();
+        let mut borrowed = cursor.fork_read_zipper();
+        assert!(borrowed.descend_first_byte());
+        let start = borrowed.path().len();
+        borrowed.descend_until();
+        assert!(borrowed.path().len() - start > 1);
+        assert_eq!(borrowed.path(), path);
+        assert_eq!(borrowed.child_count(), 0);
+    }
+    for width in [0, 1, 4096, 8192] {
+        assert_navigation_at(&mut line, &path[..width]);
+    }
+    assert_navigation_drain(&line);
+}
+
+#[test]
+fn compressed_navigation_preserves_dense_comb_and_asymmetric_siblings() {
+    let mut map = PathMap::new();
+    for byte in 0..=255u8 {
+        map.set_val_at([byte], usize::from(byte));
+    }
+    for depth in 1..33 {
+        let mut path = vec![0; depth];
+        path.push(255);
+        map.set_val_at(&path, 300 + depth);
+    }
+    let mut greatest = vec![255; 37];
+    greatest.push(0);
+    map.set_val_at(&greatest, 900);
+    for focus in [vec![], vec![0], vec![0; 16], vec![255], vec![255; 19], greatest.clone()] {
+        assert_navigation_at(&mut map, &focus);
+    }
+    assert_eq!(scalar_greatest_route(&map, &[]).0, greatest);
+    assert_navigation_drain(&map);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn compressed_navigation_matches_scalar_generated_topology_histories(
+        history in prop::collection::vec((prop::collection::vec(any::<u8>(), 0..17), 0u8..3), 0..17),
+    ) {
+        let mut map = PathMap::new();
+        for (index, (path, operation)) in history.iter().enumerate() {
+            let mut cursor = map.write_zipper();
+            cursor.move_to_path(path);
+            match operation {
+                0 => { cursor.set_val(index); }
+                1 => { cursor.create_path(); }
+                _ => { cursor.remove_val(false); }
+            }
+            cursor.reset();
+        }
+        assert_navigation_at(&mut map, &[]);
+        let mut focuses = std::collections::BTreeSet::new();
+        for (path, _) in &history {
+            for width in 1..=path.len() { focuses.insert(path[..width].to_vec()); }
+        }
+        for focus in focuses {
+            let exists = {
+                let mut cursor = map.read_zipper();
+                cursor.move_to_path(&focus);
+                cursor.path_exists()
+            };
+            if exists { assert_navigation_at(&mut map, &focus); }
+        }
+        assert_navigation_drain(&map);
+    }
+}
 
 #[derive(Default)]
 struct RetentionState {

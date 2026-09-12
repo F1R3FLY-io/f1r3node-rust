@@ -10577,6 +10577,104 @@ launch log separately. No unrelated proof source changes in this qualification.
 This discharges the focused dependent rebuild noted above, not the full campaign
 proof/runtime gate or the eight new native navigation bindings.
 
+### J-146 — 2026-09-12 Borrowed local-origin teardown navigation and formatter attribution
+
+**QUESTION.** Can Phase B select the same rightmost leaf using compressed read
+navigation without repeatedly copying the full path to the current write focus?
+This is the runtime binding of J-145, not permission to change value disposal or
+one-edge pruning. Tasks 6441 and 8413 remain under the current admission gate.
+
+**DERIVED — released API and ownership.** The first candidate forks a read zipper
+directly from the write focus. Although its visible path is relative, movement
+can copy the entire global origin into its private read buffer. The adopted
+candidate leaves that first read unmoved, obtains `trie_ref_at_path([])` as a
+`TrieRefBorrowed`, and forks a second read rooted at that borrowed focus. This
+does not create an owned interior trie, increment a trie-node reference count,
+or clone a payload. All read borrows end before write movement. Empty roots and
+leaf focuses return before subtree construction; dangling descendants remain
+part of the supported topology.
+
+The local origin copied by the second read is at most 48 bytes in PathMap 0.2.2,
+the crate-private `MAX_NODE_KEY_BYTES` layout bound. This is a version-specific
+resource assertion, **not an input-depth limit**. Each search still copies its
+relative suffix and may allocate read buffers. The reusable suffix buffer does
+not eliminate the unchanged barrier algorithm's allocations. No general total
+allocation or end-to-end timing bound follows from the local-origin bound.
+
+**ALGORITHM — implementation correspondence.** Clear the reusable suffix;
+borrow the current focus without moving it; return if it has no children; borrow
+that focus's subtree and find its greatest leaf with `descend_last_path`; copy
+the relative suffix; end both borrows; descend the existing write zipper along
+that suffix. Then execute the existing barrier/bubble transition unchanged.
+The formal route, terminal-leaf, continuation, disposal and prune obligations
+are those already kernel-checked in J-145 before this implementation.
+
+**NATIVE BINDINGS.** Three new controls in
+`rspace++/tests/guarded_pathmap/two_phase_teardown_properties.rs` compare the
+implementation against independent scalar byte traversal. They include empty
+and root-valued maps, an 8,192-byte dangling line with interior focuses, all 256
+root children, asymmetric greatest branches, combs, and 32 generated mutation
+histories without excluding dangling operations. Both globally rooted and
+focus-rooted write zippers are checked. Exact suffix, borrowed-value identity,
+child mask/count, local-root stability, unchanged snapshots, full disposal
+sequence and barrier/prune trace are required. A test-only assertion observes
+the actual production helper's initial read origin, so reintroducing the global
+origin is observable even if a separately reproduced API witness still passes.
+
+The first rebased suite passes 34 tests in both debug and release, with one
+existing measurement-only test ignored and 649 identities filtered. The final
+strengthening adds value-pointer identity, unchanged local root and the actual
+helper resource assertion; both final suites pass 34 tests, with zero failures,
+the same one measurement-only ignore and 649 filtered identities. The final
+debug and release test-body times are 0.89 and 0.09 seconds, respectively.
+All use seed 41315976, four test threads, four build jobs, and systemd scopes
+with 4 GiB memory-high, 6 GiB memory-max, zero swap, four-core quota, 512-task
+limit and 900-second lifetime. Unit-test elapsed times are not benchmark data.
+
+**MEASURED — recovered earlier run.** The unchanged depth-256 S-expression test
+finishes with the first, unre-based candidate: one pass, 490 filtered, 816.95
+seconds after a 49.82-second build. It does not qualify the current rebased
+binary or the complete debug inventory. The original full and isolated
+900-second timeouts in J-144 remain preserved negative results.
+
+**DIAGNOSTIC — remaining cost.** One headless debugger run reaches formatter
+entry after construction. A second reaches the same entry, continues, and
+samples at 60 seconds. Its worker stack is inside `ParToSExpr::par_to_sexpr`:
+`push_par_components` visits decoded `Expr` occurrences; generated protobuf
+`attach_par_exprs` rebuilds nested components; dropping those temporaries calls
+the guarded root's unchanged barrier/bubble traversal. This locates real
+reconstruction and teardown inside rendering, not just fixture construction or
+the final outer-root drop. One sample does not establish statistical dominance
+or an asymptotic exponent. The second diagnostic exits 124 at its intentional
+sampling deadline; it is not a test failure. Both diagnostic children are
+bounded to 2 GiB memory-max, 1.5 GiB memory-high, zero swap, one core and 64 tasks;
+no running acceptance test was attached to or terminated.
+
+| Preserved artifact under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-sexpr-compressed-navigation-debug-r1.log` | `e53233714766b108b52e2737b30b431d7e495074ebd3705a83cb4e19c5c9db28` |
+| `canonical-sexpr-phase-diagnostic-r1.log` | `90aba92a4032e1d87e7641cd0c52517d27296c6ed766895d76987672997eb551` |
+| `canonical-sexpr-render-diagnostic-r1.log` | `b1e35c60acca33cf00d8ac1ab4c0112227533907c805583e514cc68cf06d8f36` |
+| `rightmost-navigation-rebased-group-debug-r2.log` | `6a304c1661139f05884dd98bb59d549e973c8d6ec1f47de630919add0862304d` |
+| `rightmost-navigation-rebased-group-release-r2.log` | `1118152e8830fc0faa5b732d0ce6937fe1393506766262a5745c5478cac283f9` |
+
+The final helper source has SHA-256
+`8ec01c3ee5603592096953f00cc2d590e9b6075a6f1c9ea5040c6179d6a529b1`;
+the final test source has SHA-256
+`b3d3426b70e7fc62f4c5a094dc7d552acfa9da75001c55defeaa7b5432120005`.
+The unchanged depth-256 test is separately running against this final helper in
+`canonical-sexpr-rebased-final-20260912.scope`, with output captured in
+`target/verification/canonical-sexpr-rebased-final-debug-r1.log`; its result is
+not yet available at this checkpoint.
+
+**DECISION.** Finish and commit the navigation qualification before changing
+formatter behavior. Review existing byte-native cursor and formatter models for
+eliminating descendant reconstruction while preserving the exact historical
+diagnostic output. No formatter change, cache-retention repair, upstream
+mutation repair, full debug pass, consensus-byte change or persistence-versus-LMDB
+performance result is claimed here. PMU-005's upstream iterative-destruction
+request remains necessary; compressed search does not remove local barriers.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

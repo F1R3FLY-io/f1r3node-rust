@@ -1980,9 +1980,9 @@ not proposed runtime allocations. Route entries are ordered child ordinals, not
 native byte labels or physical node offsets.
 
 The complete eight-entry `navigation_catalog` is proved duplicate-free and binds
-every constructor. Its required native bindings are extracted below **before
-runtime implementation**; the new Rust bindings are not yet executed or claimed
-complete. Existing semantic controls remain required rather than being replaced.
+every constructor. Its required native bindings were extracted below **before
+runtime implementation**. The 2026-09-12 native follow-up is recorded after the
+table; existing semantic controls remain required rather than being replaced.
 
 | Catalog invariant | Required native/property binding |
 |---|---|
@@ -2003,6 +2003,19 @@ behavior, allocation bounds or performance. The proposed runtime uses a borrowed
 read cursor plus one reusable relative-suffix buffer, not an owned interior trie.
 The existing one-edge barrier/prune algorithm remains unchanged until its own
 contract is separately revised. See journal J-145 for evidence and limitations.
+
+**Native follow-up (2026-09-12).** Three new scalar-differential tests bind the
+eight rows above using empty/root-only/dangling/long-line, dense/comb/asymmetric
+and generated-history cases. They compare exact routes, terminal values,
+continuations, complete disposal/prune traces and shared snapshots. The complete
+guarded-map group passes 34 tests in debug and release, with one existing
+measurement-only ignore. Concrete borrowed-subtree assertions additionally check
+value-pointer identity and the initial local origin's PathMap-0.2.2 bound of
+48 bytes, including inside the production helper under `cfg(test)`. This is not
+a runtime traversal limit or a formal proof of the released crate's internals.
+The long-line witness demonstrates a compressed jump separately from bubble
+work; it is not a production jump counter or performance result. J-146 records
+exact source/log hashes and the still-open whole-debug/formatter resource gate.
 
 ### Recorded qualification
 

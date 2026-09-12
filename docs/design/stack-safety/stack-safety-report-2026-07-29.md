@@ -11235,6 +11235,34 @@ read navigation while preserving the exact one-edge cleanup and disposal trace;
 no runtime change or improved latency is claimed before proof and measurement.
 J-144 records the terminal isolation and debugger hashes.
 
+#### 5.33.61 Compressed teardown navigation qualification (2026-09-12)
+
+The proof-first navigation refinement now has a native implementation: an
+unmoved read zipper lends a `TrieRefBorrowed` at the current write focus; a second
+read selects the greatest leaf using compressed navigation; the write zipper
+then follows only that relative suffix. No owned interior root is created.
+Value disposal and one-logical-edge barrier pruning are unchanged. This keeps
+PathMap's compressed navigation available without introducing recursive subtree
+destruction through an owned temporary.
+
+In PathMap 0.2.2 the rebased initial origin is at most 48 bytes, independently of
+global focus depth. This is a released physical-node layout property, not a
+runtime depth cap. Tests require exact scalar-route and disposal-trace equality,
+borrowed value identity and shared-snapshot preservation, including an 8,192-byte
+dangling line. Both profiles pass the final strengthened suite: 34 passes,
+zero failures and one existing measurement-only ignore in each. The unchanged
+deep formatter test is being rerun separately against the final implementation.
+Read-buffer allocation and per-edge barrier costs remain.
+
+The unchanged depth-256 formatter test passes with the earlier, unre-based
+candidate in 816.95 seconds. That does not establish a complete debug pass or a
+benchmark speedup. Bounded debugger evidence now locates nested component
+decoding and temporary-root teardown inside formatting. The remaining
+reconstruction cost is distinct from the bounded-origin navigation correction.
+The source-cache retention problem in 5.33.60 is also still open. See
+[J-146](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-146--2026-09-12-borrowed-local-origin-teardown-navigation-and-formatter-attribution)
+for source correspondence, exact commands, artifact hashes and limitations.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate
