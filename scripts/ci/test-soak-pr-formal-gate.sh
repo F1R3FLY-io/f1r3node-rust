@@ -87,6 +87,8 @@ case "$config" in
     MC_RunDomainRecordIdentity_pathname_pre_fix.cfg) invariant=AdmissionRequiresOpenedRecordTrust ;;
     MC_NativeLaunchAdmission_start_first_pre_fix.cfg) invariant=UnavailableQueryPreventsNativeAdmission ;;
     MC_BreachRecordOrder_attribute_first_pre_fix.cfg) invariant=AttributionRequiresRecord ;;
+    MC_EmergencyDeadline_unbounded_pre_fix.cfg) invariant=ResponseWithinDeadline ;;
+    MC_NativeControlPath_parent_only_pre_fix.cfg) invariant=UntrustedControlPreventsWorkload ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -186,6 +188,11 @@ pr_configs=(
     soak_disk/MC_NativeLaunchAdmission_start_first_pre_fix
     soak_disk/MC_BreachRecordOrder
     soak_disk/MC_BreachRecordOrder_attribute_first_pre_fix
+    soak_disk/MC_EmergencyDeadline
+    soak_disk/MC_EmergencyDeadline_unbounded_pre_fix
+    soak_disk/MC_NativeControlPath
+    soak_disk/MC_NativeControlPath_trusted
+    soak_disk/MC_NativeControlPath_parent_only_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

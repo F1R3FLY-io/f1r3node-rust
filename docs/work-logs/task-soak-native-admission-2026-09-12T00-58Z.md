@@ -346,3 +346,29 @@ This session did not change the driver, workload, finalization settings, harness
 The user or another session staged files during this cycle, and those index changes remain intact.
 Concurrent directory replacement, mount changes, inherited descriptors, private Docker containment, and creation fencing remain unverified.
 B44, D2, all claim discharges, and acceptance remain open.
+
+## Private Docker design handoff, 2026-09-12
+
+The user approved continuation with private Docker containment.
+This session prepared the [runtime boundary and regression specification](../plans/soak-private-docker-containment-2026-09-12.md).
+The specification defines private engine placement, request enforcement, accepted-request accounting, and independent termination observations.
+Its twelve regression cases remain unexecuted.
+The first proposed fault cycle extends the controller-loss comparison to a real Docker writer.
+
+HEAD advanced externally to `9a6dacd7492fb7ae88451bd3536fabce3e143d15` during the design review.
+That commit contains the B47 and B48 integration, and the B48 package directory now exists.
+The integration owner has subsequent driver and test changes for the emergency deadline.
+This session did not edit those changes, the shared gates, the shared plan, or the claim inventory.
+The owner must include the new design and this log change in the next candidate binding when appropriate.
+
+The pinned harness requires container restart, exec-based telemetry, network sysctls, and specific mount behavior.
+The benchmark shard also requires its existing restart policies and published-port access through `localhost`.
+Those requirements cannot be removed to obtain a passing containment result.
+Docker documents separate containerd storage and authorization-plugin protocol limits that the implementation must address.
+The proposed backend therefore needs guarded capability verification before its behavioral correction.
+
+The private review records are under `$HOME/soak-evidence/f1r3node-rust/d2-private-docker-design-7mQKCfOW`.
+They bind twelve node inputs and two reviewed harness files to their source identities.
+No daemon, privileged fault test, cloud runner, or acceptance soak started during this design work.
+This session made no runtime, harness-pin, index, commit, or push changes.
+The design does not complete B44, D2, or correctness-claim discharge.

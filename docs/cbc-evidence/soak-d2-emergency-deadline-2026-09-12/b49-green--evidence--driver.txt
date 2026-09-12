@@ -1,0 +1,24 @@
+Soak host protection: node RSS ceiling=0MB; host free floor=0MB; disk free floor=4096MB (hygiene band +4096MB)
+orchestrator host guardian watching MemAvailable floor 0MB (hard floor 0MB, warn 4096MB) and disk free floor 4096MB (hard floor 2048MB); pid 93
+repo/scripts/run-merge-recovery-soak.sh: line 1783:   123 Killed                  ( cd "$SYSTEM_INTEGRATION_DIR"; export SOAK_WRITER_OWNER SOAK_DOCKER_REAL SOAK_DOCKER_OWNER_DIR; export SOAK_PROCESS_OWNER="$SOAK_WRITER_OWNER"; export PATH="$SOAK_WORKLOAD_PATH"; exec timeout --signal=TERM --kill-after=30 "${REMAINING}s" poetry run pytest integration-tests/test/tests/custom/test_load.py --provider="$PROVIDER" --monitor --rss-ceiling-mb "$RSS_CEILING_MB" --host-free-floor-mb "$HOST_FREE_FLOOR_MB" -v --tb=short --instafail --maxfail=20 --timeout=1200 ) > "$ITERATION_FIFO" 2>&1
+preserving failure evidence from integration-tests/data (iteration 1)
+failure-evidence copy incomplete (non-fatal)
+failure evidence preserved in 8s
+preserving failure evidence from integration-tests/log-archive (iteration 1)
+failure-evidence copy of log-archive skipped: the emergency deadline expired
+preserving failure evidence from integration-tests/.subprocess-data (iteration 1)
+failure-evidence copy of .subprocess-data skipped: the emergency deadline expired
+host-protection breach in iteration 1; ending soak (fail-closed)
+The disk guardian detected 1024 MiB below floor 4096 MiB (hard floor 2048 MiB, consecutive samples 1). Workload termination is unconfirmed.
+started_at=1789207066
+segments=1
+finished_at=1789207082
+target_ref=unknown
+target_sha=unknown
+requested_seconds=1200
+elapsed_seconds=16
+iterations=1
+failures=1
+bench_segments=0
+bench_failures=0
+early_exit_reason=host_protection_breach

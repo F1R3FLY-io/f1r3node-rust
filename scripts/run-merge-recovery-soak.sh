@@ -239,6 +239,40 @@ if [ "$CONTAINMENT" != unmanaged ] && [ "$CONTAINMENT" != required ]; then
 	exit 2
 fi
 RUN_DOMAIN_RECORD="${SOAK_RUN_DOMAIN_RECORD:-}"
+EMERGENCY_DEADLINE_SECONDS="${SOAK_EMERGENCY_DEADLINE_SECONDS:-60}"
+if ! [[ "$EMERGENCY_DEADLINE_SECONDS" =~ ^([5-9]|[1-9][0-9]|[1-5][0-9][0-9]|600)$ ]]; then
+	printf 'SOAK_EMERGENCY_DEADLINE_SECONDS must be an integer from 5 through 600\n' >&2
+	exit 2
+fi
+EMERGENCY_DEADLINE_EPOCH=""
+emergency_start() {
+	[ -n "$EMERGENCY_DEADLINE_EPOCH" ] && return 0
+	EMERGENCY_DEADLINE_EPOCH="$(($(date +%s) + EMERGENCY_DEADLINE_SECONDS))"
+	printf 'emergency response started; composed deadline %ss\n' "$EMERGENCY_DEADLINE_SECONDS" >"$OUTPUT_DIR/emergency-started.txt"
+}
+emergency_remaining() {
+	local remaining
+	if [ -z "$EMERGENCY_DEADLINE_EPOCH" ]; then
+		printf '%s\n' "$EMERGENCY_DEADLINE_SECONDS"
+		return 0
+	fi
+	remaining="$((EMERGENCY_DEADLINE_EPOCH - $(date +%s)))"
+	[ "$remaining" -gt 0 ] || remaining=0
+	printf '%s\n' "$remaining"
+}
+session_bounded() {
+	local seconds="$1" pid watchdog status=0
+	shift
+	setsid "$@" &
+	pid=$!
+	setsid bash -c 'sleep "$1"; kill -TERM -- "-$2" 2>/dev/null; sleep 1; kill -KILL -- "-$2" 2>/dev/null' \
+		bash "$seconds" "$pid" >/dev/null 2>&1 &
+	watchdog=$!
+	wait "$pid" || status=$?
+	kill -KILL -- "-$watchdog" 2>/dev/null || true
+	wait "$watchdog" 2>/dev/null || true
+	return "$status"
+}
 run_domain_verified() {
 	[ "$CONTAINMENT" = required ] || return 0
 	python3 - "$RUN_DOMAIN_RECORD" <<'PY'
@@ -599,16 +633,12 @@ disk_diagnostics_bounded() {
 		declare -f bounded disk_usage_roots disk_usage_snapshot_data disk_usage_tag_summary disk_guardian_diagnostics
 		declare -f guardian_stamp_health_tag || true
 	)"
-	local pid watchdog status=0
-	setsid bash -c "$definitions"$'\n''"$@"' bash "$@" &
-	pid=$!
-	setsid bash -c 'sleep "$1"; kill -TERM -- "-$2" 2>/dev/null; sleep 1; kill -KILL -- "-$2" 2>/dev/null' \
-		bash "$DISK_DIAGNOSTIC_SECONDS" "$pid" >/dev/null 2>&1 &
-	watchdog=$!
-	wait "$pid" || status=$?
-	kill -KILL -- "-$watchdog" 2>/dev/null || true
-	wait "$watchdog" 2>/dev/null || true
-	return "$status"
+	local seconds remaining
+	seconds="$DISK_DIAGNOSTIC_SECONDS"
+	remaining="$(emergency_remaining)"
+	[ "$remaining" -ge "$seconds" ] || seconds="$remaining"
+	[ "$seconds" -gt 0 ] || return 1
+	session_bounded "$seconds" bash -c "$definitions"$'\n''"$@"' bash "$@"
 }
 
 disk_usage_snapshot() {
@@ -1743,8 +1773,15 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 		fi
 		if [ -s "$HOST_GUARDIAN_BREACH" ]; then
 			GUARDIAN_INTERRUPTED=1
+			emergency_start
+			EARLY_EXIT_REASON="host_protection_breach"
+			head -1 "$HOST_GUARDIAN_BREACH" >"$OUTPUT_DIR/protection-breach.txt"
+			printf 'host_protection_breach: iteration %s: %s\n' "$ITERATIONS" "$(head -1 "$HOST_GUARDIAN_BREACH")" \
+				>"$OUTPUT_DIR/early-exit.txt"
 			kill -TERM "$ITERATION_PID" 2>/dev/null || true
-			for _ in $(seq 1 15); do
+			term_wait="$(emergency_remaining)"
+			[ "$term_wait" -le 15 ] || term_wait=15
+			for _ in $(seq 1 "$term_wait"); do
 				kill -0 "$ITERATION_PID" 2>/dev/null || break
 				sleep 1
 			done
@@ -1758,6 +1795,12 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 	if [ "$GUARDIAN_INTERRUPTED" -eq 1 ]; then
 		STATUS=1
 		stop_node_writers -aq rm -f >/dev/null 2>&1 || true
+	fi
+	if [ -n "$EMERGENCY_DEADLINE_EPOCH" ]; then
+		while kill -0 "$ITERATION_TEE_PID" 2>/dev/null && [ "$(emergency_remaining)" -gt 0 ]; do
+			sleep 0.2
+		done
+		kill "$ITERATION_TEE_PID" 2>/dev/null || true
 	fi
 	wait "$ITERATION_TEE_PID" 2>/dev/null || true
 	kill "$ITERATION_SNAPSHOT_PID" 2>/dev/null || true
@@ -1796,11 +1839,18 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			printf 'preserving failure evidence from integration-tests/%s (iteration %s)\n' \
 				"$evidence_name" "$ITERATIONS"
 			mkdir -p "$ITERATION_DIR/$evidence_name"
-			(cd "$evidence_root" &&
-				find . -type f \( -name '*.log' -o -name '*.csv' -o -name '*.txt' \
-					-o -name '*.json' -o -name '*.conf' -o -name '*.toml' \) -print0 |
-				tar --null -T - -cf -) |
-				tar -xf - -C "$ITERATION_DIR/$evidence_name" ||
+			copy_budget="$(emergency_remaining)"
+			if [ -n "$EMERGENCY_DEADLINE_EPOCH" ] && [ "$copy_budget" -le 0 ]; then
+				printf 'failure-evidence copy of %s skipped: the emergency deadline expired\n' "$evidence_name" |
+					tee -a "$OUTPUT_DIR/emergency-skipped.txt" >&2
+				continue
+			fi
+			session_bounded "$copy_budget" bash -c '
+				cd "$1" &&
+					find . -type f \( -name "*.log" -o -name "*.csv" -o -name "*.txt" \
+						-o -name "*.json" -o -name "*.conf" -o -name "*.toml" \) -print0 |
+					tar --null -T - -cf - |
+					tar -xf - -C "$2"' bash "$evidence_root" "$ITERATION_DIR/$evidence_name" ||
 				printf 'failure-evidence copy incomplete (non-fatal)\n' >&2
 			printf 'failure evidence preserved in %ss\n' "$(($(date +%s) - COPY_STARTED))"
 		done
@@ -1882,6 +1932,9 @@ if [ -z "$EARLY_EXIT_REASON" ] && [ -s "$HOST_GUARDIAN_BREACH" ]; then
 	FAILURES="$((FAILURES + 1))"
 fi
 
+if [ "${EARLY_EXIT_REASON:-}" = host_protection_breach ]; then
+	emergency_start
+fi
 FINISHED_AT="$(date +%s)"
 
 # Written before the rollup so a later segment resumes from accurate counters
@@ -1903,6 +1956,12 @@ persist_soak_state
 	printf 'early_exit_reason=%s\n' "${EARLY_EXIT_REASON:-none}"
 } | tee "$OUTPUT_DIR/summary.txt"
 
+summary_budget() {
+	local remaining
+	remaining="$(emergency_remaining)"
+	[ "$remaining" -ge 5 ] || remaining=5
+	printf '%s\n' "$remaining"
+}
 if command -v jq >/dev/null; then
 	SOAK_OUTPUT_DIR="$OUTPUT_DIR" \
 		SOAK_METRICS_REGISTRY="$SCRIPT_DIR/bench/soak-metrics.json" \
@@ -1918,7 +1977,7 @@ if command -v jq >/dev/null; then
 		SOAK_FAILURES="$FAILURES" \
 		SOAK_BENCH_SEGMENTS="$BENCH_SEGMENTS" \
 		SOAK_BENCH_FAILURES="$BENCH_FAILURES" \
-		"$SCRIPT_DIR/bench/write-soak-summary.sh" ||
+		session_bounded "$(summary_budget)" "$SCRIPT_DIR/bench/write-soak-summary.sh" ||
 		{
 			# The full rollup failing must not leave the run without passive data:
 			# aggregate-perf-report.sh then emits started_at/elapsed_seconds as

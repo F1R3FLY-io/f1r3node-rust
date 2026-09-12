@@ -146,6 +146,9 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_NativeLaunchAdmission
     soak_disk/MC_NativeLaunchAdmission_available
     soak_disk/MC_BreachRecordOrder
+    soak_disk/MC_EmergencyDeadline
+    soak_disk/MC_NativeControlPath
+    soak_disk/MC_NativeControlPath_trusted
 )
 
 TLC_WORKERS=auto
@@ -197,6 +200,9 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_NativeLaunchAdmission
         soak_disk/MC_NativeLaunchAdmission_available
         soak_disk/MC_BreachRecordOrder
+        soak_disk/MC_EmergencyDeadline
+        soak_disk/MC_NativeControlPath
+        soak_disk/MC_NativeControlPath_trusted
     )
     TLC_WORKERS=2
 fi
@@ -280,6 +286,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix:AdmissionRequiresOpenedRecordTrust
     soak_disk/MC_NativeLaunchAdmission_start_first_pre_fix:UnavailableQueryPreventsNativeAdmission
     soak_disk/MC_BreachRecordOrder_attribute_first_pre_fix:AttributionRequiresRecord
+    soak_disk/MC_EmergencyDeadline_unbounded_pre_fix:ResponseWithinDeadline
+    soak_disk/MC_NativeControlPath_parent_only_pre_fix:UntrustedControlPreventsWorkload
 )
 
 failed=0
