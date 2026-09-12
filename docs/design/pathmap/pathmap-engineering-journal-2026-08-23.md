@@ -10900,6 +10900,61 @@ canonical codec, consensus hash, contract semantics, PathMap dependency or
 persistence format changes. The source-cache retention and upstream mutation
 issues remain open and are not repaired by faster diagnostic formatting.
 
+### J-149 — 2026-09-12 Leaf-extension mutation boundaries and coverage audit
+
+**QUESTION.** Which production entry points must the PMU-006 repair cover,
+and why do the existing passing topology tests not establish that coverage?
+This entry records source-derived requirements for existing tasks 6023/6038;
+it does not report an implemented or verified replacement.
+
+**DERIVED — failure precedes the requested write.** In the installed PathMap
+0.2.2 source, `trie_map.rs::set_val_at` opens `write_zipper_at_path` before
+setting a value; `insert` aliases that method. `create_path` and
+`remove_val_at` open a root writer and descend before performing their
+operation. In `write_zipper.rs::descend_step_internal`, descent calls
+`make_mut` on the next child when additional key bytes remain. Consequently,
+repairing only the final `create_path` call cannot cover the known sentinel
+failure. The read-side boundary decision must precede mutable descent.
+
+| Local boundary | Required preservation or qualification |
+|---|---|
+| `GuardedPathMap::{create_path,set_val_at}` in `rspace++/src/rspace/guarded_pathmap.rs` | Arbitrary operation order, value-free topology, replaced-value disposal and exact endpoint count. |
+| `GuardedWriteCursor::{move_to_path,create_path,set_val}` | Moving to a missing path remains topology-neutral; a later insertion must extend the selected leaf without losing its existing value. Retain moving-zipper prefix reuse. |
+| `GuardedPathMap::with_write_cursor_at` | Prefix-rooted construction itself must not traverse the failing boundary. Relative paths and the prohibition on ascending above the logical root remain unchanged. |
+| Guarded structural rebuild and Bag sorted construction, compact import, prefix publication and delta application | The shared repair must cover compound cursor operations, not only map-level methods. Existing-value-only updates must retain their topology-preserving route. |
+| EPathMap `EntryTrie::create_path` and insertion paths in `models/src/rust/rhoapi_ext.rs` | Both `PathMap<()>` and `PathMap<Par>` specializations retain their mode, topology, derived-fold invalidation and payload ownership contracts. Neutral empty still cannot select a mode through topology creation. |
+| EPathMap map-mode `subtract_encoded_keys` | A selector may name an absent path. A no-op removal must use a safe absence check, not create topology to make write navigation possible. |
+| `writer_image_from_operations` in `rspace++/tests/support/pathmap_codec_validated_plan.rs` | Keep the complete generated input history and independent ACT/topology/value oracles. A fixture-only repair would not qualify production mutation. |
+
+**DERIVED — existing property coverage is narrower.** The guarded teardown
+property `arbitrary_value_and_topology_tries_conserve_every_edge_and_value`
+first folds generated entries into a `BTreeMap`, merges duplicate value flags,
+then omits redundant value-free prefixes during construction. That is useful
+coverage of final-shape teardown, but it deliberately loses the original
+mutation history. It cannot establish correctness for the four-operation
+history in J-148. Preserve that teardown test and add history-preserving
+mutation properties; do not reinterpret its passing result as mutation
+qualification.
+
+**REQUIRED NATIVE BINDINGS.** For each original operation, compare the result
+against an independent prefix-set and key/value oracle before proceeding to
+the next operation. Include both saved four-operation regressions, repeated
+and empty paths, compressed interior prefixes, dense-branch promotion, valued
+and value-free leaf extension, siblings, and retained CoW snapshots. Cursor
+controls must additionally cover missing-path navigation without a write,
+prefix-root confinement, and missing-key removal. Ownership controls must
+distinguish parking, successful restoration and interruption while parked;
+an arbitrary upstream panic after ownership transfers into `set_val` is not
+proved safe by a logical topology model.
+
+**HYPOTHESIS / NEXT CHECK.** A read-selected terminal boundary plus a
+value-free suffix donor and exact park/graft/restore can preserve the intended
+operation without a PathMap fork. A formal module and a bounded cursor-API
+review are in progress. Their acceptance requires native binding tests, not
+merely proof of a pointwise reference model. No dummy values, input
+reordering, ignored panic or upstream dependency change is adopted. The
+integrated acceptance failure remains open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
