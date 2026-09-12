@@ -399,6 +399,20 @@ They do not revalidate the real Docker daemon, storage durability, a composed de
 The workload and 45-second finalization limit remain unchanged.
 D2 and claim discharge remain pending.
 
+#### Run-domain admission after B45
+
+The [run-domain record](../cbc-evidence/soak-d2-run-domain-2026-09-12/README.md) adds one matched local repair.
+When `SOAK_CONTAINMENT=required`, the driver refuses benchmark and iteration admission unless a trusted [run-domain record](../../formal/tlaplus/soak_disk/RunDomainAdmission.md) matches its own cgroup and uid.
+An absent or mismatched record retains one failure across two refused restarts.
+A matching record admits work.
+The driver never selects the unmanaged path from a failed check.
+
+The native launcher does not write the record yet, and the normal workflow does not require containment.
+The fixture fabricates root-owned records in Docker isolation and shares one cgroup between the driver and both writers.
+The matching case therefore tests record comparison, not exclusive run-domain ownership.
+The launcher handshake, exclusive ownership, creation fencing, private Docker containment, and workflow integration remain open.
+D2 and claim discharge remain pending.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

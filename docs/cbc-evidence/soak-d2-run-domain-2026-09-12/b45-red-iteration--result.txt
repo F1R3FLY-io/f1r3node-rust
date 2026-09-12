@@ -1,0 +1,1 @@
+FAIL: The driver admitted iteration work without a verified run domain (absent, initial).

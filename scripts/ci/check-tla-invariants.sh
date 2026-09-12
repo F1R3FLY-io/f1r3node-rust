@@ -140,6 +140,8 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_MonitorAdmission_iteration
     soak_disk/MC_InterruptedOutputDrain
     soak_disk/MC_NativeControllerLoss
+    soak_disk/MC_RunDomainAdmission_benchmark
+    soak_disk/MC_RunDomainAdmission_iteration
 )
 
 TLC_WORKERS=auto
@@ -185,6 +187,8 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_MonitorAdmission_iteration
         soak_disk/MC_InterruptedOutputDrain
         soak_disk/MC_NativeControllerLoss
+        soak_disk/MC_RunDomainAdmission_benchmark
+        soak_disk/MC_RunDomainAdmission_iteration
     )
     TLC_WORKERS=2
 fi
@@ -263,6 +267,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_MonitorAdmission_iteration_unchecked_pre_fix:MonitorDeathPreventsAdmission
     soak_disk/MC_InterruptedOutputDrain_drain_first_pre_fix:DrainRequiresOwnedStop
     soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix:NativeControllerLossStopsOwnedWriter
+    soak_disk/MC_RunDomainAdmission_benchmark_unchecked_pre_fix:UnverifiedPlacementPreventsAdmission
+    soak_disk/MC_RunDomainAdmission_iteration_unchecked_pre_fix:UnverifiedPlacementPreventsAdmission
 )
 
 failed=0

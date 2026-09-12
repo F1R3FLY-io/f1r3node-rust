@@ -507,6 +507,14 @@ The run domain includes native writers, Docker writers, and the services that ca
 **Preferred usage:** Use this term for the complete containment boundary, not a process group or an ownership label.
 A configured run domain does not establish confirmed termination.
 
+### Run-domain record
+
+A **run-domain record** is a root-owned file that names the unit, cgroup, and uid the trusted launcher placed the soak driver in.
+The driver compares the record with its own kernel cgroup view and uid before it admits work.
+
+**Preferred usage:** Use this term for the launcher-written placement record, not for an environment variable or a caller-supplied marker.
+A matching record establishes placement, not exclusive run-domain ownership or confirmed termination.
+
 ### Creation fence
 
 A **creation fence** prevents further workload execution after closure, including execution from requests accepted before closure.
