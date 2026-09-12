@@ -1,0 +1,1 @@
+PASS: The breach record was published before evidence copying, and the emergency response published the failure within the composed deadline despite a stalled evidence copy across 24 session roots.

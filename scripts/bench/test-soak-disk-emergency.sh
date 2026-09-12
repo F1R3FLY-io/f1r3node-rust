@@ -41,4 +41,6 @@ SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-record-identit
     "${1:-$ROOT}" "$OUTPUT/record-identity"
 SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-breach-record-order.sh" \
     "${1:-$ROOT}" "$OUTPUT/breach-record-order"
+SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-emergency-deadline.sh" \
+    "${1:-$ROOT}" "$OUTPUT/emergency-deadline"
 printf 'PASS: The isolated disk emergency regressions completed.\n'

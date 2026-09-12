@@ -1,0 +1,2 @@
+var/tmp/d2-native-63e2a8f25adaca93440dd205ae410023/evidence/output/iteration-00001-docker/.pytest-output.fifo
+var/tmp/d2-native-1de636f348c5f8b98c07e306b268d5ae/evidence/output/iteration-00001-docker/.pytest-output.fifo

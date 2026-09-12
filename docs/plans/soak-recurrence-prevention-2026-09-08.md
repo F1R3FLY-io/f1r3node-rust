@@ -448,6 +448,26 @@ The [model](../../formal/tlaplus/soak_disk/BreachRecordOrder.md) refutes the att
 The composed emergency deadline, storage durability, and reserve bounds remain open.
 D2 and claim discharge remain pending.
 
+#### Composed emergency deadline after B49
+
+The [emergency deadline package](../cbc-evidence/soak-d2-emergency-deadline-2026-09-12/README.md) adds one composed budget for the whole response after a breach.
+`SOAK_EMERGENCY_DEADLINE_SECONDS` starts at the first breach decision and covers the output drain, each evidence copy, the diagnostics, and the summary writer.
+The driver writes its breach record at once when the guardian fires during an iteration, before it stops the iteration.
+A stalled evidence copy across 24 session roots can no longer delay the summary, and skipped copies are recorded.
+
+The [model](../../formal/tlaplus/soak_disk/EmergencyDeadline.md) refutes the unbounded baseline.
+The budget bounds the driver's own response and not the guardian or crash monitor, and storage durability remains unverified.
+D2 and claim discharge remain pending.
+
+#### Native control-path refusal after B50
+
+The [native control package](../cbc-evidence/soak-d2-native-control-2026-09-12/README.md) records the second session's control-path cycle on one terminated guarded runner.
+The launcher now checks every component of its control-directory path from the filesystem root before it creates the control directory or starts the manager.
+An untrusted ancestor refuses work before any workload initialization, and the [model](../../formal/tlaplus/soak_disk/NativeControlPath.md) refutes the parent-only baseline.
+Concurrent directory replacement, mount changes, inherited descriptors, private Docker containment, and creation fencing remain unverified.
+The second session's [private Docker containment specification](soak-private-docker-containment-2026-09-12.md) defines the next native boundary, with twelve regression cases still unexecuted.
+D2 and claim discharge remain pending.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.

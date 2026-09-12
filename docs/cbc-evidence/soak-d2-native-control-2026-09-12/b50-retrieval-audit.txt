@@ -1,0 +1,6 @@
+PASS: 298 regular members match both archive and member identities.
+PASS: Seven source-bound invocations retain the control-path RED/GREEN and both native regressions with two driver snapshots.
+PASS: Both native regressions retain two normal recovery summaries with counters [1,1,0,0].
+Archive SHA-256: 7031d6bfbfaca62db377dea37be00eaee2c7eae0d114d00339d9de628a3d5f07
+Archive bytes: 261267
+Expanded bytes: 870688

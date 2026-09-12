@@ -1163,3 +1163,57 @@ The supporting probe, sample, and admission checks and the summary and metrics r
 The isolated emergency suite passes 31 case directories alone, including the breach record case.
 The classifier and routing regressions pass after the emergency suite, with the formal gate, classifier, and emergency suite each run alone.
 
+### Correction of the control invariant note, 2026-09-12
+
+The native session's review is correct.
+With `QueryAvailable=FALSE` the model never reaches the admitted phase, so `VerifiedReleaseAdmits` cannot be the first violation.
+The B47 control is deterministic, and the request to narrow it is withdrawn.
+
+### Control-path integration and the 9a6dacd74 index, 2026-09-12
+
+Commit `9a6dacd74` carried the native session's control-path launcher, its `NativeControlPath` model files, and its fixture.
+The index was staged as a whole before that commit, so those files entered the history before their cycle was registered or packaged.
+The committed launcher digest `2641d0ac90ee8d837e7849038a3ef1f8f66c64fd4a035f5f823a6c1f90287ea7` is the tested corrected helper, and the committed driver is the tested B48 driver.
+This session integrates that cycle as B50 with its gate registrations, plan entry, evidence package, and inventory records.
+The B47 package retains the earlier helper identity `35399004d7ac8b9eab14db2fd9f9d1514bd46fbd8993ce530ef3ea94ac69d0c6` by digest.
+The private Docker containment specification from the native session enters the same candidate binding.
+
+### B50 native control-path integration, 2026-09-12
+
+The native session handed off its control-path cycle with the runner observed `TERMINATED`.
+The committed launcher at `9a6dacd74` matches the tested corrected helper, and the committed driver matches the tested B48 driver.
+The launcher now checks every component of its control-directory path from the filesystem root before creation or manager launch.
+An untrusted ancestor refuses work before any workload initialization, and the query and controller-loss regressions pass with both tested drivers.
+
+This session registered the two positive `NativeControlPath` configurations and the exact parent-only control.
+The registrations cover the formal gate, the gate tests, and the soak PR formal gate test.
+It added the B50 plan entry, the evidence package built from the handoff, the inventory check, and the evidence record.
+The private Docker containment specification enters the same candidate binding as a design input with its twelve cases unexecuted.
+The retained formal gate run is the isolated B49 run at the same commit state with both cycles registered.
+The emergency suite was not rerun for this integration because the cycle did not change the driver or the local fixtures.
+
+### B49 composed emergency deadline, 2026-09-12
+
+The cycle starts from committed source `9a6dacd7492fb7ae88451bd3536fabce3e143d15`.
+The fixture runs the production driver in Docker isolation as uid 65534 with three telemetry roots of eight session directories each.
+The disk probe drops below the hard floor after the workload starts, so the guardian fires during the first iteration.
+The evidence copy command ignores the termination signal, records whether the driver's breach record exists, and then stalls.
+The fixture measures the response from the guardian record to the driver's exit with a published summary.
+Its budget is the composed deadline plus fifteen seconds.
+
+The baseline driver copied evidence from each telemetry root without any bound and wrote its own breach record only after that copy.
+The matched RED exits 1 because the copy started with the record absent and the response missed the budget.
+
+The corrected driver starts one composed deadline at the first breach decision and writes the breach record and early-exit record at once.
+It bounds the output drain, each evidence copy, the diagnostics, and the summary writer by the remaining budget, each in its own session.
+The matched GREEN exits 0 with the same fixture bytes.
+The record is present when the copy starts, and two roots are skipped and recorded.
+The failure is published eleven seconds after the breach with counters `[1,1,0,0]`.
+
+The unbounded configuration violates `ResponseWithinDeadline` with TLC exit 12, and the composed configuration passes with 16 distinct states.
+The isolated formal gate passes 49 positive configurations and 49 exact controls with 98 actual TLC logs, with the B49 and B50 configurations registered.
+An earlier gate run before the B50 registration is retained as an attempt.
+The driver suite, the supporting probe, sample, and admission checks, and the summary and metrics regressions pass.
+The isolated emergency suite passes 32 case directories alone, including the emergency deadline case.
+The classifier and routing regressions pass after the emergency suite.
+

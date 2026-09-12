@@ -761,6 +761,41 @@ behaviors:
         green_exit: 0
         formal_green_exit: 0
         production_integration: false
+  - id: B49
+    statement: After a breach, the driver publishes its breach record at once and completes the whole emergency response within one composed deadline that does not depend on the number of writers, session roots, or evidence roots.
+    priority: must
+    deep_module: false
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-emergency-deadline-2026-09-12/manifest.jsonc
+        test: scripts/bench/test-soak-emergency-deadline.sh
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        production_integration: false
+  - id: B50
+    statement: The native launcher refuses work when any ancestor of its control directory is not a root-owned, unwritable directory, before it creates the control directory or starts the manager.
+    priority: must
+    deep_module: true
+    done: true
+    construction: not-applicable
+    claim_discharge: pending
+    implemented_by: pi-session-native-admission
+    cycle_log:
+      - evidence: docs/cbc-evidence/soak-d2-native-control-2026-09-12/manifest.jsonc
+        scope: native-control-path
+        test: scripts/bench/test-soak-native-control-path.py
+        red_binding: source-sha256
+        red_exit: 1
+        formal_red_exit: 12
+        green_exit: 0
+        formal_green_exit: 0
+        native_regression: scripts/bench/test-soak-native-containment.py
+        production_integration: false
 ---
 
 # Soak Gate Development Cycles
@@ -810,6 +845,11 @@ The native launcher does not write the record yet, and the normal workflow does 
 B46 adds [record identity evidence](../cbc-evidence/soak-d2-record-identity-2026-09-12/README.md).
 The [record check](../../formal/tlaplus/soak_disk/RunDomainRecordIdentity.md) now opens the record through descriptors from the filesystem root.
 It rejects an untrusted ancestor, a symbolic link component, or a record beyond its size bound.
+
+B47 records the second session's [native launch admission](../cbc-evidence/soak-d2-native-admission-2026-09-12/README.md) cycle on one terminated guarded runner.
+B48 adds [breach record order evidence](../cbc-evidence/soak-d2-breach-record-2026-09-12/README.md): the driver publishes its breach record before any attribution and kills a stalled attribution session at the deadline.
+B49 adds [composed deadline evidence](../cbc-evidence/soak-d2-emergency-deadline-2026-09-12/README.md): the whole emergency response after a breach completes within `SOAK_EMERGENCY_DEADLINE_SECONDS`, and a stalled evidence copy cannot delay the summary.
+B50 records the second session's [native control-path refusal](../cbc-evidence/soak-d2-native-control-2026-09-12/README.md) cycle on one terminated guarded runner.
 
 B44 is an open [controller-loss counterexample](../../formal/tlaplus/soak_disk/ControllerLoss.md).
 Both controllers exit, but the owned native writer continues without fixture intervention.

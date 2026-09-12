@@ -62,9 +62,10 @@ The model follows one iteration from the moment the guardian is watching it to t
 2. A live guardian runs `df` under a deadline. The probe returns promptly with or without a sample, or stalls and returns a valid field only after the deadline.
 3. A sample below the hard floor is a breach. The guardian writes `host-guardian-breach.txt`, then starts `pkill` and `docker kill` under `SOAK_DISK_STOP_SECONDS`. Stalled stop clients receive TERM, then KILL, and the guardian moves on. An unavailable sample interrupts the iteration on its own.
 4. Attribution (`df`, `du`, `docker system df`) runs under one aggregate deadline, however many session roots exist.
-5. The segment ends with the marker on disk. The next segment reads it, refuses new work, and records a failure without lowering an existing count.
+5. The driver copies the failure evidence from each telemetry root. The whole response since the breach decision runs under one composed budget, and a stalled copy is skipped when the budget is spent (B49).
+6. The segment ends with the marker on disk. The next segment reads it, refuses new work, and records a failure without lowering an existing count.
 
-Each step corresponds to one historical defect and one correction constant. The model does not compose their timing into one deadline, does not confirm that the killed writers stopped, and does not prove that the marker survives a crash. Those remain D2 obligations.
+Each step corresponds to one historical defect and one correction constant. The model composes the stop, the attribution, and the evidence copy into one deadline (B49). It does not confirm that the killed writers stopped, and it does not prove that the marker survives a crash. Those remain D2 obligations.
 
 | Model action | Driver behavior |
 | --- | --- |
@@ -72,7 +73,8 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `MonitorCrash`, `WatcherPollMonitor` | The iteration watcher polls the crash monitor, and its death is a breach (B40) |
 | `Drain` | The interrupted iteration's client has exited, and the driver waits for output EOF. The corrected driver stops the owned writers first (B43) |
 | `ControllerLoss`, `ContainmentResponse` | The driver and the crash monitor die together. Only a service manager that owns the writers' control group stops them (B44, launcher prototype) |
-| `Release` | The launcher verifies the manager placement and the gate identity, then releases the driver. A status query that never returns refuses the launch (B47, launcher prototype) |
+| `Release` | The launcher verifies the manager placement and the gate identity, then releases the driver. A status query that never returns refuses the launch (B47), and so does an untrusted ancestor of the control directory (B50, launcher prototype) |
+| `CopyEvidence`, `StallCopy`, `SkipCopy` | The driver copies the failure evidence after the attribution. A stalled copy consumes the composed budget, and the corrected driver skips it when the budget is spent (B49) |
 | `Stall`, `WatcherPollStale` | The guardian is alive but its progress record has expired; the watcher reads the record (B20 benchmark, B21 iteration) |
 | `DriverExit`, `ExitTrap` | The driver exits mid-iteration, and the corrected trap stops the writers (B28). Docker may reject the stop. The corrected trap then records a failure and a refusal (B31) |
 | `MonitorObservesExit` | The trap's exit handling leaves a marker, and the crash monitor reads it before it acts (B39) |
@@ -107,8 +109,10 @@ Each step corresponds to one historical defect and one correction constant. The 
 | `StopBeforeDrain` | The interrupted iteration path stops the owned writers before it waits for output EOF. The pre-fix driver drained first and hung on the pipe the writers held | `MC_SoakDiskGuardian_drain_first_pre_fix` | `DrainRequiresOwnedStop` |
 | `ManagedContainment` | A service manager kills the owned writers' control group when both controllers die. The launcher prototype provides it, the direct launch does not, and B44 stays open on the source | `MC_SoakDiskGuardian_unmanaged_pre_fix` | `ControllerLossStopsOwnedWriters` |
 | `VerifyBeforeRelease` | The launcher starts a trusted gate, verifies the manager placement and the gate identity, and only then releases the driver. The pre-fix launcher started the driver before its status query returned (B47, launcher prototype) | `MC_SoakDiskGuardian_start_first_pre_fix` | `UnavailableQueryPreventsRelease` |
+| `ComposedDeadline` | The driver's whole emergency response after a breach runs under one composed budget, `SOAK_EMERGENCY_DEADLINE_SECONDS`. A stalled evidence copy is skipped when the budget is spent, and the summary still publishes. The pre-fix driver had no bound on the copy (B49) | `MC_SoakDiskGuardian_unbounded_pre_fix` | `ResponseWithinDeadline` |
+| `ValidateAncestors` | The launcher refuses work when any ancestor of its control directory is not a root-owned, unwritable directory, before it creates the directory or starts the manager. The pre-fix launcher checked only the immediate parent (B50, launcher prototype) | `MC_SoakDiskGuardian_parent_only_pre_fix` | `UntrustedControlPreventsRelease` |
 
-`MC_SoakDiskGuardian` enables all twenty corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 22518 distinct states.
+`MC_SoakDiskGuardian` enables all twenty-two corrections. It also checks `TimedOutSampleRejected`, `PriorFailuresPreserved`, `KillFollowsTerm`, and the conditional theorem below. It completes with 73740 distinct states.
 
 ### Conditional no-overrun theorem
 

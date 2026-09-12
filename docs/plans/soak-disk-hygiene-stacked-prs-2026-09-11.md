@@ -19,11 +19,11 @@ Four pull requests, each based on the one before it, merged bottom-up:
 | Order | Branch | Base | Concern | Size against its base |
 | --- | --- | --- | --- | --- |
 | PR 1 | `formal/deploy-storage-bound` | `dev` | The deploy storage bound, a machine A area | 6 files, about 130 lines |
-| PR 2 | `fix/soak-driver-disk-protection` | PR 1 | The soak driver fix, its host suite, the Docker harness, the real-daemon checks, and the driver evidence record | 53 files, about 5,600 changed lines |
-| PR 3 | `formal/soak-disk-models` | PR 2 | One control registry with a bounded PR tier, the gate fixture test, the two consolidated soak models, and the storage budget | 113 files, about 3,600 lines |
+| PR 2 | `fix/soak-driver-disk-protection` | PR 1 | The soak driver fix, its host suite, the Docker harness, the real-daemon checks, and the driver evidence record | 54 files, about 5,900 changed lines |
+| PR 3 | `formal/soak-disk-models` | PR 2 | One control registry with a bounded PR tier, the gate fixture test, the two consolidated soak models, and the storage budget | 117 files, about 3,700 lines |
 | PR 4 | `docs/consensus-neutral-execution` | PR 3 | The architecture note and the verification split by machine and medium | 3 files, about 650 lines |
 
-The staging branch holds 105 commits and 2,163 changed files against dev. The four PRs together hold about 175 files. Everything else is legacy and is not carried. Section 5 lists it.
+The staging branch holds 105 commits and 2,163 changed files against dev. The four PRs together hold about 180 files. Everything else is legacy and is not carried. Section 5 lists it.
 
 ### Why this order
 
@@ -67,12 +67,12 @@ Whole files:
 - `scripts/bench/soak-disk-test.Dockerfile`
 - `scripts/bench/test-run-merge-recovery-soak.sh`, the host suite
 - `scripts/bench/test-soak-disk-admission.sh`, the table-driven Docker harness
-- `scripts/bench/test-soak-disk-emergency.sh` and the 30 `scripts/bench/test-soak-*.sh` host fixtures it runs
+- `scripts/bench/test-soak-disk-emergency.sh` and the 31 `scripts/bench/test-soak-*.sh` host fixtures it runs
 - `scripts/bench/test-soak-real-*.sh`, the eight real-daemon checks
 - `scripts/bench/collect-soak-metrics.sh` and `scripts/bench/write-soak-summary.sh`
 - `scripts/bench/run-soak-contained.sh`, `scripts/bench/soak-containment.py`, and `scripts/bench/test-soak-native-containment.py`, the B44 launcher prototype and its fixture, flagged as a prototype the normal workflow does not use
 - `scripts/bench/test-soak-native-admission.py` and `scripts/bench/test-soak-native-control-path.py`, the second source session's launcher fixtures, which no gate runs, flagged with the prototype
-- `docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md`, the driver evidence record with the B1 to B48 rows and the digest table
+- `docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md`, the driver evidence record with the B1 to B50 rows and the digest table
 - `docs/cbc-evidence/github-workflows-slashing-tests-yml.md`
 - `docs/work-logs/task-soak-disk-hygiene-parsimonious-2026-09-09.md`
 
@@ -90,7 +90,7 @@ Verification: the host suite on Linux, since the driver needs pidfd and Python 3
 Whole files:
 
 - `formal/tlaplus/soak_disk/SoakDiskAdmission.tla`, `SoakDiskGuardian.tla`, `SoakStorageBudget.tla`
-- The 52 `MC_SoakDisk*` and `MC_SoakStorageBudget*` configuration and stub pairs
+- The 54 `MC_SoakDisk*` and `MC_SoakStorageBudget*` configuration and stub pairs
 - `formal/tlaplus/soak_disk/README.md`
 - `scripts/ci/test-check-tla-invariants.sh`, the gate fixture test
 - `docs/claims/soak-disk-protection.md`
@@ -104,7 +104,7 @@ Split files:
 - `formal/tlaplus/carrier_index/README.md`: the registered-controls text.
 - `docs/formal-verification.md`: the "Soak disk protection" row and the gate text.
 
-Verification: TLC on the three positives, with 30352, 22518, and 5616 states. Then the bounded gate with 6 positives and 50 controls, and the fixture test with 50 controls times seven outcomes plus the routing scenarios.
+Verification: TLC on the three positives, with 30352, 73740, and 5616 states. Then the bounded gate with 6 positives and 52 controls, and the fixture test with 52 controls times seven outcomes plus the routing scenarios.
 
 ### PR 4: consensus-neutral execution note
 
@@ -165,8 +165,8 @@ Every git-state action, which means branch creation, staging, pushes, and PR cre
 
 The staging branch holds 2,070 legacy files, about 247,000 lines, that stay behind:
 
-- The per-defect TLA+ modules, 41 standalone specs with their configurations and correspondence notes, superseded by the two consolidated models.
-- The 31 generated evidence packages under `docs/cbc-evidence/soak-*` and the run inspection under `docs/soak-evidence`, bound by digest in the driver evidence record instead.
+- The per-defect TLA+ modules, 43 standalone specs with their configurations and correspondence notes, superseded by the two consolidated models.
+- The 34 generated evidence packages under `docs/cbc-evidence/soak-*` and the run inspection under `docs/soak-evidence`, bound by digest in the driver evidence record instead.
 - The digest inventory `docs/claims/soak-claim-inventory.jsonc`, the retention record, the inventory tests, and the formal-gate claim.
 - The root `.gitignore` rerun patterns and the package `.gitattributes` files, which only serve the packages.
 - Every Ruby file. None is tracked on the staging branch now, and none is carried.

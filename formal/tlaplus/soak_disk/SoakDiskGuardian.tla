@@ -2,7 +2,7 @@
 (* The emergency path of one soak iteration in                               *)
 (* scripts/run-merge-recovery-soak.sh: the guardian probes, records a        *)
 (* breach, stops the writers, attributes the space, and the next segment     *)
-(* finds the marker. Twenty constants switch the corrections on and off      *)
+(* finds the marker. Twenty-two constants switch the corrections on and off  *)
 (* so that each pre-fix configuration reproduces one historical defect.      *)
 (* Four more constants state the conditional no-overrun theorem: free space  *)
 (* stays positive when the hard floor covers the writers' worst consumption   *)
@@ -29,6 +29,8 @@ CONSTANTS DetectDeath,       \* the watcher treats a dead guardian as a breach
           StopBeforeDrain, \* the interrupted iteration stops the owned writers before it waits for output EOF (B43)
           ManagedContainment, \* a service manager kills the owned writers' control group when both controllers die (B44, launcher prototype)
           VerifyBeforeRelease, \* the launcher verifies manager placement and gate identity before it releases the driver, so a stalled status query prevents native admission (B47, launcher prototype)
+          ComposedDeadline, \* the driver's whole emergency response after a breach runs under one composed budget, and a stalled evidence copy is skipped when the budget is spent (B49)
+          ValidateAncestors, \* the launcher refuses work when any ancestor of its control directory is not a root-owned, unwritable directory (B50, launcher prototype)
           WriteRateMax,     \* MiB the writers can consume per clock unit (measured, not derived)
           SamplePeriod,     \* clock units between guardian probes (the 5s sleep)
           HardFloorMiB,     \* free MiB at the last healthy sample; the breach line
@@ -39,7 +41,8 @@ ASSUME /\ {DetectDeath, RejectUnavailable, EnforceTimeout, RecordFirst,
            StopOnExit, BoundTermination, RetainStopFailure, SelectOwned,
            SelectOwnedHost, MarkOwnedOnly, ConfigureAtCreation,
            SurvivesDriverCrash, RememberHandledExit, DetectMonitorDeath,
-           StopBeforeDrain, ManagedContainment, VerifyBeforeRelease} \subseteq BOOLEAN
+           StopBeforeDrain, ManagedContainment, VerifyBeforeRelease,
+           ComposedDeadline, ValidateAncestors} \subseteq BOOLEAN
        /\ WriteRateMax \in Nat
        /\ SamplePeriod \in Nat
        /\ HardFloorMiB \in Nat \ {0}
@@ -49,6 +52,7 @@ ProbeReturnsAt    == 4  \* a stalled df prints a valid field after the deadline
 AttributionBudget == 1  \* SOAK_DISK_DIAGNOSTIC_SECONDS, one unit for every root
 StopBudget        == 2  \* SOAK_DISK_STOP_SECONDS: TERM at 1, KILL at 2
 LateUnits         == 3  \* how long unconfirmed writers keep consuming after the stop
+EmergencyBudget   == 6  \* SOAK_EMERGENCY_DEADLINE_SECONDS: the stop, the attribution, and the evidence copy together (B49)
 
 \* The reaction time from the last healthy sample to a completed stop, under
 \* the corrected deadlines. The theorem's numeric premise: the hard floor must
@@ -69,6 +73,10 @@ VARIABLES phase, alive, monitorAlive, interruptRequested, breachRecorded,
           drained, \* the driver waited for output EOF on the interrupted iteration (B43)
           containedStop, \* the service manager stopped the owned writers after both controllers died (B44)
           queryAvailable, \* the launcher's service-status query returned before the release deadline (B47)
+          controlTrusted, \* every ancestor of the launcher's control directory is a root-owned, unwritable directory (B50)
+          copied, \* the failure-evidence copy completed or was skipped (B49)
+          copyElapsed, \* budget units the evidence copy consumed (B49)
+          copyStalled, \* the evidence copy command ignores its termination signal (B49)
           freeMiB,      \* free space, consumed at WriteRateMax while the writers run
           writersAlive, \* the writers still consume space
           lateUnits,    \* clock units of unconfirmed consumption after the stop
@@ -84,7 +92,8 @@ vars == <<phase, alive, monitorAlive, interruptRequested, breachRecorded,
           stopStarted, stopElapsed, termSent, killSent,
           diagElapsed, rootsLeft,
           marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop,
-          pipeHeld, drained, containedStop, queryAvailable,
+          pipeHeld, drained, containedStop, queryAvailable, controlTrusted,
+          copied, copyElapsed, copyStalled,
           freeMiB, writersAlive, lateUnits,
           unownedStopped, exitRejected, exitFailureRetained,
           unownedHostStopped, unownedMarked, unownedContainersMarked>>
@@ -120,6 +129,10 @@ Init ==
     /\ drained = FALSE
     /\ containedStop = FALSE
     /\ queryAvailable \in BOOLEAN
+    /\ controlTrusted \in BOOLEAN
+    /\ copied = FALSE
+    /\ copyElapsed = 0
+    /\ copyStalled \in BOOLEAN
     /\ freeMiB = HardFloorMiB
     /\ writersAlive = TRUE
     /\ lateUnits = 0
@@ -185,13 +198,17 @@ DriverCrash ==
 \* supervisor survives. Only a service manager that owns the writers' control
 \* group can stop them; the launcher prototype provides one, and the direct
 \* launch does not. The driver is unchanged, and B44 stays open on the source.
-\* The launcher's release gate (B47, launcher prototype). The corrected
+\* The launcher's release gate (B47, B50, launcher prototype). The corrected
 \* launcher starts a trusted gate, verifies the manager placement and the gate
 \* identity, and only then releases the driver. A status query that never
-\* returns refuses the launch. The pre-fix launcher started the driver first.
+\* returns refuses the launch, and so does an untrusted ancestor of the
+\* control directory (B50). The pre-fix launcher started the driver first
+\* and checked only the immediate parent.
 Release ==
     /\ phase = "launch"
-    /\ phase' = IF ~VerifyBeforeRelease \/ queryAvailable THEN "running" ELSE "launch-refused"
+    /\ phase' = IF /\ ~VerifyBeforeRelease \/ queryAvailable
+                   /\ ~ValidateAncestors \/ controlTrusted
+                THEN "running" ELSE "launch-refused"
     /\ UNCHANGED <<alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked, queryAvailable>>
 
 ControllerLoss ==
@@ -453,8 +470,41 @@ Drain ==
                    unownedMarked, unownedContainersMarked>>
 
 \* The segment ends with the marker on disk; the next segment starts.
+\* The driver's failure-evidence copy after the attribution (B49). The
+\* corrected driver runs the whole response under one composed budget that
+\* starts at the breach decision: when the budget is spent, a stalled copy is
+\* skipped and recorded, and the summary still publishes. The pre-fix driver
+\* had no bound on the copy, so one stalled root delayed everything after it.
+ResponseElapsed == stopElapsed + diagElapsed + copyElapsed
+
+CopyEvidence ==
+    /\ phase = "finished"
+    /\ ~copied
+    /\ ~copyStalled
+    /\ copied' = TRUE
+    /\ copyElapsed' = copyElapsed + 1
+    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked>>
+
+StallCopy ==
+    /\ phase = "finished"
+    /\ ~copied
+    /\ copyStalled
+    /\ ~ComposedDeadline \/ ResponseElapsed < EmergencyBudget
+    /\ copyElapsed' = copyElapsed + 1
+    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked, copied>>
+
+SkipCopy ==
+    /\ phase = "finished"
+    /\ ~copied
+    /\ copyStalled
+    /\ ComposedDeadline
+    /\ ResponseElapsed >= EmergencyBudget
+    /\ copied' = TRUE
+    /\ UNCHANGED <<phase, alive, monitorAlive, interruptRequested, breachRecorded, elapsed, timedOut, known, stopStarted, stopElapsed, termSent, killSent, diagElapsed, rootsLeft, marker, priorFailures, failures, admitted, stale, exitStop, crashStop, repeatedStop, pipeHeld, drained, containedStop, queryAvailable, controlTrusted, copyStalled, freeMiB, writersAlive, lateUnits, unownedStopped, exitRejected, exitFailureRetained, unownedHostStopped, unownedMarked, unownedContainersMarked, copyElapsed>>
+
 Finish ==
     /\ phase = "finished"
+    /\ copied
     /\ marker' = TRUE
     /\ phase' = "resume"
     /\ UNCHANGED <<alive, interruptRequested, breachRecorded, elapsed, timedOut,
@@ -503,8 +553,10 @@ NextCore == (DriverExit /\ UNCHANGED <<monitorAlive, DrainVars, Consumption, Sto
                \/ Finish \/ Recover \/ RestartDecision
             /\ UNCHANGED <<monitorAlive, DrainVars, stale, exitStop, crashStop, repeatedStop, Consumption, StopVars, unownedMarked, unownedContainersMarked>>)
 
-\* The launcher's query outcome is fixed at launch.
-Next == NextCore /\ UNCHANGED queryAvailable
+\* The launcher's query outcome, the control-directory trust, and the copy
+\* command's behavior are fixed at launch. The copy steps change nothing else.
+Next == \/ NextCore /\ UNCHANGED <<queryAvailable, controlTrusted, copied, copyElapsed, copyStalled>>
+        \/ CopyEvidence \/ StallCopy \/ SkipCopy
 
 Spec == Init /\ [][Next]_vars
 
@@ -540,6 +592,10 @@ TypeOK ==
     /\ drained \in BOOLEAN
     /\ containedStop \in BOOLEAN
     /\ queryAvailable \in BOOLEAN
+    /\ controlTrusted \in BOOLEAN
+    /\ copied \in BOOLEAN
+    /\ copyElapsed \in Nat
+    /\ copyStalled \in BOOLEAN
     /\ freeMiB \in Int
     /\ writersAlive \in BOOLEAN
     /\ lateUnits \in 0..LateUnits
@@ -572,6 +628,8 @@ HandledExitHasNoExtraStop == phase = "exit-checked" => ~repeatedStop
 DrainRequiresOwnedStop == drained => ~pipeHeld
 ControllerLossStopsOwnedWriters == phase = "containment-checked" => containedStop
 UnavailableQueryPreventsRelease == ~queryAvailable => phase \in {"launch", "launch-refused"}
+UntrustedControlPreventsRelease == ~controlTrusted => phase \in {"launch", "launch-refused"}
+ResponseWithinDeadline == ResponseElapsed <= EmergencyBudget
 FailedStopRetained == (phase = "exited" /\ exitRejected) => exitFailureRetained
 UnownedWritersPreserved == ~unownedStopped
 UnownedHostWritersPreserved == ~unownedHostStopped

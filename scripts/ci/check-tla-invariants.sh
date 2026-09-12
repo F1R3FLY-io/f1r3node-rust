@@ -203,6 +203,8 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_SoakDiskGuardian_drain_first_pre_fix:DrainRequiresOwnedStop
     soak_disk/MC_SoakDiskGuardian_unmanaged_pre_fix:ControllerLossStopsOwnedWriters
     soak_disk/MC_SoakDiskGuardian_start_first_pre_fix:UnavailableQueryPreventsRelease
+    soak_disk/MC_SoakDiskGuardian_unbounded_pre_fix:ResponseWithinDeadline
+    soak_disk/MC_SoakDiskGuardian_parent_only_pre_fix:UntrustedControlPreventsRelease
     soak_disk/MC_SoakStorageBudget_uncapped_blocks_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_logs_pre_fix:WithinBudget
     soak_disk/MC_SoakStorageBudget_uncapped_history_pre_fix:WithinBudget

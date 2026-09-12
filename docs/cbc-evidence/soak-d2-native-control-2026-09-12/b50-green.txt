@@ -1,0 +1,2 @@
+PASS: An untrusted control ancestor prevents workload execution and preserves the unrelated writer.
+The workload initialization hook and external workload commands were substitutes. Fixture cleanup started after the recorded verdict.

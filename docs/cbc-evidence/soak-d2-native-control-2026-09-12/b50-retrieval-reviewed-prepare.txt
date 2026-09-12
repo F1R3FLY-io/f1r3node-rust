@@ -1,0 +1,4 @@
+7031d6bfbfaca62db377dea37be00eaee2c7eae0d114d00339d9de628a3d5f07  /home/ubuntu/native-control-results.tar.gz
+archive_bytes=261267
+regular_members=298
+PASS: The retrieval archive contains only selected regular files. Private environment files are excluded.

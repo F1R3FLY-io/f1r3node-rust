@@ -1,0 +1,74 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 80 and seed -2420229289187866039 with 2 workers on 20 cores with 27305MB heap and 64MB offheap memory (Linux 6.17.0-1032-nvidia aarch64, Private Build 1.8.0_502 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/MC_EmergencyDeadline_unbounded_pre_fix.tla
+Parsing file [WORKSPACE_ROOT]/formal/tlaplus/soak_disk/EmergencyDeadline.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module EmergencyDeadline
+Semantic processing of module MC_EmergencyDeadline_unbounded_pre_fix
+Starting... (2026-09-12 03:23:33)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 2 distinct states generated at 2026-09-12 03:23:34.
+Error: Invariant ResponseWithinDeadline is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ skipped = 0
+/\ elapsed = 0
+/\ stalled = TRUE
+/\ recorded = FALSE
+/\ phase = "breach"
+/\ copied = 0
+
+State 2: <Record line 18, col 5 to line 21, col 54 of module EmergencyDeadline>
+/\ skipped = 0
+/\ elapsed = 0
+/\ stalled = TRUE
+/\ recorded = TRUE
+/\ phase = "copying"
+/\ copied = 0
+
+State 3: <StallRoot line 32, col 5 to line 37, col 62 of module EmergencyDeadline>
+/\ skipped = 0
+/\ elapsed = 1
+/\ stalled = TRUE
+/\ recorded = TRUE
+/\ phase = "copying"
+/\ copied = 0
+
+State 4: <StallRoot line 32, col 5 to line 37, col 62 of module EmergencyDeadline>
+/\ skipped = 0
+/\ elapsed = 2
+/\ stalled = TRUE
+/\ recorded = TRUE
+/\ phase = "copying"
+/\ copied = 0
+
+State 5: <StallRoot line 32, col 5 to line 37, col 62 of module EmergencyDeadline>
+/\ skipped = 0
+/\ elapsed = 3
+/\ stalled = TRUE
+/\ recorded = TRUE
+/\ phase = "copying"
+/\ copied = 0
+
+State 6: <StallRoot line 32, col 5 to line 37, col 62 of module EmergencyDeadline>
+/\ skipped = 0
+/\ elapsed = 4
+/\ stalled = TRUE
+/\ recorded = TRUE
+/\ phase = "copying"
+/\ copied = 0
+
+State 7: <StallRoot line 32, col 5 to line 37, col 62 of module EmergencyDeadline>
+/\ skipped = 0
+/\ elapsed = 5
+/\ stalled = TRUE
+/\ recorded = TRUE
+/\ phase = "copying"
+/\ copied = 0
+
+17 states generated, 13 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 1 and the 95th percentile is 1).
+Finished in 01s at (2026-09-12 03:23:34)
