@@ -313,6 +313,111 @@ mod tests {
             .expect("follower replay data mismatch — tuplespace divergence, not just WAL");
     }
 
+    /// X-3 / SEC-3 (2026-09-12, branch-review-2026-09-11.md):
+    /// pin the load-bearing "cost pre-charge runs BEFORE WAL-cap
+    /// check" ordering.  When the WAL is full, the pre-charge is
+    /// consumed even though the handler returns
+    /// `FSERR_QUOTA_EXCEEDED` and appends no entry.  This IS
+    /// intentional (per user 2026-09-11: Item 1 explicitly
+    /// deferred; refund would emit an unaccounted BillableToken
+    /// Event that shifts the `authority_cost_witness` fold bytes
+    /// → hard-fork surface).
+    ///
+    /// This regression pin prevents a future refactor from
+    /// accidentally introducing a "charge-then-refund" pattern:
+    /// - Pre-fill the WAL to `MAX_WAL_ENTRIES`.
+    /// - Snapshot the runtime's remaining cost budget.
+    /// - Issue an `fs_write` that will trigger the WAL-cap
+    ///   FSERR_QUOTA_EXCEEDED path.
+    /// - Assert the budget DECREASED (proving the pre-charge
+    ///   fired) — a refund would leave the budget unchanged or
+    ///   only partially decreased.
+    ///
+    /// See `handler_trait.rs::dispatch_via_trait` step 3 for the
+    /// full ordering documentation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sec3_wal_cap_full_pre_charge_burns_cost() {
+        use rholang::rust::interpreter::io::wal::{
+            PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.bin"), b"").unwrap();
+        let runtime = create_runtime().await;
+
+        // Pre-fill WAL to the cap.
+        for _ in 0..MAX_WAL_ENTRIES {
+            runtime
+                .fs_handles
+                .wal
+                .append(WalEntry {
+                    op: WalOp::Write,
+                    path: std::path::PathBuf::from("/prefill"),
+                    extra_path: None,
+                    offset: None,
+                    length: Some(0),
+                    payload_ref: Some(PayloadRef::hash(b"")),
+                    mode_bits: None,
+                    owner: None,
+                    group: None,
+                    outcome: WalOutcome::Success,
+                })
+                .unwrap();
+        }
+        assert_eq!(runtime.fs_handles.wal.len(), MAX_WAL_ENTRIES);
+        // Pass a bounded initial budget to `evaluate` so we can
+        // measure cost consumption precisely.  1M phlo is well
+        // above the fs_open + fs_write attempt cost but well below
+        // `Cost::unsafe_max`.  (Setting `runtime.cost` directly
+        // doesn't work — evaluate reinitializes it from its
+        // `initial_phlos` argument.)
+        let initial_budget = Cost::create(1_000_000, "sec3_test");
+        // Issue an fs_write on a Consensus cap — journal_write
+        // attempts to append and hits the cap.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                oc, wc
+            in {{
+              fsOpen!("{root}", "f.bin", "r+", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "aa".hexToBytes(), *wc) |
+                for (@_reply <- wc) {{ Nil }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let initial_value = initial_budget.value;
+        runtime
+            .evaluate(
+                &term,
+                initial_budget,
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+        let budget_after = runtime.cost.get();
+        assert!(
+            budget_after.value < initial_value,
+            "SEC-3: cost budget MUST decrease after fs_write hit \
+             WAL-cap-full (proving the pre-charge fired).  A \
+             refund would leave the budget at or near \
+             `initial_value` = {}; got after={:?}",
+            initial_value,
+            budget_after,
+        );
+        // WAL must NOT have grown past cap (unchanged from the
+        // sister H1 pin).
+        assert_eq!(
+            runtime.fs_handles.wal.len(),
+            MAX_WAL_ENTRIES,
+            "WAL cap must hold even after failed append attempt"
+        );
+    }
+
     /// H1 gap fix: end-to-end WAL cap enforcement — a Rholang program
     /// that fills the WAL past `MAX_WAL_ENTRIES` gets `FSERR_QUOTA_EXCEEDED`
     /// on the overflow write, and the WAL does not exceed the cap.

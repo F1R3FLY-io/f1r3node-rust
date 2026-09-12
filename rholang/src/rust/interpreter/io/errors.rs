@@ -600,6 +600,86 @@ mod tests {
         );
     }
 
+    /// X-3 / SEC-3 lint pin (2026-09-12, branch-review-2026-09-11.md):
+    /// scan all `.rs` files under `rholang/src/rust/interpreter/io/`
+    /// and assert no `refund_primitive` / `refund_incremental` /
+    /// `metering.refund*` call exists.  Per the cost-ordering
+    /// discipline documented at `handler_trait.rs::dispatch_via_
+    /// trait` step 3, adding a refund path would emit an
+    /// unaccounted `BillableTokenEvent` that shifts the
+    /// `authority_cost_witness` fold bytes — a hard-fork surface
+    /// event.  A future handler that needs conditional cost must
+    /// arrange to compute the correct pre-charge upfront (via
+    /// `pre_charge_incremental`), never charge-then-refund.
+    ///
+    /// User 2026-09-11 explicitly deferred Item 1 (cost burned on
+    /// WAL-cap-full ops) rather than accept a refund mechanism.
+    /// This lint enforces that decision at commit time.
+    #[test]
+    fn sec3_no_refund_primitive_in_io_tree() {
+        let io_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/rust/interpreter/io");
+        let mut offending: Vec<String> = Vec::new();
+
+        for entry in std::fs::read_dir(io_dir).expect("io/ dir readable") {
+            let entry = entry.expect("readable entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
+            // errors.rs contains the lint's own reference strings.
+            if file_name == "errors.rs" {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("io/ .rs file readable");
+            for (idx, line) in content.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//")
+                    || trimmed.starts_with("///")
+                    || trimmed.starts_with("*")
+                {
+                    continue;
+                }
+                let lower = line.to_lowercase();
+                if (lower.contains("refund_primitive")
+                    || lower.contains("refund_incremental")
+                    || (lower.contains("metering") && lower.contains(".refund")))
+                    && !line.contains("SEC-3")
+                {
+                    offending.push(format!(
+                        "{file_name}:{}: cost refund pattern found \
+                         — Adding a refund would emit an \
+                         unaccounted BillableTokenEvent → \
+                         authority_cost_witness fold bytes shift \
+                         (hard-fork surface).  See \
+                         handler_trait.rs::dispatch_via_trait \
+                         step 3 § SEC-3 for the ordering \
+                         discipline.  Line: `{}`",
+                        idx + 1,
+                        line.trim(),
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            offending.is_empty(),
+            "SEC-3: cost refund pattern found in io/ tree.  Per \
+             the ordering discipline documented at \
+             `handler_trait.rs::dispatch_via_trait` step 3, cost \
+             pre-charge MUST NEVER be refunded — refunds emit \
+             unaccounted BillableTokenEvents that shift the \
+             `authority_cost_witness` fold bytes (hard-fork \
+             surface).  Use `pre_charge_incremental` to compute \
+             the correct upfront charge instead:\n  - {}",
+            offending.join("\n  - "),
+        );
+    }
+
     /// T-13 lint pin (2026-09-11, DD-FailClosedOnInvariantBreak):
     /// scan all `.rs` files under `rholang/src/rust/interpreter/io/`
     /// and assert no raw `.expect("... poisoned")` pattern remains

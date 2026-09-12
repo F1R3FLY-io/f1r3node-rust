@@ -425,6 +425,45 @@ impl WalDeployScope {
              must derive a non-sentinel scope (Blake2b256 of deploy identifier)."
         );
         let mark = wal.begin_deploy();
+        // X-3 / SEC-2 (2026-09-12, branch-review-2026-09-11.md):
+        // sequential-deploy invariant.  The fs-handle sweep at Drop
+        // (below) is fire-and-forget on a tokio task; correctness
+        // relies on the next `WalDeployScope::new_with_lock_sweep`
+        // NOT running while the previous scope's sweep may still
+        // be in flight.  Under the current sequential-deploy
+        // execution model this holds by construction, but a future
+        // refactor that introduces parallel deploy execution
+        // within a runtime (or an operator that wraps user deploys
+        // in a system deploy with overlapping scopes) would
+        // silently open a subtle TOCTOU race between the fire-and-
+        // forget sweep and the next deploy's fs_open calls.
+        //
+        // The `current_scope_cell` is the natural indicator: it's
+        // set to `deploy_scope` here and cleared to `[0; 32]` on
+        // Drop.  A non-sentinel value at construction time means
+        // another WalDeployScope is currently in flight on this
+        // runtime.  Fail loudly instead of quietly opening the
+        // race window.
+        {
+            let prev_scope = *current_scope_cell
+                .read()
+                .expect("current_deploy_scope RwLock poisoned");
+            assert!(
+                prev_scope == [0u8; 32],
+                "SEC-2: WalDeployScope::new_with_lock_sweep called \
+                 while a prior WalDeployScope is still in flight on \
+                 this runtime (current_scope_cell = {:02x?} != \
+                 sentinel [0; 32]).  The fire-and-forget fd sweep \
+                 at Drop relies on sequential deploy execution; \
+                 overlapping WalDeployScopes would race the sweep \
+                 against the next deploy's fs_open calls.  If \
+                 you're introducing parallel deploy execution, \
+                 either (a) switch the Drop sweep to a synchronous \
+                 drain, or (b) partition per-deploy handle tables \
+                 so concurrent scopes never share fd namespace.",
+                prev_scope
+            );
+        }
         // Publish this deploy's scope to the shared cell so
         // concurrent-in-this-deploy lock-native calls record it.
         *current_scope_cell
@@ -591,15 +630,31 @@ impl Drop for WalDeployScope {
         // forget spawn: the tables' close_all_for_deploy methods
         // are async (tokio::sync::RwLock internals) but Drop is
         // sync, so we spawn a detached task holding Arc-shared
-        // clones of both tables.  Within-block correctness: deploys
-        // run sequentially; the next deploy's fs_open calls
-        // allocate fresh monotonic fds regardless of pending-sweep
-        // state, so races don't produce aliasing.  Between-block
-        // correctness: per-block runtime respawn creates fresh
-        // handle tables, so any pending sweep against the old
-        // tables races safely against unrelated state.  Skip when
-        // no tokio runtime is available (rare: only test paths
-        // that construct WalDeployScope outside an async context).
+        // clones of both tables.
+        //
+        // # X-3 / SEC-2 (2026-09-12, branch-review-2026-09-11.md)
+        //
+        // Correctness of the fire-and-forget model is UPHELD BY
+        // the sequential-deploy invariant asserted in
+        // `new_with_lock_sweep` above: at most one WalDeployScope
+        // may be in flight per runtime.  The next deploy's
+        // `fs_open` calls allocate fresh monotonic fds regardless
+        // of pending-sweep state, so races don't produce aliasing.
+        // Between-block correctness: per-block runtime respawn
+        // creates fresh handle tables, so any pending sweep
+        // against the old tables races safely against unrelated
+        // state.
+        //
+        // If a future refactor introduces parallel deploy
+        // execution within a runtime, the invariant assertion at
+        // `new_with_lock_sweep` will fire loudly BEFORE the race
+        // window opens — see SEC-2 comment there for the fixes
+        // available (synchronous drain OR per-deploy handle-table
+        // partitioning).
+        //
+        // Skip when no tokio runtime is available (rare: only test
+        // paths that construct WalDeployScope outside an async
+        // context).
         let fs_handles = self.fs_handles.clone();
         let scope = self.deploy_scope;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -4189,6 +4244,90 @@ mod tests {
         assert_eq!(a_entries[0].path, std::path::PathBuf::from("/a1"));
         assert_eq!(b_entries[0].path, std::path::PathBuf::from("/b1"));
         assert_eq!(wal.len(), 0, "both deploys drained; WAL is empty");
+    }
+
+    /// X-3 / SEC-2 (2026-09-12, branch-review-2026-09-11.md):
+    /// constructing a second `WalDeployScope` on the same runtime
+    /// while a first is still in flight MUST panic.  The fire-and-
+    /// forget fd sweep at Drop relies on sequential deploy
+    /// execution; overlapping scopes would race the sweep against
+    /// the next deploy's `fs_open` calls.
+    ///
+    /// The invariant is enforced via `current_scope_cell` (set at
+    /// construction, cleared at Drop).  A non-sentinel value at
+    /// construction time indicates a prior scope is still alive.
+    ///
+    /// This test uses `new_with_lock_sweep` directly (bypassing
+    /// the `new` test-only wrapper that constructs its own fresh
+    /// cell each call) to exercise the invariant on a shared cell
+    /// — exactly the production shape.
+    #[test]
+    #[should_panic(expected = "SEC-2:")]
+    fn sec2_overlapping_wal_deploy_scopes_on_same_runtime_panic() {
+        let shared_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let shared_sig_cell = std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+        let handles = rholang::rust::interpreter::io::handle_table::FileHandleTable::new();
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        // First scope: acquires the cell.
+        let _first = WalDeployScope::new_with_lock_sweep(
+            wal.clone(),
+            lock_registry.clone(),
+            [0x01u8; 32],
+            shared_scope_cell.clone(),
+            Vec::new(),
+            shared_sig_cell.clone(),
+            handles.clone(),
+        );
+        // Second scope on the SAME shared cell — must panic per
+        // SEC-2 invariant.  Different deploy_scope, but shared
+        // runtime state.
+        let _second = WalDeployScope::new_with_lock_sweep(
+            wal,
+            lock_registry,
+            [0x02u8; 32],
+            shared_scope_cell,
+            Vec::new(),
+            shared_sig_cell,
+            handles,
+        );
+    }
+
+    /// X-3 / SEC-2 companion: verify that after a scope's Drop
+    /// clears the cell, a new scope can be constructed cleanly on
+    /// the same runtime (proves the sequential-deploy path is
+    /// unaffected by the new assertion — regression pin for the
+    /// happy path).
+    #[test]
+    fn sec2_sequential_wal_deploy_scopes_on_same_runtime_succeed() {
+        let shared_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let shared_sig_cell = std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+        let handles = rholang::rust::interpreter::io::handle_table::FileHandleTable::new();
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        // First scope: constructed + dropped.
+        {
+            let _first = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                [0x01u8; 32],
+                shared_scope_cell.clone(),
+                Vec::new(),
+                shared_sig_cell.clone(),
+                handles.clone(),
+            );
+            // Drop at end of block clears the cell.
+        }
+        // Second scope on the same runtime state — succeeds.
+        let _second = WalDeployScope::new_with_lock_sweep(
+            wal,
+            lock_registry,
+            [0x02u8; 32],
+            shared_scope_cell,
+            Vec::new(),
+            shared_sig_cell,
+            handles,
+        );
     }
 
     /// Failed deploy followed by successful deploy: the successful

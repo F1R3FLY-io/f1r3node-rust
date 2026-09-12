@@ -14308,6 +14308,21 @@ async fn fs_revoke_is_idempotent() {
 /// Proves that revoke() only affects Fs-instance methods, not
 /// previously-issued File/Dir caps (independent agents).  This is
 /// the compositional guarantee the powerbox relies on.
+///
+/// # X-3 / SEC-1(A) (2026-09-12, branch-review-2026-09-11.md)
+///
+/// Pins the DD-Revoke documented "previously-minted caps
+/// unaffected" semantic.  The branch review flagged this as
+/// ambiguous — the FIP spec §Revocation used "revoke the Fs"
+/// language that some users interpret as "kill everything".
+/// SEC-1(A) makes the documented behavior explicit + adds a
+/// second pin below for write-side confirmation (this test only
+/// pins read-side via `.tell()`).
+///
+/// If stronger revocation semantics are needed (kill EVERY cap
+/// issued via this Fs), see SEC-1(B) in implementation-plan.md
+/// (deferred; ~3-4h of plumbing across File/Dir/Stream caps +
+/// native handlers).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_revoke_does_not_affect_previously_minted_file_caps() {
     let (space, reducer) =

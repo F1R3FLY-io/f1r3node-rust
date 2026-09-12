@@ -750,6 +750,33 @@ pub async fn dispatch_via_trait<H: FsHandler>(
     // pre-refactor's single `reserve_incremental_primitive(base
     // + n*per_byte)` call — splitting into two events would
     // change the authority_cost_witness fold bytes.
+    //
+    // # X-3 / SEC-3 ordering discipline (2026-09-12)
+    //
+    // The cost pre-charge runs BEFORE the WAL-cap check
+    // (`journal_*_via_table` → `Wal::append_with_ack`, which
+    // returns `FSERR_QUOTA_EXCEEDED` when at `MAX_WAL_ENTRIES`).
+    // When the WAL is full, the pre-charged cost is CONSUMED
+    // even though the handler returns an error and appends no
+    // WAL entry.  This is a UX / audit-trail wart, NOT a
+    // consensus concern: the pre-charge is a `BillableTokenEvent`
+    // that both leader and follower emit identically, so no
+    // divergence, no double-charge, no missing entry.
+    //
+    // Explicitly deferred per user 2026-09-11 (see
+    // `fileio_wave4_security_followups.md` Item 1).  This
+    // ordering IS load-bearing under the current design.
+    // Regression pin below prevents accidental reintroduction of
+    // a refund mechanism that would emit an unaccounted
+    // `BillableTokenEvent` (which would change the
+    // `authority_cost_witness` fold bytes → hard-fork surface).
+    //
+    // If a future handler adds cost parameterization (e.g.,
+    // `fs_write_fixed_stripe(fd, offset, stripe_size)`), ensure
+    // the `stripe_size` param is available at BOTH the pre-charge
+    // AND the WAL check paths.  Never introduce a "charge-then-
+    // maybe-refund" pattern; refunds emit new billable events
+    // that shift the fold bytes.
     match H::pre_charge_incremental(raw_pre_ack) {
         Some(cost) => fs.metering.reserve_incremental_primitive(cost)?,
         None => fs.metering.reserve_primitive(H::pre_charge_cost())?,
