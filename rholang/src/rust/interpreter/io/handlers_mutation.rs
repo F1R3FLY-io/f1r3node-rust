@@ -146,22 +146,27 @@ impl FsHandler for FsTruncateHandler {
                 }
             };
             let n = args.n;
-            let r = spawn_blocking(move || {
-                use std::os::fd::AsRawFd;
-                let raw_fd = file_arc.as_raw_fd();
-                // SAFETY: `raw_fd` is derived from `file_arc: Arc<File>`
-                // whose lifetime spans the `spawn_blocking` closure;
-                // the fd remains open for the duration of the syscall.
-                // `ftruncate` takes an open fd and a signed length;
-                // negative return means errno is set.
-                unsafe {
-                    if libc::ftruncate(raw_fd, n as i64) < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(())
+            // X-2 / G-01: park_external_during so the reduction driver
+            // can advance other participants while ftruncate runs on
+            // the blocking pool.
+            let r = crate::rust::interpreter::deterministic_reduction::park_external_during(
+                spawn_blocking(move || {
+                    use std::os::fd::AsRawFd;
+                    let raw_fd = file_arc.as_raw_fd();
+                    // SAFETY: `raw_fd` is derived from `file_arc: Arc<File>`
+                    // whose lifetime spans the `spawn_blocking` closure;
+                    // the fd remains open for the duration of the syscall.
+                    // `ftruncate` takes an open fd and a signed length;
+                    // negative return means errno is set.
+                    unsafe {
+                        if libc::ftruncate(raw_fd, n as i64) < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
                     }
-                }
-            })
+                }),
+            )
             .await;
             match r {
                 Err(je) => super::errors::join_err_abort(je),

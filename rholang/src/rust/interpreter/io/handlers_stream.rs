@@ -210,53 +210,59 @@ impl FsHandler for FsEntriesStreamOpenHandler {
             let rel_for_open = args.rel.clone();
             // safe_descend + openat + fdopendir in a blocking task.
             // Err returns a Box<Par> so the Result stays pointer-sized.
-            let opened = spawn_blocking(move || -> Result<DirIter, Box<Par>> {
-                let parent = match safe_descend_verified(&root_pb, &rel_for_open, expected_root_id)
-                {
-                    Ok(p) => p,
-                    Err(qe) => {
-                        let (code, msg) = quarantine_err_reply(&qe);
-                        return Err(Box::new(err(code, msg)));
+            //
+            // X-2 / G-01: park_external_during so the reduction driver
+            // can advance other participants while the descent + open
+            // + fdopendir runs on the blocking pool.
+            let opened = crate::rust::interpreter::deterministic_reduction::park_external_during(
+                spawn_blocking(move || -> Result<DirIter, Box<Par>> {
+                    let parent =
+                        match safe_descend_verified(&root_pb, &rel_for_open, expected_root_id) {
+                            Ok(p) => p,
+                            Err(qe) => {
+                                let (code, msg) = quarantine_err_reply(&qe);
+                                return Err(Box::new(err(code, msg)));
+                            }
+                        };
+                    // SAFETY: `parent` is a `DirfdRoot` from
+                    // `safe_descend_verified`; the dirfd is open for
+                    // `parent`'s lifetime and `parent.leaf_ptr()` returns
+                    // a NUL-terminated `*const c_char` valid for the same
+                    // lifetime.  `openat` does not retain either past the
+                    // call.
+                    let dir_fd = unsafe {
+                        libc::openat(
+                            parent.as_raw_fd(),
+                            parent.leaf_ptr(),
+                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                        )
+                    };
+                    if dir_fd < 0 {
+                        let e = std::io::Error::last_os_error();
+                        return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
                     }
-                };
-                // SAFETY: `parent` is a `DirfdRoot` from
-                // `safe_descend_verified`; the dirfd is open for
-                // `parent`'s lifetime and `parent.leaf_ptr()` returns
-                // a NUL-terminated `*const c_char` valid for the same
-                // lifetime.  `openat` does not retain either past the
-                // call.
-                let dir_fd = unsafe {
-                    libc::openat(
-                        parent.as_raw_fd(),
-                        parent.leaf_ptr(),
-                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    )
-                };
-                if dir_fd < 0 {
-                    let e = std::io::Error::last_os_error();
-                    return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
-                }
-                // L-3 pattern (fs_entries): F_DUPFD_CLOEXEC on the fd
-                // handed to fdopendir so the DIR*'s underlying fd
-                // carries CLOEXEC atomically.  Close the original.
-                //
-                // SAFETY: `dir_fd` is a freshly-opened open fd from
-                // the `openat` above; the `< 0` check preceded us.
-                // `fcntl(F_DUPFD_CLOEXEC, ...)` reads the fd flags
-                // and returns a new fd (or -1 on failure).
-                let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
-                // SAFETY: same `dir_fd` from `openat` above; still
-                // open (we haven't closed or dup'd-with-transfer it).
-                // We ignore the return value — even if close fails,
-                // the fd is gone.
-                unsafe { libc::close(dir_fd) };
-                if read_fd < 0 {
-                    let e = std::io::Error::last_os_error();
-                    return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
-                }
-                DirIter::from_dir_fd(read_fd)
-                    .map_err(|e| Box::new(err(io_err_code(&e), io_msg_scrub(&e))))
-            })
+                    // L-3 pattern (fs_entries): F_DUPFD_CLOEXEC on the fd
+                    // handed to fdopendir so the DIR*'s underlying fd
+                    // carries CLOEXEC atomically.  Close the original.
+                    //
+                    // SAFETY: `dir_fd` is a freshly-opened open fd from
+                    // the `openat` above; the `< 0` check preceded us.
+                    // `fcntl(F_DUPFD_CLOEXEC, ...)` reads the fd flags
+                    // and returns a new fd (or -1 on failure).
+                    let read_fd = unsafe { libc::fcntl(dir_fd, libc::F_DUPFD_CLOEXEC, 0) };
+                    // SAFETY: same `dir_fd` from `openat` above; still
+                    // open (we haven't closed or dup'd-with-transfer it).
+                    // We ignore the return value — even if close fails,
+                    // the fd is gone.
+                    unsafe { libc::close(dir_fd) };
+                    if read_fd < 0 {
+                        let e = std::io::Error::last_os_error();
+                        return Err(Box::new(err(io_err_code(&e), io_msg_scrub(&e))));
+                    }
+                    DirIter::from_dir_fd(read_fd)
+                        .map_err(|e| Box::new(err(io_err_code(&e), io_msg_scrub(&e))))
+                }),
+            )
             .await
             .unwrap_or_else(|je| crate::rust::interpreter::io::errors::join_err_abort(je));
             match opened {

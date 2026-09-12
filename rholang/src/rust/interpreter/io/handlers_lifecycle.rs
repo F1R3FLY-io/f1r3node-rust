@@ -322,17 +322,23 @@ impl FsHandler for FsOpenHandler {
                             ctx.handles.root_registry.resolve_or_identity(&root_pb);
                         let rel_for_open = rel.clone();
                         let intent_copy = intent;
-                        let opened = spawn_blocking(move || {
-                            let (flags, mode_bits) = fopen_flags(intent_copy);
-                            super::path::safe_open_verified(
-                                &root_pb,
-                                &rel_for_open,
-                                flags,
-                                mode_bits,
-                                expected_root_id,
+                        // X-2 / G-01: park_external_during so the
+                        // reduction driver can advance other participants
+                        // while safe_open_verified runs on the blocking pool.
+                        let opened =
+                            crate::rust::interpreter::deterministic_reduction::park_external_during(
+                                spawn_blocking(move || {
+                                    let (flags, mode_bits) = fopen_flags(intent_copy);
+                                    super::path::safe_open_verified(
+                                        &root_pb,
+                                        &rel_for_open,
+                                        flags,
+                                        mode_bits,
+                                        expected_root_id,
+                                    )
+                                }),
                             )
-                        })
-                        .await;
+                            .await;
                         match opened {
                             Ok(Ok(f)) => Some(std::sync::Arc::new(f)),
                             _ => None,

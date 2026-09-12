@@ -137,12 +137,27 @@ fn per_entry_ack_seed(ack: &Par, path: &std::path::Path) -> [u8; 32] {
 /// the async runtime to the deploy scope which rejects the block.
 /// See `design-decisions.md § DD-FailClosedOnInvariantBreak`.
 ///
+/// X-2 / G-01 (2026-09-11, branch-review-2026-09-11.md): the
+/// `spawn_blocking` JoinHandle await is wrapped in
+/// `park_external_during` so the current reduction participant is
+/// removed from the session's participant set while the syscall
+/// runs on the blocking pool.  Without this, a two-deploy scenario
+/// (D1 in `spawn_blocking(safe_open_verified(...))`, D2 doing an
+/// RSpace consume) deadlocks: D1's participant stays `Running`, so
+/// `frontier_ready()` sees a mix of `Running` + `Waiting` and never
+/// fires the driver — but the driver is the only thing that would
+/// service D2's admit, and D1's spawn_blocking never completes
+/// until the driver advances.  The park_external_during Drop guard
+/// unparks on both happy path and panic unwind (T-20's
+/// `join_err_abort` panic path).
+///
 /// Only wraps the "closure returns Par directly" pattern.  Sites
 /// where the closure returns `Result<T, E>` and the outer match
 /// dispatches on both variants stay inline — the extraction would
 /// force awkward generic-over-Result-arm parameterization for
 /// negligible LOC savings.  Those inline sites use the same
-/// `join_err_abort` helper on the `Err(_)` arm.
+/// `join_err_abort` helper on the `Err(_)` arm AND the same
+/// `park_external_during` wrapper on the `spawn_blocking(...).await`.
 ///
 /// The pre-T-20 `spawn_blocking_par_with_fallback` companion (which
 /// let callers produce a custom Par on JoinError, e.g.
@@ -153,7 +168,9 @@ fn per_entry_ack_seed(ack: &Par, path: &std::path::Path) -> [u8; 32] {
 // (`handlers_stream.rs` etc.) that share this spawn_blocking wrapper.
 pub(super) async fn spawn_blocking_par<F>(f: F) -> Par
 where F: FnOnce() -> Par + Send + 'static {
-    match spawn_blocking(f).await {
+    match crate::rust::interpreter::deterministic_reduction::park_external_during(spawn_blocking(f))
+        .await
+    {
         Ok(par) => par,
         Err(je) => super::errors::join_err_abort(je),
     }
@@ -1365,16 +1382,21 @@ impl FsProcesses {
         // retain the original for later use.
         let rel_for_open = rel.clone();
         // openat descent + safe_open in a blocking task — sync fs.
-        let opened = spawn_blocking(move || {
-            let (flags, mode_bits) = fopen_flags(intent_copy);
-            super::path::safe_open_verified(
-                &root_pb,
-                &rel_for_open,
-                flags,
-                mode_bits,
-                expected_root_id,
-            )
-        })
+        // X-2 / G-01: park_external_during so the reduction driver
+        // can advance other participants while this syscall runs on
+        // the blocking pool.
+        let opened = crate::rust::interpreter::deterministic_reduction::park_external_during(
+            spawn_blocking(move || {
+                let (flags, mode_bits) = fopen_flags(intent_copy);
+                super::path::safe_open_verified(
+                    &root_pb,
+                    &rel_for_open,
+                    flags,
+                    mode_bits,
+                    expected_root_id,
+                )
+            }),
+        )
         .await;
         let file = match opened {
             Err(je) => crate::rust::interpreter::io::errors::join_err_abort(je),
@@ -2284,27 +2306,32 @@ pub(super) async fn write_impl_via_table(
         Some(f) => f,
         None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
     };
-    let result = spawn_blocking(move || {
-        use std::os::fd::AsRawFd;
-        let raw_fd = file_arc.as_raw_fd();
-        // SAFETY: `file_arc` (an `Arc<File>`) is moved into this
-        // closure and keeps `raw_fd` open for the duration.
-        // `bytes` is a live `Vec<u8>` owned by this scope.
-        // pwrite/write read up to `bytes.len()` bytes from the
-        // pointer and return the count written (or -1 on error).
-        let n = unsafe {
-            if let Some(off) = offset {
-                libc::pwrite(raw_fd, bytes.as_ptr() as *const _, bytes.len(), off as i64)
+    // X-2 / G-01: park_external_during so the reduction driver can
+    // advance other participants while this syscall runs on the
+    // blocking pool.
+    let result = crate::rust::interpreter::deterministic_reduction::park_external_during(
+        spawn_blocking(move || {
+            use std::os::fd::AsRawFd;
+            let raw_fd = file_arc.as_raw_fd();
+            // SAFETY: `file_arc` (an `Arc<File>`) is moved into this
+            // closure and keeps `raw_fd` open for the duration.
+            // `bytes` is a live `Vec<u8>` owned by this scope.
+            // pwrite/write read up to `bytes.len()` bytes from the
+            // pointer and return the count written (or -1 on error).
+            let n = unsafe {
+                if let Some(off) = offset {
+                    libc::pwrite(raw_fd, bytes.as_ptr() as *const _, bytes.len(), off as i64)
+                } else {
+                    libc::write(raw_fd, bytes.as_ptr() as *const _, bytes.len())
+                }
+            };
+            if n < 0 {
+                Err(std::io::Error::last_os_error())
             } else {
-                libc::write(raw_fd, bytes.as_ptr() as *const _, bytes.len())
+                Ok(n as u64)
             }
-        };
-        if n < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(n as u64)
-        }
-    })
+        }),
+    )
     .await;
     match result {
         Err(je) => crate::rust::interpreter::io::errors::join_err_abort(je),
@@ -2469,10 +2496,21 @@ pub(super) async fn open_impl_via_table(
     let (root_pb, expected_root_id) = handles.root_registry.resolve_or_identity(&root_pb);
     let intent_copy = intent;
     let rel_for_open = rel.clone();
-    let opened = spawn_blocking(move || {
-        let (flags, mode_bits) = fopen_flags(intent_copy);
-        super::path::safe_open_verified(&root_pb, &rel_for_open, flags, mode_bits, expected_root_id)
-    })
+    // X-2 / G-01: park_external_during so the reduction driver can
+    // advance other participants while safe_open_verified runs on
+    // the blocking pool.
+    let opened = crate::rust::interpreter::deterministic_reduction::park_external_during(
+        spawn_blocking(move || {
+            let (flags, mode_bits) = fopen_flags(intent_copy);
+            super::path::safe_open_verified(
+                &root_pb,
+                &rel_for_open,
+                flags,
+                mode_bits,
+                expected_root_id,
+            )
+        }),
+    )
     .await;
     let file = match opened {
         Err(je) => crate::rust::interpreter::io::errors::join_err_abort(je),
@@ -2528,30 +2566,35 @@ pub(super) async fn read_impl_via_table(
         Some(f) => f,
         None => return err(FSERR_CLOSED, format!("unknown fd {fd}")),
     };
-    let result = spawn_blocking(move || {
-        use std::os::fd::AsRawFd;
-        let raw_fd = file_arc.as_raw_fd();
-        let mut buf = vec![0u8; n as usize];
-        // SAFETY: `file_arc` (an `Arc<File>`) is moved into this
-        // closure and keeps `raw_fd` open for the duration.  `buf`
-        // is a live heap allocation of `n` bytes owned by this
-        // scope.  pread/read write into `buf` up to `n` bytes and
-        // return the count written (or -1 on error); we truncate
-        // `buf` to the returned length.
-        let got = unsafe {
-            if let Some(off) = offset {
-                libc::pread(raw_fd, buf.as_mut_ptr() as *mut _, n as usize, off as i64)
+    // X-2 / G-01: park_external_during so the reduction driver can
+    // advance other participants while pread/read runs on the
+    // blocking pool.
+    let result = crate::rust::interpreter::deterministic_reduction::park_external_during(
+        spawn_blocking(move || {
+            use std::os::fd::AsRawFd;
+            let raw_fd = file_arc.as_raw_fd();
+            let mut buf = vec![0u8; n as usize];
+            // SAFETY: `file_arc` (an `Arc<File>`) is moved into this
+            // closure and keeps `raw_fd` open for the duration.  `buf`
+            // is a live heap allocation of `n` bytes owned by this
+            // scope.  pread/read write into `buf` up to `n` bytes and
+            // return the count written (or -1 on error); we truncate
+            // `buf` to the returned length.
+            let got = unsafe {
+                if let Some(off) = offset {
+                    libc::pread(raw_fd, buf.as_mut_ptr() as *mut _, n as usize, off as i64)
+                } else {
+                    libc::read(raw_fd, buf.as_mut_ptr() as *mut _, n as usize)
+                }
+            };
+            if got < 0 {
+                Err(std::io::Error::last_os_error())
             } else {
-                libc::read(raw_fd, buf.as_mut_ptr() as *mut _, n as usize)
+                buf.truncate(got as usize);
+                Ok(buf)
             }
-        };
-        if got < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            buf.truncate(got as usize);
-            Ok(buf)
-        }
-    })
+        }),
+    )
     .await;
     match result {
         Err(je) => crate::rust::interpreter::io::errors::join_err_abort(je),

@@ -98,22 +98,27 @@ impl FsHandler for FsFlushHandler {
                     return HandlerReply::err(FSERR_CLOSED, format!("unknown fd {}", args.fd));
                 }
             };
-            let r = spawn_blocking(move || {
-                use std::os::fd::AsRawFd;
-                let raw_fd = file_arc.as_raw_fd();
-                // SAFETY: `raw_fd` is derived from `file_arc:
-                // Arc<File>` whose lifetime spans this closure; the
-                // fd is open for the syscall.  `fsync` accepts any
-                // integer and returns -1 with errno on invalid fd
-                // rather than UB.
-                unsafe {
-                    if libc::fsync(raw_fd) < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(())
+            // X-2 / G-01: park_external_during so the reduction driver
+            // can advance other participants while fsync runs on the
+            // blocking pool.
+            let r = crate::rust::interpreter::deterministic_reduction::park_external_during(
+                spawn_blocking(move || {
+                    use std::os::fd::AsRawFd;
+                    let raw_fd = file_arc.as_raw_fd();
+                    // SAFETY: `raw_fd` is derived from `file_arc:
+                    // Arc<File>` whose lifetime spans this closure; the
+                    // fd is open for the syscall.  `fsync` accepts any
+                    // integer and returns -1 with errno on invalid fd
+                    // rather than UB.
+                    unsafe {
+                        if libc::fsync(raw_fd) < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
                     }
-                }
-            })
+                }),
+            )
             .await;
             match r {
                 Err(je) => super::errors::join_err_abort(je),
@@ -188,22 +193,27 @@ impl FsHandler for FsTellHandler {
                     return HandlerReply::err(FSERR_CLOSED, format!("unknown fd {}", args.fd));
                 }
             };
-            let r = spawn_blocking(move || {
-                use std::os::fd::AsRawFd;
-                let raw_fd = file_arc.as_raw_fd();
-                // SAFETY: `raw_fd` derives from `file_arc: Arc<File>`
-                // whose lifetime spans this closure; fd is open for
-                // the call.  `lseek(SEEK_CUR, 0)` is idempotent and
-                // returns the current offset (or -1 with errno).
-                unsafe {
-                    let pos = libc::lseek(raw_fd, 0, libc::SEEK_CUR);
-                    if pos < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(pos as u64)
+            // X-2 / G-01: park_external_during so the reduction driver
+            // can advance other participants while lseek runs on the
+            // blocking pool.
+            let r = crate::rust::interpreter::deterministic_reduction::park_external_during(
+                spawn_blocking(move || {
+                    use std::os::fd::AsRawFd;
+                    let raw_fd = file_arc.as_raw_fd();
+                    // SAFETY: `raw_fd` derives from `file_arc: Arc<File>`
+                    // whose lifetime spans this closure; fd is open for
+                    // the call.  `lseek(SEEK_CUR, 0)` is idempotent and
+                    // returns the current offset (or -1 with errno).
+                    unsafe {
+                        let pos = libc::lseek(raw_fd, 0, libc::SEEK_CUR);
+                        if pos < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(pos as u64)
+                        }
                     }
-                }
-            })
+                }),
+            )
             .await;
             match r {
                 Err(je) => super::errors::join_err_abort(je),
@@ -268,25 +278,31 @@ impl FsHandler for FsSizeHandler {
         Box::pin(async move {
             match ctx.handles.raw_fd(args.fd).await {
                 Some(file_arc) => {
-                    let r = spawn_blocking(move || {
-                        use std::os::fd::AsRawFd;
-                        let raw_fd = file_arc.as_raw_fd();
-                        // SAFETY: `libc::stat` is a POD C struct that
-                        // `zeroed()` can validly initialize (integer
-                        // fields).  `raw_fd` derives from `file_arc:
-                        // Arc<File>` whose lifetime spans this
-                        // closure.  `fstat` reads `&mut sb` without
-                        // retaining it past the call.
-                        unsafe {
-                            let mut sb: libc::stat = std::mem::zeroed();
-                            if libc::fstat(raw_fd, &mut sb) < 0 {
-                                Err(std::io::Error::last_os_error())
-                            } else {
-                                Ok(sb.st_size as u64)
-                            }
-                        }
-                    })
-                    .await;
+                    // X-2 / G-01: park_external_during so the reduction
+                    // driver can advance other participants while fstat
+                    // runs on the blocking pool.
+                    let r =
+                        crate::rust::interpreter::deterministic_reduction::park_external_during(
+                            spawn_blocking(move || {
+                                use std::os::fd::AsRawFd;
+                                let raw_fd = file_arc.as_raw_fd();
+                                // SAFETY: `libc::stat` is a POD C struct that
+                                // `zeroed()` can validly initialize (integer
+                                // fields).  `raw_fd` derives from `file_arc:
+                                // Arc<File>` whose lifetime spans this
+                                // closure.  `fstat` reads `&mut sb` without
+                                // retaining it past the call.
+                                unsafe {
+                                    let mut sb: libc::stat = std::mem::zeroed();
+                                    if libc::fstat(raw_fd, &mut sb) < 0 {
+                                        Err(std::io::Error::last_os_error())
+                                    } else {
+                                        Ok(sb.st_size as u64)
+                                    }
+                                }
+                            }),
+                        )
+                        .await;
                     match r {
                         Err(je) => super::errors::join_err_abort(je),
                         Ok(Err(e)) => HandlerReply::err(io_err_code(&e), io_msg_scrub(&e)),
@@ -1017,22 +1033,27 @@ impl FsHandler for FsSeekHandler {
                     );
                 }
             };
-            let r = spawn_blocking(move || {
-                use std::os::fd::AsRawFd;
-                let raw_fd = file_arc.as_raw_fd();
-                // SAFETY: `raw_fd` derives from `file_arc: Arc<File>`
-                // whose lifetime spans this closure; fd is open for
-                // the call.  `lseek` accepts any integer fd and
-                // returns -1 with errno on invalid fd or offset.
-                unsafe {
-                    let pos = libc::lseek(raw_fd, args.off, args.whence);
-                    if pos < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(pos as u64)
+            // X-2 / G-01: park_external_during so the reduction driver
+            // can advance other participants while lseek runs on the
+            // blocking pool.
+            let r = crate::rust::interpreter::deterministic_reduction::park_external_during(
+                spawn_blocking(move || {
+                    use std::os::fd::AsRawFd;
+                    let raw_fd = file_arc.as_raw_fd();
+                    // SAFETY: `raw_fd` derives from `file_arc: Arc<File>`
+                    // whose lifetime spans this closure; fd is open for
+                    // the call.  `lseek` accepts any integer fd and
+                    // returns -1 with errno on invalid fd or offset.
+                    unsafe {
+                        let pos = libc::lseek(raw_fd, args.off, args.whence);
+                        if pos < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(pos as u64)
+                        }
                     }
-                }
-            })
+                }),
+            )
             .await;
             match r {
                 Err(je) => super::errors::join_err_abort(je),
