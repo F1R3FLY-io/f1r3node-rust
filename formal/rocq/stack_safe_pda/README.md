@@ -2018,6 +2018,42 @@ formatter change has been made at this checkpoint. The model is registered in
 `_CoqProject` and the default maintained proof gate; no parser or dependency is
 introduced. See journal J-147 for exact artifacts and remaining work.
 
+#### Field-selection refinement and native obligations
+
+The subsequent `FieldViews` extension increases the checked report count to 27.
+It compares independent last-write/append decoder observations with first-field
+and contiguous-run cursor observations. Singular uniqueness is per semantic
+slot (including an entire oneof), not merely per numeric tag. Repeated fields
+must form one source-ordered run. These are admitted resident-byte premises,
+not permission to accept arbitrary protobuf input without validation.
+
+| Field-view law | Required native binding before acceptance |
+|---|---|
+| Unique singular selection | Present/absent children and scalar extrema against the frozen decoded formatter; duplicate-field negative control demonstrates why canonical admission matters. |
+| Ordered repeated selection | Zero, one and many children, preserving order; split-run negative control; continuation visits only one child at a time. |
+| Absent defaults | Missing children yield Nil, absent Var yields `var`, absent scalar/binder fields retain their historical defaults. |
+| Metadata insertion neutrality | Vary ignored fields without changing selected field output. |
+| Metadata register neutrality | Metadata before/after selected fields cannot replace a child or add an occurrence. |
+| Exact family mapping | Mixed Send/Receive/New/Expr/Bundle order, with ignored-only families excluded from wrapper arity. |
+| Repeated source-slice order | Non-identical siblings and map pairs compare with the independent decoded reference. |
+| Child-window composition | Nested offsets stay within the same callback payload; exact child slices, no owned subtree or copied payload. |
+| Invalid-input/nonvacuity controls | Explicit duplicate singular and split repeated runs distinguish the two algorithms outside their premises. |
+
+The native implementation will reuse one offset-frame vector across encoded
+endpoint callbacks. Each callback drains its frames before the zipper advances;
+offsets refer only to that callback's borrowed payload. Repeated-field frames
+advance monotonically and schedule one child, avoiding a width-sized worklist.
+This representation is the native binding of modeled windows, not a new parser.
+Scalar decoding, Rust dispatch, actual byte framing and allocation complexity
+still require native verification; the 27 checks do not prove those by themselves.
+
+Before production changes, four additional baseline tests pass in debug and
+release. They cover all 33 observation cases, signed/empty forms, every current
+generated fallback arm, and generated shallow terms. The frozen old formatter
+and these tests live under `models/tests/support/`. The original four tests keep
+their names and depth/stack parameters. These baselines are not yet evidence for
+a byte-native implementation.
+
 ### Compressed teardown navigation refinement (2026-09-11)
 
 `PathMapReversePruneTeardown.NavigationRefinement` independently computes scalar

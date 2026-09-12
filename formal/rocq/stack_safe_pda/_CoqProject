@@ -1,6 +1,5 @@
 -Q theories StackSafePDA
 theories/StackSafePDA.v
-theories/CanonicalSexprProjection.v
 theories/EPathMap.v
 theories/Bag.v
 theories/ScalarProjection.v
@@ -60,5 +59,6 @@ theories/TwoLevelRSpaceCurrentPublication.v
 theories/TwoLevelRSpaceCheckpointRecovery.v
 theories/TwoLevelRSpaceCheckpointRecoveryMutants.v
 theories/RPB3Admission.v
+theories/CanonicalSexprProjection.v
 theories/CanonicalSourceRelease.v
 theories/RPB3AdmissionMutants.v

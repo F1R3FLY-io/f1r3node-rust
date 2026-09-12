@@ -11257,8 +11257,13 @@ Read-buffer allocation and per-edge barrier costs remain.
 
 The complete current models release suite passes 491 tests with no failures,
 ignores or filters at `fec3985b6`, including the new physical-retention controls.
-Its 46.94-second test duration is not a benchmark comparison. Full models debug
-and whole-workspace acceptance remain separate requirements.
+Its 46.94-second test duration is not a benchmark comparison. The corresponding
+complete debug inventory subsequently passes all 491 tests with no failures,
+ignores or filters in 848.40 seconds. Both inventories precede the four new
+formatter baseline tests; they do not qualify later implementation changes.
+Whole-workspace acceptance remains a separate requirement. The debug log is
+`target/verification/canonical-models-rebased-debug-r1.log`, SHA-256
+`2db36b9ec4c4cefbe58e41f3306cf12ac083d138127e77c5118ea21046319565`.
 
 The unchanged depth-256 formatter test passes with the earlier, unre-based
 candidate in 816.95 seconds. That does not establish a complete debug pass or a

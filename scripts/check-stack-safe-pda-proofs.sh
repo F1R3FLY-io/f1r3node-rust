@@ -515,10 +515,6 @@ fi
 
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
-rocq_reject_placeholders theories/CanonicalSexprProjection.v
-rocq_compile_with_closed_count theories/CanonicalSexprProjection.v 18 \
-  "S-expression observation-level streaming projection and multiplicity laws"
-rocq_check_modules "S-expression observation-level projection" StackSafePDA.CanonicalSexprProjection
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
 rocq_reject_placeholders theories/ScalarProjection.v
@@ -622,6 +618,10 @@ if [[ "$rspace_commit_closed_capstones" != "6" ]]; then
   exit 1
 fi
 canonical_key_protocol_proofs
+rocq_reject_placeholders theories/CanonicalSexprProjection.v
+rocq_compile_with_closed_count theories/CanonicalSexprProjection.v 27 \
+  "S-expression streaming projection, multiplicity and canonical-field view laws"
+rocq_check_modules "S-expression canonical-field projection" StackSafePDA.CanonicalSexprProjection
 rpb3_admission_mutants_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RPB3AdmissionMutants.v 2>&1
 )"

@@ -1,5 +1,5 @@
 From Stdlib Require Import List String Arith Lia.
-From StackSafePDA Require Import StackSafePDA.
+From StackSafePDA Require Import StackSafePDA RPB3Admission.
 
 Import ListNotations.
 Open Scope string_scope.
@@ -381,6 +381,281 @@ Definition native_field_view_obligation {Bytes Typed : Type}
   forall bytes typed, resident bytes -> decode bytes = Some typed ->
     byte_projection bytes = Some (typed_projection typed).
 
+Module FieldViews.
+
+Module Windows := IndexedWindowTransport.
+
+Inductive slot := FirstChild | SecondChild | RepeatedChildren | Scalar | BinderCount
+  | ParSends | ParReceives | ParNews | ParExpressions | ParBundles | IgnoredMetadata.
+
+Definition slot_eq_dec : forall (left right : slot), {left = right} + {left <> right}.
+Proof. decide equality. Defined.
+
+Inductive payload := ScalarObservation : tokens -> payload
+  | ChildRegion : Windows.window -> payload.
+
+Record field := Field { field_slot : slot; field_payload : payload }.
+
+Fixpoint collect (wanted : slot) (fields : list field) : list payload :=
+  match fields with
+  | [] => []
+  | event :: rest =>
+      if slot_eq_dec (field_slot event) wanted
+      then field_payload event :: collect wanted rest
+      else collect wanted rest
+  end.
+
+Fixpoint decoder_repeated (wanted : slot) (fields : list field)
+  (accumulated : list payload) : list payload :=
+  match fields with
+  | [] => accumulated
+  | event :: rest => decoder_repeated wanted rest
+      (if slot_eq_dec (field_slot event) wanted
+       then accumulated ++ [field_payload event] else accumulated)
+  end.
+
+Fixpoint decoder_singular (wanted : slot) (fields : list field)
+  (current : option payload) : option payload :=
+  match fields with
+  | [] => current
+  | event :: rest => decoder_singular wanted rest
+      (if slot_eq_dec (field_slot event) wanted
+       then Some (field_payload event) else current)
+  end.
+
+Fixpoint cursor_first (wanted : slot) (fields : list field) : option payload :=
+  match fields with
+  | [] => None
+  | event :: rest =>
+      if slot_eq_dec (field_slot event) wanted
+      then Some (field_payload event) else cursor_first wanted rest
+  end.
+
+Fixpoint cursor_run (wanted : slot) (fields : list field) : list payload :=
+  match fields with
+  | [] => []
+  | event :: rest =>
+      if slot_eq_dec (field_slot event) wanted
+      then field_payload event :: cursor_run wanted rest else []
+  end.
+
+Fixpoint cursor_seek (wanted : slot) (fields : list field) : list payload :=
+  match fields with
+  | [] => []
+  | event :: rest =>
+      if slot_eq_dec (field_slot event) wanted
+      then field_payload event :: cursor_run wanted rest else cursor_seek wanted rest
+  end.
+
+Definition with_default (fallback selected : option payload) : option payload :=
+  match selected with None => fallback | Some value => Some value end.
+
+Fixpoint last_write (values : list payload) (current : option payload) : option payload :=
+  match values with [] => current | first :: rest => last_write rest (Some first) end.
+
+Lemma decoder_repeated_collects_in_source_order wanted fields accumulated :
+  decoder_repeated wanted fields accumulated = accumulated ++ collect wanted fields.
+Proof.
+  revert accumulated. induction fields as [|event rest IH]; intros accumulated; simpl.
+  - now rewrite app_nil_r.
+  - destruct (slot_eq_dec (field_slot event) wanted); rewrite IH; auto.
+    now rewrite <- app_assoc.
+Qed.
+
+Lemma decoder_singular_is_last_selected_write wanted fields current :
+  decoder_singular wanted fields current = last_write (collect wanted fields) current.
+Proof.
+  revert current. induction fields as [|event rest IH]; intro current; simpl; auto.
+  destruct (slot_eq_dec (field_slot event) wanted); simpl; apply IH.
+Qed.
+
+Lemma cursor_first_is_first_selected_value wanted fields :
+  cursor_first wanted fields = hd_error (collect wanted fields).
+Proof.
+  induction fields as [|event rest IH]; simpl; auto.
+  destruct (slot_eq_dec (field_slot event) wanted); simpl; auto.
+Qed.
+
+Theorem unique_singular_cursor_equals_decoder wanted fields fallback :
+  List.length (collect wanted fields) <= 1 ->
+  decoder_singular wanted fields fallback = with_default fallback (cursor_first wanted fields).
+Proof.
+  rewrite decoder_singular_is_last_selected_write, cursor_first_is_first_selected_value.
+  destruct (collect wanted fields) as [|first [|second rest]]; simpl; intros; try lia; reflexivity.
+Qed.
+
+Definition excludes (wanted : slot) (fields : list field) : Prop :=
+  Forall (fun event => field_slot event <> wanted) fields.
+
+Definition selected (wanted : slot) (fields : list field) : Prop :=
+  Forall (fun event => field_slot event = wanted) fields.
+
+Definition canonical_run (wanted : slot) (fields : list field) : Prop :=
+  exists before body after,
+    fields = before ++ body ++ after /\
+    excludes wanted before /\ selected wanted body /\ excludes wanted after.
+
+Lemma collect_append wanted left right :
+  collect wanted (left ++ right) = collect wanted left ++ collect wanted right.
+Proof.
+  induction left as [|event rest IH]; simpl; auto.
+  destruct (slot_eq_dec (field_slot event) wanted); simpl; now rewrite IH.
+Qed.
+
+Lemma excluded_fields_have_no_selected_values wanted fields :
+  excludes wanted fields -> collect wanted fields = [].
+Proof.
+  intro H. induction H; simpl; auto.
+  destruct (slot_eq_dec (field_slot x) wanted); congruence.
+Qed.
+
+Lemma cursor_seek_excludes_prefix wanted prefix rest :
+  excludes wanted prefix -> cursor_seek wanted (prefix ++ rest) = cursor_seek wanted rest.
+Proof.
+  intro H. induction H; simpl; auto.
+  destruct (slot_eq_dec (field_slot x) wanted); congruence.
+Qed.
+
+Lemma cursor_seek_excludes_all wanted fields :
+  excludes wanted fields -> cursor_seek wanted fields = [].
+Proof.
+  intro H. pose proof (@cursor_seek_excludes_prefix wanted fields [] H) as E.
+  now rewrite app_nil_r in E.
+Qed.
+
+Lemma cursor_run_selected_then_excluded wanted body after :
+  selected wanted body -> excludes wanted after ->
+  cursor_run wanted (body ++ after) = collect wanted body.
+Proof.
+  intros H. induction H; intro Hafter; simpl.
+  - destruct after as [|event rest]; simpl; auto.
+    inversion Hafter; subst. destruct (slot_eq_dec (field_slot event) wanted); congruence.
+  - destruct (slot_eq_dec (field_slot x) wanted); [simpl; now rewrite IHForall|congruence].
+Qed.
+
+Lemma cursor_seek_selected_then_excluded wanted body after :
+  selected wanted body -> excludes wanted after ->
+  cursor_seek wanted (body ++ after) = collect wanted body.
+Proof.
+  intros H Hafter. destruct body as [|event rest].
+  - simpl. now apply cursor_seek_excludes_all.
+  - inversion H; subst. simpl.
+    destruct (slot_eq_dec (field_slot event) (field_slot event)); [|congruence].
+    f_equal. now apply cursor_run_selected_then_excluded.
+Qed.
+
+Theorem ordered_run_cursor_equals_repeated_decoder wanted fields :
+  canonical_run wanted fields ->
+  cursor_seek wanted fields = decoder_repeated wanted fields [].
+Proof.
+  intros (before & body & after & -> & Hbefore & Hbody & Hafter).
+  rewrite cursor_seek_excludes_prefix by exact Hbefore.
+  rewrite cursor_seek_selected_then_excluded by assumption.
+  rewrite decoder_repeated_collects_in_source_order. simpl.
+  repeat rewrite collect_append.
+  rewrite (excluded_fields_have_no_selected_values Hbefore),
+    (excluded_fields_have_no_selected_values Hafter). simpl. now rewrite app_nil_r.
+Qed.
+
+Theorem absent_singular_preserves_the_decoder_default wanted fields fallback :
+  excludes wanted fields ->
+  decoder_singular wanted fields fallback = fallback /\ cursor_first wanted fields = None.
+Proof.
+  intro H. rewrite decoder_singular_is_last_selected_write,
+    cursor_first_is_first_selected_value,
+    (excluded_fields_have_no_selected_values H). split; reflexivity.
+Qed.
+
+Theorem metadata_insertion_preserves_selected_values wanted prefix suffix value :
+  wanted <> IgnoredMetadata ->
+  collect wanted (prefix ++ Field IgnoredMetadata value :: suffix) =
+    collect wanted (prefix ++ suffix).
+Proof.
+  intro H. repeat rewrite collect_append.
+  destruct wanted; simpl in *; congruence.
+Qed.
+
+Theorem metadata_is_neutral_for_decoder_registers wanted rest value singular repeated :
+  wanted <> IgnoredMetadata ->
+  decoder_singular wanted (Field IgnoredMetadata value :: rest) singular =
+    decoder_singular wanted rest singular /\
+  decoder_repeated wanted (Field IgnoredMetadata value :: rest) repeated =
+    decoder_repeated wanted rest repeated.
+Proof. intro H. destruct wanted; simpl in *; intuition congruence. Qed.
+
+Definition family_slot (wanted : slot) : bool :=
+  match wanted with
+  | ParSends | ParReceives | ParNews | ParExpressions | ParBundles => true
+  | _ => false
+  end.
+
+Definition ordered_family_slots :=
+  [ParSends; ParReceives; ParNews; ParExpressions; ParBundles].
+
+Theorem selected_family_mapping_is_exact :
+  NoDup ordered_family_slots /\
+  (forall wanted, family_slot wanted = true <-> In wanted ordered_family_slots).
+Proof.
+  split.
+  - unfold ordered_family_slots. repeat constructor; simpl; intuition discriminate.
+  - intro wanted. destruct wanted; unfold ordered_family_slots; simpl; intuition discriminate.
+Qed.
+
+Definition payload_bytes (root : CanonicalKeyProtocol.region) (value : payload)
+  : list CanonicalKeyProtocol.located_byte :=
+  match value with
+  | ScalarObservation _ => []
+  | ChildRegion region => Windows.window_bytes root region
+  end.
+
+Theorem repeated_source_slice_order_is_preserved wanted fields root :
+  canonical_run wanted fields ->
+  flat_map (payload_bytes root) (cursor_seek wanted fields) =
+    flat_map (payload_bytes root) (decoder_repeated wanted fields []).
+Proof. intro H. now rewrite (ordered_run_cursor_equals_repeated_decoder H). Qed.
+
+Theorem selected_child_window_composes_with_exact_source_slice
+  root parent limit start stop child :
+  Windows.window_valid root parent ->
+  Windows.checked_subwindow limit parent start stop = Some child ->
+  Windows.window_valid root child /\
+  Windows.window_owner child = Windows.window_owner parent /\
+  payload_bytes root (ChildRegion child) =
+    firstn (stop - start) (skipn start (payload_bytes root (ChildRegion parent))).
+Proof.
+  intros Hvalid Hchild.
+  pose proof (@Windows.nested_windows_preserve_owner_bounds_and_exact_slice
+    limit root parent start stop child Hvalid Hchild)
+    as (valid & owner & bound & bytes).
+  split; [exact valid|]. split; [exact owner|exact bytes].
+Qed.
+
+Definition sample (value : string) := ScalarObservation [value].
+
+Theorem field_view_nonvacuity_and_invalid_input_controls :
+  cursor_first Scalar [Field Scalar (sample "first"); Field Scalar (sample "last")] =
+    Some (sample "first") /\
+  decoder_singular Scalar [Field Scalar (sample "first"); Field Scalar (sample "last")] None =
+    Some (sample "last") /\
+  cursor_seek RepeatedChildren
+    [Field RepeatedChildren (sample "a"); Field IgnoredMetadata (sample "m");
+     Field RepeatedChildren (sample "b")] = [sample "a"] /\
+  decoder_repeated RepeatedChildren
+    [Field RepeatedChildren (sample "a"); Field IgnoredMetadata (sample "m");
+     Field RepeatedChildren (sample "b")] [] = [sample "a"; sample "b"] /\
+  canonical_run RepeatedChildren
+    [Field Scalar (sample "s"); Field RepeatedChildren (sample "a");
+     Field RepeatedChildren (sample "b"); Field IgnoredMetadata (sample "m")].
+Proof.
+  repeat split; try reflexivity.
+  exists [Field Scalar (sample "s")],
+    [Field RepeatedChildren (sample "a"); Field RepeatedChildren (sample "b")],
+    [Field IgnoredMetadata (sample "m")].
+  repeat split; repeat constructor; discriminate.
+Qed.
+
+End FieldViews.
+
 End CanonicalSexprProjection.
 
 Print Assumptions CanonicalSexprProjection.recursive_reference_is_the_existing_fold.
@@ -401,3 +676,12 @@ Print Assumptions CanonicalSexprProjection.constructor_catalog_is_exhaustive_and
 Print Assumptions CanonicalSexprProjection.every_constructor_observation_has_exact_streaming_tokens.
 Print Assumptions CanonicalSexprProjection.ignored_fallback_and_absence_observations_are_distinct.
 Print Assumptions CanonicalSexprProjection.empty_shape_controls.
+Print Assumptions CanonicalSexprProjection.FieldViews.unique_singular_cursor_equals_decoder.
+Print Assumptions CanonicalSexprProjection.FieldViews.ordered_run_cursor_equals_repeated_decoder.
+Print Assumptions CanonicalSexprProjection.FieldViews.absent_singular_preserves_the_decoder_default.
+Print Assumptions CanonicalSexprProjection.FieldViews.metadata_insertion_preserves_selected_values.
+Print Assumptions CanonicalSexprProjection.FieldViews.metadata_is_neutral_for_decoder_registers.
+Print Assumptions CanonicalSexprProjection.FieldViews.selected_family_mapping_is_exact.
+Print Assumptions CanonicalSexprProjection.FieldViews.repeated_source_slice_order_is_preserved.
+Print Assumptions CanonicalSexprProjection.FieldViews.selected_child_window_composes_with_exact_source_slice.
+Print Assumptions CanonicalSexprProjection.FieldViews.field_view_nonvacuity_and_invalid_input_controls.

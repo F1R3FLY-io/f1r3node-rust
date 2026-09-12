@@ -10688,11 +10688,46 @@ request remains necessary; compressed search does not remove local barriers.
 
 ### J-147 — 2026-09-12 Formal-first formatter projection and byte-view boundary
 
+**J-146 FOLLOW-UP MEASUREMENT.** The complete debug models inventory subsequently
+passes 491 tests, with zero failures, ignores and filters, in 848.40 seconds.
+The process exits zero under the existing 6 GiB memory-max, 4 GiB memory-high,
+zero-swap, four-core, 900-second scope. This closes that specific full-debug
+qualification, not whole-workspace CI or the still-unimplemented formatter
+optimization. Its source predates the four new baseline tests below. Log:
+`target/verification/canonical-models-rebased-debug-r1.log`, SHA-256
+`2db36b9ec4c4cefbe58e41f3306cf12ac083d138127e77c5118ea21046319565`.
+
 **QUESTION.** J-146 locates typed descendant reconstruction inside diagnostic
 formatting. Can the existing borrowed protobuf cursors render each authoritative
 endpoint without constructing nested `Par` roots, while preserving the exact
 historical text? This is a local repair candidate for task 8413's acceptance
 path, not a new decoder, parser or PathMap implementation.
+
+**SUBSEQUENT FIELD-VIEW CHECKPOINT.** Independent last-write/append decoder
+observations and first-field/contiguous-run cursor observations now have nine
+additional closed reports, bringing this theory to 27. The refinement requires
+singular-slot uniqueness and source-contiguous repeated runs; negative controls
+show why these premises matter. It reuses the existing admission model's exact
+owner-preserving window composition. The proof README extracts all nine native
+bindings before implementation. A fresh dependency cohort compiles StackSafePDA,
+RPB3Admission and CanonicalSexprProjection, followed by successful independent
+kernel checking. The model does not claim to verify Rust dispatch or raw parsing.
+
+The frozen decoded formatter is now test-only under `models/tests/support/`.
+Four new baseline tests pass in both profiles: 33 literal observations,
+signed/empty forms, generated fallback-arm enumeration and shallow generated
+terms. Production behavior is unchanged. The final debug/release runs each
+report four passes and 491 filtered tests, not a new full 495-test qualification.
+
+| Checkpoint artifact under `target/verification/` | SHA-256 |
+|---|---|
+| `canonical-sexpr-cohort-CanonicalSexprProjection.log` | `83b4bfe10543a5514e10eabd169ac9c06f224f7aef167ebc685d60d9bd490e02` |
+| `canonical-sexpr-cohort-kernel.log` | `c3167804464bc4378f16f9cb64c748375a8ebb30878698417d1f4075d6563b56` |
+| `canonical-sexpr-decoded-baseline-debug-r2.log` | `e97f3dd5e1165bd5f1c7a6a23311d9ea166d42be29632df66b64bb830376bb8a` |
+| `canonical-sexpr-decoded-baseline-release-r2.log` | `872f9ab928f759d3de5027f792876444b321506c7fb76a832540503a5d3f7058` |
+
+The earlier 18-report evidence below is retained as the initial checkpoint.
+The default gate now expects 27 and orders this theory after RPB3Admission.
 
 **DESIGN REVIEW.** `Par::visit_encoded` lends a validated component payload and
 its multiplicity inside a zipper callback. Complete the component's formatter
