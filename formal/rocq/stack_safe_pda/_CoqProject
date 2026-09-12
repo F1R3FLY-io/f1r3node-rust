@@ -24,6 +24,7 @@ theories/PathMapPhysicalOwnership.v
 theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v
 theories/PathMapReversePruneTeardownMutants.v
+theories/PathMapLeafExtension.v
 theories/CandidateProductPathContinuation.v
 theories/CandidateProductPathContinuationMutants.v
 theories/ChannelPrefixReplacement.v

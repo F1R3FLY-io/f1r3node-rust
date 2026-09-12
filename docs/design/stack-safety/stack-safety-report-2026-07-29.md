@@ -11307,6 +11307,27 @@ The panic occurs during valid dangling-path construction, before ACT encoding;
 it is not a formatter stack overflow. J-148 records the minimized history and
 terminal log hash. Combined-gate and campaign completion remain unproven.
 
+#### 5.33.63 Leaf-extension formal prerequisite (2026-09-12)
+
+The PMU-006 repair now has a separately qualified formal contract:
+`PathMapLeafExtension.v` produces 26 closed reports, with a fresh dependency
+rebuild and independent kernel check. Its 21 native binding obligations are
+enumerated in the formal README before runtime implementation. They cover
+terminal-boundary selection, value-free donor ownership, exact parked-value
+and endpoint-count handling, unchanged sibling topology, CoW snapshots,
+topology-neutral virtual navigation, and prefix authority. Interruption
+cleanup is explicitly not rollback; arbitrary failures inside upstream
+ownership-transfer calls are not certified by these logical proofs.
+
+The proof cohort peaks at 409.9 MiB with zero swap under a 2 GiB systemd limit.
+The maintained `--pathmap-leaf-extension-proofs` gate also passes. J-149 in
+the PathMap engineering journal records the source/log hashes, native entry
+points and why the existing sorted final-shape teardown property cannot
+establish original insertion-history correctness. These are formal
+verification results, not runtime stack/RSS improvements. Production mutation
+is not yet repaired by this checkpoint, and the integrated native gate remains
+unqualified. No consensus bytes or persistence formats change here.
+
 ### 5.34 RMP2 byte-native projection, cache, and candidate-product continuations [SS-A20, SS-A21, SS-Y14]
 
 This living checkpoint closes two different depth costs in the reconstructible RSpace candidate

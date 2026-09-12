@@ -35,6 +35,72 @@ The theorem kernel is schema-parametric. The generated Rust equivalence manifest
 
 The development contains no axioms, admitted goals, opaque assumptions, Verus `assume`, or external proof bodies.
 
+## PathMap leaf extension and virtual navigation (2026-09-12)
+
+`PathMapLeafExtension.v` specifies the local repair boundary for PMU-006,
+tracked in tasks 6023/6038. Its state separates prefix-closed logical topology
+from optional payloads: dangling paths remain observable even without values.
+The reference operation unions the old topology with the target's prefixes.
+An independent implementation model reads to the first absent edge, then
+permits subtree replacement only when the selected existing boundary is a
+terminal leaf. It parks that boundary's value, grafts a value-free suffix,
+and restores the exact parked value. Insertion subsequently replaces the
+target's value. No endpoint sorting or decoded entry projection is modeled.
+
+The 26 named proof reports cover observational equivalence, existing-path
+and repeated-create identities, read selection, preservation of values and
+finite-domain counts, parked ownership, and topology-neutral virtual cursor
+navigation. Virtual paths comprise an immutable authority prefix and a
+relative focus; saturating ascent cannot escape the prefix. Concrete negative
+controls show that an unprotected graft loses the root value, grafting below
+a nonterminal boundary destroys siblings, and interruption after parking is
+not rollback. A separate control distinguishes a missing child below a branch
+from a terminal-leaf extension.
+
+The native invariant catalog below is extracted before the Rust repair. Its
+exhaustiveness theorem enumerates this model's 21 declared obligations; it is
+not a proof that every possible Rust defect is covered. **All native bindings
+remain unqualified at this formal-first checkpoint.**
+
+| Model obligation | Required native property or source correspondence |
+|---|---|
+| `ReadSelectionExact` | Compare the read-selected existing boundary and absent suffix with an independent prefix-set oracle after each original operation. |
+| `TerminalChildMask` | Graft only at an existing focus with no children; reject the branching-boundary negative control. |
+| `MutableFocusBeforeMissingEdge` | Observe that mutable selection stops before the first absent edge, including before a prefix-rooted callback starts. |
+| `CompressedEndpointParentFocus` | Cover endpoints inside compressed paths and parent-held values under sparse and dense branches. |
+| `FreshDonorRootAbsent` | The donor root has no value; no synthetic destination value is used to permit mutation. |
+| `DonorSuffixExact` | Donor topology is exactly the missing suffix's prefix closure, including deep suffixes. |
+| `ParkNoPrune` | Detachment preserves the boundary path and uses non-pruning removal. |
+| `ParkCarrierCount` | The guarded endpoint certificate excludes a parked value at every resumable interruption boundary. |
+| `BorrowedGraftRetainsDonor` | The donor stays under its existing stack-safe owner throughout grafting and retirement. |
+| `RestoreReplacementAbsent` | Restoration returns no unexpected replacement and restores the same payload ownership, not a clone. |
+| `SuccessfulEndpointCount` | Create preserves counts; insertion adds exactly one new endpoint or returns exactly one replaced payload. Check before/after each operation. |
+| `SiblingValuesAndTopology` | Compare all values and logical edges, including unrelated siblings, against independent oracles. |
+| `CowSnapshotPreservation` | Retained snapshots preserve both values and dangling topology through mutation and all relevant drop orders. |
+| `ScopedDisposerNonpanicking` | Named production disposal policies are stack-safe and non-panicking; synthetic teardown barriers never enter the real-value sink. |
+| `DonorFinalRootTeardown` | Deep donor destruction uses the existing bounded-stack teardown path, including interrupted publication. |
+| `CalleeTransferUnwindBoundary` | Audit native remove/set ownership-transfer intervals; caller guards cannot dispose a value already transferred into a failing callee. |
+| `EmptyRootNormalizationAfterCursor` | Retired empty roots normalize only after closing the mutable cursor; reopening remains safe. |
+| `NoOpPreservesTopology` | Existing creates, missing removals and empty requests preserve their defined topology and return-value semantics. |
+| `VirtualNavigationTopologyNeutral` | Missing-path moves, cursor-only closure exit and interruption do not create topology. |
+| `VirtualAuthorityPrefix` | Relative reads, moves, child/sibling traversal, ascent and pruning never address outside the logical root. |
+| `BranchInsertionPreservesChildren` | A missing edge beneath a nonterminal uses a separately qualified insertion route and preserves existing children. |
+
+The model uses pointwise observations rather than functional extensionality.
+The segmentation law concerns logical path concatenation, not PathMap's private
+physical layout. The prepublication focus trace specifies the allowed boundary;
+the native implementation must still demonstrate that its actual operations
+follow that trace. Count laws quantify over a finite observed domain; the
+guarded runtime must maintain its exact resident endpoint certificate.
+
+No theorem establishes allocator correctness, private PathMap CoW behavior,
+arbitrary exception safety inside upstream methods, automatic Rust extraction,
+or a throughput improvement. Parking cleanup and rollback are deliberately
+different claims. The maintained `--pathmap-leaf-extension-proofs` route rebuilds
+the model prerequisites and checks the 26 reports and kernel acceptance;
+`--epathmap-import` and the default gate include the same contract. Passing the
+proof-only route does not qualify the still-failing native acceptance gate.
+
 ## Singleton EPathMap import prefilter (2026-09-08)
 
 `CanonicalEPathMapImport.v` refines the existing singleton import admission

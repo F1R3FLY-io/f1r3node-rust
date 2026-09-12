@@ -315,6 +315,23 @@ canonical_sexpr_projection_proofs() {
   rocq_check_modules "S-expression canonical-field projection" StackSafePDA.CanonicalSexprProjection
 }
 
+pathmap_leaf_extension_proofs() {
+  local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
+  rocq_reject_placeholders theories/PathMapLeafExtension.v
+  rocq_compile_with_closed_count theories/PathMapLeafExtension.v 26 \
+    "terminal leaf extension, parked ownership and topology-neutral cursor laws"
+  rocq_check_modules "PathMap leaf-extension contract" StackSafePDA.PathMapLeafExtension
+}
+
+pathmap_leaf_extension_prerequisites() {
+  local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
+  rocq_reject_placeholders theories/PathMapPhysicalOwnership.v theories/PathMapReversePruneTeardown.v
+  rocq_compile_with_closed_count theories/PathMapPhysicalOwnership.v 12 \
+    "PathMap leaf-extension physical-ownership prerequisite"
+  rocq_compile_with_closed_count theories/PathMapReversePruneTeardown.v 32 \
+    "PathMap leaf-extension disposal prerequisite"
+}
+
 canonical_act_batch_publication_proofs() {
   local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/CanonicalActBatchPublication.v
@@ -445,6 +462,18 @@ if [[ "${1:-}" == "--canonical-key-proofs" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "--pathmap-leaf-extension-proofs" ]]; then
+  export TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
+  pushd "$rocq_root" >/dev/null
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
+  pathmap_leaf_extension_prerequisites
+  pathmap_leaf_extension_proofs
+  popd >/dev/null
+  echo "stack-safe-pda: leaf-extension model proofs passed; native qualification is separate"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--epathmap-import" ]]; then
   export TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
   pushd "$rocq_root" >/dev/null
@@ -457,6 +486,8 @@ if [[ "${1:-}" == "--epathmap-import" ]]; then
   epathmap_score_proofs
   canonical_key_protocol_proofs
   canonical_sexpr_projection_proofs
+  pathmap_leaf_extension_prerequisites
+  pathmap_leaf_extension_proofs
   popd >/dev/null
   pushd "$repo_root" >/dev/null
   epathmap_import_runtime
@@ -595,6 +626,7 @@ rocq_compile_with_closed_count \
 rocq_check_modules "PathMap reverse teardown" \
   StackSafePDA.PathMapReversePruneTeardown \
   StackSafePDA.PathMapReversePruneTeardownMutants
+pathmap_leaf_extension_proofs
 rocq_compile_with_closed_count \
   theories/ChannelPrefixReplacement.v 5 \
   "the exact 27-invariant channel-prefix replacement authority"

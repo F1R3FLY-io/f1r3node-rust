@@ -10955,6 +10955,52 @@ merely proof of a pointwise reference model. No dummy values, input
 reordering, ignored panic or upstream dependency change is adopted. The
 integrated acceptance failure remains open.
 
+**FORMAL CHECKPOINT.** `PathMapLeafExtension.v` subsequently passes all 26
+named closed proof reports. A fresh five-module source cohort (base PDA,
+EPathMap, physical ownership, reverse-prune teardown and leaf extension) and
+an independent kernel check both pass. The scope takes 15.764 seconds with
+409.9 MiB peak and zero swap, under MemoryHigh=1536M, MemoryMax=2G,
+MemorySwapMax=0, CPUQuota=100%, TasksMax=64 and RuntimeMaxSec=900. The kernel
+check itself takes 12.23 seconds and 285,188 KiB maximum RSS. These are proof
+verification resource observations, not runtime performance measurements.
+
+The formal README extracts all 21 declared native obligations before runtime
+implementation. Pointwise equivalence covers topology, values, finite-domain
+counts, existing/empty/repeated paths and insertion. The independent read
+selection and virtual-navigation laws cover absent focuses and immutable
+authority prefixes. Negative controls retain naive root-value loss,
+wrong-boundary sibling loss, and the absence of rollback after interruption.
+Native CoW, compressed-node correspondence, and callee ownership-transfer
+intervals remain explicit requirements, not assumed proof conclusions.
+
+The bounded cursor review selects one shared root-native writer adapter with
+virtual state for missing focuses. A borrowed read cursor selects the deepest
+existing prefix before mutable descent. A closed optional endpoint-certificate
+borrow supports guarded maps without requiring raw EPathMap maps to invent a
+teardown count. Only the adapter updates that certificate: it excludes parked
+values until successful restoration, and checks count arithmetic before
+mutating. Incoming values must be guarded before path preparation. Existing
+named disposal and teardown-barrier policies can be shared across the crate
+boundary without exposing the guarded map or duplicating teardown. Synthetic
+barriers remain restricted to the established teardown algorithm; none are
+inserted into the destination to enable leaf extension.
+
+| Evidence | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/PathMapLeafExtension.v` | `39d0e51592e1850c12ca5996f8f427f0a29905d4071409b151ee36e115bef9d4` |
+| `target/verification/pathmap-leaf-extension-cohort-PathMapLeafExtension-r1.log` | `2a7d722fb82c14060e254bc485ff2908b2507032f8b7e3194f6d1a4281771f24` |
+| `target/verification/pathmap-leaf-extension-kernel-r1.log` | `a8cbe2b4f8148d2fd64e29afdc0a9ceb89d30f93d187a5e3244e2a8b50c4fe5d` |
+
+Earlier proof-script failures remain in `pathmap-leaf-extension-coqc-r1.log`
+through `r13.log`; `r12` passes the initial 21-report contract, and `r14`
+passes its final 26-report extension. No native mutation repair or performance
+improvement is claimed by this checkpoint. The maintained proof-only gate
+subsequently also exits zero, including fresh prerequisites, exact closed-report
+counts and kernel acceptance. Its log is
+`target/verification/pathmap-leaf-extension-maintained-gate-r1.log`, SHA-256
+`1dd348e108480ea9c7b4035e2db1f2cc3a89032d31f0033f7ae82e24867cd55c`.
+The integrated native gate remains unqualified.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
