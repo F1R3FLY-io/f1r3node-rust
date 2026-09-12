@@ -28,11 +28,11 @@ mod tests {
 
     use crypto::rust::hash::blake2b256::Blake2b256;
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+    use fileio_test_fixtures::{apply_wal_translated, assert_dir_trees_byte_identical};
     use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
     use rholang::rust::interpreter::accounting::costs::Cost;
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
-    use rholang::rust::interpreter::io::wal_applier::apply_wal_to_fresh_tree;
     use rholang::rust::interpreter::matcher::r#match::Matcher;
     use rholang::rust::interpreter::rho_runtime::{
         create_replay_rho_runtime, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
@@ -1162,127 +1162,13 @@ mod tests {
     // `fsWrite!` and supplies them directly by hash key.
     // ---------------------------------------------------------------
 
-    /// Recursively compare two directory trees for byte-identical
-    /// file contents + identical relative directory structure.
-    /// Ignores mtime, uid/gid, and any files listed in `ignore`.
-    fn assert_dir_trees_byte_identical(
-        a_root: &std::path::Path,
-        b_root: &std::path::Path,
-        ignore: &[&str],
-    ) {
-        fn collect(
-            root: &std::path::Path,
-            base: &std::path::Path,
-            ignore: &[&str],
-            out: &mut std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>,
-        ) {
-            for entry in std::fs::read_dir(root).expect("read_dir") {
-                let entry = entry.expect("dir entry");
-                let path = entry.path();
-                let rel = path.strip_prefix(base).unwrap().to_path_buf();
-                let name = rel.to_string_lossy().to_string();
-                if ignore
-                    .iter()
-                    .any(|p| name == *p || name.starts_with(&format!("{p}/")))
-                {
-                    continue;
-                }
-                let ft = entry.file_type().expect("file_type");
-                if ft.is_dir() {
-                    out.insert(rel.clone(), None); // directory marker
-                    collect(&path, base, ignore, out);
-                } else if ft.is_file() {
-                    let bytes = std::fs::read(&path).expect("read file");
-                    out.insert(rel, Some(bytes));
-                }
-                // Symlinks / other kinds are unexpected in fileio-consensus
-                // trees (boot-time validation rejects them); skip silently
-                // to keep the helper focused.
-            }
-        }
-        let mut a_map = std::collections::BTreeMap::new();
-        let mut b_map = std::collections::BTreeMap::new();
-        collect(a_root, a_root, ignore, &mut a_map);
-        collect(b_root, b_root, ignore, &mut b_map);
-        assert_eq!(
-            a_map.keys().collect::<Vec<_>>(),
-            b_map.keys().collect::<Vec<_>>(),
-            "tree layout differs: leader={:?}, follower={:?}",
-            a_map.keys().collect::<Vec<_>>(),
-            b_map.keys().collect::<Vec<_>>(),
-        );
-        for (rel, a_val) in &a_map {
-            let b_val = b_map.get(rel).unwrap();
-            match (a_val, b_val) {
-                (None, None) => {} // both directories
-                (Some(a_bytes), Some(b_bytes)) => {
-                    assert_eq!(
-                        a_bytes,
-                        b_bytes,
-                        "byte divergence at {rel:?}: leader_len={}, follower_len={}",
-                        a_bytes.len(),
-                        b_bytes.len(),
-                    );
-                }
-                _ => panic!(
-                    "kind divergence at {rel:?} (leader={:?}, follower={:?})",
-                    a_val.as_ref().map(|_| "file"),
-                    b_val.as_ref().map(|_| "file"),
-                ),
-            }
-        }
-    }
-
-    /// Rewrite an absolute path from `leader_root/rel` into the
-    /// `(follower_root, rel, None)` triple the TOCTOU-safe applier
-    /// hands to `safe_descend_verified` (S-1 hardening 2026-09-03).
-    /// Panics if the path isn't rooted under `leader_root` — that's
-    /// a WAL entry the applier can't handle safely (an out-of-tree
-    /// canon_path would mean the leader saw a symlink escape, which
-    /// boot-time validation forbids in the consensus-static trees
-    /// this test targets).
-    fn translate_path(
-        leader_root: &std::path::Path,
-        follower_root: &std::path::Path,
-        p: &std::path::Path,
-    ) -> rholang::rust::interpreter::io::wal_applier::ResolvedWalPath {
-        let rel = p.strip_prefix(leader_root).unwrap_or_else(|_| {
-            panic!(
-                "WAL entry path {p:?} is not rooted under leader_root {leader_root:?}; \
-                 test harness invariant violated"
-            )
-        });
-        rholang::rust::interpreter::io::wal_applier::ResolvedWalPath {
-            root: follower_root.to_path_buf(),
-            rel: rel.to_path_buf(),
-            expected_root_id: None,
-        }
-    }
-
-    /// Test-only wrapper for `apply_wal_to_fresh_tree` that
-    /// translates leader-tree WAL paths onto a follower tree via
-    /// `translate_path`.  Production joiners construct the
-    /// resolver from the boot registry (`resolve_wal_entry_root_rel`);
-    /// this helper keeps the `pb_m_14_*` call sites terse.
-    ///
-    /// Passes empty `allowed_roots` — the test fixtures use
-    /// tempdirs so operator-frozen consensus-static-root
-    /// validation is not applicable; production sites plumb the
-    /// actual roots.
-    fn apply_wal_translated(
-        wal: &[WalEntry],
-        payload_bytes: &std::collections::HashMap<[u8; 32], Vec<u8>>,
-        leader_root: &std::path::Path,
-        follower_root: &std::path::Path,
-    ) {
-        apply_wal_to_fresh_tree(
-            wal,
-            payload_bytes,
-            |p| translate_path(leader_root, follower_root, p),
-            &[],
-        )
-        .expect("test-driven WAL apply must not produce ApplierError");
-    }
+    // T-06 (2026-09-11, wave-4 Cluster D+E Phase 5): the previously
+    // inline test helpers `assert_dir_trees_byte_identical`,
+    // `translate_path`, and `apply_wal_translated` moved to the
+    // sibling `fileio-test-fixtures` crate.  Imported at the top of
+    // this `mod tests` block; propagated to `#[path]`-included
+    // submodules (`mutation.rs`, `observation.rs`, etc.) via the
+    // existing `use super::*;` re-export chain.
 
     // ---------------------------------------------------------------
     // H-29-3 lift, slice 1 (2026-08-26).  Path-based Consensus

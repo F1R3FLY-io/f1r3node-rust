@@ -1,0 +1,21 @@
+[package]
+name = "fileio-test-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = """
+T-06 (2026-09-11, wave-4 Cluster D+E Phase 5): shared test-only
+helpers for fileio WAL replay testing.  Extracted from the inline
+helpers in `rholang/tests/fs_wal_spec.rs` so any test binary in
+the workspace can drive follower-side WAL replay against a
+tempdir tree without reimplementing the applier plumbing.
+
+This crate is a `[dev-dependencies]` circular-loop with `rholang`
+(depends on `rholang` for `WalEntry` / `ResolvedWalPath` /
+`apply_wal_to_fresh_tree`; rholang uses THIS crate in its own
+dev-deps for tests).  Circular dev-dep cycles are supported by
+cargo — the two graphs are compiled independently.
+"""
+
+[dependencies]
+rholang = { path = ".." }

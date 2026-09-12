@@ -98,6 +98,12 @@ proptest = { workspace = true }
 rand = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 loom = "=0.7.2"
+# T-06 (2026-09-11, wave-4 Cluster D+E Phase 5): shared test-only
+# helpers for fileio WAL replay testing.  Circular dev-dep is
+# intentional and supported by cargo (dev-dep graph is compiled
+# independently of the production `[dependencies]` graph).  See
+# `fileio-test-fixtures/src/lib.rs` for the T-06 rationale.
+fileio-test-fixtures = { path = "fileio-test-fixtures" }
 
 [features]
 chromadb = ["dep:chroma", "dep:fastembed"]

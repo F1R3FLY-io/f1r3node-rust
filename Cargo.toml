@@ -4,6 +4,7 @@ members = [
 	"casper",
 	"rspace++",
 	"rholang",
+	"rholang/fileio-test-fixtures",
 	"rho-pure-eval",
 	"shared",
 	"node",
