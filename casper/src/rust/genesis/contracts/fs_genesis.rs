@@ -618,7 +618,22 @@ fn rholang_string_escape(s: &str) -> String {
 
 /// Nonce used in the FsGenesis signed-registry insertion.  MAX_LONG
 /// so nobody can overwrite the entry once published.
-pub const FS_NONCE: i64 = i64::MAX;
+///
+/// X-1 / CONS-4 (2026-09-12): source-of-truth moved to
+/// `rholang::rust::interpreter::io::FS_NONCE` so the fingerprint-
+/// fold registration lives alongside the other consensus constants
+/// (all fingerprint entries must live in a single crate for the
+/// `linkme::distributed_slice` collection to be complete in every
+/// linkage context, including rholang-lib-only tests).  Re-exported
+/// here for backwards compatibility with existing casper call
+/// sites; the value is guaranteed identical by the const-eq
+/// assertion below.
+pub const FS_NONCE: i64 = rholang::rust::interpreter::io::FS_NONCE;
+const _: () = assert!(
+    FS_NONCE == i64::MAX,
+    "CONS-4: FS_NONCE canonical value is i64::MAX; a drift here is \
+     a hard-fork event.  See rholang::rust::interpreter::io::FS_NONCE."
+);
 
 /// URN prefix shared between the runtime's `fs_native_def` registrations
 /// and this module's composed FsGenesis source.  A future Phase 1 hotfix

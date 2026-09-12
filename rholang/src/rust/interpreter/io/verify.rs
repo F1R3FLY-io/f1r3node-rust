@@ -346,6 +346,78 @@ mod tests {
         );
     }
 
+    /// X-1 / CONS-3 (2026-09-12, branch-review-2026-09-11.md): pin
+    /// the `stable_hash_provider::hash` output for a small set of
+    /// well-known Pars.  The reply-hash verify path
+    /// (`verify_reply_hash_matches_cached`) compares
+    /// `stable_hash(fresh)` against `stable_hash(previous.first())`;
+    /// if the hash function's serialization drifts (bincode
+    /// version bump, Par's `Serialize` impl change, hash function
+    /// substitution) followers would silently accept mismatched
+    /// hashes and diverge at the tuplespace level.
+    ///
+    /// These golden bytes are the equivalent of the fs_genesis
+    /// composed-source hashes: any code change here is a hard-fork
+    /// event that must roll every validator's cached-reply-hash
+    /// expectations.
+    ///
+    /// # Regeneration
+    ///
+    /// If a downstream change is intentional (e.g., bincode
+    /// version bump coordinated across the network), regenerate
+    /// via `--nocapture` and update the constants below.  Anchor
+    /// this to a version-bump commit in the log for auditability.
+    #[test]
+    fn cons3_stable_hash_pinned_for_known_pars() {
+        use super::super::errors::{FSERR_BAD_ARG, FSERR_IO};
+        // Case 1: ok_par(Par::default()) — the empty-payload
+        // success reply.  Every non-verifying handler that returns
+        // `[true]` uses this shape; every verifying handler that
+        // hits its own tautological echo path returns it under
+        // Consensus mode.
+        let empty_ok = ok_par(models::rhoapi::Par::default());
+        let empty_ok_hash = par_stable_hash(&empty_ok);
+        // Pinned bytes (regenerate on intentional roll).
+        const EXPECTED_EMPTY_OK: [u8; 32] = [
+            89, 167, 148, 142, 26, 75, 85, 14, 41, 59, 13, 160, 239, 236, 58, 176, 116, 38, 180,
+            54, 121, 32, 0, 75, 107, 121, 123, 46, 228, 251, 160, 110,
+        ];
+        assert_eq!(
+            empty_ok_hash, EXPECTED_EMPTY_OK,
+            "CONS-3: stable_hash of ok_par(Par::default()) drifted. \
+             If intentional (bincode version bump, Par Serialize \
+             impl change), coordinate across the network + update \
+             this pin.  Otherwise revert the drift-causing edit."
+        );
+        // Case 2: `err(FSERR_BAD_ARG, "example")` — a concrete
+        // error reply.  Exercises the FserrCode + msg encoding
+        // through stable_hash.
+        let bad_arg_reply = err(FSERR_BAD_ARG, "example");
+        let bad_arg_hash = par_stable_hash(&bad_arg_reply);
+        const EXPECTED_BAD_ARG: [u8; 32] = [
+            7, 68, 175, 62, 6, 223, 205, 97, 254, 101, 101, 108, 179, 34, 2, 59, 84, 168, 160, 44,
+            237, 45, 237, 179, 38, 147, 155, 123, 196, 89, 14, 129,
+        ];
+        assert_eq!(
+            bad_arg_hash, EXPECTED_BAD_ARG,
+            "CONS-3: stable_hash of err(FSERR_BAD_ARG, \"example\") \
+             drifted.  Same rationale as above."
+        );
+        // Case 3: distinct FSERR codes MUST produce distinct
+        // digests — sanity check that the code participates in
+        // the hash (a bug that ignored FserrCode would silently
+        // pass Cases 1+2 but let leader/follower diverge on
+        // otherwise-similar replies).
+        let io_reply = err(FSERR_IO, "example");
+        let io_hash = par_stable_hash(&io_reply);
+        assert_ne!(
+            bad_arg_hash, io_hash,
+            "CONS-3: distinct FSERR codes with identical message \
+             MUST hash distinctly — the FserrCode bytes are part \
+             of the stable_hash input"
+        );
+    }
+
     /// End-to-end stat_record shape: two files with identical
     /// permission bits + size but different names produce distinct
     /// Consensus-mode stat_record hashes.  This is the property

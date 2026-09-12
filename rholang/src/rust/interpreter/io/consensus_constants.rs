@@ -26,6 +26,12 @@ pub use super::lock::{LOCK_ID_CEILING, MAX_RANGES_PER_FILE, MAX_WAITERS_PER_FILE
 // WAL entry serialization (§ 3).
 pub use super::snapshot::{MANIFEST_FORMAT_VERSION, SNAPSHOT_FORMAT_VERSION};
 pub use super::wal::{MAX_WAL_ENTRIES, WAL_OP_VARIANTS, WAL_OUTCOME_VARIANTS};
+// X-1 / CONS-4 (2026-09-12): CMODE bundle-string constants + FS_NONCE
+// (§ 9a composition-time constants).  FS_NONCE's source-of-truth
+// was moved from casper to rholang (see mod.rs § FS_NONCE) so its
+// linkme registration lives in the same crate as the other
+// fingerprint entries.
+pub use super::{CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR, FS_NONCE};
 pub use super::{MAX_CHUNK_ITEMS, MAX_OPEN_FDS, MAX_READ_BYTES, MAX_TRUNCATE_BYTES};
 
 #[cfg(test)]
@@ -77,6 +83,13 @@ mod tests {
             // variant counts as consensus-observable.
             "WAL_OP_VARIANTS",
             "WAL_OUTCOME_VARIANTS",
+            // X-1 / CONS-4 (2026-09-12): CMODE bundle strings +
+            // FS_NONCE.  FS_NONCE is registered from casper's
+            // fs_genesis.rs (circular-dep avoidance — see comment
+            // in the `pub use` block above).
+            "CMODE_ORACULAR_STR",
+            "CMODE_CONSENSUS_STR",
+            "FS_NONCE",
         ]
         .into_iter()
         .collect();

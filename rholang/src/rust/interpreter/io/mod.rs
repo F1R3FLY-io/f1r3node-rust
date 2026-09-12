@@ -112,4 +112,38 @@ pub const MAX_CHUNK_ITEMS: u64 = 65536;
 crate::register_consensus_constant!(order = 3, name = MAX_READ_BYTES, u64_be);
 crate::register_consensus_constant!(order = 4, name = MAX_TRUNCATE_BYTES, u64_be);
 crate::register_consensus_constant!(order = 6, name = MAX_OPEN_FDS, u64_be);
+
+// X-1 / CONS-4 (2026-09-12, branch-review-2026-09-11.md): register
+// the two CMODE bundle-string constants in the fingerprint fold.
+// These strings are embedded in every Consensus bundle entry in
+// the composed fs_genesis source (see fs_genesis.rs
+// `BundleConsensusMode::{ORACULAR_STR, CONSENSUS_STR}`), so a
+// rename is already caught by the composed-source golden hex.
+// Folding them ALSO into the runtime fingerprint is defense-in-
+// depth: a validator whose CMODE constants drifted from the
+// canonical values fails the peering-handshake network_id check
+// AT BOOT, before it can produce any divergent state.  Orders
+// 14 & 15 (post-CONS-1's 12 & 13 for WAL_OP_VARIANTS +
+// WAL_OUTCOME_VARIANTS).  Rolls fingerprint golden hex.
+crate::register_consensus_constant!(order = 14, name = CMODE_ORACULAR_STR, str_bytes);
+crate::register_consensus_constant!(order = 15, name = CMODE_CONSENSUS_STR, str_bytes);
+
+/// X-1 / CONS-4 (2026-09-12): FS_NONCE canonical value.  Source-of-
+/// truth was moved from `casper::genesis::contracts::fs_genesis`
+/// to here so the `linkme::distributed_slice` registration lives
+/// in the same crate as the other fingerprint entries (rholang-
+/// lib-only tests must see the same fold count as the full-node
+/// binary; a casper-side registration would be invisible to
+/// `cargo test -p rholang --lib`).  Casper's `fs_genesis::
+/// FS_NONCE` re-exports this value for backwards compatibility.
+///
+/// The nonce is embedded in the composed fs_genesis source
+/// (`new_gint_par(FS_NONCE, ...)` in the signed-registry
+/// insertion), so a drift is already caught by the composed-
+/// source golden hex.  Registering in the runtime fold ALSO
+/// catches it via the peering-handshake network_id mismatch — a
+/// validator whose FS_NONCE differs from `i64::MAX` refuses to
+/// peer with the canonical fleet at boot.
+pub const FS_NONCE: i64 = i64::MAX;
+crate::register_consensus_constant!(order = 16, name = FS_NONCE, i64_be);
 crate::register_consensus_constant!(order = 11, name = MAX_CHUNK_ITEMS, u64_be);

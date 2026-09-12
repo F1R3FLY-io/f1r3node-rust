@@ -103,7 +103,13 @@ const _: () = assert!(
 /// X-1 / CONS-1 (2026-09-11): bumped from 11 to 13 to add
 /// `WAL_OP_VARIANTS` (order 12) and `WAL_OUTCOME_VARIANTS`
 /// (order 13).  Rolls fingerprint golden hex.
-const EXPECTED_ENTRY_COUNT: usize = 13;
+///
+/// X-1 / CONS-4 (2026-09-12): bumped from 13 to 16 to add
+/// `CMODE_ORACULAR_STR` (order 14, str_bytes),
+/// `CMODE_CONSENSUS_STR` (order 15, str_bytes), and `FS_NONCE`
+/// (order 16, i64_be — registered from casper crate).  Rolls
+/// fingerprint golden hex.
+const EXPECTED_ENTRY_COUNT: usize = 16;
 
 /// M-35 (2026-09-08, A4-S-3): a single consensus-observable
 /// constant's contribution to the fingerprint fold.
@@ -276,6 +282,46 @@ macro_rules! register_consensus_constant {
                 };
         }
     };
+    // X-1 / CONS-4 (2026-09-12): `str_bytes` shape for
+    // `&'static str` constants (e.g., CMODE_ORACULAR_STR).  Folds
+    // a u32-BE length prefix + the UTF-8 bytes so a rename that
+    // preserves length still produces a distinct fingerprint.
+    (order = $order:literal, name = $const_name:ident, str_bytes) => {
+        paste::paste! {
+            #[linkme::distributed_slice($crate::rust::interpreter::io::consensus_fingerprint::CONSENSUS_FOLD)]
+            #[allow(non_upper_case_globals)]
+            static [<CONSENSUS_FOLD_ $const_name>]:
+                $crate::rust::interpreter::io::consensus_fingerprint::ConsensusFoldEntry =
+                $crate::rust::interpreter::io::consensus_fingerprint::ConsensusFoldEntry {
+                    order: $order,
+                    name: stringify!($const_name),
+                    encode: |buf: &mut Vec<u8>| {
+                        let bytes = $const_name.as_bytes();
+                        buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                        buf.extend_from_slice(bytes);
+                    },
+                };
+        }
+    };
+    // X-1 / CONS-4 (2026-09-12): `i64_be` shape for signed 64-bit
+    // constants (e.g., FS_NONCE = i64::MAX).  Emitted as two's-
+    // complement big-endian bytes; distinguishable from the `u64_be`
+    // shape for values above i64::MAX (though currently unused).
+    (order = $order:literal, name = $const_name:ident, i64_be) => {
+        paste::paste! {
+            #[linkme::distributed_slice($crate::rust::interpreter::io::consensus_fingerprint::CONSENSUS_FOLD)]
+            #[allow(non_upper_case_globals)]
+            static [<CONSENSUS_FOLD_ $const_name>]:
+                $crate::rust::interpreter::io::consensus_fingerprint::ConsensusFoldEntry =
+                $crate::rust::interpreter::io::consensus_fingerprint::ConsensusFoldEntry {
+                    order: $order,
+                    name: stringify!($const_name),
+                    encode: |buf: &mut Vec<u8>| {
+                        buf.extend_from_slice(&($const_name as i64).to_be_bytes());
+                    },
+                };
+        }
+    };
 }
 
 /// Append the consensus fingerprint to the operator's `network_id`.
@@ -364,11 +410,15 @@ mod tests {
         //   SNAPSHOT_FORMAT_VERSION).
         // Prior anchor: 0982cf37fab162be (2026-09-08 M-35 landing;
         //   MAX_CHUNK_ITEMS appended at position 11).
-        // Current anchor: X-1 / CONS-1 (2026-09-11) added
-        //   WAL_OP_VARIANTS (position 12) + WAL_OUTCOME_VARIANTS
-        //   (position 13).  Pins the WAL wire encoding's variant
-        //   count as consensus-observable.
-        const EXPECTED_FOR_CURRENT: &str = "a4ec7d2e6988455b";
+        // Prior anchor: a4ec7d2e6988455b (2026-09-11 X-1 / CONS-1;
+        //   WAL_OP_VARIANTS + WAL_OUTCOME_VARIANTS appended at 12+13).
+        // Current anchor: X-1 / CONS-4 (2026-09-12) added
+        //   CMODE_ORACULAR_STR (position 14, str_bytes),
+        //   CMODE_CONSENSUS_STR (position 15, str_bytes), and
+        //   FS_NONCE (position 16, i64_be — source-of-truth moved
+        //   from casper to rholang).  Pins composition-time
+        //   consensus constants at the runtime fingerprint layer.
+        const EXPECTED_FOR_CURRENT: &str = "3b7524b21f2a9eb5";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "M-8/B2 fingerprint changed — did MAX_WAL_ENTRIES, MAX_WRITE_BYTES, \

@@ -28,6 +28,11 @@ bincode = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# X-1 / CONS-4 (2026-09-12): needed by
+# `rholang::register_consensus_constant!` when invoked from this
+# crate to register `FS_NONCE` in the fingerprint fold.
+paste = "1.0"
+linkme = "0.3"
 byteorder = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
