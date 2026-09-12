@@ -11253,6 +11253,67 @@ Proof commands use a 2 GiB cap; Rust compilation/cohorts use 6 GiB, and the
 direct minimized trace uses 1 GiB. All disable swap. The final model source
 SHA-256 is `6d5d61561dfc595010aced350e97c5a985ed8baf928b72aeb47095843a736878`.
 
+### J-154 — 2026-09-12 Clone-family union and independent ACT source-access qualification
+
+**REPRODUCED AND REPAIRED.** The shared set/map zipper union introduced in
+J-153 bypassed the previous native set join's identity shortcut. A regression
+asserting shared snapshot-cell identity fails before the repair, even though
+the resulting set is semantically equal. `EntryTrie::try_join` now applies its
+existing immutable clone-family identity witness to both specializations.
+Neither snapshot must be serialized to establish identity. The already checked
+`UnitJoin.unit_join_has_pointwise_set_laws` supplies topology and membership
+idempotence; successful mutation invalidation remains a native binding, not a
+proof of private PathMap allocation or panic atomicity.
+
+**MEASURED CORRECTNESS.** Four clone-family tests pass, including 128 generated
+original-order topology histories, both modes, cold/warm snapshot cells, dense
+dangling paths and destructive/non-destructive invalidation. A new replacement
+test initially expected bare integers; the documented cursor-composition law
+instead produces singleton lists. That test oracle was corrected without
+changing production composition semantics. Retained storage identity is a
+direct witness of shortcut selection, not an end-to-end timing measurement.
+
+**INDEPENDENT READ EVIDENCE.** The existing zero-reparse counters alone were
+insufficient: their zero values did not observe concrete event-time source
+access. A test-only `IndexedByteSource` wrapper now records byte, copy,
+contiguous-range and equality requests independently of production counters.
+The legacy canonical parser supplies the ordered expected suffix-byte reads;
+the validated plan is not used to construct the oracle. Each compressed edge
+must read exactly its source byte; metadata events, branch edges, exhaustion
+and rewind must read none. Complete and partial rewinds are checked with
+contiguous and fragmented storage, sparse/dense branches, reused lines and
+unchanged generated histories. Deliberate metadata and duplicate-suffix reads
+are rejected by the same checker. All 20 validated-plan tests pass, including
+the retained malformed-image and small-stack gates.
+
+The malformed corpus exhausts truncations and single-bit mutations of its
+selected image, not every possible byte sequence. Error parity preserves
+previously defined offsets and permits additional valid provenance where the
+legacy parser supplied none. Neither these tests nor the interior-line formal
+model prove the entire concrete Rust parser automatically.
+
+| Evidence under `target/verification/` | SHA-256 |
+|---|---|
+| `epathmap-clone-identity-baseline-r1.log` (expected identity failure) | `4e9025520c4fa5a4ebee649161b4e7efafe79b965713dab8ee7abed77c1b1df4` |
+| `epathmap-clone-identity-qualified-r1.log` (incorrect composition oracle retained) | `cf4b494686b00eec043bc7f2b7d227a730548a7c4a66f358c9b2d95421e6b304` |
+| `epathmap-clone-identity-qualified-r2.log` (4 pass) | `827cbe8b8a6fc6272578a642300deec4b4fd46dcf7386b8799d3052833ec7175` |
+| `act-source-witness-qualified-r1.log` (20 pass) | `915aaf0d4caac27cd66adf22aef04f515444aaf6dd7c8f69f87c03bcacfd23ef` |
+
+**PREREGISTERED NEXT MEASUREMENT.** pgmcp experiment 343,
+`act-validated-plan-isolated-scaling-6023`, is linked to task 6023 without
+automatically turning an experiment verdict into task completion. It compares
+canonical admission, cold full traversal and retained replay on geometric
+deep/wide/compressed inputs, with separate allocation/counter and uninstrumented
+timing builds. The primary allocation comparison uses 4096 wide valued keys;
+the full shape matrix separately tests scaling. Fixtures, audits and output
+are outside operation timers. Worker RSS includes fixture/input/runtime memory;
+headless Heaptrack attributes allocations but supplies no latency verdict.
+Five warmups and at least 30 retained replicates are planned. A new-cursor
+rewind-only measurement has no corresponding legacy API. Exact deterministic
+allocation evidence must not be misrepresented as noisy independent samples
+merely because the experiment service offers a default statistical test.
+Results, full-library verification and campaign acceptance remain open.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

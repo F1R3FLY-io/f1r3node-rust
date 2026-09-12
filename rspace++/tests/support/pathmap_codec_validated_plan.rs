@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::ops::Range;
 use std::thread;
 
 use pathmap::PathMap;
@@ -51,6 +53,282 @@ impl IndexedByteSource for FragmentedSource {
         let chunk = self.starts.partition_point(|start| *start <= index) - 1;
         self.chunks[chunk].get(index - self.starts[chunk]).copied()
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SourceAccess {
+    Byte(usize),
+    Copy { start: usize, len: usize },
+    Contiguous(Range<usize>),
+    Equal(Range<usize>, Range<usize>),
+}
+
+struct ObservedSource<S> {
+    inner: S,
+    accesses: RefCell<Vec<SourceAccess>>,
+}
+
+impl<S> ObservedSource<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            accesses: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn take_accesses(&self) -> Vec<SourceAccess> {
+        std::mem::take(&mut *self.accesses.borrow_mut())
+    }
+}
+
+impl<S: IndexedByteSource> IndexedByteSource for ObservedSource<S> {
+    fn len(&self) -> usize { self.inner.len() }
+
+    fn byte_at(&self, index: usize) -> Option<u8> {
+        self.accesses.borrow_mut().push(SourceAccess::Byte(index));
+        self.inner.byte_at(index)
+    }
+
+    fn contiguous_range(&self, range: Range<usize>) -> Option<&[u8]> {
+        self.accesses
+            .borrow_mut()
+            .push(SourceAccess::Contiguous(range.clone()));
+        self.inner.contiguous_range(range)
+    }
+
+    fn copy_exact(&self, start: usize, output: &mut [u8]) -> bool {
+        self.accesses.borrow_mut().push(SourceAccess::Copy {
+            start,
+            len: output.len(),
+        });
+        self.inner.copy_exact(start, output)
+    }
+
+    fn ranges_equal(&self, left: Range<usize>, right: Range<usize>) -> bool {
+        self.accesses
+            .borrow_mut()
+            .push(SourceAccess::Equal(left.clone(), right.clone()));
+        self.inner.ranges_equal(left, right)
+    }
+}
+
+fn legacy_event_access_oracle(bytes: &[u8]) -> Vec<(CompactTrieTopologyEvent, Option<usize>)> {
+    enum Work {
+        Visit(usize),
+        Edge(u8),
+        Leave(usize),
+    }
+    let trie = CompactTrie::parse_canonical(bytes).unwrap();
+    let mut events = Vec::new();
+    let mut work = vec![Work::Visit(trie.parsed.root_id)];
+    while let Some(next) = work.pop() {
+        match next {
+            Work::Visit(id) => {
+                let node = &trie.parsed.semantic_nodes[&id];
+                let line = node
+                    .line
+                    .as_ref()
+                    .map(|line| line.suffix.clone())
+                    .unwrap_or(0..0);
+                events.push((
+                    CompactTrieTopologyEvent::Value(line.is_empty() && node.value.is_some()),
+                    None,
+                ));
+                for offset in line.clone() {
+                    events.push((CompactTrieTopologyEvent::Edge(bytes[offset]), Some(offset)));
+                    events.push((
+                        CompactTrieTopologyEvent::Value(
+                            offset + 1 == line.end && node.value.is_some(),
+                        ),
+                        None,
+                    ));
+                }
+                work.push(Work::Leave(line.len() + 1));
+                for &(byte, child) in node.children.iter().rev() {
+                    work.push(Work::Visit(child));
+                    work.push(Work::Edge(byte));
+                }
+            }
+            Work::Edge(byte) => events.push((CompactTrieTopologyEvent::Edge(byte), None)),
+            Work::Leave(count) => {
+                events.extend((0..count).map(|_| (CompactTrieTopologyEvent::Leave, None)));
+            }
+        }
+    }
+    assert_eq!(events.iter().map(|(event, _)| *event).collect::<Vec<_>>(), old_topology(bytes));
+    events
+}
+
+#[derive(Clone, Copy)]
+enum AccessMutation {
+    None,
+    Metadata(usize),
+    DuplicateSuffix,
+}
+
+fn check_observed_event<S: IndexedByteSource>(
+    cursor: &mut CanonicalCompactTrieIndexedTopologyCursor<ObservedSource<S>>,
+    expected: Option<&(CompactTrieTopologyEvent, Option<usize>)>,
+    mutation: AccessMutation,
+) -> Result<(), String> {
+    match mutation {
+        AccessMutation::None => {}
+        AccessMutation::Metadata(offset) => {
+            let _ = cursor.source().byte_at(offset);
+        }
+        AccessMutation::DuplicateSuffix => {
+            let offset = expected
+                .and_then(|(_, offset)| *offset)
+                .ok_or("duplicate control requires a line edge")?;
+            let _ = cursor.source().byte_at(offset);
+        }
+    }
+    let actual = cursor.next_event().map_err(|error| error.to_string())?;
+    let accesses = cursor.source().take_accesses();
+    let expected_accesses = expected
+        .and_then(|(_, offset)| *offset)
+        .map(SourceAccess::Byte)
+        .into_iter()
+        .collect::<Vec<_>>();
+    if accesses != expected_accesses {
+        return Err(format!(
+            "source access mismatch: expected {expected_accesses:?}, actual {accesses:?}"
+        ));
+    }
+    if let Some((_, Some(offset))) = expected {
+        if !matches!(actual, Some(CanonicalCompactTrieTopologyEvent::Edge { source_offset, .. }) if source_offset == *offset)
+        {
+            return Err(format!("line provenance mismatch at {offset}: {actual:?}"));
+        }
+    }
+    let erased = actual.map(|event| match event {
+        CanonicalCompactTrieTopologyEvent::Value { value, .. } => {
+            CompactTrieTopologyEvent::Value(value.is_some())
+        }
+        CanonicalCompactTrieTopologyEvent::Edge { byte, .. } => {
+            CompactTrieTopologyEvent::Edge(byte)
+        }
+        CanonicalCompactTrieTopologyEvent::Leave { .. } => CompactTrieTopologyEvent::Leave,
+    });
+    if erased != expected.map(|(event, _)| *event) {
+        return Err(format!("event mismatch: expected {expected:?}, actual {actual:?}"));
+    }
+    Ok(())
+}
+
+fn check_observed_rewind<S: IndexedByteSource>(
+    cursor: &mut CanonicalCompactTrieIndexedTopologyCursor<ObservedSource<S>>,
+) -> Result<(), String> {
+    cursor.rewind();
+    let accesses = cursor.source().take_accesses();
+    if !accesses.is_empty() {
+        return Err(format!("rewind accessed source: {accesses:?}"));
+    }
+    Ok(())
+}
+
+fn check_independent_source_access<S: IndexedByteSource>(
+    bytes: &[u8],
+    source: S,
+) -> Result<(), String> {
+    let expected = legacy_event_access_oracle(bytes);
+    let mut cursor =
+        CanonicalCompactTrieIndexedTopologyCursor::from_source(ObservedSource::new(source))
+            .map_err(|error| error.to_string())?;
+    if cursor.source().take_accesses().is_empty() {
+        return Err("admission made no observed source accesses".to_owned());
+    }
+    let partial_line = expected
+        .iter()
+        .position(|(_, offset)| offset.is_some())
+        .map_or(1, |index| index + 1);
+    for partial in [None, Some(expected.len() / 2), Some(partial_line)] {
+        if let Some(count) = partial {
+            for event in expected.iter().take(count) {
+                check_observed_event(&mut cursor, Some(event), AccessMutation::None)?;
+            }
+            check_observed_rewind(&mut cursor)?;
+        }
+        for event in &expected {
+            check_observed_event(&mut cursor, Some(event), AccessMutation::None)?;
+        }
+        for _ in 0..3 {
+            check_observed_event(&mut cursor, None, AccessMutation::None)?;
+        }
+        check_observed_rewind(&mut cursor)?;
+    }
+    Ok(())
+}
+
+fn assert_independent_source_access(bytes: &[u8]) {
+    check_independent_source_access(bytes, AsRefIndexedByteSource::new(bytes)).unwrap();
+    check_independent_source_access(bytes, FragmentedSource::new(bytes, 0x2ffd_72db_d01a_dfb7))
+        .unwrap();
+}
+
+#[test]
+fn independent_source_witness_records_all_access_methods_without_double_counting() {
+    let source = ObservedSource::new(AsRefIndexedByteSource::new(b"aba"));
+    assert_eq!(source.byte_at(0), Some(b'a'));
+    assert_eq!(source.contiguous_range(0..2), Some(b"ab".as_slice()));
+    assert!(source.copy_exact(1, &mut [0; 2]));
+    assert!(source.ranges_equal(0..1, 2..3));
+    assert_eq!(source.take_accesses(), vec![
+        SourceAccess::Byte(0),
+        SourceAccess::Contiguous(0..2),
+        SourceAccess::Copy { start: 1, len: 2 },
+        SourceAccess::Equal(0..1, 2..3)
+    ]);
+    assert!(!source.copy_exact(usize::MAX, &mut [0; 2]));
+    assert_eq!(source.take_accesses(), vec![SourceAccess::Copy {
+        start: usize::MAX,
+        len: 2
+    }]);
+}
+
+#[test]
+fn independent_source_witness_checks_empty_sparse_dense_and_compressed_rewinds() {
+    for operations in [
+        vec![],
+        vec![(vec![1], Some(0)), (vec![7], Some(1)), (vec![200], None)],
+        (0u16..=255)
+            .map(|byte| (vec![byte as u8], Some(u64::from(byte))))
+            .collect(),
+        vec![
+            (b"compressed".to_vec(), Some(0)),
+            (b"compressed/prefix".to_vec(), Some(1)),
+            (b"compressed/prefix/tail".to_vec(), None),
+        ],
+    ] {
+        assert_independent_source_access(&writer_image_from_operations(&operations));
+    }
+}
+
+#[test]
+fn independent_source_witness_rejects_metadata_and_duplicate_suffix_reads() {
+    let bytes = writer_image_from_operations(&[(b"compressed/suffix".to_vec(), Some(7))]);
+    let expected = legacy_event_access_oracle(&bytes);
+    let root = CompactTrie::parse_canonical(&bytes).unwrap().parsed.root_id;
+    let mut cursor = CanonicalCompactTrieIndexedTopologyCursor::from_source(ObservedSource::new(
+        AsRefIndexedByteSource::new(bytes.as_slice()),
+    ))
+    .unwrap();
+    cursor.source().take_accesses();
+    let error = check_observed_event(&mut cursor, expected.first(), AccessMutation::Metadata(root))
+        .unwrap_err();
+    assert!(error.starts_with("source access mismatch:"), "{error}");
+    check_observed_rewind(&mut cursor).unwrap();
+    for event in &expected {
+        if event.1.is_some() {
+            let error =
+                check_observed_event(&mut cursor, Some(event), AccessMutation::DuplicateSuffix)
+                    .unwrap_err();
+            assert!(error.starts_with("source access mismatch:"), "{error}");
+            return;
+        }
+        check_observed_event(&mut cursor, Some(event), AccessMutation::None).unwrap();
+    }
+    panic!("duplicate control never reached a compressed suffix");
 }
 
 fn canonical_image(entries: impl IntoIterator<Item = (Vec<u8>, u64)>) -> Vec<u8> {
@@ -213,6 +491,7 @@ proptest! {
         prop_assert_eq!(erase_ordinals(&new_topology(&bytes)), old_topology(&bytes));
         prop_assert_eq!(planned_endpoints(&bytes), oracle_endpoints(&bytes));
         assert_forward_preorder_plan_is_exact(&bytes);
+        assert_independent_source_access(&bytes);
     }
 }
 
@@ -248,6 +527,7 @@ fn unequal_children_wrappers_and_reused_lines_preserve_exact_plan_layout() {
     let counters = state.work_counters();
     assert!(counters.wrapper_node_parses >= 2);
     assert!(counters.line_equality_bytes >= repeated.len());
+    assert_independent_source_access(&bytes);
     assert_eq!(counters.semantic_node_parses, counters.plan_records);
     assert_eq!(counters.node_reparses, 0);
 }

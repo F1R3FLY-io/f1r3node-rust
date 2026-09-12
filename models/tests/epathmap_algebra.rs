@@ -6,6 +6,7 @@ use models::rust::pathmap_integration::CursorKind;
 use models::rust::rhoapi_ext::{EPathMapAlgebraError, EntryTrie};
 use models::rust::utils::new_freevar_par;
 use pathmap::PathMap;
+use proptest::prelude::*;
 
 fn gint(value: i64) -> Par {
     Par::default().with_exprs(vec![Expr {
@@ -141,6 +142,133 @@ fn clone_family_map_join_shortcut_is_invalidated_by_every_mutation() {
         .unwrap();
     assert_eq!(combined.len(), 5);
     assert_ne!(combined.trie_snapshot(), replaced_snapshot);
+}
+
+fn assert_clone_join_storage(base: &EPathMap, force_snapshot: bool) {
+    if force_snapshot {
+        assert!(!base.trie_snapshot().is_empty());
+    }
+    let shared = base.clone();
+    let joined = EPathMap::new(
+        base.entry_trie().try_join(shared.entry_trie()).unwrap(),
+        vec![],
+        false,
+        None,
+    );
+    assert!(joined.shares_storage_with(base));
+    assert!(joined.shares_storage_with(&shared));
+    assert_eq!(joined.entry_trie(), base.entry_trie());
+    assert_eq!(
+        joined.trie_snapshot().as_ptr(),
+        base.trie_snapshot().as_ptr()
+    );
+}
+
+#[test]
+fn clone_family_join_retains_storage_for_both_modes_and_cache_states() {
+    for map_mode in [false, true] {
+        for force_snapshot in [false, true] {
+            for dangling in [false, true] {
+                let mut base = if map_mode {
+                    map([(0, 0), (1, 10), (2, 20)])
+                } else {
+                    set([0, 1, 2])
+                };
+                if dangling {
+                    for path in [&[0][..], &[178], &[1], &[178, 0]] {
+                        base.create_path(path).unwrap();
+                    }
+                }
+                assert_clone_join_storage(&base, force_snapshot);
+            }
+        }
+    }
+}
+
+#[test]
+fn clone_family_set_join_shortcut_is_invalidated_by_mutation() {
+    for force_snapshot in [false, true] {
+        let base = set([0, 1, 2]);
+        if force_snapshot {
+            assert!(!base.trie_snapshot().is_empty());
+        }
+        let mut extended = base.clone();
+        extended.insert_entry(gint(3));
+        assert!(!extended.shares_storage_with(&base));
+        assert_map_join_snapshot("extended set", &extended, &base, &extended);
+
+        let key = encode_trie_path(&gint(2));
+        let mut removed = base.clone();
+        assert!(removed.remove_encoded_entry(&key));
+        assert!(!removed.shares_storage_with(&base));
+        assert_map_join_snapshot("removed set entry", &removed, &base, &base);
+
+        let mut topology = base.clone();
+        let mut descendant = key.clone();
+        descendant.extend_from_slice(&[0xAA, 0xBB]);
+        assert!(topology.create_path(&descendant).unwrap());
+        assert!(!topology.shares_storage_with(&base));
+        assert_map_join_snapshot("set topology", &base, &topology, &topology);
+
+        let mut pruned = topology.clone();
+        assert!(pruned.remove_branches_at(&key));
+        assert!(!pruned.shares_storage_with(&topology));
+        assert_map_join_snapshot("pruned set topology", &pruned, &topology, &topology);
+
+        let mut subtrie_removed = base.clone();
+        assert!(subtrie_removed.remove_subtrie_at(&key));
+        assert!(!subtrie_removed.shares_storage_with(&base));
+        assert_map_join_snapshot("removed set subtrie", &subtrie_removed, &base, &base);
+
+        let mut greatest_removed = base.clone();
+        assert!(greatest_removed.remove_greatest_entry().is_some());
+        assert!(!greatest_removed.shares_storage_with(&base));
+        assert_map_join_snapshot(
+            "removed greatest set entry",
+            &greatest_removed,
+            &base,
+            &base,
+        );
+
+        let mut replaced = base.clone();
+        replaced
+            .replace_subtrie(&[], CursorKind::Prefix, &set([8, 9]))
+            .unwrap();
+        assert!(!replaced.shares_storage_with(&base));
+        assert_map_join_snapshot(
+            "replaced set subtrie",
+            &replaced,
+            &base,
+            &EPathMap::new(
+                vec![gint(0), gint(1), gint(2), list([8]), list([9])],
+                vec![],
+                false,
+                None,
+            ),
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn clone_family_join_preserves_storage_after_generated_topology_histories(
+        map_mode in any::<bool>(),
+        force_snapshot in any::<bool>(),
+        entries in prop::collection::vec(any::<i16>(), 1..32),
+        paths in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..16), 0..32),
+    ) {
+        let mut base = if map_mode {
+            map(entries.iter().map(|&v| (i64::from(v), i64::from(v))))
+        } else {
+            set(entries.iter().map(|&v| i64::from(v)))
+        };
+        for path in paths {
+            base.create_path(&path).unwrap();
+        }
+        assert_clone_join_storage(&base, force_snapshot);
+    }
 }
 
 #[test]

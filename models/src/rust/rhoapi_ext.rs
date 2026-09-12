@@ -1618,14 +1618,7 @@ impl EntryTrie {
     }
 
     pub fn try_join(&self, other: &Self) -> Result<Self, EPathMapAlgebraError> {
-        if matches!(
-            (&self.repr, &other.repr),
-            (EPathMapRepr::Map(_), EPathMapRepr::Map(_))
-        ) && Arc::ptr_eq(&self.trie_snapshot, &other.trie_snapshot)
-        {
-            // `EntryTrie::clone` shares this cell and every mutation replaces
-            // it. Pointer identity therefore proves that both operands still
-            // own the same immutable map root and entry-derived metadata.
+        if Arc::ptr_eq(&self.trie_snapshot, &other.trie_snapshot) {
             return Ok(self.clone());
         }
         self.try_join_exact_zipper(other)

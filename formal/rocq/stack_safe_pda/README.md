@@ -161,6 +161,14 @@ retained snapshots. The complete synchronized traversal, private CoW and
 machine-width count arithmetic are not automatically proved by these local
 specialization laws.
 
+The existing pointwise idempotence laws also justify returning an unchanged
+clone-family root for set union, as already done for map union. The native
+binding in `models/tests/epathmap_algebra.rs` checks snapshot-cell identity
+before serialization, both cold and warm, plus generated topology histories
+and successful mutation invalidation. This observation distinguishes the
+constant-time shortcut from a semantically equal reconstructed result. It
+does not establish panic-atomic invalidation or private allocator behavior.
+
 These laws qualify the added control flow, not the private implementation of
 native pruning, CoW, branch insertion or graft publication. Those remain
 explicit source-correspondence and native-test obligations.
