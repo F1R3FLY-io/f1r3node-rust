@@ -2990,7 +2990,7 @@ fn collect_recursive_manifest(
         return Err(std::io::Error::last_os_error());
     }
     let mut out = Vec::new();
-    let walk_result = walk_dirfd_recursive(target_fd, std::path::Path::new(""), &mut out);
+    let walk_result = walk_dirfd_recursive(target_fd, std::path::Path::new(""), &mut out, 0);
     // SAFETY: `target_fd` was returned by openat above and is no
     // longer used after this line (walk_dirfd_recursive dupped it
     // internally).  Closing it exactly once.
@@ -3140,11 +3140,41 @@ fn walk_and_unlink_recursive_with_journal(
 /// - S_IFDIR → openat(O_NOFOLLOW) → recurse → close → push as dir.
 /// - Anything else (S_IFLNK, S_IFIFO, S_IFSOCK, S_IFCHR, S_IFBLK)
 ///   → return Unsupported.
+///
+/// # X-3 / SEC-Mi-03 (2026-09-12, branch-review-2026-09-11.md)
+///
+/// `depth` tracks the recursion level (0 at the top-level entry
+/// from `walk_and_unlink_recursive_with_journal`).  Enforced
+/// against `MAX_RECURSION_DEPTH` = 1024 to defend against
+/// pathological deeply-nested directory trees that could exhaust
+/// the OS stack (typically ~2MB on Linux → ~1000+ frames per
+/// exhaustion under this function's ~2KB-per-frame local
+/// allocations).
+///
+/// Consensus mode is protected by the threat model
+/// (consensus-managed trees have no adversarial writer per
+/// `fileio_consensus_no_writer_threat_model.md`); Oracular mode
+/// is the surface this cap defends.
+pub(crate) const MAX_RECURSION_DEPTH: usize = 1024;
+
 fn walk_dirfd_recursive(
     dir_fd: libc::c_int,
     rel_base: &std::path::Path,
     out: &mut Vec<(PathBuf, RemoveKind)>,
+    depth: usize,
 ) -> std::io::Result<()> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "SEC-Mi-03: directory nesting exceeds \
+                 MAX_RECURSION_DEPTH = {MAX_RECURSION_DEPTH} \
+                 (safety cap against stack exhaustion under \
+                 adversarial Oracular-mode nesting).  See \
+                 branch-review-2026-09-11.md Mi-03."
+            ),
+        ));
+    }
     use std::os::unix::ffi::OsStrExt;
 
     // Dup the fd so fdopendir consumes the copy and dir_fd stays
@@ -3267,7 +3297,7 @@ fn walk_dirfd_recursive(
             if sub_fd < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            let walk_result = walk_dirfd_recursive(sub_fd, &rel, out);
+            let walk_result = walk_dirfd_recursive(sub_fd, &rel, out, depth + 1);
             // SAFETY: `sub_fd` was returned by the openat above and
             // is no longer referenced after this close (walk_
             // dirfd_recursive returned).  Closing it exactly once.

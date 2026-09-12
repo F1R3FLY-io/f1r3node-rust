@@ -167,6 +167,40 @@ pub struct HolderId {
 
 impl HolderId {
     pub fn from_bytes(bytes: [u8; 32]) -> Self { Self { bytes } }
+
+    /// X-3 / SEC-Mi-01 (2026-09-12, branch-review-2026-09-11.md):
+    /// constant-time byte comparison for holder verification in
+    /// the release path.  Defense-in-depth against a timing
+    /// side-channel where an attacker observing response latency
+    /// on failed `release()` calls could probabilistically narrow
+    /// down a holder byte-by-byte if the underlying compare short-
+    /// circuited on first mismatch.
+    ///
+    /// The threat is low in practice (sub-microsecond timing delta
+    /// per byte, dwarfed by network jitter; consensus-managed FS
+    /// assumes trusted operator network) but the constant-time
+    /// compare costs nothing at 32 bytes and eliminates the
+    /// side-channel entirely.  Reads all 32 bytes regardless of
+    /// mismatch position via bit-XOR accumulation.
+    ///
+    /// Prefer this over derived `PartialEq` for any
+    /// authentication-adjacent comparison.  A grep pin
+    /// (`sec_mi01_release_uses_constant_time_holder_compare` in
+    /// tests below) enforces the discipline in the release path.
+    #[inline]
+    pub fn ct_eq(&self, other: &HolderId) -> bool {
+        let mut acc: u8 = 0;
+        // Manual loop rather than `.zip().fold()` to make the
+        // constant-time property source-level obvious (no early
+        // exit, no iterator adapter that a future compiler pass
+        // might inline into a short-circuit).
+        let mut i = 0;
+        while i < 32 {
+            acc |= self.bytes[i] ^ other.bytes[i];
+            i += 1;
+        }
+        acc == 0
+    }
 }
 
 /// Requested access mode.  Multiple readers of overlapping ranges
@@ -688,17 +722,21 @@ impl LockRegistry {
         let mut touched_key: Option<DevInode> = None;
         let mut released = false;
         for (dev_inode, state) in guard.iter_mut() {
+            // X-3 / SEC-Mi-01 (2026-09-12): constant-time holder
+            // comparison via `HolderId::ct_eq` — see method
+            // docstring for the timing-side-channel rationale.
+            // Do NOT change to `==`.
             if let Some(pos) = state
                 .ranges
                 .iter()
-                .position(|e| e.id == lock_id && &e.holder == holder)
+                .position(|e| e.id == lock_id && e.holder.ct_eq(holder))
             {
                 state.ranges.remove(pos);
                 released = true;
             } else if state
                 .sequential_holder
                 .as_ref()
-                .is_some_and(|s| s.id == lock_id && &s.holder == holder)
+                .is_some_and(|s| s.id == lock_id && s.holder.ct_eq(holder))
             {
                 state.sequential_holder = None;
                 released = true;
@@ -1324,6 +1362,93 @@ mod tests {
 
     fn holder(byte: u8) -> HolderId { HolderId::from_bytes([byte; 32]) }
     fn deploy(byte: u8) -> DeployScope { [byte; 32] }
+
+    /// X-3 / SEC-Mi-01 (2026-09-12, branch-review-2026-09-11.md):
+    /// `HolderId::ct_eq` is a constant-time equality — the release
+    /// path uses it to defend against a timing side-channel where
+    /// an attacker observing latency on failed release() calls
+    /// could narrow down a holder byte-by-byte.  This test pins
+    /// (a) semantic correctness — ct_eq agrees with `==` on all
+    /// inputs and (b) that mismatch-position doesn't affect the
+    /// path's observable behavior (proven at the semantic level;
+    /// true wall-clock timing invariance requires assembly-level
+    /// analysis that's out of scope).
+    #[test]
+    fn sec_mi01_holder_ct_eq_matches_partial_eq_semantically() {
+        // Case 1: identical bytes → true.
+        let a = HolderId::from_bytes([0x42; 32]);
+        let b = HolderId::from_bytes([0x42; 32]);
+        assert!(a.ct_eq(&b));
+        assert_eq!(a == b, a.ct_eq(&b));
+
+        // Case 2: mismatch at first byte.
+        let mut b2_bytes = [0x42u8; 32];
+        b2_bytes[0] = 0x00;
+        let b2 = HolderId::from_bytes(b2_bytes);
+        assert!(!a.ct_eq(&b2));
+        assert_eq!(a == b2, a.ct_eq(&b2));
+
+        // Case 3: mismatch at last byte.
+        let mut b3_bytes = [0x42u8; 32];
+        b3_bytes[31] = 0x00;
+        let b3 = HolderId::from_bytes(b3_bytes);
+        assert!(!a.ct_eq(&b3));
+        assert_eq!(a == b3, a.ct_eq(&b3));
+
+        // Case 4: totally distinct.
+        let c = HolderId::from_bytes([0xFF; 32]);
+        assert!(!a.ct_eq(&c));
+
+        // Reflexive.
+        assert!(a.ct_eq(&a));
+    }
+
+    /// X-3 / SEC-Mi-01 lint pin: scan `lock.rs` for direct `==`
+    /// comparisons of HolderId in the release path.  A refactor
+    /// that reverts `e.holder.ct_eq(holder)` to `&e.holder ==
+    /// holder` would silently reintroduce the timing side-channel.
+    ///
+    /// The current release() function contains the ONLY holder-
+    /// equality check in the io/ tree; other sites (waiter cancel,
+    /// count_locks, is_locked) don't compare HolderIds at all.
+    /// So a scan for `.holder ==` or `holder == &e.holder` inside
+    /// `release()` catches regressions.
+    #[test]
+    fn sec_mi01_release_uses_constant_time_holder_compare() {
+        let source = include_str!("lock.rs");
+        // Locate the `pub fn release(` function's body and scan
+        // for equality patterns on `.holder` inside it.  Simple
+        // heuristic: from "fn release(&self, lock_id: LockId,
+        // holder: &HolderId)" to the next "}" at the same indent
+        // level.  Since we control the source, tolerate false
+        // positives by requiring a preceding `.holder` reference.
+        let start = source
+            .find("pub fn release(&self, lock_id: LockId, holder: &HolderId)")
+            .expect("release() function must exist");
+        // Take a bounded window rather than parsing braces
+        // (release() body is ~40 lines).
+        let window_end = (start + 2000).min(source.len());
+        let window = &source[start..window_end];
+        // Any raw `==` on `.holder` is a regression.  Allow
+        // `.ct_eq(holder)` (SEC-Mi-01 method) and comments.
+        for (lineno, line) in window.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("///") || trimmed.starts_with("*") {
+                continue;
+            }
+            if (line.contains(".holder ==") || line.contains("&e.holder =="))
+                && !line.contains("ct_eq")
+            {
+                panic!(
+                    "SEC-Mi-01 regression at release()+{lineno}: raw \
+                     `==` on `.holder` — replace with `.holder.ct_eq(\
+                     holder)` for constant-time comparison.  Line: \
+                     `{}`",
+                    line.trim(),
+                );
+            }
+        }
+    }
 
     /// T-14 review-fix (S2, 2026-09-08): `LockId` MUST carry
     /// `#[repr(transparent)]` for the same reason as `Fd` — any
