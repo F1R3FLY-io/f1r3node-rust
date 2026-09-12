@@ -2571,6 +2571,11 @@ mod tests {
     /// distinct bytes when combined with the same other fields
     /// (proves the op is part of the encoding, not silently
     /// stripped).
+    ///
+    /// X-1 / CONS-1 review-fix (2026-09-12): extended from 9 to all
+    /// 16 `WalOp` variants (the pre-CONS-1 count of 9 covered only
+    /// mutation ops; the observation ops Read/ReadAt/Stat/Entries/
+    /// Size/EntriesStreamNext/Exists were silently missing).
     #[test]
     fn every_walop_variant_encodes_distinctly() {
         let mut roots = std::collections::HashSet::new();
@@ -2584,6 +2589,13 @@ mod tests {
             WalOp::RemoveDir,
             WalOp::Rename,
             WalOp::CopyFile,
+            WalOp::Read,
+            WalOp::ReadAt,
+            WalOp::Stat,
+            WalOp::Entries,
+            WalOp::Size,
+            WalOp::EntriesStreamNext,
+            WalOp::Exists,
         ] {
             let e = WalEntry {
                 op,
@@ -2603,7 +2615,96 @@ mod tests {
                 "op {op:?} produced a duplicate root — the op tag is not part of the encoding"
             );
         }
-        assert_eq!(roots.len(), 9);
+        assert_eq!(
+            roots.len(),
+            crate::rust::interpreter::io::wal::WAL_OP_VARIANTS,
+            "coverage MUST match WAL_OP_VARIANTS (CONS-1 pin) — any \
+             new WalOp variant must be added to this test's op list"
+        );
+    }
+
+    /// X-1 / CONS-2 (2026-09-12, branch-review-2026-09-11.md): pin
+    /// the `PayloadRef` wire encoding.  Every WalEntry's
+    /// `payload_ref` field encodes via `encode_payload_ref` (see
+    /// snapshot.rs body); the tag bytes are consensus-observable
+    /// (leader + follower must agree on the mapping tag → variant
+    /// or WAL round-trip diverges).  Also pins the byte layout of
+    /// the `Some(PayloadRef::Hash(...))` arm (the only variant
+    /// currently emitted by production handlers).
+    ///
+    /// # Pinned tag values (hard-fork surface)
+    ///
+    /// - `None` → single byte `0x00`.
+    /// - `Some(PayloadRef::Hash(h))` → tag `0x01` + 32 hash bytes.
+    /// - `Some(PayloadRef::DeployRef { block_hash, deploy_index,
+    ///   arg_index })` → tag `0x02` + 32 block_hash bytes + 4
+    ///   BE deploy_index bytes + 4 BE arg_index bytes.  (DeployRef
+    ///   byte layout is separately pinned in
+    ///   `wal_root_carries_deploy_index_and_arg_index_separately`.)
+    ///
+    /// # Regression scenarios
+    ///
+    /// - Adding a new variant → append at tag `0x03`; do NOT
+    ///   reorder.  Bump `SNAPSHOT_FORMAT_VERSION` + the fingerprint
+    ///   fold + this test.
+    /// - Changing an existing tag byte → hard fork event; every
+    ///   validator's WAL wire encoding shifts.
+    #[test]
+    fn payload_ref_wire_encoding_tags_pinned() {
+        // Build a synthetic entry with `payload_ref = None` and
+        // capture the encoded byte where the payload_ref tag sits.
+        // Layout (from encode_entry): version(1) count(4) op(1)
+        // path_len(4) path(2 = "/x") extra_flag(1) offset_flag(1)
+        // length_flag(1) payload_tag(1).  Walk 1+4+1+4+2+1+1+1 = 15
+        // to reach the tag.
+        let make_entry_with_payload = |payload_ref| WalEntry {
+            op: WalOp::Write,
+            path: PathBuf::from("/x"),
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        let none_bytes = encode_wal_slice(&[make_entry_with_payload(None)]);
+        assert_eq!(
+            none_bytes[15], 0,
+            "CONS-2: payload_ref=None MUST encode as tag byte 0x00 \
+             (offset 15 in the current entry layout).  A change \
+             here is a hard-fork event."
+        );
+
+        let hash_val: [u8; 32] = [0xAB; 32];
+        let hash_bytes =
+            encode_wal_slice(&[make_entry_with_payload(Some(PayloadRef::Hash(hash_val)))]);
+        assert_eq!(
+            hash_bytes[15], 1,
+            "CONS-2: payload_ref=Some(Hash(...)) MUST encode as tag \
+             byte 0x01.  A change here is a hard-fork event."
+        );
+        assert_eq!(
+            &hash_bytes[16..16 + 32],
+            &hash_val,
+            "CONS-2: PayloadRef::Hash payload bytes MUST follow the \
+             tag directly, verbatim (no length prefix)."
+        );
+
+        let deploy_ref_bytes =
+            encode_wal_slice(&[make_entry_with_payload(Some(PayloadRef::DeployRef {
+                block_hash: [0xCD; 32],
+                deploy_index: 0x0102_0304,
+                arg_index: 0x0506_0708,
+            }))]);
+        assert_eq!(
+            deploy_ref_bytes[15], 2,
+            "CONS-2: payload_ref=Some(DeployRef {{ ... }}) MUST \
+             encode as tag byte 0x02.  A change here is a hard-\
+             fork event."
+        );
+        // (Full DeployRef byte layout is pinned separately.)
     }
 
     /// Coverage M2: every `Option::Some` field arm exercises the
