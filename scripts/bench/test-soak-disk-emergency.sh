@@ -37,4 +37,6 @@ for mode in benchmark iteration; do
     SOAK_RUN_DOMAIN_MODE="$mode" SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-run-domain-admission.sh" \
         "${1:-$ROOT}" "$OUTPUT/run-domain-admission-$mode"
 done
+SOAK_DISK_TEST_IMAGE="$IMAGE" bash "$ROOT/scripts/bench/test-soak-record-identity.sh" \
+    "${1:-$ROOT}" "$OUTPUT/record-identity"
 printf 'PASS: The isolated disk emergency regressions completed.\n'

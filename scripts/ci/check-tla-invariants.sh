@@ -142,6 +142,7 @@ POST_FIX_CONFIGS=(
     soak_disk/MC_NativeControllerLoss
     soak_disk/MC_RunDomainAdmission_benchmark
     soak_disk/MC_RunDomainAdmission_iteration
+    soak_disk/MC_RunDomainRecordIdentity
 )
 
 TLC_WORKERS=auto
@@ -189,6 +190,7 @@ if [[ "$SOAK_PR" == true ]]; then
         soak_disk/MC_NativeControllerLoss
         soak_disk/MC_RunDomainAdmission_benchmark
         soak_disk/MC_RunDomainAdmission_iteration
+        soak_disk/MC_RunDomainRecordIdentity
     )
     TLC_WORKERS=2
 fi
@@ -269,6 +271,7 @@ NEGATIVE_CONTROLS=(
     soak_disk/MC_NativeControllerLoss_unmanaged_pre_fix:NativeControllerLossStopsOwnedWriter
     soak_disk/MC_RunDomainAdmission_benchmark_unchecked_pre_fix:UnverifiedPlacementPreventsAdmission
     soak_disk/MC_RunDomainAdmission_iteration_unchecked_pre_fix:UnverifiedPlacementPreventsAdmission
+    soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix:AdmissionRequiresOpenedRecordTrust
 )
 
 failed=0

@@ -25,7 +25,7 @@
       "casper/src/rust/validate.rs": "87d72346aa9a1050e58cf0d08adcd6ceb55de212c2899685f8153c7c89bd0aa9",
       "casper/tests/batch2/validate_test.rs": "d2b2a5436a31da1021d634bbbbcf478cc53f812a2f9d3808f36f1d47bb765cb9",
       "docs/Glossary.md": "fab423a0579585c9fc0a3e3e537e177e9eb7e344771cb2d38ee95db2b87f7635",
-      "docs/ToDos.md": "c6c19bfdee7b5e02afdb8d66e6b2529d3da928b9b4e91ecb1cafeec367abe248",
+      "docs/ToDos.md": "4529db95c5048e3af9543158fed4450124e8b4cee98bdc297db653592220d3ff",
       "docs/cbc-evidence/.gitattributes": "730a35ae3d558080083c3103d9ac8100c3f6561678092abe341701dfa331eb1d",
       "docs/cbc-evidence/casper-src-rust-finality-deploy-lifecycle-rs.md": "6f05187d21932fb3178582857cb12742a02e1d0aac12034a86d9f04ab5008df4",
       "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md": "d1beaad52820cd00d45751153d48d346c83e0ad5a3144753bd6c3796427760f2",
@@ -1607,6 +1607,58 @@
       "docs/cbc-evidence/soak-d2-real-system-2026-09-10/manifest.jsonc": "5918cd78b803d9e6566afdb46ba10cd21360b2341326d54a4766bfd2bde2df88",
       "docs/cbc-evidence/soak-d2-real-system-2026-09-10/regressions.txt": "b54774b2533666ef367cdf043ce398232071a8a98f6a94f5966fef91ed6ed40a",
       "docs/cbc-evidence/soak-d2-real-system-2026-09-10/routing.txt": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/.gitattributes": "6a1a047654d573fc6585f93549c0cb1d946bb1e20fc00d5f44c271bf22ab7548",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/README.md": "9518f526bb962e4fc53d094b6bae5d3dee082d396edf9842ca7124de758ebb35",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-base-commit.txt": "ab534523a8b8b7db6660f08453b8dd9fae840fe84981c66dadabad628165dca2",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-baseline-source.sha256": "b84e0857970fd779403aa18a2c9876347b18ff22e8505d9d0a0cbe43b09f34e6",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-fixture-image-id.txt": "db15f81ed36987862fa43d997fb27238d88d2501d05f6ba2f89e48ef39729f8d",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-fixture-source.sha256": "ee51438e7998107d0e9b7819a4415d2c2c7daa77f7dd47ff378c7cb369e794f5",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-formal--MC_RunDomainRecordIdentity-exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-formal--MC_RunDomainRecordIdentity.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-formal--MC_RunDomainRecordIdentity.txt": "f0190122f2204670edc5f664cd71fb08e62fdf07c8722cf3d1f5b144ca8e0347",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-formal--MC_RunDomainRecordIdentity_pathname_pre_fix-exit.txt": "a1fb50e6c86fae1679ef3351296fd6713411a08cf8dd1790a4fd05fae8688164",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-formal--MC_RunDomainRecordIdentity_pathname_pre_fix.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-formal--MC_RunDomainRecordIdentity_pathname_pre_fix.txt": "44a583042c5108e72d42a5f0a27a62e9c6306943754a33aba6b26f4d288f610e",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--fixture-cgroup.txt": "cc8745fb63b1bccbdb890c5e55d1c578e3c04876c1c0fb544ae98f1f17637890",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--matching--admitted.txt": "f49a0548413d5855ace8467e8abd32fa57d97ffd948bd55b1df190f770e1deb0",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--matching--driver-exit.txt": "9d9b18720961e9b4689fd763b85e7b6f36160ccd3a8a1c9ddc5103bb0f66c396",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--matching--driver.txt": "30ef6673cc2dc0854c19a1de62c1fd3cd598bb6cc8d553b15d7284fab7413189",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--oversized--breach.txt": "3acc4074dfc19f7945c2e51f88023a3199219138c30f07685de9b9f058784da6",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--oversized--driver-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--oversized--driver.txt": "0fb3afff4b3ac1d9b6b65adb60d7fdc97ec4425bdd2863125ee4e4401ec07290",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--records.txt": "2acf60f7b3c614c42ae92beecf2dc60bda94a401dfa431fc5aa6a79877d17082",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--source-sha256.txt": "2c2250ed6a1ae4ec12f10ac8d94fa13f5e4eed220c4645ff1701e8516486d413",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--symlink-ancestor--breach.txt": "3acc4074dfc19f7945c2e51f88023a3199219138c30f07685de9b9f058784da6",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--symlink-ancestor--driver-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--symlink-ancestor--driver.txt": "986ca0ea3538ae5eb1b4496b7250a6ac4f5db62ca0b8160bd43e0213fd514f1a",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--unrelated-after.txt": "66801e59da05a1a8cae786d11bf8b3f6241f339cfc73567de9243df27b39163b",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--untrusted-ancestor--breach.txt": "3acc4074dfc19f7945c2e51f88023a3199219138c30f07685de9b9f058784da6",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--untrusted-ancestor--driver-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--evidence--untrusted-ancestor--driver.txt": "f9a840475d2bd8ec53ad56b3caababed65fcd0dd2decc998198fb685b9936904",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--fixture-exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green--result.txt": "aa0d495da62a2242bfe17fc9020944ad49c72cf949b39823bdff3ac180ec3c88",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green-exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-green.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-initial-status.txt": "a8b4a93f08eca08d2eb4a0d0f9b6e355058d987e47812b4c063a9c11c63c9ef1",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red--evidence--fixture-cgroup.txt": "e74a8ce63aedbe6747a77e217d4b1d321823d90d48d66c3f1a6835043874041e",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red--evidence--records.txt": "2acf60f7b3c614c42ae92beecf2dc60bda94a401dfa431fc5aa6a79877d17082",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red--evidence--source-sha256.txt": "b84e0857970fd779403aa18a2c9876347b18ff22e8505d9d0a0cbe43b09f34e6",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red--evidence--untrusted-ancestor--admitted.txt": "f49a0548413d5855ace8467e8abd32fa57d97ffd948bd55b1df190f770e1deb0",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red--evidence--untrusted-ancestor--driver-exit.txt": "9d9b18720961e9b4689fd763b85e7b6f36160ccd3a8a1c9ddc5103bb0f66c396",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red--evidence--untrusted-ancestor--driver.txt": "0350fba3a713f6f7166027bade63564c98752f2679af8bf13069384e017189bc",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red--fixture-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red--result.txt": "7fc51237562663111a81f909376c10c29367a26c879dd1a9c17c8682f9153ea7",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red-attempt-1-setup-failure-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red-attempt-1-setup-failure.stderr": "209513948be21a99a5c6a08de9e726739cb26061c1b48d53a42c1de2a45c5c28",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red-attempt-1-setup-failure.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red-exit.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-red.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-tla2tools.sha256": "1584d8d4174a05fa2d78d64e589db71d86f4580faa8eab8f4124844773da764a",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-verified-source-list.txt": "d66c7a5e4a55115d8d3eeb288000d2d46fc40e7859bd4e90b6f27857f120d8e6",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/b46-verified-source.sha256": "ef7b9db97a1a9505647e107a03b231f1988470760921049df23d5b68f3ab7175",
+      "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/manifest.jsonc": "9d72b7531e3b471be5661912bd6280f5fa36aa80ddbad91d521d2f05fbc4377d",
       "docs/cbc-evidence/soak-d2-run-domain-2026-09-12/.gitattributes": "6a1a047654d573fc6585f93549c0cb1d946bb1e20fc00d5f44c271bf22ab7548",
       "docs/cbc-evidence/soak-d2-run-domain-2026-09-12/README.md": "e357ed18172105213260f14d92af99df09e28c55158bdb1f19dc78ca6c951bc2",
       "docs/cbc-evidence/soak-d2-run-domain-2026-09-12/b45-base-commit.txt": "6bae6677e2083468fa868e3d853445dea50612642bdc45effab8b31f760937f4",
@@ -2023,7 +2075,7 @@
       "docs/claims/settled-effect-probe-equivalence.md": "d1c5ffca02e504e85b1b7936d9d6313c589ed2b10b3875160179a576e206a97d",
       "docs/claims/soak-evidence-retention.jsonc": "28e386df992c8c4075d918a9eb9b26cf51c24217c792eeac2415768d7c5d0b26",
       "docs/claims/soak-formal-gate.md": "027d529ad36da3fbc704df91789401755b9a5d948409e04f946d7c5fc01f7dee",
-      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "a22ba4b45dd02d5c065938e30b970698c4393d0466d7842dd35a4218475ddd47",
+      "docs/plans/soak-recurrence-prevention-2026-09-08.md": "7ac1cdb51590c97c3f6c47f54517fd27625e2c6192ba59a19b7d8f8256b26773",
       "docs/soak-evidence/34180346282/README.md": "27c314d5365c1665fd4bd3211981dea1335e6016935c840128eac3e26527da0e",
       "docs/soak-evidence/34180346282/archive-members-sha256.json": "277cff716a21476aaf1b261b92a8da20c183c1c6315c42d1d20ef913e627f477",
       "docs/soak-evidence/34180346282/inspect.rb": "7c01506787c049630524451a57de894fb8a9a776237ef145d140fa6b0f05bbbc",
@@ -2048,8 +2100,8 @@
       "docs/soak-evidence/repin-962effd-2026-09-08/release-workflows.txt": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin-regression.txt": "c163764ac6a691d0f60831fac3197a8392645d49ac35fc4353d818e37be01aaf",
       "docs/soak-evidence/repin-962effd-2026-09-08/repin.txt": "19c345e18685824f7a6b5ab4def851f9b2f83202826d56962413342e95ab6437",
-      "docs/tdd-plans/soak-gates-2026-09-08.md": "3f2aa4b3956949d7f7a879f6e923e01c353bc026d1f8ed3c4ecfb6478174652c",
-      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "1fefeee6cefa127e752a9028a91486508be817738cda2f26d04e288aa81a06ed",
+      "docs/tdd-plans/soak-gates-2026-09-08.md": "3f4848967bf0c5788ed8cf967317be0818615b7a0f1fbcbd4b8102a79c5cb5a0",
+      "docs/work-logs/task-soak-disk-hygiene-stop-2026-09-08T05-06Z.md": "e07819478097fa21d9f2df3d27645068dfb6b7a57c7893463a1a1633753ea92d",
       "formal/rocq/finalized_floor/_CoqProject": "36ebdf1770fd2001cd5eec7ab1f70f5b58a2ddb372ce11bbb2937f10ec7bef38",
       "formal/rocq/finalized_floor/theories/AccountableSafety.v": "639a09038941b853cd119807a034fa11093c85daaf0f05c08d016cdb36f25bb9",
       "formal/rocq/finalized_floor/theories/AdmissionEffectAlignment.v": "a671e0009aa7fe2afba661bd804203c700c8a35f0451fe39dd568cfe4f5122c1",
@@ -2320,6 +2372,10 @@
       "formal/tlaplus/soak_disk/MC_RunDomainAdmission_iteration.tla": "36d3e6d0e88d92ebbde5d71462921b04124caf8ff00510c2a61213c3de26c2a8",
       "formal/tlaplus/soak_disk/MC_RunDomainAdmission_iteration_unchecked_pre_fix.cfg": "7e188e44b3de574a330d9e5bdb44e4e8bff3740ac466cb08d36320d1f15ba842",
       "formal/tlaplus/soak_disk/MC_RunDomainAdmission_iteration_unchecked_pre_fix.tla": "5e61e26130f9a8f23e52d532a9bbd5a68bfbc4e2c864cdbe3a27417d7be89529",
+      "formal/tlaplus/soak_disk/MC_RunDomainRecordIdentity.cfg": "6a00e89c5f16ee8eec5f3ab106e0cb83119ddef775a8168321405b3bcb23d935",
+      "formal/tlaplus/soak_disk/MC_RunDomainRecordIdentity.tla": "a0acc39fb7656092a92c987687325539a756474d69f94955b7c291425c0a4df9",
+      "formal/tlaplus/soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix.cfg": "078c1a9f7944533afed6bd1b2508cf9f75fcba2927930e13adcde55a74188120",
+      "formal/tlaplus/soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix.tla": "7cd382fb8dc4e23d1ea2eac3636e9c5570c1682d62e85bbcfe51083f748e261f",
       "formal/tlaplus/soak_disk/MC_SoakDisk.cfg": "baa1c4153fc8c485d6d15ce267adb601f1585a4e24f0686ff07f3bec8b9894f4",
       "formal/tlaplus/soak_disk/MC_SoakDisk.tla": "3f1c1f5589f430a424efe8c8916f7b725b1bc33bd39e49959ffd3c63d11ab039",
       "formal/tlaplus/soak_disk/MC_SoakDisk_floor_only_pre_fix.cfg": "0ee62f80739ff4f03d47555b4cb4550738d909f6a247a66fd62b73ac30051132",
@@ -2331,6 +2387,8 @@
       "formal/tlaplus/soak_disk/README.md": "01b7a506fbf1e34bedfb3e3657823c8a75081752e72810f93f28f506f3a10f18",
       "formal/tlaplus/soak_disk/RunDomainAdmission.md": "d8cb0fc567942a059740507315dd30fe02f2e87c54cad6089c9bb7c4ffa95b09",
       "formal/tlaplus/soak_disk/RunDomainAdmission.tla": "7cf14fd32ca97b46a2aaafc8eb7bfb12cabf616b44d27c4c0e4e5ad2cbaa718e",
+      "formal/tlaplus/soak_disk/RunDomainRecordIdentity.md": "314e4194dcf2f3066d3a579228140d629df9c754adcd9e67fa990ef8cc9ff201",
+      "formal/tlaplus/soak_disk/RunDomainRecordIdentity.tla": "2403c4b63895cae1a2d2c97e87d2063c33abbe3600d485f20178ca9508f3f5fb",
       "formal/tlaplus/soak_disk/SoakDisk.tla": "17219df7246a0e349fcb9072590a2576fa568f38755364c7f637f0227bede942",
       "rspace++/src/rspace/replay_rspace.rs": "14c254ef0ac3db29a44313f8da8c7df02576ff113c135dc78650247fa12f1cb5",
       "scripts/bench/aggregate-perf-report.sh": "012856a3921851e02705bd7dde91a5b07d98d61d28944df9b85f03737405760c",
@@ -2340,8 +2398,8 @@
       "scripts/bench/profile-casper-latency.sh": "a8b57f262660d1f75e733e33af904f4fa5da52b911777e046d57f656a0041a25",
       "scripts/bench/restore-soak-dashboard-run.sh": "e62dfae78d12ffc32f0cae73df6453d924cc7ace86a544774b5099880d1fd99e",
       "scripts/bench/run-bench-segment.sh": "735c0eed6e7db8edb2ca910f40c2058a146b386aec28e817d2ad795c70888813",
-      "scripts/bench/run-soak-contained.sh": "c8074bc3adff678fe508c93e118c4633333f15494214e24875b96464b04566d2",
-      "scripts/bench/soak-containment.py": "dfcc0c3bd009071c46df82b28e076106069de40152511ff0f88f9c8eb0de4859",
+      "scripts/bench/run-soak-contained.sh": "6c62dcc2184d54112acc55112d58f74bda2eaf39ddff57b8040f27a03c5b2210",
+      "scripts/bench/soak-containment.py": "35399004d7ac8b9eab14db2fd9f9d1514bd46fbd8993ce530ef3ea94ac69d0c6",
       "scripts/bench/soak-disk-test.Dockerfile": "85340de51da31c1ea8ded3c4a20a8e0cf8f85a26b0cfc13ab4b29768d5048aa9",
       "scripts/bench/soak-metrics.json": "d4a71e7996dc0b0a74fcfc339f5164121c246db7c2f4e27114b7ea80c2edfef7",
       "scripts/bench/test-aggregate-perf-report.sh": "858169b3477baa66bbdb0c809df7a4d4eecc645e0ea4312a719ad174521ee0f5",
@@ -2364,7 +2422,7 @@
       "scripts/bench/test-soak-disk-active-probe.sh": "9e5c50a0bf37cfa1a1b00b6ad2d442e2421fbd3788d82540ab5edb3058474f2b",
       "scripts/bench/test-soak-disk-admission.sh": "05563f84f9775aa5d7881d2b854ca698397005c398d55cddd3b544b76416e4fd",
       "scripts/bench/test-soak-disk-diagnostic-deadline.sh": "b44ff741f9d62d2c75cc119e12e70f9cdea9de0d9dec099e993c32e2ade1c955",
-      "scripts/bench/test-soak-disk-emergency.sh": "d7c8aec4ccc296e9b9b3c4a9c686c719b52a88f4545af9c4b1dea282f81f6db8",
+      "scripts/bench/test-soak-disk-emergency.sh": "2dcca69be54070510dd83a6dd4a052a5b928f2e77faaa4f5706eb3695859f248",
       "scripts/bench/test-soak-disk-hygiene-deadline.sh": "1f438657eb5a5d4afc3cdf0593d2003e3f6796cbab27c966c9e6565b6b3e0d9b",
       "scripts/bench/test-soak-disk-probe-timeout.sh": "872d44a5940e59d7a2457ee0747bd8cca5ad73ba5bc3e20ccacadc090b00e098",
       "scripts/bench/test-soak-disk-probe.sh": "41ee399da2c2bbf7a54634a5bbf90087071ecd0e8456dc6478932ca2032dbc41",
@@ -2388,20 +2446,21 @@
       "scripts/bench/test-soak-real-docker-shutdown.sh": "4f7237d42d158e4592635eaf6ee26b86b3bf43bf4dfd2578488d0b20f3c72fd9",
       "scripts/bench/test-soak-real-stop-failure.sh": "094542693a5abd8f2875c7c4dd1bcfd1050c442e92003b8c069c819df331d410",
       "scripts/bench/test-soak-real-stop-ownership.sh": "5c363ce3cb7f070abbae8af220a4a2613debffd813a593ec2899a141dc7dfc4e",
+      "scripts/bench/test-soak-record-identity.sh": "483c4792f2a3cd846aa0bdf5f5587fd42653cca751d6eedea269f0577fd13c7d",
       "scripts/bench/test-soak-run-domain-admission.sh": "8554a88973dc195bf463330a0a72e2491d1078c5daf4ecbf52bb6ddb3cc5eaa4",
       "scripts/bench/test-write-soak-summary.sh": "355ac9ebc268e626e99a54a9464aad9ed9b9db9ae8af65e122263acf2d1ddf23",
       "scripts/bench/write-soak-summary.sh": "ed6c53492ab35dd9b2cc82123766e76efec9ea6a7e18b759a034b4a038d8a489",
       "scripts/check-finalized-floor-ALL.sh": "f42a6f9106b99309dd56c577f45b7e6c3e596439ff4ca88635a860dc53e955c7",
       "scripts/ci/check-formal-invariants.sh": "84e75616a60f671c1be36b85a4678f97c1c3ea1f8f08396e1281bcfa0e8f2876",
       "scripts/ci/check-soak-evidence-package.rb": "1eb605fbc93936adb50fc3105b5e92ff33fd2013af95f476f38ef4ab57c6e39f",
-      "scripts/ci/check-tla-invariants.sh": "8dffd8227c8e37e216428c33b23d51be4e921d67251551752af359370ce6c40f",
-      "scripts/ci/test-check-tla-invariants.sh": "f295c48ad4d89d74e8bd7f600b5936731dbf8e0d989170e17f420d1569d91c8b",
+      "scripts/ci/check-tla-invariants.sh": "83c3d6438dd0e02dcd56f4d71cf884d13014f297f643541e59b1fcd8359c2741",
+      "scripts/ci/test-check-tla-invariants.sh": "3929c2f7245c2294a4c045a1abca9bf82e4ee568d4314195672f1fbe1297efe2",
       "scripts/ci/test-soak-claim-inventory-jsonc.sh": "b6ba3dcd5a81ef37698bd10cb6ca4058afccfdf9d0bf0273530a865202c691db",
       "scripts/ci/test-soak-claim-inventory.sh": "8bcbdb5ec7ab008ec9057ba07f03c425bd6e9237c915340ba7957681b5d7f3d4",
       "scripts/ci/test-soak-evidence-package.rb": "b1ad6c959b1f559ea184847cec714e5f5cf999d9aec94f4f4d9a84e4efba373c",
-      "scripts/ci/test-soak-pr-formal-gate.sh": "3d9da19b4fbd62350f424a5421ce0b6c624f9ff468316c6dcc209d1cd6c08598",
+      "scripts/ci/test-soak-pr-formal-gate.sh": "a780cf63fd7092e65cc10228a539277fb68d289f9a06ef856a34eaceb86e9602",
       "scripts/repin-system-integration.sh": "762e421890952bc4c84ac7f1c4a844356edefe4786cf86e65e12f21590018a06",
-      "scripts/run-merge-recovery-soak.sh": "9c3bced0eba2bc1c5d3842ec12a9f784027c9ce7ec05ba501b2be960ca4baa2a",
+      "scripts/run-merge-recovery-soak.sh": "08e0fa0c07cb8cf4ec3b326052e65de31421b335b9ad7e5ef08dc8499cb69ce7",
       "scripts/test-repin-system-integration.sh": "cf238a85019b74c232106fbcd2c357f09095d01f65f40bd8941e30e99f57c104"
     }
   },
@@ -2557,7 +2616,8 @@
         "BOUNDED-TLA",
         "DISK-EMERGENCY",
         "NATIVE-CONTROLLER-LOSS",
-        "RUN-DOMAIN-ADMISSION"
+        "RUN-DOMAIN-ADMISSION",
+        "RUN-DOMAIN-RECORD-IDENTITY"
       ],
       "pending_obligations": [
         "The maintainer must ratify the resource claim and any new mandatory CbC attributes.",
@@ -2568,7 +2628,8 @@
         "Identify and correct the growing consumer during D3.",
         "Complete exact-candidate acceptance with merged harness 962effd17708192627bd249362761c0ccb1fd5fa. Local repin checks do not discharge finalization or disk obligations.",
         "Preserve earlier product failures and require full-duration completion independently of safe disk stops.",
-        "B45 refuses admission without a matching trusted run-domain record. The launcher handshake, exclusive ownership, creation fencing, and Docker containment remain incomplete."
+        "B45 refuses admission without a matching trusted run-domain record. The launcher handshake, exclusive ownership, creation fencing, and Docker containment remain incomplete.",
+        "B46 binds the run-domain record identity through descriptors and rejects an oversized record. The launcher handshake, exclusive ownership, creation fencing, and Docker containment remain incomplete."
       ]
     }
   ],
@@ -4123,6 +4184,67 @@
         "Verify that the recorded cgroup is an exclusively owned unit, then add creation fencing and private Docker containment before workflow integration.",
         "Complete storage durability, one composed deadline, reserve bounds, hosted enforcement, maintainer ratification, and separately authorized acceptance."
       ]
+    },
+    {
+      "id": "RUN-DOMAIN-RECORD-IDENTITY",
+      "command": "SOAK_DISK_TEST_IMAGE=<sha256> bash scripts/bench/test-soak-record-identity.sh <source> <new-evidence-directory>",
+      "configurations": [
+        "formal/tlaplus/soak_disk/RunDomainRecordIdentity.tla",
+        "formal/tlaplus/soak_disk/MC_RunDomainRecordIdentity.tla",
+        "formal/tlaplus/soak_disk/MC_RunDomainRecordIdentity.cfg",
+        "formal/tlaplus/soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix.tla",
+        "formal/tlaplus/soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix.cfg",
+        "formal/tlaplus/soak_disk/RunDomainRecordIdentity.md",
+        "scripts/bench/test-soak-record-identity.sh",
+        "scripts/run-merge-recovery-soak.sh"
+      ],
+      "verifier": {
+        "name": "Isolated Docker fixture and finite TLC refutation",
+        "version": "The manifest binds the baseline and corrected runtime sources, the fixture bytes, the fixture image, and the TLC jar."
+      },
+      "assumptions": [
+        "The fixture container runs as root only to build the record chains under /run and then drops to uid 65534 before any workload code.",
+        "The fixture substitutes df, docker, poetry, curl, and oci commands. The driver's kernel cgroup view comes from /proc/self/cgroup."
+      ],
+      "bounds": [
+        "The matched pair uses identical fixture bytes. One earlier attempt is retained as a setup failure.",
+        "The fixture builds each untrusted chain before the driver starts and does not race a concurrent rename.",
+        "The unit field check is a shape check. The sixteen-state model does not represent time, storage, exclusive ownership, or creation fencing."
+      ],
+      "production_tests": [
+        {
+          "path": "scripts/bench/test-soak-record-identity.sh",
+          "command": "SOAK_DISK_TEST_IMAGE=<sha256> bash scripts/bench/test-soak-record-identity.sh <source> <new-evidence-directory>",
+          "result": "source-bound-matched-red-green",
+          "required_exit_code": 0,
+          "observed_exit_code": 0
+        }
+      ],
+      "expected_results": [
+        {
+          "configuration": "MC_RunDomainRecordIdentity",
+          "exit_code": 0
+        },
+        {
+          "configuration": "MC_RunDomainRecordIdentity_pathname_pre_fix",
+          "exit_code": 12,
+          "invariant": "AdmissionRequiresOpenedRecordTrust"
+        }
+      ],
+      "ci": {
+        "workflow": ".github/workflows/ci.yml",
+        "job": "not-configured",
+        "enforcement": "The fixture runs in the isolated disk emergency suite. Its finite configurations are registered in the formal gate. Hosted execution remains unverified."
+      },
+      "evidence_refs": [
+        "D2-RECORD-IDENTITY-LOCAL"
+      ],
+      "result": "historical-baseline",
+      "pending_obligations": [
+        "Make the native launcher write the run-domain record before it starts the driver, and verify the handshake on a native service manager.",
+        "Verify that the recorded cgroup is an exclusively owned unit, then add creation fencing and private Docker containment before workflow integration.",
+        "Complete storage durability, one composed deadline, reserve bounds, hosted enforcement, maintainer ratification, and separately authorized acceptance."
+      ]
     }
   ],
   "evidence": {
@@ -4537,6 +4659,17 @@
         "Two setup-failure attempts and one prior-fixture pair are retained with their original identities. The final matched pair uses identical fixture bytes.",
         "All four claim discharges, all nine gates, hosted enforcement, and acceptance remain pending."
       ]
+    },
+    "D2-RECORD-IDENTITY-LOCAL": {
+      "path": "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/manifest.jsonc",
+      "role": "historical-baseline",
+      "identity": "Source-bound B46 RED/GREEN pair for run-domain record identity binding, a matching finite refutation, and combined local checks.",
+      "limitations": [
+        "The fixture builds each untrusted chain before the driver starts in Docker isolation. No native service manager, real Docker daemon, or disposable runner executed this cycle.",
+        "The unit field check is a shape check, not a live service invocation check. Exclusive ownership and creation fencing remain distinct claims.",
+        "One setup-failure attempt is retained with its original identity. The matched pair uses identical fixture bytes.",
+        "All four claim discharges, all nine gates, hosted enforcement, and acceptance remain pending."
+      ]
     }
   },
   "gates": [
@@ -4575,7 +4708,8 @@
         "DISK-EMERGENCY",
         "CONTROLLER-LOSS",
         "NATIVE-CONTROLLER-LOSS",
-        "RUN-DOMAIN-ADMISSION"
+        "RUN-DOMAIN-ADMISSION",
+        "RUN-DOMAIN-RECORD-IDENTITY"
       ],
       "pending_obligations": [
         "B5 through B43 pass their selected local checks. B35 is unchanged-production characterization. B44 remains RED. D2 is not complete.",
@@ -4592,7 +4726,8 @@
         "Complete the authorized bounded D3 node diagnostics with the required observability prerequisites. Full D2 discharge requires all-writer growth and reserve evidence.",
         "Correct combined driver and crash-monitor loss with reviewed containment. The current ownership marker does not make workload lifetime depend on either controller.",
         "The native-only subcycle passes. The original direct-launch B44, private Docker containment, creation fencing, and workflow integration remain incomplete.",
-        "The B45 run-domain admission check passes locally. Native launcher record emission, exclusive ownership, creation fencing, private Docker containment, and workflow integration remain incomplete."
+        "The B45 run-domain admission check passes locally. Native launcher record emission, exclusive ownership, creation fencing, private Docker containment, and workflow integration remain incomplete.",
+        "The B46 record identity check passes locally. Native launcher record emission, exclusive ownership, creation fencing, private Docker containment, and workflow integration remain incomplete."
       ]
     },
     {

@@ -84,6 +84,7 @@ case "$config" in
     MC_InterruptedOutputDrain_drain_first_pre_fix.cfg) invariant=DrainRequiresOwnedStop ;;
     MC_NativeControllerLoss_unmanaged_pre_fix.cfg) invariant=NativeControllerLossStopsOwnedWriter ;;
     MC_RunDomainAdmission_benchmark_unchecked_pre_fix.cfg | MC_RunDomainAdmission_iteration_unchecked_pre_fix.cfg) invariant=UnverifiedPlacementPreventsAdmission ;;
+    MC_RunDomainRecordIdentity_pathname_pre_fix.cfg) invariant=AdmissionRequiresOpenedRecordTrust ;;
     *) printf 'Model checking completed. No error has been found.\n'; exit 0 ;;
 esac
 printf 'Error: Invariant %s is violated.\n' "$invariant"
@@ -176,6 +177,8 @@ pr_configs=(
     soak_disk/MC_RunDomainAdmission_benchmark_unchecked_pre_fix
     soak_disk/MC_RunDomainAdmission_iteration
     soak_disk/MC_RunDomainAdmission_iteration_unchecked_pre_fix
+    soak_disk/MC_RunDomainRecordIdentity
+    soak_disk/MC_RunDomainRecordIdentity_pathname_pre_fix
     carrier_index/MC_CarrierIndex_dag_first_pre_fix
     carrier_index/MC_CarrierIndex_read_failure_pre_fix
 )

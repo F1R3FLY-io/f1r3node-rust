@@ -413,6 +413,15 @@ The matching case therefore tests record comparison, not exclusive run-domain ow
 The launcher handshake, exclusive ownership, creation fencing, private Docker containment, and workflow integration remain open.
 D2 and claim discharge remain pending.
 
+#### Record identity after B46
+
+The [record identity package](../cbc-evidence/soak-d2-record-identity-2026-09-12/README.md) corrects two defects that the second session found in the B45 check.
+The driver now opens the [run-domain record](../../formal/tlaplus/soak_disk/RunDomainRecordIdentity.md) through descriptors from the filesystem root.
+It rejects an ancestor that is not root-owned or is writable by others, a symbolic link component, and a record beyond its size bound.
+A root-owned chain still admits work.
+The unit field check is a shape check, and invocation identity, exclusive ownership, and creation fencing remain distinct claims.
+D2 and claim discharge remain pending.
+
 ### Gate O1: Verify observability before the diagnostic soak
 
 **Owners:** The soak maintainer and Casper maintainer.
